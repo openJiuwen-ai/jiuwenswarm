@@ -1,0 +1,104 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Attach bounded subagent execution and optional stream capture.
+
+The SDK owns input validation, query budgets, focused browser resumes, resource
+cleanup, usage attribution, and authoritative result rendering. This patch only
+wraps its narrow dispatch seam for deadlines and failure propagation, selecting
+stream capture only while a debug dump is active. All parent agent modes use
+this hook, including native team members.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+    run_subagent_with_timeout,
+)
+
+_PATCH_APPLIED = False
+_logger = logging.getLogger(__name__)
+
+
+def _subagent_source_label(subagent: Any) -> str:
+    card = getattr(subagent, "card", None)
+    subagent_type = str(
+        getattr(card, "name", None) or getattr(card, "id", None) or "unknown"
+    )
+    return f"subagent:builtin:{subagent_type}"
+
+
+def _wrap_invoke_subagent(original_dispatch: Any):
+    """Guard delegation in all modes; capture only when a debug dump is active."""
+
+    async def _invoke_subagent_with_trace(
+        self: Any,
+        subagent: Any,
+        subagent_inputs: dict[str, Any],
+        *,
+        parent_session_id: str,
+        session: Any = None,
+    ) -> Any:
+        from jiuwenswarm.server.runtime.debug_trace import (
+            get_debug_trace_logger,
+            invoke_subagent_with_trace,
+        )
+        from jiuwenswarm.server.runtime.debug_trace.context import (
+            get_debug_trace_logger_for_session,
+        )
+
+        debug_logger = get_debug_trace_logger()
+        if debug_logger is None:
+            debug_logger = get_debug_trace_logger_for_session(parent_session_id)
+        if debug_logger is None or not debug_logger.captures_subagent_flow():
+            return await run_subagent_with_timeout(
+                subagent,
+                session_id=str(subagent_inputs.get("conversation_id") or parent_session_id),
+                call=lambda: original_dispatch(
+                    self, subagent, subagent_inputs,
+                    parent_session_id=parent_session_id, session=session,
+                ),
+            )
+        return await invoke_subagent_with_trace(
+            subagent,
+            inputs=subagent_inputs,
+            session=session,
+            session_id=parent_session_id,
+            source_label=_subagent_source_label(subagent),
+        )
+
+    return _invoke_subagent_with_trace
+
+
+def apply_task_tool_debug_patch() -> None:
+    """Patch only the SDK dispatch seam used to invoke a created subagent."""
+    global _PATCH_APPLIED
+    if _PATCH_APPLIED:
+        return
+
+    from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+    if getattr(TaskTool, "debug_trace_patch_applied", False):
+        _PATCH_APPLIED = True
+        return
+
+    original_dispatch = getattr(TaskTool, "_invoke_subagent", None)
+    if not callable(original_dispatch):
+        _logger.warning(
+            "TaskTool debug subagent-flow capture is unavailable because this SDK "
+            "does not expose the narrow dispatch hook; TaskTool behavior is unchanged."
+        )
+        TaskTool.debug_trace_patch_applied = True
+        TaskTool.debug_trace_patch_mode = "unsupported_sdk"
+        _PATCH_APPLIED = True
+        return
+
+    setattr(TaskTool, "_invoke_subagent", _wrap_invoke_subagent(original_dispatch))
+    TaskTool.debug_trace_patch_applied = True
+    TaskTool.debug_trace_patch_mode = "dispatch_only"
+    _PATCH_APPLIED = True
+
+
+__all__ = ["apply_task_tool_debug_patch", "_subagent_source_label"]

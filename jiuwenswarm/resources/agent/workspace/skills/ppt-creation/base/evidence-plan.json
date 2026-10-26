@@ -1,0 +1,7 @@
+{
+  "$schema": "./evidence-plan.schema.json",
+  "version": 1,
+  "asset_root": "assets",
+  "analysis_root": "analysis",
+  "items": []
+}

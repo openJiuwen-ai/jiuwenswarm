@@ -1,0 +1,224 @@
+phases:
+  processing:
+    - "^processing"
+
+  dispatch_init:
+    - "^dispatch init"
+  dispatch_process:
+    - "^dispatch process"
+  dispatch_sync_all:
+    - "^dispatch sync-all"
+
+  dispatch_gmm1_wait_shared_token:
+    - "^dispatch-gmm1 wait-shared-token"
+  dispatch_gmm1_wait_moe_token:
+    - "^dispatch-gmm1 wait-moe-token"
+  dispatch_gmm1_sleep:
+    - "^dispatch-gmm1 sleep"
+  dispatch_gmm1_sync_block_mmad:
+    - "^dispatch-gmm1 sync-block-mmad"
+  dispatch_gmm1_sync_aiv:
+    - "^dispatch-gmm1 sync-aiv"
+  dispatch_gmm1_sync:
+    - "^dispatch-gmm1.*sync"
+  dispatch_gmm1_shared_dispatch_swiglu_wait_flag:
+    - "^dispatch-gmm1 shared-dispatch-swiglu wait-flag"
+  dispatch_gmm1_moe_dispatch_swiglu_wait_flag:
+    - "^dispatch-gmm1 moe-dispatch-swiglu wait-flag"
+  dispatch_gmm1_shared_process:
+    - "^dispatch-gmm1 shared-process"
+    - "^dispatch-gmm1.*shared-pro"
+    - "^dispatch-gmm1.*shared-prologue"
+  dispatch_gmm1_moe_process:
+    - "^dispatch-gmm1 moe-process"
+  dispatch_gmm1_comp_core:
+    - "^dispatch-gmm1 CompCoreFunc"
+  dispatch_gmm1_send_core:
+    - "^dispatch-gmm1 SendCoreFunc"
+  dispatch_gmm1_recv_core:
+    - "^dispatch-gmm1 RecvCoreFunc"
+  dispatch_gmm1_share_quant_core:
+    - "^dispatch-gmm1 shareQuantCoreFunc"
+  dispatch_gmm1_share_swiglu_core:
+    - "^dispatch-gmm1 shareSwigluCoreFunc"
+  dispatch_gmm1_recv_token_calc:
+    - "^dispatch-gmm1 recv-token-calc"
+  dispatch_gmm1_recv_token:
+    - "^dispatch-gmm1 recv-token"
+  dispatch_gmm1_recv_count:
+    - "^dispatch-gmm1 recv-count"
+  dispatch_gmm1_get_cum_sum:
+    - "^dispatch-gmm1 get-cum-sum"
+  dispatch_gmm1_dispatch_send:
+    - "^dispatch-gmm1 dispatch-send"
+  dispatch_gmm1_moe_dispatch_send:
+    - "^dispatch-gmm1 moe-dispatch-send"
+  dispatch_gmm1_shared_dispatch_swiglu:
+    - "^dispatch-gmm1 shared-dispatch-swiglu"
+  dispatch_gmm1_moe_dispatch_swiglu:
+    - "^dispatch-gmm1 moe-dispatch-swiglu"
+  dispatch_gmm1_shared_quant:
+    - "^dispatch-gmm1 shared-quant"
+  dispatch_gmm1_moe_quant:
+    - "^dispatch-gmm1 moe-quant"
+  dispatch_gmm1_aiv_init_params:
+    - "^dispatch-gmm1 aiv-init-params"
+  dispatch_gmm1_aiv_init_state:
+    - "^dispatch-gmm1 aiv-init-state"
+  dispatch_gmm1_update_clean_info:
+    - "^dispatch-gmm1 UpdateAndCleanInfo"
+  dispatch_gmm1_aiv:
+    - "^dispatch-gmm1 aiv"
+  dispatch_gmm1_aic:
+    - "^dispatch-gmm1 aic"
+  dispatch_gmm1:
+    - "^dispatch-gmm1"
+
+  combine_init:
+    - "^combine init"
+
+  gmm2_combine_wait_quant:
+    - "^gmm2-combine wait quant"
+  gmm2_combine_block_mmad_waiting:
+    - "^gmm2-combine block-mmad waiting"
+  gmm2_combine_block_mmad_copy_out:
+    - "^gmm2-combine block-mmad copy-out"
+  gmm2_combine_shared_wait_combine:
+    - "^gmm2-combine block-epilogue shared-wait-combine"
+    - "^gmm2-combine.*shared-wait-combine"
+  gmm2_combine_block_epilogue_shared_waiting:
+    - "^gmm2-combine block-epilogue shared-waiting"
+  gmm2_combine_block_epilogue_waiting:
+    - "^gmm2-combine block-epilogue waiting"
+  gmm2_combine_block_epilogue_shared_calc:
+    - "^gmm2-combine block-epilogue shared-calc"
+  gmm2_combine_block_epilogue_calc:
+    - "^gmm2-combine block-epilogue calc"
+  gmm2_combine_block_epilogue_shared_group:
+    - "^gmm2-combine block-epilogue shared-group"
+  gmm2_combine_block_epilogue_group:
+    - "^gmm2-combine block-epilogue group"
+  gmm2_combine_block_epilogue:
+    - "^gmm2-combine block-epilogue"
+  gmm2_combine_combine_barrier_all:
+    - "^gmm2-combine combine-barrier-all"
+  gmm2_combine_combine_wait_send:
+    - "^gmm2-combine combine-wait-send"
+  gmm2_combine_combine_wait_status:
+    - "^gmm2-combine combine-wait-status"
+  gmm2_combine_combine_set_status:
+    - "^gmm2-combine combine-set-status"
+  gmm2_combine_combine_local_copy:
+    - "^gmm2-combine combine-local-copy"
+  gmm2_combine_combine_send:
+    - "^gmm2-combine combine-send"
+  gmm2_combine_combine_recv:
+    - "^gmm2-combine combine-recv"
+  gmm2_combine_combine:
+    - "^gmm2-combine combine"
+  gmm2_combine_send_calc:
+    - "^gmm2-combine send-calc"
+  gmm2_combine_clean_flags:
+    - "^gmm2-combine clean-flags"
+  gmm2_combine_sync_gmm2:
+    - "^gmm2-combine sync-gmm2"
+  gmm2_combine_sync:
+    - "^gmm2-combine.*sync"
+  gmm2_combine_moe_gmm2:
+    - "^gmm2-combine moe-gmm2"
+  gmm2_combine_shared_gmm2:
+    - "^gmm2-combine shared-gmm2"
+  gmm2_combine_aiv:
+    - "^gmm2-combine aiv"
+  gmm2_combine_aic:
+    - "^gmm2-combine aic"
+  gmm2_combine:
+    - "^gmm2-combine"
+
+phase_categories:
+  processing: container
+  dispatch_gmm1: container
+  dispatch_gmm1_aic: container
+  dispatch_gmm1_aiv: container
+  gmm2_combine: container
+  gmm2_combine_aic: container
+  gmm2_combine_aiv: container
+  dispatch_init: init
+  combine_init: init
+  dispatch_gmm1_wait_shared_token: wait
+  dispatch_gmm1_wait_moe_token: wait
+  dispatch_gmm1_sleep: wait
+  dispatch_gmm1_shared_dispatch_swiglu_wait_flag: wait
+  dispatch_gmm1_moe_dispatch_swiglu_wait_flag: wait
+  gmm2_combine_wait_quant: wait
+  gmm2_combine_block_mmad_waiting: wait
+  gmm2_combine_block_epilogue_waiting: wait
+  gmm2_combine_block_epilogue_shared_waiting: wait
+  gmm2_combine_shared_wait_combine: wait
+  gmm2_combine_combine_wait_send: wait
+  gmm2_combine_combine_wait_status: wait
+  gmm2_combine_combine_barrier_all: wait
+  dispatch_gmm1_sync: sync
+  dispatch_gmm1_sync_aiv: sync
+  dispatch_gmm1_sync_block_mmad: sync
+  dispatch_sync_all: sync
+  gmm2_combine_sync: sync
+  gmm2_combine_sync_gmm2: sync
+  dispatch_gmm1_comp_core: compute
+  dispatch_gmm1_moe_process: compute
+  dispatch_gmm1_shared_process: compute
+  gmm2_combine_moe_gmm2: compute
+  gmm2_combine_shared_gmm2: compute
+  gmm2_combine_block_mmad_copy_out: compute
+  gmm2_combine_block_epilogue: epilogue
+  gmm2_combine_block_epilogue_group: epilogue
+  gmm2_combine_block_epilogue_shared_group: epilogue
+  gmm2_combine_block_epilogue_calc: epilogue
+  gmm2_combine_block_epilogue_shared_calc: epilogue
+  dispatch_gmm1_shared_quant: quant
+  dispatch_gmm1_moe_quant: quant
+  dispatch_gmm1_share_quant_core: quant
+  dispatch_gmm1_shared_dispatch_swiglu: quant
+  dispatch_gmm1_moe_dispatch_swiglu: quant
+  dispatch_gmm1_share_swiglu_core: quant
+  dispatch_process: communication
+  dispatch_gmm1_send_core: communication
+  dispatch_gmm1_recv_core: communication
+  dispatch_gmm1_recv_token_calc: communication
+  dispatch_gmm1_recv_token: communication
+  dispatch_gmm1_recv_count: communication
+  dispatch_gmm1_get_cum_sum: communication
+  dispatch_gmm1_dispatch_send: communication
+  dispatch_gmm1_moe_dispatch_send: communication
+  gmm2_combine_combine: communication
+  gmm2_combine_combine_send: communication
+  gmm2_combine_combine_recv: communication
+  gmm2_combine_combine_set_status: communication
+  gmm2_combine_combine_local_copy: communication
+  gmm2_combine_send_calc: communication
+  dispatch_gmm1_aiv_init_params: init
+  dispatch_gmm1_aiv_init_state: init
+  dispatch_gmm1_update_clean_info: cleanup
+  gmm2_combine_clean_flags: cleanup
+
+focus_phases:
+  - processing
+  - dispatch_gmm1
+  - dispatch_gmm1_wait_shared_token
+  - dispatch_gmm1_wait_moe_token
+  - dispatch_gmm1_moe_process
+  - dispatch_gmm1_comp_core
+  - dispatch_gmm1_shared_process
+  - dispatch_gmm1_sync_aiv
+  - dispatch_gmm1_sync_block_mmad
+  - gmm2_combine
+  - gmm2_combine_wait_quant
+  - gmm2_combine_moe_gmm2
+  - gmm2_combine_shared_gmm2
+  - gmm2_combine_block_epilogue
+  - gmm2_combine_block_epilogue_waiting
+  - gmm2_combine_block_epilogue_calc
+  - gmm2_combine_shared_wait_combine
+  - gmm2_combine_combine_wait_send
+  - gmm2_combine_combine_wait_status
+  - gmm2_combine_sync_gmm2

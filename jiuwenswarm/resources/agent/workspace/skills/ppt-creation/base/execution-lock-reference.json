@@ -1,0 +1,87 @@
+{
+  "$schema": "./execution-lock.schema.json",
+  "version": 2,
+  "evidence_plan": "evidence-plan.json",
+  "template": {
+    "source": "references/template.pptx",
+    "canvas_mode": "template-master",
+    "authoring_canvas": "10x5.625-scaled",
+    "merge_mode": "template-layout",
+    "content_layout": "slideLayout7.xml",
+    "content_shell": "blank-content",
+    "footer_mode": "master"
+  },
+  "brand": {
+    "colors": {
+      "primary": "4472C4",
+      "secondary": "8FAADC",
+      "text": "1D1D1A",
+      "secondary_text": "666666",
+      "background": "FFFFFF"
+    },
+    "typography": {
+      "cjk": "Microsoft YaHei",
+      "latin": "Arial"
+    },
+    "footer": {
+      "required_on": "standard-content"
+    },
+    "summary_banner": {
+      "required_on": "standard-content",
+      "fill": "4472C4",
+      "text_color": "FFFFFF",
+      "position": "above-footer"
+    }
+  },
+  "deck": {
+    "narrative_mode": "briefing",
+    "typography_policy": {
+      "title_min_pt": 24,
+      "body_min_pt": 10,
+      "absolute_min_pt": 7
+    },
+    "image_treatment": "rectangular-documentary"
+  },
+  "pages": [
+    {
+      "id": "P01",
+      "role": "fixed-cover",
+      "rhythm": "anchor",
+      "core_message": "Replace with the confirmed cover message.",
+      "summary": null,
+      "visual_strategy": {
+        "primary": "template",
+        "fallback": "none"
+      },
+      "component_policy": "avoid",
+      "composition": "Use the official fixed-cover page without rebuilding its geometry.",
+      "evidence_visual": {
+        "kind": "template",
+        "asset_ids": []
+      },
+      "reference_ids": [],
+      "reference_waiver": "The official cover is itself the governing reference."
+    },
+    {
+      "id": "P02",
+      "role": "standard-content",
+      "rhythm": "dense",
+      "core_message": "Replace with the one conclusion this page must establish.",
+      "summary": "Replace with the one-sentence takeaway rendered in the fixed red banner.",
+      "visual_strategy": {
+        "primary": "native-drawing",
+        "fallback": "component"
+      },
+      "component_policy": "optional",
+      "composition": "Use one dominant relationship diagram plus a concise evidence column; avoid equal gray cards.",
+      "evidence_visual": {
+        "kind": "native-diagram",
+        "asset_ids": []
+      },
+      "reference_ids": [
+        "problem-diagram-analysis"
+      ],
+      "reference_waiver": null
+    }
+  ]
+}

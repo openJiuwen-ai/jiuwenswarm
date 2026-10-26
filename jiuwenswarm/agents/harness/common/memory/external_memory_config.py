@@ -1,0 +1,455 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+
+"""External memory configuration helpers.
+
+Reads `memory.external` from config.yaml. For provider=openjiuwen, also
+maps the jiuwenswarm-shaped config (`memory.external.openjiuwen` + top-level
+`embed`) into the config dict that OpenJiuwenMemoryProvider expects, and
+builds the `MemoryScopeConfig` (LLM + embedding) the LTM engine needs to
+extract and retrieve memories. Concrete Store / Embedding instances are
+built inside the provider — not here.
+"""
+
+import logging
+import os
+from pathlib import Path
+from typing import Any, Dict, Optional, Tuple
+
+from jiuwenswarm.common.local_env_config import read_env
+from jiuwenswarm.common.utils import (
+    get_multi_tenant_user_workspace_dir,
+    normalize_tenant_scope_id,
+)
+from jiuwenswarm.server.runtime.tenant_context import get_bound_workspace_key
+
+from .config import _load_config, get_embed_config
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_USER = "__default__"
+_DEFAULT_SCOPE = "__default__"
+
+_VALID_ENGINES = {"builtin", "external", "both", "none"}
+
+
+def _resolve_full_config(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Resolve config snapshot; memory 段始终合并 Gateway DB overlay。"""
+    from .config import _load_config, merge_memory_config_into_config
+
+    base = config if config is not None else _load_config()
+    return merge_memory_config_into_config(base)
+
+
+def get_memory_engine(config: Optional[Dict[str, Any]] = None) -> str:
+    """Return the memory engine policy: builtin | external | both | none.
+
+    Controls which memory subsystems are allowed to mount.
+    Default: builtin (backward-compatible with configs that predate this flag).
+    """
+    from .config import get_memory_section
+
+    mem = get_memory_section(config)
+    value = str(mem.get("engine") or "builtin").strip().lower()
+    return value if value in _VALID_ENGINES else "builtin"
+
+
+def is_builtin_memory_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Engine-level gate for the built-in MemoryRail."""
+    return get_memory_engine(config) in {"builtin", "both"}
+
+
+def is_external_memory_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Engine-level gate for the ExternalMemoryRail."""
+    return get_memory_engine(config) in {"external", "both"}
+
+
+def get_external_memory_config(
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return the `memory.external` section with defaults filled in."""
+    from .config import get_memory_section
+
+    mem = get_memory_section(config)
+    ext = mem.get("external", {}) if isinstance(mem, dict) else {}
+    if not isinstance(ext, dict):
+        ext = {}
+
+    return {
+        "provider": (ext.get("provider") or "").strip(),
+        "user_id": ext.get("user_id") or _DEFAULT_USER,
+        "scope_id": ext.get("scope_id") or _DEFAULT_SCOPE,
+        "allowed_plugins": ext.get("allowed_plugins") or [],
+        "openjiuwen": ext.get("openjiuwen") or {},
+        "mem0": ext.get("mem0") or {},
+        "openviking": ext.get("openviking") or {},
+        "lakebase": ext.get("lakebase") or {},
+        "officeace_cloud": ext.get("officeace_cloud") or {},
+    }
+
+
+def is_external_memory_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
+    """Return True iff external memory is both engine-allowed and has a provider."""
+    if not is_external_memory_allowed(config):
+        return False
+    return bool(get_external_memory_config(config).get("provider"))
+
+
+def is_cloud_deployment() -> bool:
+    """True iff ``OFFICE_ACE_DEPLOYMENT=cloud``（OfficeAce 云服务）。
+
+    未设置或其他值视为 PC 端（向后兼容）。
+
+    ``OFFICE_ACE_DEPLOYMENT`` 属于 BUSINESS_MIRROR_KEYS，bare 值在
+    ``ingest_bare_business_into_tip`` 后被从 ``os.environ`` 搬到 per-agent
+    tip 并 pop。读取优先级如下（先命中先返回，逐级兜底）：
+
+    1. ``effective_tip`` — per-agent 活跃 tip（ingest 后的正主）；
+    2. ``get_process_baseline`` — 进程级基线（ingest 时 ``setdefault``
+       落盘，tip 未 hydrate 的早期阶段可见）；
+    3. ``os.environ`` — bare 尚未被 ingest 的冷启动阶段兜底。
+
+    三级都缺时按 ``"pc"`` 处理（向后兼容）。
+    """
+    try:
+        from jiuwenswarm.common.local_env_config import effective_tip, get_process_baseline
+        tip_val = str(effective_tip().get("OFFICE_ACE_DEPLOYMENT") or "")
+        base_val = str(get_process_baseline().get("OFFICE_ACE_DEPLOYMENT") or "")
+    except Exception:
+        logger.warning("[is_cloud_deployment]: effective_tip or get_process_baseline failed", exc_info=True)
+        tip_val = ""
+        base_val = ""
+    val = tip_val or base_val or os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc")
+    return val.strip().lower() == "cloud"
+
+
+def get_office_ace_user_profile_config(
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return the ``memory.office_ace_user_profile`` section with defaults filled.
+
+    启用条件（由 external memory 开关 + provider 隐含控制，无独立 enabled 段）：
+      external memory 已开启（engine ∈ {external, both} 且 provider 非空）
+      AND provider == "officeace_cloud"
+      AND endpoint/api_key/user_id 齐全
+    任一不满足 → ``enabled`` 为 False（rail/后台拉取不挂载，零残留）。
+
+    user_id 复用上层 ``memory.external.user_id``（不在此段单独配置）。
+
+    部署形态分流（OFFICE_ACE_DEPLOYMENT）：
+      * cloud：endpoint/api_key 回落到 AgentArts Memory 凭证
+        （AGENTARTS_MEMORY_BASE_URL / AGENTARTS_MEMORY_API_KEY）。
+        user_id 始终取上层 MEMORY_USER_ID。
+      * pc/未设：用 OFFICE_ACE_USER_PROFILE_* 专用凭证。
+    """
+    from .config import get_memory_section
+
+    mem = get_memory_section(config)
+    up = mem.get("office_ace_user_profile", {}) if isinstance(mem, dict) else {}
+    if not isinstance(up, dict):
+        up = {}
+    ext = mem.get("external", {}) if isinstance(mem, dict) else {}
+    if not isinstance(ext, dict):
+        ext = {}
+
+    endpoint = str(up.get("endpoint") or "").strip()
+    api_key = str(up.get("api_key") or "").strip()
+    # user_id 复用上层 memory.external.user_id，office_ace_user_profile 段不单独配置
+    user_id = str(ext.get("user_id") or "").strip() or _DEFAULT_USER
+
+    # 云端：凭证回落到 AgentArts Memory（与对话上报同源）
+    if is_cloud_deployment():
+        if not endpoint:
+            endpoint = os.environ.get("AGENTARTS_MEMORY_BASE_URL", "").strip()
+        if not api_key:
+            api_key = os.environ.get("AGENTARTS_MEMORY_API_KEY", "").strip()
+
+    # space_id：cloud 端 internal 接口 path 需要（/v1/core/internal/spaces/{space_id}/...），
+    # pc 端 appapi 接口不需要。优先取 office_ace_user_profile 段，cloud 回落 AGENTARTS_MEMORY_SPACE_ID。
+    space_id = str(up.get("space_id") or "").strip()
+    if is_cloud_deployment() and not space_id:
+        space_id = os.environ.get("AGENTARTS_MEMORY_SPACE_ID", "").strip()
+
+    # 启用条件：external memory 开启 + provider=officeace_cloud + 凭证齐全。
+    # 无独立 enabled 段——officeace_cloud provider 在位即隐含 user profile 启用。
+    provider = (ext.get("provider") or "").strip()
+    enabled = bool(
+        is_external_memory_allowed(config)
+        and provider == "officeace_cloud"
+        and endpoint
+        and api_key
+        and user_id
+    )
+
+    return {
+        "enabled": enabled,
+        "endpoint": endpoint,
+        "api_key": api_key,
+        "user_id": user_id,
+        "fetch_interval_minutes": int(up.get("fetch_interval_minutes", 10)),
+        "max_chars": int(up.get("max_chars", 8000)),
+        "timeout_seconds": float(up.get("timeout_seconds", 15.0)),
+        "space_id": space_id,
+    }
+
+
+def is_office_ace_user_profile_enabled(
+    config: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """True iff external memory on + officeace_cloud provider + credentials complete."""
+    return bool(get_office_ace_user_profile_config(config)["enabled"])
+
+
+def _nonempty_str(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _resolve_tenant_agent_workspace_dir(*, workspace_key: str | None = None) -> Path:
+    """``workspace_{key}/agent/jiuwenclaw_workspace`` (jiuwenswarm layout)."""
+    wk = workspace_key if workspace_key is not None else get_bound_workspace_key()
+    wk = normalize_tenant_scope_id(wk)
+    return get_multi_tenant_user_workspace_dir(wk) / "agent" / "jiuwenclaw_workspace"
+
+
+def _resolve_ltm_dir(*, workspace_key: str | None = None) -> Path:
+    """Default LTM dir under the tenant agent workspace.
+
+    Path: ``workspace_{key}/agent/jiuwenclaw_workspace/memory/ltm``
+
+    When ``workspace_key`` is omitted, uses the key bound via
+    :func:`~jiuwenswarm.server.runtime.tenant_context.bind_workspace_key`.
+    """
+    base = _resolve_tenant_agent_workspace_dir(workspace_key=workspace_key) / "memory" / "ltm"
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
+def resolve_openjiuwen_store_paths(
+    oj_cfg: Optional[Dict[str, Any]] = None,
+    *,
+    workspace_key: str | None = None,
+) -> tuple[str, str, str]:
+    """Resolve kv / vector / db paths (tip → config → tenant default).
+
+    Priority for each path:
+      1. tip/env ``MEMORY_KV_PATH`` / ``MEMORY_VECTOR_DIR`` / ``MEMORY_DB_PATH``
+      2. ``openjiuwen.kv_path`` / ``vector_persist_dir`` / ``db_path`` (non-empty)
+      3. tenant default under ``.../memory/ltm/{kv,chroma,ltm.db}``
+    """
+    cfg = oj_cfg if isinstance(oj_cfg, dict) else {}
+
+    tip_kv = _nonempty_str(read_env("MEMORY_KV_PATH"))
+    tip_vec = _nonempty_str(read_env("MEMORY_VECTOR_DIR"))
+    tip_db = _nonempty_str(read_env("MEMORY_DB_PATH"))
+    cfg_kv = _nonempty_str(cfg.get("kv_path"))
+    cfg_vec = _nonempty_str(cfg.get("vector_persist_dir"))
+    cfg_db = _nonempty_str(cfg.get("db_path"))
+
+    ltm_dir: Path | None = None
+    if not (tip_kv or cfg_kv) or not (tip_vec or cfg_vec) or not (tip_db or cfg_db):
+        ltm_dir = _resolve_ltm_dir(workspace_key=workspace_key)
+
+    kv_path = tip_kv or cfg_kv or str(ltm_dir / "kv")
+    vector_dir = tip_vec or cfg_vec or str(ltm_dir / "chroma")
+    db_path = tip_db or cfg_db or str(ltm_dir / "ltm.db")
+    return kv_path, vector_dir, db_path
+
+
+def build_openjiuwen_provider_config(
+    ext_cfg: Dict[str, Any],
+    full_config: Optional[Dict[str, Any]] = None,
+    *,
+    workspace_key: str | None = None,
+) -> Tuple[Dict[str, Any], Any]:
+    """Map jiuwenswarm config into what OpenJiuwenMemoryProvider expects.
+
+    Provider-expected shape:
+        {
+          "kv":        {"backend": "shelve|memory|sqlite", "path": "..."},
+          "vector":    {"backend": "chroma", "persist_directory": "..."},
+          "db":        {"backend": "sqlite", "path": "..."},
+          "embedding": {"model_name": "...", "base_url": "...", "api_key": "..."},
+        }
+
+    Returns:
+        (provider_config, scope_config)
+        - provider_config: the dict above, consumed by the provider to build
+          its KV / Vector / DB stores and embedding model.
+        - scope_config: a ``MemoryScopeConfig`` (LLM + embedding) the LTM
+          engine needs to extract memories (sync_turn) and run vector search
+          (prefetch / ltm_search). None when the LLM (models.defaults[*] with
+          is_default: true) is not configured — storage of raw messages still
+          works, but fact extraction / vector search will be skipped.
+    """
+    oj_cfg = ext_cfg.get("openjiuwen") or {}
+    kv_path, vector_dir, db_path = resolve_openjiuwen_store_paths(
+        oj_cfg,
+        workspace_key=workspace_key,
+    )
+
+    kv_backend = (oj_cfg.get("kv_type") or "shelve").lower()
+    vector_backend = (oj_cfg.get("vector_type") or "chroma").lower()
+    db_backend = (oj_cfg.get("db_type") or "sqlite").lower()
+
+    embed_cfg = get_embed_config() or {}
+    embedding = {
+        "model_name": embed_cfg.get("model") or read_env("EMBED_MODEL", ""),
+        "base_url": embed_cfg.get("base_url") or read_env("EMBED_BASE_URL", ""),
+        "api_key": embed_cfg.get("api_key") or read_env("EMBED_API_KEY", ""),
+    }
+    if not embedding["model_name"]:
+        logger.warning(
+            "[external_memory] Embedding not configured — OpenJiuwen LTM will skip vector search"
+        )
+
+    provider_config = {
+        "kv": {"backend": kv_backend, "path": kv_path},
+        "vector": {"backend": vector_backend, "persist_directory": vector_dir},
+        "db": {"backend": db_backend, "path": db_path},
+        "embedding": embedding,
+    }
+
+    scope_config = _build_scope_config(full_config, embedding)
+
+    return provider_config, scope_config
+
+
+def _build_scope_config(
+    full_config: Optional[Dict[str, Any]],
+    embedding: Dict[str, Any],
+) -> Any:
+    """Build ``MemoryScopeConfig`` from config.yaml's ``models.defaults`` list.
+
+    jiuwenswarm stores default models as a *list* under ``models.defaults``,
+    each entry carrying ``model_client_config`` (api_base/api_key/model_name/
+    client_provider/verify_ssl/timeout) + ``model_config_obj`` (temperature)
+    + an ``is_default: true`` marker. We pick the default entry.
+
+    Returns None when the LLM is not configured (no api_key / model_name /
+    api_base) — sync_turn (fact extraction) won't work in that case, but raw
+    message storage still proceeds.
+    """
+    from openjiuwen.core.memory.config.config import MemoryScopeConfig
+    from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
+    from openjiuwen.core.foundation.llm.schema.config import (
+        ModelRequestConfig,
+        ModelClientConfig,
+    )
+
+    cfg = _resolve_full_config(full_config)
+    models_cfg = (cfg or {}).get("models", {}) if isinstance(cfg, dict) else {}
+
+    # models.defaults is a list; fall back to models.default (dict) for safety.
+    defaults = models_cfg.get("defaults") if isinstance(models_cfg, dict) else None
+    default_model: Dict[str, Any] = {}
+    if isinstance(defaults, list):
+        for entry in defaults:
+            if isinstance(entry, dict) and entry.get("is_default"):
+                default_model = entry
+                break
+        if not default_model and defaults:
+            default_model = defaults[0] if isinstance(defaults[0], dict) else {}
+    elif isinstance(defaults, dict):
+        default_model = defaults
+    else:
+        default_model = models_cfg.get("default", {}) if isinstance(models_cfg, dict) else {}
+
+    client_cfg = default_model.get("model_client_config", {}) if isinstance(default_model, dict) else {}
+    model_obj_cfg = default_model.get("model_config_obj", {}) if isinstance(default_model, dict) else {}
+
+    api_base = client_cfg.get("api_base", "")
+    api_key = client_cfg.get("api_key", "")
+    model_name = client_cfg.get("model_name", "")
+    client_provider = client_cfg.get("client_provider", "OpenAI")
+    verify_ssl = client_cfg.get("verify_ssl", True)
+    timeout = client_cfg.get("timeout", 1800)
+
+    if not api_key or not model_name or not api_base:
+        logger.warning(
+            "[external_memory] LLM not configured (models.defaults[is_default=true]) — "
+            "sync_turn (fact extraction) will not work"
+        )
+        return None
+
+    # ModelRequestConfig carries model_name + sampling params; ModelClientConfig
+    # carries connection settings (provider/api_key/api_base/timeout/verify_ssl).
+    # They are split by design in openjiuwen — model_name is NOT a client field.
+    model_cfg = ModelRequestConfig(
+        model_name=model_name,
+        temperature=model_obj_cfg.get("temperature", 0.2),
+        top_p=model_obj_cfg.get("top_p", 0.7),
+    )
+    model_client_cfg = ModelClientConfig(
+        client_provider=client_provider,
+        api_key=api_key,
+        api_base=api_base,
+        verify_ssl=verify_ssl,
+        timeout=timeout,
+    )
+
+    embed_model_name = embedding.get("model_name", "")
+    embed_base_url = embedding.get("base_url", "")
+    embed_api_key = embedding.get("api_key")
+    embed_cfg_obj = None
+    if embed_model_name and embed_base_url:
+        embed_cfg_obj = EmbeddingConfig(
+            model_name=embed_model_name,
+            base_url=embed_base_url,
+            api_key=embed_api_key,
+        )
+    else:
+        logger.warning(
+            "[external_memory] Embedding model_name or base_url missing — "
+            "MemoryScopeConfig will not include embedding_cfg"
+        )
+
+    scope_config_kwargs: Dict[str, Any] = {
+        "model_cfg": model_cfg,
+        "model_client_cfg": model_client_cfg,
+    }
+    if embed_cfg_obj is not None:
+        scope_config_kwargs["embedding_cfg"] = embed_cfg_obj
+
+    scope_config = MemoryScopeConfig(**scope_config_kwargs)
+    logger.info(
+        "[external_memory] LLM config built for LTM: model=%s api_base=%s",
+        model_name, api_base,
+    )
+    return scope_config
+
+
+def external_memory_fingerprint(
+    config: dict[str, Any] | None,
+    *,
+    workspace_key: str | None = None,
+) -> str:
+    """Stable hash for external memory provider config (includes store paths)."""
+    import hashlib
+
+    if not isinstance(config, dict):
+        return ""
+    provider = str(config.get("external_memory_provider") or "").strip()
+    embed_key = str(config.get("external_memory_api_key") or "").strip()
+    embed_base = str(config.get("external_memory_api_base") or "").strip()
+    embed_model = str(config.get("external_memory_model") or "").strip()
+    # Prefer explicit path overrides; else resolve tip/tenant defaults so
+    # different agents do not share one fingerprint when LTM dirs differ.
+    oj = {}
+    if isinstance(config.get("memory"), dict):
+        ext = config["memory"].get("external") or {}
+        if isinstance(ext, dict):
+            oj = ext.get("openjiuwen") or {}
+    try:
+        kv_path, vector_dir, db_path = resolve_openjiuwen_store_paths(
+            oj if isinstance(oj, dict) else {},
+            workspace_key=workspace_key,
+        )
+    except Exception:
+        kv_path = vector_dir = db_path = ""
+    payload = (
+        f"{provider}|{embed_key}|{embed_base}|{embed_model}"
+        f"|{kv_path}|{vector_dir}|{db_path}"
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]

@@ -1,0 +1,100 @@
+# Policy schema version. Currently only version 1 is supported.
+version: 1
+
+# Human-readable policy name shown by the server policy API.
+name: "code-agent"
+
+# Environment variables injected into every process running inside the sandbox.
+environment: {}
+
+# Filesystem access rules. Paths are sandbox-visible absolute paths.
+filesystem_policy:
+  # Lifecycle directories to create for the sandbox and bind into the sandbox path.
+  # Items may be either:
+  #   - "/path": create a server-managed directory with default permissions
+  #   - path: "/path"
+  #     permissions: "0755"  # optional octal permissions applied on the backing directory
+  # The permissions value may be quoted or numeric, but quoted octal strings are recommended.
+  # Paths must be absolute sandbox-visible paths. Directories persist for the sandbox
+  # lifecycle and are removed when the sandbox is deleted. Access is still controlled
+  # by the directory permissions and Landlock.
+  directories: []
+
+  # Lifecycle files to create for the sandbox and bind into the sandbox path.
+  # Items may be either:
+  #   - "/path/to/file": create a server-managed empty file with default permissions
+  #   - path: "/path/to/file"
+  #     permissions: "0644"  # optional octal permissions applied on the backing file
+  # Paths must be absolute sandbox-visible paths. Files persist for the sandbox
+  # lifecycle and are removed when the sandbox is deleted.
+  files: []
+
+  # Read-only paths inside the sandbox. These entries grant read permission only;
+  # they do not mount host paths by themselves.
+
+  read_only:
+    - "/"
+    - "/bin"
+    - "/sbin"
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/etc"
+    - "/opt"
+    - "/tmp"
+    - "/home"
+
+  # Read-write paths inside the sandbox. Use directories or bind_mounts to make
+  # these paths exist in the sandbox.
+  read_write: []
+
+  # Extra bind mounts from host into sandbox.
+  # Each item uses:
+  #   host_path: absolute path on the host (literal "*" is rejected; use
+  #              bind_root_entries instead to mount every immediate child
+  #              of a host directory)
+  #   sandbox_path: absolute path visible inside the sandbox
+  #   mode: "ro" for read-only or "rw" for read-write
+  bind_mounts: []
+
+  # Bind every immediate entry (subdirectory or regular file) directly under
+  # ``host_root`` into the sandbox at ``sandbox_path/<child_name>`` with the
+  # same uniform ``mode``. Useful when you want to expose all of ``/etc`` or a
+  # workspace tree without listing each child by hand in ``bind_mounts``.
+  #
+  # Each item uses:
+  #   host_root: absolute host directory whose immediate children get mounted
+  #   sandbox_path: absolute sandbox directory under which each child appears
+  #   mode: "ro" for read-only or "rw" for read-write (default "ro")
+  #   include_hidden: include dot-prefixed children (default false)
+  #   exclude: list of fnmatch globs applied to each child basename; matched
+  #            entries are skipped
+  bind_root_entries:
+    - host_root: "/"
+      sandbox_path: "/"
+      mode: "ro"
+
+  # Device nodes to expose inside the sandbox with bwrap --dev-bind.
+  # Each item uses:
+  #   host_path: absolute device path on the host
+  #   sandbox_path: absolute path visible inside the sandbox
+  device:
+    - host_path: "/dev/null"
+      sandbox_path: "/dev/null"
+    - host_path: "/dev/random"
+      sandbox_path: "/dev/random"
+    - host_path: "/dev/urandom"
+      sandbox_path: "/dev/urandom"
+
+landlock:
+  # compatibility:
+  #   disabled: do not apply Landlock
+  #   best_effort: apply Landlock when supported, otherwise continue
+  #   hard_requirement: fail sandbox startup if Landlock is unavailable
+  compatibility: best_effort
+
+namespace:
+  user: false
+
+network:
+  mode: host

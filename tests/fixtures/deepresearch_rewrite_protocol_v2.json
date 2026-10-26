@@ -1,0 +1,313 @@
+{
+  "protocol_version": 2,
+  "offset_encoding": "utf-8-bytes",
+  "range_semantics": "half-open",
+  "visible_text_normalization": {
+    "soft_break": "space",
+    "hard_break": "newline",
+    "unit_separator": "newline",
+    "citation": "visible link label"
+  },
+  "cases": [
+    {
+      "id": "duplicate_text_second_occurrence",
+      "markdown": "重复目标，前文；重复目标，后文。\n",
+      "start_byte": 24,
+      "end_byte": 36,
+      "selected_text": "重复目标",
+      "source_sha256": "6e616fcf84b8c48323a30c0492eac2b408c1502ebca9e56d9450a751559ff66b",
+      "accepted": true,
+      "raw_selection": "重复目标",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "emoji_before_selection",
+      "markdown": "A😀前缀 target 后缀\n",
+      "start_byte": 12,
+      "end_byte": 18,
+      "selected_text": "target",
+      "source_sha256": "34a04005bcaf206eec990bd9637d9fdb6725e0a0c0d4aebf003f17f4c956eb5c",
+      "accepted": true,
+      "raw_selection": "target",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "cjk_selection",
+      "markdown": "这是中文段落。\n",
+      "start_byte": 6,
+      "end_byte": 12,
+      "selected_text": "中文",
+      "source_sha256": "72726d8818f693066ceb69afa364218b692e62ea92b385782363780f47529c21",
+      "accepted": true,
+      "raw_selection": "中文",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "combining_character_selection",
+      "markdown": "Café noir.\n",
+      "start_byte": 3,
+      "end_byte": 6,
+      "selected_text": "é",
+      "source_sha256": "bf12767b0f2a56b2190075bae8169f656e3ce8d6357d4aff184bc6c7ea48f9f6",
+      "accepted": true,
+      "raw_selection": "é",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "lf_document",
+      "markdown": "甲段\n\n乙段\n",
+      "start_byte": 8,
+      "end_byte": 14,
+      "selected_text": "乙段",
+      "source_sha256": "8ac108dd19f683846eb2d70136c72205e4255619ee0b4bc565db65f268b7cea5",
+      "accepted": true,
+      "raw_selection": "乙段",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 1, "coverage": "partial"}]
+    },
+    {
+      "id": "crlf_document",
+      "markdown": "甲段\r\n\r\n乙段\r\n",
+      "start_byte": 10,
+      "end_byte": 16,
+      "selected_text": "乙段",
+      "source_sha256": "8ac108dd19f683846eb2d70136c72205e4255619ee0b4bc565db65f268b7cea5",
+      "accepted": true,
+      "raw_selection": "乙段",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 1, "coverage": "partial"}]
+    },
+    {
+      "id": "strong_content_only",
+      "markdown": "Before **bold** after.\n",
+      "start_byte": 9,
+      "end_byte": 13,
+      "selected_text": "bold",
+      "source_sha256": "e0007a5bca8d915862749b39bc77cb33e0f6fe5ff504191587e1ba59d8251315",
+      "accepted": true,
+      "raw_selection": "bold",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "emphasis_content_only",
+      "markdown": "Before *emphasis* after.\n",
+      "start_byte": 8,
+      "end_byte": 16,
+      "selected_text": "emphasis",
+      "source_sha256": "bd8c171b30ddda660f98423c304dbdb4cf08744365958072a132b922ab7f3993",
+      "accepted": true,
+      "raw_selection": "emphasis",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "ordinary_link_label_only",
+      "markdown": "Read [guide](https://example.com) now.\n",
+      "start_byte": 6,
+      "end_byte": 11,
+      "selected_text": "guide",
+      "source_sha256": "83ca68be6227af2feb15f227485ed18aff8ecae99416a4bd6df3be1b5e8059b4",
+      "accepted": true,
+      "raw_selection": "guide",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "multiple_citations_between_endpoints",
+      "markdown": "Claim alpha [[1]](https://a.example) and [[2]](https://b.example) omega.\n",
+      "start_byte": 6,
+      "end_byte": 71,
+      "selected_text": "alpha [1] and [2] omega",
+      "source_sha256": "b1ecf3e21013c41b7158a530d48aaaf77a82d7bc743a6448003884c606138355",
+      "accepted": true,
+      "raw_selection": "alpha [[1]](https://a.example) and [[2]](https://b.example) omega",
+      "visible_text_convention": "citation_link_labels",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "soft_break_normalizes_to_space",
+      "markdown": "soft first\nsoft second\n",
+      "start_byte": 5,
+      "end_byte": 22,
+      "selected_text": "first soft second",
+      "source_sha256": "f66aa43738015c6d0054ca08ddb2c925303236d690fc41934eeb639d4d7e02f9",
+      "accepted": true,
+      "raw_selection": "first\nsoft second",
+      "visible_text_convention": "soft_break_as_space",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "hard_break_between_endpoints",
+      "markdown": "hard first  \nhard second\n",
+      "start_byte": 5,
+      "end_byte": 24,
+      "selected_text": "first\nhard second",
+      "source_sha256": "661ac21c3f74b0bcb1ac7ea1c142f3d97d36313d456cc66da5b400be6a716447",
+      "accepted": true,
+      "raw_selection": "first  \nhard second",
+      "visible_text_convention": "hard_break_as_newline",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "heading_partial",
+      "markdown": "## Heading title\n",
+      "start_byte": 3,
+      "end_byte": 10,
+      "selected_text": "Heading",
+      "source_sha256": "b34f17f02ecf0307437429f667421d119aaf1bf819694236efe15c538850445c",
+      "accepted": true,
+      "raw_selection": "Heading",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "heading", "index": 0, "coverage": "partial", "level": 2}]
+    },
+    {
+      "id": "paragraph_partial",
+      "markdown": "Paragraph editable text.\n",
+      "start_byte": 10,
+      "end_byte": 18,
+      "selected_text": "editable",
+      "source_sha256": "16ccf899a26641eff821460a4c1b80ad8c26f142c411741a9b1a3f34222a71df",
+      "accepted": true,
+      "raw_selection": "editable",
+      "visible_text_convention": "literal",
+      "expected_units": [{"kind": "paragraph", "index": 0, "coverage": "partial"}]
+    },
+    {
+      "id": "same_level_list_items",
+      "markdown": "- first item\n- second item\n",
+      "start_byte": 2,
+      "end_byte": 26,
+      "selected_text": "first item\nsecond item",
+      "source_sha256": "237ce2727d4870096552fb7baadf556892f47aeb1f8f7cfc373cab18a39c8343",
+      "accepted": true,
+      "raw_selection": "first item\n- second item",
+      "visible_text_convention": "unit_separator_newline",
+      "expected_units": [
+        {"kind": "list_item", "index": 0, "coverage": "full", "depth": 0, "marker": "-"},
+        {"kind": "list_item", "index": 1, "coverage": "full", "depth": 0, "marker": "-"}
+      ]
+    },
+    {
+      "id": "mixed_heading_paragraph_list",
+      "markdown": "## Head\n\nPara text\n\n- Item text\n",
+      "start_byte": 3,
+      "end_byte": 31,
+      "selected_text": "Head\nPara text\nItem text",
+      "source_sha256": "cc0ccee1d529bd0b574a0fa68e9edbe4b4ed227acceceac8f62dd9c89550d7bf",
+      "accepted": true,
+      "raw_selection": "Head\n\nPara text\n\n- Item text",
+      "visible_text_convention": "unit_separator_newline",
+      "expected_units": [
+        {"kind": "heading", "index": 0, "coverage": "full", "level": 2},
+        {"kind": "paragraph", "index": 1, "coverage": "full"},
+        {"kind": "list_item", "index": 2, "coverage": "full", "depth": 0, "marker": "-"}
+      ]
+    },
+    {
+      "id": "partial_outer_units_complete_middle",
+      "markdown": "Alpha tail\n\nMiddle complete required\n\nOmega head\n",
+      "start_byte": 6,
+      "end_byte": 48,
+      "selected_text": "tail\nMiddle complete required\nOmega head",
+      "source_sha256": "bc539dd511ca3d06c3bd19f14321a59194e6ea4c99ed6cc6e9ee4aabd32a792f",
+      "accepted": true,
+      "raw_selection": "tail\n\nMiddle complete required\n\nOmega head",
+      "visible_text_convention": "unit_separator_newline",
+      "expected_units": [
+        {"kind": "paragraph", "index": 0, "coverage": "partial"},
+        {"kind": "paragraph", "index": 1, "coverage": "full"},
+        {"kind": "paragraph", "index": 2, "coverage": "partial"}
+      ]
+    },
+    {
+      "id": "selected_text_mismatch_rejected",
+      "markdown": "Actual visible text.\n",
+      "start_byte": 0,
+      "end_byte": 19,
+      "selected_text": "Altered visible text",
+      "source_sha256": "768c75072d4d2bc922f16cfa37bb46c16d1d8fef05c44d5b58177dee79b6d8c3",
+      "accepted": false,
+      "raw_selection": "Actual visible text",
+      "visible_text_convention": "literal",
+      "mismatch_kind": "visible_text",
+      "error_code": "SELECTION_MAPPING_CONFLICT"
+    },
+    {
+      "id": "nested_list_rejected",
+      "markdown": "- parent item\n  - nested item\n- sibling item\n",
+      "start_byte": 2,
+      "end_byte": 29,
+      "selected_text": "parent item\nnested item",
+      "source_sha256": "9dff3d02fe5954861dd8e02e618a038b4c2d3d4416d1686ad4b64dfe7639a6a1",
+      "accepted": false,
+      "raw_selection": "parent item\n  - nested item",
+      "visible_text_convention": "unit_separator_newline",
+      "error_code": "UNSUPPORTED_NESTED_LIST"
+    },
+    {
+      "id": "table_rejected",
+      "markdown": "| Name | Value |\n| --- | --- |\n| A | B |\n",
+      "start_byte": 33,
+      "end_byte": 38,
+      "selected_text": "A B",
+      "source_sha256": "2a972c9a739364716235256a420550448398860d47c31ad1534811c35ac81cdf",
+      "accepted": false,
+      "raw_selection": "A | B",
+      "visible_text_convention": "table_cells",
+      "error_code": "UNSUPPORTED_BLOCK_KIND"
+    },
+    {
+      "id": "fenced_code_rejected",
+      "markdown": "```python\nprint(\"hello\")\n```\n",
+      "start_byte": 10,
+      "end_byte": 24,
+      "selected_text": "print(\"hello\")",
+      "source_sha256": "957e13c0732e48fd5496f935894dc93a9da7dcd5eb8ffea52646fdf178cda1d1",
+      "accepted": false,
+      "raw_selection": "print(\"hello\")",
+      "visible_text_convention": "literal",
+      "error_code": "UNSUPPORTED_BLOCK_KIND"
+    },
+    {
+      "id": "html_block_rejected",
+      "markdown": "<section>private text</section>\n",
+      "start_byte": 9,
+      "end_byte": 21,
+      "selected_text": "private text",
+      "source_sha256": "66c279b1e928c2dd31a931998f6239872230eb459535a6ae9ccef3b5dcb8c99c",
+      "accepted": false,
+      "raw_selection": "private text",
+      "visible_text_convention": "literal",
+      "error_code": "UNSUPPORTED_BLOCK_KIND"
+    },
+    {
+      "id": "image_rejected",
+      "markdown": "Before ![diagram](diagram.png) after.\n",
+      "start_byte": 9,
+      "end_byte": 16,
+      "selected_text": "diagram",
+      "source_sha256": "2c20a6b064ee805c68638fcdf13455bb59c90d4293528c22437afd44dd7027fd",
+      "accepted": false,
+      "raw_selection": "diagram",
+      "visible_text_convention": "image_alt_text",
+      "error_code": "PROTECTED_ANCHOR_ENDPOINT"
+    },
+    {
+      "id": "inference_rejected",
+      "markdown": "#inference: inferred-only text\n",
+      "start_byte": 12,
+      "end_byte": 30,
+      "selected_text": "inferred-only text",
+      "source_sha256": "57fc920817ad3b2fc1b83f3b21df1902a4e75a4036c09af5e2ce9b926d80d6fb",
+      "accepted": false,
+      "raw_selection": "inferred-only text",
+      "visible_text_convention": "literal",
+      "error_code": "INFERENCE_NOT_REWRITABLE"
+    }
+  ]
+}

@@ -1,0 +1,543 @@
+/* ===========================================
+   SessionSidebar Styles - JiuwenSwarm Redesign
+   Based on design spec v5.0 (2026-05-14)
+   =========================================== */
+
+/* Sidebar Container */
+.sidebar {
+  grid-area: nav;
+  width: 100%;
+  height: 100vh;
+  border-right: 1px solid var(--color-border-default);
+  background: var(--color-sidebar-surface);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-sizing: border-box;
+}
+
+/* ============================================
+   Advanced Config Panel
+   ============================================ */
+.advanced-config-panel {
+  position: fixed;
+  bottom: 60px;
+  left: 16px;
+  width: 216px;
+  background: var(--color-surface-popover);
+  border: 1px solid var(--color-border-default);
+  border-radius: 20px;
+  box-shadow: var(--effect-shadow-lg);
+  padding: 20px;
+  z-index: 1300;
+  animation: panelSlideUp 0.2s ease-out;
+}
+
+@keyframes panelSlideUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* ============================================
+   Config Row
+   ============================================ */
+.config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.config-row:last-child {
+  margin-bottom: 0;
+}
+
+.config-row__label {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.config-row__value {
+  min-width: 0;
+  max-width: 118px;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================
+   Connection Status
+   ============================================ */
+.connection-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connection-status__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+
+.connection-status--connected .connection-status__dot {
+  background: var(--color-feedback-success);
+}
+
+.connection-status--disconnected .connection-status__dot {
+  background: var(--color-feedback-danger);
+}
+
+.connection-status__text {
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+/* ============================================
+   Segmented Control
+   ============================================ */
+.segmented-control {
+  display: flex;
+  width: 100px;
+  height: 32px;
+  background: var(--color-action-secondary);
+  border-radius: 16px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.segmented-control__btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 12px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 14px;
+  cursor: pointer;
+}
+
+.segmented-control__btn:hover {
+  color: var(--color-text-primary);
+}
+
+.segmented-control__btn--active {
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  box-shadow: var(--effect-shadow-sm);
+}
+
+/* ============================================
+   Icon Rail (64px sidebar)
+   Based on Pixso high-fidelity design
+   ============================================ */
+
+.sidebar--icon-rail {
+  width: 64px;
+  max-width: 64px;
+  min-width: 64px;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 0;
+  position: relative;
+  overflow: visible;
+}
+
+/* Logo in icon rail — SVG handles gradient + mark */
+.icon-rail-logo {
+  width: 28px;
+  height: 68px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.icon-rail-logo img {
+  display: block;
+}
+
+/* Nav items in icon rail */
+.icon-rail-nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 48px;
+  min-height: 48px;
+  margin-bottom: 8px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.icon-rail-nav-item__icon {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-rail-nav-item__icon img,
+.icon-rail-nav-item__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-rail-nav-item__label {
+  max-width: 44px;
+  overflow: hidden;
+  color: inherit;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.15;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 仅"个人上下文"等需要多行换行显示的标签使用（如「我的\n上下文」/「My\nContext」） */
+.icon-rail-nav-item__label--multiline {
+  white-space: pre-line;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.icon-rail-nav-item {
+  color: var(--color-text-primary);
+}
+
+.icon-rail-nav-item:hover {
+  background: var(--color-sidebar-nav-hover);
+}
+
+.icon-rail-nav-item--active {
+  background: var(--color-sidebar-nav-active);
+}
+
+.icon-rail-nav-item--active:hover {
+  background: var(--color-sidebar-nav-active-hover);
+}
+
+.icon-rail-more-panel {
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: 64px;
+  z-index: 1200;
+  width: 240px;
+  padding: 24px 8px;
+  background: var(--color-sidebar-surface);
+}
+
+.icon-rail-more-panel__title {
+  height: 28px;
+  margin: 0 8px 24px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 28px;
+}
+
+.icon-rail-more-panel__list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.icon-rail-more-panel__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  text-align: left;
+}
+
+.icon-rail-more-panel__item:hover,
+.icon-rail-more-panel__item--active {
+  background: var(--color-sidebar-more-item-hover);
+}
+
+.icon-rail-more-panel__item--active {
+  font-weight: 700;
+}
+
+.icon-rail-more-panel__icon {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+
+.icon-rail-more-panel__icon img,
+.icon-rail-more-panel__icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.icon-rail-more-panel__text {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Spacer pushes bottom items down */
+.icon-rail-spacer {
+  flex: 1 1;
+  min-height: 8px;
+}
+
+.icon-rail-help-button {
+  min-height: 36px;
+  margin-bottom: 2px;
+  color: var(--color-text-secondary);
+}
+
+.icon-rail-help-button:hover {
+  color: var(--color-text-primary);
+}
+
+.icon-rail-help-button + .icon-rail-nav-item {
+  margin-bottom: 12px;
+}
+
+.enterprise-context-popover {
+  position: absolute;
+  z-index: 1500;
+  left: 72px;
+  bottom: 56px;
+  width: 360px;
+  padding: 14px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-popover);
+  box-shadow: var(--effect-shadow-lg);
+}
+.enterprise-context-popover__user { padding-bottom: 12px; margin-bottom: 10px; border-bottom: 1px solid var(--color-border-default); color: var(--color-text-primary); font-size: 13px; font-weight: 600; }
+.enterprise-context-popover__user small { display: block; margin-top: 4px; color: var(--color-text-secondary); font-size: 11px; font-weight: 400; }
+.enterprise-context-popover label { display: block; margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }
+.editable-combobox {
+  position: relative;
+  margin-top: 5px;
+}
+.editable-combobox input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  padding: 0 30px 0 9px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 7px;
+  outline: none;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+.editable-combobox input:focus {
+  border-color: var(--color-action-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-action-primary) 16%, transparent);
+}
+.editable-combobox input:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.editable-combobox__toggle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  width: 30px;
+  height: 32px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.editable-combobox__toggle:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.editable-combobox__toggle svg {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.5;
+  transition: transform 0.15s ease;
+}
+.editable-combobox--open .editable-combobox__toggle svg {
+  transform: rotate(180deg);
+}
+.editable-combobox__list {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 4px);
+  right: 0;
+  left: 0;
+  max-height: 168px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 7px;
+  background: var(--color-surface-popover);
+  box-shadow: var(--effect-shadow-lg);
+}
+.editable-combobox__option {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.editable-combobox__option--active,
+.editable-combobox__option:hover {
+  background: var(--color-surface-hover);
+}
+.editable-combobox__option[aria-selected='true'] {
+  color: var(--color-action-primary);
+  font-weight: 600;
+}
+.editable-combobox__empty {
+  padding: 8px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  text-align: center;
+}
+
+/* 企业版用户面：与主侧栏统一的克制弹层样式。 */
+.enterprise-context-popover { width: 280px; padding: 12px; border-radius: 12px; background: var(--color-surface-popover); box-shadow: var(--effect-shadow-lg); }
+.enterprise-context-popover__user { margin: 0 2px 8px; padding: 4px 4px 10px; font-size: 13px; }
+.enterprise-context-popover__modes {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  margin: 0 0 4px;
+  padding: 3px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-surface-card) 70%, transparent);
+}
+.enterprise-context-popover__mode {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  font-size: 11px;
+}
+.enterprise-context-popover__mode--active {
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-weight: 600;
+  box-shadow: var(--effect-shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
+}
+.enterprise-context-popover__mode-check {
+  color: #16a34a;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+}
+.enterprise-context-popover__mode:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.enterprise-context-popover label { margin-top: 8px; font-size: 11px; }
+.enterprise-context-popover .editable-combobox { margin-top: 4px; }
+.enterprise-context-popover__input {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 32px;
+  margin-top: 4px;
+  padding: 0 9px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 7px;
+  outline: none;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+.enterprise-context-popover__input:focus {
+  border-color: var(--color-action-primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-action-primary) 16%, transparent);
+}
+.enterprise-context-popover__input:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.enterprise-context-popover__apply {
+  width: 100%;
+  margin-top: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 7px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font-size: 12px;
+  text-align: center;
+}
+.enterprise-context-popover__apply:hover:not(:disabled) {
+  border-color: var(--color-action-primary);
+  color: var(--color-action-primary);
+}
+.enterprise-context-popover__apply:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+.enterprise-context-popover__status { margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }
+.enterprise-context-popover__error { margin-top: 10px; color: var(--color-feedback-danger); font-size: 11px; line-height: 1.45; }
+.enterprise-context-popover__switch { width: 100%; margin-top: 12px; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: 7px; background: transparent; color: var(--color-text-primary); cursor: pointer; font-size: 12px; text-align: center; }
+.enterprise-context-popover__switch:hover { background: color-mix(in srgb, var(--color-action-primary) 8%, transparent); border-color: var(--color-action-primary); color: var(--color-action-primary); }
+.enterprise-context-popover__logout { width: 100%; margin-top: 8px; padding: 8px 10px; border: 1px solid var(--color-border-default); border-radius: 7px; background: transparent; color: var(--color-feedback-danger); cursor: pointer; font-size: 12px; text-align: center; }
+.enterprise-context-popover__logout:hover { background: color-mix(in srgb, var(--color-feedback-danger) 8%, transparent); border-color: var(--color-feedback-danger); }

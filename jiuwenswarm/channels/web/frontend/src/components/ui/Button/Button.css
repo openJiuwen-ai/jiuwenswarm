@@ -1,0 +1,80 @@
+.ui-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 4px 24px;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 22px;
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-button-border);
+  border-radius: var(--radius-full);
+  background: var(--color-surface-card);
+  cursor: pointer;
+  transition:
+    color var(--duration-fast) var(--ease-out),
+    background var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out);
+}
+
+.ui-button:hover:not(:disabled) {
+  background: var(--color-button-hover);
+}
+.ui-button:focus-visible {
+  outline: none;
+  box-shadow: var(--effect-focus-ring);
+}
+.ui-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
+}
+.ui-button--primary {
+  color: var(--color-control-emphasis-text);
+  border-color: var(--color-control-emphasis);
+  background: var(--color-control-emphasis);
+}
+.ui-button--primary:hover:not(:disabled) {
+  border-color: var(--color-control-emphasis-hover);
+  background: var(--color-control-emphasis-hover);
+}
+.ui-button--quiet {
+  border-color: transparent;
+  background: transparent;
+}
+.ui-button--warning {
+  color: var(--color-feedback-warning);
+  border-color: var(--color-border-warning);
+  background: var(--color-feedback-warning-subtle);
+}
+.ui-button--warning:hover:not(:disabled) {
+  color: var(--color-feedback-warning-text);
+  border-color: var(--color-feedback-warning);
+  background: var(--color-feedback-warning);
+}
+.ui-button--danger {
+  color: var(--color-feedback-danger);
+  border-color: var(--color-border-danger);
+  background: var(--color-feedback-danger-subtle);
+}
+.ui-button--sm {
+  min-height: 28px;
+  padding: 4px 16px;
+  font-size: 12px;
+  line-height: 18px;
+}
+.ui-button--icon-only {
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+}
+.ui-button__icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+}

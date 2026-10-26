@@ -1,0 +1,115 @@
+---
+name: <swarmskill-name>
+description: |
+  <One-line WHAT: this Swarm Skill does X via N-role pattern Y. e.g., "3-role adversarial PR review (Reviewer + Critic + Architect) that surfaces inter-role conflicts instead of papering over them">.
+  Use when <one-line WHEN: the natural-language situation that should trigger — do NOT enumerate synonym phrases; semantic match handles variants>.
+  Do NOT use for <one-line NOT: explicit non-cases that prevent over-firing on adjacent skills>.
+version: "0.1"
+kind: swarm-skill
+roles:
+  - id: <role-id-1>
+    kind: ai_agent                        # mandatory. Use `human_agent` if Stage 0.5 confirmed human participation.
+    purpose: <≤150 chars HARD CAP: 1-line role responsibility — what this role does and why. Detail belongs in roles/<id>.md, not here>
+    skills: [<dependent-skill-name>]      # populated from Stage 2 auto-matching; mirror in dependencies.yaml
+    tools: [<tool-name>]                  # populated from Stage 2 auto-matching; mirror in dependencies.yaml
+  - id: <role-id-2>
+    kind: ai_agent
+    purpose: <...>
+    skills: []                            # [] = Stage 2 auto-matching confirmed no skill matches for this role
+    tools: []
+  - id: <role-id-3>
+    kind: ai_agent
+    purpose: <...>
+  # Example human role (omit if all-AI swarm):
+  # - id: <human-role-id>
+  #   kind: human_agent                   # human-in-the-loop; skills/tools usually empty
+  #   purpose: <≤150 chars: what input the human is asked to provide and when>
+  #   skills: []
+  #   tools: []
+---
+
+# <Swarm Skill Display Name>
+
+<1-2 sentences: an in-context introduction for an Agent that has already triggered this skill. Different from `description` (which gates the trigger). State the team's pattern (parallel adversarial / sequential pipeline / mixed) and the single failure mode it solves.>
+
+## Workflow
+
+<Describe the protocol in natural language. Use numbered steps. Step 0 MUST be dependency pre-flight.>
+
+0. **Pre-flight: check dependencies** — read [dependencies.yaml](dependencies.yaml) and verify.
+   Report missing items: `required: true` = likely fails without it; `required: false` = degraded but functional. **User decides** whether to proceed.
+   The team can run on inline-persona-only mode if all skills are missing.
+   Note: dependencies were populated during authoring via Stage 2 auto-matching (local scan) and optional post-generation community enrichment. Each entry's `source` field indicates origin (`local` or community URL).
+
+1. **<Step name>** — <executor (Leader / role-id) / input / action>. <Conditions, links to
+   detail files: see [bind.md](bind.md) § <Section> for limits, see [workflow.md](workflow.md)
+   for the full step.>
+
+2. **<Step name>** — <...>
+
+3. **<Step name>** — <...>
+
+4. **Final: emit <Report Name>** — <what the report contains>. <Decision rule for any
+   ambiguity, e.g., "Leader surfaces contradictions verbatim, never mediates".>
+
+## Roles
+
+| id | Purpose | When dispatched | Input | Key dependencies | Role file |
+|---|---|---|---|---|---|
+| <role-id-1> | <1-line purpose> | <every run / on condition X / parallel with Y> | <what this role receives> | <skill / tool> | [roles/<role-id-1>.md](roles/<role-id-1>.md) |
+| <role-id-2> | <...> | <...> | <...> | <...> | [roles/<role-id-2>.md](roles/<role-id-2>.md) |
+| <role-id-3> | <...> | <...> | <...> | <...> | [roles/<role-id-3>.md](roles/<role-id-3>.md) |
+
+> Before dispatching each teammate, read the corresponding role file and extract the
+> `## Inline Persona for Teammate` section — paste it directly into the dispatch prompt.
+> Most adopting agents do NOT auto-load role files for teammates.
+
+## Files
+
+| File | What it contains | When to read |
+|---|---|---|
+| [workflow.md](workflow.md) | Mermaid diagram, step-by-step protocol, integration rules, Final Report format | Before first dispatch — the complete playbook |
+| [bind.md](bind.md) | Resource limits, behavioral constraints, failure handling and degraded modes | When hitting limits, handling failures, or needing degraded-mode rules |
+| [roles/\*.md](roles/) | Per-role identity, success criteria, output schema, Inline Persona for Teammate | Before dispatching each teammate — extract Inline Persona |
+| [dependencies.yaml](dependencies.yaml) | External skills and tools required to run | **Startup** — verify deps, report missing items, user decides go/no-go |
+
+<!--
+TEMPLATE NOTES (delete before publishing):
+
+1. `description` is a TRIGGER read by the model BEFORE loading the body.
+   HARD RULES (the validator enforces these):
+     - ≤ 4 lines, ≤ 500 chars total.
+     - 3-line structure only: WHAT / WHEN / NOT. Do NOT add a separate `Triggers:` line.
+     - NO synonym enumeration. Modern semantic match handles "评审 PR / review this PR /
+       team review / 多角色评审" from a single natural sentence. Listing 5+ phrases
+       wastes tokens and signals to the validator that the WHAT line is unclear.
+     - NO scope thresholds with numbers (e.g. ">200 LOC"). Those belong in bind.md.
+     - NO Stage 0 justification rationale (e.g. "replaces the failure mode where..."). 
+       That belongs in the body intro paragraph.
+   Calibration benchmark: see ../SKILL.md frontmatter for a compliant example.
+
+2. The first heading paragraph below the frontmatter is for an ALREADY-TRIGGERED Agent
+   (more room — 1-2 sentences stating pattern + the failure mode this team solves).
+   Different consumer + different timing from `description` — both are needed.
+
+3. SKILL.md body MUST contain `## Workflow` + `## Roles` + `## Files`.
+   Do NOT add `## When to Use` (already covered by description).
+   Do NOT add `## Anti-Patterns` (already covered by description's "Do NOT use for").
+   Do NOT add a mermaid diagram here — it belongs only in workflow.md.
+
+4. The Roles table should include "When dispatched" / "Input" / "Key dependencies"
+   columns to augment the structured `roles[]` frontmatter with runtime info.
+
+5. Step 0 (dependency pre-flight) is MANDATORY. The Agent reports → user decides go/no-go.
+   The Agent does NOT make the go/no-go call itself.
+
+6. Per-role `purpose:` field has a ≤150-char HARD CAP (validator enforces).
+   Detail goes in roles/<id>.md, not here.
+
+7. If generating a SwarmFlow-backed full spec, add this row to `## Files`:
+   `| [scripts/workflow.py](scripts/workflow.py) | Executable workflow script | When running in SwarmFlow mode |`
+   For script-only SwarmFlow mode, use a minimal `SKILL.md` containing only
+   frontmatter plus `## Workflow` and `## Files`; omit `roles/`, `workflow.md`,
+   `bind.md`, and `dependencies.yaml` intentionally, and do not declare non-empty
+   `roles:` in frontmatter. All prompts live inside `scripts/workflow.py`.
+-->

@@ -1,0 +1,197 @@
+.model-setup-guide {
+  position: fixed;
+  z-index: 2000;
+  inset: 0;
+  pointer-events: none;
+}
+
+.model-setup-guide__mask {
+  position: fixed;
+  background: var(--color-backdrop-strong);
+  pointer-events: auto;
+}
+
+.model-setup-guide__spotlight {
+  position: fixed;
+  border: 1px solid var(--color-action-primary);
+  border-radius: 12px;
+  box-shadow: var(--effect-shadow-lg);
+  pointer-events: none;
+}
+
+[data-model-setup-guide-target='more'][aria-describedby^='model-setup-guide-description-'] {
+  outline: none;
+  box-shadow: none;
+}
+
+.model-setup-guide__callout {
+  position: fixed;
+  padding: 20px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 16px;
+  background: var(--color-surface-popover);
+  box-shadow: var(--effect-shadow-lg);
+  color: var(--color-text-primary);
+  pointer-events: auto;
+  animation: modelSetupGuideEnter 200ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.model-setup-guide__skip {
+  appearance: none;
+  position: absolute;
+  top: 20px;
+  right: 16px;
+  min-width: 44px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  outline: none;
+  background: var(--color-action-secondary);
+  box-shadow: none;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease,
+    transform 120ms ease;
+}
+
+.model-setup-guide__skip:hover,
+.model-setup-guide__skip:focus-visible {
+  background: var(--color-sidebar-nav-hover);
+  color: var(--color-text-primary);
+}
+
+.model-setup-guide__skip:active {
+  transform: translateY(1px);
+}
+
+@keyframes modelSetupGuideEnter {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.model-setup-guide__content {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+
+.model-setup-guide__avatar {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.model-setup-guide__copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.model-setup-guide__title {
+  margin: 2px 0 0;
+  color: var(--color-text-strong);
+  font-size: 17px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+.model-setup-guide__callout--manual .model-setup-guide__title {
+  padding-right: 48px;
+}
+
+.model-setup-guide__description {
+  max-width: 34ch;
+  margin: 7px 0 0;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.model-setup-guide__footer {
+  display: flex;
+  min-height: 30px;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--color-border-default);
+}
+
+.model-setup-guide__hint {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.model-setup-guide__progress {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.model-setup-guide__actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.model-setup-guide__text-button {
+  appearance: none;
+  padding: 2px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  box-shadow: none;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1.5;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.model-setup-guide__text-button:hover {
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.model-setup-guide__text-button:focus-visible {
+  outline: none;
+  box-shadow: none;
+  color: var(--color-text-primary);
+  text-decoration: none;
+}
+
+.model-setup-guide__actions .model-setup-guide__text-button--primary,
+.model-setup-guide__actions .model-setup-guide__text-button--primary:hover,
+.model-setup-guide__actions .model-setup-guide__text-button--primary:focus,
+.model-setup-guide__actions .model-setup-guide__text-button--primary:focus-visible,
+.model-setup-guide__actions .model-setup-guide__text-button--primary:active {
+  color: var(--color-action-primary);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .model-setup-guide__spotlight,
+  .model-setup-guide__callout {
+    animation: none;
+    transition: none;
+  }
+}

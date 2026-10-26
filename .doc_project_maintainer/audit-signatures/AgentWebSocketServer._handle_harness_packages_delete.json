@@ -1,0 +1,20 @@
+{
+  "calls": [
+    {
+      "tool_name": "collaboration.followup_task",
+      "raw_input": {
+        "target": "/root/reaudit_ws_key",
+        "symbol_id": "AgentWebSocketServer._handle_harness_packages_delete",
+        "assignment": "Re-audit exactly one expired symbol against current source."
+      }
+    },
+    {
+      "tool_name": "collaboration.wait_agent",
+      "raw_input": {
+        "target": "/root/reaudit_ws_key",
+        "symbol_id": "AgentWebSocketServer._handle_harness_packages_delete",
+        "completed": true
+      }
+    }
+  ]
+}

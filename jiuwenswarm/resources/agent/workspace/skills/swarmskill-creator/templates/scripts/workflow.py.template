@@ -1,0 +1,329 @@
+"""Executable SwarmFlow workflow for <swarmskill-name>.
+
+Standalone Python workflow module: META + JSON Schema literals +
+explicit swarmflow primitive imports + async def run(args).
+"""
+import json
+from string import Template
+
+from swarmflow import agent, compact, log, map_parallel, parallel, phase
+
+META = {
+    "name": "<swarmskill-name>",
+    "description": "<One-line description of the executable workflow>",
+    "whenToUse": "<When an Agent should REUSE this workflow directly>",
+    "phases": [
+        {"title": "<Phase 1>", "detail": "<What this phase accomplishes>"},
+        {"title": "<Phase 2>", "detail": "<What this phase accomplishes>"},
+    ],
+}
+
+# ---------------------------------------------------------------------------
+# JSON Schema for structured agent outputs.
+# agent() validates LLM response against this schema; if validation fails
+# the return may be None or a raw string — always wrap with extract_json().
+# ---------------------------------------------------------------------------
+ROLE_RESULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "result": {"type": "string"},
+        "verdict": {"type": "string"},
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Resilient helpers — every workflow gets these for free
+# ---------------------------------------------------------------------------
+
+def extract_json(text, fallback=None):
+    """Extract the first JSON object from text (LLM output may have prose).
+
+    Handles three cases:
+    1. Already a dict — return as-is (agent() schema validation succeeded).
+    2. Pure JSON string — parse directly.
+    3. JSON embedded in prose — scan for outermost {…} and parse.
+    Falls back to *fallback* (default {}) if nothing parses.
+    """
+    fallback_value = {} if fallback is None else fallback
+    if isinstance(text, dict):
+        return text
+    if not isinstance(text, str):
+        return fallback_value
+    text = text.strip()
+    # Direct parse
+    try:
+        parsed = json.loads(text)
+        return parsed if isinstance(parsed, dict) else fallback_value
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # Scan for outermost { ... }
+    depth = 0
+    start = None
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}' and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                try:
+                    parsed = json.loads(text[start:i + 1])
+                    return parsed if isinstance(parsed, dict) else fallback_value
+                except (json.JSONDecodeError, ValueError):
+                    start = None
+    return fallback_value
+
+
+def safe_get(obj, key, default=""):
+    """Safely get a key from an agent result, handling None/non-dict."""
+    if obj is None:
+        return str(default)
+    if isinstance(obj, dict):
+        return str(obj.get(key, default))
+    return str(default)
+
+
+def has_meaningful_result(obj):
+    """Return True only when semantic success fields are non-empty."""
+    return (
+        safe_get(obj, "verdict", "unknown") != "unknown"
+        and bool(safe_get(obj, "result", "").strip())
+    )
+
+
+def parse_args(args):
+    """Normalize args to dict. Swarmflow may pass JSON string or dict."""
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str):
+        try:
+            return json.loads(args) if args.strip() else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+# ---------------------------------------------------------------------------
+# Prompt builders — keep prompts inside this script.
+# Use string.Template ($-placeholders) so literal braces in prompt prose or JSON
+# examples are never interpreted as Python expressions (an f-string would treat
+# a literal `{N}` as the variable N and raise NameError at runtime).
+# ---------------------------------------------------------------------------
+
+INLINE_PROMPT = Template(
+    """You are $role_id.
+
+Task input:
+$payload
+
+IMPORTANT: Return ONLY a valid JSON object. No markdown fences, no explanation, just JSON.
+Fields expected: "result" (string), "verdict" (string).
+You may include additional fields if they add value.
+"""
+)
+
+
+def build_inline_prompt(role_id, payload):
+    """Build an inline prompt requesting JSON output."""
+    payload_text = (
+        json.dumps(payload, ensure_ascii=False)
+        if isinstance(payload, (dict, list))
+        else str(payload)
+    )
+    return INLINE_PROMPT.substitute(role_id=role_id, payload=payload_text)
+
+
+# ---------------------------------------------------------------------------
+# Workflow entrypoint
+# ---------------------------------------------------------------------------
+
+async def run(args):
+    """Execute the workflow and return a JSON-serializable result."""
+    args = parse_args(args)
+
+    phase("<Phase 1>")
+    log("Starting <Phase 1>")
+    raw_results = await parallel(
+        [
+            lambda: agent(
+                build_inline_prompt("<role-id-1>", args),
+                label="<role-id-1>",
+                phase="<Phase 1>",
+                schema=ROLE_RESULT_SCHEMA,
+            ),
+            lambda: agent(
+                build_inline_prompt("<role-id-2>", args),
+                label="<role-id-2>",
+                phase="<Phase 1>",
+                schema=ROLE_RESULT_SCHEMA,
+            ),
+        ]
+    )
+    # Resilient extraction: schema validation may return None or raw string
+    role_results = compact([
+        extract_json(r, fallback={"result": "extraction_failed", "verdict": "unknown"})
+        for r in raw_results
+    ])
+
+    phase("<Phase 2>")
+    log("Starting <Phase 2>")
+    final_raw = await agent(
+        build_inline_prompt(
+            "<integrator-role-id>",
+            {"role_results": role_results, "original_args": args},
+        ),
+        label="integrate",
+        phase="<Phase 2>",
+        schema=ROLE_RESULT_SCHEMA,
+    )
+    final = extract_json(final_raw, fallback={"result": "integration_failed", "verdict": "unknown"})
+
+    return {
+        "status": "complete" if has_meaningful_result(final) else "degraded",
+        "role_results": role_results,
+        "final": final,
+    }
+
+# TEMPLATE AUTHORING CONSTRAINTS (delete before publishing):
+# This block is the canonical full constraint list for SwarmFlow workflow
+# scripts generated by swarmskill-creator. SKILL.md, the compliance checklist,
+# and the validator summarize or enforce parts of this list; do not duplicate
+# the full list elsewhere.
+# - Keep META a pure literal; do not use calls, names, f-strings, or concatenation.
+# - Keep a top-level async def run(args) entrypoint.
+# - Keep all prompts in this file as constants or prompt-builder functions.
+# - Build prompts with string.Template as shown above, not f-strings/str.format
+#   (see the prompt-builder comment for why). The validator rejects f-strings
+#   that reference undefined names.
+# - Use top-level explicit `from swarmflow import ...` imports for the operators
+#   this script actually uses. Do not use import *, delayed imports, aliases, or
+#   dynamic import/importlib/getattr(sys.modules[...]) lookup. The supported
+#   operators are agent, agent_session, budget, compact, flatten_filter, human,
+#   human_session, log, map_parallel, parallel, phase, pipeline, pmap, and
+#   workflow. AgentSession and HumanSession are type-only imports; import them
+#   only for annotations and never construct them directly.
+# - Do not define variables, functions, parameters, or classes named like
+#   SwarmFlow operators. They shadow the imported runtime primitives.
+# - Use workflow(...) only to reuse a child workflow script that already exists
+#   and needs its own journal namespace. Await direct serial calls. For sibling
+#   fan-out, return workflow(...) from each parallel thunk and bind loop
+#   variables in lambda defaults. Prefer a stable string-literal name or path;
+#   validate any path selected from args.
+# - Workflow composition is capped at one level. A child script's run() MUST NOT
+#   call workflow(...) again; flatten recursive designs into one script with
+#   loops, parallel, or pipeline. The child shares the parent Runtime,
+#   concurrency permits, abort signal, and budget ledger, so do not pass or
+#   allocate a separate budget object.
+# - Generate budget-dependent control flow only when the user requests a token
+#   budget or budget-based scaling. budget.total is None when no cap is set, so
+#   guard every numeric use of budget.remaining(): for example,
+#   `while budget.total and budget.remaining() > threshold`.
+# - For evenly divisible work, size static fan-out with
+#   `budget.total // per_agent if budget.total else default`. For graceful
+#   completion, poll remaining() inside the same total guard and reserve enough
+#   budget for integration or reporting.
+# - budget is read-only. Read budget.total as a property; call budget.spent()
+#   and budget.remaining() as methods. Never assign to budget.total. Let
+#   BudgetExhausted propagate; use finally for cleanup instead of catching
+#   BaseException or BudgetExhausted.
+# - Parallel child workflows compete for the same token ledger. If fairness is
+#   required, calculate per-child limits in the parent and pass them through
+#   child args; workflow(...) itself does not consume tokens.
+# - Use JSON Schema literals for structured agent outputs. Keep schema but
+#   REMOVE schema-object keywords "additionalProperties": False and "required"
+#   — both are too strict for LLM outputs and can cause agent() to silently
+#   return None. A business output field named "required" under "properties" is
+#   allowed; the ban is on the JSON Schema strictness keyword.
+# - For this template, every agent() call should request JSON and be wrapped
+#   with extract_json(..., fallback={...}). agent() may return None (schema
+#   validation failed) or a raw string (no schema match); extract_json handles
+#   both gracefully.
+# - Use human(...) for one-shot human input. Await it outside parallel thunks,
+#   never pass notify=..., and handle None just as deliberately as an agent
+#   failure. Use a schema when the human answer must be structured.
+# - Use human_session(...) or agent_session(...) only when the same participant
+#   needs multiple turns with persistent context. The factories are synchronous:
+#   assign their return value without await. Await every session.send(...) and
+#   session.aclose() call, keep sends on one session sequential, and close the
+#   session in a finally block. send(notify=True) is one-way and returns None;
+#   never combine notify=True with schema=....
+# - An agent_session consumes one spawn slot when first opened and its turns use
+#   the agent concurrency permit. A human_session consumes neither while waiting
+#   for a person. Account for the former in budgets, and handle None returned by
+#   either session instead of assuming every turn succeeds.
+# - Give human and session interactions stable literal labels. An active phase()
+#   call overrides a session's default phase, so one session may intentionally
+#   continue across multiple workflow phases.
+# - After extract_json(...), verify semantic key fields before treating a
+#   result as successful. Missing or empty key fields should trigger fallback,
+#   retry, or degraded handling.
+# - ALWAYS call parse_args(args) at the top of run(). Swarmflow may pass args
+#   as a JSON string instead of a dict.
+# - Use safe_get(obj, key, default) instead of obj["key"] or obj.get("key")
+#   to handle None results and missing keys uniformly.
+# - Import and use `log` from swarmflow. Do not define a local log() helper,
+#   assign to `log`, or import another logging function as `log`; those calls
+#   will not show in SwarmFlow workflow logs.
+# - Use log(...), not print(...), for workflow-visible runtime messages.
+# - phase("...") is a stable workflow stage, not a progress log; use log("...")
+#   for events. Every META["phases"][].title must have a matching phase("...")
+#   call in run().
+# - Every agent(...) must pass phase="..." exactly equal to the nearest active
+#   phase("...") string; no aliases, paraphrases, dynamic labels, or prefixes.
+# - Every agent(...) must pass a stable literal label="..."; dynamic labels are
+#   rejected so progress groups and failure locations stay stable.
+# - log(...) takes exactly one positional argument; format details into one string.
+# - Default multi-stage item work to pipeline(items, stage1, stage2, ...).
+#   Use parallel([...]) as a barrier only when the next step genuinely needs all
+#   prior results together, such as dedup/merge, early zero-count exit, or
+#   cross-item comparison.
+# - Fixed heterogeneous roles inside one phase: parallel([lambda: agent(...), ...]).
+# - Homogeneous dynamic item fan-out: map_parallel(items, fn). Declare an item
+#   cap and log skipped work; do not silently truncate user input.
+# - Per-item ordered multi-stage processing: pipeline(items, stage1, stage2).
+#   Each pipeline stage receives (prev_result, original_item, index), not just
+#   the previous result.
+#   If you use extra primitives such as pipeline/log/flatten_filter, add them
+#   to the explicit swarmflow import.
+# - Do not use asyncio.gather/create_task around agent calls, including alias
+#   forms such as import asyncio as aio or from asyncio import gather. Use
+#   parallel() or pipeline() so resume, counters, and progress grouping stay
+#   correct.
+# - Outside parallel thunks, await every agent() call. Inside parallel([...]),
+#   pass thunks such as lambda: agent(...); if intermediate awaits are needed,
+#   use an async def thunk.
+# - A single agent() or consecutive awaited agent() calls are sequential.
+# - Encode actual parallel/pipeline/gate/retry/degraded behavior here. When
+#   workflow.md exists, it explains this script but must not define a different
+#   topology.
+# - For custom parallel thunks, bind loop variables in lambda defaults to avoid
+#   late-binding bugs. Prefer map_parallel(items, fn) for homogeneous fan-out.
+# - parallel([...]) may return [dict, None, dict] when one branch fails. Always
+#   compact/filter results before integration, and report missing branches.
+# - Dynamic fan-out and loops must have a visible stop condition. Use at least
+#   one of: max_rounds, dry_count/no-new-results limit, budget guard, or input
+#   length cap. Do not write unbounded while loops or recursive fan-out.
+# - Handle empty input sequences before indexing results[0] or assuming work ran.
+# - Avoid non-determinism inside workflow.py: no random values, current time, or
+#   direct filesystem reads/writes. Pass timestamps, sampled inputs, and file
+#   contents through args or runtime-provided data instead.
+# - Keep all mutable run state inside run(args). Do not use module-level lists,
+#   dicts, sets, caches, counters, or accumulated results.
+# - Cache validation: when loading cached results from incremental runs, verify
+#   key fields are non-empty (not just that the cache file exists). An empty
+#   scores list or null signal indicates a failed prior run and should be
+#   treated as a cache miss, not a valid result to skip.

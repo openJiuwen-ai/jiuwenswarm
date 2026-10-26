@@ -1,0 +1,315 @@
+.share-image-stage {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  z-index: -1;
+  width: 750px;
+  pointer-events: none;
+}
+
+.share-image-document {
+  --share-image-footer-note-color: rgb(107.72, 107.72, 107.72);
+  --share-image-link-color: rgb(92.68, 92.68, 92.68);
+  width: 750px;
+  min-height: 1px;
+  box-sizing: border-box;
+  background: var(--color-surface-page);
+  color: var(--color-text-primary);
+  padding: 26px 18px 28px;
+  font-family: var(--font-body);
+}
+
+.share-image-document *,
+.share-image-document *::before,
+.share-image-document *::after {
+  box-sizing: border-box;
+  animation: none !important;
+}
+
+.share-image-header {
+  padding: 2px 16px 22px;
+}
+
+.share-image-masthead {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.share-image-brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 13px;
+}
+
+.share-image-brand__logo {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 11px;
+}
+
+.share-image-brand__name {
+  color: var(--color-text-strong);
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.share-image-content {
+  border: 1px solid rgba(var(--color-border-default-rgb), 0.86);
+  border-radius: 8px;
+  background: var(--color-surface-content);
+  padding: 26px 28px 30px;
+}
+
+.share-image-content-header {
+  border-bottom: 1px solid var(--color-border-default);
+  padding-bottom: 22px;
+  margin-bottom: 26px;
+}
+
+.share-image-content-header h1 {
+  margin: 0;
+  color: var(--color-text-strong);
+  font-size: 20px;
+  font-weight: 750;
+  line-height: 1.25;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-image-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+  color: var(--color-text-secondary);
+  font-size: 15px;
+  line-height: 1.4;
+}
+
+.share-image-section {
+  padding-top: 0;
+}
+
+.share-image-section__label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 18px;
+  color: var(--color-text-strong);
+  font-size: 20px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
+.share-image-section__label::before {
+  width: 6px;
+  height: 22px;
+  border-radius: 3px;
+  background: var(--color-action-primary);
+  content: '';
+}
+
+.share-image-section--group {
+  margin-top: 30px;
+  border-top: 1px solid var(--color-border-default);
+  padding-top: 28px;
+}
+
+.share-image-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 18px 16px 0;
+  color: var(--color-text-secondary);
+}
+
+.share-image-footer__note {
+  flex: 0 0 auto;
+  color: var(--share-image-footer-note-color);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.share-image-links {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 0;
+  max-width: 430px;
+  gap: 9px;
+  color: var(--share-image-link-color);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.3;
+  text-align: right;
+}
+
+.share-image-link {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 5px;
+}
+
+.share-image-link span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.share-image-link-divider {
+  width: 1px;
+  height: 12px;
+  flex: 0 0 auto;
+  background: rgba(var(--color-text-secondary-rgb), 0.28);
+}
+
+.share-image-empty {
+  color: var(--color-text-secondary);
+  font-size: 16px;
+}
+
+.share-image-document .chat-bubble + div button,
+.share-image-document .chat-bubble + div svg {
+  display: none;
+}
+
+/* Keep the full Mermaid diagram visible in share image */
+.share-image-document .mermaid-canvas {
+  overflow: visible !important;
+}
+
+/* Prevent Mermaid from squeezing wide diagrams in share images. */
+.share-image-document .mermaid-canvas svg {
+  max-width: none !important;
+}
+
+.share-image-document .chat-bubble,
+.share-image-document .chat-text,
+.share-image-document .chat-markdown {
+  color: var(--color-text-primary);
+}
+
+.share-image-document .chat-markdown pre,
+.share-image-document .chat-markdown code,
+.share-image-group-message__body pre,
+.share-image-group-message__body code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.share-image-group-list {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.share-image-group-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+}
+
+.share-image-group-message.is-user {
+  justify-content: flex-end;
+}
+
+.share-image-group-message__avatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  border-radius: 12px;
+  background: transparent;
+}
+
+.share-image-group-message__main {
+  display: flex;
+  min-width: 0;
+  max-width: 560px;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.share-image-group-message.is-user .share-image-group-message__main {
+  align-items: flex-end;
+}
+
+.share-image-group-message__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  margin-bottom: 5px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.share-image-group-message.is-user .share-image-group-message__meta {
+  justify-content: flex-end;
+}
+
+.share-image-group-message__member {
+  color: var(--color-text-strong);
+  font-weight: 700;
+}
+
+.share-image-group-message__time {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.share-image-group-message__bubble {
+  position: relative;
+  max-width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  color: var(--color-text-primary);
+}
+
+.share-image-group-message.is-user .share-image-group-message__bubble {
+  border-color: transparent;
+  border-radius: 8px;
+  background: var(--color-action-primary-subtle);
+  padding: 8px 12px;
+}
+
+.share-image-group-message__chip {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-right: 6px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background: var(--color-action-primary-subtle);
+  padding: 2px 8px;
+  color: var(--color-text-link);
+  font-size: 13px;
+}
+
+.share-image-group-message__body {
+  margin: 0;
+}
+
+.share-image-group-message__body p:first-child {
+  margin-top: 0;
+}
+
+.share-image-group-message__body p:last-child {
+  margin-bottom: 0;
+}

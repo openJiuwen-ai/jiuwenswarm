@@ -1,0 +1,16 @@
+{
+  "marketplaces": [
+    {
+      "name": "baoyu",
+      "url": "https://github.com/JimLiu/baoyu-skills",
+      "enabled": false,
+      "last_updated": "2026-03-02T09:12:45.697130+00:00"
+    },
+    {
+      "name": "anthropic",
+      "url": "https://github.com/anthropics/skills",
+      "enabled": false,
+      "last_updated": "2026-03-02T09:12:45.697130+00:00"
+    }
+  ]
+}

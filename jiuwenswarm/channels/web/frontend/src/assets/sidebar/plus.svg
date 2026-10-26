@@ -1,0 +1,14 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none" customFrame="#000000">
+	<defs>
+		<clipPath id="clipPath_0">
+			<rect width="16.000000" height="16.000000" x="0.000000" y="0.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+	</defs>
+	<rect id="icon/加号_线" width="16.000000" height="16.000000" x="0.000000" y="0.000000" fill="rgb(255,255,255)" fill-opacity="0" />
+	<g id=".公共工具/iC辅助/bg/浅色" customFrame="url(#clipPath_0)">
+		<rect id=".公共工具/iC辅助/bg/浅色" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
+		<rect id="矩形" width="16.000000" height="16.000000" x="0.000000" y="0.000000" opacity="0" fill="rgb(255,255,255)" />
+		<rect id="矩形" width="15.111111" height="15.111111" x="0.444444" y="0.444444" opacity="0" stroke="rgb(151,151,151)" stroke-opacity="0" stroke-width="0.888888896" />
+	</g>
+	<path id="形状结合" d="M8.5 7.5L8.5 2.26667C8.5 2.11939 8.38061 2 8.23333 2L7.76667 2C7.61939 2 7.5 2.11939 7.5 2.26667L7.5 7.5L2.26667 7.5C2.11939 7.5 2 7.61939 2 7.76667L2 8.23333C2 8.38061 2.11939 8.5 2.26667 8.5L7.5 8.5L7.5 13.7333C7.5 13.8806 7.61939 14 7.76667 14L8.23333 14C8.38061 14 8.5 13.8806 8.5 13.7333L8.5 8.5L13.7333 8.5C13.8806 8.5 14 8.38061 14 8.23333L14 7.76667C14 7.61939 13.8806 7.5 13.7333 7.5L8.5 7.5Z" fill="rgb(51,51,51)" fill-rule="evenodd" />
+</svg>

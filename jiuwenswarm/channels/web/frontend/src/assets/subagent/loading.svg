@@ -1,0 +1,26 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none">
+	<mask id="mask_15" width="14.000000" height="14.000000" x="1.000000" y="1.000000" maskUnits="userSpaceOnUse">
+		<g filter="url(#pixso_custom_mask_type_alpha)">
+			<path id="Stroke-2" d="M8 1C8.44043 1 8.79747 1.35704 8.79747 1.79747C8.79747 2.2379 8.44043 2.59494 8 2.59494C5.01486 2.59494 2.59494 5.01486 2.59494 8C2.59494 10.9851 5.01486 13.4051 8 13.4051C10.9851 13.4051 13.4051 10.9851 13.4051 8C13.4051 7.55957 13.7621 7.20253 14.2025 7.20253C14.643 7.20253 15 7.55957 15 8C15 11.866 11.866 15 8 15C4.134 15 1 11.866 1 8C1 4.134 4.134 1 8 1Z" fill="url(#paint_linear_9)" fill-rule="nonzero" />
+		</g>
+	</mask>
+	<defs>
+		<clipPath id="clipPath_11">
+			<rect width="16.000000" height="16.000000" x="0.000000" y="0.000000" fill="rgb(255,255,255)" />
+		</clipPath>
+		<linearGradient id="paint_linear_9" x1="18.9547691" x2="4.75360775" y1="8.00000095" y2="0.999997139" gradientUnits="userSpaceOnUse">
+			<stop stop-color="rgb(255,255,255)" offset="0.00095607515" stop-opacity="0" />
+			<stop stop-color="rgb(255,254.745,254.745)" offset="0.975277901" stop-opacity="1" />
+		</linearGradient>
+		<filter id="pixso_custom_mask_type_alpha">
+			<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0 " />
+		</filter>
+	</defs>
+	<rect id="加载" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
+	<g id="loading黑" clip-path="url(#clipPath_11)">
+		<rect id="loading黑" width="16.000000" height="16.000000" x="0.000000" y="0.000000" />
+		<g id="蒙版" mask="url(#mask_15)">
+			<path id="Fill-1" d="M0 16L16 16L16 0L0 0L0 16Z" fill="currentColor" fill-rule="evenodd" />
+		</g>
+	</g>
+</svg>

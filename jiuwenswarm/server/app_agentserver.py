@@ -1,0 +1,728 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
+"""Standalone AgentServer entrypoint.
+
+This process only starts:
+- JiuWenSwarm (agent runtime)
+- AgentWebSocketServer (ws server for Gateway)
+
+Gateway should be started separately and connect to this ws server.
+Both processes share the same user workspace directory (~/.jiuwenswarm).
+
+Supports ``--dotenv <path>`` for multi-instance isolation.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import atexit
+import importlib
+import logging
+import logging.handlers
+import os
+import sys
+
+# --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
+parse_dotenv_early("jiuwenswarm-agentserver")
+
+
+from jiuwenswarm.common.utils import (
+    get_env_file,
+    get_logs_dir,
+    get_user_workspace_dir,
+    logger,
+    prepare_workspace,
+    reset_free_search_runtime_flags,
+    update_config,
+    migrate_legacy_user_config_if_needed,
+)
+from jiuwenswarm.edition import is_enterprise
+
+migrate_legacy_user_config_if_needed()
+
+# Ensure workspace initialized
+_workspace_dir = get_user_workspace_dir()
+_config_file = _workspace_dir / "config" / "config.yaml"
+_new_workspace = _workspace_dir / "agent" / "jiuwenclaw_workspace"
+_old_workspace = _workspace_dir / "agent" / "workspace"
+if not _config_file.exists() or (_old_workspace.exists() and not _new_workspace.exists()):
+    prepare_workspace(overwrite=False)
+else:
+    # 企业级多 Pod 共享 PVC：各 AgentServer 启动时 merge 写 config.yaml 会与并发读竞态。
+    # 配置由部署侧/init 写入 PVC，运行时经 Gateway reload_config 热更新，不在此 merge。
+    if not is_enterprise():
+        update_config()
+
+# Pin openjiuwen log dir before any openjiuwen-heavy imports
+from jiuwenswarm.common.openjiuwen_logging import bootstrap_openjiuwen_logging
+
+_loaded_logging_yaml = bootstrap_openjiuwen_logging()
+
+# --- Now safe to import remaining jiuwenswarm modules ---
+from jiuwenswarm.common.debug_dump import install_async_dump_handler, install_fault_log
+from jiuwenswarm.infrastructure.config import Settings
+
+if not _loaded_logging_yaml:
+    _logs_root = get_logs_dir()
+    _file_logging_enabled = Settings().log_to_file_enabled
+    if _file_logging_enabled:
+        _logs_root.mkdir(parents=True, exist_ok=True)
+    _perm_fmt = logging.Formatter(
+        "%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    _perm_fh = None
+    if _file_logging_enabled:
+        _perm_fh = logging.handlers.RotatingFileHandler(
+            _logs_root / "permissions.log",
+            maxBytes=20 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        _perm_fh.setLevel(logging.INFO)
+        _perm_fh.setFormatter(_perm_fmt)
+    _perm_sh = logging.StreamHandler()
+    _perm_sh.setLevel(logging.INFO)
+    _perm_sh.setFormatter(_perm_fmt)
+
+    _sec_logger = logging.getLogger("openjiuwen.harness.security")
+    _sec_logger.setLevel(logging.INFO)
+    if not _sec_logger.handlers:
+        if _perm_fh is not None:
+            _sec_logger.addHandler(_perm_fh)
+        _sec_logger.addHandler(_perm_sh)
+    _sec_logger.propagate = False
+
+    _common_logger = logging.getLogger("common")
+    _common_logger.setLevel(logging.INFO)
+
+    class _PermissionEngineFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            return "[PermissionEngine]" in record.getMessage()
+
+    _perm_filter = _PermissionEngineFilter()
+    _common_fh = None
+    if _file_logging_enabled:
+        _common_fh = logging.handlers.RotatingFileHandler(
+            _logs_root / "permissions.log",
+            maxBytes=20 * 1024 * 1024,
+            backupCount=5,
+            encoding="utf-8",
+        )
+        _common_fh.setLevel(logging.INFO)
+        _common_fh.setFormatter(_perm_fmt)
+        _common_fh.addFilter(_perm_filter)
+    _common_sh = logging.StreamHandler()
+    _common_sh.setLevel(logging.INFO)
+    _common_sh.setFormatter(_perm_fmt)
+    _common_sh.addFilter(_perm_filter)
+    if _common_fh is not None:
+        _common_logger.addHandler(_common_fh)
+    _common_logger.addHandler(_common_sh)
+    _common_logger.propagate = False
+
+    _perm_ns_logger = logging.getLogger("jiuwenswarm.agents.harness.common.rails.permissions")
+    _perm_ns_logger.setLevel(logging.INFO)
+    if not _perm_ns_logger.handlers:
+        if _perm_fh is not None:
+            _perm_ns_logger.addHandler(_perm_fh)
+        _perm_ns_logger.addHandler(_perm_sh)
+    _perm_ns_logger.propagate = False
+
+# Load env from user workspace config/.env
+load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
+from jiuwenswarm.common.local_env_config import ingest_bare_business_into_tip
+
+ingest_bare_business_into_tip()
+reset_free_search_runtime_flags()
+
+from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
+    install_shell_tool_safety_hooks,
+)
+
+install_shell_tool_safety_hooks()
+
+# LLM 客户端补丁分两类：
+#   1) 与渠道无关：GLM XML 标签清洗、tip Authorization 保留（Huawei MaaS Basic）、
+#      华为 MaaS x-span-id 注入、before_model_http 扩展埋点（模型 HTTP 出口的
+#      公共事件点，积分对账头等扩展字段经此注入）生产链路硬依赖，无条件应用；
+#   2) 仅对 SSE-only 网关有意义：非流式 invoke()（subagent / 心跳等）把
+#      text/event-stream 文本组装成 ChatCompletion——按渠道门控，见下方函数。
+from jiuwenswarm.llm_sse_patch import (
+    apply_before_model_http_hook_patch,
+    apply_glm_tool_xml_sanitize_patch,
+    apply_huawei_maas_span_id_patch,
+    apply_openai_auth_header_patch,
+    apply_openai_response_assembly_patch,
+    remove_openai_response_assembly_patch,
+)
+
+apply_openai_auth_header_patch()
+apply_glm_tool_xml_sanitize_patch()
+apply_huawei_maas_span_id_patch()
+apply_before_model_http_hook_patch()
+
+
+def _should_apply_sse_invoke_patch() -> bool:
+    """检测是否存在 ``mode == "xiaoyi_claw"`` 的小艺渠道（决定是否启用 SSE 响应组装补丁）。
+
+    ``mode`` 的规范位置是 ``channels.xiaoyi.apps[].mode``：Web UI 保存小艺渠道配置时
+    只保留 ``{"apps", "send_file_allowed"}``，顶层平铺键会被清理，因此这里优先遍历
+    ``apps``；同时兼容旧的顶层平铺格式 ``channels.xiaoyi.mode``。
+    """
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        xiaoyi = (get_config().get("channels", {}) or {}).get("xiaoyi", {}) or {}
+    except Exception as exc:  # noqa: BLE001 - 启动早期读配置失败时保守兜底
+        logger.warning(
+            "[app_agentserver] 读取 channels.xiaoyi 配置失败，默认应用 SSE 兼容补丁: %s",
+            exc,
+        )
+        return True
+
+    modes: list[str] = []
+    apps = xiaoyi.get("apps")
+    if isinstance(apps, list):
+        for app in apps:
+            if isinstance(app, dict) and app.get("mode") is not None:
+                modes.append(str(app.get("mode")).strip())
+    # 兼容旧平铺格式（channels.xiaoyi.mode）
+    legacy_mode = xiaoyi.get("mode")
+    if legacy_mode is not None:
+        modes.append(str(legacy_mode).strip())
+
+    return "xiaoyi_claw" in modes
+
+
+def refresh_openai_response_assembly_patch() -> bool:
+    """Synchronize the SSE response assembly patch with the current config.
+
+    Both operations are idempotent, so this can be called at process startup and
+    after a runtime config reload that enables or disables ``xiaoyi_claw``.
+    """
+    if not _should_apply_sse_invoke_patch():
+        remove_openai_response_assembly_patch()
+        return False
+    apply_openai_response_assembly_patch()
+    return True
+
+
+refresh_openai_response_assembly_patch()
+
+# [PERF 实验] 企业版 + symphony 关闭时短路 evolution rail 轨迹 drain
+from jiuwenswarm.perf.evolution_rail_short_circuit import (
+    apply_evolution_rail_short_circuit,
+)
+
+apply_evolution_rail_short_circuit()
+
+from jiuwenswarm.common.openjiuwen_rail_compat import install_evolution_rail_kwargs_compat
+from jiuwenswarm.openjiuwen_skip_tool_patch import apply_skip_tool_tool_message_patch
+from jiuwenswarm.openjiuwen_streaming_tool_patch import apply_streaming_tool_wait_timeout_patch
+
+apply_skip_tool_tool_message_patch()
+apply_streaming_tool_wait_timeout_patch()
+install_evolution_rail_kwargs_compat()
+
+# Batch-scoped tool concurrency limits from react.concurrency (AbilityManager hook).
+from jiuwenswarm.server.tool_concurrency import apply_tool_concurrency_limit
+
+apply_tool_concurrency_limit()
+
+# /debug 模式下捕获 builtin TaskTool 分发的 subagent 流（reasoning/tool_call/usage），
+# 内联写入主 dump。非 debug 或 include_subagent_flow 关闭时走原始 invoke，零回归。
+from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+    apply_task_tool_debug_patch,
+)
+
+apply_task_tool_debug_patch()
+
+# Ensure every harness-created subagent receives the SDK observability rail.
+# Loading this module earlier changes startup ordering, so keep it deferred
+# until the compatibility patches above are installed.
+importlib.import_module(
+    "openjiuwen.harness.observability"
+).install_subagent_observability_hook()
+
+# Subagent thinking control (task_tool optional ``thinking`` param).
+# Requires openjiuwen core with llm_call_kwargs + thinking_hook; otherwise no-op.
+from jiuwenswarm.common.thinking.register_hook import register_thinking_hook
+
+register_thinking_hook()
+
+# Attach RequestSummaryRail(record_only=True) after DeepAgent.create_subagent so
+# TaskTool / SessionSpawn children contribute llm/tool events to the parent
+# request_summaries.jsonl (no-op when perf.summary.enabled is false).
+from jiuwenswarm.perf.install_hooks import install_perf_hooks
+
+install_perf_hooks()
+
+# Strip leader-exclusive tools when factory injects general-purpose (Deep / Flash /
+# Team all go through _inject_general_purpose_subagent; Team does not use
+# interface_deep._make_deep_agent_config).
+from jiuwenswarm.agents.harness.common.tools.subagent_executor.excluded_spawn_tools import (
+    apply_inject_general_purpose_excluded_tools_patch,
+)
+
+apply_inject_general_purpose_excluded_tools_patch()
+
+# Process exit diagnostics: log reason only; do not change exit code or cleanup order.
+_EXIT_REASON = "unknown"
+
+
+def _set_exit_reason(reason: str) -> None:
+    global _EXIT_REASON
+    _EXIT_REASON = reason
+
+
+def _atexit_log_exit_reason() -> None:
+    # Interpreter/pytest teardown may close handler streams; suppress logging's
+    # default "Logging error" spam when emit hits a closed file.
+    old_raise = logging.raiseExceptions
+    logging.raiseExceptions = False
+    try:
+        logger.critical("[AgentServer] atexit reason=%s", _EXIT_REASON)
+    finally:
+        logging.raiseExceptions = old_raise
+
+
+atexit.register(_atexit_log_exit_reason)
+
+
+async def _run(host: str, port: int) -> None:
+    from jiuwenswarm.telemetry.runtime import ProcessTelemetryLifecycle
+
+    telemetry_lifecycle = ProcessTelemetryLifecycle(
+        logger=logger,
+        process_name="AgentServer",
+    )
+    try:
+        await _run_with_telemetry(host, port, telemetry_lifecycle)
+    finally:
+        await telemetry_lifecycle.stop()
+
+
+async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None:
+    from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+    link_mtls = LinkMTLSConfig.from_env(role="agentserver")  # fail before starting any listener
+    from jiuwenswarm.common.model_client_extensions import load_extra_model_clients
+
+    load_extra_model_clients()
+
+    from openjiuwen.core.runner import Runner
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.agents.harness.team.remote_member_bootstrap import run_teammate_bootstrap_daemon
+    from jiuwenswarm.extensions.manager import ExtensionManager
+    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.common.config import get_config
+
+    # 脱敏冷加载尽量提前：读库走 infrastructure.db，不依赖扩展加载完成。
+    # 失败时仍保留内置规则；企业版 identity 在 import 阶段已可对 user_id= 等脱敏。
+    try:
+        from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
+
+        await LogMaskingEngine.reload_log_masking_rule()
+    except Exception:  # noqa: BLE001
+        logger.warning("[AgentServer] log_masking_rule cold load skipped", exc_info=True)
+
+    logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+
+    from jiuwenswarm.perf.config import init_perf_summary_config
+
+    init_perf_summary_config()
+
+    # ---------- 扩展系统初始化 ----------
+    callback_framework = Runner.callback_framework
+    extension_registry = ExtensionRegistry.create_instance(
+        callback_framework=callback_framework,
+        config={},
+        logger=logger,
+    )
+    extension_manager = ExtensionManager(
+        registry=extension_registry,
+    )
+    telemetry_lifecycle.bind_extension_manager(extension_manager)
+    await extension_manager.load_all_extensions()
+    from jiuwenswarm.common.config import clear_config_cache
+    from jiuwenswarm.common.path_provider import PathCategory, get_path_provider
+    from jiuwenswarm.common.utils import _dispatch_path, setup_logger
+
+    clear_config_cache()
+    logs_override = _dispatch_path(PathCategory.LOGS)
+    rebuild_logger = get_path_provider() is not None and logs_override is not None
+    if rebuild_logger:
+        setup_logger()
+        bootstrap_openjiuwen_logging()
+    logger.info("[AgentServer] 扩展加载完成，共 %d 个", len(extension_manager.list_extensions()))
+    await telemetry_lifecycle.start(
+        process_role="agentserver",
+        registry=extension_registry,
+        extension_manager=extension_manager,
+    )
+
+    try:
+        from jiuwenswarm.server.runtime.code_source_unicode import register_code_source_unicode_hook
+
+        register_code_source_unicode_hook()
+    except Exception:  # noqa: BLE001
+        logger.warning("[AgentServer] code_source_unicode hook registration skipped", exc_info=True)
+
+    if is_enterprise():
+        try:
+            from jiuwenswarm.agents.harness.common.memory.config import (
+                reload_task_memory_config_from_gateway_db,
+            )
+
+            await reload_task_memory_config_from_gateway_db()
+            logger.info("[AgentServer] task_memory_config loaded from Gateway DB (if any)")
+        except Exception:  # noqa: BLE001
+            logger.warning("[AgentServer] task_memory_config cold load skipped", exc_info=True)
+
+    if is_enterprise():
+        try:
+            from jiuwenswarm.agents.harness.common.memory.config import (
+                reload_memory_config_from_gateway_db,
+            )
+
+            await reload_memory_config_from_gateway_db()
+            logger.info("[AgentServer] memory_config loaded from Gateway DB (if any)")
+        except Exception:  # noqa: BLE001
+            logger.warning("[AgentServer] memory_config cold load skipped", exc_info=True)
+
+    if is_enterprise():
+        try:
+            from jiuwenswarm.common.utils import reload_logging_levels
+
+            await reload_logging_levels()
+            logger.info("[AgentServer] logging levels reloaded from config store (if any)")
+        except Exception:  # noqa: BLE001
+            logger.warning("[AgentServer] logging_config cold load skipped", exc_info=True)
+
+    if is_enterprise():
+        try:
+            from jiuwenswarm.gateway.config.audit.access import (
+                SERVICE_AGENTSERVER,
+                reload_audit_log_config_from_db,
+            )
+
+            await reload_audit_log_config_from_db(service=SERVICE_AGENTSERVER)
+            logger.info(
+                "[AgentServer] audit_log_config loaded from Gateway DB (if any)"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] audit_log_config cold load skipped",
+                exc_info=True,
+            )
+
+    if is_enterprise():
+        try:
+            from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                reload_permissions_from_gateway_db,
+            )
+
+            await reload_permissions_from_gateway_db()
+            logger.info("[AgentServer] permissions config refreshed from yaml fallback")
+        except Exception:  # noqa: BLE001
+            logger.warning("[AgentServer] permissions config cold load skipped", exc_info=True)
+
+    if is_enterprise():
+        try:
+            from jiuwenswarm.server.runtime.workspace.policy_reload import (
+                reload_quota_policies_from_gateway_db,
+            )
+
+            await reload_quota_policies_from_gateway_db(force=True)
+            logger.info(
+                "[AgentServer] workspace_quota_policy loaded from Gateway DB (if any)"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] workspace_quota_policy cold load skipped",
+                exc_info=True,
+            )
+
+    try:
+        from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+            start_usage_reconciler,
+        )
+
+        start_usage_reconciler()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] workspace usage reconciler start skipped",
+            exc_info=True,
+        )
+
+    # 会话 metadata 的字段补全已改为惰性迁移:读取时按需推断并写回磁盘
+    # (见 session_metadata._apply_metadata_defaults_with_inference),无需启动全量扫描。
+
+    server = AgentWebSocketServer.get_instance(
+        host=host,
+        port=port
+    )
+    if link_mtls.enforced:
+        await server.start(listen=False)
+    else:
+        await server.start()
+
+    # ---------- ProactiveEngine 初始化 ----------
+    # 适配逻辑（建专用 agent + 触发主 agent 回调）封装在 proactive_adapter，
+    # app_agentserver 只调 init_proactive_engine。
+    from jiuwenswarm.server.runtime.proactive_adapter import init_proactive_engine
+    full_cfg = get_config()
+    proactive_config = full_cfg.get("proactive_recommendation", {}) if isinstance(full_cfg, dict) else {}
+    await init_proactive_engine(server, proactive_config)
+
+    # ---------- HTTP/SSE 入口（可选，与 WebSocket 并列）----------
+    # 与 WS 共享同一套 handler（见 agent_http_server 模块说明）。
+    # 默认关闭。主配置入口是 config.yaml 的 http_server.enabled，
+    # 完整优先级与各场景说明见 resolve_http_server_settings 的 docstring。
+    http_server = None
+    try:
+        from jiuwenswarm.server.agent_http_server import (
+            AgentHTTPServer,
+            resolve_http_server_settings,
+        )
+
+        http_enabled, http_host, http_port = resolve_http_server_settings(host)
+        if http_enabled or link_mtls.enforced:
+            candidate = AgentHTTPServer(server, host=http_host, port=http_port)
+            # start() 自身不抛异常；失败返回 False，WebSocket 主链路不受影响。
+            http_server = candidate if await candidate.start() else None
+        else:
+            logger.info(
+                "[AgentServer] HTTP 入口未开启（config.yaml http_server.enabled 或 AGENT_HTTP_ENABLED）"
+            )
+    except Exception as exc:  # noqa: BLE001 - HTTP 入口不可用不应阻断 WS 主链路
+        if link_mtls.enforced:
+            await server.stop()
+            raise RuntimeError("AgentServer enforce HTTPS startup failed; no WS fallback") from exc
+        logger.error("[AgentServer] HTTP 入口启动失败，仅 WebSocket 可用: %s", exc, exc_info=True)
+        http_server = None
+
+    if link_mtls.enforced and http_server is None:
+        await server.stop()
+        raise RuntimeError("AgentServer enforce requires a working HTTPS listener")
+
+    if link_mtls.enforced:
+        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled",
+                    host, http_server.port)
+    elif http_server is not None:
+        logger.info(
+            "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop",
+            host,
+            port,
+            host,
+            http_server.port,
+        )
+    else:
+        logger.info("[AgentServer] ready: ws://%s:%s  Ctrl+C to stop", host, port)
+
+    stop_event = asyncio.Event()
+    teammate_bootstrap_task: asyncio.Task | None = None
+
+    # Distributed teammate can receive bootstrap before any team-mode request arrives.
+    # Keep a lightweight daemon alive so remote member bootstrap is consumed proactively.
+    teammate_bootstrap_task = asyncio.create_task(
+        run_teammate_bootstrap_daemon(stop_event=stop_event)
+    )
+    from jiuwenswarm.common.mcp_server_registry import start_mcp_registry_runtime, stop_mcp_registry_runtime
+
+    await start_mcp_registry_runtime()
+
+    def _on_signal() -> None:
+        stop_event.set()
+
+    loop = asyncio.get_running_loop()
+    # 把主 loop 句柄注入 sandbox_config_rpc, 供同步 RPC handler 在工作线程调用
+    # _trigger_apply 时用 run_coroutine_threadsafe 投递协程 (替代 deprecated
+    # asyncio.get_event_loop().create_task()).
+    from jiuwenswarm.server.sandbox_config_rpc import register_main_loop
+    register_main_loop(loop)
+    try:
+        import signal
+
+        loop.add_signal_handler(signal.SIGINT, _on_signal)
+        loop.add_signal_handler(signal.SIGTERM, _on_signal)
+    except (NotImplementedError, OSError):
+        pass
+
+    # 周期内存回收(gc.collect + malloc_trim):
+    # JIUWENSWARM_GC_RECLAIM_INTERVAL 秒门控,默认关闭。
+    from jiuwenswarm.server.runtime import mem_reclaimer
+    mem_reclaimer.setup()
+
+    try:
+        await stop_event.wait()
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        pass
+    finally:
+        logger.info("[AgentServer] stopping…")
+        try:
+            from jiuwenswarm.server.runtime.workspace.usage_reconciler import (
+                stop_usage_reconciler,
+            )
+
+            await stop_usage_reconciler()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] workspace usage reconciler stop failed: %s", exc
+            )
+        try:
+            await stop_mcp_registry_runtime()
+        except Exception as exc:
+            logger.warning("[AgentServer] MCP registry scanner stop failed: %s", exc)
+        if teammate_bootstrap_task is not None:
+            teammate_bootstrap_task.cancel()
+            try:
+                await teammate_bootstrap_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("[AgentServer] teammate bootstrap daemon stop failed: %s", exc)
+        if http_server is not None:
+            try:
+                await http_server.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentServer] HTTP 入口关闭失败: %s", exc)
+        await server.stop()
+        # jiuwenbox 关停顺序: 先 DELETE 远端沙箱, 再停 box-server 子进程。
+        # shutdown_jiuwenbox_sandboxes 是 HTTP DELETE 给 box-server (清本进程 provider
+        # 缓存里的 sandbox_id), 必须 box-server 还活着才能响应; 故它在 runner.stop()
+        # 之前。runner.stop() 再停 box-server 子进程 (external 模式下 no-op)。若反过来
+        # 先停子进程, DELETE 会全失败 (被 warning 吞不崩, 但沙箱没正常清理)。
+        # 走线程是因为底层 httpx 是同步 API, 不能直接堵 event loop。
+        # cleanup 自身已经吞了所有异常并永不抛, 外层 try/except 只是再加一道防线,
+        # 兜住 import 阶段 (例如 venv 损坏) 这种极端情况。
+        # 企业级 sidecar 模式静默跳过 step 1: pod 终止时 sidecar 毫秒级退出、
+        # 先于本进程清理, DELETE 必败纯噪音 (沙箱由 box-server lifespan +
+        # bwrap PDEATHSIG + 容器 cgroup 三层兜底销毁); 非 enterprise external
+        # 模式 box-server 长活于本进程外, 仍需 DELETE。
+        if not is_enterprise():
+            try:
+                from jiuwenswarm.server.sandbox_lifecycle import (
+                    shutdown_jiuwenbox_sandboxes,
+                )
+
+                logger.info(
+                    "[AgentServer][sandbox] step 1: DELETE 远端沙箱 (box-server 活着)"
+                )
+                released = await asyncio.to_thread(shutdown_jiuwenbox_sandboxes)
+                logger.info("[AgentServer][sandbox] step 1 done: released=%s", released)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] jiuwenbox sandbox cleanup failed: %s", exc,
+                )
+        # 停 internal 模式下由本 agent-server 拉起的 box-server 子进程。box-server
+        # 进程退出时其 FastAPI lifespan shutdown 会兜底调 shutdown_all_sandboxes
+        # (清上面 DELETE 漏网的沙箱)。失败不阻断后续清理。
+        try:
+            from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+
+            runner = JiuwenBoxRunner.instance()
+            owned = runner.get_owned_endpoint()
+            logger.info(
+                "[AgentServer][sandbox] step 2: stop box-server 子进程 (owned=%s)",
+                owned,
+            )
+            await runner.stop()
+            logger.info("[AgentServer][sandbox] step 2 done")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[AgentServer] jiuwenbox runner stop failed: %s", exc)
+        from jiuwenswarm.perf.guard import run_perf_safe
+        from jiuwenswarm.perf.writer import flush_request_summary_writer
+
+        run_perf_safe(
+            "AgentServer",
+            "request summary flush",
+            lambda: flush_request_summary_writer(timeout=5.0),
+        )
+        # Shutdown team observability (flush & close spans)
+        try:
+            from jiuwenswarm.agents.harness.team.team_manager import shutdown_team_observability
+            shutdown_team_observability()
+        except Exception as exc:
+            logger.warning("[AgentServer] team observability shutdown failed: %s", exc)
+        # Shutdown single-agent / coding-agent observability. Independently
+        # tracked from team observability; no-op unless an agent run owned the
+        # provider (it will not tear down a provider the team still owns).
+        try:
+            from jiuwenswarm.agents.harness.agent_observability import (
+                shutdown_agent_observability,
+            )
+            shutdown_agent_observability()
+        except Exception as exc:
+            logger.warning("[AgentServer] agent observability shutdown failed: %s", exc)
+        try:
+            from jiuwenswarm.server.runtime.session import session_history
+
+            await asyncio.to_thread(session_history.shutdown)
+        except Exception as exc:
+            logger.warning("[AgentServer] history flush failed: %s", exc)
+        logger.info("[AgentServer] stopped")
+        _set_exit_reason("clean_shutdown")
+
+
+def main() -> None:
+    from jiuwenswarm.dotenv_early import get_parsed_dotenv
+
+    parser = argparse.ArgumentParser(
+        prog="jiuwenswarm-agentserver",
+        description="Start JiuwenSwarm AgentServer (standalone process for Gateway to connect).",
+    )
+    parser.add_argument(
+        "--port",
+        "-p",
+        type=int,
+        default=None,
+        metavar="PORT",
+        help="Bind port (default: AGENT_SERVER_PORT env or 18092).",
+    )
+    parser.add_argument(
+        "--name",
+        metavar="<name>",
+        help="Start a named instance from instances.yaml.",
+    )
+    parser.add_argument(
+        "--dotenv",
+        metavar="<path>",
+        help="Load environment from .env file (processed at startup, not used here).",
+    )
+    args = parser.parse_args()
+
+    # Handle --name: check if bootstrap .env was loaded successfully
+    # (parse_dotenv_early() already processed it at module import time)
+    if args.name and get_parsed_dotenv() is None:
+        # Early parsing failed - error was already printed
+        raise SystemExit(1)
+
+    host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1")
+    port = args.port
+    if port is None:
+        for key in ("AGENT_SERVER_PORT", "AGENT_PORT"):
+            raw = os.getenv(key)
+            if raw:
+                port = int(raw)
+                break
+        else:
+            port = 18092
+
+    install_async_dump_handler("agentserver")
+    install_fault_log("agentserver")
+    try:
+        asyncio.run(_run(host=host, port=port))
+        if _EXIT_REASON == "unknown":
+            _set_exit_reason("asyncio_run_returned")
+    except SystemExit as exc:
+        _set_exit_reason(f"SystemExit({exc.code})")
+        raise
+    except BaseException as exc:
+        _set_exit_reason(f"{type(exc).__name__}: {exc}")
+        raise
+
+
+if __name__ == "__main__":
+    main()

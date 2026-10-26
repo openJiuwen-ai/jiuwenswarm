@@ -1,0 +1,74 @@
+[
+  {
+    "resourceSpans": [{
+      "scopeSpans": [{
+        "spans": [{
+          "traceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "spanId": "0000000000000021",
+          "name": "llm.call",
+          "startTimeUnixNano": "21000000000",
+          "endTimeUnixNano": "22000000000",
+          "attributes": [
+            { "key": "gen_ai.conversation.id", "value": { "stringValue": "pressure-session" } },
+            { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "subagent:pressure" } },
+            { "key": "openjiuwen.inference.id", "value": { "stringValue": "inference-21" } },
+            { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.step.number", "value": { "intValue": "21" } },
+            { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "21" } },
+            { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Need one more tool\"},{\"type\":\"tool_call\",\"id\":\"call-21\",\"name\":\"bash\",\"arguments\":{\"command\":\"pwd\"}}]}]" } },
+            { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [{ "stringValue": "tool_calls" }] } } }
+          ]
+        }]
+      }]
+    }]
+  },
+  {
+    "resourceSpans": [{
+      "scopeSpans": [{
+        "spans": [{
+          "traceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "spanId": "0000000000001021",
+          "parentSpanId": "0000000000000021",
+          "name": "tool.bash",
+          "startTimeUnixNano": "22000000000",
+          "endTimeUnixNano": "22500000000",
+          "attributes": [
+            { "key": "gen_ai.conversation.id", "value": { "stringValue": "pressure-session" } },
+            { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "subagent:pressure" } },
+            { "key": "openjiuwen.trajectory.record.kind", "value": { "stringValue": "tool" } },
+            { "key": "openjiuwen.inference.id", "value": { "stringValue": "inference-21" } },
+            { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.step.number", "value": { "intValue": "21" } },
+            { "key": "gen_ai.tool.name", "value": { "stringValue": "bash" } },
+            { "key": "gen_ai.tool.call.id", "value": { "stringValue": "call-21" } },
+            { "key": "gen_ai.tool.call.arguments", "value": { "stringValue": "{\"command\":\"pwd\"}" } },
+            { "key": "gen_ai.tool.call.result", "value": { "stringValue": "{\"output\":\"/workspace\"}" } }
+          ]
+        }]
+      }]
+    }]
+  },
+  {
+    "resourceSpans": [{
+      "scopeSpans": [{
+        "spans": [{
+          "traceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "spanId": "0000000000000022",
+          "name": "llm.call",
+          "startTimeUnixNano": "23000000000",
+          "endTimeUnixNano": "24000000000",
+          "attributes": [
+            { "key": "gen_ai.conversation.id", "value": { "stringValue": "pressure-session" } },
+            { "key": "openjiuwen.execution.subject.id", "value": { "stringValue": "subagent:pressure" } },
+            { "key": "openjiuwen.inference.id", "value": { "stringValue": "inference-22" } },
+            { "key": "openjiuwen.turn.number", "value": { "intValue": "1" } },
+            { "key": "openjiuwen.step.number", "value": { "intValue": "22" } },
+            { "key": "openjiuwen.execution.subject.request.number", "value": { "intValue": "22" } },
+            { "key": "gen_ai.output.messages", "value": { "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"reasoning\",\"content\":\"Ready to answer\"},{\"type\":\"text\",\"content\":\"Final pressure-safe answer\"}]}]" } },
+            { "key": "gen_ai.response.finish_reasons", "value": { "arrayValue": { "values": [{ "stringValue": "stop" }] } } }
+          ]
+        }]
+      }]
+    }]
+  }
+]

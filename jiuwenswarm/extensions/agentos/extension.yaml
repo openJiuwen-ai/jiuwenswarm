@@ -1,0 +1,9 @@
+id: agentos_router
+name: AgentOS Router
+version: 0.1.0
+description: Route AgentOS requests through YuanRong and the Agent registry
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.3"
+dependencies: {}
+config_schema:
+  type: object

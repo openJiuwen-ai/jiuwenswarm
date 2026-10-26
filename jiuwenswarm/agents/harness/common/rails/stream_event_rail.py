@@ -1,0 +1,2028 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+
+"""JiuSwarmStreamEventRail — Stream event emission, pause checks, context fix.
+
+Migrated from JiuSwarmReActAgent:
+  - _emit_tool_call / _emit_tool_result / _emit_todo_updated / _emit_context_usage
+  - _fix_incomplete_tool_context
+  - Pause checkpoint logic
+"""
+from __future__ import annotations
+
+import asyncio
+import copy
+import json
+import os
+import re
+from typing import Any, List, Optional
+
+from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+from openjiuwen.core.foundation.llm import (
+    AssistantMessage,
+    ToolMessage,
+)
+from openjiuwen.core.session.agent import Session
+from openjiuwen.core.session.checkpointer import CheckpointerFactory
+from openjiuwen.core.session.stream import OutputSchema
+from openjiuwen.core.single_agent.rail.base import (
+    AgentCallbackContext,
+    InvokeInputs,
+    ToolCallInputs,
+)
+from openjiuwen.harness.rails.base import DeepAgentRail
+from openjiuwen.harness.rails.skills.skill_use_rail import get_current_skill_name
+from openjiuwen.harness.tools import TodoListTool
+from openjiuwen.harness.workspace.workspace import WorkspaceNode
+
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    convert_interactions_to_ask_user_question,
+)
+from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+    strip_image_content_from_model_context,
+)
+from jiuwenswarm.agents.harness.common.rails.symphony import (
+    SymphonyToolStreamHandler,
+)
+from jiuwenswarm.agents.harness.common.rails.path_whitespace_fix import (
+    WHITESPACE_FIX_TOOL_NAMES,
+    build_whitespace_fix_notice,
+    fix_whitespace_path_arguments,
+)
+from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
+    extract_path_from_arguments,
+    handle_read_file_before_tool_call,
+    is_read_file_tool,
+    normalize_read_file_tool_outcome,
+)
+from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
+    SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY,
+    is_todo_close_nudge,
+)
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    filter_todos_for_display,
+    filter_todos_for_execution,
+    get_todo_generation_token,
+    snapshot_includes_persistent_todos,
+)
+from jiuwenswarm.common.tool_display import (
+    build_tool_display_name,
+    extract_call_goal,
+    inject_call_goal_schema,
+)
+from jiuwenswarm.common.todo_snapshot import (
+    format_todos_for_frontend,
+    overlay_serial_todo_statuses,
+)
+from jiuwenswarm.common.utils import fix_json_arguments, logger
+
+# "todo"：flash 统一工具（单卡 action 分发，覆盖同一组引擎操作）
+_TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify", "todo"])
+_EARLY_CHECKPOINT_EXTRA_KEY = "_jiuwenswarm_early_checkpoint_done"
+_WHITESPACE_PATH_FIXES_EXTRA_KEY = "_jiuwenswarm_whitespace_path_fixes"
+_EARLY_CHECKPOINT_ENV = "JIUWENCLAW_EARLY_CHECKPOINT"
+
+
+def _early_checkpoint_disabled_by_env() -> bool:
+    raw = (os.getenv(_EARLY_CHECKPOINT_ENV) or "").strip().lower()
+    return raw in {"0", "false", "no", "off"}
+
+
+# When TOOL_RESULT_DISPLAY_MAX_CHARS is unset, keep the historical emit cap for
+# non-enterprise runs. Enterprise deploy normally sets the env (e.g. 500).
+_DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS = 60000
+_TOOL_RESULT_DISPLAY_MAX_CHARS_LIMIT = 100_000
+
+
+def _resolve_source_skill(session: Any = None) -> str:
+    """Return active skill name for tool-call attribution, or empty string.
+
+    Prefer session-backed binding (set by skill_tool); ContextVar alone does
+    not propagate across tool execution contexts — same issue as skill_turbo
+    request_metadata rebinding below.
+    """
+    try:
+        name = get_current_skill_name(session)
+    except Exception:
+        logger.debug("resolve source_skill failed", exc_info=True)
+        return ""
+    return str(name or "").strip()
+
+
+def _resolve_tool_result_display_max_chars() -> int:
+    """Resolve streamed tool_result.result max chars.
+
+    - env configured and valid -> use TOOL_RESULT_DISPLAY_MAX_CHARS
+      (0 = no truncation; max 100000)
+    - unset / invalid -> 60000 (legacy default in jiuwenswarm)
+    """
+    raw = os.getenv("TOOL_RESULT_DISPLAY_MAX_CHARS")
+    if raw is None or str(raw).strip() == "":
+        return _DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return _DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS
+    if parsed < 0 or parsed > _TOOL_RESULT_DISPLAY_MAX_CHARS_LIMIT:
+        return _DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS
+    return parsed
+
+
+def _format_tool_result_for_stream(result: Any) -> str:
+    if result is None:
+        return ""
+    text = str(result)
+    limit = _resolve_tool_result_display_max_chars()
+    if limit == 0 or len(text) <= limit:
+        return text
+    return text[:limit]
+
+
+def _structured_tool_result_payload(result: Any) -> Any | None:
+    detailed_output = getattr(result, "detailed_output", None)
+    if detailed_output is not None:
+        return detailed_output
+    if isinstance(result, (dict, list)):
+        return result
+    return None
+
+
+def _parse_tool_call_arguments(tool_call: Any) -> dict[str, Any]:
+    raw_args = getattr(tool_call, "arguments", None) if tool_call else None
+    if isinstance(raw_args, dict):
+        return raw_args
+    if isinstance(raw_args, str):
+        try:
+            parsed = json.loads(raw_args)
+        except (TypeError, ValueError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def extract_tool_interrupt(value: Any) -> Any | None:
+    """Find a tool interrupt in wrapped exception chains without looping.
+
+    Class-name matching intentionally supports exceptions crossing duplicated
+    SDK import boundaries, where ``isinstance`` can be false for equivalent
+    ToolInterruptException classes.
+    """
+    pending = [value]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        if (
+            current.__class__.__name__ == "ToolInterruptException"
+            and hasattr(current, "request")
+        ):
+            return current
+        for attr_name in ("cause", "__cause__"):
+            cause = getattr(current, attr_name, None)
+            if cause is not None and cause is not current:
+                pending.append(cause)
+    return None
+
+
+# Backward-compatible private alias for existing tests/imports.
+_extract_tool_interrupt = extract_tool_interrupt
+
+
+def _normalize_ask_user_interrupt_value(value_obj: Any, tool_args: dict[str, Any]) -> Any:
+    """Attach ask_user tool metadata so plain-query interrupts are not misclassified."""
+    if isinstance(value_obj, dict):
+        if str(value_obj.get("tool_name") or "").strip() == "ask_user":
+            return value_obj
+        if value_obj.get("tool_args"):
+            return value_obj
+        return {
+            **value_obj,
+            "tool_name": "ask_user",
+            "tool_args": tool_args,
+            "message": value_obj.get("message") or tool_args.get("query") or "",
+        }
+
+    tool_name = str(getattr(value_obj, "tool_name", "") or "").strip()
+    existing_args = getattr(value_obj, "tool_args", None)
+    if tool_name == "ask_user" and existing_args:
+        return value_obj
+
+    return {
+        "tool_name": "ask_user",
+        "tool_args": tool_args,
+        "message": str(getattr(value_obj, "message", "") or tool_args.get("query") or ""),
+        "questions": getattr(value_obj, "questions", None) or tool_args.get("questions") or [],
+    }
+
+
+def _ask_user_question_payload_from_interrupt(tool_call: Any, interrupt: Any) -> dict[str, Any] | None:
+    request_id = str(
+        getattr(getattr(interrupt, "request", None), "tool_call_id", None)
+        or getattr(tool_call, "id", "")
+        or ""
+    ).strip()
+    if not request_id:
+        return None
+
+    args = _parse_tool_call_arguments(tool_call)
+    value_obj = getattr(interrupt, "request", None)
+    if value_obj is None:
+        if not args:
+            return None
+        value_obj = {"tool_name": "ask_user", "tool_args": args, "questions": args.get("questions", [])}
+    elif args:
+        value_obj = _normalize_ask_user_interrupt_value(value_obj, args)
+
+    return convert_interactions_to_ask_user_question([{"id": request_id, "value": value_obj}])
+
+
+def _boolish_false(value: Any) -> bool:
+    if value is False:
+        return True
+    return isinstance(value, str) and value.strip().lower() in {"false", "0", "no"}
+
+
+def _boolish_true(value: Any) -> bool:
+    if value is True:
+        return True
+    return isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}
+
+
+def _nonzero_exit(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value != 0
+    if isinstance(value, str):
+        try:
+            return int(value.strip()) != 0
+        except ValueError:
+            return None
+    return None
+
+
+def _infer_tool_result_error(value: Any) -> bool | None:
+    if isinstance(value, dict):
+        if "success" in value:
+            if _boolish_false(value.get("success")):
+                return True
+            if _boolish_true(value.get("success")):
+                return False
+        if _boolish_true(value.get("is_error")) or _boolish_true(value.get("isError")):
+            return True
+        status = value.get("status")
+        if isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure"}:
+            return True
+        for key in ("exit_code", "exitCode", "returncode", "return_code"):
+            exit_failed = _nonzero_exit(value.get(key))
+            if exit_failed is not None:
+                return exit_failed
+        for key in ("data", "raw_output", "rawOutput", "result"):
+            nested = value.get(key)
+            if isinstance(nested, (dict, list)):
+                nested_error = _infer_tool_result_error(nested)
+                if nested_error is not None:
+                    return nested_error
+        return None
+
+    if isinstance(value, list):
+        for item in value:
+            item_error = _infer_tool_result_error(item)
+            if item_error:
+                return True
+        return None
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, (dict, list)):
+            parsed_error = _infer_tool_result_error(parsed)
+            if parsed_error is not None:
+                return parsed_error
+        if re.search(r"\bsuccess\s*[:=]\s*False\b", text, re.IGNORECASE):
+            return True
+        if text.startswith("[ERROR]"):
+            return True
+        exit_match = re.search(
+            r"\b(?:exit(?:[_ ]?code)?|returncode|return[_ ]code)\s*[:= ]\s*(-?\d+)\b",
+            text,
+            re.IGNORECASE,
+        )
+        if exit_match:
+            return int(exit_match.group(1)) != 0
+    return None
+
+
+# skill_turbo 专用 ContextVar 的绑定/复位收口（8 个 token 单一进出）。
+# 详细机制与条件语义见 context_binding 模块；新增通道在该模块加一行即可。
+from jiuwenswarm.server.runtime.skill_turbo.context_binding import (  # noqa: E402
+    bind_skill_turbo_context,
+    reset_skill_turbo_context,
+)
+
+
+class JiuSwarmStreamEventRail(DeepAgentRail):
+
+    _bg_emit_tasks: set = set()
+    """Emit frontend stream events and enforce pause/abort checkpoints.
+
+    Pause/abort state is owned by this Rail (not DeepAgent) so that
+    interface.py can call rail.pause() / rail.resume() / rail.abort()
+    without requiring changes to DeepAgent.
+    """
+
+    priority = 80
+
+    # Key used in ctx.extra to carry session_id from before_invoke to checkpoints.
+    # ctx.extra persists across all events within a single invoke, so sub-agent
+    # checkpoints inherit the parent's session_id (correct: parent abort → sub stops).
+    _SID_KEY = "__jiuwenswarm_session_id__"
+    _SHELL_SID_TOKEN_KEY = "__jiuwenswarm_shell_session_token__"
+
+    def __init__(self, *, member_name: str | None = None, role: str | None = None) -> None:
+        super().__init__()
+        self._deep_agent: Optional[Any] = None
+        self._member_name = str(member_name or "").strip()
+        self._role = str(role or "").strip().lower()
+        # Per-session pause/abort state.  Keyed by session_id (conversation_id).
+        # Shared adapter instances serve multiple concurrent sessions; scalar state
+        # would cause cross-session contamination (session A cancel kills session B).
+        self._abort_requested: dict[str, bool] = {}
+        self._pause_events: dict[str, asyncio.Event] = {}
+        # Per-session conversation context
+        self._conversation_ids: dict[str, str] = {}
+        self._main_sessions: dict[str, Session] = {}
+        # Shared across sessions (same workspace → same tool instance)
+        self._main_todo_tool: Optional[TodoListTool] = None
+        # Track in-flight tool calls for cancellation status emission
+        self._inflight_tool_calls: dict[str, dict[str, Any]] = {}
+        # Store cancelled tool info for interrupt response (per-session to avoid
+        # cross-session leakage in concurrent collect→get→clear sequences).
+        self._cancelled_tool_results: dict[str, list[dict[str, Any]]] = {}
+        self._symphony_stream_handler = SymphonyToolStreamHandler()
+        # Tenant-scoped checkpointer for early checkpoint (prefer over Factory default).
+        self._checkpointer: Optional[Any] = None
+        self._skill_turbo_adapter: Any | None = None
+        # 当前请求的 metadata（由 adapter 在 _apply_runtime_config_stages 注入）。
+        # metadata 的 ContextVar 在请求任务中设置，但工具在 harness 执行任务里运行，
+        # ContextVar 不跨任务传播，故经由本属性在 before_tool_call（工具执行上下文）转绑。
+        self._skill_turbo_request_metadata: Optional[dict[str, Any]] = None
+        # Per-request openjiuwen CwdState paths (cwd / project_root / workspace).
+        # Seeded by the adapter in the request task; rebound here because the
+        # interaction supervisor / round task does not inherit that ContextVar.
+        self._runtime_cwd: Optional[str] = None
+        self._runtime_project_root: Optional[str] = None
+        self._runtime_workspace: Optional[str] = None
+
+    def set_checkpointer(self, checkpointer: Optional[Any]) -> None:
+        """Bind tenant-scoped checkpointer for early checkpoint saves."""
+        self._checkpointer = checkpointer
+
+    def set_skill_turbo_adapter(self, adapter: Any) -> None:
+        """注入 SkillTurbo adapter，用于 HITL 中断/恢复桥接。"""
+        self._skill_turbo_adapter = adapter
+
+    def set_skill_turbo_request_metadata(self, metadata: Optional[dict]) -> None:
+        """注入当前请求 metadata，供 skill_turbo 工具在工具执行上下文中读取。"""
+        self._skill_turbo_request_metadata = (
+            dict(metadata) if isinstance(metadata, dict) else None
+        )
+
+    def set_runtime_cwd_paths(
+        self,
+        *,
+        cwd: str | None = None,
+        project_root: str | None = None,
+        workspace: str | None = None,
+    ) -> None:
+        """Store per-request CWD layers for rebind in the interaction task.
+
+        ``write_file`` / ``bash`` / ``glob`` / etc. resolve relative paths via
+        ``get_cwd()`` / ``get_workspace()``. Those ContextVars are seeded in the
+        request task but tools run under the DeepAgent supervisor round task,
+        so this rail must re-apply the paths at invoke / tool boundaries.
+        """
+        def _norm(value: str | None) -> str | None:
+            if not isinstance(value, str):
+                return None
+            stripped = value.strip()
+            return stripped or None
+
+        self._runtime_cwd = _norm(cwd)
+        self._runtime_project_root = _norm(project_root) or self._runtime_cwd
+        self._runtime_workspace = _norm(workspace) or self._runtime_cwd
+        if self._runtime_cwd:
+            logger.info(
+                "[StreamEventRail] runtime cwd paths stored cwd=%s project_root=%s "
+                "workspace=%s",
+                self._runtime_cwd,
+                self._runtime_project_root,
+                self._runtime_workspace,
+            )
+
+    def _resolve_runtime_cwd_paths(self) -> tuple[str, str, str] | None:
+        """Resolve cwd / project_root / workspace for the current request."""
+        cwd = self._runtime_cwd
+        project_root = self._runtime_project_root
+        workspace = self._runtime_workspace
+        if not cwd and isinstance(self._skill_turbo_request_metadata, dict):
+            epd = self._skill_turbo_request_metadata.get("effective_project_dir")
+            if isinstance(epd, str) and epd.strip():
+                cwd = project_root = workspace = epd.strip()
+        if not cwd:
+            return None
+        return (
+            cwd,
+            project_root or cwd,
+            workspace or cwd,
+        )
+
+    def _rebind_runtime_cwd(self, *, replace: bool) -> None:
+        """Apply stored runtime paths onto openjiuwen CwdState in this task.
+
+        Args:
+            replace: When True, ``init_cwd`` installs a fresh CwdState (use in
+                ``before_invoke`` before tool ``asyncio.gather`` copies the
+                ContextVar reference). When False, mutate the shared CwdState
+                via ``set_cwd`` / ``set_project_root`` / ``set_workspace`` so
+                gather siblings already holding the reference see the update.
+        """
+        paths = self._resolve_runtime_cwd_paths()
+        if paths is None:
+            return
+        cwd, project_root, workspace = paths
+        try:
+            if replace:
+                from openjiuwen.core.sys_operation.cwd import init_cwd
+
+                init_cwd(cwd, project_root=project_root, workspace=workspace)
+            else:
+                from openjiuwen.core.sys_operation.cwd import (
+                    set_cwd,
+                    set_project_root,
+                    set_workspace,
+                )
+
+                set_cwd(cwd)
+                set_project_root(project_root)
+                set_workspace(workspace)
+            logger.debug(
+                "[StreamEventRail] rebound runtime cwd replace=%s cwd=%s",
+                replace,
+                cwd,
+            )
+        except Exception:
+            logger.warning(
+                "[StreamEventRail] rebind runtime cwd failed replace=%s cwd=%s",
+                replace,
+                cwd,
+                exc_info=True,
+            )
+
+    # Agent-internal subtrees that must stay under the agent workspace even when
+    # a per-request project_dir is bound (todos, context offload, memory, …).
+    _AGENT_INTERNAL_PATH_PREFIXES = frozenset(
+        {
+            "todo",
+            "context",
+            "skills",
+            "memory",
+            "sub_agents",
+            ".agent_history",
+            ".checkpoint",
+            ".workspace",
+        }
+    )
+
+    def _rebase_path_from_agent_workspace(self, file_path: str) -> str | None:
+        """Rebase absolute agent-workspace user paths onto the request project_dir.
+
+        OfficeClaw models often emit absolute paths under ``agent_default`` when
+        the prompt lacked project_dir context. Relative resolution alone cannot
+        fix those; rewrite only non-internal artifact paths.
+        """
+        if not isinstance(file_path, str) or not file_path.strip():
+            return None
+        expanded = os.path.expanduser(file_path.strip())
+        if not (os.path.isabs(expanded) or expanded.startswith("\\\\") or expanded.startswith("//")):
+            return None
+        paths = self._resolve_runtime_cwd_paths()
+        if paths is None:
+            return None
+        runtime_cwd, _, _ = paths
+        try:
+            from jiuwenswarm.common.utils import get_agent_workspace_dir
+        except Exception:
+            return None
+        try:
+            agent_ws = os.path.abspath(str(get_agent_workspace_dir()))
+            abs_path = os.path.abspath(expanded)
+            runtime_cwd_abs = os.path.abspath(runtime_cwd)
+        except (OSError, TypeError, ValueError):
+            return None
+        if os.path.normcase(agent_ws) == os.path.normcase(runtime_cwd_abs):
+            return None
+        try:
+            rel = os.path.relpath(abs_path, agent_ws)
+        except ValueError:
+            return None
+        if rel.startswith("..") or os.path.isabs(rel):
+            return None
+        first = rel.replace("\\", "/").split("/", 1)[0].lower()
+        if first in self._AGENT_INTERNAL_PATH_PREFIXES or first.startswith("."):
+            return None
+        rebased = os.path.abspath(os.path.join(runtime_cwd_abs, rel))
+        if os.path.normcase(rebased) == os.path.normcase(abs_path):
+            return None
+        return rebased
+
+    @staticmethod
+    def _fix_whitespace_path_args(tool_call: Any, tool_name: str) -> list[tuple[str, str]]:
+        try:
+            from openjiuwen.core.sys_operation.cwd import get_cwd
+
+            base_dir = get_cwd()
+        except Exception:  # noqa: BLE001 - cwd is optional, absolute paths still work
+            base_dir = None
+        try:
+            raw_args = getattr(tool_call, "arguments", None)
+            fixed = fix_whitespace_path_arguments(raw_args, str(base_dir) if base_dir else None)
+            if fixed is None:
+                return []
+            new_args, fixes = fixed
+            # ToolCall.arguments is a JSON string; keep the type it arrived with.
+            tool_call.arguments = (
+                json.dumps(new_args, ensure_ascii=False) if isinstance(raw_args, str) else new_args
+            )
+            for original, corrected in fixes:
+                logger.info(
+                    "[StreamEventRail] fixed whitespace in %s path: %s -> %s",
+                    tool_name,
+                    original,
+                    corrected,
+                )
+            return fixes
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning(
+                "[StreamEventRail] failed to fix whitespace in %s path: %s",
+                tool_name,
+                exc,
+            )
+            return []
+
+    def _annotate_whitespace_path_fix(self, ctx: AgentCallbackContext) -> None:
+        extra = getattr(ctx, "extra", None)
+        fixes_by_call = extra.get(_WHITESPACE_PATH_FIXES_EXTRA_KEY) if isinstance(extra, dict) else None
+        if not isinstance(fixes_by_call, dict):
+            return
+        tool_call_id = str(getattr(getattr(ctx.inputs, "tool_call", None), "id", "") or "")
+        fixes = fixes_by_call.pop(tool_call_id, None)
+        if not fixes:
+            return
+        tool_msg = getattr(ctx.inputs, "tool_msg", None)
+        content = getattr(tool_msg, "content", None)
+        if not isinstance(content, str):
+            return
+        tool_msg.content = build_whitespace_fix_notice(fixes, self._get_prompt_language()) + "\n" + content
+
+    def _rebase_user_artifact_path_args(self, tool_call: Any, tool_name: str) -> None:
+        """Rewrite write/edit file_path when model hardcodes agent workspace."""
+        args = getattr(tool_call, "arguments", None)
+        if not isinstance(args, dict):
+            return
+        key = "file_path" if "file_path" in args else ("path" if "path" in args else None)
+        if key is None:
+            return
+        original = args.get(key)
+        rebased = self._rebase_path_from_agent_workspace(original) if isinstance(original, str) else None
+        if not rebased:
+            return
+        try:
+            new_args = dict(args)
+            new_args[key] = rebased
+            tool_call.arguments = new_args
+            logger.info(
+                "[StreamEventRail] rebased %s path from agent workspace: %s -> %s",
+                tool_name,
+                original,
+                rebased,
+            )
+        except (AttributeError, TypeError) as exc:
+            logger.warning(
+                "[StreamEventRail] failed to rebase %s path: %s",
+                tool_name,
+                exc,
+            )
+
+    def init(self, agent: Any) -> None:
+        self._deep_agent = agent
+
+    def _get_prompt_language(self) -> str:
+        """Get the current prompt language from the agent's system_prompt_builder."""
+        return getattr(
+            getattr(self._deep_agent, "system_prompt_builder", None),
+            "language", None,
+        ) or "cn"
+
+    def _read_image_multimodal_enabled(self) -> bool:
+        deep_config = (
+            getattr(self._deep_agent, "deep_config", None)
+            or getattr(self._deep_agent, "_deep_config", None)
+        )
+        return bool(getattr(deep_config, "enable_read_image_multimodal", False))
+
+    def _tool_interrupted_message(self, tool_name: str) -> str:
+        """Build a language-aware tool interruption message."""
+        if self._get_prompt_language() == "en":
+            return f"[Tool interrupted] Tool {tool_name} was interrupted by the user and has no result."
+        return f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。"
+
+    @staticmethod
+    def _tool_call_id(tool_call: Any) -> str:
+        if isinstance(tool_call, dict):
+            return str(tool_call.get("id") or tool_call.get("tool_call_id") or "")
+        return str(
+            getattr(tool_call, "id", "")
+            or getattr(tool_call, "tool_call_id", "")
+            or ""
+        )
+
+    @staticmethod
+    def _tool_call_name(tool_call: Any) -> str:
+        if isinstance(tool_call, dict):
+            function = tool_call.get("function")
+            if isinstance(function, dict):
+                return str(function.get("name") or tool_call.get("name") or "")
+            return str(tool_call.get("name") or "")
+        return str(getattr(tool_call, "name", "") or "")
+
+    def _tool_interrupt_placeholders_by_id(
+        self,
+        messages: list[Any],
+    ) -> dict[str, str]:
+        """Map tool_call_id to the exact placeholder content emitted by this rail."""
+        placeholders: dict[str, str] = {}
+        for message in messages:
+            if not isinstance(message, AssistantMessage):
+                continue
+            for tool_call in getattr(message, "tool_calls", None) or []:
+                tool_call_id = self._tool_call_id(tool_call)
+                if not tool_call_id:
+                    continue
+                placeholders[tool_call_id] = self._tool_interrupted_message(
+                    self._tool_call_name(tool_call),
+                )
+        return placeholders
+
+    @staticmethod
+    def _tool_call_names_by_id(messages: list[Any]) -> dict[str, str]:
+        """Map tool_call_id back to the originating assistant tool name.
+
+        This is NOT enough to classify fake/real tool messages by itself.
+        We use it only to recover the expected tool name for a ToolMessage's
+        tool_call_id, then match that message content against known interrupt
+        placeholder templates for that tool.
+        """
+        names: dict[str, str] = {}
+        for message in messages:
+            if not isinstance(message, AssistantMessage):
+                continue
+            for tool_call in getattr(message, "tool_calls", None) or []:
+                tool_call_id = JiuSwarmStreamEventRail._tool_call_id(tool_call)
+                if not tool_call_id:
+                    continue
+                names[tool_call_id] = JiuSwarmStreamEventRail._tool_call_name(tool_call)
+        return names
+
+    @staticmethod
+    def _tool_message_text(message: ToolMessage) -> str | None:
+        content = getattr(message, "content", None)
+        return content if isinstance(content, str) else None
+
+    @staticmethod
+    def _normalize_tool_interrupt_text(text: str) -> str:
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _is_legacy_tool_interrupt_placeholder_text(
+        self,
+        content: str,
+        tool_name: str,
+    ) -> bool:
+        from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+            _SKILL_TURBO_HITL_PLACEHOLDER,
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY,
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2,
+        )
+        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+        )
+
+        legacy_templates = [
+            f"[Tool execution interrupted] Tool {tool_name} was interrupted by user during execution, "
+            f"no result available.",
+            f"[Tool interrupted] Tool {tool_name} was interrupted by the user and has no result.",
+            f"[工具执行被中断] 工具 {tool_name} 执行过程中被用户打断，没有执行结果。",
+            # HITL 暂停 tool_msg（skill_acceleration_exec 专用文案，含历史版本）
+            _SKILL_TURBO_HITL_PLACEHOLDER
+            if tool_name == "skill_acceleration_exec"
+            else "",
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY
+            if tool_name == "skill_acceleration_exec"
+            else "",
+            _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2
+            if tool_name == "skill_acceleration_exec"
+            else "",
+            # HITL 暂停 tool_msg（deepresearch_execute 专用文案）。注册后
+            # 孤儿清理把"占位 + resume 完成态同 id 两条消息"收敛为"占位被
+            # 真实结果替换"，而非 duplicate 规则保留占位删掉完成态。
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER
+            if tool_name == "deepresearch_execute"
+            else "",
+        ]
+        normalized_content = self._normalize_tool_interrupt_text(content)
+        return any(
+            template
+            and normalized_content == self._normalize_tool_interrupt_text(template)
+            for template in legacy_templates
+        )
+
+    def _is_tool_interrupt_placeholder(
+        self,
+        message: Any,
+        placeholders_by_id: dict[str, str],
+        tool_names_by_id: dict[str, str],
+    ) -> bool:
+        """Classify whether a ToolMessage is an interrupt placeholder.
+
+        Decision rule:
+        1. tool_call_id identifies which assistant tool call this ToolMessage
+           belongs to.
+        2. tool_call_id -> tool_name lets us recover the expected tool name.
+        3. We then compare content against known interrupt placeholder text
+           variants for that tool. So fake/real is still determined by content,
+           not by tool_call_id alone.
+        """
+        if not isinstance(message, ToolMessage):
+            return False
+        tool_call_id = getattr(message, "tool_call_id", "")
+        if not tool_call_id:
+            return False
+        expected = placeholders_by_id.get(tool_call_id)
+        content = self._tool_message_text(message)
+        if not content:
+            return False
+        if expected and content == expected:
+            return True
+        tool_name = tool_names_by_id.get(tool_call_id, "")
+        if not tool_name:
+            return False
+        return self._is_legacy_tool_interrupt_placeholder_text(content, tool_name)
+
+    def _resolve_sid(self, ctx: AgentCallbackContext, session: Session | None = None) -> str:
+        """Resolve the per-session key used by this rail.
+
+        99aa04963 made pause/abort and conversation state per-session. Most
+        callbacks inherit ctx.extra from before_invoke, but tool callbacks can
+        arrive without that value depending on agent-core callback boundaries.
+        Fall back to the captured main session identity so main-agent tool calls
+        can still find their conversation_id while unrelated sessions remain
+        isolated.
+        """
+        sid = ctx.extra.get(self._SID_KEY, "")
+        if isinstance(sid, str) and sid:
+            return sid
+        if session is not None:
+            for known_sid, known_session in self._main_sessions.items():
+                if session is known_session:
+                    ctx.extra[self._SID_KEY] = known_sid
+                    return known_sid
+        return "default"
+
+    # -- pause / resume / abort API for interface.py --
+    # All methods accept session_id to scope state per-session on shared adapters.
+
+    def _get_pause_event(self, sid: str) -> asyncio.Event:
+        """Lazily get/create pause event for a session. Created events start in set (unpaused)."""
+        event = self._pause_events.get(sid)
+        if event is None:
+            event = asyncio.Event()
+            event.set()
+            self._pause_events[sid] = event
+        return event
+
+    def pause(self, session_id: str = "") -> None:
+        sid = session_id or "default"
+        self._get_pause_event(sid).clear()
+
+    def resume(self, session_id: str = "") -> None:
+        sid = session_id or "default"
+        self._abort_requested.pop(sid, None)
+        self._get_pause_event(sid).set()
+
+    def abort(self, session_id: str = "") -> None:
+        sid = session_id or "default"
+        self._abort_requested[sid] = True
+        self._get_pause_event(sid).set()
+        if sid:
+            try:
+                from openjiuwen.core.sys_operation.shell_process_registry import (
+                    kill_shell_processes_for_session_tree,
+                )
+
+                killed = kill_shell_processes_for_session_tree(sid)
+                if killed:
+                    logger.info(
+                        "[StreamEventRail] killed %d shell process(es) for session=%s",
+                        killed,
+                        sid,
+                    )
+            except Exception:
+                logger.debug(
+                    "[StreamEventRail] kill_commands_for_session failed",
+                    exc_info=True,
+                )
+
+    def reset_abort(self, session_id: str = "") -> None:
+        sid = session_id or "default"
+        self._abort_requested.pop(sid, None)
+
+    def reset_for_new_task(self, session_id: str = "") -> None:
+        """Unblock the pause event for the next task without touching the abort flag.
+
+        Called on cancel so that a new task can start without being stuck at
+        the _pause_event.wait() checkpoint. The abort flag is intentionally
+        NOT cleared here — it must remain True until the next task's
+        process_message_*_impl calls reset_abort() at entry, ensuring the
+        in-flight checkpoint (before_model_call / before_tool_call) can still
+        observe the flag and raise CancelledError.
+        """
+        sid = session_id or "default"
+        self._get_pause_event(sid).set()
+        self._conversation_ids.pop(sid, None)
+        self._main_sessions.pop(sid, None)
+
+    def cleanup_session(self, session_id: str = "") -> None:
+        """Remove ALL per-session state for *session_id*.
+
+        Called by the adapter when the last task for a session completes
+        (Counter drops to 0). Prevents unbounded growth of the per-session
+        dicts on long-lived adapters serving many unique sessions.
+        """
+        sid = session_id or "default"
+        self._abort_requested.pop(sid, None)
+        self._pause_events.pop(sid, None)
+        self._conversation_ids.pop(sid, None)
+        self._main_sessions.pop(sid, None)
+        self._cancelled_tool_results.pop(sid, None)
+
+    def get_cancelled_tool_results(self, session_id: str = "") -> list[dict[str, Any]]:
+        """Get cancelled tool results collected during interrupt.
+
+        Args:
+            session_id: Return results for this session only.
+
+        Returns list of tool_result dicts for gateway to forward to frontend.
+        """
+        sid = session_id or "default"
+        return list(self._cancelled_tool_results.get(sid, []))
+
+    def clear_cancelled_tool_results(self, session_id: str = "") -> None:
+        """Clear cancelled tool results after they've been retrieved."""
+        sid = session_id or "default"
+        self._cancelled_tool_results.pop(sid, None)
+
+    def collect_cancelled_tool_updates(self, session_id: str = "") -> None:
+        """Collect cancelled tool info for interrupt response.
+
+        Args:
+            session_id: Only collect tools for this session. If empty, collect all.
+        """
+        sid = session_id or "default"
+        bucket = self._cancelled_tool_results.setdefault(sid, [])
+        for tc_id, info in list(self._inflight_tool_calls.items()):
+            # Only collect tools matching the target session
+            if session_id and info.get("session_id") != session_id:
+                continue
+            tc = info.get("tool_call")
+            if tc is None:
+                continue
+            bucket.append({
+                "tool_name": getattr(tc, "name", ""),
+                "tool_call_id": tc_id,
+                "result": "[Interrupted] Tool execution cancelled by user.",
+                "status": "error",
+            })
+            self._inflight_tool_calls.pop(tc_id, None)
+        logger.info(
+            "[StreamEventRail] collected %d cancelled tools for session=%s",
+            len(bucket),
+            session_id,
+        )
+
+    # ------------------------------------------------------------------
+    # before_invoke (Outer event on DeepAgent): capture conversation_id
+    # ------------------------------------------------------------------
+
+    async def before_invoke(self, ctx: AgentCallbackContext) -> None:
+        if not isinstance(ctx.inputs, InvokeInputs):
+            return
+        # Subagents have no session on their before_invoke (ctx.session is None);
+        # the main agent always has one.  Use this to distinguish without relying
+        # on conv_id naming conventions.
+        if ctx.session is None:
+            return
+        # Use the real conversation_id as the session key; fall back to "default"
+        # only for the pause/abort state lookup key (sid).  Do NOT store the
+        # "default" sentinel as a conversation_id value — after_tool_call uses
+        # truthiness to decide whether to emit todo.updated, and a literal
+        # "default" would trigger _emit_todo_updated with a bogus session key.
+        raw_conv_id = ctx.inputs.conversation_id or ""
+        sid = raw_conv_id or "default"
+        if raw_conv_id:
+            self._conversation_ids[sid] = raw_conv_id
+        self._main_sessions[sid] = ctx.session
+        # Carry session_id through ctx.extra so checkpoints (before_model_call,
+        # before_tool_call) within this invoke can look up per-session state.
+        # Sub-agents inherit this from the parent's invoke since they don't
+        # fire their own before_invoke (ctx.session is None → early return above).
+        ctx.extra[self._SID_KEY] = sid
+        try:
+            from openjiuwen.core.sys_operation.shell_process_registry import (
+                set_shell_session_id,
+            )
+
+            ctx.extra[self._SHELL_SID_TOKEN_KEY] = set_shell_session_id(raw_conv_id or sid)
+        except Exception:
+            logger.debug("[StreamEventRail] set_shell_session_id failed", exc_info=True)
+
+        # Install request CwdState before tool gather copies the ContextVar ref.
+        # Without this, relative write_file/bash/glob resolve against the default
+        # agent workspace instead of relay/project_dir.
+        self._rebind_runtime_cwd(replace=True)
+
+    async def after_invoke(self, ctx: AgentCallbackContext) -> None:
+        token = ctx.extra.pop(self._SHELL_SID_TOKEN_KEY, None)
+        if token is None:
+            return
+        try:
+            from openjiuwen.core.sys_operation.shell_process_registry import (
+                reset_shell_session_id,
+            )
+
+            reset_shell_session_id(token)
+        except Exception:
+            logger.debug("[StreamEventRail] reset_shell_session_id failed", exc_info=True)
+
+        # SkillTurbo: ensure adapter token is reset after invoke
+        # SkillTurbo: 还原请求级 ContextVar 绑定（bind 存入的 token 一处循环复位，
+        # 幂等：已 reset 的 pop 得 None 跳过；与 after_tool_call / on_model_exception 对称）
+        reset_skill_turbo_context(ctx)
+
+        # adapter 兜底清理：token 已还原后仍无条件用 None 覆盖一次，防 token 丢失
+        # 或需无条件清空时 adapter 泄漏（与原实现一致）
+        if self._skill_turbo_adapter is not None:
+            try:
+                from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                    clear_current_skill_turbo_adapter,
+                )
+                clear_current_skill_turbo_adapter()
+            except Exception:
+                logger.debug(
+                    "[StreamEventRail] clear skill_turbo adapter failed after invoke",
+                    exc_info=True,
+                )
+
+    # ------------------------------------------------------------------
+    # before_model_call: pause check + context fix + compression info
+    # ------------------------------------------------------------------
+
+    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        sid = self._resolve_sid(ctx, ctx.session)
+        await self._get_pause_event(sid).wait()
+        if self._abort_requested.get(sid, False):
+            raise asyncio.CancelledError("Agent abort requested")
+
+        # Some task-loop paths reach model call without before_invoke; keep cwd
+        # aligned for any rail/tool that reads get_cwd during the model turn.
+        self._rebind_runtime_cwd(replace=False)
+
+        self._inject_tool_call_goal_schema(ctx)
+        self._ensure_tool_call_goal_prompt()
+
+        if ctx.context is not None:
+            if not self._read_image_multimodal_enabled():
+                strip_image_content_from_model_context(ctx.context)
+            await self._fix_incomplete_tool_context(ctx)
+
+        await self._maybe_early_checkpoint(ctx)
+
+    async def _maybe_early_checkpoint(self, ctx: AgentCallbackContext) -> None:
+        """Persist context + agent state once per invoke before the first LLM call.
+
+        Mitigates losing the user message if the process dies before ``post_run``:
+        ``save_contexts`` then ``post_agent_execute`` (not ``post_run``, which closes
+        the stream). Skipped on later ReAct iterations via ``ctx.extra`` flag.
+        """
+        if _early_checkpoint_disabled_by_env():
+            return
+        if ctx.extra.get(_EARLY_CHECKPOINT_EXTRA_KEY):
+            return
+        sid = self._resolve_sid(ctx, ctx.session)
+        cid = (self._conversation_ids.get(sid, "") or "").strip()
+        if cid.startswith("heartbeat"):
+            return
+        session = getattr(ctx, "session", None)
+        agent = getattr(ctx, "agent", None)
+        if session is None or agent is None:
+            return
+        context_engine = getattr(agent, "context_engine", None)
+        if context_engine is None:
+            return
+
+        actual_session = getattr(session, "_parent", session) if session else None
+        if actual_session is None:
+            return
+
+        try:
+            await context_engine.save_contexts(actual_session)
+            inner = getattr(actual_session, "_inner", actual_session)
+            cp = (
+                self._checkpointer
+                if self._checkpointer is not None
+                else CheckpointerFactory.get_checkpointer()
+            )
+            await cp.post_agent_execute(inner)
+            ctx.extra[_EARLY_CHECKPOINT_EXTRA_KEY] = True
+            session_id = ""
+            gs = getattr(actual_session, "get_session_id", None)
+            if callable(gs):
+                session_id = str(gs())
+            else:
+                fn = getattr(actual_session, "session_id", None)
+                if callable(fn):
+                    session_id = str(fn())
+            logger.debug(
+                "[StreamEventRail] early checkpoint saved session_id=%s",
+                session_id or "",
+            )
+        except Exception as exc:
+            logger.warning(
+                "[StreamEventRail] early checkpoint failed: %s",
+                exc,
+                exc_info=True,
+            )
+
+    @staticmethod
+    def _inject_tool_call_goal_schema(ctx: AgentCallbackContext) -> None:
+        """仅给送入 LLM 的 ToolInfo 注入 call_goal，且必须 deepcopy。
+
+        不可就地改 parameters / card.input_params：ToolInfo 与执行侧 schema 常共享
+        内层 properties，注入后 SchemaUtils 会补上 call_goal=None，LocalFunction
+        再 **kwargs 传给 send_file 等实现会直接 TypeError（表现为工具挂掉）。
+        """
+        tools = getattr(ctx.inputs, "tools", None) or []
+        if not tools:
+            return
+        next_tools: list[Any] = []
+        changed = False
+        for tool in tools:
+            params = getattr(tool, "parameters", None)
+            if not isinstance(params, dict):
+                next_tools.append(tool)
+                continue
+            props = params.get("properties")
+            if isinstance(props, dict) and "call_goal" in props:
+                next_tools.append(tool)
+                continue
+            cloned = copy.deepcopy(params)
+            inject_call_goal_schema(cloned)
+            if cloned == params:
+                next_tools.append(tool)
+                continue
+            model_copy = getattr(tool, "model_copy", None)
+            if callable(model_copy):
+                try:
+                    next_tools.append(model_copy(update={"parameters": cloned}))
+                    changed = True
+                    continue
+                except Exception as exc:
+                    # model_copy 可能抛 ValidationError 等与具体 ToolInfo 实现相关的异常；
+                    # 注入失败时跳过该工具，不阻断主链路。
+                    logger.warning(
+                        "[StreamEventRail] model_copy for call_goal failed; skip inject tool=%s err=%s",
+                        getattr(tool, "name", type(tool).__name__),
+                        exc,
+                    )
+            # 无 model_copy / copy 失败：绝不回写原始 ToolInfo，避免 call_goal 泄漏进执行侧。
+            next_tools.append(tool)
+        if changed:
+            try:
+                ctx.inputs.tools = next_tools
+            except (AttributeError, TypeError) as exc:
+                logger.warning(
+                    "[StreamEventRail] replace tools with call_goal schema failed: %s",
+                    exc,
+                )
+
+    def _ensure_tool_call_goal_prompt(self) -> None:
+        builder = getattr(self._deep_agent, "system_prompt_builder", None)
+        if builder is None:
+            return
+        try:
+            from openjiuwen.harness.prompts import PromptSection
+            cn_text = (
+                "# 工具 call_goal\n\n"
+                "每次调用工具时，请填写参数 `call_goal`：用一句简短中文说明"
+                "这次调用要达成的目标（如「调研 openJiuwen 官网信息」「创建三子棋对战团队」），"
+                "不要只写工具名或裸 URL。"
+                "该字段仅用于界面展示，不影响工具实际执行。\n"
+                "若工具参数里已有 `description`：`call_goal` 必须与 `description` 使用同一句，"
+                "禁止再写一句近义复述（避免同一信息输出两遍）。\n"
+                "团队工具也必须填 `call_goal`，且不能用其它字段代替：\n"
+                "- `spawn_member` / `spawn_teammate`：`call_goal` 写「为何创建该成员」；"
+                "`display_name` 仍是成员展示名，两者都要填。\n"
+                "- `send_message`：`call_goal` 写「这次消息的目的」；"
+                "`summary` 可继续填，但不能省略 `call_goal`。\n"
+                "- `build_team`：`call_goal` 写建队目标；`display_name` 仍是团队名。"
+            )
+            en_text = (
+                "# Tool call_goal\n\n"
+                "When calling any tool, set `call_goal`: one short phrase for the goal of this call "
+                "(e.g. \"Research openJiuwen official site\", \"Create tic-tac-toe team\"). "
+                "Do not just repeat the tool name or raw URL. UI only; does not affect execution.\n"
+                "If the tool already has a `description` parameter: set `call_goal` to the exact same "
+                "string — do not invent a second near-duplicate phrase.\n"
+                "Team tools must also set `call_goal`; do not substitute other fields:\n"
+                "- `spawn_member` / `spawn_teammate`: `call_goal` = why spawn this member; "
+                "`display_name` remains the member label — fill both.\n"
+                "- `send_message`: `call_goal` = purpose of this message; "
+                "`summary` may still be set, but `call_goal` is required too.\n"
+                "- `build_team`: `call_goal` = team goal; `display_name` remains the team name."
+            )
+            builder.add_section(
+                PromptSection(
+                    name="tool_call_goal",
+                    content={"cn": cn_text, "en": en_text},
+                    priority=40,
+                )
+            )
+        except (ImportError, AttributeError, TypeError, ValueError) as exc:
+            logger.warning("[StreamEventRail] inject call_goal prompt failed: %s", exc)
+
+    async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        # Newer agent-core emits the complete context-usage.v1 snapshot itself.
+        # Skip the legacy three-field rail event only after that write succeeds.
+        # Do NOT key off ``context_usage_report``: core assigns the report before
+        # analyze/write_stream. If emit fails after that assignment, skipping here
+        # would drop both the v1 frame and the legacy fallback (zero context.usage).
+        extra = getattr(ctx, "extra", {})
+        if isinstance(extra, dict) and extra.get("_context_usage_event_emitted"):
+            return
+        # [PERF] 轻量模式:context.usage 是信息性统计事件,高并发下
+        # write_stream 背压会把本钩子拖到秒级(100 并发实测 ×12-26 次
+        # >1s 慢回调)。改为后台发射,不阻塞回复路径;背压时晚到但不丢。
+        import os as _os
+        _light = (_os.getenv("JIUWENCLAW_ADAPTER_CKPT_LIGHT") or "").strip().lower() in {"1", "true", "yes", "on"}
+        coro = self._emit_context_usage(
+            ctx,
+            member_name=self._member_name or None,
+            role=self._role or None,
+        )
+        if _light:
+            try:
+                task = asyncio.create_task(coro, name="ctx-usage-emit-bg")
+                self._bg_emit_tasks.add(task)
+                task.add_done_callback(self._bg_emit_tasks.discard)
+                return
+            except RuntimeError:
+                pass  # 无 loop 时退回同步
+        await coro
+
+    async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        sid = self._resolve_sid(ctx, ctx.session)
+        await self._get_pause_event(sid).wait()
+        if self._abort_requested.get(sid, False):
+            raise asyncio.CancelledError("Agent abort requested")
+
+        # Mutate shared CwdState (gather children hold the same reference).
+        # Covers write_file/edit_file/bash/glob/grep/command_tools/etc.
+        self._rebind_runtime_cwd(replace=False)
+
+        session = ctx.session
+        if session is not None and isinstance(ctx.inputs, ToolCallInputs):
+            tc = ctx.inputs.tool_call
+            tool_name = str(
+                getattr(ctx.inputs, "tool_name", "") or getattr(tc, "name", "") or ""
+            )
+            if tool_name in ("write_file", "edit_file"):
+                self._rebase_user_artifact_path_args(tc, tool_name)
+            if tool_name in WHITESPACE_FIX_TOOL_NAMES:
+                fixes = self._fix_whitespace_path_args(tc, tool_name)
+                tool_call_id = str(getattr(tc, "id", "") or "")
+                if fixes and tool_call_id and isinstance(getattr(ctx, "extra", None), dict):
+                    # ctx.extra is shared across all tool calls of the whole invoke;
+                    # entries are popped in after_tool_call keyed by tool_call_id.
+                    ctx.extra.setdefault(_WHITESPACE_PATH_FIXES_EXTRA_KEY, {})[tool_call_id] = fixes
+            if is_read_file_tool(tool_name):
+                path = extract_path_from_arguments(getattr(tc, "arguments", {}))
+                if path:
+                    handle_read_file_before_tool_call(ctx, path)
+            # 主模型随 tool_call 产出的目标文案（call_goal）：取出后剥掉，避免 schema 拒收。
+            # 绝不碰 display_name（team 成员名等业务字段）。
+            model_display, cleaned_args = extract_call_goal(
+                getattr(tc, "arguments", {}) if tc else {}
+            )
+            # 无论是否填了 call_goal，都写回清洗后的 arguments，避免执行侧拿到该字段。
+            if tc is not None:
+                try:
+                    tc.arguments = cleaned_args
+                except (AttributeError, TypeError) as exc:
+                    logger.warning(
+                        "[StreamEventRail] rewrite tool arguments without call_goal failed; tool_id=%s err=%s",
+                        getattr(tc, "id", ""),
+                        exc,
+                    )
+                ctx.inputs.tool_args = cleaned_args
+            extra = getattr(ctx, "extra", None)
+            if not isinstance(extra, dict):
+                extra = {}
+            from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+            skip_resume_tool_call = (
+                tool_name == "skill_acceleration_exec"
+                and extra.get(RESUME_USER_INPUT_KEY) is not None
+            )
+            if not skip_resume_tool_call and not is_todo_close_nudge(tc):
+                await self._emit_tool_call(session, tc, model_display_name=model_display)
+                if not ctx.extra.get("_skip_tool"):
+                    await self._emit_tool_update(session, tc, status="in_progress")
+            self._symphony_stream_handler.bind_progress(ctx, session, tc)
+            # Track in-flight tool call for cancellation
+            tc_id = getattr(tc, "id", "")
+            if tc_id:
+                self._inflight_tool_calls[tc_id] = {
+                    "tool_call": tc,
+                    "session": session,
+                    "session_id": sid,
+                }
+
+        # SkillTurbo 专用 ContextVar 统一绑定（adapter / metadata / workspace /
+        # interactive_ask / outer_todo / outer_todo_pending /
+        # outer_todo_completed_before / subagent_parent / resume_answers
+        # 共 9 个，条件语义与绑定实现见
+        # context_binding.bind_skill_turbo_context）
+        try:
+            _resume_answers = None
+            extra = getattr(ctx, "extra", None)
+            if isinstance(extra, dict):
+                from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+
+                _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
+            _outer_todo_active = None
+            _outer_todo_pending = None
+            _outer_todo_completed_before = None
+            if isinstance(extra, dict):
+                _outer_todo_active = extra.get(SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY)
+                _outer_todo_pending = extra.get(SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY)
+                _outer_todo_completed_before = extra.get(
+                    SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY
+                )
+            bind_skill_turbo_context(
+                ctx,
+                adapter=self._skill_turbo_adapter,
+                request_metadata=self._skill_turbo_request_metadata,
+                parent_session=session,
+                resume_answers=_resume_answers,
+                outer_todo_active=_outer_todo_active,
+                outer_todo_pending=_outer_todo_pending,
+                outer_todo_completed_before=_outer_todo_completed_before,
+            )
+        except Exception:
+            # metadata / resume_answers 绑定失败意味着 HITL 作答注入静默失效，
+            # 升为 warning 保证可观测（debug 会被淹没）。
+            logger.warning(
+                "[StreamEventRail] bind skill_turbo context failed",
+                exc_info=True,
+            )
+
+    # ------------------------------------------------------------------
+    # after_tool_call: emit tool_result + todo.updated
+    # ------------------------------------------------------------------
+
+    async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
+        # 复位全部 skill_turbo ContextVar 绑定（幂等；不依赖 session 状态，
+        # 消除 session-is-None 路径漏 reset adapter/metadata 的隐患）
+        reset_skill_turbo_context(ctx)
+
+        session = ctx.session
+        if session is None or not isinstance(ctx.inputs, ToolCallInputs):
+            # TIE 块未执行，清理可能残留的 stale TIC（reset_skill_turbo_context
+            # 不含 TIC 清理——TIC 由工具体直接 set，不经 token 绑定机制）。
+            try:
+                from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                    set_skill_turbo_hitl_tic,
+                )
+
+                set_skill_turbo_hitl_tic(None)
+            except Exception:
+                logger.debug("[StreamEventRail] stale TIC cleanup on early return failed", exc_info=True)
+            return
+
+        tc = ctx.inputs.tool_call
+        tc_id = getattr(tc, "id", "")
+        self._symphony_stream_handler.reset_progress(ctx)
+        # Remove from in-flight tracking on completion
+        if tc_id:
+            self._inflight_tool_calls.pop(tc_id, None)
+
+        # SkillTurbo HITL：主信号是工具返回值里的 __skill_turbo_hitl__ 标记
+        # （deepcopy 安全、随返回值穿越任何执行上下文），ContextVar 中的
+        # ToolInterruptException 作为旧路径兜底。此处把 ctx.inputs.tool_result
+        # 改写为 TIE，使 harness 原生 HITL 机制（build_interrupt_state）检测并暂停。
+        # 暂停处理不依赖 _skill_turbo_adapter 绑定：适配器缺失时同样必须暂停，
+        # 否则外层模型会把暂停占位当失败而放弃加速通道。
+        # （token 复位已在函数入口 reset_skill_turbo_context 统一完成。）
+        try:
+            from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                _SKILL_TURBO_HITL_PLACEHOLDER,
+                _SKILL_TURBO_HITL_RESULT_KEY,
+                get_skill_turbo_hitl_tic,
+                set_skill_turbo_hitl_tic,
+            )
+            _tool_name = str(getattr(ctx.inputs, "tool_name", "") or "")
+            _hitl_request_dump: dict[str, Any] | None = None
+            _raw_tool_result = ctx.inputs.tool_result
+            _is_hitl_marker = (
+                _tool_name == "skill_acceleration_exec"
+                and isinstance(_raw_tool_result, dict)
+                and bool(_raw_tool_result.get(_SKILL_TURBO_HITL_RESULT_KEY))
+            )
+            if _is_hitl_marker and isinstance(_raw_tool_result.get("request"), dict):
+                _hitl_request_dump = _raw_tool_result["request"]
+            _skill_turbo_tic = (
+                get_skill_turbo_hitl_tic() if _hitl_request_dump is None else None
+            )
+            if _skill_turbo_tic is not None and _tool_name != "skill_acceleration_exec":
+                logger.warning(
+                    "[StreamEventRail] stale skill_turbo TIC dropped for tool=%s",
+                    _tool_name,
+                )
+                set_skill_turbo_hitl_tic(None)
+                _skill_turbo_tic = None
+            if _hitl_request_dump is not None or _skill_turbo_tic is not None:
+                set_skill_turbo_hitl_tic(None)
+                if isinstance(ctx.inputs, ToolCallInputs):
+                    from openjiuwen.core.single_agent.interrupt.exception import (
+                        ToolInterruptException,
+                    )
+                    from openjiuwen.core.single_agent.interrupt.response import (
+                        ToolCallInterruptRequest,
+                    )
+                    if _hitl_request_dump is not None:
+                        _hitl_request: Any = ToolCallInterruptRequest.model_validate(
+                            _hitl_request_dump
+                        )
+                        _original_tcid = str(_hitl_request.tool_call_id or "?")
+                    else:
+                        _hitl_request = _skill_turbo_tic.request
+                        _original_tcid = (
+                            _skill_turbo_tic.tool_call.id
+                            if _skill_turbo_tic.tool_call
+                            else "?"
+                        )
+                    new_tic = ToolInterruptException(
+                        request=_hitl_request,
+                        tool_call=ctx.inputs.tool_call,
+                    )
+                    ctx.inputs.tool_result = new_tic
+                    ctx.inputs.tool_msg = ToolMessage(
+                        content=_SKILL_TURBO_HITL_PLACEHOLDER,
+                        tool_call_id=ctx.inputs.tool_call.id,
+                    )
+                    logger.info(
+                        "[StreamEventRail] SkillTurbo HITL: rewrote tool_result to TIE. "
+                        "source=%s original_tcid=%s harness_tcid=%s",
+                        "result_marker" if _hitl_request_dump is not None else "contextvar",
+                        _original_tcid,
+                        ctx.inputs.tool_call.id
+                        if isinstance(ctx.inputs, ToolCallInputs)
+                        else "?",
+                    )
+                    # 卡片由 harness __interaction__ 转换统一发出（外层
+                    # tool_call_id，harness 恢复按同一 id 对齐）；此处不再主动
+                    # emit，避免同一次中断发出两张 ask_user 卡片。
+                    return  # 跳过 _emit_tool_result：中断态无结果可发
+        except Exception:
+            logger.warning(
+                "[StreamEventRail] skill_turbo HITL rewrite failed",
+                exc_info=True,
+            )
+            # 降级：原始 marker dict 不可直接透传给模型（无语义 JSON 会让
+            # 模型误判失败并回退 skill_tool）。改为可读暂停文案兜底。
+            from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                _SKILL_TURBO_HITL_RESULT_KEY,
+            )
+            if (
+                isinstance(ctx.inputs, ToolCallInputs)
+                and isinstance(ctx.inputs.tool_result, dict)
+                and ctx.inputs.tool_result.get(_SKILL_TURBO_HITL_RESULT_KEY)
+            ):
+                from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                    _SKILL_TURBO_HITL_PLACEHOLDER,
+                )
+                ctx.inputs.tool_result = _SKILL_TURBO_HITL_PLACEHOLDER
+                ctx.inputs.tool_msg = ToolMessage(
+                    content=_SKILL_TURBO_HITL_PLACEHOLDER,
+                    tool_call_id=ctx.inputs.tool_call.id,
+                )
+
+        if (
+            str(getattr(tc, "name", "") or "").strip() == "deepresearch_execute"
+            and _extract_tool_interrupt(ctx.inputs.tool_result) is not None
+        ):
+            return
+        if is_todo_close_nudge(tc):
+            return
+
+        normalize_read_file_tool_outcome(ctx)
+        self._annotate_whitespace_path_fix(ctx)
+        # A call suspended for user input (approval card, ask_user) has no
+        # result yet: ToolCallResilienceRail only left a failure placeholder
+        # on ctx.inputs.tool_result.  Emitting it would show the tool as
+        # failed before the user has answered; the resumed call emits the
+        # real result.
+        if _extract_tool_interrupt(ctx.exception) is None:
+            await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
+            self._symphony_stream_handler.request_force_finish(
+                ctx,
+                tc,
+                ctx.inputs.tool_result,
+            )
+        await self._emit_ask_user_question_if_interrupted(
+            session,
+            tc,
+            ctx.inputs.tool_name,
+            ctx.inputs.tool_result,
+            ctx.exception,
+        )
+
+        tool_name = ctx.inputs.tool_name
+        sid = self._resolve_sid(ctx, session)
+        conv_id = self._conversation_ids.get(sid, "")
+        if tool_name in _TODO_TOOL_NAMES:
+            # Prefer conversation_id (main session key for todo.json). Fall back
+            # to resolved sid so perf/todo.updated still fire if mapping is late.
+            todo_sid = conv_id or sid
+            if todo_sid:
+                # Emit the main-agent todo snapshot after every todo tool call.
+                # The todo tool itself is loaded from the main workspace below, so
+                # this stays authoritative even when a resumed/supplement turn uses
+                # a different stream session object.
+                await self._emit_todo_updated(
+                    session,
+                    todo_sid,
+                    tool_name=tool_name,
+                    arguments=getattr(tc, "arguments", None),
+                )
+
+    # ------------------------------------------------------------------
+    # on_model_exception: attempt context repair
+    # ------------------------------------------------------------------
+
+    async def on_model_exception(self, ctx: AgentCallbackContext) -> None:
+        # 异常路径统一复位全部 skill_turbo ContextVar 绑定（避免泄漏）
+        reset_skill_turbo_context(ctx)
+        if ctx.context is not None:
+            logger.info("[StreamEventRail] Attempting context repair after model exception")
+            await self._fix_incomplete_tool_context(ctx)
+
+    # ------------------------------------------------------------------
+    # Private helpers (migrated from JiuSwarmReActAgent)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def _emit_tool_call(
+        session: Session,
+        tool_call: Any,
+        *,
+        model_display_name: str = "",
+    ) -> None:
+        try:
+            name = getattr(tool_call, "name", "")
+            arguments = getattr(tool_call, "arguments", {})
+            tool_call_payload: dict[str, Any] = {
+                "name": name,
+                "arguments": arguments,
+                "tool_call_id": getattr(tool_call, "id", ""),
+            }
+            # 优先用主模型随 tool_call 产出的目标文案；未填时再规则兜底。
+            display_name = (model_display_name or "").strip() or build_tool_display_name(
+                name, arguments
+            )
+            if display_name:
+                tool_call_payload["display_name"] = display_name
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                tool_call_payload["source_skill"] = source_skill
+            await session.write_stream(
+                OutputSchema(
+                    type="tool_call",
+                    index=0,
+                    payload={"tool_call": tool_call_payload},
+                )
+            )
+        except Exception:
+            logger.debug("tool_call emit failed", exc_info=True)
+
+    async def _emit_tool_result(
+        self,
+        session: Session,
+        tool_call: Any,
+        result: Any,
+    ) -> None:
+        try:
+            raw_output = _structured_tool_result_payload(result)
+            tool_result_payload = {
+                "tool_name": getattr(tool_call, "name", "") if tool_call else "",
+                "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
+                "result": _format_tool_result_for_stream(result),
+            }
+            if raw_output is not None:
+                tool_result_payload["raw_output"] = raw_output
+                self._symphony_stream_handler.enrich_result_payload(
+                    tool_call,
+                    tool_result_payload,
+                    raw_output,
+                )
+            error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
+            if error_state is not None:
+                tool_result_payload["success"] = not error_state
+                if error_state:
+                    tool_result_payload["status"] = "error"
+                    tool_result_payload["is_error"] = True
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                tool_result_payload["source_skill"] = source_skill
+            await session.write_stream(
+                OutputSchema(
+                    type="tool_result",
+                    index=0,
+                    payload={
+                        "tool_result": tool_result_payload
+                    },
+                )
+            )
+        except Exception:
+            logger.debug("tool_result emit failed", exc_info=True)
+
+    @staticmethod
+    async def _emit_ask_user_question_if_interrupted(
+        session: Session,
+        tool_call: Any,
+        tool_name: str,
+        result: Any,
+        exception: Any = None,
+    ) -> None:
+        if str(tool_name or "").strip() != "ask_user":
+            return
+        interrupt = _extract_tool_interrupt(result) or _extract_tool_interrupt(exception)
+        if interrupt is None:
+            return
+        payload = _ask_user_question_payload_from_interrupt(tool_call, interrupt)
+        if not payload:
+            logger.debug("[StreamEventRail] ask_user interrupt payload unavailable")
+            return
+        try:
+            await session.write_stream(
+                OutputSchema(
+                    type="chat.ask_user_question",
+                    index=0,
+                    payload=payload,
+                )
+            )
+        except Exception:
+            logger.debug("ask_user question emit failed", exc_info=True)
+
+    @staticmethod
+    async def _emit_tool_update(session: Session, tool_call: Any, *, status: str) -> None:
+        try:
+            update_payload: dict[str, Any] = {
+                "tool_name": getattr(tool_call, "name", "") if tool_call else "",
+                "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
+                "arguments": getattr(tool_call, "arguments", {}) if tool_call else {},
+                "status": str(status or "").strip() or "in_progress",
+            }
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                update_payload["source_skill"] = source_skill
+            await session.write_stream(
+                OutputSchema(
+                    type="tool_update",
+                    index=0,
+                    payload={
+                        "tool_update": update_payload,
+                    },
+                )
+            )
+        except Exception:
+            logger.debug("tool_update emit failed", exc_info=True)
+
+    async def _emit_todo_updated(
+        self,
+        session: Session,
+        session_id: str,
+        *,
+        tool_name: str = "",
+        arguments: Any = None,
+    ) -> None:
+        """Load the main agent's todo list and push a todo.updated event to the frontend."""
+        todo_tool = self._get_todo_tool()
+        if todo_tool is None:
+            logger.debug("[StreamEventRail] TodoListTool not available")
+            return
+
+        try:
+            todos_data = await todo_tool.load_todos(session_id)
+        except Exception as exc:
+            logger.debug(
+                "[StreamEventRail] Failed to load todos: %s", exc
+            )
+            return
+
+        # 请求隔离：todo.updated 是全量快照旁路（todo 工具 after_tool_call
+        # 全量推 todo.json），按 generation token 剔除已被新一轮请求取代的
+        # 旧代条目，防止旧任务的 completed 条目重新弹回前端。未打标条目
+        # （legacy 磁盘残留）与无 token 会话（fail-open）原样放行。
+        try:
+            generation_token = get_todo_generation_token(session)
+        except Exception:
+            generation_token = None
+        if generation_token or tool_name:
+            before = len(todos_data)
+            if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
+                todos_data = filter_todos_for_display(todos_data, generation_token)
+            else:
+                todos_data = filter_todos_for_execution(todos_data, generation_token)
+            if len(todos_data) != before:
+                logger.info(
+                    "[StreamEventRail] todo.updated filtered stale-generation "
+                    "todos: session_id=%s generation_token=%s before=%d after=%d",
+                    session_id,
+                    generation_token,
+                    before,
+                    len(todos_data),
+                )
+
+        # Parent StreamEventRail only: team-member rails use their own
+        # workspace and must not feed request_summaries.tasks.
+        # Serial overlay is applied after format (same helper as task.update)
+        # so todo.updated cannot leak a later completed row while an earlier
+        # item is still open.
+        if not self._member_name:
+            from jiuwenswarm.perf.guard import run_perf_safe
+            from jiuwenswarm.perf.todo_tracker import (
+                sync_main_agent_todos,
+                todos_from_items,
+            )
+
+            run_perf_safe(
+                "StreamEventRail",
+                "perf sync main-agent todos",
+                lambda: sync_main_agent_todos(
+                    todos_from_items(todos_data),
+                    session_id=session_id,
+                ),
+            )
+
+        todos = overlay_serial_todo_statuses(
+            self._format_todos_for_frontend(todos_data)
+        )
+
+        try:
+            await session.write_stream(
+                OutputSchema(
+                    type="todo.updated",
+                    index=0,
+                    payload={"todos": todos},
+                )
+            )
+        except Exception:
+            logger.debug("todo.updated emit failed", exc_info=True)
+
+    def _get_todo_tool(self) -> TodoListTool | None:
+        """Build and cache a TodoListTool from the main agent's deep_config workspace.
+
+        Avoids Runner.resource_mgr: subagents register their own tools there and
+        overwrite the main agent's entry, causing load_todos to read from the wrong
+        workspace path.  deep_config.workspace is fixed at main-agent init time.
+        """
+        if self._main_todo_tool is not None:
+            return self._main_todo_tool
+
+        da = self._deep_agent
+        if da is None:
+            return None
+
+        try:
+            deep_config = da.deep_config
+            workspace_path = str(deep_config.workspace.get_node_path(WorkspaceNode.TODO))
+            language = getattr(deep_config, "language", None) or getattr(
+                getattr(da, "system_prompt_builder", None), "language", "cn"
+            ) or "cn"
+            self._main_todo_tool = TodoListTool(
+                operation=deep_config.sys_operation,
+                workspace=workspace_path,
+                language=language,
+                agent_id=da.card.id,
+            )
+            return self._main_todo_tool
+        except Exception as exc:
+            logger.debug(
+                "[StreamEventRail] Failed to create TodoListTool: %s", exc
+            )
+            return None
+
+    @staticmethod
+    def _format_todos_for_frontend(
+        todos_data: List[Any],
+    ) -> List[dict[str, Any]]:
+        """Use the same mapping for live events and history restoration."""
+        return format_todos_for_frontend(todos_data)
+
+    @staticmethod
+    async def _emit_context_usage(
+        ctx: AgentCallbackContext,
+        *,
+        member_name: str | None = None,
+        role: str | None = None,
+    ) -> None:
+        """Emit context usage stats (context_max, tokens_used, rate)."""
+        session = ctx.session
+        if session is None:
+            return
+
+        context = ctx.context
+        if context is None:
+            return
+
+        model_name = None
+        try:
+            agent = ctx.agent
+            if agent is not None:
+                config = getattr(agent, '_config', None)
+                if config is not None:
+                    model_name = getattr(config, 'model_name', None)
+        except Exception:
+            logger.debug("Failed to get model_name from ctx.agent", exc_info=True)
+
+        try:
+            # raw_total_tokens: model max context window — use agent-core's resolver
+            # with built-in dict + 200000 fallback (never returns 0)
+            raw_total_tokens = ContextUtils.resolve_context_max(
+                model_name=model_name,
+                fallback_context_window_tokens=getattr(context, "_context_window_tokens", None),
+                model_context_window_tokens=getattr(context, "_model_context_window_tokens", None),
+            )
+
+            # The context window contains model input, not the generated reply.
+            # Some providers only expose total_tokens, so keep it as a fallback.
+            response = ctx.inputs.response
+            usage_metadata = {}
+            if response and hasattr(response, 'usage_metadata') and response.usage_metadata:
+                usage_metadata = response.usage_metadata.model_dump()
+            current_context_tokens = 0
+            if isinstance(usage_metadata, dict):
+                for token_key in ("input_tokens", "prompt_tokens", "total_tokens"):
+                    token_value = usage_metadata.get(token_key)
+                    if token_value is not None:
+                        current_context_tokens = token_value
+                        break
+
+            if raw_total_tokens != 0:
+                rate = current_context_tokens / raw_total_tokens * 100
+            else:
+                rate = 0
+
+            payload = {
+                "rate": rate,
+                "context_max": raw_total_tokens,
+                "tokens_used": current_context_tokens,
+            }
+            if role:
+                payload["role"] = role
+            if member_name:
+                payload["member_name"] = member_name
+
+            await session.write_stream(
+                OutputSchema(
+                    type="context.usage",
+                    index=0,
+                    payload=payload,
+                )
+            )
+        except Exception:
+            logger.debug("context_usage emit failed", exc_info=True)
+
+    def _ensure_json_arguments(self, arguments: Any) -> str:
+        """Ensure tool call arguments are valid JSON string.
+
+        If arguments is a dict, convert to JSON string. If arguments is a string,
+        attempt multi-stage repair (json_repair, rule-based quote fixing) before
+        returning valid JSON. If all repair attempts fail, return empty JSON object.
+
+        Args:
+            arguments: The arguments value from tool_call.
+
+        Returns:
+            Valid JSON string (e.g., '{"key": "value"}').
+        """
+        if isinstance(arguments, dict):
+            return json.dumps(arguments, ensure_ascii=False)
+        if isinstance(arguments, str):
+            repaired = fix_json_arguments(arguments)
+            if isinstance(repaired, dict):
+                return json.dumps(repaired, ensure_ascii=False)
+            logger.warning("Illegal Tool call arguments after repair: %s", arguments)
+            return "{}"
+        return "{}"
+
+    async def _fix_incomplete_tool_context(self, ctx: AgentCallbackContext) -> None:
+        """Repair incomplete tool-call history with minimal, rule-based replay.
+
+        Rule:
+        - For each assistant tool_calls block, only the window before the next
+          UserMessage counts as the "immediate response" area.
+        - If a tool_call_id has no ToolMessage in that window, insert one
+          immediately after the assistant.
+        - If a placeholder ToolMessage exists and a later real ToolMessage with
+          the same tool_call_id exists, replace the placeholder in-place with
+          the real ToolMessage and drop the later duplicate.
+        """
+        try:
+            context = ctx.context
+            if context is None:
+                return
+            messages = context.get_messages()
+            tools = getattr(ctx.inputs, "tools", None) or []
+            for tool in tools:
+                if not tool.parameters:
+                    tool.parameters = {
+                        "type": "object",
+                        "properties": {}
+                    }
+                if tool.parameters.get("type") is None:
+                    tool.parameters["type"] = "object"
+            self._inject_tool_call_goal_schema(ctx)
+            len_messages = len(messages)
+            if len_messages == 0:
+                return
+
+            # Defensive normalization of malformed tool-call argument JSON on
+            # replayed history. _ensure_json_arguments returns well-formed
+            # arguments byte-for-byte unchanged, so we reassign ONLY when the
+            # value actually changes -- i.e. only genuinely malformed JSON
+            # (missing quotes / unbalanced braces) is rewritten, while valid
+            # arguments stay identical to preserve faithful replay for
+            # reasoning models. The authoritative repair still lives in
+            # ability_manager at execution time; this is just a safety net.
+            for m in messages:
+                if isinstance(m, AssistantMessage) and getattr(m, "tool_calls", None):
+                    for tc in m.tool_calls:
+                        raw = getattr(tc, "arguments", None)
+                        if not isinstance(raw, str) or not raw.strip():
+                            continue
+                        normalized = self._ensure_json_arguments(raw)
+                        if normalized != raw:
+                            tc.arguments = normalized
+
+            placeholders_by_id = self._tool_interrupt_placeholders_by_id(messages)
+            tool_names_by_id = self._tool_call_names_by_id(messages)
+
+            real_tool_messages_by_id: dict[str, ToolMessage] = {}
+            for message in messages:
+                if not isinstance(message, ToolMessage):
+                    continue
+                tool_call_id = getattr(message, "tool_call_id", "")
+                if (
+                    tool_call_id
+                    and tool_call_id not in real_tool_messages_by_id
+                    and not self._is_tool_interrupt_placeholder(
+                        message, placeholders_by_id, tool_names_by_id)
+                ):
+                    real_tool_messages_by_id[tool_call_id] = message
+
+            rebuilt_messages: list[Any] = []
+            changed = False
+            inserted = 0
+            removed_orphan = 0
+            removed_duplicate = 0
+            replaced_placeholder = 0
+            consumed_real_ids: set[str] = set()
+            idx = 0
+
+            while idx < len(messages):
+                message = messages[idx]
+
+                if isinstance(message, ToolMessage):
+                    removed_orphan += 1
+                    changed = True
+                    idx += 1
+                    continue
+
+                rebuilt_messages.append(message)
+
+                if not isinstance(message, AssistantMessage) or not getattr(message, "tool_calls", None):
+                    idx += 1
+                    continue
+
+                expected: list[tuple[str, Any]] = []
+                expected_ids: set[str] = set()
+                for tool_call in message.tool_calls:
+                    tcid = self._tool_call_id(tool_call)
+                    if tcid and tcid not in expected_ids:
+                        expected.append((tcid, tool_call))
+                        expected_ids.add(tcid)
+
+                seen_ids: set[str] = set()
+                idx += 1
+                while idx < len(messages) and isinstance(messages[idx], ToolMessage):
+                    tool_message = messages[idx]
+                    tool_message_id = str(getattr(tool_message, "tool_call_id", "") or "")
+                    if tool_message_id not in expected_ids:
+                        changed = True
+                        removed_orphan += 1
+                        idx += 1
+                        continue
+                    if tool_message_id in seen_ids:
+                        changed = True
+                        removed_duplicate += 1
+                        idx += 1
+                        continue
+
+                    replacement = None
+                    if (
+                        self._is_tool_interrupt_placeholder(
+                            tool_message,
+                            placeholders_by_id,
+                            tool_names_by_id,
+                        )
+                        and tool_message_id in real_tool_messages_by_id
+                        and real_tool_messages_by_id[tool_message_id] is not tool_message
+                    ):
+                        replacement = real_tool_messages_by_id[tool_message_id]
+                    if replacement is not None:
+                        rebuilt_messages.append(replacement)
+                        consumed_real_ids.add(tool_message_id)
+                        replaced_placeholder += 1
+                        changed = True
+                    else:
+                        rebuilt_messages.append(tool_message)
+                    seen_ids.add(tool_message_id)
+                    idx += 1
+
+                for tcid, tool_call in expected:
+                    if tcid in seen_ids:
+                        continue
+                    replacement = real_tool_messages_by_id.get(tcid)
+                    if replacement is not None:
+                        rebuilt_messages.append(replacement)
+                        consumed_real_ids.add(tcid)
+                    else:
+                        rebuilt_messages.append(ToolMessage(
+                            content=self._tool_interrupted_message(self._tool_call_name(tool_call)),
+                            tool_call_id=tcid,
+                        ))
+                    inserted += 1
+                    changed = True
+
+            if not changed:
+                return
+
+            context.pop_messages(size=len(messages))
+            for message in rebuilt_messages:
+                await context.add_messages(message)
+
+            repair_count = (
+                inserted
+                + removed_orphan
+                + removed_duplicate
+                + replaced_placeholder
+            )
+            if repair_count:
+                logger.info(
+                    "Repaired tool message context: inserted=%d orphan_removed=%d "
+                    "duplicate_removed=%d placeholder_replaced=%d",
+                    inserted,
+                    removed_orphan,
+                    removed_duplicate,
+                    replaced_placeholder,
+                )
+        except Exception as e:
+            logger.warning("Failed to fix incomplete tool context: %s", e)

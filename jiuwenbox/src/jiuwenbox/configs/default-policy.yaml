@@ -1,0 +1,344 @@
+# Policy schema version. Currently only version 1 is supported.
+version: 1
+
+# Human-readable policy name shown by the server policy API.
+name: "server-default"
+
+# Environment variables injected into every process running inside the sandbox.
+environment: {}
+
+# Filesystem access rules. Paths are sandbox-visible absolute paths.
+filesystem_policy:
+  # Lifecycle directories to create for the sandbox and bind into the sandbox path.
+  # Items may be either:
+  #   - "/path": create a server-managed directory with default permissions
+  #   - path: "/path"
+  #     permissions: "0755"  # optional octal permissions applied on the backing directory
+  # The permissions value may be quoted or numeric, but quoted octal strings are recommended.
+  # Paths must be absolute sandbox-visible paths. Directories persist for the sandbox
+  # lifecycle and are removed when the sandbox is deleted. Access is still controlled
+  # by the directory permissions and Landlock.
+  directories:
+    - path: "/home"
+      permissions: "0777"
+    - path: "/tmp"
+      permissions: "1777"
+
+  # Lifecycle files to create for the sandbox and bind into the sandbox path.
+  # Items may be either:
+  #   - "/path/to/file": create a server-managed empty file with default permissions
+  #   - path: "/path/to/file"
+  #     permissions: "0644"  # optional octal permissions applied on the backing file
+  # Paths must be absolute sandbox-visible paths. Files persist for the sandbox
+  # lifecycle and are removed when the sandbox is deleted.
+  files: []
+
+  # Read-only paths inside the sandbox. These entries grant read permission only;
+  # they do not mount host paths by themselves.
+  read_only:
+    - "/"
+    - "/bin"
+    - "/sbin"
+    - "/usr"
+    - "/lib"
+    - "/lib64"
+    - "/etc"
+    - "/opt"
+
+  # Read-write paths inside the sandbox. Use directories or bind_mounts to make
+  # these paths exist in the sandbox.
+  read_write:
+    - "/home"
+    - "/tmp"
+
+  # Extra bind mounts from host into sandbox.
+  # Each item uses:
+  #   host_path: absolute path on the host
+  #   sandbox_path: absolute path visible inside the sandbox
+  #   mode: "ro" for read-only or "rw" for read-write
+  bind_mounts:
+    - host_path: "/bin"
+      sandbox_path: "/bin"
+      mode: "ro"
+    - host_path: "/sbin"
+      sandbox_path: "/sbin"
+      mode: "ro"
+    - host_path: "/usr"
+      sandbox_path: "/usr"
+      mode: "ro"
+    - host_path: "/lib"
+      sandbox_path: "/lib"
+      mode: "ro"
+    - host_path: "/lib64"
+      sandbox_path: "/lib64"
+      mode: "ro"
+    - host_path: "/etc/resolv.conf"
+      sandbox_path: "/etc/resolv.conf"
+      mode: "ro"
+    - host_path: "/etc/hosts"
+      sandbox_path: "/etc/hosts"
+      mode: "ro"
+    - host_path: "/etc/nsswitch.conf"
+      sandbox_path: "/etc/nsswitch.conf"
+      mode: "ro"
+    - host_path: "/etc/host.conf"
+      sandbox_path: "/etc/host.conf"
+      mode: "ro"
+    - host_path: "/etc/ssl/certs"
+      sandbox_path: "/etc/ssl/certs"
+      mode: "ro"
+    - host_path: "/etc/pki"
+      sandbox_path: "/etc/pki"
+      mode: "ro"
+    - host_path: "/opt"
+      sandbox_path: "/opt"
+      mode: "ro"
+
+  # Device nodes to expose inside the sandbox with bwrap --dev-bind.
+  # Each item uses:
+  #   host_path: absolute device path on the host
+  #   sandbox_path: absolute path visible inside the sandbox
+  device:
+    - host_path: "/dev/urandom"
+      sandbox_path: "/dev/urandom"
+    - host_path: "/dev/null"
+      sandbox_path: "/dev/null"
+
+# Process identity inside the sandbox.
+process:
+  # User name to run as. If the user cannot be resolved, runtime falls back to nobody-style IDs.
+  run_as_user: sandbox
+
+  # Group name to run as. If the group cannot be resolved, runtime falls back to nobody-style IDs.
+  run_as_group: sandbox
+
+# Linux namespace isolation controlled by bubblewrap.
+namespace:
+  # user:
+  #   true: create a new user namespace
+  #   false: reuse the current user namespace
+  user: true
+
+  # pid:
+  #   true: create a new PID namespace
+  #   false: reuse the current PID namespace
+  pid: true
+
+  # ipc:
+  #   true: create a new IPC namespace
+  #   false: reuse the current IPC namespace
+  ipc: true
+
+  # cgroup:
+  #   true: create a new cgroup namespace
+  #   false: reuse the current cgroup namespace
+  cgroup: true
+
+  # uts:
+  #   true: create a new UTS namespace
+  #   false: reuse the current UTS namespace
+  uts: true
+
+# Linux capability rules applied by bubblewrap.
+capabilities:
+  # Capabilities to add, for example ["CAP_NET_RAW"] or ["NET_RAW"].
+  add: []
+
+  # Capabilities to drop. "ALL" drops all capabilities when supported by bubblewrap.
+  drop: []
+
+# Landlock filesystem access enforcement.
+landlock:
+  # compatibility:
+  #   disabled: do not apply Landlock
+  #   best_effort: apply Landlock when supported, otherwise continue
+  #   hard_requirement: fail sandbox startup if Landlock is unavailable
+  compatibility: best_effort
+
+# Seccomp syscall filtering.
+syscall:
+  # Syscall names to block on x86_64. Leave empty to disable explicit syscall blocking.
+  x86_64:
+    blocked:
+      - "kexec_load"
+      - "kexec_file_load"
+      - "reboot"
+      - "pivot_root"
+      - "swapon"
+      - "swapoff"
+      - "nfsservctl"
+      - "lookup_dcookie"
+      - "ptrace"
+      - "mount"
+      - "umount2"
+      - "unshare"
+      - "setns"
+      - "userfaultfd"
+      - "perf_event_open"
+      - "bpf"
+      - "add_key"
+      - "request_key"
+      - "keyctl"
+      - "io_uring_setup"
+      - "io_uring_enter"
+      - "io_uring_register"
+      - "open_by_handle_at"
+      - "name_to_handle_at"
+      - "init_module"
+      - "finit_module"
+      - "delete_module"
+      - "acct"
+  # Syscall names to block on arm64/aarch64.
+  arm64:
+    blocked:
+      - "kexec_load"
+      - "kexec_file_load"
+      - "reboot"
+      - "pivot_root"
+      - "swapon"
+      - "swapoff"
+      - "nfsservctl"
+      - "lookup_dcookie"
+      - "ptrace"
+      - "mount"
+      - "umount2"
+      - "unshare"
+      - "setns"
+      - "userfaultfd"
+      - "perf_event_open"
+      - "bpf"
+      - "add_key"
+      - "request_key"
+      - "keyctl"
+      - "io_uring_setup"
+      - "io_uring_enter"
+      - "io_uring_register"
+      - "open_by_handle_at"
+      - "name_to_handle_at"
+      - "init_module"
+      - "finit_module"
+      - "delete_module"
+      - "acct"
+
+# Network policy. Egress controls outbound traffic; ingress controls inbound traffic.
+network:
+  # mode:
+  #   isolated: create a dedicated network namespace and apply these rules
+  #   host: use host networking and skip namespace firewall setup
+  mode: isolated
+
+  # Uplink for isolated network namespaces. Each sandbox gets a veth pair,
+  # a default route, and optional NAT through the host/container default route.
+  # When subnet is omitted, jiuwenbox selects a private IPv4 range that does
+  # not overlap with current routes.
+  uplink:
+    nat: true
+    interface: ""
+
+  # Outbound traffic from sandbox to outside destinations.
+  egress:
+    # default:
+    #   deny: block traffic unless it matches allowed_domains/allowed_ips and allowed_ports
+    #   allow: allow traffic unless it matches blocked_domains/blocked_ips/blocked_ports
+    default: allow
+
+    # Domain names allowed as outbound destinations. Wildcards like "*.example.com" are accepted
+    # by resolving the base domain; rules are applied to resolved IPs.
+    allowed_domains:
+      - "baidu.com"
+
+    # Domain names blocked as outbound destinations. Block rules take precedence over allow rules.
+    blocked_domains:
+      - "ip.me"
+
+    # IP/CIDR ranges allowed as outbound destinations, for example "203.0.113.10/32" or
+    # "10.0.0.0/8". With default: deny, destinations not listed here are blocked.
+    allowed_ips:
+      - "127.0.0.1/32"
+      - "::1/128"
+
+    # IP/CIDR ranges blocked as outbound destinations. Block rules take precedence.
+    blocked_ips:
+      - "169.254.169.254/32"
+
+    # TCP destination ports allowed for outbound traffic when default is deny.
+    allowed_ports:
+      - 443
+      - 80
+
+    # TCP destination ports blocked for outbound traffic. Block rules take precedence.
+    blocked_ports:
+      - 22
+
+  # Inbound traffic from outside sources into the sandbox.
+  ingress:
+    # default:
+    #   deny: block traffic unless it matches allowed_domains/allowed_ips and allowed_ports
+    #   allow: allow traffic unless it matches blocked_domains/blocked_ips/blocked_ports
+    default: allow
+
+    # Domain names allowed as inbound sources. These are resolved to source IP rules.
+    allowed_domains:
+      - "localhost"
+
+    # Domain names blocked as inbound sources. Block rules take precedence over allow rules.
+    blocked_domains: []
+
+    # IP/CIDR ranges allowed as inbound sources. With default: deny, sources not listed here
+    # are blocked unless allowed by allowed_ports-only rules.
+    allowed_ips:
+      - "127.0.0.1/32"
+      - "::1/128"
+
+    # IP/CIDR ranges blocked as inbound sources. Block rules take precedence.
+    blocked_ips: []
+
+    # TCP destination ports allowed for inbound traffic when default is deny.
+    allowed_ports:
+      - 8080
+
+    # TCP destination ports blocked for inbound traffic. Block rules take precedence.
+    blocked_ports: []
+
+# ---------------------------------------------------------------------------
+# Cgroup resource limits (optional)
+# ---------------------------------------------------------------------------
+# Per-sandbox cgroup limits. All three fields default to null which means
+# "no limit". Omitting the ``cgroup`` block entirely, or leaving every
+# field unset/null, causes jiuwenbox to *skip* cgroup setup completely so
+# this default policy still runs on hosts without a writable cgroup tree.
+#
+# Cgroup v2 is preferred. v1 is used as a fallback when v2 is unavailable.
+# If at least one field is non-null and neither backend is writable,
+# sandbox creation fails with a CgroupSetupError.
+#
+# Accepted formats:
+#   memory_max: integer bytes (e.g. 268435456) or string with binary unit
+#     suffix B/K/KB/KiB/M/MB/MiB/G/GB/GiB/T/TB/TiB (e.g. "256M", "1G").
+#   cpu_max: fractional cores (e.g. 0.5 = half a core, 2.0 = two cores)
+#     or "<quota_us> <period_us>" pair (e.g. "50000 100000"). "max" or null
+#     means no limit.
+#   pids_max: positive integer cap on processes/threads (e.g. 256). "max"
+#     or null means no limit.
+cgroup: {}
+
+# Idle sandbox reaping (jiuwenbox 服务端行为, 不下传到 bwrap / landlock / cgroup).
+#
+# 仅在 server 启动时加载的根 policy 上生效; per-sandbox policy 上的同名字段不会
+# 影响沙箱隔离, 也不会改变正在运行的沙箱的淘汰判定。
+#
+# 字段:
+#   idle_timeout: 沙箱最大空闲时长 (秒). null / 0 / 负值 = 禁用淘汰 (默认).
+#                 "空闲" = 自最后一次 exec / file IO / 列目录 等 API 调用以来的时长;
+#                 单纯查询接口 (get_sandbox / list_sandboxes / get_logs) 不会刷新计时器.
+#   idle_check_interval: reaper 轮询间隔 (秒). 必须 > 0, 默认 60.
+#
+# 行为: 默认禁用. 显式配置 idle_timeout 后, 后台 task 每隔 idle_check_interval
+#       秒扫一次, 超时的沙箱直接走 delete_sandbox (跟 ``DELETE /sandboxes/{id}``
+#       同一路径), 审计日志会带 ``reason: idle_timeout``.
+#
+# 示例:
+#   timeout:
+#     idle_timeout: 1800       # 30 分钟无活动即淘汰
+#     idle_check_interval: 60  # 每分钟扫一次
+timeout: {}

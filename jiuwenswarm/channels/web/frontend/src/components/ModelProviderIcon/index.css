@@ -1,0 +1,23 @@
+.model-provider-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.model-provider-icon--img {
+  object-fit: contain;
+}
+
+.model-provider-icon--fallback {
+  background: rgba(var(--color-text-primary-rgb), 0.12);
+  color: var(--color-text-primary);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0;
+  border-radius: 4px;
+}

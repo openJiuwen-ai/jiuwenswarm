@@ -1,0 +1,8 @@
+# 包含 package resources 目录
+recursive-include jiuwenswarm/resources *
+recursive-include jiuwenswarm/symphony/fingerprint/normalize *.yaml
+prune jiuwenswarm/resources/agent/workspace/skills/project-maintainer
+
+# 排除 node_modules，避免打包进 wheel
+prune jiuwenswarm/channels/web/frontend/node_modules
+global-exclude node_modules

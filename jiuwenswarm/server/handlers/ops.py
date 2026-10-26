@@ -1,0 +1,358 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""运维域 handler"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+from jiuwenswarm.common.schema.message import EventType
+from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
+from jiuwenswarm.extensions.hooks_context import AgentReloadConfigHookContext
+from jiuwenswarm.extensions.registry import ExtensionRegistry
+from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+logger = logging.getLogger(__name__)
+
+
+async def _reset_active_browser_runtimes_if_available(browser_move: Any) -> int:
+    """Reset active browser runtimes when supported by the installed SDK."""
+    reset_runtimes = getattr(
+        browser_move,
+        "reset_active_browser_runtimes",
+        None,
+    )
+    if not callable(reset_runtimes):
+        logger.warning(
+            "[AgentWebSocketServer] installed openjiuwen does not support "
+            "reset_active_browser_runtimes; restarting the local browser "
+            "runtime server only"
+        )
+        return 0
+    return await reset_runtimes()
+
+
+async def handle_proactive_tick(ctx: RequestContext) -> None:
+    """Handle proactive.tick request from CronScheduler.
+
+    This is called by Gateway's CronScheduler to trigger a recommendation tick.
+    Respects cooldown and daily limits.
+    """
+    request = ctx.request
+    if ctx.services.proactive_engine is None:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": "ProactiveEngine not initialized"},
+        )
+    else:
+        try:
+            # Extract target_channel from params
+            params = request.params or {}
+            target_channel = params.get("target_channel")
+
+            # Run the tick (respects cooldown and daily limits)
+            success = await ctx.services.proactive_engine.tick_now(target_channel=target_channel)
+
+            status = "tick_executed" if success else "no_recommendation"
+            last_tick = ctx.services.proactive_engine.last_tick_at
+            if last_tick > 0:
+                status = f"{status} (last_tick_at={last_tick:.0f})"
+
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"status": status, "success": success},
+            )
+        except Exception as e:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(e)},
+            )
+
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
+
+
+async def handle_browser_runtime_restart(ctx: RequestContext) -> None:
+    request = ctx.request
+    try:
+        from openjiuwen.harness.tools import browser_move
+
+        reset_runtimes = await _reset_active_browser_runtimes_if_available(
+            browser_move
+        )
+        result = browser_move.restart_local_browser_runtime_server()
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={
+                "result": result,
+                "reset_runtimes": reset_runtimes,
+            },
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[AgentWebSocketServer] browser.runtime_restart failed: %s", e)
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": str(e)},
+        )
+
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
+
+
+async def handle_config_cache_clear(ctx: RequestContext) -> None:
+    request = ctx.request
+    try:
+        from jiuwenswarm.agents.harness.common.memory.config import (
+            clear_config_cache,
+            clear_embed_config_db_cache,
+        )
+
+        clear_config_cache()
+        clear_embed_config_db_cache()
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"cleared": True},
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[AgentWebSocketServer] config.cache_clear failed: %s", e)
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": str(e)},
+        )
+
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
+
+
+async def _trigger_agent_reload_config_hook(
+    request: AgentRequest,
+    config_payload: Any,
+    env_overrides: Any,
+) -> tuple[Any, Any]:
+    """reload 生效前触发 AGENT_RELOAD_CONFIG hook，返回扩展改写后的 config/env。
+
+    扩展整体替换 ``hook_ctx.config`` / ``hook_ctx.env`` 即可生效（原地修改仅在
+    原值为 dict 时可用；``config`` 原值可为 ``None``，表示未下发、按本地配置
+    reload）。ExtensionRegistry 未初始化时静默跳过并返回原值；``trigger()``
+    抛出的异常（如扩展 abort 重抛的 cause）按原语义向上传播，交由调用方
+    统一失败处理——不允许改写被静默丢弃后 reload 依旧 ok=True。
+    """
+    hook_ctx = AgentReloadConfigHookContext(
+        request_id=request.request_id,
+        channel_id=request.channel_id,
+        config=config_payload,
+        env=env_overrides,
+    )
+    fired = await ExtensionRegistry.trigger_if_initialized(
+        AgentServerHookEvents.AGENT_RELOAD_CONFIG, hook_ctx
+    )
+    if fired:
+        return hook_ctx.config, hook_ctx.env
+    return config_payload, env_overrides
+
+
+async def handle_agent_reload_config(ctx: RequestContext) -> None:
+    request = ctx.request
+    try:
+        params = request.params or {}
+        config_payload = params.get("config")
+        env_overrides = params.get("env")
+        target_channel_id = str(params.get("target_channel_id") or "").strip() or None
+        target_session_id = str(params.get("target_session_id") or "").strip() or None
+        raw_reload_scopes = params.get("reload_scopes")
+        reload_scopes = {
+            str(scope)
+            for scope in raw_reload_scopes
+            if isinstance(scope, str) and scope
+        } if isinstance(raw_reload_scopes, list) else set()
+
+        reload_kwargs = {}
+        if target_channel_id:
+            reload_kwargs["target_channel_id"] = target_channel_id
+        if target_session_id:
+            reload_kwargs["target_session_id"] = target_session_id
+        if reload_scopes:
+            reload_kwargs["reload_scopes"] = reload_scopes
+        agent_reload_scopes = {"model", "team", "permissions", "agent_runtime"}
+        should_reload_agents = not reload_scopes or bool(reload_scopes & agent_reload_scopes)
+        if should_reload_agents:
+            if request.channel_id == "officeclaw":
+                guard = TenantAgentPool.require_officeclaw_agent(request)
+                if guard is not None:
+                    wire = encode_agent_response_for_wire(
+                        guard, response_id=request.request_id
+                    )
+                    await ctx.sink.send_wire(wire)
+                    return
+
+            # AGENT_RELOAD_CONFIG hook：仅在确认会执行 agent 侧 reload 且租户
+            # 守卫通过后触发，扩展改写的 config/env 随后才真正生效——scope 不
+            # 命中或守卫拒绝的请求不跑扩展链，改写值不会被静默丢弃。
+            config_payload, env_overrides = await _trigger_agent_reload_config_hook(
+                request, config_payload, env_overrides
+            )
+
+            raw_agent = getattr(request, "agent_id", None)
+            agent_id, service_id, _workspace_key = TenantAgentPool.extract_ids(request)
+            if (
+                request.channel_id == "officeclaw"
+                or (raw_agent is not None and str(raw_agent).strip())
+            ):
+                await ctx.services.tenant_pool().reload_tenant_config(
+                    agent_id,
+                    service_id,
+                    config=config_payload,
+                    env=env_overrides,
+                )
+            else:
+                await ctx.services.agent_manager.reload_agents_config(
+                    config_payload,
+                    env_overrides,
+                    **reload_kwargs,
+                )
+                # 数字分身走 TenantAgentPool 里独立的 AgentManager（channel=im_hosting），
+                # 不在上面的 web AgentManager 中。只热更新 web 时，已创建的托管会话
+                # 会继续用创建时的占位模型（.env 的 your-model-name）。
+                # 这块对接专家之后需要修改channel
+                await ctx.services.tenant_pool().reload_agents_config(
+                    config_payload,
+                    env_overrides if isinstance(env_overrides, dict) else {},
+                )
+
+        # ``xiaoyi_claw`` can be enabled without restarting agent server.
+        # Re-evaluate the gate after every config reload; the patch is idempotent.
+        from jiuwenswarm.server.app_agentserver import (
+            refresh_openai_response_assembly_patch,
+        )
+
+        refresh_openai_response_assembly_patch()
+
+        # Hot-reload ProactiveEngine config if available
+        should_reload_proactive = not reload_scopes or bool(reload_scopes & {"model", "proactive", "agent_runtime"})
+        if ctx.services.proactive_engine is not None and should_reload_proactive:
+            cfg = get_config()
+            proactive_cfg = cfg.get("proactive_recommendation", {})
+            ctx.services.proactive_engine.reload_config(proactive_cfg)
+            # 重建 proactive agent——它启动时建一次，模型配置固化在实例里。
+            # 用户改模型后主 agent 会热更新，但 proactive agent 不在主 agent
+            # 链路里，不重建会继续用旧模型（可能已失效/欠费）。
+            try:
+                from jiuwenswarm.server.runtime.proactive_adapter import build_proactive_agent
+                ctx.services.proactive_engine.rebuild_proactive_agent(build_proactive_agent)
+            except Exception as exc:
+                logger.warning("[AgentWebSocketServer] proactive agent rebuild failed: %s", exc)
+
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"reloaded": True},
+        )
+    except Exception as e:
+        logger.exception("[AgentWebSocketServer] agent.reload_config failed: %s", e)
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": str(e)},
+        )
+
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
+
+
+async def handle_sync_agents_configs(ctx: RequestContext) -> None:
+    request = ctx.request
+    params = request.params if isinstance(request.params, dict) else {}
+    try:
+        payload = await ctx.services.tenant_pool().sync_agents_configs(params)
+        agents = payload.get("agents") if isinstance(payload, dict) else []
+        all_ok = (
+            isinstance(agents, list)
+            and all(isinstance(item, dict) and item.get("ok") for item in agents)
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=all_ok,
+            payload={
+                "event_type": EventType.SYNC_AGENTS_CONFIGS_RESULT.value,
+                **payload,
+            },
+        )
+    except ValueError as exc:
+        logger.warning(
+            "[AgentWebSocketServer] sync_agents_configs rejected: %s", exc
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={
+                "event_type": EventType.SYNC_AGENTS_CONFIGS_RESULT.value,
+                "error": str(exc),
+            },
+        )
+    except Exception as exc:
+        logger.exception(
+            "[AgentWebSocketServer] sync_agents_configs failed: %s", exc
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={
+                "event_type": EventType.SYNC_AGENTS_CONFIGS_RESULT.value,
+                "error": str(exc),
+            },
+        )
+
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
+
+
+async def handle_agent_prewarm_sync(ctx: RequestContext) -> None:
+    """Reconcile background prewarming for the Gateway's live channels."""
+    request = ctx.request
+    params = request.params if isinstance(request.params, dict) else {}
+    raw_channels = params.get("enabled_channels")
+    if not isinstance(raw_channels, list):
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": "enabled_channels must be a list", "code": "BAD_REQUEST"},
+        )
+    else:
+        stats = await ctx.services.agent_manager.sync_prewarm_channels(
+            [str(channel) for channel in raw_channels],
+            config=params.get("config"),
+            env=params.get("env"),
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=stats,
+        )
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)

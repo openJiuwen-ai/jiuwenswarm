@@ -1,0 +1,130 @@
+/* PersonalContextImAssociateDialog — 渠道关联浮层（即时关联） */
+
+.pc-imad__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.pc-imad {
+  background: #ffffff;
+  border-radius: 16px;
+  padding: 24px;
+  width: 360px;
+  max-width: 90vw;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.pc-imad__head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pc-imad__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #191919;
+}
+
+.pc-imad__close {
+  display: flex;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: #808080;
+  cursor: pointer;
+}
+
+.pc-imad__close:hover {
+  color: #191919;
+}
+
+.pc-imad__hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: #595959;
+}
+
+.pc-imad__qr {
+  padding: 12px;
+  border: 1px solid #f0f0f0;
+  border-radius: 12px;
+  background: #ffffff;
+}
+
+.pc-imad__link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #1476ff;
+  text-decoration: none;
+}
+
+.pc-imad__link:hover {
+  text-decoration: underline;
+}
+
+.pc-imad__waiting {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #808080;
+}
+
+.pc-imad__error {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(242, 48, 48, 0.08);
+  color: #f23030;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+}
+
+.pc-imad__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 999px;
+  background: #191919;
+  color: #ffffff;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pc-imad__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.spin {
+  animation: pc-imad-spin 1s linear infinite;
+}
+
+@keyframes pc-imad-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

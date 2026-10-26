@@ -1,0 +1,11 @@
+name: demo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+  - pip
+  - numpy
+  - pyyaml
+  - pip:
+      - openai
+      - rich

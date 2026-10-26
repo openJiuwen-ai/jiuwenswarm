@@ -1,0 +1,9 @@
+# Merge into the existing flash mapping in the user's config.yaml.
+flash:
+  enabled: true
+  skill_selection:
+    enabled: true
+    catalog_check_interval_s: 5.0
+    candidate_k: 5
+    query_timeout_s: 10
+    startup_timeout_s: 60

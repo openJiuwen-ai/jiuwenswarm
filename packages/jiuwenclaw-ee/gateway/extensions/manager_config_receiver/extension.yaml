@@ -1,0 +1,17 @@
+id: jiuwenclaw_ee_manager_config_receiver
+name: JiuwenClaw EE Manager Config Receiver
+version: 0.2.0
+description: Gateway HTTP config receiver for Claw Manager sync (replaces manager_ws_client WebSocket client)
+author: openjiuwen
+min_jiuwenclaw_version: "0.1.0"
+dependencies: {}
+config_schema:
+  type: object
+  properties:
+    enabled:
+      type: boolean
+      default: true
+    http_port:
+      type: integer
+      default: 8775
+      description: HTTP listen port for Manager → Gateway config sync

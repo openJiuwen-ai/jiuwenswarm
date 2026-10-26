@@ -1,0 +1,28 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+/*
+ * DSH theme provenance: exact copied source sheets are recorded in
+ * ../theme/PROVENANCE.md and used under the repository MIT license.
+ */
+@import '../theme/base.css';
+@import '../theme/design-platform.css';
+@import '../theme/scrollbar.css';
+@import '../theme/gradient-shadow-text.css';
+@import '../theme/shiki.css';
+
+.jiuwenTrajectoryTheme {
+  height: 100%;
+  min-height: 0;
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-bg-layer-1);
+  font-family: var(--dsw-font-family);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.jiuwenTrajectoryTheme button,
+.jiuwenTrajectoryTheme input,
+.jiuwenTrajectoryTheme select,
+.jiuwenTrajectoryTheme textarea {
+  font-family: inherit;
+}

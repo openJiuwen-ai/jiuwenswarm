@@ -1,0 +1,5 @@
+FROM timberio/vector:0.40.0-alpine
+
+RUN apk update && \
+    apk add --no-cache vim && \
+    ln -sf /usr/bin/vim /usr/bin/vi

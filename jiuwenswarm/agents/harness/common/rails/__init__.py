@@ -1,0 +1,56 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+
+"""JiuWenSwarm Rails for DeepAgent integration.
+
+注意：工具权限护栏已切换为 openjiuwen 实现；此处保留同名导出以维持兼容。
+"""
+
+from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
+from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
+from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import (
+    DisabledToolsRail,
+)
+from jiuwenswarm.agents.harness.common.rails.project_memory_rail import ProjectMemoryRail
+from jiuwenswarm.agents.harness.common.rails.office_ace_user_profile import (
+    OfficeAceUserProfileRail,
+)
+from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
+from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
+from jiuwenswarm.agents.harness.common.rails.symphony import (
+    SymphonyOrchestrationRail,
+)
+from jiuwenswarm.agents.harness.team.rails.team_member_skill_toolkit_rail import (
+    MemberSkillToolkitRail,
+)
+from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
+from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import MultimodalImageRail
+from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from jiuwenswarm.agents.harness.common.rails.task_execution_rail import TaskExecutionRail
+from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail import ContextOverflowRecoveryRail
+from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import NotifyingLLMRetryRail
+from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+    DeepResearchExecutionRail,
+)
+from jiuwenswarm.agents.harness.common.rails.model_routing.model_routing_rail import (
+    ModelRoutingRail,
+)
+
+__all__ = [
+    "JiuSwarmStreamEventRail",
+    "TaskExecutionRail",
+    "MultimodalImageRail",
+    "PermissionInterruptRail",
+    "AvatarPromptRail",
+    "ProjectMemoryRail",
+    "OfficeAceUserProfileRail",
+    "ResponsePromptRail",
+    "RuntimePromptRail",
+    "SymphonyOrchestrationRail",
+    "MemberSkillToolkitRail",
+    "StructuredAskUserRail",
+    "ContextOverflowRecoveryRail",
+    "NotifyingLLMRetryRail",
+    "DeepResearchExecutionRail",
+    "DisabledToolsRail",
+    "ModelRoutingRail",
+]

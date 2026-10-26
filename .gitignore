@@ -1,0 +1,106 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.telemetry-evidence/
+
+# Node.js / Frontend
+**/node_modules/
+dist/
+build/
+# 构建时下载的 Node 运行时缓存（build-macos.sh / build-exe.ps1 用），不入库
+vendor/node/
+coverage/
+jiuwenswarm/channels/web/frontend/logs/
+jiuwenswarm/channels/web/frontend/cd
+jiuwenswarm/channels/web/frontend/tsc
+jiuwenswarm/channels/web/frontend/openjiuwen-web@0.1.0
+jiuwenswarm/channels/tui/frontend/bun.lock
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env_personal
+/deploy/enterprise/.env.custom
+/deploy/enterprise/.link-mtls-test/
+!.env.example
+
+# Apple code signing & notarization secrets — NEVER commit (contains private keys!)
+*.p12
+*.cer
+*.mobileprovision
+AuthKey_*.p8
+DeveloperID_backup.p12
+developerID_application.cer
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+.claude
+**/CLAUDE.md
+**/CLAUDE.local.md
+**/JIUWENCLAW.local.md
+**/JIUWENCLAW.md
+.jiuwen/settings.local.json
+workspace/agent-data.json
+
+# reference
+reference/
+openspec/
+docs/ai/
+
+# logs
+logs/
+
+# Browser automation runtime artifacts
+.browser/
+.browser-profiles/
+.playwright-mcp/
+
+# workspace
+workspace/session
+workspace/agent/memory/*.db
+workspace/agent/memory/*.db-shm
+workspace/agent/memory/*.db-wal
+
+jiuwenswarm/agentserver/tools/browser-move/.browser
+jiuwenswarm/agentserver/tools/browser-move/.browser-profiles
+jiuwenswarm/agentserver/tools/browser-move/screenshots
+
+jiuwenswarm/workspace/.whatsapp-auth/
+jiuwenswarm/resources/agent/workspace/
+jiuwenswarm/resources/tui/bin/
+packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui/bin/
+packages/jiuwenswarm-tui/jiuwenswarm_tui/resources/tui-bin/
+
+.crossnote/
+.trae/
+
+# Build-time Node runtime cache used by packaging scripts.
+vendor/node/
+
+# Local smoke / verification scratch scripts (not part of the PR).
+_smoke_*.py
+_verify_*.py

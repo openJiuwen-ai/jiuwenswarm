@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openjiuwen-skillsdispatch"
+version = "0.1.0"
+description = "openJiuwen skills dispatch SDK for skill indexing, retrieval, and orchestration"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "PyYAML>=6.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["indexing*", "models*", "orchestration*", "retrieval*", "shared*"]
+exclude = ["tests*", "data*"]
+
+[tool.setuptools.package-data]
+"retrieval.tree.render" = ["*.yaml"]

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jiuwenswarm-tui"
+version = "0.2.3"
+description = "Native terminal UI launcher for JiuwenSwarm"
+requires-python = ">=3.11,<3.14"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
+
+[project.scripts]
+jiuwenswarm-tui = "jiuwenswarm_tui.app:main"
+
+[tool.setuptools]
+py-modules = []
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jiuwenswarm_tui*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+"*" = ["LICENSE"]
+jiuwenswarm_tui = [
+    "resources/**/*",
+    "resources/*",
+]

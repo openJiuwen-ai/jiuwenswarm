@@ -1,0 +1,34 @@
+# Yuanrong (Edge/Remote) configuration.
+# This file extends the default policy with inference privacy proxy enabled.
+# The proxy runs on the edge server and routes LLM API requests.
+
+version: 1
+name: "inference-policy"
+
+inference_privacy_proxies:
+  listen_host: "0.0.0.0"  # MUST, bind to all interfaces for edge server access
+  listen_port: 8322  # MUST, set to enable proxy. 0 or omit to disable.
+  
+  # OPTIONAL: here starts example forwarding rule.
+  # routes can be configured with REST API dynamically instead.
+  routes:
+    # example OpenAI API route
+    - path_prefix: "openai"
+      target_endpoint: "https://api.openai.com"
+      api_key: "sk_sandbox_managed_key"  # Set your sandbox-managed API key here
+      # example:
+      # curl -X POST http://127.0.0.1:8322/openai/v1/chat/completions \
+      #   -H "Authorization: Bearer sk_fake_key" ...
+      # ==> https://api.openai.com/v1/chat/completions \
+      #   -H "Authorization: Bearer sk_sandbox_managed_key" ...
+
+    # example Custom LLM endpoint
+    - path_prefix: "custom"
+      target_endpoint: "http://192.168.1.100:9000"
+      api_key: "sk_sandbox_managed_key"
+      skip_cert_verify: false # for self_signed cert server, debug only
+      # example:
+      # curl -X POST http://127.0.0.1:8322/custom/v1/chat/completions \
+      #   -H "Authorization: Bearer sk_fake_key" ...
+      # ==> http://192.168.1.100:9000/v1/chat/completions
+      #   -H "Authorization: Bearer sk_sandbox_managed_key" ...

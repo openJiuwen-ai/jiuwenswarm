@@ -1,0 +1,9 @@
+id: agent_client
+name: AgentServer Client
+version: 0.1.0
+description: Provide AgentServerClient implementation via extension
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.1.0"
+dependencies: {}
+config_schema:
+  type: object

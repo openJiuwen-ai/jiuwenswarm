@@ -1,0 +1,138 @@
+# Workflow: <One-line task pipeline summary>
+
+## Overview
+
+```mermaid
+graph LR
+  A[Leader: Pre-flight + Context] --> B{Input scale OK?}
+  B -- No --> C[Degraded Mode<br/>see bind.md]
+  B -- Yes --> D[role-id-1]
+  B -- Yes --> E[role-id-2]
+  B -- Yes --> F[role-id-3]
+  D --> G[Leader: Integrate]
+  E --> G
+  F --> G
+  G --> H[Final Report]
+```
+
+<Replace the diagram above with one that matches your team's pattern:
+
+- A-pattern (parallel adversarial): all roles fan out from Leader, then fan in to Integrate.
+- B-pattern (parallel decomposition): same shape as A; integration node composes by slice.
+- C-pattern (specialization pipeline): linear chain `Leader → Stage 1 → gate → Stage 2 → gate → ...`
+- Mixed: combine; e.g., C+A places an adversarial fan-out inside one stage.
+- Debate pattern (B → Cross-exam → C): Round1 fan-out (isolated) → relay node
+  (visibility switch point) → Round2 fan-out (mutual visibility) → synthesizer → final.
+  The relay node represents WHERE visibility changes, not HOW — delivery mechanism is
+  a framework-level choice with recommended preference: (1) direct peer-to-peer;
+  (2) shared blackboard; (3) Leader-relay as fallback.
+  For multi-round debate, annotate `×N rounds (see bind.md)` on the relay→Round2 edge
+  instead of duplicating the fan-out block.
+
+Include decision diamonds for degraded mode triggers (linked to bind.md § Failure Handling).
+Include retry loops (back-edges) if roles can be re-dispatched on failure.>
+
+<If Debate pattern, keep the following note (delete this instruction line, keep the content):>
+
+- **Inter-member communication preference** (Debate pattern): this Swarm Skill declares **who sees whose output at which phase** (visibility semantics). Frameworks SHOULD implement the highest-priority delivery mechanism they support: **(1) direct peer-to-peer exchange** (most efficient) > **(2) shared blackboard** > **(3) Leader-relay** (fallback). See [bind.md](bind.md) § Behavioral Constraints for phase-scoped visibility rules.
+
+## Detailed Steps
+
+### Step 0 — Pre-flight: dependency check
+
+- **Executor**: Leader
+- **Input**: [dependencies.yaml](dependencies.yaml)
+- **Action**: verify each `skills[]` and `tools[]` entry is available
+- **Output**: pre-flight report to user
+- **Quality gate**: user decides go/no-go on missing items (Agent does NOT auto-decide)
+
+### Step 1 — <Step name>
+
+- **Executor**: <Leader / role-id>
+- **Input**: <what this step receives>
+- **Action**: <what happens, in 1-3 sentences>
+- **Output**: <structured deliverable name + brief shape>
+- **Serial / Parallel**: <if parallel, list which roles run together>
+- **Quality gate**: <pass criteria — count-based or enum-based, never "looks good"; fail action — kick back to which step / how many retries / when to escalate>
+
+### Step 2 — <Step name>
+
+- **Executor**: <...>
+- **Input**: <...>
+- **Action**: <...>
+- **Output**: <...>
+- **Serial / Parallel**: <...>
+- **Quality gate**: <...>
+
+### Step 3 — <Step name>
+
+- **Executor**: <...>
+- **Input**: <...>
+- **Action**: <...>
+- **Output**: <...>
+- **Serial / Parallel**: <...>
+- **Quality gate**: <...>
+
+### Step N — Final: emit <Report Name>
+
+- **Executor**: Leader
+- **Input**: outputs from all upstream steps
+- **Action**: <integration logic — A: surface contradictions verbatim; B: compose by slice; C: validate gates>
+- **Output**: <Report Name> in the format below
+
+#### Final Report Format
+
+```markdown
+# <Report Name>
+
+## Summary
+<1-3 sentence overview>
+
+## <Tier 1 — e.g., MUST-FIX / Critical Findings / GO-NO-GO Verdict>
+- <item> — <evidence reference>
+
+## <Tier 2 — e.g., SHOULD-FIX / Recommendations>
+- <item>
+
+## <Tier 3 — e.g., FYI / Observations>
+- <item>
+
+## Contradictions (A-pattern only — surfaced verbatim, NOT mediated)
+- <Role X said "...", Role Y said "..." — human decides>
+
+## Coverage Map (B-pattern only)
+- Slice 1: <covered by role X>
+- Slice 2: <covered by role Y>
+- Gaps: <slices nobody covered, if any>
+
+## Unresolved Disputes (Debate-pattern — preserved from cross-exam, NOT mediated)
+- <Claim by Role X> vs <Counter by Role Y> — <synthesizer's assessment + what user should verify>
+```
+
+## Acceptance Criteria
+
+- All roles returned outputs matching their `## Output Schema` (no malformed responses).
+- Final Report contains all mandatory tiers.
+- <Pattern-specific check, e.g., "All A-pattern contradictions surfaced verbatim, none mediated by Leader" / "All C-pattern gates passed or explicit kick-back recorded" / "All Debate-pattern unresolved disputes preserved with cross-exam context, not silently dropped">.
+- <Coverage check, e.g., "All B-pattern slices accounted for in the Coverage Map">.
+
+<!--
+TEMPLATE NOTES (delete before publishing):
+
+1. Mermaid is REQUIRED in `## Overview` — the primary expression difference from
+   single-agent skills (which are linear and need no diagram).
+   Use `graph LR` for wide pipelines, `graph TD` for tall ones.
+
+2. EVERY step's `Quality gate` MUST be specific. "Looks good" is not a gate.
+   Use count-based ("≥3 sections present"), enum-based ("Verdict in {GO, NO-GO}"),
+   or schema-based ("matches Output Schema") criteria.
+
+3. Quality gates live INSIDE the steps (not in a separate `## Quality Gates` section).
+   A gate is a property of a step, not an independent concept.
+
+4. The Final Report Format is defined HERE (in the last step) — NOT in SKILL.md.
+   Defining it in two places creates drift.
+
+5. Acceptance Criteria judges a SUCCESSFUL SINGLE RUN. It is NOT a per-step gate.
+   Failures of acceptance criteria → bind.md § Failure Handling.
+-->

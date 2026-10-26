@@ -1,0 +1,36 @@
+:root {
+  /* Typography */
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  --font-body: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+  --font-display: "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+
+  /* Shape */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --duration-fast: 120ms;
+  --duration-normal: 200ms;
+  --duration-slow: 350ms;
+
+  /* Shell layout */
+  --shell-pad: 16px;
+  --shell-gap: 16px;
+  --shell-nav-width: 240px;
+  --shell-topbar-height: 56px;
+  --tool-panel-width: var(--shell-nav-width);
+  --statusbar-right-space: var(--tool-panel-width);
+
+  /* Typography scale */
+  --font-size-base: 14px;
+  --font-size-lg: 16px;
+  --font-size-sm: 13px;
+  --font-size-xs: 12px;
+  --font-size-2xs: 11px;
+}

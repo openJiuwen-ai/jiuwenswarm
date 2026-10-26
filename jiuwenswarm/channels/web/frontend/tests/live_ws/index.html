@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Subagent live WS harness</title>
+</head>
+<body>
+  <p id="status">waiting</p>
+  <pre id="out">{}</pre>
+  <script type="module">
+    import {
+      useSubagentStore,
+      selectSubagents,
+      selectSubagentActivities,
+    } from "./subagentStore.browser.mjs";
+    import {
+      normalizeSubagentStatusEvent,
+      normalizeSubagentActivityEvent,
+    } from "./subagentNormalizer.browser.mjs";
+
+    const params = new URLSearchParams(location.search);
+    const sessionId = params.get("session") || "session-h";
+    const wsUrl = params.get("ws") || "ws://127.0.0.1:8766";
+
+    function snapshot() {
+      const live = useSubagentStore.getState().getRuntime(sessionId);
+      return {
+        ids: selectSubagents(live).map((item) => item.subagent_id).sort(),
+        a: live?.subagentsById?.["sa-a"]?.status ?? null,
+        b: live?.subagentsById?.["sa-b"]?.status ?? null,
+        c: live?.subagentsById?.["sa-c"]?.status ?? null,
+        activitiesA: selectSubagentActivities(live, "sa-a").length,
+        ready: Boolean(live?.subagentsById?.["sa-a"] && live?.subagentsById?.["sa-c"]),
+      };
+    }
+
+    function render(label, snap) {
+      document.getElementById("status").textContent = label;
+      document.getElementById("out").textContent = JSON.stringify(snap);
+      if (snap.ready) {
+        document.getElementById("out").dataset.ready = "1";
+      }
+    }
+
+    const ws = new WebSocket(wsUrl);
+    ws.onopen = () => {
+      document.getElementById("status").textContent = "connected";
+      ws.send(JSON.stringify({ type: "ready", session_id: sessionId }));
+    };
+    ws.onmessage = (event) => {
+      const payload = JSON.parse(event.data);
+      if (payload.event_type === "chat.subtask_update") {
+        const normalized = normalizeSubagentStatusEvent({
+          ...payload,
+          event_type: "chat.subtask_update",
+          session_id: payload.session_id || sessionId,
+        });
+        if (normalized) {
+          useSubagentStore.getState().applyEvent(sessionId, normalized);
+        }
+      } else if (payload.event_type === "chat.subagent_activity") {
+        const normalized = normalizeSubagentActivityEvent({
+          ...payload,
+          event_type: "chat.subagent_activity",
+          session_id: payload.session_id || sessionId,
+        });
+        if (normalized) {
+          useSubagentStore.getState().applyEvent(sessionId, normalized);
+        }
+      } else if (payload.type === "done") {
+        const snap = snapshot();
+        render("done", snap);
+        ws.send(JSON.stringify({ type: "snapshot", snapshot: snap }));
+        fetch("/snapshot", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(snap),
+        });
+        return;
+      }
+      render("updated", snapshot());
+    };
+    ws.onerror = () => {
+      document.getElementById("status").textContent = "error";
+    };
+  </script>
+</body>
+</html>
