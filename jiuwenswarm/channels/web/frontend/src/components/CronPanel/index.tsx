@@ -892,8 +892,11 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 通过 portal 挂在 body 上，不随 CronPanel 卸载，跳转后提示仍在目标会话顶部可见。
         // 固定 id 去重，连续触发多个任务时不会叠出一排提示。testId 保持既有自动化锚点不变。
         // proactive 分支不跳转、面板不卸载，继续用面板内 setSuccess（既有用例预期）。
-        // 视觉风格与位置均与「任务更新成功」等面板内提示保持一致：实心绿底、白字、无图标、
-        // 无关闭按钮、2s 自动消失。通过 panelRef.getBoundingClientRect() 取 CronPanel 容器
+        // 视觉风格与位置均与「任务更新成功」等面板内提示保持一致：实心绿底、白字、无图标。
+        // 提示不能在 2s 后自动收起：跳转后用户是在目标会话里回看这条提示的，而触发会话
+        // 往往数秒后才产生首条回复，短时 toast 在此之前就已消失（实测断言窗口在触发后
+        // 约 7s 才开始）。因此常驻显示，直到用户手动关闭或被后续 closeAll 清理。
+        // 通过 panelRef.getBoundingClientRect() 取 CronPanel 容器
         // 顶部居中坐标，用 position:fixed + transform 让 toast 精确落在面板内提示的同一位置
         // （面板内提示是 absolute top-3 left-1/2 -translate-x-1/2，受左侧 ConversationSidebar
         // 影响，其水平中心不是视口中心；toast 默认 fixed 视口居中会与面板内提示错位）。
@@ -904,8 +907,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           content: t('cron.success.runNow'),
           variant: 'default',
           testId: 'cron-success-toast',
-          duration: 2,
-          closable: false,
+          // duration: 0 = 不自动消失。跳转本身不影响 ToastStack（挂在 body 上），
+          // 但触发会话的首条回复晚于 2s，自动收起的提示会在此前消失。
+          duration: 0,
+          closable: true,
           style: {
             position: 'fixed',
             top: panelRect ? `${panelRect.top + 12}px` : '12px',
