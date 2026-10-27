@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
@@ -155,6 +157,42 @@ def _override_ids(raw: Any) -> set[str]:
     return ids
 
 
+def _override_key(item: dict[str, Any]) -> tuple[str, Any]:
+    tools = item.get("tools") or []
+    if isinstance(tools, str):
+        tools = [tools]
+    tools_key = tuple(sorted(str(tool).strip() for tool in tools if str(tool).strip()))
+    match_type = str(item.get("match_type") or "").strip().lower()
+    pattern = str(item.get("pattern") or "")
+    action = str(item.get("action") or "").strip().lower()
+    if tools_key or match_type or pattern:
+        return ("signature", (tools_key, match_type, pattern, action))
+    return ("id", str(item.get("id") or "").strip())
+
+
+def _override_keys(raw: Any) -> set[tuple[str, Any]]:
+    keys: set[tuple[str, Any]] = set()
+    if not isinstance(raw, list):
+        return keys
+    for item in raw:
+        if isinstance(item, dict):
+            keys.add(_override_key(item))
+    return keys
+
+
+def _stable_override_id(item: dict[str, Any]) -> str:
+    tools = item.get("tools") or []
+    if isinstance(tools, str):
+        tools = [tools]
+    tool = next((str(name).strip() for name in tools if str(name).strip()), "tool")
+    match_type = str(item.get("match_type") or "").strip().lower() or "rule"
+    pattern = str(item.get("pattern") or "")
+    raw = f"user_allow_{tool}_{match_type}_{pattern}"
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", raw).strip("_").lower() or "user_allow_override"
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
+    return f"{slug[:111]}_{digest}"[:120]
+
+
 def _path_key(item: dict[str, Any]) -> tuple[str, str]:
     path = str(item.get("path") or "").replace("\\", "/").rstrip("/").casefold()
     match = str(item.get("match") or "prefix").strip().lower() or "prefix"
@@ -259,6 +297,11 @@ def overlay_from_effective(
     ) | _tool_names_at_level(skip_layer, "allow")
     base_ask = _tool_names_at_level(global_layer, "ask")
     base_deny = _tool_names_at_level(global_layer, "deny")
+    base_override_keys = (
+        _override_keys(global_layer.get("approval_overrides"))
+        | _override_keys(user_layer.get("approval_overrides"))
+        | _override_keys(skip_layer.get("approval_overrides"))
+    )
     base_override_ids = (
         _override_ids(global_layer.get("approval_overrides"))
         | _override_ids(user_layer.get("approval_overrides"))
@@ -294,11 +337,23 @@ def overlay_from_effective(
         if not isinstance(item, dict):
             continue
         override_id = str(item.get("id") or "").strip()
-        if not override_id or override_id in base_override_ids:
+        if not override_id or _override_key(item) in base_override_keys:
             continue
         overrides.append(item)
     if overrides:
-        out["approval_overrides"] = overrides
+        output_ids = [str(item.get("id") or "").strip() for item in overrides]
+        colliding_ids = {
+            oid
+            for oid in output_ids
+            if oid in base_override_ids or output_ids.count(oid) > 1
+        }
+        out["approval_overrides"] = [
+            {**item, "id": _stable_override_id(item)}
+            if str(item.get("id") or "").strip() in colliding_ids
+            and str(item.get("pattern") or "").strip()
+            else item
+            for item in overrides
+        ]
 
     fg = src.get("file_guard")
     if isinstance(fg, dict):
