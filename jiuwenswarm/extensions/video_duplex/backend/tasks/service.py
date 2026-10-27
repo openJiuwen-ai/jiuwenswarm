@@ -132,6 +132,14 @@ class TaskService:
             if t["status"] == "unknown" else None
         ))
         await self._notify(task)
+        self.interrupt_settled()
+
+    def interrupt_settled(self, core_session_id=None):
+        """A card was answered or a turn ended: probe held sessions again, then dispatch."""
+        if core_session_id is None:
+            self.pending_interrupts.clear()
+        else:
+            self.pending_interrupts.discard(core_session_id)
         self.kick()
 
     def kick(self):
@@ -177,12 +185,14 @@ class TaskService:
             t["status"] == "waiting_user" and t.get("execution_settled")
         )
 
-    @staticmethod
-    def _ready(task, tasks, active):
-        return not TaskService._blockers(task, tasks, active)
+    def _ready(self, task, tasks, active):
+        return not self._blockers(task, tasks, active)
 
-    @staticmethod
-    def _blockers(task, tasks, active):
+    def _holds_card(self, task):
+        # A resumed task answers its own card; only new work waits behind one.
+        return not task.get("resume_answer") and task.get("core_session_id") in self.pending_interrupts
+
+    def _blockers(self, task, tasks, active):
         """The exact tasks that keep ``task`` from dispatching (empty: ready)."""
         request = task["request"]
         by_id = {t["id"]: t for t in tasks}
@@ -191,6 +201,9 @@ class TaskService:
         ]
         if any(t.get("status") != "completed" for t in dependencies):
             return [t for t in dependencies if t and t.get("status") != "completed"] or [{}]
+
+        if self._holds_card(task):
+            return [{}]
 
         def same_scope(t):
             return (t["owner"], t["session"]) == (task["owner"], task["session"])
@@ -495,7 +508,7 @@ class TaskService:
             work.add_done_callback(lambda _: self.cancellations.pop(task_id, None))
         elif recheck and task["status"] == "cancelling":
             self._spawn_reconcile(task)
-        self.kick()
+        self.interrupt_settled()
         await self._notify(task)
         return receipt
 

@@ -77,6 +77,9 @@ export class JoyAIProvider {
   private pendingToolContext: JoyAIToolContextEntry[] = [];
   private deliveredSearchIds = new Set<string>();
   private restoreToken = '';
+  // Open approval cards (job:interaction -> header, same shape as Qwen). Their status is the
+  // last thing JoyAI reads on every user turn, so a spoken 同意/拒绝 can answer them.
+  private pendingApprovals = new Map<string, Record<string, unknown>>();
 
   constructor(callbacks: JoyAIProviderCallbacks, replyLanguage: ReplyLanguage = 'match') {
     this.callbacks = callbacks;
@@ -186,6 +189,7 @@ export class JoyAIProvider {
     this.lastFrameRequestAt = null;
     this.pendingToolContext = [];
     this.deliveredSearchIds.clear();
+    this.pendingApprovals.clear();
     this.handledTurns.clear();
     if (this.framePollTimer !== null) {
       window.clearInterval(this.framePollTimer);
@@ -207,7 +211,7 @@ export class JoyAIProvider {
   /** A managed task's card (its job_id) or a typed-chat card (job_id ""); information forms stay on screen. */
   enqueueQuestion(jobId: string, interaction: ApprovalInteraction): void {
     if (interaction.state !== 'pending') {
-      this.closeApprovals(jobId, interaction.id || interaction.request_id);
+      this.closeApprovals(jobId);
       return;
     }
     if (!interaction.source || !APPROVAL_SOURCES.has(interaction.source)) return;
@@ -217,13 +221,9 @@ export class JoyAIProvider {
     this.callbacks.report('joyai_approval_card_pending', { job_id: jobId, pending: this.pendingApprovals.size });
   }
 
-  private closeApprovals(jobId: string, interactionId?: string): void {
-    // Chat cards share an empty job ID; only the named interaction may close.
-    for (const [key, card] of this.pendingApprovals) {
-      if (jobId ? card.job_id === jobId : Boolean(interactionId) && key === `question::${interactionId}`) {
-        this.pendingApprovals.delete(key);
-      }
-    }
+  private closeApprovals(jobId: string): void {
+    const prefix = `question:${jobId}:`;
+    for (const key of [...this.pendingApprovals.keys()]) if (key.startsWith(prefix)) this.pendingApprovals.delete(key);
   }
 
   handleCompletedSearch(payload: SearchJobPayload, brief: RealtimeBrief, existing?: SearchJobState): boolean {
@@ -419,6 +419,11 @@ export class JoyAIProvider {
       const prompt = instruction.trim();
       const toolContext =
         requestKind === 'user' ? buildJoyAIToolContextBatch(this.pendingToolContext) : { text: '', jobIds: [] };
+      // Read at send time, so an answer to the card can see a card that opened meanwhile.
+      const approvalContext =
+        requestKind === 'user' && this.pendingApprovals.size
+          ? pendingCardTurnNotice([...this.pendingApprovals.values()], originalQuestion)
+          : '';
       const frameTimeRange = frameDataUrl ? this.frameClock.nextRange() : '';
       let result: JoyAIFrameResult;
       try {
@@ -435,6 +440,7 @@ export class JoyAIProvider {
             search_session_id: searchSessionId,
             frame_time_range: frameTimeRange,
             ...(toolContext.text ? { tool_context: toolContext.text } : {}),
+            ...(approvalContext ? { approval_context: approvalContext } : {}),
             ...(requestKind === 'user' && this.restoreToken ? { restore_token: this.restoreToken } : {}),
           },
           { timeoutMs: requestKind === 'user' ? 90_000 : 60_000 },
@@ -483,7 +489,7 @@ export class JoyAIProvider {
             reply_language: this.replyLanguage,
           });
           this.callbacks.setStatus(
-            `JoyAI 限流，${Math.ceil(cooldownMs / 1_000)} 秒后重试，画面发送间隔已调整为 ${this.frameRequestIntervalMs / 1_000} 秒`,
+            `JoyAI 服务商限流（429，每分钟 token 额度已用完），${Math.ceil(cooldownMs / 1_000)} 秒后重试，画面发送间隔已调整为 ${this.frameRequestIntervalMs / 1_000} 秒`,
           );
         }
         throw error;

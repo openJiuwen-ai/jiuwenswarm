@@ -11,6 +11,8 @@ import {
   useApplicationTaskStore,
 } from "../../../channels/web/frontend/src/applicationPlugins/taskProgressStore";
 import { useSessionStore } from "../../../channels/web/frontend/src/stores/sessionStore";
+import { useChatStore } from "../../../channels/web/frontend/src/stores/chatStore";
+import { APPROVAL_SOURCES } from "./VideoLivePanel/taskPrompts";
 import { VideoLivePanel, type VideoLivePanelHandle } from "./VideoLivePanel";
 import type {
   SearchJobPayload,
@@ -692,10 +694,12 @@ export function TaskFullDuplexRuntime({
     panelRef.current = panel;
     registerTaskFullDuplexController(panel, async (targetSessionId) => {
       runtimeSessionIdRef.current = targetSessionId;
+      chatApprovalsRef.current = new Map();
+      syncChatApprovals();
       await flushConversationHistory(targetSessionId);
       return conversationJobsRef.current.bind(targetSessionId);
     }, cancelSessionTasks);
-  }, []);
+  }, [syncChatApprovals]);
 
   useEffect(
     () => () => {

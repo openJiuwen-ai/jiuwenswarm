@@ -23,6 +23,16 @@ def test_model_selection_keeps_connection_and_rejects_ambiguous_names():
         helper.select_model([], "")
 
 
+def test_model_selection_falls_back_to_joyai_provider(monkeypatch):
+    monkeypatch.setenv("JOYAI_API_BASE", "https://joyai.example/v1")
+    monkeypatch.setenv("JOYAI_API_KEY", "joyai-key")
+    monkeypatch.setenv("JOYAI_MODEL_NAME", "joyai-model")
+    selected = helper.select_model([], "")
+    assert selected["model_id"] == "joyai_fallback"
+    assert selected["model_client_config"]["model_name"] == "joyai-model"
+    assert selected["model_client_config"]["api_base"] == "https://joyai.example/v1"
+
+
 async def review(monkeypatch, proposal, *, invalid=False):
     model = AsyncMock(return_value=json.dumps(proposal))
     monkeypatch.setattr(helper, "request_review", model)

@@ -135,7 +135,7 @@ export function TaskFullDuplexAction({
 // Mounted with the app runtime, independently of any conversation composer.
 export function TaskFullDuplexControls() {
   const { t } = useTranslation();
-  const { state, microphoneMuted, cardHold, speakerMuted, screenSharing } = useTaskFullDuplexRuntime();
+  const { state, microphoneMuted, speakerMuted, screenSharing } = useTaskFullDuplexRuntime();
   const running = state !== 'idle';
   const [orbMounted, setOrbMounted] = useState(running);
   const [orbVariant, setOrbVariant] = useState<'starting' | 'active'>('starting');
@@ -251,11 +251,6 @@ export function TaskFullDuplexControls() {
               data-testid="chat-panel-duplex-controls"
               data-variant={state}
             >
-              {running && cardHold ? (
-                <div className="task-full-duplex-sharing" role="status" data-testid="chat-panel-duplex-card-hold">
-                  <span>{t('chat.duplexControls.cardHold')}</span>
-                </div>
-              ) : null}
               {screenSharing ? (
                 <div className="task-full-duplex-sharing" role="status" data-testid="chat-panel-duplex-sharing-indicator">
                   <span className="task-full-duplex-sharing__dot" aria-hidden="true" />
@@ -278,19 +273,19 @@ export function TaskFullDuplexControls() {
                 )}
                 data-testid="chat-panel-duplex-orb"
               >
-                <DuplexOrb variant={orbVariant} microphoneMuted={running && (microphoneMuted || cardHold)} />
+                <DuplexOrb variant={orbVariant} microphoneMuted={running && microphoneMuted} />
               </div>
               <div className="task-full-duplex-orb__controls">
                 <button
                   type="button"
                   onClick={toggleTaskDuplexMicrophone}
-                  disabled={state !== 'active' || cardHold}
-                  aria-pressed={microphoneMuted || cardHold}
-                  aria-label={t(cardHold ? 'chat.duplexControls.cardHold' : microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
-                  title={t(cardHold ? 'chat.duplexControls.cardHold' : microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
+                  disabled={state !== 'active'}
+                  aria-pressed={microphoneMuted}
+                  aria-label={t(microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
+                  title={t(microphoneMuted ? 'chat.duplexControls.unmuteMic' : 'chat.duplexControls.muteMic')}
                   data-testid="chat-panel-duplex-microphone"
                 >
-                  {microphoneMuted || cardHold ? <MicOff aria-hidden /> : <Mic aria-hidden />}
+                  {microphoneMuted ? <MicOff aria-hidden /> : <Mic aria-hidden />}
                 </button>
                 <button
                   type="button"

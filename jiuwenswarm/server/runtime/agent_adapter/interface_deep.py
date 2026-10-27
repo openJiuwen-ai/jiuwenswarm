@@ -166,9 +166,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
     discard_pending_permission_interrupt_for_target,
-    discard_permission_continuation, validate_client_tool_answers, validate_manual_resume,
-    discard_restored_permission_batch, unanswered_permission_batch,
-    has_live_pending_interrupt,
+    discard_permission_continuation, has_live_pending_interrupt, validate_manual_resume,
 )
 from jiuwenswarm.runtime.client_tools import client_tool_request_event
 from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (

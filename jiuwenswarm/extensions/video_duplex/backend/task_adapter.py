@@ -10,10 +10,9 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskS
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
 from .tasks.errors import CancellationSettlementTimeout, QueueVersionConflict, TaskRevisionConflict, TaskNotFound
-from .tasks.interactions import approval_cards
+from .tasks.interactions import approval_cards, approval_option_labels, voice_approval_answers
 from .tasks.diagnostics import receipt_state, task_state, trace_task
 from .tasks.prompts import (
-    APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
     EMPTY_QUERY_INSTRUCTIONS,
     QUEUE_CONFLICT_INSTRUCTIONS,
     SCHEDULED_JOBS_INSTRUCTIONS,
@@ -28,6 +27,17 @@ logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
 STOP_SETTLEMENT_TIMEOUT = 90
+SCHEDULED_JOBS_LIMIT = 20
+# How long a voice answer to a typed chat card waits for Core to resume the turn.
+CHAT_ANSWER_CONFIRM_TIMEOUT = 10
+
+
+async def gateway_scheduled_jobs(owner):
+    """Read the Gateway cron store with the same owner scope as the sidebar's ``cron.job.list``."""
+    from jiuwenswarm.gateway.cron.controller import CronController
+
+    # An empty owner is the anonymous single-user scope; the sidebar then lists every job too.
+    return await CronController.get_instance().list_jobs(user_id=owner or None)
 
 
 class AgentRequestTimeoutError(TimeoutError):
@@ -419,6 +429,12 @@ class VideoSearchManager:
         self.subscribers = {}
         self._approval_cards = {}
         self._execution_targets = {}
+        # Typed chat cards the web channel pushed, by Core session (latest only).
+        self._chat_cards = {}
+        self._chat_resumed = {}
+        listen = getattr(channel, "add_session_event_listener", None)
+        if callable(listen):
+            listen(self._on_session_event)
         self._queue_requests = {}
 
     @property
@@ -588,9 +604,9 @@ class VideoSearchManager:
                 )
         else:
             result["interaction"] = interaction
-        # Approval cards are click-only; voice may still answer information questions.
+        # Voice answers approval cards with one of each card's own option labels.
         cards = approval_cards(interaction)
-        approval = dict(requires_click=cards is not None, **({"approval_cards": cards} if cards else {}))
+        approval = {"approval_cards": cards} if cards else {}
         result.update(approval)
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12000:
             # Five jobs remain well below the provider's 256 KiB frame limit,
@@ -648,10 +664,7 @@ class VideoSearchManager:
         if not session_id:
             return
         if event_name == "chat.ask_user_question":
-            if payload.get("source") == "permission_interrupt":
-                self._chat_cards.pop(session_id, None)
-                return
-            if payload.get("duplex_job_id") or payload.get("source") != "confirm_interrupt":
+            if payload.get("duplex_job_id") or payload.get("source") not in {"permission_interrupt", "confirm_interrupt"}:
                 return
             self._chat_cards[session_id] = {
                 key: payload.get(key) for key in ("request_id", "source", "questions", "approval_schema")
@@ -675,7 +688,7 @@ class VideoSearchManager:
             return None
         session = scope.removeprefix("task-duplex:")
         card = self._chat_cards.get(session)
-        if not card or card.get("source") != "confirm_interrupt":
+        if not card:
             return None
         from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -745,8 +758,7 @@ class VideoSearchManager:
         chosen = [a["selected_options"][0] for a in bound]
         if not resumed.is_set():
             return dict(job_id="", interaction_id=interaction_id, state="submitted", applied=False, answers=chosen,
-                        message=("Submitted, but Core has not resumed the task yet; "
-                                 "query again before saying it was approved"))
+                        message="Submitted, but Core has not resumed the task yet; query again before saying it was approved")
         self._chat_cards.pop(session, None)
         closed = {"session_id": session, "request_id": interaction_id}
         await asyncio.gather(*(
@@ -901,7 +913,9 @@ class VideoSearchManager:
                 )
                 return {"search_job": task, "call_id": call.call_id}
             return {
-                "tool_result": await self.operate(owner, scope, call, user_instruction=params.get("question") or ""),
+                "tool_result": await self.operate(
+                    owner, scope, call, ws=ws, user_instruction=params.get("question") or "",
+                ),
                 "call_id": call.call_id,
             }
 
@@ -936,7 +950,7 @@ class VideoSearchManager:
             self._queue_requests[key] = (signature, task)
         return await asyncio.shield(self._queue_requests[key][1])
 
-    async def operate(self, owner, scope, call, *, user_instruction=""):
+    async def operate(self, owner, scope, call, *, ws=None, approvals_only=False, user_instruction=""):
         args = call.arguments
         if args.get("job_id"):
             try:
@@ -1038,22 +1052,26 @@ class VideoSearchManager:
             if receipt.get("state") == "rejected":
                 result.update(receipt, message=QUEUE_CONFLICT_INSTRUCTIONS)
         elif call.name == "jiuwen_task_answer":
-            cards = approval_cards(self.service.get(owner, scope, args["job_id"]).get("interaction"))
-            if cards is not None:
-                # Explicit receipt so the model cannot mistake a refusal for consent.
-                return dict(
-                    task_id=args["job_id"], state="rejected", applied=False,
-                    code="APPROVAL_REQUIRES_CLICK", requires_click=True,
-                    approval_cards=cards, message=APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
+            if not args.get("job_id"):
+                # A typed chat's card has no job; it is named by its interaction_id.
+                return await self.answer_chat_card(
+                    ws, owner, scope, args["interaction_id"], args["answers"]
                 )
-            result = await self.service.answer(
-                owner,
-                scope,
-                args["job_id"],
-                call.call_id,
-                args["interaction_id"],
-                answers=args["answers"],
-            )
+            interaction = self.service.get(owner, scope, args["job_id"]).get("interaction")
+            if approvals_only and approval_cards(interaction) is None:
+                raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
+            try:
+                result = await self.service.answer(
+                    owner,
+                    scope,
+                    args["job_id"],
+                    call.call_id,
+                    args["interaction_id"],
+                    answers=args["answers"],
+                )
+            except ValueError as exc:
+                # Explicit receipt so the model cannot mistake a refusal for consent.
+                return dict(task_id=args["job_id"], state="rejected", applied=False, error=str(exc))
         else:
             try:
                 result = self.service.modify(

@@ -160,7 +160,14 @@ def response_language_instruction(value: object = "match") -> str:
     )
 
 
-def ground_user_instruction(instruction: str, tool_context: str = "", reply_language: object = "match", *, restore_instructions: str = "") -> str:
+def ground_user_instruction(
+    instruction: str,
+    tool_context: str = "",
+    reply_language: object = "match",
+    *,
+    restore_instructions: str = "",
+    approval_context: str = "",
+) -> str:
     """Add per-turn grounding rules without changing frame-only or tool turns."""
     instruction = str(instruction or "").strip()
     if not instruction:

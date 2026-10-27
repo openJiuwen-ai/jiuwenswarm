@@ -81,7 +81,7 @@ dedicated text model through `jiuwen_queue_manage`. The manager queries actual t
 current conversation and uses the existing queue tools. Qwen reports their receipts. JoyAI
 uses the manager's receipt-based answer for both text and speech, withholding its original
 unconfirmed promise without issuing another management operation. JoyAI information forms
-and approvals still require the UI; Qwen information answers remain supported.
+still require the UI; both providers retain explicit voice approval answers through jiuwen_task_answer. Qwen information answers remain supported through the queue manager.
 New tasks still use `jiuwen_delegate`. The realtime model must initiate the management call: spoken promises
 without a tool call are not automatically executed.
 
@@ -102,8 +102,7 @@ The manager reuses the first configured text model by default. Set `DUPLEX_QUEUE
 in `.env` to an existing model ID, alias or unique name, then restart. It receives instructions
 and task records, without audio or images. Each request allows six model decisions within
 40 seconds. Errors preserve earlier receipts and do not imply success or rollback. Duplicate
-command IDs share execution while cached in the current process. Approvals still require
-an on-screen click.
+command IDs share execution while cached in the current process. Approval cards retain explicit voice consent and on-screen controls.
 
 JoyAI refreshes an expired context token in the same authorized chat and retries the
 unexecuted user request once. Cancellation or session replacement stops that retry.
@@ -197,12 +196,16 @@ uses native design tools in the current project. Voice and text share the Design
 later typed turns also receive recent saved voice context. Native question cards remain
 answerable. Voice answers and cancellation use the current task binding, so a stale
 cancellation cannot stop a later turn.
-Approval cards (permission approvals, cua desktop confirmations and similar) must be
-clicked on screen (Allow or Reject); voice cannot approve or reject them. While a task
-waits on one, the assistant explains what the card is for and asks you to click it,
-without claiming it was allowed. While the card is open, voice stops listening and the
-microphone button is disabled, the same way the text input is locked; once you click the
-card, the microphone returns to the state you had chosen.
+Approval cards (permission approvals, cua desktop confirmations and similar) can be
+answered by voice as well as on screen. Clearly saying "agree", "allow", "OK" or "approve"
+allows; "reject", "no" or "cancel this operation" rejects. Saying "allow for this
+conversation" picks the session option, so the card is not shown again in this conversation;
+the permanent option is picked only when you explicitly say "always allow". If your meaning is unclear,
+the assistant asks once and does not submit; with several open cards it first confirms
+which one. A new request spoken while a card waits (such as "open WeChat") is dispatched
+as a new task and queued until the approval is handled; it is never used as an answer.
+Cards left by typed chat can also be answered by voice. The assistant says a card was
+approved only after it confirms the task resumed. Speech that ended before a card appeared is never taken as its answer.
 Voice tasks retain their own per-round result subscription even when the Design page
 already has a subscription. Canvas, node, run and assistant activity updates use the
 saved Design session's Web channel, so the page does not need a refresh.
@@ -243,13 +246,13 @@ Core summaries are written to the conversation and queued for speech once per ta
 JoyAI does not generate another summary.
 While Qwen Full-duplex is active, it asks pending information-form questions
 about time, content and parameters aloud. They collect the user's spoken answers,
-ask for missing fields and query the current interaction before submitting through
+ask for missing fields and pass the answers to `jiuwen_queue_manage`, which queries the current interaction before submitting through
 `jiuwen_task_answer`. Answers resume the original task without another delegation.
 Duplicate notices do not repeat questions; other sessions and replay notices do not
 trigger speech. Native forms remain available for manual input. Permission and
-operation approvals keep their existing UI.
+operation approvals support explicit voice answers as well as their existing UI.
 JoyAI does not ask or answer information forms by voice. Users complete the existing
-on-screen forms, and the server rejects JoyAI `jiuwen_task_answer` requests. Ordinary
+on-screen forms, and the server rejects JoyAI information-form `jiuwen_task_answer` requests; approval-card answers remain supported. Ordinary
 voice conversation, task management and Core summaries in text and speech remain available.
 Completion notices retain the Core invocation's `job_id`. Resource IDs inside result
 text belong in follow-up instructions and cannot replace the invocation ID. If a

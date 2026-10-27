@@ -1,4 +1,4 @@
-import { TASK_ACCEPTED_INSTRUCTIONS } from './taskPrompts';
+import { APPROVAL_SOURCES, TASK_ACCEPTED_INSTRUCTIONS, type ApprovalInteraction } from './taskPrompts';
 import { informationInteraction } from './taskInteraction';
 import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
@@ -88,6 +88,8 @@ export interface VideoLivePanelHandle {
   stopScreenSharing: () => void;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
+  /** A typed-chat approval card in this conversation; it has no job, so job_id is "". */
+  deliverChatApproval: (interaction: { request_id: string; state: string; source?: string; questions?: unknown[] }) => void;
   deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
@@ -198,6 +200,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     duplexRef.current = null;
     joyaiProviderRef.current?.stop();
     joyaiProviderRef.current = null;
+    if (!renewing) approvalCardsRef.current.clear();
     if (!renewing) {
       microphoneMutedRef.current = false;
       speakerMutedRef.current = false;
@@ -441,6 +444,17 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       toolCallId: callId,
     });
     setSearchStatus(`${payload.engine || '九问搜索 Agent'}失败：${error}`);
+  };
+
+  // JoyAI answers approval cards by voice only (information forms stay on screen), like Qwen's enqueueQuestion.
+  const deliverJoyAIApproval = (jobId: string, interaction: ApprovalInteraction) => {
+    const cards = approvalCardsRef.current;
+    if (interaction.state !== 'pending') {
+      for (const [key, card] of cards) if (card.jobId === jobId) cards.delete(key);
+    } else if (interaction.source && APPROVAL_SOURCES.has(interaction.source)) {
+      cards.set(`${jobId}:${interaction.id || interaction.request_id}`, { jobId, interaction });
+    }
+    joyaiProviderRef.current?.enqueueQuestion(jobId, interaction);
   };
 
   const deliverTaskInteraction = (payload: SearchJobPayload) => {
@@ -1269,6 +1283,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       // pending questions and approval cards for the model to raise.
       if (!searchSessionRef.current || payload.search_session_id !== searchSessionRef.current) return;
       if (payload.job_id && payload.interaction) duplexRef.current?.enqueueQuestion(payload.job_id, payload.interaction);
+      if (payload.job_id && payload.interaction) deliverJoyAIApproval(payload.job_id, payload.interaction);
+    },
+    deliverChatApproval: (interaction) => {
+      duplexRef.current?.enqueueQuestion('', { ...interaction, id: interaction.request_id } as never);
+      deliverJoyAIApproval('', { ...interaction, id: interaction.request_id } as ApprovalInteraction);
     },
   }));
 

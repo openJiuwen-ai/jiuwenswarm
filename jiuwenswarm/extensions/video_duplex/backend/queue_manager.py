@@ -28,7 +28,7 @@ SYSTEM_PROMPT = (
     "For a stale revision or queue conflict, query and correct once. Never repeat an identical write. "
     "Cancellation acceptance means stopping is pending, not stopped. Modification acceptance is not completion. "
     "Only state=reordered confirms reorder. Never claim success without a successful receipt. "
-    "Information answers require observed interaction_id and explicit user answers; approvals require on-screen clicks. "
+    "Information answers require observed interaction_id and explicit user answers; approval cards use the separate voice approval flow with explicit user consent or on-screen clicks. Do not submit approval answers through this manager. "
     "Do not create new tasks or undo external effects yourself. Explain unsupported requests. "
     "If information_answers_allowed=false, direct all information form answers to the on-screen form. "
     "Scheduled jobs are reachable only through jiuwen_cron_query, jiuwen_cron_update and jiuwen_cron_delete. "

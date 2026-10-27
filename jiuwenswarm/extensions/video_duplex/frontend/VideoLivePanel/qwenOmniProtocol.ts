@@ -33,6 +33,8 @@ export interface QwenOmniSessionOptions {
   replyLanguage?: string;
   restoreInstructions?: string;
   extraInstructions?: string;
+  /** The client creates replies itself (an approval card is open), so the provider must not. */
+  clientResponses?: boolean;
 }
 
 export interface QwenOmniMediaBatch {

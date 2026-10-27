@@ -403,9 +403,11 @@ def register_video_live_handler(
         try:
             model_instruction = instruction
             if request_kind == "user":
-                model_instruction = (
-                    joyai_provider.ground_user_instruction(instruction, tool_context, reply_language, restore_instructions=restore_instructions)
-                    if restore_instructions else joyai_provider.ground_user_instruction(instruction, tool_context, reply_language)
+                extra = {"restore_instructions": restore_instructions} if restore_instructions else {}
+                if approval_context:
+                    extra["approval_context"] = approval_context
+                model_instruction = joyai_provider.ground_user_instruction(
+                    instruction, tool_context, reply_language, **extra
                 )
             request_args = [frame_data_url, model_instruction, upstream_session_id]
             if frame_time_range:
@@ -501,9 +503,9 @@ def register_video_live_handler(
                     "jiuwen_task_query",
                     "jiuwen_task_modify",
                     "jiuwen_task_cancel",
+                    # Approval cards only; operate() refuses information forms.
+                    "jiuwen_task_answer",
                 }:
-                    if value.get("name") == "jiuwen_task_answer":
-                        raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
                     raise ValueError("Unsupported task operation")
                 owner, scope = await search_manager.scope(
                     ws, {"search_session_id": search_session_id}
@@ -545,7 +547,9 @@ def register_video_live_handler(
                     }
                     result = {**result, "delegation": call.task}
                     break
-                receipt = await search_manager.operate(owner, scope, call, user_instruction=question or instruction)
+                receipt = await search_manager.operate(
+                    owner, scope, call, ws=ws, approvals_only=True, user_instruction=question or instruction,
+                )
                 operation_count += 1
                 # Feed facts through the same provider conversation, including ids
                 # needed for query -> modify. A receipt cannot manufacture a task.

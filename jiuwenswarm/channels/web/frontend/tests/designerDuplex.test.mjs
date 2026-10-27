@@ -23,7 +23,7 @@ await build({
       else if (path.endsWith('designerStore')) contents = 'export const useDesignerStore = selector => selector(globalThis.designerDuplex.state); useDesignerStore.getState = () => globalThis.designerDuplex.state;';
       else if (path.endsWith('designerUiStore')) contents = 'export const useDesignerUiStore = selector => selector({toggleChatSidebar() {}});';
       else if (path.endsWith('designerEntry')) contents = 'export const DESIGNER_TEAM_MODE = "team.design"; export const bindDesignerChatSession = id => globalThis.designerDuplex.bindings.push(id); export const composeDesignerSession = async () => {}; export const sendDesignerLeaderMessage = async () => {};';
-      else if (path.endsWith('stores/chatStore')) contents = 'const chatState = {runtimes: {}, activeSessionId: "design-chat"}; export const useChatStore = Object.assign(selector => selector(chatState), {getState: () => chatState, subscribe: () => () => {}});';
+      else if (path.endsWith('stores/chatStore')) contents = 'export const useChatStore = selector => selector({runtimes: {}, activeSessionId: "design-chat"});';
       else if (path.endsWith('stores/sessionStore')) contents = 'export const useSessionStore = selector => selector({runtimes: {}, chatAvailableModels: [], defaultModelName: null}); export const resolveChatModelSelection = () => null;';
       else if (path.endsWith('services/webClient')) contents = 'export const webClient = {request: async () => ({})}; export const webRequest = async () => ({task_full_duplex_enabled: true});';
       else if (path.endsWith('featureFlag')) contents = 'export const useTaskFullDuplexEnabled = () => true; export const setTaskFullDuplexEnabled = () => {}; export const setTaskAsrEnabled = () => {};';
