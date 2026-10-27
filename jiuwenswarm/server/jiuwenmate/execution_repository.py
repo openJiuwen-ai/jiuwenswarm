@@ -948,7 +948,7 @@ class ExecutionRepository(SQLiteStore):
                 "LEFT JOIN candidate_outputs c ON c.namespace_id=d.namespace_id AND c.output_id=d.output_id "
                 "AND c.request_id=d.request_id AND d.notice_text IS NULL "
                 "LEFT JOIN group_delivery_archives a ON a.namespace_id=d.namespace_id AND a.delivery_id=d.delivery_id "
-                "WHERE d.namespace_id=? AND d.status='delivered' AND d.channel='feishu' "
+                "WHERE d.namespace_id=? AND d.status='delivered' AND d.channel IN ('feishu','dingtalk') "
                 "AND a.delivery_id IS NULL " + position + "ORDER BY d.updated_at,d.delivery_id LIMIT ?", params,
             ).fetchall()
         jobs = [dict(row) for row in rows]

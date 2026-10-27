@@ -674,6 +674,7 @@ test('channel reply mode renders a compact selected state and disables changes w
   const html = renderProfile({ initialSection: 'channels', colleague: { ...colleague, groupReplyMode: 'passive' } });
   assert.match(html, /aria-pressed="true"[^>]*data-variant="passive"/);
   assert.match(html, /aria-pressed="false"[^>]*data-variant="adaptive"/);
+  assert.match(html, /钉钉群里只有 @ 到机器人的消息会触发回复/);
   const saving = renderProfile({ initialSection: 'channels', savingResources: true });
   assert.match(saving, /aria-pressed="true"[^>]*disabled=""/);
 });
