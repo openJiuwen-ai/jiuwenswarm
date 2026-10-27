@@ -1165,6 +1165,7 @@
         "cancelDelete": "取消",
         "deleteRunning": "诊断进行中，无法删除"
       },
+      "rewardResult": "产物评估结果",
       "rewardDimensions": "共 {{count}} 项评分维度，其中 {{perfect}} 项无需优化；点击类别查看各维度评分，需优化的在诊断发现中展开",
       "rewardTotal": "总分 {{score}}",
       "artifactFix": "产物修复建议",
@@ -1186,7 +1187,11 @@
         "user": "用户补充"
       },
       "signalSourceLabel": "信号来源：{{source}}",
-      "attributionLabel": "归因：{{kind}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}：{{dimension}}",
+      "findingDimension": "维度",
+      "findingProblem": "问题",
+      "findingReason": "原因",
       "attributionKind": {
         "artifact": "产物",
         "skill": "技能",

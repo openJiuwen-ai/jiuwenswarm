@@ -248,12 +248,23 @@ test('a heading the suggestion opens with is dropped, but never the only content
   assert.equal(stripLeadingHeading('  正文  '), '正文');
 });
 
-test('the node label joins the evidence refs of a failure cause', () => {
+test('the node label keeps gaps and collapses only adjacent steps', () => {
   const ref = (spanId, nodeId) => ({ trace_id: 't', span_id: spanId, subject_id: 'main', node_id: nodeId });
   assert.equal(
     evidenceNodeLabel({ evidence: [ref('1', 'main:23'), ref('2', 'main:30'), ref('3', 'main:23')] }),
-    'main:23 → main:30',
+    'main:23; main:30',
   );
+  assert.equal(
+    evidenceNodeLabel({ evidence: [ref('1', 'main:16'), ref('2', 'main:17'), ref('3', 'main:15')] }),
+    'main:15 → main:17',
+  );
+  assert.equal(
+    evidenceNodeLabel({
+      evidence: [ref('1', 'main:20'), ref('2', 'main:18'), ref('3', 'main:19'), ref('4', 'main:15')],
+    }),
+    'main:15; main:18 → main:20',
+  );
+  assert.equal(evidenceNodeLabel({ evidence: [ref('1', 'main:14')] }), 'main:14');
   assert.equal(evidenceNodeLabel({ evidence: [] }), '');
 });
 
@@ -356,7 +367,7 @@ test('skillSuggestionText keeps the whole md_string block', () => {
 
 test('the node label joins distinct node ids with an arrow', () => {
   const ref = nodeId => ({ trace_id: 't', span_id: 's', subject_id: 'main', ...(nodeId === undefined ? {} : { node_id: nodeId }) });
-  assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:30')] }), 'main:23 → main:30');
+  assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:30')] }), 'main:23; main:30');
   assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:23')] }), 'main:23');
   assert.equal(causeNodeLabel({ refs: [ref(undefined)] }), '');
   assert.equal(causeNodeLabel({ refs: [] }), '');
