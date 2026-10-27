@@ -3072,14 +3072,17 @@
       "enabled": "启用",
       "disabled": "禁用",
       "builtin": "内置",
-      "prebuilt": "企业预置",
+      "prebuilt": "预置",
       "user": "用户自装"
     },
     "mySkillsGroups": {
       "added": "已添加技能",
+      "prebuilt": "预置技能",
       "builtin": "内置技能",
       "skillPack": "技能包"
     },
+    "noPrebuiltSkills": "暂无预置技能",
+    "noUserSkills": "暂无用户自装技能",
     "skillTypes": {
       "skill": "技能包",
       "skillpack": "技能包",
@@ -3239,7 +3242,7 @@
       "cancel": "取消"
     },
     "builtIn": "内置",
-    "enterprisePrebuilt": "企业预置",
+    "enterprisePrebuilt": "预置",
     "status": {
       "installed": "已安装",
       "notInstalled": "未安装",

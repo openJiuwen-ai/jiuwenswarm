@@ -227,6 +227,49 @@ def test_prebuilt_skill_cannot_be_changed_or_uninstalled(tmp_path: Path) -> None
     assert manager.list_skill_installations() == [record]
 
 
+def test_enterprise_builtin_skill_can_toggle_but_not_uninstall(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业内置（builtin）可启停；仍不可卸载。"""
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    workspace = tmp_path / "tenant"
+    manager = SkillManager(workspace_dir=str(workspace))
+    skill_dir = _write_skill(workspace, "docx-pro")
+    record = manager.record_skill_installation(
+        name="docx-pro",
+        source_type="builtin",
+        source="builtin",
+        origin="builtin:docx-pro",
+        version="1.0.0",
+    )
+
+    toggle_off = asyncio.run(
+        manager.handle_skills_toggle(
+            {"name": "docx-pro", "origin": record["origin"], "enabled": False}
+        )
+    )
+    assert toggle_off["success"] is True
+    assert toggle_off["enabled"] is False
+    assert manager.get_skill_enabled("docx-pro") is False
+
+    toggle_on = asyncio.run(
+        manager.handle_skills_toggle(
+            {"name": "docx-pro", "origin": record["origin"], "enabled": True}
+        )
+    )
+    assert toggle_on["success"] is True
+    assert manager.get_skill_enabled("docx-pro") is True
+
+    uninstall_result = asyncio.run(
+        manager.handle_skills_uninstall(
+            {"name": "docx-pro", "origin": record["origin"]}
+        )
+    )
+    assert uninstall_result["error_code"] == "prebuilt_not_removable"
+    assert skill_dir.is_dir()
+
+
 def test_enterprise_web_install_and_uninstall_use_workspace_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

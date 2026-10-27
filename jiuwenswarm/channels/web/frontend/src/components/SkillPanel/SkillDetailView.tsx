@@ -29,7 +29,8 @@ import {
 } from '../ui';
 import { Switch } from '../Switch';
 import { resolveMarketplaceInstalledLocalName } from '../../utils/skillNetUrl';
-import { isAdminManagedSkill } from './skillPanelUtils';
+import { isEnterprise } from '../../edition';
+import { isAdminManagedSkill, shouldShowEnableSwitch } from './skillPanelUtils';
 import { buildSkillVersionOptions } from './skillVersionOptions';
 import type {
   EvolutionEntry,
@@ -390,6 +391,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
   // 技能包含有已卸载成员时整包被禁用，且不允许直接启用（需重新下载完整技能包）
   const isPackBlocked = (selectedSkill.blocked_members?.length ?? 0) > 0;
   const adminManaged = isAdminManagedSkill(selectedSkill);
+  const showEnableSwitch = shouldShowEnableSwitch(selectedSkill, isEnterprise());
   return renderShell(
     {
       avatar: { name: skillDisplayName, testId: 'skill-panel-my-detail-avatar' },
@@ -430,7 +432,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
               ? [t('skills.skillTypes.skillpack')]
               : undefined,
     },
-    /* 右侧操作按钮；企业预置/内置不展示编辑、卸载、启停、发布 */
+    /* 右侧操作按钮；企业预置/内置不展示编辑、卸载、发布；内置可启停 */
     <div className="flex items-center flex-shrink-0">
       {!adminManaged ? (
         <div className="relative">
@@ -484,7 +486,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           ) : null}
         </div>
       ) : null}
-      {!adminManaged ? (
+      {showEnableSwitch ? (
         <div
           className="ml-5 flex items-center gap-2"
           title={isPackBlocked ? t('skills.packBlockedHint') : undefined}
@@ -509,7 +511,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           selectedSkill.enabled !== false ? () => onGoToChat(selectedSkill.name, selectedSkill.skill_type) : undefined
         }
         disabled={selectedSkill.enabled === false}
-        className={`${adminManaged ? 'ml-0' : 'ml-6'} flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed`}
+        className={`${showEnableSwitch || !adminManaged ? 'ml-6' : 'ml-0'} flex items-center justify-center rounded-[16px] text-sm text-control-emphasis bg-card border border-control-emphasis hover:bg-secondary/30 whitespace-nowrap disabled:opacity-40 disabled:cursor-not-allowed`}
         style={{ width: '96px', height: '32px' }}
         data-testid={`${tid}-go-try-btn`}
       >
