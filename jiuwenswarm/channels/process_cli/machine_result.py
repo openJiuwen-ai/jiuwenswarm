@@ -174,8 +174,7 @@ class RunSummary:
         """Consume one event while preserving Runtime-owned payloads."""
         payload = event.payload if isinstance(event.payload, Mapping) else {}
         event_type = event.event_type
-        visible_text = payload.get("output_suppressed") is not True
-        if event_type == "chat.delta" and visible_text:
+        if event_type == "chat.delta":
             text = _text(payload)
             self._deltas.write(text)
             self._answer_deltas.write(text)
@@ -183,7 +182,7 @@ class RunSummary:
             self._answer_deltas.seek(0)
             self._answer_deltas.truncate()
             self._answer_final = ""
-        elif event_type == "chat.final" and visible_text:
+        elif event_type == "chat.final":
             final = _text(payload)
             if final:
                 self._final = final

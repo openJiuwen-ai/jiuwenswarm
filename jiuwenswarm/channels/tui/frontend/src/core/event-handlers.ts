@@ -1163,12 +1163,6 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
   if (eventSessionId && eventSessionId !== activeSessionId) {
     return connectionChanged;
   }
-  if (
-    payload.output_suppressed === true &&
-    (effectiveEvent === "chat.delta" || effectiveEvent === "chat.final" || effectiveEvent === "chat.reasoning")
-  ) {
-    return connectionChanged;
-  }
 
   switch (effectiveEvent) {
     case "chat.delta":
@@ -1373,16 +1367,6 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
         if (typeof pageIdxRaw === "number") {
           delegate.notifyHistoryPageDone(pageIdxRaw);
         }
-        return connectionChanged;
-      }
-      const record = payload.message && typeof payload.message === "object" && !Array.isArray(payload.message)
-        ? payload.message as Record<string, unknown>
-        : payload;
-      const recordEvent = record.event_type ?? record.type;
-      if (
-        record.output_suppressed === true &&
-        (recordEvent === "chat.delta" || recordEvent === "chat.final" || recordEvent === "chat.reasoning")
-      ) {
         return connectionChanged;
       }
       const entry = parseHistoryFrame(frame);

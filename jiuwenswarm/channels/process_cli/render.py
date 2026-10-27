@@ -150,10 +150,6 @@ class EventRenderer:
     def _render_human(self, event: RuntimeEvent) -> None:
         event_type = event.event_type
         payload = event.payload or {}
-        if payload.get("output_suppressed") is True and event_type in {
-            "chat.delta", "chat.final", "chat.reasoning",
-        }:
-            return
         teammate = str(payload.get("role") or "").strip().lower() == "teammate"
         if teammate and event_type in {"chat.delta", "chat.final", "chat.reasoning"}:
             # Member streams run concurrently with the leader. Their text
