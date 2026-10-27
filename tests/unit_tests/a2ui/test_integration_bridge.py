@@ -396,10 +396,11 @@ async def test_finalize_assistant_response_if_a2ui_bypasses_non_web_channel(monk
 async def test_finalize_officeclaw_skips_server_side_repair_and_resend(monkeypatch):
     """officeclaw (relay-claw) must NOT run server-side A2UI repair/retry/resend.
 
-    relay-claw frontend accumulates streamed a2ui deltas and self-repairs via
-    jsonrepair; a server-side repair+resend would emit a second <a2ui-json> block
-    on top of the accumulated one and arrive after the wire terminal chunk
-    (review CR-1 + atomgit-bot medium-priority comment on PR #8390).
+    officeclaw completely skips server-side finalize (including validation) — no
+    repair, no retry, no resend. Broken a2ui content is handled downstream by
+    relay-claw's parseA2UIContent + jsonrepair (in relay-claw repo a2uiContent.ts,
+    not this repo). Skipping entirely eliminates the CR-1 timing issue (resend
+    frame after terminal) and the atomgit-bot duplicate-block concern.
     """
     import types
 

@@ -48,10 +48,12 @@ def is_a2ui_probe_channel(channel: str | None) -> bool:
 
 
 # 仅这些渠道走服务端 A2UI repair/retry/重发（finalize_assistant_response_if_a2ui）。
-# officeclaw (relay-claw) 故意排除：relay-claw 前端用 parseA2UIContent 从累积文本
-# 提取 <a2ui-json> 并自带 jsonrepair 兜底；服务端 repair 后整段 chat.final 重发会与
-# 已累积 delta 产生重复块，且该帧落在 wire 终结块之后被消费方丢弃（PR #8390 检视
-# CR-1 + atomgit-bot medium-priority 意见）。officeclaw 改为仅校验不 repair。
+# officeclaw (relay-claw) 故意排除，完全跳过服务端 finalize（含校验）：
+# 1. relay-claw 前端用 parseA2UIContent 从累积文本提取 <a2ui-json>，破损 JSON 走
+#    jsonrepair 兜底（实现在 relay-claw 仓库 a2uiContent.ts:71-75，非本仓库）；
+# 2. 服务端 repair 后整段 chat.final 重发会与已累积 delta 产生重复块；
+# 3. 该重发帧落在 wire 终结块之后被 relay-claw 消费方 break 丢弃（检视 CR-1）。
+# 完全跳过 = 不 repair/不校验/不重发，从根上消除 CR-1 时序问题与重复块（检视 CR-3）。
 _A2UI_FINALIZE_REPAIR_CHANNEL_IDS = frozenset({"web"})
 
 
@@ -138,8 +140,10 @@ async def finalize_assistant_response_if_a2ui(
     if not is_a2ui_channel(channel):
         return content
 
-    # officeclaw (relay-claw) 不走服务端 repair/retry/重发：前端累积解析 + jsonrepair
-    # 自担修复，重发整段会制造重复块且落在 wire 终结块之后被丢（PR #8390 检视意见）。
+    # officeclaw (relay-claw) 完全跳过服务端 finalize（含校验）：不 repair、不校验、
+    # 不重发。破损 a2ui 由下游 relay-claw 前端 parseA2UIContent + jsonrepair 自行处理
+    # （jsonrepair 实现在 relay-claw 仓库 a2uiContent.ts:71-75，非本仓库）。完全跳过
+    # 从根上消除检视 CR-1（重发帧时序丢）+ CR-3（注释行为不符）+ atomgit-bot 重复块。
     if not should_finalize_repair(channel):
         return content
 

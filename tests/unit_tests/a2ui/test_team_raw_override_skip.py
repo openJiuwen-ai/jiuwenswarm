@@ -3,7 +3,8 @@
 """team raw_query 覆写豁免（max评审#2）回归测试。
 
 client_event 请求的 inputs["query"] 已由 build_user_prompt 转为可读 a2ui prompt，
-team 分支不得再用 raw_query（此时为原始 dict）覆写回它。
+但 raw_query 取自 params.content（dict），raw_query = query if isinstance(query, str)
+else "" 为空字符串——不豁免时用空串覆写转换后成品 prompt（检视 CR-5）。
 """
 
 from __future__ import annotations

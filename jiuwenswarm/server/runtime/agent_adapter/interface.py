@@ -149,7 +149,9 @@ def _should_skip_team_raw_override(inputs: dict[str, Any], request: AgentRequest
 
     豁免两类结构化请求：
     - InteractiveInput：ask_user/HITL 续答（既有先例）
-    - A2UI client_event：query 已是转换后 a2ui prompt，覆写将退回原始 dict
+    - A2UI client_event：query 已是转换后 a2ui prompt（str），但 raw_query 取自
+      params.content（dict），raw_query = query if isinstance(query, str) else ""
+      为空字符串——不豁免时用空串覆写转换后成品 prompt（检视 CR-5）
     """
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
