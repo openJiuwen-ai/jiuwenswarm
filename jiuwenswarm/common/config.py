@@ -2535,7 +2535,7 @@ _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
 }
 
 # 受 ``get_sandbox_runtime`` / ``update_sandbox_runtime`` 管辖的 sandbox 字段。
-_SANDBOX_RUNTIME_KEYS: tuple[str, ...] = tuple(_SANDBOX_RUNTIME_DEFAULTS.keys())
+_SANDBOX_RUNTIME_KEYS: tuple[str, ...] = (*_SANDBOX_RUNTIME_DEFAULTS, "network_default")
 
 # 连接器 CLI glob 强制并入 excluded_commands；入口名只改 connect_cli_config.json。
 def merge_connector_excluded_commands(patterns: list[str] | None) -> list[str]:
@@ -2638,6 +2638,10 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
     if "urls" in runtime:
         from jiuwenswarm.common.net_guard_config import validate_sandbox_urls
         out["urls"] = validate_sandbox_urls(runtime["urls"])
+    if "network_default" in runtime:
+        if runtime["network_default"] not in ("allow", "deny"):
+            raise ValueError("sandbox.network_default must be allow|deny")
+        out["network_default"] = runtime["network_default"]
     if "idle_ttl_seconds" in runtime:
         # ``<= 0`` 归一化成 ``None`` (= 禁用淘汰), 与 jiuwenbox server 端
         # ``TimeoutPolicy.idle_timeout`` 的语义对齐。
@@ -3166,6 +3170,8 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("sandbox.files is managed by sandbox.files.sync; edit FileGuard first")
     if "urls" in patch:
         raise ValueError("sandbox.urls is managed by sandbox.network.sync; edit NetGuard first")
+    if "network_default" in patch:
+        raise ValueError("sandbox.network_default is managed by sandbox.network.sync; edit NetGuard first")
 
     current = get_sandbox_runtime()
     merged = dict(current)

@@ -169,6 +169,10 @@ class SecurityConfigService:
         return {
             axis: (old.get(module) or {}).get(field) != (new.get(module) or {}).get(field)
             or (old.get(module) or {}).get("enabled") != (new.get(module) or {}).get("enabled")
+            or (
+                axis == "network"
+                and (old.get(module) or {}).get("defaults", "allow") != (new.get(module) or {}).get("defaults", "allow")
+            )
             for axis, module, field in (("file", "file_guard", "paths"), ("network", "net_guard", "urls"))
         }
 

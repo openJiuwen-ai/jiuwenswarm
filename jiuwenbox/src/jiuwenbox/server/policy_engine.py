@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from collections.abc import Mapping
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -287,6 +286,10 @@ class PolicyEngine:
 
         if isinstance(base, dict) and isinstance(extra, Mapping):
             merged = dict(base)
+            replace_allowed = extra.get("replace_allowed") is True and "allowed_domains" in base
+            if replace_allowed:
+                for key in ("allowed_domains", "allowed_ips", "allowed_ports"):
+                    merged[key] = []
             for key, value in extra.items():
                 if key in merged:
                     merged[key] = self._merge_value(merged[key], value)

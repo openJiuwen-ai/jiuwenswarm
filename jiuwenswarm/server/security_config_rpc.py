@@ -103,7 +103,11 @@ def _check_sandbox_coverage(
 def _sandbox_rule_fields_changed(before: dict[str, Any], after: dict[str, Any], module: str, field: str) -> bool:
     old = before.get(module) or {}
     new = after.get(module) or {}
-    return old.get(field) != new.get(field) or old.get("enabled") != new.get("enabled")
+    return (
+        old.get(field) != new.get(field)
+        or old.get("enabled") != new.get("enabled")
+        or (module == "net_guard" and old.get("defaults", "allow") != new.get("defaults", "allow"))
+    )
 
 
 def _get_native_sandbox_config(service: SecurityConfigService) -> dict[str, Any]:

@@ -141,7 +141,6 @@ def _load_copy() -> dict[str, Any]:
             if k not in win_net or not win_net[k]:
                 win_net[k] = v
     # 补齐结构 (兼容旧副本缺字段)
-    skel = _empty_skeleton()
     win = data.setdefault("windows", {})
     win.setdefault("filesystem", {})
     win.setdefault("network", {})
@@ -488,17 +487,22 @@ def set_sandbox_network_config(
     disable_all: bool,
     allow_domains: list[Any],
     deny_domains: list[Any],
+    *,
+    default: str | None = None,
 ) -> dict[str, Any]:
     """整体替换用户网络配置.
 
     disable_all → 副本 windows.network.disable_all (仅 Windows; box-server 传给
     EgressFilter 短路拒绝所有出站; allow/blocked_domains 原样保留在副本, 不清空, 关掉即恢复).
-    allow_domains → 副本 egress.allowed_domains (merge 去重并集到基底 pypi/npmmirror).
+    allow_domains → 副本 egress.allowed_domains；默认 deny 时替换基底允许名单，否则与基底并集。
     deny_domains → 副本 egress.blocked_domains (黑名单优先).
     Linux 副本写 network.egress.*; iptables 按 IP 过滤, 域名在下发时解析成 IP.
+    default 由 Guard 同步提供；deny 使用完整允许名单，覆盖基底域名/IP/端口放行。
     """
     if not isinstance(disable_all, bool):
         raise ValueError("disable_all must be boolean")
+    if default is not None and default not in ("allow", "deny"):
+        raise ValueError("sandbox.network_default must be allow|deny")
     if not isinstance(allow_domains, list) or not isinstance(deny_domains, list):
         raise ValueError("allow_domains and deny_domains must be lists")
     if disable_all and not _is_windows():
@@ -515,10 +519,23 @@ def set_sandbox_network_config(
         net = data["network"]
     net["egress"]["allowed_domains"] = list(allow_norm)
     net["egress"]["blocked_domains"] = list(deny_norm)
+    if default is not None:
+        egress = net["egress"]
+        egress["default"] = default
+        if default == "deny":
+            egress.update(replace_allowed=True, allowed_ips=[], allowed_ports=[])
+        elif egress.pop("replace_allowed", False):
+            # Restore base-policy allowances when leaving the synchronized deny mode.
+            egress.pop("allowed_ips", None)
+            egress.pop("allowed_ports", None)
     if _is_windows():
         _save_copy(data)
     else:
         _save_linux_copy(data)
+    if default is not None:
+        saved = _load_copy()["windows"]["network"] if _is_windows() else _load_linux_copy()["network"]
+        if saved != net:
+            raise OSError("Sandbox network configuration could not be saved")
     return {
         "disable_all": disable_all,
         "allow_domains": allow_norm,

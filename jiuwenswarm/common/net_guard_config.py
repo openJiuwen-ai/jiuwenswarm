@@ -1,4 +1,4 @@
-"""Explicit NetGuard → sandbox domain synchronization. ASK is skipped."""
+"""Explicit NetGuard → sandbox domain/default synchronization. ASK is skipped."""
 
 from copy import deepcopy
 
@@ -26,14 +26,19 @@ def project_net_guard_to_sandbox(guard):
         target = allow if action == "allow" else deny
         if domain not in target:
             target.append(domain)
-    if guard.get("defaults", "allow") != "allow":
+    default = guard.get("defaults", "allow")
+    if default == "ask":
         skipped.append(
             {
                 "pattern": "defaults",
-                "reason": "沙箱域名名单不支持同步默认询问或默认拒绝",
+                "reason": "沙箱不支持默认询问，仅同步域名规则，默认允许",
             }
         )
-    return {"allow_domains": allow, "deny_domains": deny}, skipped
+    return {
+        "default": "deny" if default == "deny" else "allow",
+        "allow_domains": allow,
+        "deny_domains": deny,
+    }, skipped
 
 
 def sync_net_guard_to_sandbox():
@@ -55,11 +60,13 @@ def sync_net_guard_to_sandbox():
         urls = {domain: "allow" for domain in network["allow_domains"]}
         urls.update({domain: "deny" for domain in network["deny_domains"]})
         data.setdefault("sandbox", {})["urls"] = urls
+        data["sandbox"]["network_default"] = network["default"]
         return data
 
     data = update_config(mutate)
     return {
         "urls": deepcopy(data["sandbox"]["urls"]),
+        "default": data["sandbox"]["network_default"],
         "skipped": skipped,
         "restart_required": True,
     }
@@ -98,6 +105,7 @@ def render_saved_sandbox_urls(policy_path):
 
     sandbox = get_config().get("sandbox") or {}
     urls = validate_sandbox_urls(sandbox.get("urls", {}))
+    default = sandbox.get("network_default")
     expected = _runtime_copy_path() if _is_windows() else _linux_runtime_copy_path()
     if policy_path is None or Path(policy_path).resolve() != expected.resolve():
         raise ValueError("sandbox.urls requires the platform runtime policy copy")
@@ -117,6 +125,7 @@ def render_saved_sandbox_urls(policy_path):
         current["disable_all"],
         allowed,
         denied,
+        default=default,
     )
     if get_sandbox_network_config() != stored:
         raise OSError("Sandbox network configuration could not be saved")

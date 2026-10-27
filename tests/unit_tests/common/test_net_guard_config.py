@@ -1,6 +1,9 @@
-"""Network sync must skip ASK and preserve sandbox allow/deny semantics."""
+"""Network sync preserves default deny and domain exceptions without base bypasses."""
+
+from pathlib import Path
 
 import pytest
+import yaml
 
 from jiuwenswarm.common import config
 from jiuwenswarm.common.net_guard_config import (
@@ -41,6 +44,7 @@ def test_projection_skips_ask_and_urls_instead_of_widening_them():
         }
     )
     assert network == {
+        "default": "allow",
         "allow_domains": ["*.allow.example.com"],
         "deny_domains": ["deny.example.com"],
     }
@@ -144,11 +148,133 @@ def test_runtime_updates_preserve_synced_urls(config_file):
     saved = sync_net_guard_to_sandbox()["urls"]
     config.update_sandbox_runtime({"enabled": True})
     assert config.load_yaml_round_trip(config_file)["sandbox"]["urls"] == saved
+    assert config.get_sandbox_runtime()["network_default"] == "allow"
+    assert config.load_yaml_round_trip(config_file)["sandbox"]["network_default"] == "allow"
     with pytest.raises(ValueError, match="sandbox.network.sync"):
         config.update_sandbox_runtime({"urls": {}})
+    with pytest.raises(ValueError, match="sandbox.network.sync"):
+        config.update_sandbox_runtime({"network_default": "deny"})
 
 
 @pytest.mark.parametrize("urls", [None, [], {"example.com": "ask"}, {"https://example.com/path": "deny"}])
 def test_invalid_saved_rules_are_rejected(urls):
     with pytest.raises(ValueError):
         validate_sandbox_urls(urls)
+
+
+@pytest.mark.parametrize("default", ["allow", "deny"])
+def test_supported_default_is_synchronized_without_a_skipped_receipt(default):
+    network, skipped = project_net_guard_to_sandbox({"defaults": default, "urls": {}})
+    assert network["default"] == default
+    assert skipped == []
+
+
+@pytest.mark.parametrize("windows", [True, False])
+@pytest.mark.parametrize("domains", [{}, {
+    "allowed.example.com": "allow", "denied.example.com": "deny", "ip.me": "allow",
+}])
+def test_default_deny_survives_base_merge_and_allows_only_domain_exceptions(
+    config_file, monkeypatch, windows, domains,
+):
+    from jiuwenbox.models import policy as policy_module
+    from jiuwenbox.models.policy import SecurityPolicy
+    from jiuwenbox.server.policy_engine import PolicyEngine
+    from jiuwenbox.supervisor import win_proxy
+
+    monkeypatch.setattr(render, "_is_windows", lambda: windows)
+    # DNS is deterministic; this regression opens no sockets.
+    monkeypatch.setattr(win_proxy.socket, "getaddrinfo", lambda *_args: [(0, 0, 0, "", ("203.0.113.10", 0))])
+    data = config.load_yaml_round_trip(config_file)
+    data["permissions"]["net_guard"].update(defaults="deny", urls=domains)
+    config.dump_yaml_round_trip(config_file, data)
+    synced = sync_net_guard_to_sandbox()
+    assert synced["default"] == "deny"
+    assert synced["skipped"] == []
+    policy_path = render._runtime_copy_path() if windows else render._linux_runtime_copy_path()
+    assert not policy_path.exists()  # Sync only saves the snapshot.
+
+    # Applying must consume the snapshot even if NetGuard changes afterwards.
+    data = config.load_yaml_round_trip(config_file)
+    data["permissions"]["net_guard"].update(defaults="allow", urls={})
+    config.dump_yaml_round_trip(config_file, data)
+    render_saved_sandbox_urls(policy_path)
+    override = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    base_path = Path(policy_module.__file__).resolve().parents[1] / "configs" / "windows-policy.yaml"
+    base = SecurityPolicy.model_validate(yaml.safe_load(base_path.read_text(encoding="utf-8")))
+    if not windows:
+        # Exercise the same allowlist merge contract for the Linux projection.
+        base = base.model_copy(update={"network": base.network.model_copy(update={"egress": base.windows.network.egress})})
+    merged = PolicyEngine().merge_policy(base, override)
+    egress = merged.windows.network.egress if windows else merged.network.egress
+    assert egress.default == "deny"
+    assert egress.allowed_domains == [domain for domain, action in domains.items() if action == "allow"]
+    assert egress.allowed_ports == []
+    assert egress.allowed_ips == []
+    assert egress.blocked_ports == base.windows.network.egress.blocked_ports
+    gate = win_proxy.EgressFilter(egress)
+    # ip.me stays blocked: it is on the base blocklist, which outranks an allow projection.
+    for host in ("203.0.113.10", "127.0.0.1", "pypi.org", "other.example.com", "denied.example.com", "ip.me"):
+        for port in (80, 443, 8443):
+            assert not gate.allow(host, port)[0], (host, port)
+    if domains:
+        for port in (80, 443, 8443):
+            assert gate.allow("allowed.example.com", port)[0]
+
+    # Switching back restores base allowances; repeated rendering is idempotent.
+    assert sync_net_guard_to_sandbox()["default"] == "allow"
+    render_saved_sandbox_urls(policy_path)
+    render_saved_sandbox_urls(policy_path)
+    restored = PolicyEngine().merge_policy(base, yaml.safe_load(policy_path.read_text(encoding="utf-8")))
+    restored_egress = restored.windows.network.egress if windows else restored.network.egress
+    assert restored_egress.default == "allow"
+    assert restored_egress.allowed_ports == base.windows.network.egress.allowed_ports
+    assert restored_egress.allowed_ips == base.windows.network.egress.allowed_ips
+    assert win_proxy.EgressFilter(restored_egress).allow("203.0.113.10", 443)[0]
+
+
+def test_default_deny_rpc_receipt_preserves_only_unsupported_skips(config_file):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.sandbox_config_rpc import dispatch_sandbox_config_request
+
+    data = config.load_yaml_round_trip(config_file)
+    data["permissions"]["net_guard"].update(defaults="deny", urls={
+        "allowed.example.com": "allow", "review.example.com": "ask",
+        "https://example.com/private": "deny",
+    })
+    config.dump_yaml_round_trip(config_file, data)
+    result = dispatch_sandbox_config_request(AgentRequest(
+        request_id="deny-sync", channel_id="web", req_method=ReqMethod.SANDBOX_NETWORK_SYNC, params={},
+    ))
+    assert result.ok
+    assert result.payload["default"] == "deny"
+    assert result.payload["urls"] == {"allowed.example.com": "allow"}
+    assert {item["pattern"] for item in result.payload["skipped"]} == {
+        "review.example.com", "https://example.com/private",
+    }
+
+
+def test_default_only_runtime_write_failure_is_not_reported_as_success(config_file, monkeypatch):
+    monkeypatch.setattr(render, "_is_windows", lambda: True)
+    render.set_sandbox_network_config(False, [], [])
+    data = config.load_yaml_round_trip(config_file)
+    data["permissions"]["net_guard"].update(defaults="deny", urls={})
+    config.dump_yaml_round_trip(config_file, data)
+    sync_net_guard_to_sandbox()
+    monkeypatch.setattr(render, "_save_copy", lambda _data: None)
+    with pytest.raises(OSError, match="could not be saved"):
+        render_saved_sandbox_urls(render._runtime_copy_path())
+
+
+def test_legacy_snapshot_preserves_existing_default_and_allowances(config_file, monkeypatch):
+    monkeypatch.setattr(render, "_is_windows", lambda: True)
+    policy_path = render._runtime_copy_path()
+    render.set_sandbox_network_config(False, [], [])
+    data = yaml.safe_load(policy_path.read_text(encoding="utf-8"))
+    data["windows"]["network"]["egress"].update(default="deny", allowed_ports=[8443])
+    policy_path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    render_saved_sandbox_urls(policy_path)
+    applied = yaml.safe_load(policy_path.read_text(encoding="utf-8"))["windows"]["network"]["egress"]
+    assert applied["default"] == "deny"
+    assert applied["allowed_ports"] == [8443]
+    assert "replace_allowed" not in applied

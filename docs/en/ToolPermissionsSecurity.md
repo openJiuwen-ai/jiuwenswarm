@@ -186,6 +186,7 @@ For the guard configuration above, the Web response is:
   "ok": true,
   "payload": {
     "urls": {"blocked.example.com": "deny"},
+    "default": "allow",
     "skipped": [{"pattern":"review.example.com","reason":"询问仅在工具调用前处理，不同步到沙箱"}],
     "restart_required": true
   }
@@ -195,22 +196,26 @@ For the guard configuration above, the Web response is:
 | Field | Meaning |
 | --- | --- |
 | `urls` | Domain-to-allow/deny mapping saved to `config.yaml` under `sandbox.urls`; replaces the previous mapping |
+| `default` | Default action saved under `sandbox.network_default`: `allow` or `deny` |
 | `skipped` | `{pattern, reason}` entries, or `[]`; partial skipping still returns success. Current reason strings are server-generated Chinese text |
 | `restart_required` | Always true; call `sandbox.restart` to apply both sets of rules |
 
-Only allow/deny rules for plain domains or `*.domain` are copied. **ASK is skipped, never mapped to DENY**. Full URLs, ports and unsupported wildcard patterns are also skipped rather than broadened. Non-allow defaults are reported with `pattern: "defaults"` because domain lists cannot represent them. If all rules are skipped, `sandbox.urls` becomes `{}`. Original NetGuard rules are unchanged. Sandbox allowlist, blocklist and base-policy semantics still apply; synchronization is not a complete translation of NetGuard.
+Allow/deny rules for plain domains or `*.domain` are copied together with the allow/deny default action from `net_guard.defaults`. **Default deny is supported and is no longer reported in `skipped`**. Default ask is still reported with `pattern: "defaults"` and uses sandbox default allow. ASK domain rules are skipped, never mapped to DENY. Full URLs, ports and unsupported wildcard patterns remain in `skipped` rather than being broadened. An empty domain projection saves `sandbox.urls: {}`; default deny still applies. Original NetGuard rules are unchanged. Partial synchronization still returns success; callers should surface the actual limitations in `skipped` instead of treating a successful save as complete coverage.
 
-Like file sync saving `sandbox.files`, network sync only saves `sandbox.urls` in `config.yaml`. It does not change the runtime policy copy or start, reload or recreate sandboxes. `ok: true` means saved, not applied. Example saved configuration:
+Like file sync saving `sandbox.files`, network sync only saves `sandbox.urls` and `sandbox.network_default` in `config.yaml`. It does not change the runtime policy copy or start, reload or recreate sandboxes. The response echoes the saved `default`; `ok: true` means saved, not applied. Example saved configuration:
 
 ```yaml
 sandbox:
   files: []
+  network_default: deny
   urls:
     example.org: allow
     blocked.example.com: deny
 ```
 
-`sandbox.files` and `sandbox.urls` store sandbox-supported rules synchronized from their respective Guards. `sandbox.restart` reads both saved configurations, applies them and rebuilds the sandboxes. It does not reread Guard rules or copy runtime rules back into configuration. Guard edits require another sync to update the pending configuration. Network application converts `sandbox.urls` into domain lists in the platform runtime policy copy, preserving `disable_all`. The defaults `files: []` and `urls: {}` both mean empty rules. Starting the internally managed service also loads the current configuration. Applying network rules fails explicitly if a custom policy does not use the platform runtime copy.
+`sandbox.files`, `sandbox.urls` and `sandbox.network_default` store the synchronized snapshot. `sandbox.restart` applies that snapshot and rebuilds sandboxes without rereading Guard rules or copying runtime rules back. Guard edits require another sync. Network application writes domain lists and `egress.default` to the platform runtime policy copy, preserving `disable_all`. Default deny sets `egress.replace_allowed: true`: projected domains replace base allowed domains, IPs and ports, so empty IP/port lists no longer inherit the broad base 80/443 allowances. Base blocklists remain effective and take precedence. Independently configured native domains still participate in composition; `disable_all=true` continues to deny even allowed domains. Switching back to allow removes the projection's replacement marker and empty IP/port lists, restoring base allowances. Legacy snapshots without `network_default` preserve the existing default action. The configuration facade also treats a NetGuard-default-only edit as a network change requiring synchronization and application.
+
+The defaults `files: []` and `urls: {}` both mean empty rules. Starting the internally managed service also loads the saved snapshot. Applying network rules fails explicitly if a custom policy does not use the platform runtime copy. Service reloads and sandbox recreation stop running sandbox tasks.
 
 Read pending rules from the sync response or `config.yaml`. The separate legacy `sandbox.network.get/set` interfaces still operate on the runtime policy copy. They do not participate in Guard synchronization or read pending `sandbox.urls`. Unified application uses the saved sandbox configuration.
 

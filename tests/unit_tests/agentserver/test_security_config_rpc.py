@@ -135,6 +135,55 @@ async def test_profile_defaults_change_does_not_restart_sandbox(service, monkeyp
 
 
 @pytest.mark.asyncio
+async def test_network_default_only_changes_sync_restart_and_report_supported_default(service, monkeypatch, tmp_path):
+    from jiuwenswarm.common.net_guard_config import render_saved_sandbox_urls
+    from jiuwenswarm.server import sandbox_policy_render as render
+    from jiuwenswarm.server.security_config_legacy_rpc import dispatch_managed_permissions_request
+
+    monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(render, "_is_windows", lambda: True)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc.publish_host_exit_policy_from_config",
+        lambda _config: None,
+    )
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    live["permissions"]["file_guard"] = {
+        "enabled": True, "defaults": {"read": "allow", "write": "allow", "exec": "allow"}, "paths": [],
+    }
+    live["permissions"]["net_guard"] = {
+        "enabled": True, "defaults": "allow", "urls": {"allowed.example.com": "allow", "review.example.com": "ask"},
+    }
+    dump_yaml_round_trip(service.config_path, live)
+    restarts = []
+
+    async def restart(_params):
+        render_saved_sandbox_urls(render._runtime_copy_path())
+        restarts.append(load_yaml_round_trip(render._runtime_copy_path())["windows"]["network"]["egress"]["default"])
+        return {"status": "applied"}
+
+    manager = Manager()
+    initialized = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_INITIALIZE, {}, agent_manager=manager,
+        restart_sandboxes=restart, service=service,
+    )
+    assert initialized["applied"], initialized
+    assert restarts == []
+    for default in ("deny", "allow"):
+        result = await dispatch_managed_permissions_request(
+            ReqMethod.PERMISSIONS_NET_GUARD_SET, {"net_guard": {"defaults": default}},
+            agent_manager=manager, restart_sandboxes=restart, service=service,
+        )
+        assert result["applied"], result
+        assert result["apply"]["targets"]["sandbox"] == "applied"
+        assert {item["pattern"] for item in result["apply"]["sandbox_network_skipped"]} == {"review.example.com"}
+        saved = load_yaml_round_trip(service.config_path)["sandbox"]
+        assert saved["network_default"] == default
+        assert saved["urls"] == {"allowed.example.com": "allow"}
+    assert restarts == ["deny", "allow"]
+
+
+@pytest.mark.asyncio
 async def test_initialization_reports_unprojectable_builtin_paths_without_blocking(service, monkeypatch):
     from jiuwenswarm.common import config as config_module
 

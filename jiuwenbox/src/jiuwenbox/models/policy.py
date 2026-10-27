@@ -449,6 +449,8 @@ class NetworkMode(str, enum.Enum):
 
 class NetworkRulePolicy(BaseModel):
     default: Literal["deny", "allow"] = "deny"
+    # Synchronized domain-only policy must not inherit broad base port/IP allows.
+    replace_allowed: bool = False
     allowed_domains: list[str] = Field(default_factory=list)
     blocked_domains: list[str] = Field(default_factory=list)
     allowed_ips: list[str] = Field(default_factory=list)
