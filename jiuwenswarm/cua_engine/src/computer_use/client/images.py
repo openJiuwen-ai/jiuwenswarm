@@ -44,15 +44,26 @@ def image_metadata(png):
     return known["metadata"] if known is not None and known["hash"] == _hash(png) else None
 
 
-def image_delivered(png):
+def image_delivered(png, coordinates=None):
     known = _sources.get(png)
     if known is not None and known["hash"] == _hash(png) and known["source"].get("current",
                                                                                  lambda: True)() is not False:
-        known["source"].get("delivered", lambda: None)()
+        delivered = known["source"].get("delivered")
+        if delivered is not None:
+            if coordinates is not None:
+                size = png_size(png)
+                if coordinates.source_size != (size["width"], size["height"]):
+                    raise ValueError("The delivered coordinate map does not belong to this source PNG.")
+            if coordinates is None or coordinates.source_size == coordinates.delivered_size:
+                delivered()
+            else:
+                delivered(coordinates)
 
 
-def image_label(png, context_already_shown=False):
+def image_label(png, context_already_shown=False, coordinates=None):
     size = png_size(png)
+    if coordinates is not None:
+        size = dict(width=coordinates.delivered_size[0], height=coordinates.delivered_size[1])
     known = _sources.get(png)
     if known is not None and known["hash"] != _hash(png):
         _sources.delete(png)
@@ -76,4 +87,5 @@ def image_label(png, context_already_shown=False):
                      and source.get("current", lambda: True)() is not False)
     if source is not None and known["metadata"] is not None:
         facts["stopReasons"] = known["metadata"].get("stopReasons", ())
-    return render_image_caption(size["width"], size["height"], facts)
+    caption = render_image_caption(size["width"], size["height"], facts)
+    return caption + ("\nUse this displayed image's pixels for coordinates." if coordinates is not None else "")

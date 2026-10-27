@@ -182,7 +182,7 @@ if state.overview is not None:
     printImage(state.overview)  # Related windows and popups.
 ```
 
-Let this call return and inspect the image before choosing coordinates in another call. App coordinates use the selected window's original PNG pixels, origin top-left. Use the App that supplied that image. Overviews show context only; read a popup's own window image to click it. Printing an old image does not refresh it. After a changed capture, return its new screenshot before coordinate input; re-observe when geometry or state changes. A preview or `Screenshot: captured` label does not deliver an image to the model.
+Let this call return and inspect the image before choosing coordinates in another call. Use the pixels of the image actually returned to the model, origin top-left. Image delivery may resize a screenshot; the SDK maps those coordinates back to the retained capture. Use the App that supplied that image. Overviews show context only; read a popup's own window image to click it. Printing an old image does not refresh it. After a changed capture, return its new screenshot before coordinate input; re-observe when geometry or state changes. A preview or `Screenshot: captured` label does not deliver an image to the model.
 
 For system UI, unknown-owner popups or app-level limits, `computer.read()` presents a desktop catalogue and desktop PNG without requiring AX. Computer input uses those desktop coordinates and requires exclusive mode; never mix desktop and App coordinates. Missing displays and gaps are not input regions. AX failure does not necessarily prevent screenshots, but App keyboard input may still require native window confirmation.
 

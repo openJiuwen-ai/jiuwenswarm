@@ -39,6 +39,7 @@ from .desktop_store import DesktopStore
 from .diagnostics import local_failure
 from .execution import operation
 from .images import image_delivery_epoch, image_delivery_required, register_image
+from .image_coordinates import ImageCoordinates
 from .observation_data import retain_observation_data
 from .observations import observation_completed, observations_invalidated, pending_observations_discarded
 from .result_presentation import action_result, captured_text
@@ -57,6 +58,7 @@ class AppState:
     refs: OrderedDict = field(default_factory=OrderedDict)
     windows: dict = field(default_factory=dict)
     delivered: tuple | None = None
+    delivered_coordinates: ImageCoordinates | None = None
     capture_expired: bool = False
 
     @property
@@ -240,6 +242,7 @@ class NativeController:
             state.query_scope_kind = 'window'
             self._catalogue(state, observed.directory, observed.windows)
             state.delivered, state.capture_expired = None, False
+            state.delivered_coordinates = None
             if observed.tree is not None:
                 self._remember(state, observed.target, observed.tree)
             if observed.menus is not None:
@@ -260,6 +263,7 @@ class NativeController:
             state.selection = choices.selection
         self._catalogue(state, choices.directory, self.reader.window_aliases(choices.directory))
         state.observation, state.query_target, state.delivered = None, None, None
+        state.delivered_coordinates = None
         state.refs.clear()
         lines = [
             'App: ' + json_string(state.name) + '.', 'Select a window with app.window(ref).',
@@ -384,9 +388,10 @@ class NativeController:
                     and owner.observation is not None and owner.observation.image is not None
                     and owner.observation.image.image is pixels and session == controller.transport.session)
 
-        def delivered():
+        def delivered(coordinates=None):
             if current():
                 weak_state().delivered = (capture, image_delivery_epoch())
+                weak_state().delivered_coordinates = coordinates
 
         selected = next(item for item in observation.source_directory['surfaces']
                         if item['surface'] == observation.target.surface)
@@ -419,6 +424,9 @@ class NativeController:
 
     def check_coordinates(self, owner, x, y, operation_name='click'):
         self.app_ref(owner, True)
+        coordinates = self.state(owner).delivered_coordinates
+        if coordinates is not None:
+            x, y = coordinates.source_point((x, y))
         dimensions = capture_metadata(self.state(owner).observation.image.image)
         outside_observed_image = not finite(x) or not finite(
             y) or not 0 <= x < dimensions['width'] or not 0 <= y < dimensions['height']
@@ -437,8 +445,16 @@ class NativeController:
         else:
             target, parameter = params['appRef'], 'appRef'
         intent = dict(typeText='insert', pressKey='key').get(method, method)
-        return await self._execute(owner, Intent(intent, {k: v
-                                                          for k, v in params.items() if k != parameter}), target,
+        parameters = {key: value for key, value in params.items() if key != parameter}
+        if method in ('click', 'scroll', 'drag'):
+            if owner is None:
+                parameters = self.desktop.map_parameters(method, parameters)
+            else:
+                self.app_ref(owner, True)
+                coordinates = self.state(owner).delivered_coordinates
+                if coordinates is not None:
+                    parameters = coordinates.source_parameters(method, parameters)
+        return await self._execute(owner, Intent(intent, parameters), target,
                                    app_keyboard=owner is not None and method in ('typeText', 'paste', 'pressKey'))
 
     async def act_element(self, owner, snapshot, query, intent, parameters):
