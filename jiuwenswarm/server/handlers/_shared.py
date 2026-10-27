@@ -337,7 +337,7 @@ def resolve_request_runtime_mode(
         if not _request_allows_plan_entry(request, params):
             params = {**params, "mode": mode_text.split(".", 1)[0]}
     legacy_resolver = partial(
-        resolve_agent_request_mode, allow_flash_default=not explicit_officeclaw,
+        resolve_agent_request_mode, allow_flash_default=True,
     )
     resolved = resolve_request_mode(params, legacy_resolver, work_mode=work_mode)
     # Web composition and new canonical modes bypass the legacy Flash guard.
@@ -346,7 +346,7 @@ def resolve_request_runtime_mode(
     if resolved.canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}:
         default_mode, _, _ = resolve_agent_request_mode(
             "agent", work_mode=resolved.work_mode,
-            allow_flash_default=not explicit_officeclaw,
+            allow_flash_default=True,
         )
         if default_mode == "flash":
             resolved = replace(
