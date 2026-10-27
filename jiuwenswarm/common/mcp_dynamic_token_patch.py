@@ -36,15 +36,14 @@ Mechanism (SDK v0.1.16, AgentServer 主进程 site-packages 版):
 
   C. ``DynamicTokenProvider`` is an ``httpx.Auth``: ``async_auth_flow`` lays
      down the static template headers/query params (same semantics as the
-     stock provider), then resolves the current turn's ``X-User-Token`` from
-     the (server_id, JSON-RPC id) registry — 实际 HTTP 请求由建连时启动的
-     后台任务发送，直接读 ContextVar 拿到的是 connect 时刻快照；发送侧经
-     会话写流代理（``_TurnTokenTaggingStream``，在 ``ClientSession.__init__``
-     消费 authenticate 留下的归属标记安装——先于首次 send，``initialize``
-     握手即带用户令牌；connect 成功后另有兜底安装）按请求 id 登记当轮
-     token，provider 侧按请求体 id 精确消费：带 id 的请求只认本次登记值
-     （缺失回退静态快照，不沿用上一轮用户令牌）；GET 事件流 / 通知回退
-     最近一次登记值。Then it fetches a fresh actor token **before the first
+     stock provider), then overrides ``Authorization`` with the current turn's
+     ``X-User-Token`` — 实际 HTTP 请求由建连时启动的后台任务发送，直接读
+     ContextVar 拿到的是 connect 时刻快照；因此 call_tool / list_tools /
+     connect 的包装作用域（``_call_authorization_scope``）在**调用者上下文**
+     （本轮对话栈）读请求级 ext 的 X-User-Token 存入进程级 holder
+     （``_CURRENT_CALL_AUTH``，按 server_id 键），provider 出网时从 holder
+     取完整值，作用域退出即还原（本轮没带令牌不残留上一轮的值，回退静态
+     快照）。Then it fetches a fresh actor token **before the first
      ``yield``** and injects the dynamic agent-workload header
      ``X-Actor-Token: Bearer <token>`` alongside ``Authorization`` (§2.1 dual
      matrix: user authorization vs agent-workload authorization). A
@@ -79,7 +78,7 @@ fetch without re-registration.
 from __future__ import annotations
 
 import asyncio
-import contextvars
+import contextlib
 import json
 import logging
 import threading
@@ -115,26 +114,14 @@ _BACKGROUND_TASKS: set[asyncio.Task] = set()
 # 整份替换，None = 未下发/清除。
 _DISPATCHED_CREDENTIALS: dict[str, str] | None = None
 _DISPATCHED_LOCK = threading.Lock()
-# 逐轮用户令牌登记表（见下方"逐轮用户令牌登记表"一节：发送侧按 JSON-RPC id
-# 登记，provider 按 id 精确消费）。
-#: server_id -> {jsonrpc_id: [Authorization 值, ...]}。同 id 多值（两个连接
-#: 复用同 provider 且请求 id 撞号）按 FIFO 消费；单连接场景每 id 恰一条。
-_TURN_TOKENS: dict[str, dict[Any, list[str]]] = {}
-#: server_id -> 最近一次登记的用户 Authorization 值：GET 事件流 / 通知等
-#: 无 JSON-RPC id 的请求无法精确归属，回退到它（取不到再回退静态快照）。
-_LAST_TURN_TOKEN: dict[str, str] = {}
-#: 单网关待消费登记上限（在途请求数量级），超出丢弃最旧——连接死亡导致
-#: 永不消费的登记不无限累积。
-_MAX_PENDING_TURN_TOKENS = 64
-
-#: 会话归属标记：TOOL_AUTH（authenticate）与 ``ClientSession`` 构造发生在
-#: **同一任务**（connect 流程内，中间的 await 不换上下文）——authenticate
-#: 对动态 token 网关写下 server_id，会话构造点一次性消费（读后即清），
-#: 把逐轮 token 登记代理装到 ``_write_stream`` 上。必须在首次 send 之前：
-#: initialize 握手也要求双 token（网关在握手缺用户令牌时直接拒绝）。
-_PENDING_TAG_SERVER: contextvars.ContextVar[str] = contextvars.ContextVar(
-    "jw_mcp_pending_tag_server", default=""
-)
+# 逐轮用户令牌 holder：server_id -> 本轮调用的 Authorization 完整值。
+# 实际 HTTP 请求由**建连时启动的后台任务**（mcp SDK post_writer / SSE 读流）
+# 发送，在那里读请求级 ContextVar 拿到的是 connect 时刻快照（逐轮轮换的
+# 用户令牌会停在旧值）——因此 call_tool / list_tools / connect 的包装在
+# **调用者上下文**（本轮对话栈，请求级 ext 已抬升）读出 X-User-Token 存入
+# 本 holder，httpx.Auth 出网时从这里取本轮值；作用域退出即还原，本轮没带
+# 用户令牌的调用不会残留上一轮的值（回退条目静态快照头）。
+_CURRENT_CALL_AUTH: dict[str, str] = {}
 
 #: 纯文本回退时接受的最大 body 长度（超过按解析失败处理，防止把大页面当 token）。
 _MAX_PLAIN_TEXT_TOKEN_LEN = 4096
@@ -298,8 +285,6 @@ def unmark_dynamic_token_server(server_id: str) -> None:
         if entry["refcount"] <= 1:
             _DYNAMIC_SERVERS.pop(sid, None)
             evicted = _PROVIDERS.pop(sid, None)
-            _TURN_TOKENS.pop(sid, None)
-            _LAST_TURN_TOKEN.pop(sid, None)
         else:
             entry["refcount"] -= 1
     if evicted is not None:
@@ -321,179 +306,70 @@ def _registry_token_url(server_id: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# 逐轮用户令牌登记表（发送侧按 JSON-RPC id 登记，provider 按 id 精确消费）
+# 逐轮用户令牌作用域（调用者上下文读 X-User-Token → holder → provider 出网取用）
 # ---------------------------------------------------------------------------
-#
-# 为什么不直接读 ContextVar：实际 HTTP 请求由**建连时启动的后台任务**
-# （mcp SDK streamable_http post_writer / SSE 读流）发送——httpx.Auth 在
-# 那个任务的上下文里执行，读到的 ContextVar 是 connect 时刻的快照，逐轮
-# 轮换的用户令牌会停在旧值（首轮 A、次轮 B 仍发 A；预热连接永远静态值）。
-# 正确通道：``BaseSession.send_request`` 内 ``await self._write_stream.send``
-# 在**调用者上下文**执行且消息带 JSON-RPC id —— 把会话写流挂上登记代理
-# （``_TurnTokenTaggingStream``，connect 成功后安装），调用侧按
-# (server_id, id) 登记本轮 token；provider 侧解析请求体 id 精确消费。
 
 
-def _record_turn_token(server_id: str, request_id: Any, authorization: str) -> None:
-    """发送侧登记：把当前调用者的用户令牌绑到 (server_id, JSON-RPC id)。"""
-    sid = str(server_id or "").strip()
-    if not sid or request_id is None:
-        return
-    with _REGISTRY_LOCK:
-        bucket = _TURN_TOKENS.setdefault(sid, {})
-        bucket.setdefault(request_id, []).append(authorization)
-        while len(bucket) > _MAX_PENDING_TURN_TOKENS:
-            bucket.pop(next(iter(bucket)))
-        _LAST_TURN_TOKEN[sid] = authorization
+@contextlib.contextmanager
+def _call_authorization_scope(server_id: str):
+    """调用作用域：进入时从请求级 ext 读 X-User-Token 存入 holder，退出还原。
 
-
-def _consume_turn_token(server_id: str, request_id: Any) -> str:
-    """provider 侧精确消费：返回并移除该 (server_id, id) 的登记（无 → 空串）。"""
-    sid = str(server_id or "").strip()
-    if not sid:
-        return ""
-    with _REGISTRY_LOCK:
-        values = _TURN_TOKENS.get(sid, {}).get(request_id)
-        if not values:
-            return ""
-        value = values.pop(0)
-        if not values:
-            _TURN_TOKENS[sid].pop(request_id, None)
-        return value
-
-
-def _last_turn_token(server_id: str) -> str:
-    """该网关最近一次登记的用户令牌（无登记 → 空串，调用方回退静态头）。"""
-    sid = str(server_id or "").strip()
-    if not sid:
-        return ""
-    with _REGISTRY_LOCK:
-        return _LAST_TURN_TOKEN.get(sid, "")
-
-
-class _TurnTokenTaggingStream:
-    """会话写流代理：在**调用者上下文**把本轮用户令牌绑到出站请求上。
-
-    ``ClientSession`` 的所有出站消息经 ``self._write_stream.send`` 发出
-    （mcp ``BaseSession.send_request`` 内 ``await``），该调用发生在工具
-    调用者的任务里——与 HTTP 实际发送任务（建连时的 post_writer）不同。
-    代理在 ``send`` 里识别出站 JSON-RPC **请求**（root 同时有 ``method``
-    与 ``id``；响应有 id 无 method、通知有 method 无 id，均不登记），把
-    当前请求级 ext 里的 ``X-User-Token`` 登记到 (server_id, id)；provider
-    侧按请求体 id 精确消费。登记失败只打 debug，绝不阻断消息发送。
-
-    代理在 connect 成功后替换 ``session._write_stream``（实例属性）。会话
-    的接收循环在建连时已用原流进入 ``async with``（关闭走原流），替换后
-    的属性读取（各 send 点）才走代理——原流生命周期不受影响。
+    包装在 SDK 客户端的 call_tool / list_tools / connect 入口上，作用域体在
+    **调用者上下文**（本轮对话栈，请求级 ext 已抬升）执行；实际 HTTP 请求
+    由建连时的后台任务发送、从 holder 取值（见 ``_CURRENT_CALL_AUTH``）。
+    支持嵌套（call_tool 作用域内自愈重连的 connect 作用域）：保存前值、
+    退出还原，内层不会把外层的值清掉。本轮没带用户令牌（后台轮次 /
+    cron / 非企业）时不写入——不会沿用上一轮的值，回退条目静态快照头。
     """
-
-    def __init__(self, inner: Any, server_id: str) -> None:
-        self._inner = inner
-        self._server_id = str(server_id or "").strip()
-
-    async def send(self, item: Any) -> None:
-        try:
-            root = getattr(getattr(item, "message", None), "root", None)
-            request_id = getattr(root, "id", None)
-            if (
-                request_id is not None
-                and not isinstance(request_id, bool)
-                and getattr(root, "method", None) is not None
-            ):
-                user_token = _current_user_authorization()
-                if user_token:
-                    _record_turn_token(self._server_id, request_id, user_token)
-        except Exception:  # noqa: BLE001 - 登记失败不阻断消息发送
-            logger.debug(
-                "[mcp-dynamic-token] turn token tagging failed: server_id=%s",
-                self._server_id,
-                exc_info=True,
-            )
-        await self._inner.send(item)
-
-    def __getattr__(self, name: str) -> Any:
-        # 仅初始化期可能触发的私有槽位直接抛错，避免递归；其余全委托内层
-        # 流（aclose / send_nowait / statistics 等）。
-        if name in ("_inner", "_server_id"):
-            raise AttributeError(name)
-        return getattr(self._inner, name)
-
-
-def _install_turn_token_tagging(session: Any, server_id: str) -> None:
-    """把会话写流换成登记代理（幂等）；结构不符时跳过（回退静态头语义）。"""
-    if session is None or not str(server_id or "").strip():
+    sid = str(server_id or "").strip()
+    user_authorization = _current_user_authorization() if sid else ""
+    if not sid or not user_authorization:
+        yield
         return
-    if getattr(session, "_jw_turn_token_tagged", False):
-        return
-    inner = getattr(session, "_write_stream", None)
-    if inner is None:
-        return
-    session._write_stream = _TurnTokenTaggingStream(inner, server_id)
-    session._jw_turn_token_tagged = True
-    logger.debug(
-        "[mcp-dynamic-token] turn token tagging installed: server_id=%s",
-        server_id,
-    )
+    previous = _CURRENT_CALL_AUTH.get(sid)
+    _CURRENT_CALL_AUTH[sid] = user_authorization
+    try:
+        yield
+    finally:
+        if previous is None:
+            _CURRENT_CALL_AUTH.pop(sid, None)
+        else:
+            _CURRENT_CALL_AUTH[sid] = previous
 
 
-def _consume_pending_tag_server() -> str:
-    """一次性消费会话归属标记（读后即清，防陈旧标记误挂后续无关会话）。"""
-    server_id = _PENDING_TAG_SERVER.get()
-    if server_id:
-        _PENDING_TAG_SERVER.set("")
-    return server_id
+def _patch_sdk_call_scopes() -> None:
+    """给 SDK 客户端的调用/建连入口包上逐轮用户令牌作用域（幂等）。
 
-
-def _patch_sdk_connect_for_turn_token() -> None:
-    """给 MCP HTTP 客户端装逐轮 token 登记代理（发送侧，两类接缝）。
-
-    - ``ClientSession.__init__``（主接缝）：authenticate 在 TOOL_AUTH 里写下
-      网关归属标记，会话构造点消费标记并安装代理——发生在**首次 send 之前**，
-      ``initialize`` 握手就带上当轮用户令牌（网关握手校验双 token 时否则
-      直接连接失败）；
-    - connect 成功后的兜底安装：若 ``__init__`` 接缝因 SDK 结构变化未生效，
-      至少保证首次调用起的请求被登记（握手退回静态头语义）。
-
-    重连会重建 ``_session``——两条接缝都幂等（标记挂在类方法 / session 实例
-    上）。call_timeout_patch 已包装 call_tool/list_tools，与此处包装的
-    connect/_do_connect/__init__ 不相交。
+    覆盖 call_tool（工具请求）、list_tools（tools/list 探测）与
+    connect/_do_connect（initialize 握手也要双 token）；重连发生在
+    call_tool 作用域内，嵌套作用域保存/还原前值。call_timeout_patch
+    已包装 call_tool/list_tools，链式包装互不影响。
     """
-    from mcp.client.session import ClientSession
     from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
     from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
         StreamableHttpClient,
     )
 
-    original_init = ClientSession.__init__
-    if not getattr(original_init, "_jw_turn_token_tagged", False):
+    targets = (
+        (StreamableHttpClient, ("call_tool", "list_tools", "connect")),
+        (SseClient, ("call_tool", "list_tools", "_do_connect")),
+    )
+    for cls, method_names in targets:
+        for method_name in method_names:
+            original = getattr(cls, method_name, None)
+            if original is None or getattr(original, "_jw_user_token_scoped", False):
+                continue
 
-        def _tagged_init(
-            self: Any, *args: Any, __orig: Any = original_init, **kwargs: Any
-        ) -> None:
-            __orig(self, *args, **kwargs)
-            server_id = _consume_pending_tag_server()
-            if server_id:
-                _install_turn_token_tagging(self, server_id)
+            async def _scoped(
+                self: Any, *args: Any, __orig: Any = original, **kwargs: Any
+            ) -> Any:
+                with _call_authorization_scope(
+                    str(getattr(self, "_server_id", "") or "")
+                ):
+                    return await __orig(self, *args, **kwargs)
 
-        _tagged_init._jw_turn_token_tagged = True  # type: ignore[attr-defined]
-        ClientSession.__init__ = _tagged_init
-
-    for cls, method_name in ((StreamableHttpClient, "connect"), (SseClient, "_do_connect")):
-        original = getattr(cls, method_name, None)
-        if original is None or getattr(original, "_jw_turn_token_tagged", False):
-            continue
-
-        async def _tagged(self: Any, *args: Any, __orig: Any = original, **kwargs: Any) -> Any:
-            ok = await __orig(self, *args, **kwargs)
-            if ok:
-                _install_turn_token_tagging(
-                    getattr(self, "_session", None),
-                    str(getattr(self, "_server_id", "") or ""),
-                )
-            return ok
-
-        _tagged._jw_turn_token_tagged = True  # type: ignore[attr-defined]
-        setattr(cls, method_name, _tagged)
+            _scoped._jw_user_token_scoped = True  # type: ignore[attr-defined]
+            setattr(cls, method_name, _scoped)
 
 
 async def _quiet_aclose(provider: "DynamicTokenProvider") -> None:
@@ -642,29 +518,6 @@ def _current_user_authorization() -> str:
 # ---------------------------------------------------------------------------
 
 
-def _request_jsonrpc_id(request: httpx.Request) -> Any:
-    """从 MCP HTTP 请求提取 JSON-RPC id（POST 体顶层的 ``id``）。
-
-    非 POST（SSE 事件流的 GET）、空体、非对象体、通知（无 id）、非法 id
-    （bool / 结构化）一律返回 ``None``——调用方按"无法精确归属"处理。
-    """
-    if request.method.upper() != "POST":
-        return None
-    content = request.content
-    if not content:
-        return None
-    try:
-        payload = json.loads(content)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict):
-        return None
-    request_id = payload.get("id")
-    if isinstance(request_id, bool) or not isinstance(request_id, (int, str)):
-        return None
-    return request_id
-
-
 class DynamicTokenProvider(httpx.Auth):
     """每请求实时获取 token 的 ``httpx.Auth``。
 
@@ -672,10 +525,9 @@ class DynamicTokenProvider(httpx.Auth):
       1. 铺静态模板 headers（对齐 ``AuthHeaderAndQueryProvider`` 语义——
          条目下发的 Authorization 原样保留）；
       2. 合并 auth_query_params；
-      3. 用户授权逐轮覆盖：按 (server_id, JSON-RPC id) 登记表取本轮
-         ``X-User-Token`` 完整值覆盖静态 ``Authorization``（带 id 的请求
-         只认本次登记值，缺失回退静态快照；无 id 的 GET/通知回退最近一次
-         登记值）；
+      3. 用户授权逐轮覆盖：从 holder（``_CURRENT_CALL_AUTH``）取本轮
+         ``X-User-Token`` 完整值覆盖静态 ``Authorization``（与 X-Actor-Token
+         平级并列）；本轮没带令牌 → 无值 → 保留静态快照；
       4. 取 token——**失败不阻断请求**：打 warning 后动态头置空（空字符串），
          照常发起调用，由网关决定放行或 401；
       5. 追加注入智能体负载授权头 ``X-Actor-Token: Bearer <token>``（§2.1
@@ -712,20 +564,13 @@ class DynamicTokenProvider(httpx.Auth):
                 request.headers[key] = value
         if self.query_params:
             request.url = request.url.copy_merge_params(self.query_params)
-        # 用户授权（逐轮 X-User-Token）：**不在这里读 ContextVar**——本方法
-        # 在建连时启动的后台任务里执行，读到的是 connect 时刻上下文（旧值）。
-        # 正确取法是发送侧按 JSON-RPC id 登记的登记表（见
-        # _TurnTokenTaggingStream）：
-        #   - 带 id 的请求（工具调用等）：**只认发送侧为本次调用登记的值**。
-        #     登记缺失（本轮没带用户令牌的后台轮次 / cron / 排队续跑）回退
-        #     静态快照——绝不沿用上一轮用户的令牌（身份串用）；
-        #   - 无 id 的请求（GET 事件流 / 通知）：无法按调用归属，回退该网关
-        #     最近一次登记值；都没有保留静态快照头，不阻断请求。
-        request_id = _request_jsonrpc_id(request)
-        if request_id is not None:
-            user_authorization = _consume_turn_token(self._server_id, request_id)
-        else:
-            user_authorization = _last_turn_token(self._server_id)
+        # 用户授权（逐轮 X-User-Token，与 X-Actor-Token 平级）：本方法在
+        # 建连时启动的后台任务里执行——在那里读请求级 ContextVar 拿到的是
+        # connect 时刻快照（旧值），所以只能从 holder 取本轮值：call_tool /
+        # list_tools / connect 的包装作用域在调用者上下文（本轮对话栈）读
+        # X-User-Token 写入 holder，作用域退出即还原。本轮没带令牌 → 无值
+        # → 保留条目静态快照头，不阻断请求。
+        user_authorization = _CURRENT_CALL_AUTH.get(self._server_id, "")
         if user_authorization:
             request.headers["Authorization"] = user_authorization
         try:
@@ -833,9 +678,6 @@ class DynamicTokenAuthStrategy:
         tool_id = str(getattr(auth_config, "tool_id", "") or "").strip()
         token_url = _registry_token_url(tool_id) if tool_id else None
         if creds is None or not token_url:
-            # 静态网关：清掉可能残留的陈旧归属标记，防止同任务里先前一次
-            # 失败 connect 的标记把无关会话错挂到别的网关名下。
-            _PENDING_TAG_SERVER.set("")
             return await original().authenticate(auth_config, **kwargs)
         with _REGISTRY_LOCK:
             provider = _PROVIDERS.get(tool_id)
@@ -847,9 +689,6 @@ class DynamicTokenAuthStrategy:
                     tool_id,
                 )
                 _PROVIDERS[tool_id] = provider
-        # 归属标记：connect 流程内 authenticate 与 ClientSession 构造同任务，
-        # 构造点消费标记装上登记代理（首次 initialize 握手即带用户令牌）。
-        _PENDING_TAG_SERVER.set(tool_id)
         return ToolAuthResult(
             success=True,
             auth_data={"auth_provider": provider},
@@ -877,9 +716,9 @@ def apply_mcp_dynamic_token_patch() -> bool:
     _ORIGINAL_STRATEGY = HeaderQueryAuthStrategy
     DynamicTokenAuthStrategy.auth_type = AuthType.HEADER_AND_QUERY
     AuthStrategyRegistry.register(DynamicTokenAuthStrategy)
-    # 逐轮用户令牌：connect 成功后给会话写流挂登记代理（发送侧，见
-    # _TurnTokenTaggingStream）；幂等，重复 apply 无副作用。
-    _patch_sdk_connect_for_turn_token()
+    # 逐轮用户令牌：call_tool/list_tools/connect 包装作用域（调用者上下文
+    # 读 X-User-Token 存 holder，见 _CURRENT_CALL_AUTH）；幂等，重复 apply 无副作用。
+    _patch_sdk_call_scopes()
     _PATCHED = True
     return True
 
@@ -891,8 +730,7 @@ def _reset_dynamic_token_state_for_tests() -> None:
         providers = list(_PROVIDERS.values())
         _PROVIDERS.clear()
         _DYNAMIC_SERVERS.clear()
-        _TURN_TOKENS.clear()
-        _LAST_TURN_TOKEN.clear()
+        _CURRENT_CALL_AUTH.clear()
     with _DISPATCHED_LOCK:
         _DISPATCHED_CREDENTIALS = None
     _PATCHED = False

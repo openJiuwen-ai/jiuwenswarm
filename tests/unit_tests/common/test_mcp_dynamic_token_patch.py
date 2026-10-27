@@ -811,13 +811,15 @@ async def test_provider_picks_up_hot_reloaded_credentials(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# 11. 逐轮用户授权：发送侧登记（JSON-RPC id）→ provider 精确消费
+# 11. 逐轮用户授权：调用作用域（holder）→ provider 出网取用
 # ---------------------------------------------------------------------------
 #
 # HTTP 实际由建连时的后台任务（post_writer）发送——provider 里读 ContextVar
-# 拿到的是 connect 时刻快照（首轮 A、次轮 B 仍发 A）。正确通道：会话写流
-# 代理在调用者上下文按 (server_id, JSON-RPC id) 登记本轮 X-User-Token，
-# provider 按请求体 id 精确消费。
+# 拿到的是 connect 时刻快照（首轮 A、次轮 B 仍发 A）。最小实现：call_tool /
+# list_tools / connect 的包装作用域在调用者上下文（本轮对话栈）读请求级 ext
+# 的 X-User-Token 存进程级 holder（按 server_id 键），provider 出网时取完整值
+# 赋给 Authorization（与 X-Actor-Token 平级）；作用域退出即还原，本轮没带
+# 令牌不残留上一轮的值。
 
 
 @contextlib.contextmanager
@@ -833,7 +835,7 @@ def _turn_ext(values: dict[str, str] | None):
 
 
 def _jsonrpc_request(request_id: int = 1) -> httpx.Request:
-    """带 JSON-RPC id 的工具调用 POST（与 SDK post_writer 的请求体同构）。"""
+    """工具调用 POST（与 SDK post_writer 的请求体同构）。"""
     return httpx.Request(
         "POST",
         "https://gw.example/mcp",
@@ -886,222 +888,99 @@ def test_current_user_authorization_rejects_unsafe_values():
 
 
 # ---------------------------------------------------------------------------
-# 11.1 登记表：record / consume / last / 容量 / 注销清理
+# 11.1 调用作用域：进入写 holder、退出还原、嵌套保存前值
 # ---------------------------------------------------------------------------
 
 
-def test_turn_token_record_then_consume_exact():
+def test_call_scope_sets_and_restores():
     from jiuwenswarm.common.mcp_dynamic_token_patch import (
-        _consume_turn_token,
-        _record_turn_token,
+        _CURRENT_CALL_AUTH,
+        _call_authorization_scope,
     )
 
-    _record_turn_token("srv-1", 7, "Bearer t7")
-    assert _consume_turn_token("srv-1", 7) == "Bearer t7"
-    assert _consume_turn_token("srv-1", 7) == ""  # 一次性消费
-    assert _consume_turn_token("srv-other", 7) == ""  # 按网关隔离
+    with _turn_ext({"X-User-Token": "Bearer A"}):
+        with _call_authorization_scope("srv-1"):
+            assert _CURRENT_CALL_AUTH["srv-1"] == "Bearer A"
+        assert "srv-1" not in _CURRENT_CALL_AUTH  # 退出还原，不残留
 
 
-def test_turn_token_same_id_fifo_across_connections():
-    """两个连接复用同 provider 且 id 撞号：按 FIFO 各取各的。"""
+def test_call_scope_nesting_restores_outer_value():
+    """call_tool 作用域内自愈重连的 connect 作用域：内层退出还原外层的值。"""
     from jiuwenswarm.common.mcp_dynamic_token_patch import (
-        _consume_turn_token,
-        _record_turn_token,
+        _CURRENT_CALL_AUTH,
+        _call_authorization_scope,
     )
 
-    _record_turn_token("srv-1", 1, "Bearer conn-A")
-    _record_turn_token("srv-1", 1, "Bearer conn-B")
-    assert _consume_turn_token("srv-1", 1) == "Bearer conn-A"
-    assert _consume_turn_token("srv-1", 1) == "Bearer conn-B"
+    with _turn_ext({"X-User-Token": "Bearer outer"}):
+        with _call_authorization_scope("srv-1"):
+            with _turn_ext({"X-User-Token": "Bearer inner"}):
+                with _call_authorization_scope("srv-1"):
+                    assert _CURRENT_CALL_AUTH["srv-1"] == "Bearer inner"
+                assert _CURRENT_CALL_AUTH["srv-1"] == "Bearer outer"  # 还原外层
+        assert "srv-1" not in _CURRENT_CALL_AUTH  # 外层退出后彻底还原
 
 
-def test_turn_token_pending_cap_evicts_oldest():
-    """待消费登记超上限：丢最旧，防连接死亡后登记无限累积。"""
+def test_call_scope_noop_without_token():
+    """本轮没带用户令牌（后台轮次/cron）：不写入 holder，不残留旧值。"""
     from jiuwenswarm.common.mcp_dynamic_token_patch import (
-        _MAX_PENDING_TURN_TOKENS,
-        _consume_turn_token,
-        _record_turn_token,
+        _CURRENT_CALL_AUTH,
+        _call_authorization_scope,
     )
 
-    for i in range(_MAX_PENDING_TURN_TOKENS + 4):
-        _record_turn_token("srv-cap", i, f"Bearer t{i}")
-    assert _consume_turn_token("srv-cap", 0) == ""  # 最旧被逐出
-    last = _MAX_PENDING_TURN_TOKENS + 3
-    assert _consume_turn_token("srv-cap", last) == f"Bearer t{last}"
-
-
-def test_turn_token_last_keeps_recent_value():
-    from jiuwenswarm.common.mcp_dynamic_token_patch import (
-        _last_turn_token,
-        _record_turn_token,
-    )
-
-    assert _last_turn_token("srv-last") == ""
-    _record_turn_token("srv-last", 1, "Bearer first")
-    _record_turn_token("srv-last", 2, "Bearer second")
-    assert _last_turn_token("srv-last") == "Bearer second"
-
-
-def test_unmark_clears_turn_token_registries():
-    from jiuwenswarm.common.mcp_dynamic_token_patch import (
-        _consume_turn_token,
-        _last_turn_token,
-        _record_turn_token,
-        unmark_dynamic_token_server,
-    )
-
-    assert mark_dynamic_token_server("srv-clear", "http://kc.example/token")
-    _record_turn_token("srv-clear", 1, "Bearer t1")
-    unmark_dynamic_token_server("srv-clear")  # refcount 归零 → 逐出并清理
-    assert _consume_turn_token("srv-clear", 1) == ""
-    assert _last_turn_token("srv-clear") == ""
+    with _turn_ext({"X-User-Token": "Bearer A"}):
+        with _call_authorization_scope("srv-1"):
+            pass
+    with _turn_ext(None):
+        with _call_authorization_scope("srv-1"):
+            assert "srv-1" not in _CURRENT_CALL_AUTH
 
 
 # ---------------------------------------------------------------------------
-# 11.2 写流代理：调用者上下文登记请求、跳过响应/通知、委托其余操作
-# ---------------------------------------------------------------------------
-
-
-class _FakeRequestRoot:
-    def __init__(self, request_id: Any = None, method: str | None = None) -> None:
-        self.id = request_id
-        self.method = method
-
-
-class _FakeSessionMessage:
-    def __init__(self, root: Any) -> None:
-        self.message = SimpleNamespace(root=root)
-
-
-class _FakeSendStream:
-    def __init__(self) -> None:
-        self.sent: list[Any] = []
-        self.closed = False
-
-    async def send(self, item: Any) -> None:
-        self.sent.append(item)
-
-    async def aclose(self) -> None:
-        self.closed = True
-
-
-def _tagged_stream() -> tuple[Any, _FakeSendStream]:
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _TurnTokenTaggingStream
-
-    inner = _FakeSendStream()
-    return _TurnTokenTaggingStream(inner, "srv-1"), inner
-
-
-@pytest.mark.asyncio
-async def test_tagging_stream_records_outbound_request_token():
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _consume_turn_token
-
-    stream, inner = _tagged_stream()
-    with _turn_ext({"X-User-Token": "Bearer turn-A"}):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(5, "tools/call")))
-
-    assert len(inner.sent) == 1  # 消息照常下发
-    assert _consume_turn_token("srv-1", 5) == "Bearer turn-A"
-
-
-@pytest.mark.asyncio
-async def test_tagging_stream_skips_response_notification_and_bool_id():
-    """响应（有 id 无 method）、通知（有 method 无 id）、bool id 均不登记。"""
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _last_turn_token
-
-    stream, _inner = _tagged_stream()
-    with _turn_ext({"X-User-Token": "Bearer turn-A"}):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(5, None)))  # 响应
-        await stream.send(
-            _FakeSessionMessage(_FakeRequestRoot(None, "notifications/initialized"))
-        )
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(True, "tools/call")))
-
-    assert _last_turn_token("srv-1") == ""
-
-
-@pytest.mark.asyncio
-async def test_tagging_stream_without_ext_sends_through():
-    stream, inner = _tagged_stream()
-    await stream.send(_FakeSessionMessage(_FakeRequestRoot(5, "tools/call")))
-    assert len(inner.sent) == 1
-
-
-@pytest.mark.asyncio
-async def test_tagging_stream_delegates_attributes():
-    stream, inner = _tagged_stream()
-    await stream.aclose()
-    assert inner.closed is True
-
-
-def test_install_tagging_idempotent():
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _install_turn_token_tagging
-
-    session = SimpleNamespace(_write_stream=_FakeSendStream())
-    _install_turn_token_tagging(session, "srv-1")
-    first = session._write_stream
-    _install_turn_token_tagging(session, "srv-1")
-    assert session._write_stream is first  # 不二次包装
-
-
-# ---------------------------------------------------------------------------
-# 11.3 provider 消费：按请求体 id 精确归属，逐轮换值（评审复现场景）
+# 11.2 provider 出网：holder 有值覆盖、无值静态、逐轮换值（评审复现场景）
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_auth_flow_consumes_exact_turn_token():
-    """发送侧登记的 id 与 POST 体一致：本轮 token 精确覆盖静态头。"""
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _record_turn_token
+async def test_auth_flow_overrides_authorization_with_call_token():
+    """作用域内：X-User-Token 完整值覆盖静态快照，与 X-Actor-Token 平级并存。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _call_authorization_scope
 
     provider = _make_provider(token="tok-1")
-    _record_turn_token("srv-1", 1, "Bearer turn-A")
 
-    sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
+    with _turn_ext({"X-User-Token": "Bearer turn-A"}):
+        with _call_authorization_scope("srv-1"):
+            sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
 
-    assert sent.headers["Authorization"] == "Bearer turn-A"  # 完整值覆盖
-    assert sent.headers["X-Actor-Token"] == "Bearer tok-1"  # 动态头并存
+    assert sent.headers["Authorization"] == "Bearer turn-A"  # 完整值（含 Bearer 前缀）
+    assert sent.headers["X-Actor-Token"] == "Bearer tok-1"  # 平级动态头并存
     assert sent.headers["X-Static"] == "s"
 
 
 @pytest.mark.asyncio
-async def test_auth_flow_token_follows_each_turn():
-    """评审复现场景：第一轮 Token A、第二轮 Token B，工具各收到各自的值。"""
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _TurnTokenTaggingStream
+async def test_auth_flow_token_follows_each_turn_then_falls_back():
+    """评审两轮复现：A → A，B → B，第三轮不带令牌 → 静态快照（不沿用 B）。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _call_authorization_scope
 
     provider = _make_provider(token="tok-1")
-    inner = _FakeSendStream()
-    stream = _TurnTokenTaggingStream(inner, "srv-1")
 
-    # 第一轮：调用者上下文经写流代理登记 id=1 → Token A；POST 按 id 消费
     with _turn_ext({"X-User-Token": "Bearer A"}):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(1, "tools/call")))
-    sent_a = await _run_flow(provider, _jsonrpc_request(request_id=1))
+        with _call_authorization_scope("srv-1"):
+            sent_a = await _run_flow(provider, _jsonrpc_request(request_id=1))
 
-    # 第二轮：新值 Token B（同一 provider、同一连接）
     with _turn_ext({"X-User-Token": "Bearer B"}):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(2, "tools/call")))
-    sent_b = await _run_flow(provider, _jsonrpc_request(request_id=2))
+        with _call_authorization_scope("srv-1"):
+            sent_b = await _run_flow(provider, _jsonrpc_request(request_id=2))
+
+    sent_c = await _run_flow(provider, _jsonrpc_request(request_id=3))  # 无作用域/无 ext
 
     assert sent_a.headers["Authorization"] == "Bearer A"
-    assert sent_b.headers["Authorization"] == "Bearer B"  # 不再停留旧值
+    assert sent_b.headers["Authorization"] == "Bearer B"
+    assert sent_c.headers["Authorization"] == "Bearer static"
 
 
 @pytest.mark.asyncio
-async def test_auth_flow_falls_back_to_last_turn_token_without_id():
-    """GET 事件流 / 通知（无 JSON-RPC id）：回退最近一次登记值。"""
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _record_turn_token
-
-    provider = _make_provider(token="tok-1")
-    _record_turn_token("srv-1", 1, "Bearer turn-A")
-
-    sent = await _run_flow(provider, httpx.Request("GET", "https://gw.example/mcp"))
-    assert sent.headers["Authorization"] == "Bearer turn-A"
-
-
-@pytest.mark.asyncio
-async def test_auth_flow_keeps_static_without_any_registration():
-    """无任何登记（预热连接未发生过调用 / turn 栈外）：保留静态快照。"""
+async def test_auth_flow_keeps_static_without_scope():
+    """作用域外（预热连接、后台 TTL 刷新）：保留条目静态快照头。"""
     provider = _make_provider(token="tok-1")
 
     sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
@@ -1112,30 +991,44 @@ async def test_auth_flow_keeps_static_without_any_registration():
 
 @pytest.mark.asyncio
 async def test_auth_flow_unsafe_ext_records_nothing():
-    """ext 值不安全（换行注入）：登记代理拒绝 → 回退静态头，请求不阻断。"""
+    """ext 值不安全（换行注入）：作用域不写入 → 回退静态头，请求不阻断。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _CURRENT_CALL_AUTH,
+        _call_authorization_scope,
+    )
+
     provider = _make_provider(token="tok-1")
 
-    stream, _inner = _tagged_stream()
     with _turn_ext({"X-User-Token": "Bearer a\r\nEvil: 1"}):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(3, "tools/call")))
+        with _call_authorization_scope("srv-1"):
+            assert "srv-1" not in _CURRENT_CALL_AUTH
+            sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
 
-    sent = await _run_flow(provider, _jsonrpc_request(request_id=3))
     assert sent.headers["Authorization"] == "Bearer static"
 
 
-def test_request_jsonrpc_id_extraction():
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _request_jsonrpc_id
+# ---------------------------------------------------------------------------
+# 11.3 SDK 包装安装：call_tool/list_tools/connect 全部挂上作用域
+# ---------------------------------------------------------------------------
 
-    assert _request_jsonrpc_id(_jsonrpc_request(request_id=9)) == 9
-    assert _request_jsonrpc_id(_jsonrpc_request(request_id="abc")) == "abc"
-    assert _request_jsonrpc_id(httpx.Request("GET", "https://gw.example/mcp")) is None
-    notification = httpx.Request(
-        "POST", "https://gw.example/mcp",
-        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+
+@pytest.mark.asyncio
+async def test_sdk_call_paths_wrapped_with_scope():
+    from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+        StreamableHttpClient,
     )
-    assert _request_jsonrpc_id(notification) is None
-    garbage = httpx.Request("POST", "https://gw.example/mcp", content=b"not-json")
-    assert _request_jsonrpc_id(garbage) is None
+
+    apply_mcp_dynamic_token_patch()
+
+    for cls, methods in (
+        (StreamableHttpClient, ("call_tool", "list_tools", "connect")),
+        (SseClient, ("call_tool", "list_tools", "_do_connect")),
+    ):
+        for name in methods:
+            method = getattr(cls, name)
+            assert getattr(method, "_jw_user_token_scoped", False), (cls.__name__, name)
+            assert asyncio.iscoroutinefunction(method), (cls.__name__, name)
 
 
 # ---------------------------------------------------------------------------
@@ -1192,95 +1085,3 @@ async def test_preflight_marked_gateway_without_creds_keeps_static(_patch_httpx)
     headers = _RecordingAsyncClient.requests[0][2]["headers"]
     assert headers["Authorization"] == "Bearer static"
     assert "X-Actor-Token" not in headers
-
-
-# ---------------------------------------------------------------------------
-# 11.5 评审二轮回归：第三轮无令牌不沿用上一轮；握手前装好登记代理
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_auth_flow_id_bearing_call_does_not_inherit_last_turn():
-    """评审复现：A → A，B → B，第三轮不带用户令牌 → 静态快照（不沿用 B）。"""
-    provider = _make_provider(token="tok-1")
-    inner = _FakeSendStream()
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _TurnTokenTaggingStream
-
-    stream = _TurnTokenTaggingStream(inner, "srv-1")
-
-    with _turn_ext({"X-User-Token": "Bearer A"}):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(1, "tools/call")))
-    sent_a = await _run_flow(provider, _jsonrpc_request(request_id=1))
-
-    with _turn_ext({"X-User-Token": "Bearer B"}):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(2, "tools/call")))
-    sent_b = await _run_flow(provider, _jsonrpc_request(request_id=2))
-
-    # 第三轮：本轮上下文没有用户令牌（后台轮次/cron）→ 登记缺失 → 静态快照
-    with _turn_ext(None):
-        await stream.send(_FakeSessionMessage(_FakeRequestRoot(3, "tools/call")))
-    sent_c = await _run_flow(provider, _jsonrpc_request(request_id=3))
-
-    assert sent_a.headers["Authorization"] == "Bearer A"
-    assert sent_b.headers["Authorization"] == "Bearer B"
-    assert sent_c.headers["Authorization"] == "Bearer static"  # 不沿用 B
-
-
-@pytest.mark.asyncio
-async def test_authenticate_sets_pending_install_marker():
-    """TOOL_AUTH 命中动态网关：留下会话归属标记（ClientSession 构造点消费）。"""
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _PENDING_TAG_SERVER
-
-    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
-    apply_mcp_dynamic_token_patch()
-    assert mark_dynamic_token_server("srv-1", "http://kc.example/token")
-
-    assert _PENDING_TAG_SERVER.get() == ""
-    await DynamicTokenAuthStrategy().authenticate(_auth_config(tool_id="srv-1"))
-    assert _PENDING_TAG_SERVER.get() == "srv-1"
-    _PENDING_TAG_SERVER.set("")  # 测试上下文清理
-
-
-@pytest.mark.asyncio
-async def test_authenticate_fallback_clears_stale_marker():
-    """静态网关（未标记/无凭据）：清除陈旧标记，不把无关会话错挂归属。"""
-    from jiuwenswarm.common.mcp_dynamic_token_patch import _PENDING_TAG_SERVER
-
-    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
-    apply_mcp_dynamic_token_patch()  # srv-other 未标记 → 回退原策略
-
-    _PENDING_TAG_SERVER.set("srv-stale")
-    await DynamicTokenAuthStrategy().authenticate(_auth_config(tool_id="srv-other"))
-    assert _PENDING_TAG_SERVER.get() == ""
-
-
-@pytest.mark.asyncio
-async def test_client_session_init_installs_tagging_before_first_send():
-    """接缝一（主）：ClientSession 构造消费归属标记装代理——先于 initialize。
-
-    用真实 mcp ClientSession + anyio 内存流验证：构造完成后写流已是登记
-    代理，其后 session.initialize() 发出的握手请求即在登记范围内；标记
-    一次性消费，后续无关会话不再安装。
-    """
-    import anyio
-    from mcp.client.session import ClientSession
-
-    from jiuwenswarm.common.mcp_dynamic_token_patch import (
-        _PENDING_TAG_SERVER,
-        _TurnTokenTaggingStream,
-    )
-
-    apply_mcp_dynamic_token_patch()  # 安装 ClientSession.__init__ 接缝
-
-    inbound_send, inbound_receive = anyio.create_memory_object_stream(10)
-    outbound_send, _outbound_receive = anyio.create_memory_object_stream(10)
-
-    _PENDING_TAG_SERVER.set("srv-real")
-    session = ClientSession(read_stream=inbound_receive, write_stream=outbound_send)
-    assert isinstance(session._write_stream, _TurnTokenTaggingStream)
-    assert session._write_stream._inner is outbound_send
-    assert _PENDING_TAG_SERVER.get() == ""  # 一次性消费
-
-    # 标记已消费：随后的无关会话不安装
-    session2 = ClientSession(read_stream=inbound_receive, write_stream=outbound_send)
-    assert not isinstance(session2._write_stream, _TurnTokenTaggingStream)
