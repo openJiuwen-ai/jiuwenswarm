@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import os
@@ -1357,6 +1358,23 @@ def _launch_run_trigger(
     task.add_done_callback(_RUN_TASKS.discard)
 
 
+def _accepts_two_positionals(callback: Any) -> bool:
+    """True when ``callback`` can be invoked as ``callback(value, node_id)``."""
+    if callback is None:
+        return False
+    try:
+        signature = inspect.signature(callback)
+    except (TypeError, ValueError):  # builtins without introspection
+        return False
+    positional = 0
+    for param in signature.parameters.values():
+        if param.kind is param.VAR_POSITIONAL:
+            return True
+        if param.kind in (param.POSITIONAL_ONLY, param.POSITIONAL_OR_KEYWORD):
+            positional += 1
+    return positional >= 2
+
+
 async def _launch_run_trigger_and_ack(
     coordinator: RunCoordinator,
     payload: dict[str, Any],
@@ -1385,16 +1403,30 @@ async def _launch_run_trigger_and_ack(
     first: dict[str, Any] = {}
     latest: dict[str, Any] = {}
     started = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    forwards_node_id = _accepts_two_positionals(on_update)
 
-    def _capture(run: dict[str, Any]) -> None:
+    def _capture(run: dict[str, Any], node_id: str | None = None) -> None:
         snapshot = dict(run)
         latest.clear()
         latest.update(snapshot)
         if not first:
             first.update(snapshot)
-        started.set()
+        # ``on_update`` can be invoked from a worker thread (see
+        # ``_run_update_callback``, which hops back with
+        # ``call_soon_threadsafe``); ``asyncio.Event`` is not thread-safe.
+        try:
+            loop.call_soon_threadsafe(started.set)
+        except RuntimeError:  # event loop already closed: run has finished
+            started.set()
         if on_update is not None:
-            on_update(snapshot)
+            # ``RunCoordinator`` and ``DesignEventBridge`` push the node id too;
+            # dropping it lost every DESIGNER_NODE_UPDATED frame. Callers that
+            # only accept the snapshot keep the one-argument contract.
+            if forwards_node_id:
+                on_update(snapshot, node_id)
+            else:
+                on_update(snapshot)
 
     async def _run() -> None:
         try:
