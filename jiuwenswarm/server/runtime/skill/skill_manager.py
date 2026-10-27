@@ -418,6 +418,24 @@ _SKILL_DISPLAY_KEYS = (
     "description_en",
 )
 
+_SKILL_DISPLAY_FILENAME = "skill_display.md"
+_BUILTIN_SKILL_UI_WHITELIST = frozenset(
+    {
+        "advanced-daily-report",
+        "gitcode-api",
+        "financial-document-parser",
+        "skill-gen-4-enterprise-doc",
+        "skill-creator",
+        "swarmskill-creator",
+    }
+)
+_SKILL_DISPLAY_KEYS = (
+    "display_name_zh",
+    "description_zh",
+    "display_name_en",
+    "description_en",
+)
+
 # 自研内置技能名单（内置技能目录下 _proprietary_skills.json）。名单内的内置技能标记
 # proprietary=true（自研），名单外的内置技能一律视为三方下载——不配置即默认三方。
 _PROPRIETARY_SKILLS_FILENAME = "_proprietary_skills.json"

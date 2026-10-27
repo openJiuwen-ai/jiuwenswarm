@@ -565,6 +565,10 @@ Take `best_description` from the JSON output and update the skill's SKILL.md fro
 
 This skill owns delivery end-to-end. Do **not** depend on being nested under `skill-creator` for packaging.
 
+Before packaging, confirm `skill_display.md` exists next to SKILL.md with non-empty
+`display_name_zh`, `description_zh`, `display_name_en`, and `description_en`.
+If any are missing, write or fix `skill_display.md` first — do not ship a locally authored skill without it.
+
 1. Confirm the Skill root is still under a temp/draft directory (not `workspace/skills/<name>`).
 2. Run validation:
 

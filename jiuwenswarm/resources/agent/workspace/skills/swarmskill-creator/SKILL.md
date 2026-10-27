@@ -59,7 +59,7 @@ Stage routing:
 |---|---|
 | **Markdown spec (default)** | Run the normal full-spec stages: Stage 0 → 1 → 2 → 3 → 4 → 5 → 6 → 7 |
 | **Markdown spec + SwarmFlow script** | Run the normal full-spec stages (through Stage 7), and add Stage 3b after `workflow.md`; revisit Stage 3b after `bind.md` if failure/retry behavior changes the script |
-| **Script-only SwarmFlow skill** | Write minimal `SKILL.md` + `scripts/workflow.py` under a temp/draft directory, then run Stage 6 → Stage 7. Do not fabricate role files, prompt files, or Markdown spec files just to satisfy the full-spec pipeline |
+| **Script-only SwarmFlow skill** | Write minimal `SKILL.md` + `skill_display.md` + `scripts/workflow.py` under a temp/draft directory, then run Stage 6 → Stage 7. Do not fabricate role files, prompt files, or Markdown spec files just to satisfy the full-spec pipeline |
 
 ## Forced delivery rules (CREATE / CONVERT / MODIFY)
 
@@ -386,7 +386,7 @@ For a CREATE request:
 4. Write all `roles/<id>.md` files (motto, boundary, schema, inline persona) + auto-match local skills/tools
 5. Write `workflow.md`; if output shape includes SwarmFlow, draft `scripts/workflow.py` topology from it
 6. Write `bind.md`; if output shape includes SwarmFlow, update `scripts/workflow.py` for executable retry/failure/degraded behavior
-7. Write `dependencies.yaml` → `SKILL.md` (each using its template)
+7. Write `dependencies.yaml` → `SKILL.md` → `skill_display.md` (each using its template)
 8. Run `python scripts/validate_swarmskill.py <draft>/<swarmskill-name>/` until exit 0
 9. **Stage 7**: package → `send_file_to_user` → tell user to click Save
 10. Present creation summary with per-role capability coverage → recommend community search for roles lacking **domain-specific** skills (default: recommend; generic utility skills do NOT satisfy the threshold)
@@ -397,9 +397,10 @@ For a script-only SwarmFlow CREATE request:
 1. Use this path when the request mentions 工作流 / workflow / SwarmFlow / `workflow.py` / executable orchestration / code orchestration / 可执行编排 / 编排脚本, unless the user also asks for a full team skill spec.
 2. Author under a temp/draft directory only.
 3. Write a minimal `SKILL.md` with `kind: swarm-skill`, concise trigger description, no non-empty `roles:`, `## Workflow`, and `## Files`.
-4. Write `scripts/workflow.py` from [templates/scripts/workflow.py.template](templates/scripts/workflow.py.template), deleting placeholders and template notes. Inline every agent prompt in this script.
-5. Run `python scripts/validate_swarmskill.py <draft>/<swarmskill-name>/` until exit 0.
-6. **Stage 7**: package → `send_file_to_user` → tell user to click Save. Explain that this skill is optimized for SwarmFlow execution, not full-spec role evolution.
+4. Write `skill_display.md` from [templates/skill_display.md.template](templates/skill_display.md.template) with all four display fields filled.
+5. Write `scripts/workflow.py` from [templates/scripts/workflow.py.template](templates/scripts/workflow.py.template), deleting placeholders and template notes. Inline every agent prompt in this script.
+6. Run `python scripts/validate_swarmskill.py <draft>/<swarmskill-name>/` until exit 0.
+7. **Stage 7**: package → `send_file_to_user` → tell user to click Save. Explain that this skill is optimized for SwarmFlow execution, not full-spec role evolution.
 
 For a CONVERT request:
 
