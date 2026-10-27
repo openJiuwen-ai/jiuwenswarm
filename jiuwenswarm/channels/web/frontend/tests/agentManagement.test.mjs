@@ -599,6 +599,40 @@ test('My Experts keeps its own capability descriptions across catalog refreshes'
   }
 });
 
+test('My Experts keeps its own capability descriptions across catalog refreshes', () => {
+  for (const locale of ['zh', 'en']) {
+    const catalog = [normalizeAgentTemplateListItem({
+      id: 'hub-expert',
+      source: 'hub',
+      installed: false,
+      displayDescription: { zh: '广场介绍', en: 'Marketplace capability' },
+    }, locale)];
+    let state = createInitialAgentManagementState();
+    for (const displayDescription of [
+      { zh: '本地介绍', en: 'Installed capability' },
+      {},
+      undefined,
+    ]) {
+      const mineCatalog = [normalizeAgentTemplateListItem({
+        id: 'hub-expert',
+        source: 'hub',
+        installed: true,
+        displayDescription,
+      }, locale)];
+      state = agentManagementReducer(state, { type: 'catalog.loaded', catalog, mineCatalog });
+      const mine = buildCatalogViewModel(state.mineCatalog, { scope: 'mine', category: '', query: '' });
+      const marketplace = buildCatalogViewModel(state.catalog, { scope: 'catalog', category: '', query: '' });
+      assert.equal(mine.items.length, 1);
+      assert.equal(mine.items[0].description, displayDescription?.[locale] || '');
+      assert.equal(mine.items[0].installed, true);
+      assert.equal(marketplace.items[0].description, catalog[0].description);
+    }
+    state = agentManagementReducer(state, { type: 'catalog.loaded', catalog, mineCatalog: [] });
+    assert.deepEqual(state.mineCatalog, []);
+    assert.equal(state.catalog.length, 1);
+  }
+});
+
 test('canonical reducer keeps file selection and content status separate from source DTOs', () => {
   const loading = agentManagementReducer(initialAgentManagementState, {
     type: 'file.loading',

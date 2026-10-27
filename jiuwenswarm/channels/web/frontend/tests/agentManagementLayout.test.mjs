@@ -8,13 +8,10 @@ import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 const previousDocument = globalThis.document;
-const previousWindow = globalThis.window;
-const renderDom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' });
+const renderDom = new JSDOM('<!doctype html><html><body></body></html>');
 globalThis.document = renderDom.window.document;
-globalThis.window = renderDom.window;
 after(() => {
   globalThis.document = previousDocument;
-  globalThis.window = previousWindow;
   renderDom.window.close();
 });
 
