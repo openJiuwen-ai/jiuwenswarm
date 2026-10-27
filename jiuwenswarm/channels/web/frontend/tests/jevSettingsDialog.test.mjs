@@ -308,7 +308,7 @@ test('one shared Jev configuration is shown; mode and switches stay in their ori
   assert.deepEqual(browserItems.map(item => item.id), ['browser-path', 'browser-run-mode', 'browser-decision-mode']);
   const collaboration = experimentalModule.sections.find(section => section.id === 'multi-model-collaboration');
   assert.deepEqual(collaboration.items[0].subItems.items[0], {
-    id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled',
+    id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled', errorDisplay: 'inline',
   });
   assert.equal(collaboration.items[0].subItems.items[1].render.name, 'CollaborationVerifierInterval');
   await mount(async ({ calls, config, browser }) => {

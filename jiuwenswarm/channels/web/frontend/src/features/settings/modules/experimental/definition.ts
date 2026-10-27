@@ -118,7 +118,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             show: 'when-parent-checked',
             disabled: 'never',
             items: [
-              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled' },
+              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled', errorDisplay: 'inline' },
               { id: 'multi-model-verification', component: 'custom', render: CollaborationVerifierInterval },
             ],
           },

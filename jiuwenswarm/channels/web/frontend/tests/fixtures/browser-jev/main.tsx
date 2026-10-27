@@ -10,7 +10,8 @@ import '../../../src/index.css';
 
 const query = new URLSearchParams(location.search);
 const empty = query.has('empty');
-const missingKey = empty || query.has('missingKey');
+const collaboration = query.has('collaboration');
+const missingKey = empty || query.has('missingKey') || collaboration;
 void i18n.changeLanguage(query.get('lang') ?? 'zh');
 let browser: Record<string, unknown> = {
   chrome_path: '', headless: false, decision_mode: missingKey ? 'llm' : 'hybrid', decision_provider: 'openrouter',
@@ -21,7 +22,7 @@ const config: Record<string, unknown> = {
   jev_openrouter_api_key: missingKey ? '' : 'synthetic-openrouter-key',
   jev_typesafe_api_key: missingKey ? '' : 'synthetic-typesafe-key',
   jev_custom_api_key: '',
-  multi_model_collaboration_enabled: 'false',
+  multi_model_collaboration_enabled: collaboration ? 'true' : 'false',
   moa_jev_enabled: 'false',
   moa_verifier_interval: '3',
 };
@@ -29,6 +30,9 @@ const request: SettingsRequest = async (method, params) => {
   if (method === 'config.get') return { ...config } as never;
   if (method === 'config.save_all') {
     if (query.has('deleteError')) throw new Error('Unable to clear the test model');
+    if (collaboration && params?.config && (params.config as Record<string, unknown>).moa_jev_enabled === 'true') {
+      throw new Error('Jev API key is required in Models > Jev settings');
+    }
     Object.assign(config, params?.config);
     return { ok: true } as never;
   }
@@ -64,7 +68,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     />
   ) : (
   <SettingsPage
-    definition={openSourceSettingsPageDefinition} initialModuleId={missingKey && !empty ? 'browser' : 'models'}
+    definition={openSourceSettingsPageDefinition} initialModuleId={collaboration ? 'experimental' : missingKey && !empty ? 'browser' : 'models'}
     isConnected connectionState="ready" request={request}
   />
   ),

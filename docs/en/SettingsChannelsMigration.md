@@ -191,6 +191,8 @@ Third-party agents are available only in **Team mode**. The two proactive recomm
 
 The current Experimental page also provides **RSI · Recursive self-improvement** and **Trajectory UI**. These are outside the previous-version configuration mappings listed in this guide.
 
+**Multi-model collaboration** verifies every 3 agent execution rounds by default. Each round includes a primary model decision and any tool execution. The LLM verifier and JEV share this interval, and explicitly saved intervals continue to apply.
+
 ![New Experimental settings](../assets/images/settings-channels-migration/en/experimental-settings.png)
 
 ## More / Browser → Settings / Browser

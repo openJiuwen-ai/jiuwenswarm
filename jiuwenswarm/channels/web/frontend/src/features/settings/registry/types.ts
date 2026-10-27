@@ -49,6 +49,7 @@ export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'switch';
       key: string;
+      errorDisplay?: 'inline';
       subItems?: SettingSubItems;
     })
   | (SettingItemBase & {
