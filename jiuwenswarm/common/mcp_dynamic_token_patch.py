@@ -40,10 +40,11 @@ Mechanism (SDK v0.1.16, AgentServer 主进程 site-packages 版):
      ``X-User-Token`` — 实际 HTTP 请求由建连时启动的后台任务发送，直接读
      ContextVar 拿到的是 connect 时刻快照；因此 call_tool / list_tools /
      connect 的包装作用域（``_call_authorization_scope``）在**调用者上下文**
-     （本轮对话栈）读请求级 ext 的 X-User-Token 存入进程级 holder
-     （``_CURRENT_CALL_AUTH``，按 server_id 键），provider 出网时从 holder
-     取完整值，作用域退出即还原（本轮没带令牌不残留上一轮的值，回退静态
-     快照）。Then it fetches a fresh actor token **before the first
+     （本轮对话栈）读请求级 ext 的 X-User-Token 计入进程级 holder
+     （``_CURRENT_CALL_AUTH``，按 server_id + 值引用计数），provider 出网时
+     从 holder 取完整值，作用域退出递减（本轮没带令牌不残留上一轮的值；
+     多个不同用户的调用重叠时无归属值，回退静态快照，绝不串身份）。Then
+     it fetches a fresh actor token **before the first
      ``yield``** and injects the dynamic agent-workload header
      ``X-Actor-Token: Bearer <token>`` alongside ``Authorization`` (§2.1 dual
      matrix: user authorization vs agent-workload authorization). A
@@ -309,32 +310,73 @@ def _registry_token_url(server_id: str) -> str | None:
 # 逐轮用户令牌作用域（调用者上下文读 X-User-Token → holder → provider 出网取用）
 # ---------------------------------------------------------------------------
 
+#: server_id -> {Authorization 完整值: 在途调用计数}。同一网关可能被多轮
+#: 对话并发调用，按值引用计数而非单值覆盖：
+#:   - 恰好一个不同值在途 → provider 读到它（含同一用户的并发调用）；
+#:   - 多个不同值在途（不同用户的调用重叠）→ 读不到（回退静态快照），
+#:     绝不串用他人身份；
+#:   - 先退出的调用只递减自己的值，不影响仍在途调用的可读性。
+_CURRENT_CALL_AUTH: dict[str, dict[str, int]] = {}
+
+
+def _current_call_authorization(server_id: str) -> str:
+    """provider 出网取用：该网关当前在途调用的用户 Authorization 完整值。
+
+    仅当在途值唯一时返回；多个不同用户的调用重叠时无法归属，返回空串
+    （调用方回退条目静态快照头）。
+    """
+    values = _CURRENT_CALL_AUTH.get(str(server_id or "").strip())
+    if values and len(values) == 1:
+        return next(iter(values))
+    return ""
+
 
 @contextlib.contextmanager
 def _call_authorization_scope(server_id: str):
-    """调用作用域：进入时从请求级 ext 读 X-User-Token 存入 holder，退出还原。
+    """调用作用域：进入时从请求级 ext 读 X-User-Token 计入 holder，退出递减。
 
     包装在 SDK 客户端的 call_tool / list_tools / connect 入口上，作用域体在
     **调用者上下文**（本轮对话栈，请求级 ext 已抬升）执行；实际 HTTP 请求
-    由建连时的后台任务发送、从 holder 取值（见 ``_CURRENT_CALL_AUTH``）。
-    支持嵌套（call_tool 作用域内自愈重连的 connect 作用域）：保存前值、
-    退出还原，内层不会把外层的值清掉。本轮没带用户令牌（后台轮次 /
-    cron / 非企业）时不写入——不会沿用上一轮的值，回退条目静态快照头。
+    由建连时的后台任务发送、经 :func:`_current_call_authorization` 取值。
+    嵌套（call_tool 作用域内自愈重连的 connect 作用域）按引用计数共存。
+    本轮没带用户令牌（后台轮次 / cron / 非企业）时不计入——不会沿用上一
+    轮的值，回退条目静态快照头。
     """
     sid = str(server_id or "").strip()
     user_authorization = _current_user_authorization() if sid else ""
     if not sid or not user_authorization:
         yield
         return
-    previous = _CURRENT_CALL_AUTH.get(sid)
-    _CURRENT_CALL_AUTH[sid] = user_authorization
+    values = _CURRENT_CALL_AUTH.setdefault(sid, {})
+    values[user_authorization] = values.get(user_authorization, 0) + 1
     try:
         yield
     finally:
-        if previous is None:
-            _CURRENT_CALL_AUTH.pop(sid, None)
-        else:
-            _CURRENT_CALL_AUTH[sid] = previous
+        current = _CURRENT_CALL_AUTH.get(sid)
+        if current is not None:
+            count = current.get(user_authorization, 0) - 1
+            if count <= 0:
+                current.pop(user_authorization, None)
+            else:
+                current[user_authorization] = count
+            if not current:
+                _CURRENT_CALL_AUTH.pop(sid, None)
+
+
+def _wrap_with_call_scope(cls: type, method_name: str) -> None:
+    """把 ``cls.method_name`` 包上调用作用域（幂等，靠方法标记判重）。"""
+    original = getattr(cls, method_name, None)
+    if original is None or getattr(original, "_jw_user_token_scoped", False):
+        return
+
+    async def _scoped(
+        self: Any, *args: Any, __orig: Any = original, **kwargs: Any
+    ) -> Any:
+        with _call_authorization_scope(str(getattr(self, "_server_id", "") or "")):
+            return await __orig(self, *args, **kwargs)
+
+    _scoped._jw_user_token_scoped = True  # type: ignore[attr-defined]
+    setattr(cls, method_name, _scoped)
 
 
 def _patch_sdk_call_scopes() -> None:
@@ -342,7 +384,7 @@ def _patch_sdk_call_scopes() -> None:
 
     覆盖 call_tool（工具请求）、list_tools（tools/list 探测）与
     connect/_do_connect（initialize 握手也要双 token）；重连发生在
-    call_tool 作用域内，嵌套作用域保存/还原前值。call_timeout_patch
+    call_tool 作用域内，嵌套作用域按引用计数共存。call_timeout_patch
     已包装 call_tool/list_tools，链式包装互不影响。
     """
     from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
@@ -356,20 +398,7 @@ def _patch_sdk_call_scopes() -> None:
     )
     for cls, method_names in targets:
         for method_name in method_names:
-            original = getattr(cls, method_name, None)
-            if original is None or getattr(original, "_jw_user_token_scoped", False):
-                continue
-
-            async def _scoped(
-                self: Any, *args: Any, __orig: Any = original, **kwargs: Any
-            ) -> Any:
-                with _call_authorization_scope(
-                    str(getattr(self, "_server_id", "") or "")
-                ):
-                    return await __orig(self, *args, **kwargs)
-
-            _scoped._jw_user_token_scoped = True  # type: ignore[attr-defined]
-            setattr(cls, method_name, _scoped)
+            _wrap_with_call_scope(cls, method_name)
 
 
 async def _quiet_aclose(provider: "DynamicTokenProvider") -> None:
@@ -495,8 +524,9 @@ def _current_user_authorization() -> str:
     自愈重连都在 turn 栈里），能读到本轮真实值；turn 栈外（后台 TTL 刷新、
     预热重连、cron 轮次）读不到 → 返回空串，回退静态快照头。
 
-    防御：剔首尾空白；含控制字符（含 CR/LF）或非可打印 ASCII 的值一律拒绝
-    ——这类值注入请求头会在 httpx/h11 发送阶段抛 LocalProtocolError /
+    防御：仅接受字符串值（数字/列表等经 str() 会带进结构化字符）；剔首尾
+    空白；含控制字符（含 CR/LF）或非可打印 ASCII 的值一律拒绝——这类值
+    注入请求头会在 httpx/h11 发送阶段抛 LocalProtocolError /
     UnicodeEncodeError，击穿"取不到不阻断"的降级语义。
     """
     try:
@@ -505,7 +535,9 @@ def _current_user_authorization() -> str:
         raw = get_ext().get(USER_TOKEN_EXT_KEY)
     except Exception:  # noqa: BLE001 - ext 读取失败不阻断请求
         return ""
-    value = str(raw or "").strip()
+    if not isinstance(raw, str):
+        return ""
+    value = raw.strip()
     if not value or len(value) > _MAX_USER_TOKEN_LEN:
         return ""
     if any(not (0x20 <= ord(ch) <= 0x7E) for ch in value):
@@ -567,10 +599,11 @@ class DynamicTokenProvider(httpx.Auth):
         # 用户授权（逐轮 X-User-Token，与 X-Actor-Token 平级）：本方法在
         # 建连时启动的后台任务里执行——在那里读请求级 ContextVar 拿到的是
         # connect 时刻快照（旧值），所以只能从 holder 取本轮值：call_tool /
-        # list_tools / connect 的包装作用域在调用者上下文（本轮对话栈）读
-        # X-User-Token 写入 holder，作用域退出即还原。本轮没带令牌 → 无值
-        # → 保留条目静态快照头，不阻断请求。
-        user_authorization = _CURRENT_CALL_AUTH.get(self._server_id, "")
+        # list_tools / connect 的包装作用域在调用者上下文（本轮对话栈）把
+        # X-User-Token 计入 holder（按值引用计数），作用域退出递减。本轮
+        # 没带令牌或多个不同用户的调用重叠 → 无归属值 → 保留条目静态快照
+        # 头，不阻断请求。
+        user_authorization = _current_call_authorization(self._server_id)
         if user_authorization:
             request.headers["Authorization"] = user_authorization
         try:

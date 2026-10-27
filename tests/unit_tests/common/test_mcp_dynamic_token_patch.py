@@ -896,28 +896,13 @@ def test_call_scope_sets_and_restores():
     from jiuwenswarm.common.mcp_dynamic_token_patch import (
         _CURRENT_CALL_AUTH,
         _call_authorization_scope,
+        _current_call_authorization,
     )
 
     with _turn_ext({"X-User-Token": "Bearer A"}):
         with _call_authorization_scope("srv-1"):
-            assert _CURRENT_CALL_AUTH["srv-1"] == "Bearer A"
+            assert _current_call_authorization("srv-1") == "Bearer A"
         assert "srv-1" not in _CURRENT_CALL_AUTH  # 退出还原，不残留
-
-
-def test_call_scope_nesting_restores_outer_value():
-    """call_tool 作用域内自愈重连的 connect 作用域：内层退出还原外层的值。"""
-    from jiuwenswarm.common.mcp_dynamic_token_patch import (
-        _CURRENT_CALL_AUTH,
-        _call_authorization_scope,
-    )
-
-    with _turn_ext({"X-User-Token": "Bearer outer"}):
-        with _call_authorization_scope("srv-1"):
-            with _turn_ext({"X-User-Token": "Bearer inner"}):
-                with _call_authorization_scope("srv-1"):
-                    assert _CURRENT_CALL_AUTH["srv-1"] == "Bearer inner"
-                assert _CURRENT_CALL_AUTH["srv-1"] == "Bearer outer"  # 还原外层
-        assert "srv-1" not in _CURRENT_CALL_AUTH  # 外层退出后彻底还原
 
 
 def test_call_scope_noop_without_token():
@@ -1085,3 +1070,284 @@ async def test_preflight_marked_gateway_without_creds_keeps_static(_patch_httpx)
     headers = _RecordingAsyncClient.requests[0][2]["headers"]
     assert headers["Authorization"] == "Bearer static"
     assert "X-Actor-Token" not in headers
+
+
+# ---------------------------------------------------------------------------
+# 11.6 场景补充：异常还原 / 并发引用计数 / provider 组合语义
+# ---------------------------------------------------------------------------
+
+
+def test_call_scope_restores_on_exception():
+    """作用域体内抛异常：holder 仍被还原（finally），异常照常传播。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _CURRENT_CALL_AUTH,
+        _call_authorization_scope,
+    )
+
+    with _turn_ext({"X-User-Token": "Bearer A"}):
+        with pytest.raises(RuntimeError, match="boom"):
+            with _call_authorization_scope("srv-1"):
+                raise RuntimeError("boom")
+    assert "srv-1" not in _CURRENT_CALL_AUTH
+
+
+def test_call_scope_refcount_same_value_survives_inner_exit():
+    """同用户并发（同值引用计数）：内层调用退出不影响外层在途调用的可读性。
+
+    回归旧"保存前值/退出还原"语义的缺陷——先进入的调用退出时会把仍在途
+    调用的值一起抹掉。
+    """
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _CURRENT_CALL_AUTH,
+        _call_authorization_scope,
+        _current_call_authorization,
+    )
+
+    with _turn_ext({"X-User-Token": "Bearer A"}):
+        with _call_authorization_scope("srv-1"):
+            with _call_authorization_scope("srv-1"):  # 同用户第二个并发调用
+                assert _current_call_authorization("srv-1") == "Bearer A"
+            # 内层已退出，外层调用仍在途 → 值仍可读
+            assert _current_call_authorization("srv-1") == "Bearer A"
+        assert "srv-1" not in _CURRENT_CALL_AUTH  # 全部退出才清空
+
+
+def test_call_scope_cross_value_concurrent_never_leaks_identity():
+    """不同用户的调用在途重叠：无归属值（回退静态快照），绝不串用他人身份。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _CURRENT_CALL_AUTH,
+        _call_authorization_scope,
+        _current_call_authorization,
+    )
+
+    with _turn_ext({"X-User-Token": "Bearer user-A"}):
+        with _call_authorization_scope("srv-1"):
+            with _turn_ext({"X-User-Token": "Bearer user-B"}):
+                with _call_authorization_scope("srv-1"):
+                    # A、B 两路调用同时在途：无法归属 → 空（静态快照兜底）
+                    assert _current_call_authorization("srv-1") == ""
+                # B 路退出后，A 路仍在途 → 恢复可读
+                assert _current_call_authorization("srv-1") == "Bearer user-A"
+            assert _current_call_authorization("srv-1") == "Bearer user-A"
+        assert "srv-1" not in _CURRENT_CALL_AUTH
+
+
+@pytest.mark.asyncio
+async def test_auth_flow_actor_failure_with_user_token():
+    """取 actor token 失败 + 本轮用户令牌在途：Authorization 带用户令牌、
+    X-Actor-Token 置空，请求照常发起（两个头语义互不干扰）。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _call_authorization_scope
+
+    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
+    token_url = "http://token-svc.example/token"
+    provider = DynamicTokenProvider(
+        {"Authorization": "Bearer static"}, {}, token_url, "srv-1"
+    )
+
+    async def _failing_fetch() -> str:
+        raise McpDynamicTokenUnavailableError(token_url, "connection refused")
+
+    provider._fetch_token = _failing_fetch  # type: ignore[method-assign]
+
+    with _turn_ext({"X-User-Token": "Bearer turn-A"}):
+        with _call_authorization_scope("srv-1"):
+            sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
+
+    assert sent.headers["Authorization"] == "Bearer turn-A"  # 用户授权不受影响
+    assert sent.headers["X-Actor-Token"] == ""  # 动态头置空降级
+
+
+@pytest.mark.asyncio
+async def test_auth_flow_adds_authorization_when_static_empty():
+    """条目没有静态 auth_headers：本轮用户令牌照样补上 Authorization。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _call_authorization_scope
+
+    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
+    provider = DynamicTokenProvider({}, {}, "http://token-svc.example/token", "srv-1")
+
+    async def _fake_fetch() -> str:
+        return "tok-1"
+
+    provider._fetch_token = _fake_fetch  # type: ignore[method-assign]
+
+    with _turn_ext({"X-User-Token": "Bearer turn-A"}):
+        with _call_authorization_scope("srv-1"):
+            sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
+
+    assert sent.headers["Authorization"] == "Bearer turn-A"
+    assert sent.headers["X-Actor-Token"] == "Bearer tok-1"
+
+
+@pytest.mark.asyncio
+async def test_auth_flow_server_isolation():
+    """作用域按网关隔离：srv-1 的在途令牌不外溢到其他网关的 provider。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _call_authorization_scope
+
+    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
+    provider_other = DynamicTokenProvider(
+        {"Authorization": "Bearer static"},
+        {},
+        "http://token-svc.example/token",
+        "srv-other",
+    )
+
+    async def _fake_fetch() -> str:
+        return "tok-1"
+
+    provider_other._fetch_token = _fake_fetch  # type: ignore[method-assign]
+
+    with _turn_ext({"X-User-Token": "Bearer turn-A"}):
+        with _call_authorization_scope("srv-1"):
+            sent = await _run_flow(provider_other, _jsonrpc_request(request_id=1))
+
+    assert sent.headers["Authorization"] == "Bearer static"  # 未被 srv-1 的值覆盖
+    assert sent.headers["X-Actor-Token"] == "Bearer tok-1"
+
+
+@pytest.mark.asyncio
+async def test_auth_flow_ambiguous_concurrency_falls_back_to_static():
+    """不同用户调用在途重叠时的真实出网：Authorization 回退静态快照。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _call_authorization_scope
+
+    provider = _make_provider(token="tok-1")
+
+    with _turn_ext({"X-User-Token": "Bearer user-A"}):
+        with _call_authorization_scope("srv-1"):
+            with _turn_ext({"X-User-Token": "Bearer user-B"}):
+                with _call_authorization_scope("srv-1"):
+                    sent = await _run_flow(provider, _jsonrpc_request(request_id=1))
+
+    assert sent.headers["Authorization"] == "Bearer static"  # 不串身份
+    assert sent.headers["X-Actor-Token"] == "Bearer tok-1"
+
+
+@pytest.mark.parametrize("bad", [123, 4.5, ["Bearer x"], {"t": 1}, True, None])
+def test_current_user_authorization_rejects_non_string(bad):
+    """ext 值非字符串：拒绝注入（str() 会把结构化字符带进请求头）。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _current_user_authorization
+
+    with _turn_ext({"X-User-Token": bad}):
+        assert _current_user_authorization() == ""
+
+
+# ---------------------------------------------------------------------------
+# 11.7 包装函数级：_wrap_with_call_scope 在调用路径上的行为
+# ---------------------------------------------------------------------------
+
+
+class _DummyClient:
+    """模拟 SDK 客户端：记录调用期间 provider 视角能读到的值。"""
+
+    _server_id = "srv-dummy"
+
+    def __init__(self, raise_on_call: BaseException | None = None) -> None:
+        self.seen: list[str] = []
+        self._raise = raise_on_call
+
+    async def call_tool(self, name, arguments=None):  # noqa: ANN001
+        from jiuwenswarm.common.mcp_dynamic_token_patch import (
+            _current_call_authorization,
+        )
+
+        self.seen.append(_current_call_authorization(self._server_id))
+        if self._raise is not None:
+            raise self._raise
+        return name
+
+
+@pytest.mark.asyncio
+async def test_wrap_with_call_scope_during_and_after_call():
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _CURRENT_CALL_AUTH,
+        _wrap_with_call_scope,
+    )
+
+    _wrap_with_call_scope(_DummyClient, "call_tool")
+
+    with _turn_ext({"X-User-Token": "Bearer T"}):
+        client = _DummyClient()
+        assert await client.call_tool("t") == "t"
+        assert client.seen == ["Bearer T"]  # 调用期间 provider 可读到本轮值
+    assert "srv-dummy" not in _CURRENT_CALL_AUTH  # 调用结束还原
+
+    client2 = _DummyClient()
+    assert await client2.call_tool("t") == "t"
+    assert client2.seen == [""]  # 作用域外（无 ext）→ 空
+
+
+@pytest.mark.asyncio
+async def test_wrap_with_call_scope_restores_on_exception():
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _CURRENT_CALL_AUTH,
+        _wrap_with_call_scope,
+    )
+
+    _wrap_with_call_scope(_DummyClient, "call_tool")
+
+    with _turn_ext({"X-User-Token": "Bearer T"}):
+        client = _DummyClient(raise_on_call=RuntimeError("tool exploded"))
+        with pytest.raises(RuntimeError, match="tool exploded"):
+            await client.call_tool("t")
+        assert client.seen == ["Bearer T"]  # 进入时已可读
+    assert "srv-dummy" not in _CURRENT_CALL_AUTH  # 异常路径同样还原
+
+
+def test_wrap_with_call_scope_idempotent():
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _wrap_with_call_scope
+
+    _wrap_with_call_scope(_DummyClient, "call_tool")
+    wrapped = _DummyClient.__dict__["call_tool"]
+    _wrap_with_call_scope(_DummyClient, "call_tool")
+    assert _DummyClient.__dict__["call_tool"] is wrapped  # 不二次包装
+
+
+# ---------------------------------------------------------------------------
+# 11.8 请求级 ext 抬升链路（agent_ws_server 入口依赖的原语）
+# ---------------------------------------------------------------------------
+
+
+def test_request_ext_lift_roundtrip():
+    from jiuwenswarm.common.request_ext import get_ext, lift_from_metadata, reset_ext
+
+    assert lift_from_metadata(None) is None
+    assert lift_from_metadata({"no-ext": 1}) is None
+    assert lift_from_metadata({"ext": "not-a-dict"}) is None
+
+    token = lift_from_metadata(
+        {"ext": {"X-User-Token": "Bearer t", "X-Trace-Tag": "trace"}}
+    )
+    assert token is not None
+    assert get_ext() == {"X-User-Token": "Bearer t", "X-Trace-Tag": "trace"}
+    reset_ext(token)
+    assert get_ext() == {}
+
+
+@pytest.mark.asyncio
+async def test_concurrent_turns_isolated_real_asyncio():
+    """真实 asyncio 并发：两轮不同用户同时调用同一网关，各拿各的值。
+
+    （作用域体不含 await 时 enter+read+exit 原子执行，无重叠；若真实调用
+    在途重叠，则由 ambiguous_concurrency 测试覆盖——回退静态快照。）
+    """
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _call_authorization_scope,
+        _current_call_authorization,
+    )
+
+    async def tool_call() -> str:
+        await asyncio.sleep(0.01)
+        with _call_authorization_scope("srv-e2e"):
+            return _current_call_authorization("srv-e2e")
+
+    async def turn_call(token: str) -> str:
+        from jiuwenswarm.common import request_ext
+
+        tok = request_ext.set_current({"X-User-Token": token})
+        try:
+            return await tool_call()
+        finally:
+            request_ext.reset_ext(tok)
+
+    r1, r2 = await asyncio.gather(turn_call("Bearer U1"), turn_call("Bearer U2"))
+    assert r1 == "Bearer U1"
+    assert r2 == "Bearer U2"
