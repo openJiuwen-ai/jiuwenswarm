@@ -4956,6 +4956,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["session_id"] = params.get("session_id")
             if "page_idx" in params:
                 payload["page_idx"] = params.get("page_idx")
+            if "cursor" in params:
+                payload["cursor"] = params.get("cursor")
+            if "limit" in params:
+                payload["limit"] = params.get("limit")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _locale_get_conf(ws, req_id, params, session_id):

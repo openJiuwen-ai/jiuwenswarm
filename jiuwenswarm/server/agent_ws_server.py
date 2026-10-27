@@ -89,10 +89,13 @@ from jiuwenswarm.server.runtime.agent_warm_pool import WarmClaim
 from jiuwenswarm.server.runtime.expert.expert_service import ExpertService
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
 from jiuwenswarm.server.runtime.session.session_history import (
+    HistorySnapshotChanged,
+    InvalidHistoryCursor,
     append_compact_history_records,
     history_exists,
     is_valid_session_id,
     load_history_records,
+    read_history_cursor_page,
     read_member_history_records,
     read_team_history_records,
 )
@@ -5746,7 +5749,13 @@ class AgentWebSocketServer:
                    if get_sandbox_startup_mode() != "internal" else {})}
 
     async def _get_conversation_history_async(
-        self, session_id: str, page_idx: int
+        self,
+        session_id: str,
+        page_idx: int | None = None,
+        *,
+        cursor_protocol: bool = False,
+        cursor: str | None = None,
+        limit: int = _HISTORY_PAGE_SIZE,
     ) -> dict[str, Any] | None:
         """Keep full-history parsing off the loop, with one read per session."""
         locks = getattr(self, "_history_read_locks", None)
@@ -5762,9 +5771,19 @@ class AgentWebSocketServer:
 
         await lock.acquire()
         try:
-            task = asyncio.create_task(asyncio.to_thread(
-                self.get_conversation_history, session_id=session_id, page_idx=page_idx
-            ))
+            if cursor_protocol:
+                task = asyncio.create_task(asyncio.to_thread(
+                    self.get_conversation_history_cursor,
+                    session_id=session_id,
+                    cursor=cursor,
+                    limit=limit,
+                ))
+            else:
+                task = asyncio.create_task(asyncio.to_thread(
+                    self.get_conversation_history,
+                    session_id=session_id,
+                    page_idx=page_idx,
+                ))
         except BaseException:
             lock.release()
             raise
@@ -5786,7 +5805,32 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = params.get("session_id")
         page_idx = params.get("page_idx")
-        data = await self._get_conversation_history_async(session_id=session_id, page_idx=page_idx)
+        cursor_protocol = "cursor" in params
+        request_cursor = params.get("cursor")
+        try:
+            data = await self._get_conversation_history_async(
+                session_id=session_id,
+                page_idx=page_idx,
+                cursor_protocol=cursor_protocol,
+                cursor=request_cursor,
+                limit=params.get("limit", _HISTORY_PAGE_SIZE),
+            )
+        except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
+            error_code = (
+                "HISTORY_SNAPSHOT_CHANGED"
+                if isinstance(exc, HistorySnapshotChanged)
+                else "INVALID_HISTORY_CURSOR"
+            )
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": error_code},
+            )
+            wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if data is None:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -6330,7 +6374,42 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = params.get("session_id")
         page_idx = params.get("page_idx")
-        data = await self._get_conversation_history_async(session_id=session_id, page_idx=page_idx)
+        cursor_protocol = "cursor" in params
+        request_cursor = params.get("cursor")
+        try:
+            data = await self._get_conversation_history_async(
+                session_id=session_id,
+                page_idx=page_idx,
+                cursor_protocol=cursor_protocol,
+                cursor=request_cursor,
+                limit=params.get("limit", _HISTORY_PAGE_SIZE),
+            )
+        except (InvalidHistoryCursor, HistorySnapshotChanged) as exc:
+            error_code = (
+                "HISTORY_SNAPSHOT_CHANGED"
+                if isinstance(exc, HistorySnapshotChanged)
+                else "INVALID_HISTORY_CURSOR"
+            )
+            error_chunk = AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.error",
+                    "error": str(exc),
+                    "code": error_code,
+                    "session_id": str(session_id or ""),
+                    "cursor": request_cursor,
+                },
+                is_complete=True,
+            )
+            wire = encode_agent_chunk_for_wire(
+                error_chunk,
+                response_id=request.request_id,
+                sequence=0,
+            )
+            async with send_lock:
+                await send_wire_payload(ws, wire)
+            return
         if data is None:
             err_chunk = AgentResponseChunk(
                 request_id=request.request_id,
@@ -6353,6 +6432,10 @@ class AgentWebSocketServer:
         messages = data.get("messages", [])
         total_pages = data.get("total_pages")
         page = data.get("page_idx")
+        next_cursor = data.get("next_cursor")
+        has_more = data.get("has_more")
+        snapshot_id = data.get("snapshot_id")
+        snapshot_end = data.get("snapshot_end")
         if isinstance(messages, list):
             for seq, item in enumerate(messages):
                 chunk = AgentResponseChunk(
@@ -6364,6 +6447,11 @@ class AgentWebSocketServer:
                         "session_id": str(session_id or ""),
                         "total_pages": total_pages,
                         "page_idx": page,
+                        "cursor": request_cursor if cursor_protocol else None,
+                        "next_cursor": next_cursor,
+                        "has_more": has_more,
+                        "snapshot_id": snapshot_id,
+                        "snapshot_end": snapshot_end,
                     },
                     is_complete=False,
                 )
@@ -6388,8 +6476,11 @@ class AgentWebSocketServer:
 
         # Session open / refresh: push full todo snapshot before history "done"
         # so the frontend todo panel restores without reading workspace files.
-        # Only page 1 — pagination must not re-flash the panel.
-        if page_idx == 1 and isinstance(session_id, str) and session_id.strip():
+        # Only the initial batch — pagination must not re-flash the panel.
+        is_initial_history_batch = (
+            cursor_protocol and request_cursor is None
+        ) or (not cursor_protocol and page_idx == 1)
+        if is_initial_history_batch and isinstance(session_id, str) and session_id.strip():
             todos = load_todo_snapshot_for_frontend(session_id)
             todo_chunk = AgentResponseChunk(
                 request_id=request.request_id,
@@ -6431,6 +6522,11 @@ class AgentWebSocketServer:
                 "session_id": str(session_id or ""),
                 "total_pages": total_pages,
                 "page_idx": page,
+                "cursor": request_cursor if cursor_protocol else None,
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+                "snapshot_id": snapshot_id,
+                "snapshot_end": snapshot_end,
             },
             is_complete=True,
         )
@@ -9388,6 +9484,51 @@ class AgentWebSocketServer:
             "total_pages": total_pages,
             "page_idx": page_idx,
         }
+
+    @staticmethod
+    def get_conversation_history_cursor(
+        session_id: str,
+        cursor: str | None,
+        limit: int = _HISTORY_PAGE_SIZE,
+    ) -> dict[str, Any]:
+        """Return one newest-to-oldest history batch for the cursor protocol."""
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise InvalidHistoryCursor("session_id is required")
+        if cursor is not None and not isinstance(cursor, str):
+            raise InvalidHistoryCursor("history cursor must be null or a string")
+        if (
+            not isinstance(limit, int)
+            or isinstance(limit, bool)
+            or not 1 <= limit <= _HISTORY_PAGE_SIZE
+        ):
+            raise InvalidHistoryCursor(
+                f"history limit must be between 1 and {_HISTORY_PAGE_SIZE}"
+            )
+
+        normalized_session_id = session_id.strip()
+        data = read_history_cursor_page(
+            normalized_session_id,
+            cursor=cursor,
+            limit=limit,
+            is_restorable=_is_restorable_history_record,
+        )
+        messages = data.get("messages")
+        if isinstance(messages, list):
+            data["messages"] = [
+                _sanitize_history_record_for_wire(item)
+                for item in messages
+                if isinstance(item, dict)
+            ]
+        logger.debug(
+            "[history.get] cursor batch: session_id=%s limit=%s returned=%s "
+            "has_more=%s scanned_bytes=%s",
+            normalized_session_id,
+            limit,
+            len(data.get("messages", [])),
+            data.get("has_more"),
+            data.get("scanned_bytes"),
+        )
+        return data
 
     async def _handle_initialize(
             self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock

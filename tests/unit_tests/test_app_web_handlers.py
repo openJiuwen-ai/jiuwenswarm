@@ -46,6 +46,32 @@ class FakeWebChannel:
 
 
 @pytest.mark.asyncio
+async def test_history_get_forwards_cursor_pagination_params():
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["history.get"](
+        None,
+        "history-page",
+        {"session_id": "session-1", "cursor": "next-token", "limit": 50},
+        "session-1",
+    )
+
+    assert channel.responses[-1] == {
+        "id": "history-page",
+        "ok": True,
+        "payload": {
+            "accepted": True,
+            "session_id": "session-1",
+            "cursor": "next-token",
+            "limit": 50,
+        },
+        "error": None,
+        "code": None,
+    }
+
+
+@pytest.mark.asyncio
 async def test_cron_run_list_reads_persisted_records_after_job_deleted(tmp_path):
     from jiuwenswarm.gateway.cron.controller import CronController
     from jiuwenswarm.gateway.cron.store import CronJobStore
