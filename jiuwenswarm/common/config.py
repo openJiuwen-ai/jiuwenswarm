@@ -1189,6 +1189,63 @@ def _persist_permissions(mutate_fn) -> dict[str, Any]:
     return persist_permissions_mutate(mutate_fn, persist_scope="base")
 
 
+def get_file_soft_delete_settings(
+    config: dict[str, Any] | None,
+    workspace_dir: str | None = None,
+) -> tuple[bool, str]:
+    """返回 Windows 软删除是否开启，以及归档目录。
+
+    只有布尔 ``True`` 才开启。缺省和非布尔值都保持关闭。
+    ``archive_dir`` 为空时落到 ``<workspace>/.trash``。关闭时归档路径为空。
+    """
+    if not isinstance(config, dict):
+        return False, ""
+    permissions = config.get("permissions")
+    if not isinstance(permissions, dict):
+        return False, ""
+    section = permissions.get("soft_delete")
+    if section is None:
+        return False, ""
+    if not isinstance(section, dict):
+        logger.warning("Invalid permissions.soft_delete=%r; leaving soft-delete off", section)
+        return False, ""
+    enabled = section.get("enabled", False)
+    if not isinstance(enabled, bool):
+        logger.warning(
+            "Invalid permissions.soft_delete.enabled=%r; leaving soft-delete off",
+            enabled,
+        )
+        return False, ""
+    if not enabled:
+        return False, ""
+
+    archive = section.get("archive_dir", "")
+    if archive is None:
+        archive = ""
+    if not isinstance(archive, str):
+        logger.warning(
+            "Invalid permissions.soft_delete.archive_dir=%r; leaving soft-delete off",
+            archive,
+        )
+        return False, ""
+    archive = archive.strip()
+    if archive:
+        return True, os.path.abspath(os.path.expandvars(os.path.expanduser(archive)))
+
+    workspace = (workspace_dir or "").strip()
+    if not workspace:
+        react = config.get("react")
+        if isinstance(react, dict):
+            raw_workspace = react.get("workspace_dir")
+            if isinstance(raw_workspace, str):
+                workspace = raw_workspace.strip()
+    if not workspace:
+        from jiuwenswarm.common.utils import get_agent_workspace_dir
+
+        workspace = str(get_agent_workspace_dir())
+    return True, os.path.abspath(os.path.join(workspace, ".trash"))
+
+
 def get_permissions_file_guard_workspace_rw_enabled() -> bool:
     """读取 ``permissions.file_guard.workspace.rw_enabled``（缺省为 True）。"""
     fg = _effective_permissions().get("file_guard")
