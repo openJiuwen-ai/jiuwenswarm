@@ -1277,6 +1277,52 @@ async def test_interact_uses_runner_only_for_active_session(
 
 
 @pytest.mark.asyncio
+async def test_interact_bumps_user_turn_epoch_only_for_answer_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HITL 清除门的 epoch 只被「作答型载荷」推进。
+
+    InteractiveInput（桌面 HITL 作答，agent-core 侧 resume_interrupt 直解
+    挂起）与 HumanAgentMessage（swarmflow 人类成员回复，消息等待型 HITL
+    的作答）在投递成功后 bump；godview 追问文本 / team.external_event
+    外部事件只进 inbox 不解挂起，不得 bump——否则同一暂停轮晚到的
+    leader 帧误过 epoch 门清掉挂起标记，流末兜底给仍在等待作答的回合
+    补带 error 的终态帧并级联 park 收流。（旧实现无条件 bump：本用例
+    首个断言在旧实现上必红。）
+    """
+    from openjiuwen.agent_teams.interaction.payload import HumanAgentMessage
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    manager = _TeamManagerHarness()
+    manager.set_active_runtime_for_test("sess-1", "demo-team")
+
+    async def fake_interact_agent_team(user_input, *, team_name, session_id):
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.Runner.interact_agent_team",
+        fake_interact_agent_team,
+    )
+
+    # godview 追问文本（裸 str）：不是作答，不推进 epoch
+    assert await manager.interact("sess-1", "先等等，我问下别的") == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 0
+
+    # team.external_event 外部事件（dict 载荷）：不是作答，不推进 epoch
+    assert await manager.interact("sess-1", {"type": "team.external_event", "data": {}}) == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 0
+
+    # swarmflow 人类成员回复：消息等待型 HITL 的作答，推进 epoch
+    reply = HumanAgentMessage(sender="user", target="corr-1", body="答案")
+    assert await manager.interact("sess-1", reply) == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 1
+
+    # InteractiveInput（桌面 HITL 作答）：推进 epoch
+    assert await manager.interact("sess-1", InteractiveInput()) == (True, None)
+    assert manager.user_turn_epoch("sess-1") == 2
+
+
+@pytest.mark.asyncio
 async def test_interact_refreshes_active_team_model_pool_trace_before_runner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
