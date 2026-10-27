@@ -9,6 +9,12 @@ import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { isDesignerModerationError } from '../designerRunView';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerNodeUpload';
+import {
+  ArrangeNodesIcon,
+  HideEdgesIcon,
+  MinimapIcon,
+  ShowEdgesIcon,
+} from '../designerIcons';
 import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
