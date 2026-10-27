@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.session-repo-info
+  version: 1.0.0
+  displayName: Session Repository Info
+extensions:
+  - id: repo-reader
+    runtime: backend
+    module: extension.py
