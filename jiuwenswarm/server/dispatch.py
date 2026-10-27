@@ -89,6 +89,7 @@ from jiuwenswarm.server.handlers.ops import (
 from jiuwenswarm.server.handlers.permissions import handle_permissions_config
 from jiuwenswarm.server.handlers.sandbox import handle_command_sandbox
 from jiuwenswarm.server.handlers.schedule import handle_schedule_request
+from jiuwenswarm.server.handlers.agent_templates import handle_agent_templates_request
 from jiuwenswarm.server.handlers.skills import handle_skills_request
 from jiuwenswarm.server.handlers.session import (
     handle_history_append_record,
@@ -319,6 +320,14 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: handle_skills_request,
     ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: handle_skills_request,
     ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: handle_skills_request,
+    # 专家包在 AgentServer 的装备目录。WebSocket 经 process_message；
+    # 企业版南向是 HTTP，这里登记后专用网址走同一条路径。
+    ReqMethod.AGENT_TEMPLATES_LIST: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_SHOW: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_FILE_LIST: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_FILE_READ: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_INSTALL: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_UNINSTALL: handle_agent_templates_request,
 }
 
 

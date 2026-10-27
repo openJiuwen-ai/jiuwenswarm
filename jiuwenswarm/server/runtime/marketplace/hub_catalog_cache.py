@@ -319,7 +319,14 @@ async def cached_asset_catalog(port, kind, *, refresh=False, preload=False):
         # must never make an otherwise usable catalog fail.
         fields = {
             name: item.get(name) if isinstance(item.get(name), str) else ""
-            for name in ("display_name", "short_description", "public_latest_version", "icon_uri", "package_name")
+            for name in (
+                "display_name",
+                "short_description",
+                "public_latest_version",
+                "icon_uri",
+                "package_name",
+                "category_name",
+            )
         }
         tags = item.get('tags')
         fields['tags'] = tuple(tag for tag in tags if isinstance(tag, str)) if isinstance(tags, (list, tuple)) else ()

@@ -18,6 +18,18 @@ class LoggingConfigUpsertRequest(BaseModel):
     full: str | None = Field(default=None, max_length=16)
 
 
+class PackageAllowlistPackage(BaseModel):
+    kind: str = Field(..., min_length=1, max_length=32)
+    id: str = Field(..., min_length=1, max_length=128)
+    match_expr: str | list[str] | None = None
+
+
+class PackageAllowlistUpsertRequest(BaseModel):
+    """管理面下发的专家包允许名单全量快照。"""
+
+    packages: list[PackageAllowlistPackage] = Field(default_factory=list)
+
+
 class CronPolicyUpsertRequest(BaseModel):
     """对齐 cron_policy：界面同时运行中的定时任务上限。0 表示不能再从界面启用。"""
 

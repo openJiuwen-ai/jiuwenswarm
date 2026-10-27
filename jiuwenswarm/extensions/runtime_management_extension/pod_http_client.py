@@ -68,6 +68,22 @@ class _StreamScope:
     session_id: str
 
 
+async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
+    """企业版先读库再组头。个人版直接组请求。"""
+    from jiuwenswarm.edition import is_enterprise
+
+    if not is_enterprise():
+        return assemble_rest_request(envelope, base_url=api_root)
+    from gateway.manager_config.core.application_config.package_allowlist import (
+        read_package_allowlist_packages,
+    )
+    from jiuwenswarm.server.runtime.package_allowlist import bind_outbound_allowlist
+
+    packages = await read_package_allowlist_packages()
+    with bind_outbound_allowlist(packages):
+        return assemble_rest_request(envelope, base_url=api_root)
+
+
 def _http_method_not_handled(envelope: E2AEnvelope, message: str) -> AgentResponse:
     """没有专用网址时直接回给调用方，不再发往 Agent。"""
     return AgentResponse(
@@ -353,7 +369,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = False
         try:
-            assembled = assemble_rest_request(envelope, base_url=api_root)
+            assembled = await _assemble_with_allowlist(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][unary] request_id=%s method=%s 没有 HTTP 处理",
@@ -444,7 +460,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = True
         try:
-            assembled = assemble_rest_request(envelope, base_url=api_root)
+            assembled = await _assemble_with_allowlist(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][stream] request_id=%s method=%s 没有 HTTP 处理",
