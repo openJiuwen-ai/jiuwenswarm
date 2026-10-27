@@ -50,7 +50,11 @@ export type FormItem<TValues extends FormValues> =
       changeOnBlur?: boolean;
     })
   | (FormItemBase<TValues, keyof TValues> & { component: 'textarea'; placeholder?: string; rows?: number })
-  | (FormItemBase<TValues, keyof TValues> & { component: 'select'; options: readonly SelectOption[] })
+  | (FormItemBase<TValues, keyof TValues> & {
+      component: 'select';
+      options: readonly SelectOption[];
+      placeholder?: string;
+    })
   | (FormItemBase<TValues, keyof TValues> & { component: 'switch'; switchLabel: string })
   | (FormItemBase<TValues, keyof TValues> & {
       component: 'radioGroup';
