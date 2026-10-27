@@ -1,7 +1,9 @@
 import hashlib
 import io
 import time
+from datetime import timedelta
 from types import SimpleNamespace
+from urllib.parse import quote
 from unittest.mock import AsyncMock, Mock
 
 import httpx
@@ -22,7 +24,7 @@ from jiuwenswarm.common.obs_files import AttachmentStore, DOWNLOAD_TTL_SECONDS
 from jiuwenswarm.common.utils import build_tenant_key
 from gateway.channel_manager.web.enterprise_files import (
     register_enterprise_file_routes,
-    serve_object_download,
+    serve_presigned_download,
 )
 from starlette.requests import Request
 from jiuwenswarm.server.runtime.tenant_context import TenantContext
@@ -82,8 +84,8 @@ async def test_enterprise_tool_keeps_execution_authorization(
         if scenario in {"success", "full_access"}:
             assert "成功发送 1 个文件" in result
             file = push.await_args.args[0]["payload"]["files"][0]
-            claims = delivery.manager.validate_token(file["download_token"])
-            assert claims["kind"] == "obs_asset_v1" and claims["sid"] == "tool-session"
+            assert file["download_token"] == file["url"]
+            assert "/file-api/download?url=" in file["download_url"]
             assert history.call_args.kwargs["extra"]["files"][0] == file
         else:
             assert "失败" in result
@@ -99,12 +101,55 @@ async def test_enterprise_tool_keeps_execution_authorization(
 class ObjectClient:
     def __init__(self):
         self.objects = {}
+        self.signed = {}
         self.reads = []
         self.closed = False
         self.released = False
 
     def bucket_exists(self, bucket):
         return True
+
+    def presigned_get_object(self, bucket, key, *, expires):
+        assert expires == timedelta(days=7)
+        url = f"http://obs/{bucket}/{quote(key)}?signature=issued"
+        self.signed[url] = (bucket, key, time.time() + expires.total_seconds())
+        return url
+
+    def signed_request(self, method, url, *, headers=None, redirect, preload_content):
+        headers = headers or {}
+        from gateway.channel_manager.web.container_file_http import _parse_single_byte_range
+
+        assert method == "GET" and not redirect and not preload_content
+        status, response_headers = 200, {}
+        signed = self.signed.get(url)
+        location = signed[:2] if signed else None
+        if not signed or time.time() > signed[2]:
+            status = 403
+        elif location not in self.objects:
+            status = 404
+        if status != 200:
+            response = io.BytesIO()
+            response.status, response.headers = status, response_headers
+            response.release_conn = Mock()
+            return response
+        bucket, key = location
+        data, metadata, etag = self.objects[location]
+        byte_range = _parse_single_byte_range(headers["Range"], len(data)) if headers.get("Range") else None
+        if headers.get("Range") and byte_range is None:
+            response = io.BytesIO()
+            response.status, response.headers = 416, {}
+            response.release_conn = Mock()
+            return response
+        offset, end = byte_range or (0, max(len(data) - 1, 0))
+        length = end - offset + 1 if data else 0
+        response = self.get_object(bucket, key, offset=offset, length=length,
+            request_headers={"If-Match": f'"{etag}"'})
+        response.status = 206 if byte_range else 200
+        response.headers = {"Content-Length": str(length),
+            "x-amz-meta-session-id": metadata.get("session-id", "")}
+        if byte_range:
+            response.headers["Content-Range"] = f"bytes {offset}-{end}/{len(data)}"
+        return response
 
     def put_object(self, bucket, key, reader, length, metadata):
         data = b""
@@ -163,8 +208,14 @@ def delivery(tmp_path, monkeypatch):
     client = ObjectClient()
     store = AttachmentStore(client, "bucket", "http://obs")
     monkeypatch.setattr(AttachmentStore, "from_env", lambda: store)
-    manager = WebFileDownloadManager("s" * 64)
-    monkeypatch.setattr(WebFileDownloadManager, "get_instance", lambda: manager)
+    monkeypatch.setattr(
+        "gateway.channel_manager.web.enterprise_files._obs_http_client",
+        lambda: SimpleNamespace(request=client.signed_request, clear=Mock()),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.obs_files._obs_http_client",
+        lambda: SimpleNamespace(request=client.signed_request, clear=Mock()),
+    )
     owner = VerifiedDownloadAssetOwner(root=tmp_path / "sealed", start_sweeper=False)
     source = tmp_path / "中文.txt"
     source.write_bytes(b"workspace file\n")
@@ -173,7 +224,6 @@ def delivery(tmp_path, monkeypatch):
     return SimpleNamespace(
         client=client,
         store=store,
-        manager=manager,
         owner=owner,
         source=source,
         info=info,
@@ -181,22 +231,6 @@ def delivery(tmp_path, monkeypatch):
         tenant=tenant,
         metadata=metadata,
     )
-
-
-def test_publishes_workspace_file_without_snapshot_and_seven_day_claims(delivery):
-    payload = delivery.manager.validate_token(delivery.info["download_token"])
-    assert payload["kind"] == "obs_asset_v1"
-    assert abs(payload["exp"] - time.time() - 7 * 86400) < 3
-    assert payload["tenant_key"] == delivery.tenant
-    data = next(iter(delivery.client.objects.values()))[0]
-    assert data == b"workspace file\n"
-    assert payload["digest"] == "sha256:" + hashlib.sha256(data).hexdigest()
-    assert "path" not in payload
-    assert not delivery.owner.root.exists()
-    delivery.source.write_bytes(b"changed workspace source")
-    assert next(iter(delivery.client.objects.values()))[0] == data
-    assert delivery.manager.validate_token(delivery.info["download_token"])
-
 
 def test_workspace_change_during_upload_is_not_delivered(delivery, monkeypatch):
     put = delivery.client.put_object
@@ -211,36 +245,6 @@ def test_workspace_change_during_upload_is_not_delivered(delivery, monkeypatch):
     assert isinstance(error.value.__cause__, ValueError)
     assert "source changed" in str(error.value.__cause__)
     assert len(delivery.client.objects) == 1
-
-
-@pytest.mark.parametrize(
-    "elapsed, valid", [(601, True), (604799, True), (604802, False)]
-)
-def test_object_delivery_expiry_is_seven_days_not_ten_minutes(
-    delivery, monkeypatch, elapsed, valid
-):
-    payload = delivery.manager.validate_token(delivery.info["download_token"])
-    monkeypatch.setattr(
-        time, "time", lambda: payload["exp"] - DOWNLOAD_TTL_SECONDS + elapsed
-    )
-    assert (
-        bool(delivery.manager.validate_token(delivery.info["download_token"])) is valid
-    )
-
-
-def test_materialize_object_checks_digest_and_closes_response(delivery, tmp_path):
-    payload = delivery.manager.validate_token(delivery.info["download_token"])
-    target = tmp_path / "restored.txt"
-    delivery.source.unlink()
-    delivery.store.download_file(payload, target)
-    assert target.read_bytes() == b"workspace file\n"
-    assert delivery.client.closed and delivery.client.released
-    key = (delivery.store.bucket, payload["object_key"])
-    _, metadata, etag = delivery.client.objects[key]
-    delivery.client.objects[key] = (b"X" * payload["size"], metadata, etag)
-    with pytest.raises(ValueError, match="digest mismatch"):
-        delivery.store.download_file(payload, tmp_path / "corrupt.txt")
-
 
 @pytest.mark.asyncio
 async def test_gateway_reads_obs_without_agent_or_snapshot(delivery):
@@ -258,8 +262,8 @@ async def test_gateway_reads_obs_without_agent_or_snapshot(delivery):
         assert delivery.client.closed and delivery.client.released
         count = len(delivery.client.reads)
         head = await client.head(url)
-        assert head.status_code == 200 and not head.content
-        assert len(delivery.client.reads) == count
+        assert head.status_code == 206 and not head.content
+        assert len(delivery.client.reads) == count + 1
         part = await client.get(url, headers={"Range": "bytes=2-8"})
         assert part.status_code == 206 and part.content == full.content[2:9]
         suffix = await client.get(url, headers={"Range": "bytes=-4"})
@@ -272,35 +276,55 @@ async def test_gateway_reads_obs_without_agent_or_snapshot(delivery):
         assert (await client.get(url, headers={"X-Bot-Id": "other"})).status_code == 403
 
 
-@pytest.mark.parametrize(
-    "change",
-    [
-        {"exp": 1},
-        {"sid": ""},
-        {"object_key": "downloads/another/file"},
-        {"digest": "bad"},
-        {"size": -1},
-        {"size": True},
-        {"bucket": "other"},
-        {"etag": "changed"},
-        {"size": 999},
-    ],
-)
 @pytest.mark.asyncio
-async def test_invalid_or_changed_objects_fail_closed(delivery, change):
-    payload = delivery.manager.validate_token(delivery.info["download_token"])
-    payload.update(change)
-    token = delivery.manager._sign_payload(payload)
+async def test_presigned_delivery_does_not_read_gateway_signing_key(delivery, monkeypatch):
+    monkeypatch.setattr(WebFileDownloadManager, "get_instance", Mock(side_effect=AssertionError("Gateway read a local signing key")))
+    file = build_object_file_download_info(delivery.source, "session", "u", metadata=delivery.metadata)
     app = FastAPI()
-
     register_enterprise_file_routes(app, SimpleNamespace())
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://gateway"
-    ) as client:
-        response = await client.get("/file-api/download", params={"token": token})
-        assert response.status_code == 403
-        assert not delivery.client.reads
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://gateway") as client:
+        assert (await client.head(file["download_url"])).status_code == 206
+        response = await client.get(file["download_url"])
+        assert response.status_code == 200 and response.content == b"workspace file\n"
 
+
+@pytest.mark.parametrize("change", ["signature", "origin", "bucket", "tenant", "path", "session"])
+@pytest.mark.asyncio
+async def test_presigned_delivery_rejects_tampering(delivery, change):
+    from urllib.parse import parse_qs, urlencode, urlsplit
+
+    query = {key: value[0] for key, value in parse_qs(urlsplit(delivery.info["download_url"]).query).items()}
+    if change == "signature":
+        query["url"] = query["url"].replace("signature=issued", "signature=other")
+    elif change == "origin":
+        query["url"] = query["url"].replace("http://obs/", "http://another/")
+    elif change == "bucket":
+        query["url"] = query["url"].replace("/bucket/", "/another/")
+    elif change == "tenant":
+        query["user_id"] = "another"
+    elif change == "path":
+        query["url"] = query["url"].replace("/downloads/", "/uploads/")
+    else:
+        query["session_id"] = "another"
+    app = FastAPI()
+    register_enterprise_file_routes(app, SimpleNamespace())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://gateway") as client:
+        response = await client.get("/file-api/download?" + urlencode(query))
+    assert response.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_presigned_empty_file_supports_head(delivery):
+    source = delivery.source
+    source.write_bytes(b"")
+    file = build_object_file_download_info(source, "session", "u", metadata=delivery.metadata)
+    app = FastAPI()
+    register_enterprise_file_routes(app, SimpleNamespace())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://gateway") as client:
+        head = await client.head(file["download_url"])
+        get = await client.get(file["download_url"])
+    assert head.status_code == get.status_code == 200
+    assert head.headers["content-length"] == "0" and not get.content
 
 @pytest.mark.asyncio
 async def test_missing_object_is_404(delivery):
@@ -313,27 +337,6 @@ async def test_missing_object_is_404(delivery):
     ) as client:
         assert (await client.get(delivery.info["download_url"])).status_code == 404
 
-
-@pytest.mark.asyncio
-async def test_history_token_with_delimited_tenant_still_downloads(delivery):
-    payload = delivery.manager.validate_token(delivery.info["download_token"])
-    old_key = (delivery.store.bucket, payload["object_key"])
-    payload.pop("identity")
-    payload["tenant_key"] = "g::b::u"
-    from jiuwenswarm.common.obs_files import download_object_key
-
-    payload["object_key"] = download_object_key(payload["tenant_key"], payload["asset_id"], payload["name"])
-    delivery.client.objects[(delivery.store.bucket, payload["object_key"])] = delivery.client.objects[old_key]
-    token = delivery.manager._sign_payload(payload)
-    app = FastAPI()
-    register_enterprise_file_routes(app, SimpleNamespace())
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://gateway") as client:
-        url = delivery.manager.generate_download_url(token, "u")
-        response = await client.get(url)
-        assert response.status_code == 200 and response.content == b"workspace file\n"
-        assert (await client.get(url, headers={"X-User-Id": "other"})).status_code == 403
-
-
 @pytest.mark.parametrize("identity", [{}, {"user_id": "other", "routing": {"group_id": "g", "bot_id": "b"}}])
 def test_delivery_rejects_missing_or_mismatched_identity_before_upload(delivery, identity):
     count = len(delivery.client.objects)
@@ -342,45 +345,69 @@ def test_delivery_rejects_missing_or_mismatched_identity_before_upload(delivery,
     assert len(delivery.client.objects) == count
 
 
-@pytest.mark.parametrize(
-    "missing", ["tenant_key", "bucket", "object_key", "size", "etag", "digest", "name"]
-)
+def test_publishes_seven_day_obs_url_without_snapshot_or_app_token(delivery):
+    assert abs(delivery.info["expires_at"] - time.time() - DOWNLOAD_TTL_SECONDS) < 3
+    assert delivery.info["download_token"] == delivery.info["url"]
+    key = delivery.store.download_key(delivery.info["url"], delivery.tenant)
+    data, metadata, _ = delivery.client.objects[(delivery.store.bucket, key)]
+    assert data == b"workspace file\n"
+    assert metadata["sha256"] == "sha256:" + hashlib.sha256(data).hexdigest()
+    assert metadata["session-id"] == "session"
+    delivery.source.write_bytes(b"changed source")
+    assert delivery.client.objects[(delivery.store.bucket, key)][0] == data
+    assert not delivery.owner.root.exists()
+
+
+@pytest.mark.parametrize("elapsed,valid", [(601, True), (604799, True), (604802, False)])
 @pytest.mark.asyncio
-async def test_malformed_signed_claims_are_forbidden_before_sdk_access(
-    delivery, missing, monkeypatch
-):
-    payload = delivery.manager.validate_token(delivery.info["download_token"])
-    del payload[missing]
-    token = delivery.manager._sign_payload(payload)
-    store_factory = Mock(side_effect=AssertionError("malformed token reached OBS"))
-    monkeypatch.setattr(AttachmentStore, "from_env", store_factory)
-    response = await serve_object_download(
-        Request({"type": "http", "method": "GET", "headers": [], "query_string": b""}),
-        token,
-        delivery.identity,
-    )
-    assert response.status_code == 403
-    store_factory.assert_not_called()
+async def test_obs_enforces_seven_day_expiry(delivery, monkeypatch, elapsed, valid):
+    created_at = delivery.info["expires_at"] - DOWNLOAD_TTL_SECONDS
+    monkeypatch.setattr(time, "time", lambda: created_at + elapsed)
+    app = FastAPI()
+    register_enterprise_file_routes(app, SimpleNamespace())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app), base_url="http://gateway") as client:
+        response = await client.get(delivery.info["download_url"])
+    assert response.status_code == (200 if valid else 403)
+
+
+def test_skill_delivery_read_checks_session_and_tenant(delivery):
+    assert delivery.store.read_download(delivery.info["url"], delivery.tenant, "session") == b"workspace file\n"
+    assert delivery.client.closed and delivery.client.released
+    with pytest.raises(ValueError, match="session mismatch"):
+        delivery.store.read_download(delivery.info["url"], delivery.tenant, "another")
+    with pytest.raises(ValueError, match="current tenant"):
+        delivery.store.read_download(delivery.info["url"], "another", "session")
 
 
 @pytest.mark.asyncio
-async def test_gateway_releases_connection_when_stream_close_raises(
-    delivery, monkeypatch
-):
+async def test_proxy_releases_connection_when_close_raises(delivery, monkeypatch):
     get_object = delivery.client.get_object
-
-    def response_with_failed_close(*args, **kwargs):
+    def failed_close(*args, **kwargs):
         response = get_object(*args, **kwargs)
         response.close = Mock(side_effect=OSError("close failed"))
         return response
-
-    monkeypatch.setattr(delivery.client, "get_object", response_with_failed_close)
-    response = await serve_object_download(
+    monkeypatch.setattr(delivery.client, "get_object", failed_close)
+    response = await serve_presigned_download(
         Request({"type": "http", "method": "GET", "headers": [], "query_string": b""}),
-        delivery.info["download_token"],
-        delivery.identity,
+        delivery.info["url"], delivery.identity,
     )
     with pytest.raises(OSError, match="close failed"):
         async for _ in response.body_iterator:
             pass
     assert delivery.client.released
+
+
+@pytest.mark.parametrize("status", [301, 302, 401, 500, 503])
+@pytest.mark.asyncio
+async def test_proxy_does_not_follow_redirects_or_expose_upstream_errors(delivery, monkeypatch, status):
+    response = Mock(status=status, headers={"Location": "http://untrusted/"})
+    pool = Mock(request=Mock(return_value=response))
+    monkeypatch.setattr("gateway.channel_manager.web.enterprise_files._obs_http_client", lambda: pool)
+    result = await serve_presigned_download(
+        Request({"type": "http", "method": "HEAD", "headers": [], "query_string": b""}),
+        delivery.info["url"], delivery.identity,
+    )
+    assert result.status_code == 502
+    assert pool.request.call_args.kwargs["redirect"] is False
+    response.release_conn.assert_called_once()
+    pool.clear.assert_called_once()

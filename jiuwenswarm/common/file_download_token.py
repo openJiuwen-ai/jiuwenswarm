@@ -22,7 +22,6 @@ import hmac
 import json
 import logging
 import os
-import re
 import secrets
 import time
 from pathlib import Path
@@ -162,23 +161,6 @@ class WebFileDownloadManager:
             payload[agent_http_base_key] = base.rstrip("/")
         return self._sign_payload(payload)
 
-    def generate_object_asset_token(
-        self, *, asset_id: str, expires_at: float, size: int, digest: str,
-        file_name: str, session_id: str, tenant_key: str,
-        bucket: str, object_key: str, etag: str,
-        routing_identity: dict[str, str] | None = None,
-    ) -> str:
-        from jiuwenswarm.common.obs_files import OBJECT_ASSET_KIND
-
-        payload = {
-            "kind": OBJECT_ASSET_KIND, "asset_id": asset_id,
-            "exp": expires_at, "size": size, "digest": digest, "name": file_name,
-            "sid": session_id, "tenant_key": tenant_key,
-            "bucket": bucket, "object_key": object_key, "etag": etag,
-        }
-        if routing_identity is not None:
-            payload["identity"] = dict(routing_identity)
-        return self._sign_payload(payload)
 
     def generate_skill_content_image_token(
         self, *, name: str, version: str | None, relative_path: str,
@@ -228,21 +210,6 @@ class WebFileDownloadManager:
                 if str(payload.get("sid") or "").strip() != str(session_id).strip():
                     return None
             token_kind = payload.get("kind")
-            if token_kind == "obs_asset_v1":
-                from jiuwenswarm.common.obs_files import download_object_key
-
-                if (
-                    not all(isinstance(payload.get(key), str) and payload[key] for key in
-                            ("tenant_key", "asset_id", "name", "sid", "bucket", "object_key", "etag"))
-                    or type(payload.get("exp")) not in (int, float)
-                    or type(payload.get("size")) is not int or payload["size"] < 0
-                    or not re.fullmatch(r"sha256:[0-9a-f]{64}", str(payload.get("digest", "")))
-                    or payload["object_key"] != download_object_key(
-                        payload["tenant_key"], payload["asset_id"], payload["name"]
-                    )
-                ):
-                    return None
-                return payload
             if token_kind not in (None, _VERIFIED_ASSET_TOKEN_KIND):
                 return None
             if token_kind == _VERIFIED_ASSET_TOKEN_KIND:
