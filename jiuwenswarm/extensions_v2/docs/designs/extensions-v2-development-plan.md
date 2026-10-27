@@ -3,10 +3,10 @@
 ## 1. 这份计划怎么读和维护
 
 - 计划范围：`jiuwenswarm/extensions_v2/` 负责的 V2 扩展机制——扩展包的装配、声明校验、加载生效与生命周期管理，平台事件（含 WebUI 渲染事件）的定义与触发，扩展UI界面项的发现、挂载与交互，以及 AgentServer 与 Gateway、Web 前端之间的上下行交接。
-- 范围之外：agent-core 的 Events 与 Extension 公共机制实现；旧 `jiuwenswarm/extensions/` 机制的改造；Gateway 渠道能力与旧机制迁移；工具、会话与模型服务自身的业务实现。
+- 范围之外：agent-core 的 Events 与 Extension 公共机制实现；旧 `jiuwenswarm/extensions/` 机制的改造；Gateway 渠道能力与旧机制迁移；未列入本计划的工具、会话与模型业务功能。Server 特性包含其 Ops / 事件所需的平台业务适配。
 - 所属模块：`jiuwenswarm/jiuwenswarm/extensions_v2/`。协作方为 AgentServer 运行时（`jiuwenswarm/server/`）、Gateway WebChannel（`jiuwenswarm/gateway/`）与 Web 前端（`jiuwenswarm/channels/web/frontend/`）。
-- 交付分类：既有本地包装载与 WebUI 工作共 8 项，保留历史台账；后端管理接入 4 项，追加 Server 会话工作区、主模型和 Git 仓库查询 3 项。Gateway 渠道能力与旧机制迁移不在本轮。
-- 既有安排：EXTV2-01～08 和 M1～M3 保留原范围与进度。本轮补充 EXTV2-09～12 四项后端接入，并在 EXTV2-09 追加 Web `/extension` 命令；不新增管理页面或业务内置事件任务。
+- 交付分类：既有本地包装载与 WebUI 工作共 8 项，保留历史台账；后端管理接入 4 项，追加 Server 会话工作区、主模型、Git 仓库查询和历史读写 4 项。Gateway 渠道能力与旧机制迁移不在本轮。
+- 既有安排：EXTV2-01～08 和 M1～M3 保留原范围与进度。本轮补充 EXTV2-09～12 四项后端接入，并在 EXTV2-09 追加 Web `/extension` 命令；Server 接入条目为 EXTV2-13～16，不新增管理页面。
 - 本轮边界：复用 Core 已有的 Registry、热重载与失败候选清理；不增加已发布版本回退，不修改 Events 内部实现，不实现自动在途计数及旧代模块回收。
 - 更新日期：2026-10-27。
 - 设计依据：[设计概览](extensions-v2-overview.md)、[详细架构](extensions-v2-architecture.md)、agent-core [扩展包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md)、agent-core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)。
@@ -279,6 +279,15 @@
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`；示例 `examples/session_repo_info/`。
 - **前端与联合交付：** 不新增查询 Event、业务 CORE 或前端入口；不据此完成 M1～M3。对应 Server PR-03。
 
+### EXTV2-16 会话历史读写与追加前扩展
+
+- **目标与范围：** 提供只读 `ops.session.messages(limit=50, cursor=None)`、写入 `ops.session.append(message)` 和追加前事件 `session.append`，实现主会话产品历史分页、用户审核 / 正文改写、默认 CORE 落盘后回执；接入原可等待主历史写入和 `history.append_record` RPC。不驱动 Agent、不注入模型上下文，不新增前端入口。
+- **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
+- **开工硬前置：** 已有 EXTV2-01 装配、EXTV2-05 共享 Ops Builder、宿主绑定的有效 SessionContext 和原历史服务；不依赖 cwd / model / repo 能力。
+- **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 第 5 节](../features/F_16_session-history-ops.md#5-验证设计与执行记录)。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py`；用户示例 `examples/session_history_audit/`。
+- **前端与联合交付：** 历史可通过既有读取入口恢复，本次不主动渲染 UI，不据此完成 M1～M3。对应 Server PR-04。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -315,6 +324,8 @@ flowchart TB
     A1 --> S14["EXTV2-14 会话主模型 Ops"]
     B1 --> S14
     S13 --> S15["EXTV2-15 会话 Git 仓库 Ops"]
+    A1 --> S16["EXTV2-16 会话历史与追加 Hook"]
+    B1 --> S16
     A4 --> B3
     B3 --> C1
 
@@ -350,6 +361,7 @@ flowchart LR
 | A 扩展机制基座 | EXTV2-01 → 02 → 03 → 04 | 01 完成后 02 可独立开工，03、04 依次推进 | M1、M2 |
 | B 事件与 WebUI 服务 | EXTV2-05 → 06 → 07 | 05 依赖 01；06 依赖 05；07 依赖 04 与 06 | M1、M2 |
 | C Web 前端 | EXTV2-08 | 模拟帧可先行，联调依赖 07 | M1、M2 |
+| Server 能力 | EXTV2-13～16 | 13、14、16 依赖已有装配 / Ops 接线；15 依赖 13 的可信 cwd | 各特性独立验收，不据此完成 M1～M3 |
 
 顺序限制：`ops.build` 必须先于任何包安装；候选发布必须先于界面项发现；渲染服务必须先于上行回执校验。软依赖不写入硬前置，只在节点验收中体现。
 
@@ -384,6 +396,7 @@ flowchart LR
 | EXTV2-13 会话工作区查询 | 完成 | 刘瑜 | [!71](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/71) | V2 115 项、原生用量 3 项、无项目工作区 62 项测试通过；独立进程用户包调用链验证通过，见 F_13 | 2026-10-26 |
 | EXTV2-14 会话主模型查询 | 完成 | 刘瑜 | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) | 扩展与用量 140 项、模型兼容 116 项测试通过；独立进程 ZIP 安装、用户 Handler 调用及卸载验证通过，见 F_14 / S_04 | 2026-10-26 |
 | EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | [!81](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/81) | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05 | 2026-10-27 |
+| EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | — | 345 项定向回归通过（含新增 48 项）；真实 Front / Supervisor / Worker、两用户 ZIP、两次模型回合、原追加 RPC、改写 / 拒绝 / 重试与历史读回、卸载及进程端口清理验证通过，见 F_16 / S_06 | 2026-10-27 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 

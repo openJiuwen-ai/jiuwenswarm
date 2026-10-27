@@ -1,10 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Read-only session capabilities contributed during ``ops.build``."""
+"""Bound-session capabilities contributed during ``ops.build``."""
 
 from __future__ import annotations
 
 import asyncio
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -26,6 +27,11 @@ from jiuwenswarm.server.runtime.session.model_selection_store import (
     sanitize_model_info,
 )
 from jiuwenswarm.server.runtime.session.session_repo import read_session_repo
+from jiuwenswarm.server.runtime.session.session_history_ops import (
+    SessionHistoryError,
+    prepare_extension_append,
+    read_session_messages,
+)
 
 
 def _require_session(ops: EventHandlerOps, capability: str) -> SessionContext:
@@ -104,10 +110,55 @@ async def session_repo(ops: EventHandlerOps) -> dict[str, object] | None:
     return await asyncio.to_thread(read_session_repo, cwd)
 
 
+async def session_messages(
+    ops: EventHandlerOps,
+    limit: int = 50,
+    cursor: str | None = None,
+) -> dict[str, object]:
+    """Read a fixed newest-first page from the bound main transcript.
+
+    Raises:
+        RuntimeError: No session is bound to this invocation.
+        SessionHistoryError: Invalid parameters, cursor, snapshot or file I/O.
+    """
+    context = _require_session(ops, "session.messages")
+    return await asyncio.to_thread(read_session_messages, context.session_id, limit, cursor)
+
+
+async def session_append(
+    ops: EventHandlerOps,
+    message: object,
+    *,
+    bus: ExtensionEventBus | None = None,
+) -> dict[str, object]:
+    """Await session.append policy and commit a transcript-only message.
+
+    Raises:
+        RuntimeError: No session is bound to this invocation.
+        SessionHistoryError: Invalid input, conflict, lifecycle, dispatch or I/O.
+        asyncio.CancelledError: Cancellation, after draining an accepted write.
+    """
+    from jiuwenswarm.extensions_v2.event_types.session_history import dispatch_session_append
+
+    context = _require_session(ops, "session.append")
+    if bus is None:
+        raise SessionHistoryError("APPEND_BUS_UNAVAILABLE")
+    package = ops.package_metadata
+    package_id = package.package_id if package is not None else "<host>"
+    prepared, message_id, key, fingerprint = prepare_extension_append(context.session_id, package_id, message)
+    result = await dispatch_session_append(
+        bus, context, prepared, message_id=message_id, source="extension", append_key=key,
+        fingerprint=fingerprint, update_metadata=False,
+    )
+    return result.to_dict()
+
+
 async def session_ops_build(
     event: Event,
     ops: EventHandlerOps | None,
     next_handler: EventNext,
+    *,
+    bus: ExtensionEventBus | None = None,
 ) -> EventHandlerOpsBuilder:
     """Contribute the session namespace to the host's shared Ops catalog."""
     del ops
@@ -119,6 +170,8 @@ async def session_ops_build(
     builder.add_method("session", "root", session_root)
     builder.add_method("session", "model", session_model)
     builder.add_method("session", "repo", session_repo)
+    builder.add_method("session", "messages", session_messages)
+    builder.add_method("session", "append", partial(session_append, bus=bus))
     return builder
 
 
@@ -162,7 +215,7 @@ def register_session_ops(
         ops: EventHandlerOps | None,
         next_handler: EventNext,
     ) -> EventHandlerOpsBuilder:
-        builder = await session_ops_build(event, ops, next_handler)
+        builder = await session_ops_build(event, ops, next_handler, bus=bus)
         builder.add_method("session", "files", files)
         builder.add_method("session", "read_file", read_file)
         return builder

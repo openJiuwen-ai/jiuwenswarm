@@ -26,6 +26,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from jiuwenswarm.common.mode_matrix import is_team_mode
+
 # ---------------------------------------------------------------------------
 # Wire byte budgets
 # ---------------------------------------------------------------------------
@@ -236,11 +238,34 @@ def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
     return minimal
 
 
+def is_restorable_history_record(record: Any) -> bool:
+    """Return whether a stored record belongs in the public main transcript."""
+    if not isinstance(record, dict):
+        return False
+    role = record.get("role")
+    content = record.get("content")
+    has_content = isinstance(content, str) and bool(content.strip())
+    has_media = (
+        isinstance(record.get("media_items"), list) and bool(record["media_items"])
+    ) or (
+        isinstance(record.get("mediaItems"), list) and bool(record["mediaItems"])
+    )
+    files = record.get("files")
+    if isinstance(files, dict):
+        has_media = has_media or isinstance(files.get("uploaded_images"), list) and bool(files["uploaded_images"])
+    if role == "user":
+        if is_team_mode(record.get("mode", "")) and record.get("channel_id", "") not in ("web", "tui"):
+            return False
+        return has_content or has_media
+    event_type = record.get("event_type")
+    return has_content if not event_type else event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+
+
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     """Sanitize one history record, collapsing if it exceeds the per-record budget."""
     if not isinstance(record, dict):
         return {"content": _sanitize_history_wire_value(record), "truncated": True}
-    sanitized = _sanitize_history_wire_value(record)
+    sanitized = _sanitize_history_wire_value({key: value for key, value in record.items() if key != "_session_append"})
     if not isinstance(sanitized, dict):
         return {"content": str(sanitized), "truncated": True}
     if _json_wire_size(sanitized) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
@@ -287,7 +312,7 @@ def split_history_record_for_stream(
     metadata = {
         key: _sanitize_history_wire_value(value)
         for key, value in record.items()
-        if key != "content"
+        if key not in ("content", "_session_append")
     }
     full = {**metadata, "content": content}
 
@@ -747,6 +772,7 @@ __all__ = [
     "_WORKFLOW_AGENT_MAX_LIMIT",
     "_SPLITTABLE_AGENT_FIELDS",
     "_HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES",
+    "is_restorable_history_record",
     "_json_wire_size",
     "_coerce_int",
     "_truncate_string_by_bytes",

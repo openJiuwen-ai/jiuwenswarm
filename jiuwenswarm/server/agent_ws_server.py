@@ -6266,7 +6266,10 @@ class AgentWebSocketServer:
             timestamp = _dt.datetime.now().timestamp()
 
         try:
-            await run_history_io(append_history_record,
+            from jiuwenswarm.extensions_v2.event_types.session_history import try_append_platform_history
+            from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
+
+            record_kwargs = dict(
                 session_id=session_id,
                 request_id=request_id,
                 channel_id=channel_id,
@@ -6276,6 +6279,17 @@ class AgentWebSocketServer:
                 event_type=event_type,
                 mode=mode,
             )
+            handled, append_result = await try_append_platform_history(
+                record_kwargs, source="history.append_record",
+                idempotency_key=f"history.append_record:{request_id}:{role}",
+            )
+            if handled:
+                if append_result is None:
+                    raise SessionHistoryError("INVALID_MESSAGE")
+                if append_result.status == "rejected":
+                    raise SessionHistoryError("APPEND_REJECTED")
+            else:
+                await run_history_io(append_history_record, **record_kwargs)
             # Cron 失败补写可能落到尚未有标题的会话（会话分配失败的 run 写
             # 占位会话）。assistant 记录不触发 auto_title，这里按调用方传入
             # 的 title 回填空标题；已有标题（正常 run 的 auto_title）不覆盖。
