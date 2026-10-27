@@ -511,7 +511,16 @@ class RailStateMachineBase(DeepAgentRail):
                 f"under .aet/features/; if none exists, ask the user for a feature "
                 f"name and create the directory)\n\n"
             )
-            advance_instruction = self._build_production_advance_instruction(next_stages)
+            if next_stage:
+                advance_instruction = (
+                    f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
+                    f"(with stage={next_stage}) to advance to the next stage."
+                )
+            else:
+                advance_instruction = (
+                    f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
+                    f"to advance the flow."
+                )
         else:
             prev_artifact = self._find_previous_stage_artifact(stage)
             review_target = prev_artifact or "<previous-stage-artifact>"
@@ -520,13 +529,7 @@ class RailStateMachineBase(DeepAgentRail):
                 f"Review target: .aet/features/<feature-name>/design/{review_target}"
                 f" (the file produced by the previous stage)\n"
                 f"(<feature-name> is resolved from the latest-modified subdirectory "
-                f"under .aet/features/)\n"
-                f"Resolved absolute path: {target_path}\n"
-                f"Exists: {'yes' if target_exists else 'no'}\n"
-                f"Path existence is verified by the framework. Do NOT shell out to "
-                f"`test -f` / `[[ -f ]]` to check it — those are not portable to "
-                f"Windows PowerShell. If it is missing, stop and ask the user for "
-                f"the correct path.\n\n"
+                f"under .aet/features/)\n\n"
             )
             # Review stages run the SKILL.md R1->R2->R3->R4 pipeline. The
             # advance instruction must NOT say "after completing the review,
