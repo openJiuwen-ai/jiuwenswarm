@@ -8,7 +8,6 @@ import logging
 import math
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -20,8 +19,8 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 from jiuwenswarm.server.wire_truncate import (
     _HISTORY_PAGE_SIZE,
-    _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
     _sanitize_history_record_for_wire,
+    is_restorable_history_record,
     split_history_record_for_stream,
 )
 
@@ -29,33 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def _is_restorable_history_record(record: Any) -> bool:
-    if not isinstance(record, dict):
-        return False
-    role = record.get("role")
-    content = record.get("content")
-    has_content = isinstance(content, str) and bool(content.strip())
-    has_media = (
-        isinstance(record.get("media_items"), list) and bool(record["media_items"])
-    ) or (
-        isinstance(record.get("mediaItems"), list) and bool(record["mediaItems"])
-    )
-    files = record.get("files")
-    if isinstance(files, dict):
-        has_media = has_media or (
-            isinstance(files.get("uploaded_images"), list)
-            and bool(files["uploaded_images"])
-        )
-    if role == "user":
-        mode = record.get("mode", "")
-        if is_team_mode(mode):
-            channel_id = record.get("channel_id", "")
-            if channel_id not in ("web", "tui"):
-                return False
-        return has_content or has_media
-    event_type = record.get("event_type")
-    if not event_type:
-        return has_content
-    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+    return is_restorable_history_record(record)
 
 
 def load_history_page(

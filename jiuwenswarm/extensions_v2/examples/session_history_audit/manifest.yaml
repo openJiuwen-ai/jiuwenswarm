@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.session-history-audit
+  version: 1.0.0
+  displayName: Session History Audit
+extensions:
+  - id: history-audit
+    runtime: backend
+    module: extension.py

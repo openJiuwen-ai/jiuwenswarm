@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from jiuwenswarm.extensions_v2.event_types.context_usage import register_context_usage_events
+from jiuwenswarm.extensions_v2.event_types.session_history import register_session_history_events
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import register_session_ops
 
 if TYPE_CHECKING:
@@ -20,6 +21,7 @@ def register_event_types(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 
     webui.register_event_types(bus)
     register_context_usage_events(bus)
+    register_session_history_events(bus)
 
 
 def register_handlers(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:

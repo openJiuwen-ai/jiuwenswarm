@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import datetime
 import hashlib
 import json
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import Future, InvalidStateError
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -52,6 +54,23 @@ class InvalidHistoryCursor(ValueError):
 
 class HistorySnapshotChanged(RuntimeError):
     """The history file was replaced or truncated after the snapshot began."""
+
+
+@dataclass(frozen=True)
+class PreparedHistoryRecord:
+    """A canonical record and host-only facts for its metadata update."""
+
+    session_id: str
+    record: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+class HistoryAppendConflict(ValueError):
+    """An existing append identity has a different original request."""
+
+
+class HistoryAppendOutcomeUnknown(OSError):
+    """A failed write could not be rolled back to its original length."""
 
 
 def collapse_file_content_blocks(content: str) -> str:
@@ -1168,7 +1187,7 @@ def resolve_final_record_timestamp(
     return segment_started_at
 
 
-def append_history_record(
+def prepare_history_record(
     *,
     session_id: str,
     request_id: str,
@@ -1181,8 +1200,8 @@ def append_history_record(
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
     subagent_id: str | None = None,
-) -> None:
-    """向指定 session 的当前激活历史文件异步追加一条记录."""
+) -> PreparedHistoryRecord | None:
+    """Build a canonical history record without performing persistence."""
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
         logger.debug(
@@ -1236,13 +1255,24 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
 
+    return PreparedHistoryRecord(sid, item, {
+        "request_id": rid, "channel_id": cid, "role": role_norm,
+        "content": content_text, "timestamp": float(timestamp), "extra": extra,
+        "channel_metadata": channel_metadata, "mode": mode, "subagent_id": subagent_id,
+    })
+
+
+def _update_history_record_metadata(prepared: PreparedHistoryRecord) -> None:
+    facts = prepared.metadata
+    sid, rid, cid = prepared.session_id, facts["request_id"], facts["channel_id"]
+    role_norm, content_text = facts["role"], facts["content"]
+    timestamp, extra = facts["timestamp"], facts["extra"]
+    channel_metadata, mode, subagent_id = facts["channel_metadata"], facts["mode"], facts["subagent_id"]
     is_cross_session_user = bool(
         role_norm == "user"
         and isinstance(extra, dict)
         and extra.get("message_origin") == SESSION_MESSAGE_ORIGIN
     )
-
-    _enqueue_history_item(sid, item, subagent_id=subagent_id)
 
     # 更新会话元数据
     try:
@@ -1288,6 +1318,99 @@ def append_history_record(
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)
+
+
+def append_history_record(
+    *,
+    session_id: str,
+    request_id: str,
+    channel_id: str,
+    role: str,
+    content: Any,
+    timestamp: float,
+    event_type: str | None = None,
+    extra: dict[str, Any] | None = None,
+    channel_metadata: dict[str, Any] | None = None,
+    mode: str | None = None,
+    subagent_id: str | None = None,
+) -> None:
+    """Queue a canonical record using the existing asynchronous writer."""
+    prepared = prepare_history_record(
+        session_id=session_id, request_id=request_id, channel_id=channel_id,
+        role=role, content=content, timestamp=timestamp, event_type=event_type,
+        extra=extra, channel_metadata=channel_metadata, mode=mode, subagent_id=subagent_id,
+    )
+    if prepared is None:
+        return
+    _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
+    _update_history_record_metadata(prepared)
+
+
+def _iter_committed_history(path: Path) -> Iterator[dict[str, Any]]:
+    if path.suffix != ".jsonl":
+        yield from (row for row in _read_history(path) if isinstance(row, dict))
+        return
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def commit_history_record(
+    prepared: PreparedHistoryRecord,
+    *,
+    append_key: str,
+    fingerprint: str,
+    update_metadata: bool,
+) -> tuple[dict[str, Any], bool]:
+    """Commit after queued writes, returning the stored record and duplicate flag.
+
+    No extension code executes while queue/file/lifecycle locks are held.
+    The deduplication marker is written in the same record as its content.
+    """
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    sid = prepared.session_id
+    if prepared.metadata.get("subagent_id"):
+        raise ValueError("committed appends only support main session history")
+    with _QUEUE_ENQUEUE_LOCK:
+        _WRITE_QUEUE.join()
+        with _FILE_LOCK, lc.resource_lock("session", sid):
+            lc.write_guard(sid, generation=prepared.metadata.get("append_generation"))
+            path = _ensure_legacy_json_bootstrap(sid) if use_legacy_history_json() else _ensure_jsonl_bootstrap(sid)
+            for previous in _iter_committed_history(path):
+                marker = previous.get("_session_append")
+                if isinstance(marker, dict) and marker.get("key") == append_key:
+                    if marker.get("fingerprint") != fingerprint:
+                        raise HistoryAppendConflict("append identity already has different content")
+                    return copy.deepcopy(previous), True
+            record = copy.deepcopy(prepared.record)
+            record["_session_append"] = {"key": append_key, "fingerprint": fingerprint}
+            if path.suffix == ".jsonl":
+                previous_size = path.stat().st_size if path.exists() else 0
+                try:
+                    _append_record_unfenced(path, record)
+                except OSError:
+                    try:
+                        if path.exists():
+                            with path.open("r+b") as stream:
+                                stream.truncate(previous_size)
+                    except OSError as rollback_error:
+                        raise HistoryAppendOutcomeUnknown("history append rollback failed") from rollback_error
+                    raise
+            else:
+                records = _read_history(path)
+                records.append(record)
+                _write_records_unfenced(path, records)
+    if update_metadata:
+        _update_history_record_metadata(prepared)
+    return record, False
 
 
 def enqueue_history_request_completion(
