@@ -42,6 +42,8 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.source.install",
     "skills.updates.check",
     "skills.update",
+    # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
+    "skills.import_local",
     "skills.enterprise.list",
     "skills.enterprise.install",
     "skills.enterprise.uninstall",

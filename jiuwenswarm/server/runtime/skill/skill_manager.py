@@ -5694,6 +5694,23 @@ class SkillManager:
         preserved_source = "local"
         preserved_version: str | None = None
 
+        # 企业版：import_local 会同步写入 source_type=user 安装账本；
+        # 禁止覆盖 prebuilt/builtin，避免把管理面/内置身份改写成用户自装。
+        if is_enterprise():
+            installation = self._find_skill_installation(name=skill_name)
+            if installation is not None:
+                existing_type = str(installation.get("source_type") or "").strip()
+                if existing_type == "prebuilt":
+                    raise SkillRpcError(
+                        ERROR_SKILL_NAME_CONFLICT,
+                        f"skill `{skill_name}` is prebuilt and cannot be overwritten",
+                    )
+                if existing_type == "builtin":
+                    raise SkillRpcError(
+                        ERROR_SKILL_BUILTIN_READ_ONLY,
+                        f"内置 Skill 不可覆盖: {skill_name}",
+                    )
+
         if existing:
             if self._is_builtin_skill(skill_name, self._get_installed_plugins(), dest):
                 raise SkillRpcError(
@@ -5743,18 +5760,53 @@ class SkillManager:
             ),
             None,
         )
-        record = {
-            "name": skill_name,
-            "origin": origin,
-            "source": (
-                existing_record.get("source")
-                if isinstance(existing_record, dict) and existing_record.get("source")
-                else preserved_source
-            ),
-        }
-        if isinstance(existing_record, dict) and existing_record.get("display_name"):
-            record["display_name"] = existing_record.get("display_name")
-        self._add_local_skill(record)
+        if is_enterprise():
+            # 企业版只写安装账本（与技能源/web install 一致），不双写 local_skills。
+            existing_installation = self._find_skill_installation(name=skill_name)
+            source_value = preserved_source
+            if isinstance(existing_installation, dict):
+                prev_source = str(existing_installation.get("source") or "").strip()
+                if prev_source:
+                    source_value = prev_source
+            elif isinstance(existing_record, dict):
+                prev_source = str(existing_record.get("source") or "").strip()
+                if prev_source:
+                    source_value = prev_source
+            display_name = ""
+            if isinstance(existing_installation, dict):
+                display_name = str(
+                    existing_installation.get("market_display_name") or ""
+                ).strip()
+            if not display_name and isinstance(existing_record, dict):
+                display_name = str(existing_record.get("display_name") or "").strip()
+            try:
+                self.record_skill_installation(
+                    name=skill_name,
+                    source_type="user",
+                    source=str(source_value or "local"),
+                    origin=origin,
+                    version=str(preserved_version or ""),
+                    entity_dir=skill_name,
+                    market_display_name=display_name or None,
+                    replace_by_name=True,
+                )
+            except SkillNameConflictError as exc:
+                raise SkillRpcError(ERROR_SKILL_NAME_CONFLICT, str(exc)) from exc
+            # 清掉同名 local_skills，避免与安装账本双口径残留。
+            self._remove_local_skill(skill_name)
+        else:
+            record = {
+                "name": skill_name,
+                "origin": origin,
+                "source": (
+                    existing_record.get("source")
+                    if isinstance(existing_record, dict) and existing_record.get("source")
+                    else preserved_source
+                ),
+            }
+            if isinstance(existing_record, dict) and existing_record.get("display_name"):
+                record["display_name"] = existing_record.get("display_name")
+            self._add_local_skill(record)
         self._refresh_agent_data_indexes()
 
         skill_type = detect_skill_type(dest)
