@@ -9,16 +9,18 @@ from types import SimpleNamespace
 import pytest
 import pytest_asyncio
 
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams
+from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    WebHandlersBindParams,
+    _register_web_handlers,
+)
 from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from jiuwenswarm.gateway.cron import scheduler as cron_scheduler_module
 from jiuwenswarm.gateway.cron.controller import CronController
 from jiuwenswarm.gateway.cron.models import CronRunState
-from jiuwenswarm.gateway.cron import scheduler as cron_scheduler_module
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
 from jiuwenswarm.gateway.cron.store import CronJobStore
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
@@ -28,9 +30,10 @@ class _TestWebChannel(WebChannel):
     """Expose registered dispatch and real response queues inside the hierarchy."""
 
     async def metadata(self, session_id: str, user_id: str | None = "alice") -> dict:
-        ws = SimpleNamespace(_jiuwen_ws_id="metadata-test", closed=False)
+        ws_id = "metadata-test"
+        ws = SimpleNamespace(_jiuwen_ws_id=ws_id, closed=False)
         queue = asyncio.Queue()
-        self._send_queues[ws._jiuwen_ws_id] = queue
+        self._send_queues[ws_id] = queue
         handler = self._method_handlers["session.get_metadata"]
         await handler(ws, "metadata-request", {"session_id": session_id}, "current-web-session", user_id)
         return queue.get_nowait()
@@ -168,8 +171,8 @@ class _AgentClient:
             self.closed.set()
 
 
-@pytest_asyncio.fixture
-async def harness_factory(tmp_path):
+@pytest_asyncio.fixture(name="harness_factory")
+async def _harness_factory_fixture(tmp_path):
     harnesses = []
 
     async def create(mode="agent", user_id="alice", timeout_seconds=None, configured=True):
@@ -180,8 +183,7 @@ async def harness_factory(tmp_path):
         controller = CronController(store=store, scheduler=scheduler)
         handler.set_cron_controller(controller)
         channel = _TestWebChannel(WebChannelConfig(), RobotMessageRouter(), agent_client=client)
-        register = getattr(app_web_handlers, "_register_web_handlers")
-        register(WebHandlersBindParams(
+        _register_web_handlers(WebHandlersBindParams(
             channel=channel, agent_client=client, cron_controller=controller if configured else None,
         ))
         job = await store.create_job(
