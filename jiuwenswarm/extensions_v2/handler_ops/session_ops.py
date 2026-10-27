@@ -24,6 +24,7 @@ from jiuwenswarm.server.runtime.session.model_selection_store import (
     get_session_model_info,
     sanitize_model_info,
 )
+from jiuwenswarm.server.runtime.session.session_repo import read_session_repo
 
 
 def _require_session(ops: EventHandlerOps, capability: str) -> SessionContext:
@@ -85,6 +86,23 @@ async def session_model(ops: EventHandlerOps) -> dict[str, object] | None:
     return await asyncio.to_thread(get_session_model_info, context.session_id)
 
 
+async def session_repo(ops: EventHandlerOps) -> dict[str, object] | None:
+    """Read Git identity at the bound cwd, or None without a Git working tree.
+
+    Raises:
+        RuntimeError: No session is bound to the current Handler.
+        TypeError: The bound directory is not a string or None.
+        ValueError: The bound directory is not an absolute path.
+        SessionRepoError: The workspace or Git is unavailable, times out, or
+            reports an unexpected failure. Raw Git output is never returned.
+    """
+    context = _require_session(ops, "session.repo")
+    cwd = _absolute_path(context.cwd, "session.repo")
+    if cwd is None:
+        return None
+    return await asyncio.to_thread(read_session_repo, cwd)
+
+
 async def session_ops_build(
     event: Event,
     ops: EventHandlerOps | None,
@@ -99,6 +117,7 @@ async def session_ops_build(
     builder.add_method("session", "cwd", session_cwd)
     builder.add_method("session", "root", session_root)
     builder.add_method("session", "model", session_model)
+    builder.add_method("session", "repo", session_repo)
     return builder
 
 
