@@ -115,6 +115,60 @@ def _is_sandbox_process_name(proc_name: str) -> bool:
     return name_l.startswith("python") or name_l in _SANDBOX_PROCESS_NAMES
 
 
+def _apply_soft_delete_env(env: dict[str, str]) -> None:
+    """开关打开时把软删除 DLL 路径和归档目录写进 box-server 环境。
+
+    box-server 只继承白名单和 ``JIUWENBOX_*``。开关关闭时不导入软删除模块。
+    模块缺失或 DLL 不存在时只记日志，沙箱照常启动，删除保持系统原样。
+    """
+    already_requested = (
+        env.get("JIUWENBOX_SOFT_DELETE") == "1"
+        and (env.get("JIUWENBOX_SOFT_DELETE_DLL") or "").strip()
+    )
+    enabled = False
+    archive = ""
+    if not already_requested:
+        try:
+            from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
+
+            enabled, archive = get_file_soft_delete_settings(get_config())
+        except Exception:  # noqa: BLE001
+            logger.warning("读取软删除配置失败, 沙箱不启用软删除", exc_info=True)
+            return
+        if not enabled:
+            return
+    try:
+        from jiuwenbox.supervisor.win_softdelete import (
+            ENV_ARCHIVE,
+            ENV_DLL,
+            ENV_ENABLED,
+            dll_path,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("软删除模块不可用, 沙箱不启用软删除", exc_info=True)
+        env.pop("JIUWENBOX_SOFT_DELETE", None)
+        env.pop("JIUWENBOX_SOFT_DELETE_DLL", None)
+        env.pop("JIUWENBOX_SOFT_DELETE_ARCHIVE", None)
+        return
+
+    existing_dll = (env.get(ENV_DLL) or "").strip()
+    if env.get(ENV_ENABLED) == "1" and existing_dll:
+        if not os.path.isfile(existing_dll):
+            logger.warning("软删除 DLL 不存在, 沙箱不启用软删除: %s", existing_dll)
+            env.pop(ENV_ENABLED, None)
+            env.pop(ENV_DLL, None)
+            env.pop(ENV_ARCHIVE, None)
+        return
+    dll = dll_path()
+    if not dll.is_file():
+        logger.warning("软删除 DLL 不存在, 沙箱不启用软删除: %s", dll)
+        return
+    env[ENV_ENABLED] = "1"
+    env[ENV_DLL] = str(dll)
+    if archive:
+        env[ENV_ARCHIVE] = archive
+
+
 def _cleanup_stale_win_proxy_ports(
     port_start: int = _WIN_PROXY_DEFAULT_PORT_START,
     port_end: int = _WIN_PROXY_DEFAULT_PORT_END,
@@ -510,6 +564,8 @@ class JiuwenBoxRunner:
                 )
             else:
                 env.pop("JIUWENBOX_POLICY_PATH", None)
+            if sys.platform == "win32":
+                _apply_soft_delete_env(env)
 
             logger.info("[JiuwenBoxRunner] spawning: %s", " ".join(cmd))
             try:
