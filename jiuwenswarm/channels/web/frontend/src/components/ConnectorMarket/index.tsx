@@ -1,3 +1,4 @@
+import { AppMarketPanel } from '../AppMarketPanel';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useConnectorStore, CONNECTOR_ERROR_TOAST_ID } from '../../stores/connectorStore';
@@ -180,11 +181,11 @@ export function ConnectorMarketPanel({
   // 之前那样挂载时无脑把两份列表都拉一遍——两边数据量都可能不小，没必要为了看不见的那一页
   // 多打一次请求。activeKind 是"当前实际展示的是哪种列表"：topTab 直接是 'plugin'/'mcp' 时
   // 就是它本身，topTab 是 'my'（我的扩展）时看 myKind 子筛选。
-  const activeKind: MarketKind = topTab === 'my' ? myKind : topTab;
+  const activeKind: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
 
   // 进入市场或切换插件/连接器范围时，直接请求当前列表。
   useEffect(() => {
-    if (view.name !== 'market') return;
+    if (view.name !== 'market' || topTab === 'app') return;
     // MCP/插件都按 filter 分别拉"广场"(builtin)/"我的"(local) 两份列表（MCP 见 connectorStore.ts
     // 头注释，2026-08-17 按 MCP 接口文档 v2 改造；插件 2026-08-19 对齐同款做法——之前这里插件分支
     // 固定传 undefined 拿混合列表，靠 MarketplacePage.tsx 前端按 pkg.source 二次过滤，用户反馈
@@ -207,6 +208,7 @@ export function ConnectorMarketPanel({
     <div className="flex min-h-0 flex-1 flex-col" data-testid="connector-market-panel">
       {view.name === 'market' && (
         <MarketplacePage
+          appMarketPanel={<AppMarketPanel />}
           topTab={topTab}
           onTopTabChange={setTopTab}
           myKind={myKind}

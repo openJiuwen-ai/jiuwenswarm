@@ -27,12 +27,13 @@ import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingCon
 import { PageToolbarSearch, PageHeader, CategoryTabs, Tabs, EmptyState } from '../ui';
 
 export type MarketKind = 'plugin' | 'mcp';
-export type TopTab = MarketKind | 'my';
+export type TopTab = MarketKind | 'my' | 'app';
 // 状态筛选：'pending' 对应不可用态（插件未安装或MCP未连接/绑定MCP未连接），'available' 对应
 // 可用态。2026-08-15 去除全局启用/禁用后不再有第三个"disabled"筛选项，见
 // state-model-rectification-v2-remove-global-toggle.md。
 
 interface MarketplacePageProps {
+  appMarketPanel?: React.ReactNode;
   topTab: TopTab;
   onTopTabChange: (tab: TopTab) => void;
   myKind: MarketKind;
@@ -69,6 +70,7 @@ const LOAD_MORE_THRESHOLD_PX = 40;
 
 
 export function MarketplacePage({
+  appMarketPanel,
   topTab,
   onTopTabChange,
   myKind,
@@ -480,15 +482,15 @@ export function MarketplacePage({
               value={topTab}
               onChange={onTopTabChange}
               items={[
-                ...(['plugin', 'mcp', 'my'] as const).map((tab) => ({
+                ...(['app', 'plugin', 'mcp', 'my'] as const).map((tab) => ({
                   value: tab,
-                  label: t(tab === 'my' ? 'connectorMarket.tabs.my' : `connectorMarket.tabs.${tab}Market`),
+                  label: t(tab === 'app' ? 'nav.appMarket' : tab === 'my' ? 'connectorMarket.tabs.my' : `connectorMarket.tabs.${tab}Market`),
                 })),
               ]}
             />
           </div>
 
-          <div className="flex items-center gap-3">
+          {topTab !== 'app' && <div className="flex items-center gap-3">
             <InstallationFilterSelect value={installationFilter} onChange={setInstallationFilter} />
             <PageToolbarSearch
               wrapperTestId="connector-market-search"
@@ -557,7 +559,7 @@ export function MarketplacePage({
                 )}
               </div>
             )}
-          </div>
+          </div>}
         </div>
       </div>
 
@@ -601,6 +603,7 @@ export function MarketplacePage({
         </div>
       )}
 
+      {topTab === 'app' ? appMarketPanel : <>
           <CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
           <div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto" onScroll={handleListScroll}>
             <div className="card-grid-auto" data-testid="connector-market-card-list">
@@ -731,6 +734,8 @@ export function MarketplacePage({
         ) : null}
         </div>
       </div>
+
+      </>}
 
       {tokenTarget && (
         <ConnectTokenModal

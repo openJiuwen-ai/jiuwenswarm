@@ -56,7 +56,35 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Knowledge"
+    "personalContext": "Knowledge",
+    "appMarket": "App Market"
+  },
+  "appMarket": {
+    "title": "App Market",
+    "subtitle": "Manage local app lifecycle: start, stop, and delete",
+    "allApps": "All Apps",
+    "running": "Running",
+    "start": "Start",
+    "stop": "Stop",
+    "open": "Open",
+    "delete": "Delete",
+    "loading": "Loading...",
+    "empty": "Failed to load",
+    "noApps": "No apps available",
+    "noInstances": "No running apps",
+    "startSuccess": "App started",
+    "startFailed": "Failed to start",
+    "stopSuccess": "App stopped",
+    "stopFailed": "Failed to stop",
+    "deleteSuccess": "App deleted",
+    "deleteFailed": "Failed to delete",
+    "deleteConfirm": "Are you sure you want to delete this app? Running instances will be stopped.",
+    "states": {
+      "stopped": "Not started",
+      "starting": "Starting",
+      "running": "Running",
+      "stopping": "Stopping"
+    }
   },
   "applicationPlugins": {
     "title": "Application plugins",

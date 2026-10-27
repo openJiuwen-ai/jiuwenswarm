@@ -56,7 +56,35 @@
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
-    "personalContext": "知识"
+    "personalContext": "知识",
+    "appMarket": "应用市场"
+  },
+  "appMarket": {
+    "title": "应用市场",
+    "subtitle": "管理本地应用的启动、停止和删除",
+    "allApps": "全部应用",
+    "running": "运行中",
+    "start": "启动",
+    "stop": "停止",
+    "open": "打开",
+    "delete": "删除",
+    "loading": "加载中...",
+    "empty": "加载失败",
+    "noApps": "暂无应用",
+    "noInstances": "暂无运行中的应用",
+    "startSuccess": "应用已启动",
+    "startFailed": "启动失败",
+    "stopSuccess": "应用已停止",
+    "stopFailed": "停止失败",
+    "deleteSuccess": "应用已删除",
+    "deleteFailed": "删除失败",
+    "deleteConfirm": "确定要删除此应用吗？相关实例将被停止。",
+    "states": {
+      "stopped": "未启动",
+      "starting": "启动中",
+      "running": "运行中",
+      "stopping": "退出中"
+    }
   },
   "applicationPlugins": {
     "title": "应用插件",
