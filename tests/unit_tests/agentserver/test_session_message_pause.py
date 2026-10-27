@@ -173,15 +173,18 @@ async def test_a_refused_second_answer_leaves_the_message_with_the_answer_that_r
     queued, _ = _enqueue(store, key="two-answers")
     store.claim(queued.message_id, "execution-1", "run-1")
     store.mark_waiting(queued.message_id, interrupt_request_id=QUESTIONS[0], interrupt_source="ask_user_interrupt")
-    manager = FakeAgentManager()
-    manager.agent = agent = _FollowUpAgent()
-    manager.get_agent_for_session_nowait = lambda channel_id, session_id: agent
+    agent = _FollowUpAgent()
     coordinator = RuntimeSessionCoordinator()
-    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(),
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock(),
                            plan_controller=FakePlanController(), session_coordinator=coordinator)
     await coordinator.register_session("target-1", "web", SessionPersistencePolicy.PERSISTENT)
-    await coordinator.run_unary("target-1", f"session-message-{queued.message_id}", SessionWorkKind.SESSION_MESSAGE,
-                                lambda: asyncio.sleep(0), interaction_ids=lambda _: frozenset(QUESTIONS))
+    turn_id = f"session-message-{queued.message_id}"
+
+    async def mailbox_turn() -> None:
+        coordinator.bind_agent("target-1", turn_id, agent)
+
+    await coordinator.run_unary("target-1", turn_id, SessionWorkKind.SESSION_MESSAGE, mailbox_turn,
+                                interaction_ids=lambda _: frozenset(QUESTIONS))
     server = _server(service, runtime)
     server._session_stream_tasks = {}
     server._send_runtime_event = AsyncMock(return_value=True)

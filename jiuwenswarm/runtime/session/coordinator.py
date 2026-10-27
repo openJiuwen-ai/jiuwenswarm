@@ -298,6 +298,25 @@ class RuntimeSessionCoordinator:
                 return True
         return False
 
+    def bind_agent(self, session_id: str, request_id: str, agent: Any) -> None:
+        record = self._sessions.get(session_id)
+        if record is None:
+            return
+        for handle in self._registry.select(
+            session_id=session_id,
+            request_id=request_id,
+            generation=record.generation,
+            active_only=True,
+        ):
+            handle.agent = agent
+
+    def control_target_agent(self, session_id: str, answered: tuple[str, ...]) -> Any:
+        record = self._sessions.get(session_id)
+        if record is None or record.state is RuntimeSessionState.CLOSED:
+            return None
+        target = self._control_target(record, answered)
+        return target[0].agent if target is not None else None
+
     async def deliver_control(
         self,
         session_id: str,
@@ -1023,6 +1042,7 @@ class RuntimeSessionCoordinator:
             parent_execution_id=parent_execution_id,
             root_work_kind=(parent.root_work_kind or parent.work_kind) if parent else None,
             root_request_id=(parent.root_request_id or parent.request_id) if parent else None,
+            agent=parent.agent if parent else None,
         )
         self._registry.register(handle)
         record.state = RuntimeSessionState.ACTIVE

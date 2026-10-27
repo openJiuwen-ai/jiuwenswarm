@@ -117,6 +117,7 @@ def make_chain(tmp_path, monkeypatch):
             pin_agent=Mock(),
             unpin_agent=Mock(),
             get_agent_for_session_nowait=Mock(return_value=agent),
+            borrow_agent_nowait=lambda candidate: candidate,
         )
         plan = SimpleNamespace(
             ensure_state=AsyncMock(return_value=PlanStateResult()),

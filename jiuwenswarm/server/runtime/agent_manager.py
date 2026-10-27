@@ -1464,6 +1464,12 @@ class AgentManager:
                 )
         return None
 
+    def borrow_agent_nowait(self, agent: "JiuWenSwarm") -> "JiuWenSwarm | None":
+        """Borrow ``agent`` while it is still cached; None once it was retired or recreated."""
+        if any(agent is cached for channel_agents in self.agents.values() for cached in channel_agents.values()):
+            return self._borrow_agent(agent)
+        return None
+
     def get_auto_permission_agent_for_session_nowait(
         self,
         channel_id: str,

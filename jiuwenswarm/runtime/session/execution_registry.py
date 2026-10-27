@@ -77,6 +77,7 @@ class SessionExecutionRegistry:
             return
         handle.state = state
         handle.waiting_control_ids = frozenset()
+        handle.agent = None
         handle.finished_at = time.monotonic()
         if error is not None:
             handle.error = str(error)

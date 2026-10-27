@@ -121,7 +121,7 @@ async def harness(monkeypatch: pytest.MonkeyPatch):
     )
     manager = SimpleNamespace(
         create_session=AsyncMock(return_value=SESSION_ID),
-        get_agent_for_session_nowait=Mock(return_value=agent),
+        borrow_agent_nowait=lambda candidate: candidate,
         begin_foreground_chat=AsyncMock(),
         end_foreground_chat=AsyncMock(),
         cancel_all_inflight_work=AsyncMock(),

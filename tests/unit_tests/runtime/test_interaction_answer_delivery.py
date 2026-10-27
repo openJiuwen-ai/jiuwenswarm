@@ -71,13 +71,8 @@ class _QuestionAgent(FakeAgent):
             self.running -= 1
 
 
-class _Manager(FakeAgentManager):
-    def get_agent_for_session_nowait(self, channel_id, session_id):
-        return self.agent
-
-
 def _runtime(agent: _QuestionAgent) -> tuple[AgentRuntime, SessionRunAdmission]:
-    manager = _Manager()
+    manager = FakeAgentManager()
     manager.agent = agent
     admission = SessionRunAdmission()
     runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(),
@@ -195,6 +190,27 @@ async def test_a_refused_answer_keeps_the_question_pending_while_the_pause_waits
     assert not await _heartbeat_can_start(admission, session_id)
 
     agent.refuse = False
+    await asyncio.wait_for(answer(runtime, session_id), 5)  # the pause still waited for it
+    assert not admission.has_pending_interaction(session_id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["unary", "streamed"])
+async def test_a_cancelled_answer_keeps_the_question_pending_while_the_pause_waits(path: str) -> None:
+    session_id = f"cancelled-{path}"
+    agent = _QuestionAgent()
+    agent.release.clear()
+    runtime, admission = await _paused(session_id, agent)
+
+    answer = _unary_answer if path == "unary" else _streamed_answer
+    cancelled = asyncio.create_task(answer(runtime, session_id))
+    await asyncio.wait_for(agent.started.wait(), 5)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+
+    assert admission.has_pending_interaction(session_id)
+    agent.release.set()
     await asyncio.wait_for(answer(runtime, session_id), 5)  # the pause still waited for it
     assert not admission.has_pending_interaction(session_id)
 

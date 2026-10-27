@@ -119,7 +119,7 @@ async def test_cross_session_question_can_be_answered(
 
     agent = _Agent()
     manager = SimpleNamespace(
-        get_agent_for_session_nowait=Mock(return_value=agent),
+        borrow_agent_nowait=lambda candidate: candidate,
         cleanup=AsyncMock(),
         cancel_all_inflight_work=AsyncMock(),
         cleanup_session_runtime=AsyncMock(return_value=True),

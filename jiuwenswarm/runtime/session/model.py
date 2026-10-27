@@ -189,6 +189,7 @@ class SessionExecutionHandle:
     error: str | None = None
     cancellation_requested: bool = False
     task: asyncio.Task[Any] | None = field(default=None, repr=False)
+    agent: Any = field(default=None, repr=False)
     terminal_event: asyncio.Event = field(default_factory=asyncio.Event, repr=False)
     retain_owner_task: bool = field(default=False, repr=False)
 

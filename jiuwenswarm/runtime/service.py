@@ -1735,6 +1735,9 @@ class AgentRuntime:
                     channel_id,
                     **prepare_kwargs,
                 )
+                self._session_coordinator.bind_agent(
+                    request.session_id or "default", request.request_id, agent,
+                )
                 if not readonly_goal_get:
                     plan_result = await self._plan_controller.ensure_state(
                         request,
@@ -2422,6 +2425,9 @@ class AgentRuntime:
                     channel_id,
                     **prepare_kwargs,
                 )
+                self._session_coordinator.bind_agent(
+                    request.session_id or "default", request.request_id, agent,
+                )
                 if not readonly_goal_get:
                     plan_result = await self._plan_controller.ensure_state(
                         request,
@@ -2729,18 +2735,11 @@ class AgentRuntime:
 
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
-        cleared.extend(await self._clear_answered_interactions(request))
-        lookup = getattr(manager, "get_agent_for_session_nowait", None)
-        agent = (
-            lookup(channel_id, request.session_id or "") if callable(lookup) else None
-        )
-        if agent is None:
-            raise RuntimeError(
-                f"session has no active agent: {request.session_id or 'default'}"
-            )
+        agent = self._control_agent(request, manager)
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
+        cleared.extend(await self._clear_answered_interactions(request))
         events: list[RuntimeEvent] = []
         response_stream = deliver(request)
         try:
@@ -2783,6 +2782,15 @@ class AgentRuntime:
             and event.payload.get("session_id", event.session_id) == request.session_id
         )
 
+    def _control_agent(self, request: AgentRequest, manager: AgentManager) -> Any:
+        """Borrow the agent the paused execution ran on, though its Session was evicted from it since."""
+        session_id = request.session_id or "default"
+        agent = self._session_coordinator.control_target_agent(session_id, self._control_ids(request))
+        borrowed = manager.borrow_agent_nowait(agent) if agent is not None else None
+        if borrowed is None:
+            raise RuntimeError(f"session has no active agent: {session_id}")
+        return borrowed
+
     async def _released_after(
         self, request: AgentRequest, stream: AsyncIterator[RuntimeEvent]
     ) -> AsyncIterator[RuntimeEvent]:
@@ -2803,10 +2811,7 @@ class AgentRuntime:
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
         session_id = request.session_id or "default"
-        lookup = getattr(manager, "get_agent_for_session_nowait", None)
-        agent = lookup(channel_id, request.session_id or "") if callable(lookup) else None
-        if agent is None:
-            raise RuntimeError(f"session has no active agent: {request.session_id or 'default'}")
+        agent = self._control_agent(request, manager)
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
