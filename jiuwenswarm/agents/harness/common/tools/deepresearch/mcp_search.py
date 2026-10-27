@@ -305,6 +305,7 @@ async def search_mcp_gateway(servers):
         server = uvicorn.Server(uvicorn.Config(
             app, log_config=None, access_log=False, log_level='warning',
             timeout_graceful_shutdown=1, lifespan='on'))
+
         # An embedded task must not replace the host service's signal handlers.
         def capture_signals():
             return nullcontext()

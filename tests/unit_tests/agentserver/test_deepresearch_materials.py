@@ -2,13 +2,15 @@
 import asyncio
 import json
 from pathlib import Path
+import stat
 
 import pytest
 from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
 
 
 @pytest.mark.asyncio
-async def test_snapshot_publish_failure_removes_temporary_file(tmp_path, monkeypatch):
+@pytest.mark.parametrize('operation', ['fsync', 'replace'])
+async def test_snapshot_publish_failure_removes_temporary_file(tmp_path, monkeypatch, operation):
     source = tmp_path / "source.txt"
     source.write_text("material content")
     context = {"original_query": "参考附件研究", "files": [{"path": str(source)}],
@@ -18,11 +20,43 @@ async def test_snapshot_publish_failure_removes_temporary_file(tmp_path, monkeyp
     def fail_replace(*args):
         raise failure
 
-    monkeypatch.setattr(m.os, "replace", fail_replace)
+    monkeypatch.setattr(m.os, operation, fail_replace)
     with pytest.raises(OSError) as caught:
         await m.prepare_materials(context, "35c0b386-7e75-4923-b373-720ed2ed848b")
     assert caught.value is failure
     assert all(path.is_dir() for path in (tmp_path / ".deepresearch-materials").rglob("*"))
+
+
+@pytest.mark.asyncio
+async def test_snapshot_publish_closes_private_file_before_atomic_replace(tmp_path, monkeypatch):
+    source = tmp_path / 'source.txt'
+    source.write_text('material content')
+    context = {'original_query': '参考附件研究', 'files': [{'path': str(source)}],
+               'scope': 'session', 'output_dir': str(tmp_path)}
+    original_replace = m.os.replace
+    original_fsync = m.os.fsync
+    descriptors = []
+
+    def record_fsync(fd):
+        original_fsync(fd)
+        descriptors.append(fd)
+
+    def checked_replace(temporary, target):
+        assert len(descriptors) == 1
+        with pytest.raises(OSError):
+            m.os.fstat(descriptors[0])
+        assert Path(temporary).parent == target.parent
+        assert stat.S_IMODE(Path(temporary).stat().st_mode) == 0o600
+        assert not target.exists()
+        original_replace(temporary, target)
+
+    monkeypatch.setattr(m.os, 'fsync', record_fsync)
+    monkeypatch.setattr(m.os, 'replace', checked_replace)
+    ref = await m.prepare_materials(context, '35c0b386-7e75-4923-b373-720ed2ed848b')
+    target = Path(ref['path'])
+    assert list(target.parent.iterdir()) == [target]
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+    assert json.loads(target.read_text())['materials'][0]['content'] == 'material content'
 
 
 @pytest.mark.asyncio
