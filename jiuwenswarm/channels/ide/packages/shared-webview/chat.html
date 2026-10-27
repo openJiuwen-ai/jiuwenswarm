@@ -2912,14 +2912,17 @@ function appendDelta(rid, text) {
     if (pt.activeUsageRow) pt.activeUsageRow.firstTokenAt = pt.firstTokenTime;
   }
   pt.textContent += text;
-  // Append raw text to the stream (interleaved with tool cards)
+  // Render each text segment independently so tool cards stay interleaved.
+  // Keep the source: a path or Markdown delimiter can span several deltas.
   var lastChild = pt.streamEl.lastElementChild;
   if (lastChild && lastChild.classList.contains('chunk-text')) {
-    lastChild.textContent += text;
+    lastChild.__markdownSource += text;
+    lastChild.innerHTML = renderMarkdown(lastChild.__markdownSource);
   } else {
     var span = document.createElement('span');
     span.className = 'chunk-text';
-    span.textContent = text;
+    span.__markdownSource = text;
+    span.innerHTML = renderMarkdown(text);
     pt.streamEl.appendChild(span);
   }
   scrollToBottom();
@@ -3654,7 +3657,7 @@ function finalizeTurn(rid, payload) {
       pt.typingEl = null;
     }
     // Keep streaming content as-is (chunk-text and tool cards stay interleaved).
-    // No markdown replacement — the raw streaming text preserves the chronological layout.
+    // Each text segment is already rendered without replacing its tool-card siblings.
     if (pt.streamEl.querySelector('.typing-dots')) { pt.streamEl.querySelector('.typing-dots').remove(); }
     if (pt.thinkingHeader) {
       pt.thinkingHeader.textContent = 'Reasoning';
@@ -5072,30 +5075,42 @@ function openToolFile(ev) {
 }
 
 function renderInline(line) {
-  line = line.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  line = line.replace(/_([^_]+)_/g, '<em>$1</em>');
-  // Pattern 1: backtick-wrapped file paths — run before generic backtick handler
-  line = line.replace(/`((?:(?:\.{1,2}\/)?(?:[\w\-]+\/)+)?[\w.\-]+\.\w{2,6}(?::\d+)?)`/g, function(_, raw) {
-    var m = raw.match(/^(.*?):(\d+)$/);
-    var filePath = m ? m[1] : raw;
-    var lineNum = m ? m[2] : '0';
-    var hasSlash = filePath.indexOf('/') !== -1;
-    var hasLine = !!m;
-    if (!hasSlash && !hasLine) return '<code>' + escapeHtml(raw) + '</code>';
-    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
-         + '" onclick="openFileLink(this)"><code>' + escapeHtml(raw) + '</code></a>';
+  function renderText(text) {
+    return escapeHtml(text)
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+      .replace(/_([^_]+)_/g, '<em>$1</em>');
+  }
+
+  var out = '';
+  var cursor = 0;
+  // Consume code spans and bare references before emphasis. Never process
+  // generated HTML again: underscores belong to paths and code literally.
+  line.replace(/`([^`]+)`|(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g,
+    function(match, code, filePath, lineNum, offset) {
+      out += renderText(line.slice(cursor, offset));
+      cursor = offset + match.length;
+      var label;
+      if (code !== undefined) {
+        label = '<code>' + escapeHtml(code) + '</code>';
+        var ref = code.match(/^(.*?)(?::(\d+))?$/);
+        filePath = ref[1];
+        lineNum = ref[2] || '0';
+        // Backticks delimit paths containing spaces, Unicode, drive letters
+        // or backslashes. Exclude URL schemes and non-file code expressions.
+        var isPath = /^(?:[A-Za-z]:)?[^:*?"<>|`\r\n]+\.[A-Za-z0-9]{1,10}$/.test(filePath);
+        if (!isPath || (!/[\/\\]/.test(filePath) && !ref[2])) {
+          out += label;
+          return match;
+        }
+      } else {
+        label = escapeHtml(filePath + ':' + lineNum);
+      }
+      out += '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
+           + '" onclick="openFileLink(this)">' + label + '</a>';
+      return match;
   });
-  // Generic backtick handler for remaining non-file spans
-  line = line.replace(/`([^`]+)`/g, function(_, c) {
-    return '<code>' + escapeHtml(c) + '</code>';
-  });
-  // Pattern 2: bare path/to/file.ext:N outside backticks and existing HTML
-  line = line.replace(/(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g, function(_, filePath, lineNum) {
-    return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
-         + '" onclick="openFileLink(this)">' + escapeHtml(filePath) + ':' + lineNum + '</a>';
-  });
-  return line;
+  return out + renderText(line.slice(cursor));
 }
 
 // ─────────────────────────────────────────────
