@@ -61,10 +61,7 @@ def build_system_prompt(language: str, *, repl_enabled: bool = True) -> str:
     text = DEFAULT_CUA_AGENT_SYSTEM_PROMPT.get(language, DEFAULT_CUA_AGENT_SYSTEM_PROMPT["cn"])
     if sys.platform == "darwin":
         text += (
-            "\nmacOS exception: get_window_state/zoom capture the window without activation. "
-            "Single-step input uses a separate session defaulting to exclusive foreground input; "
-            "an explicit COMPUTER_USE_DESKTOP is honored. Shared mode refuses that global-input route. "
-            "Coordinates are Retina-normalized PNG pixels in the virtual screenshot canvas. "
+            "\nOn macOS, get_window_state and zoom observe the window without activating it. "
             "Use cmd/super for Command.\n"
         )
     if not repl_enabled:
@@ -82,10 +79,7 @@ def build_system_prompt(language: str, *, repl_enabled: bool = True) -> str:
             raise ValueError("The bundled Computer Use Skill has no API surface")
         base = before + api + remainder
     return text + (
-        "\nFor simple observations or one explicit action, use the original tools. Prefer cua_repl "
-        "for systematic multi-step workflows (多步工作流), loops and conditions. It executes Python, "
-        "not JavaScript. Variables persist only within this delegated task; the host owns cleanup. "
-        "Reads present text, printImage presents screenshots, and actions require explicit reads to verify. "
-        "Never reuse old-tool references or coordinates in the REPL, or vice versa. REPL input follows "
-        "its own host shared/exclusive policy. It runs with host permissions, not in a security sandbox.\n\n"
+        "\nUse the single-step tools for a simple observation or action. Prefer cua_repl "
+        "for multi-step workflows (多步工作流), loops and conditions. Keep its element references "
+        "and screenshot coordinates separate from the single-step tools.\n\n"
     ) + base.replace("computer_use({", "cua_repl({")

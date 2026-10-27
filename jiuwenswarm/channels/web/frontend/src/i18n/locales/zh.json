@@ -246,16 +246,6 @@
     "edge": {
       "delete": "删除连线"
     },
-    "revision": {
-      "title": "选择要保留的版本",
-      "hint": "{{label}} 已重新生成。原版还在，请选择保留哪一份。",
-      "original": "原版",
-      "incoming": "新内容",
-      "keepOriginal": "保留原版",
-      "keepIncoming": "采用新内容",
-      "pending": "待选择",
-      "compare": "比较版本"
-    },
     "materials": {
       "title": "产出物料",
       "hint": "Brief 和分镜表可手动编辑。保存后重跑下游节点会读到新内容。",
@@ -511,7 +501,15 @@
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
-      "jevTab": "Jev",
+      "jevTab": "决策模型",
+      "jevTabHelp": "可选配置。用于增强浏览器子智能体，以及单智能体会话中多模型协同的决策能力。",
+      "jevModels": "Jev 模型",
+      "jevDeleteFailed": "清除 Jev 配置失败，请重试。",
+      "jevEmpty": "尚未配置 Jev 模型",
+      "jevEmptyDescription": "添加一个 Jev 模型，供浏览器决策和多模型协同共用。",
+      "jevDisplayNamePlaceholder": "请输入模型展示名称",
+      "jevApiBasePlaceholder": "例如：https://jev.example.com/v1",
+      "jevModelHint": "请填写提供商支持的 Jev 模型名，例如 typesafe/jev-1.13 或 jev-1.13.0。",
       "modelGroups": "模型组",
       "modelGroupsManagement": "模型组管理",
       "empty": "尚未配置模型",
@@ -685,7 +683,6 @@
         "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
         "aliasRequired": "模型展示名称为必填项",
         "aliasConflict": "模型展示名称必须全局唯一，不能与其他模型的展示名称重复",
-        "modelNameConflict": "模型 ID 不能与其他配置的模型展示名称相同",
         "modelGroupNameConflict": "模型组名称必须全局唯一，不能与其他模型组名称重复"
       },
       "testConnection": "测试连接",
@@ -739,8 +736,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "自定义",
       "jevConfig": "Jev 模型配置",
-      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > Jev」配置。",
-      "clearSharedJevConfirm": "清除当前提供商的 Jev 密钥？浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
+      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > 决策模型」中添加 Jev 模型。",
+      "clearSharedJevConfirm": "清除当前 Jev 模型的密钥和展示名称？连接参数将保留，浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
       "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
@@ -821,7 +818,7 @@
       },
       "decision_mode": {
         "title": "浏览器决策",
-        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > Jev」中的共享配置。"
+        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > 决策模型」中的共享配置。"
       },
       "decision_provider": {
         "title": "Jev 服务提供方",
@@ -1001,7 +998,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV 决策",
-        "description": "使用「模型 > Jev」中配置的 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
+        "description": "使用「模型 > 决策模型」中配置的 Jev 决定是否咨询参考模型；关闭时使用模型组的组内默认模型验证执行进度。"
       },
       "moa_verifier_interval": {
         "title": "验证间隔（轮）",
@@ -1061,14 +1058,15 @@
         "cancel": "取消",
         "start": "开始执行",
         "starting": "启动中…",
-        "summary": "已选择 {{count}} 个 Agent · {{nodes}} 个节点",
-        "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
+        "summary": "已选择 {{count}} 个 Agent · {{spans}} 个 OTel Span",
+        "emptyNodes": "选中范围内没有完整可诊断的 OTel Span（起止未都被覆盖的 Span 已被剔除）",
         "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
-        "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
+        "nodeLimit": "选中轨迹超过 {{limit}} 个 OTel Span（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
-        "noData": "当前没有可诊断的轨迹"
+        "noData": "当前没有可诊断的轨迹",
+        "replay": "只读复现中无法诊断，请先退出复现"
       },
-      "summary": "{{agents}}个Agent · {{nodes}} 个节点",
+      "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -2218,11 +2216,11 @@
       "openFile": "打开文件",
       "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或点击“一键安装”改用内置 CLI。",
       "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或点击“一键安装”改用内置 CLI。",
-      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或点击“一键安装”使用内置 CLI。",
-      "missingPath": "路径不存在：{{path}}。请检查路径，或点击“一键安装”使用内置 CLI。",
-      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或点击“一键安装”使用内置 CLI。",
-      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或点击“一键安装”使用内置 CLI。",
-      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或点击“一键安装”使用内置 CLI。",
+      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或取消后点击“一键安装”使用内置 CLI。",
+      "missingPath": "路径不存在：{{path}}。请检查路径，或取消后点击“一键安装”使用内置 CLI。",
+      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或取消后点击“一键安装”使用内置 CLI。",
+      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或取消后点击“一键安装”使用内置 CLI。",
+      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或取消后点击“一键安装”使用内置 CLI。",
       "autoSaved": "{{agents}} 依赖安装完成，已自动保存您的配置。",
       "installDialogTitle": "安装可选组件",
       "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，您的配置将自动保存。",
@@ -3923,6 +3921,7 @@
     "messageQueue": "消息队列",
     "crossSessionMessageQueue": "跨会话消息",
     "localMessageQueue": "本地消息",
+    "turnStarting": "正在启动…",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",

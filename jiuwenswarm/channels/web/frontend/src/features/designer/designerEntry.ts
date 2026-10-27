@@ -64,6 +64,11 @@ function inheritDesignerModelChoice(sessionId: string, choice: DesignerModelChoi
  */
 export function bindDesignerChatSession(sessionId: string): void {
   useChatStore.getState().ensureRuntime(sessionId);
+  // A design session is only ever used from the canvas, so its session-scoped
+  // model state (`runtimes[sessionId]`) is created here. Without it every model
+  // read falls back to the default and every switch is silently dropped, which
+  // is what made the canvas model label inert (#5394).
+  useSessionStore.getState().ensureRuntime(sessionId);
   if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
     useSessionStore.getState().setMode(sessionId, 'team');
   }

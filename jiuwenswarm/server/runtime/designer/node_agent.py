@@ -20,6 +20,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     AssetRef,
     DesignerExecutionGraph,
     DesignerGraphNode,
+    clip_order_problems,
     data_predecessors,
     is_compose_sink_node,
     node_agent_template,
@@ -383,10 +384,19 @@ class DesignerNodeSpawner(Protocol):
 
 def _graph_patch_summary(graph: DesignerExecutionGraph) -> dict[str, Any]:
     """Shape returned to the leader after a canvas patch is saved."""
-    return {
+    summary: dict[str, Any] = {
         "graph_id": graph.get("graph_id"),
         "nodes": [node.get("id") for node in graph.get("nodes") or []],
     }
+    problems = clip_order_problems(graph)
+    if problems:
+        summary["clip_order_warning"] = (
+            "Each clip films the storyboard row at its config.clip_index and the final "
+            "film follows that order, so patch the clip nodes again: number them 1..N "
+            "in shot order (keep their ids) and wire each clip after the previous one. "
+            "Problems: " + "; ".join(problems)
+        )
+    return summary
 
 
 def designer_agent_group_dir() -> Path:
@@ -1090,6 +1100,7 @@ class DesignerGraphToolkit:
             edge_video_inputs,
             first_connected_video_file,
             generate_clip_video,
+            note_video_duration,
             video_duration_seconds,
         )
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
@@ -1274,6 +1285,7 @@ class DesignerGraphToolkit:
             except Exception:  # noqa: BLE001
                 logger.debug("call_video_model early prompt handoff failed", exc_info=True)
         dur = video_duration_seconds(self.ctx, node)
+        note_video_duration(self.ctx, node, dur)
         from jiuwenswarm.server.runtime.designer.audio_locks import video_gen_family_label
 
         beat = asyncio.create_task(

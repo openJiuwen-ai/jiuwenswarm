@@ -104,7 +104,7 @@ import {
   type Session,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
-import { resolveAvailableModelSelection } from './stores/sessionStore';
+import { isModelCatalogPending, resolveAvailableModelSelection } from './stores/sessionStore';
 import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -273,6 +273,12 @@ function restoreSessionModelSelection(
   const store = useSessionStore.getState();
   const restoredSelection = parseModelSelection(modelSelection);
   if (restoredSelection) {
+    // Catalog often arrives after session.get_metadata on refresh (#5860). Keep the
+    // server selection until models.list is ready; do not clear or write back yet.
+    if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) {
+      store.setSelectedModelSelection(sessionId, restoredSelection);
+      return;
+    }
     const resolved = resolveAvailableModelSelection(
       restoredSelection,
       store.chatAvailableModels,
@@ -1462,6 +1468,35 @@ function AppContent({
     }
   }, [applySubagentHistoryReplay, request]);
 
+  const seedDiscoveredSubagents = useCallback((sid: string, ids: string[]) => {
+    // Cold refresh has no in-memory roster; parent history.done lists on-disk
+    // subagent buckets so we can seed ids and then pull per-subagent history
+    // (GitCode #4887). Placeholder status is replaced by roster frames.
+    if (!ids.length) return;
+    const subagentStore = useSubagentStore.getState();
+    let seeded = false;
+    for (const subagentId of ids) {
+      if (subagentStore.getRuntime(sid)?.subagentsById[subagentId]) continue;
+      const event = normalizeSubagentStatusEvent({
+        event_type: 'chat.subtask_update',
+        session_id: sid,
+        parent_session_id: sid,
+        subagent_id: subagentId,
+        display_name: subagentId,
+        status: 'completed',
+        revision: 0,
+        created_at: 0,
+        updated_at: 0,
+      });
+      if (!event || event.subagent.parent_session_id !== sid) continue;
+      subagentStore.applyHistoryEvent(sid, event);
+      seeded = true;
+    }
+    if (seeded) {
+      restoreSubagentHistory(sid);
+    }
+  }, [restoreSubagentHistory]);
+
   const applyRecoveredSubagentToolHistory = useCallback((sid: string, items: HistoryToolReplayItem[]) => {
     const subagentStore = useSubagentStore.getState();
     const mergedToolReplay = mergeHistoryToolReplayItems(
@@ -1569,6 +1604,9 @@ function AppContent({
         );
       }
     }
+    if (result.discoveredSubagentIds.length > 0) {
+      seedDiscoveredSubagents(sid, result.discoveredSubagentIds);
+    }
     if (result.subagentReplay.length > 0) {
       applySubagentHistoryReplay(sid, result.subagentReplay);
     }
@@ -1634,7 +1672,7 @@ function AppContent({
         ...currentItems,
       ]);
     }
-  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, settleHistoricalToolExecutions]);
+  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, seedDiscoveredSubagents, settleHistoricalToolExecutions]);
 
   const fetchHistoryBatch = useCallback(async (
     sid: string,
@@ -2708,6 +2746,9 @@ function AppContent({
       onSubagentReplay: (items) => {
         applySubagentHistoryReplay(sessionId, items);
       },
+      onDiscoveredSubagentIds: (ids) => {
+        seedDiscoveredSubagents(sessionId, ids);
+      },
       onReasoningReplay: (items) => {
         restoreReasoningSegments(
           sessionId,
@@ -2799,6 +2840,7 @@ function AppContent({
     addToolResult,
     applyRecoveredSubagentToolHistory,
     applySubagentHistoryReplay,
+    seedDiscoveredSubagents,
     settleHistoricalToolExecutions,
     clearMessages,
     disposeInFlightHistoryHandles,

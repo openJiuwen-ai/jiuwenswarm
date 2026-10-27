@@ -1049,27 +1049,20 @@
   min-width: 0;
 }
 
-.designer-chat-panel__model {
+/* Canvas model switcher (#5394): this used to be a static label, so the
+   composer must now host the real picker without squeezing the send button. */
+.designer-chat-panel__composer-actions .chat-model-selector {
   display: inline-flex;
   min-width: 0;
   max-width: calc(100% - 40px);
-  align-items: center;
-  gap: 6px;
-  color: var(--color-text-primary);
-  font-size: 12px;
-  line-height: 1;
-  pointer-events: none;
-  user-select: none;
 }
 
-.designer-chat-panel__model-icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
+.designer-chat-panel__composer-actions .chat-mode-select__trigger {
+  min-width: 0;
+  max-width: 100%;
 }
 
-.designer-chat-panel__model-label {
+.designer-chat-panel__composer-actions .chat-mode-select__label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2159,18 +2152,6 @@
 .designer-node-toolbar__rerun:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-}
-
-.designer-node-toolbar__compare {
-  align-self: center;
-  min-width: 72px;
-  padding: 6px 14px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 999px;
-  background: var(--color-surface-card);
-  color: var(--color-text-primary);
-  font-size: 13px;
-  cursor: pointer;
 }
 
 .designer-node-toolbar__panel {
@@ -3300,123 +3281,6 @@ textarea.designer-node-toolbar__param-input {
   line-height: 1.55;
   white-space: pre-wrap;
   text-align: left;
-}
-
-.designer-revision-chooser {
-  position: fixed;
-  inset: 0;
-  z-index: 42;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.designer-revision-chooser__backdrop {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  background: rgb(15 23 42 / 72%);
-  cursor: pointer;
-}
-
-.designer-revision-chooser__panel {
-  position: relative;
-  display: flex;
-  width: min(1100px, 100%);
-  max-height: calc(100vh - 48px);
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: 16px;
-  background: var(--color-surface-card, #fff);
-  box-shadow: 0 24px 72px rgb(15 23 42 / 28%);
-}
-
-.designer-revision-chooser__header,
-.designer-revision-chooser__actions {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 20px;
-}
-
-.designer-revision-chooser__header {
-  border-bottom: 1px solid var(--color-border-default, #e5e7eb);
-}
-
-.designer-revision-chooser__header h2,
-.designer-revision-chooser__column h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-}
-
-.designer-revision-chooser__header p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: var(--color-text-muted, #6b7280);
-}
-
-.designer-revision-chooser__compare {
-  display: grid;
-  min-height: 0;
-  flex: 1;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  padding: 16px 20px;
-  overflow: auto;
-}
-
-.designer-revision-chooser__column {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.designer-revision-chooser__stack {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.designer-revision-chooser__item {
-  margin: 0;
-}
-
-.designer-revision-chooser__item figcaption {
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: var(--color-text-muted, #6b7280);
-}
-
-.designer-revision-chooser__item img,
-.designer-revision-chooser__item video {
-  display: block;
-  max-width: 100%;
-  max-height: 280px;
-  object-fit: contain;
-}
-
-.designer-revision-chooser__text {
-  box-sizing: border-box;
-  width: 100%;
-  max-height: 280px;
-  margin: 0;
-  overflow: auto;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border-default, #e5e7eb);
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-.designer-revision-chooser__actions {
-  justify-content: flex-end;
-  border-top: 1px solid var(--color-border-default, #e5e7eb);
 }
 
 /* Read-only workflow: edit affordances stay visible and show a forbidden cursor. */

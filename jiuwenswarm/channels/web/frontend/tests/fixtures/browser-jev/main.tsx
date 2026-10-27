@@ -9,11 +9,13 @@ import '../../../src/styles/themes/default/light.css';
 import '../../../src/index.css';
 
 const query = new URLSearchParams(location.search);
-const missingKey = query.has('missingKey');
+const empty = query.has('empty');
+const missingKey = empty || query.has('missingKey');
 void i18n.changeLanguage(query.get('lang') ?? 'zh');
 let browser: Record<string, unknown> = {
   chrome_path: '', headless: false, decision_mode: missingKey ? 'llm' : 'hybrid', decision_provider: 'openrouter',
   decision_model: 'typesafe/jev-1.13', decision_api_base: JEV_PRESETS.openrouter.api_base,
+  decision_display_name: 'Jev decision model',
 };
 const config: Record<string, unknown> = {
   jev_openrouter_api_key: missingKey ? '' : 'synthetic-openrouter-key',
@@ -26,11 +28,15 @@ const config: Record<string, unknown> = {
 const request: SettingsRequest = async (method, params) => {
   if (method === 'config.get') return { ...config } as never;
   if (method === 'config.save_all') {
+    if (query.has('deleteError')) throw new Error('Unable to clear the test model');
     Object.assign(config, params?.config);
     return { ok: true } as never;
   }
   if (method === 'path.set') {
-    const next = { ...browser, ...Object.fromEntries(Object.entries(params ?? {}).filter(([, value]) => value !== undefined)) };
+    const next = {
+      ...browser,
+      ...Object.fromEntries(Object.entries(params ?? {}).filter(([, value]) => value !== undefined)),
+    };
     const preset = JEV_PRESETS[next.decision_provider as JevProvider];
     if (next.decision_mode !== 'llm' && !config[preset.keyField]) {
       throw new Error('Jev API key is required in Models > Jev settings');
@@ -39,7 +45,8 @@ const request: SettingsRequest = async (method, params) => {
   }
   if (method === 'path.get' || method === 'path.set') return {
     ...browser,
-    jev_key_configured: Boolean(config[JEV_PRESETS[browser.decision_provider as JevProvider].keyField]),
+    decision_display_name: browser.decision_display_name ?? '',
+    jev_key_configured: Boolean(browser.decision_provider && config[JEV_PRESETS[browser.decision_provider as JevProvider].keyField]),
   } as never;
   if (method === 'models.list') return { models: [] } as never;
   if (method === 'model_groups.list') return { groups: [] } as never;
@@ -57,7 +64,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
     />
   ) : (
   <SettingsPage
-    definition={openSourceSettingsPageDefinition} initialModuleId={missingKey ? 'browser' : 'models'}
+    definition={openSourceSettingsPageDefinition} initialModuleId={missingKey && !empty ? 'browser' : 'models'}
     isConnected connectionState="ready" request={request}
   />
   ),

@@ -45,6 +45,17 @@ _REJECT_PATTERNS = tuple(
     if kw.isascii()
 )
 _REJECT_CJK = tuple(kw for kw in _REJECT_KEYWORDS if not kw.isascii())
+# Re-gate keywords: SKILL.md R3 "需要复审" option — return to R1 for another
+# gate loop WITHOUT advancing. Distinct from reject (rework to production
+# stage) and approve (advance forward). "跳过复审" is approve, NOT regate,
+# so the keyword must be the full "需要复审" phrase, not bare "复审".
+_REGATE_KEYWORDS = ("需要复审", "re-gate", "regate")
+_REGATE_PATTERNS = tuple(
+    re.compile(fr"\b{re.escape(kw)}\b", re.IGNORECASE)
+    for kw in _REGATE_KEYWORDS
+    if kw.isascii()
+)
+_REGATE_CJK = tuple(kw for kw in _REGATE_KEYWORDS if not kw.isascii())
 # Fixed rework map (config lists forward edges only).
 # Wave-2 stage additions that introduce new *_review stages MUST update this map.
 _REWORK_TARGETS = {
@@ -137,6 +148,16 @@ class DesignRail(RailStateMachineBase):
                 logger.info(
                     "[DesignRail] review rejected -> rework to %s", target
                 )
+        elif self._is_regate(answer):
+            # SKILL.md R3 "需要复审": loop back to R1 for re-gate inside the
+            # review skill. The rail does NOT transition (re-gate is internal
+            # to the review skill's R1->R2->R3 loop) and must NOT log
+            # "approved" — that would mislead the agent into calling
+            # sdd_advance prematurely, skipping the re-gate loop.
+            logger.info(
+                "[DesignRail] review re-gate requested (需要复审); "
+                "skill owns R3->R1 loop, no rail transition"
+            )
         else:
             # Approve: do NOT auto-transition here. The SKILL.md R4 step
             # instructs the agent to call sdd_advance explicitly. Auto-
@@ -189,6 +210,16 @@ class DesignRail(RailStateMachineBase):
             if pattern.search(text):
                 return True
         for kw in _REJECT_CJK:
+            if kw in text:
+                return True
+        return False
+
+    def _is_regate(self, answer: str) -> bool:
+        text = (answer or "").lower()
+        for pattern in _REGATE_PATTERNS:
+            if pattern.search(text):
+                return True
+        for kw in _REGATE_CJK:
             if kw in text:
                 return True
         return False

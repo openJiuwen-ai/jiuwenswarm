@@ -26,7 +26,7 @@ uv sync --locked
 uv run --no-sync jiuwenswarm-init
 ```
 
-依赖来源以当前 `pyproject.toml` 和 `uv.lock` 为准，普通用户按仓库提供的锁文件同步即可，无需安装本地 agent-core。维护者联调时可以在本地把 `openjiuwen` source 改为 agent-core 源码路径并设置 `editable = true`，同步更新锁文件；这类本地依赖配置不应提交到远端。首次初始化后按[快速开始](Quickstart.md)配置模型与凭据；已有工作区不必重复初始化。需要指定官方 Python 包源时使用 `uv sync --locked --default-index https://pypi.org/simple`，不改变锁文件中的源地址。
+依赖来源以当前 `pyproject.toml` 和 `uv.lock` 为准，普通用户按仓库提供的锁文件同步即可。维护者联调时可以在本地把 `openjiuwen` source 改为 agent-core 源码路径并设置 `editable = true`，同步更新锁文件；这类本地依赖配置不应提交到远端。首次初始化后按[快速开始](Quickstart.md)配置模型与凭据；已有工作区不必重复初始化。需要指定官方 Python 包源时使用 `uv sync --locked --default-index https://pypi.org/simple`，不改变锁文件中的源地址。
 
 配置默认位于 `~/.jiuwenswarm/config/config.yaml`。以下片段应合并到初始化生成的配置中，不要覆盖整份文件、模型或其他已有设置。Team Organization 复用 `modes.team.jiuwen_team`，不需要新增顶层 `organization` 配置：
 
@@ -61,14 +61,14 @@ modes:
 
 Summary Team 会读取同一份 Team 默认模型配置；如果默认模型缺失，Summary Team 无法启动。当前 Team Organization 为同进程版本，参与组织的 Team Leader 由同一 AgentServer 进程管理，并共享同一 `TeamDatabase` 实例与本机工作空间。联调建议使用 SQLite 和 `inprocess`；仅改用 PostgreSQL 不会开启跨进程组织协作。
 
-Team Organization 使用现有实验特性配置，默认关闭，同时控制前端组织视图和后端组织能力。在用户配置文件 `~/.jiuwenswarm/config/config.yaml` 中增加：
+Team Organization 是默认关闭的实验特性。在 Web 的「更多 → 配置 → 实验特性 → Team Organization」中打开「启用 Team Organization」，或在用户配置文件 `~/.jiuwenswarm/config/config.yaml` 中增加：
 
 ```yaml
 experimental:
   team_organization_ui_enabled: true
 ```
 
-也可以在 Web 的「更多 → 配置 → 实验特性」中开启 Team Organization。此开关决定新构建 Team 的 `enable_organization`：关闭或缺省时不挂载 `org_*` 工具，也不恢复已有组织绑定，普通 Team 成员协作仍可使用；Web 和 TUI 的组织运行都依赖此开关。已有配置中其他 `experimental` 项应保留。
+该开关同时控制前端组织视图和新构建 Team 的后端组织能力，并非仅用于 UI。配置键为兼容已有配置仍叫 `experimental.team_organization_ui_enabled`，请保留完整名称。它决定新构建 Team 的 `enable_organization`：关闭或缺省时不挂载 `org_*` 工具，也不恢复已有组织绑定，普通 Team 成员协作仍可使用；Web 和 TUI 的组织运行都依赖此开关。已有配置中其他 `experimental` 项应保留。
 
 后端在 Team 构建时读取开关，不会因界面切换立即卸载正在运行的组织。更改后请完整重启后端（包括常驻 Runtime Worker），再创建新的 Team 会话；如果已有组织任务在运行，先停止该任务。仅刷新网页或重启连接层不会重建已有运行实例。关闭开关不会删除组织数据库或交付物。
 
@@ -114,11 +114,11 @@ uv run --no-sync jiuwenswarm-start dev
 将下面的提示词作为一条完整消息发送。简短执行要求也应写入子任务描述，才能传递给被唤醒的专家团。篇幅要求用于控制工作范围，不保证模型在固定时间内结束。
 
 ```text
-请使用 Team Organization，完成一份“10 人团队内部知识问答助手”的简短可行性报告，并采用 SUMMARY_TEAM 汇总模式。
+请使用 Team Organization，完成一份“10 人团队内部知识问答助手”的简短可行性报告。
 
 场景：成员上传内部文本说明，通过提问查找答案；回答附带文档来源，文档没有答案时明确告知。第一版只考虑这些功能。
 
-请由当前商业策划专家团创建组织，邀请已安装的“技术洞察专家团”和“代码架构设计专家团”加入。请创建并认领整体事项，将汇总模式设置为 SUMMARY_TEAM。
+请由当前商业策划专家团创建组织，邀请已安装的“技术洞察专家团”和“代码架构设计专家团”加入。请创建并认领整体事项。
 
 将以下三个独立子任务发布到共享任务池，按对应专家团的实际能力标签设置认领条件。不要委派，也不要直接指定执行团队，由不同专家团 Leader 自主认领：
 
@@ -128,9 +128,7 @@ uv run --no-sync jiuwenswarm-start dev
 
 请把以下要求写入每个子任务的描述和验收条件：只根据上述假设做简短分析，成果不超过 100 字；不联网、不生成文件、不编写代码、不继续拆分任务，不扩展为全面调研。各团采用必要的最少内部协作，完成后及时提交成果。你也需要自行认领并完成商业策划子任务。
 
-三个子任务全部完成并验收后，请启动独立 Summary Team 的汇总任务。汇总团队只整合已验收成果，输出一份 300 字左右的中文报告，不追加研究或新任务；完成后提交报告并结束汇总任务。
-
-最后请由 Owner 在当前会话直接展示完整报告正文，并完成整体事项。不要只回复状态、文件路径或“正在等待”。其他专家团执行期间不要反复轮询或催促，等待完成通知后继续。
+最终输出一份 300 字左右的中文报告。
 ```
 
 ### 3.4 预期结果
@@ -233,20 +231,4 @@ uv run --no-sync jiuwenswarm-start dev
 
 这些检查不能代替真实模型联调。自动化回归通过后，仍需使用可用模型、合法 AgentGroup 包和独立测试会话完成上述流程。
 
-当前实验界面隔离专家消息历史。后台专家 Team 和 Summary Team 已完成的回复片段会保存，即使浏览器断连，刷新后选择对应 Team 仍可恢复。正在生成的文本在下一个输出边界或轮次结束时保存。专家工具执行历史的完整恢复不在本次界面范围内。
 
-| 现象 | 检查项 |
-|------|--------|
-| 同一专家团在新会话创建组织报 `organization already belongs to team` | 组织 ID 在共享 `team.db` 中全局唯一，旧会话遗留组织未解散会占用同名 ID。升级 agent-core 后框架会自动为冲突 ID 追加 `-N` 后缀，以 `org_create_organization` 返回的实际 `organization_id` 为准；旧数据也可先回原会话调用 `org_dissolve_organization` 清理 |
-| `org_list_expert_groups` 返回空 | AgentGroup manifest、安装状态以及同名冲突；按能力过滤时还需检查 capabilities |
-| 前端看不到已安装的专家团 | 手动创建是否成功、是否已安装、当前是否为 Team 模式；刷新模板列表并检查实际工作区 |
-| 输入区不能选择专家团模板 | 是否已在当前会话构建 Team；新建未发送消息的会话再选模板 |
-| `npm run dev` 启动失败或端口已占用 | 是否执行过 `npm ci`、是否又手动启动了前端；`jiuwenswarm-start dev` 已包含前端启动 |
-| 专家团可见但无法匹配领域任务 | 检查专家目录返回的实际能力；未配置 capabilities 的模板使用领域标签，显式 capabilities 优先；介绍文字不作为能力，修改模板后使用新 Team 会话 |
-| 专家 Team 创建后未入组 | Team 是否成功激活、是否共享 Owner 的 `TeamDatabase` |
-| Summary Team 启动失败 | 默认模型是否可解析，Owner Team 是否已有数据库和 workspace |
-| 子任务完成但父任务无法结束 | 子任务是否已有 `ACCEPTED` 审核，修复任务是否正确关联 |
-| 最终文件找不到 | workspace 是否启用；组织本机工作空间和任务中的产物路径是否一致 |
-| 重启后没有继续执行 | 是否使用同一 session 和持久化 storage，Team 是否已重新激活 |
-
-排障时保留启动终端输出，并检查当前用户工作区的 `logs/`。优先查找 `ExpertGroupCatalog`、`ExpertTeamLauncher`、`SummaryTeamLauncher` 相关日志，结合组织面板的任务状态区分“尚未完成”和“已完成但待验收”；不要为了重试直接删除原有工作区或数据库。

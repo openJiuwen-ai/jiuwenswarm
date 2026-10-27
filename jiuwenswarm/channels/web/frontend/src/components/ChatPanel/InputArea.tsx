@@ -71,6 +71,7 @@ import {
   type SlashCommand,
   type SlashCommandContext,
 } from './slashCommands/registry';
+import { splitComposerSlashChip } from './composerDraftHydrate';
 import {
   canUseSlashCommand,
   getWebSlashCommandsForMode,
@@ -2335,15 +2336,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
   }, [autoFocusKey]);
 
-  // 切会话时用 inputValue 填充 contenteditable（chip 位置丢失，仅恢复纯文本）
-  useEffect(() => {
-    if (!inputRef.current) return;
-    const sid = useChatStore.getState().activeSessionId;
-    if (!sid) return;
-    const text = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
-    inputRef.current.textContent = text;
-  }, [activeSessionId]);
-
   // 监听外部设置 inputValue 的事件（如编辑排队任务）
   useEffect(() => {
     const handler = (e: Event) => {
@@ -2389,6 +2381,66 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     });
     return text.replace(/\u200B/g, '');
   }, []);
+
+  // 切会话时用 inputValue 填充 contenteditable。技能 chip 由 selectedSkills 同步效果重建；
+  // 有参斜杠 chip（如 /persist）写在纯文本里，这里还原成蓝色标签，避免切回后"标签消失"（#5771）。
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const sid = useChatStore.getState().activeSessionId;
+    if (!sid) return;
+    const text = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
+    el.replaceChildren();
+    const { command, rest } = splitComposerSlashChip(text);
+    if (command) {
+      const chip = document.createElement('span');
+      chip.className = 'chat-input-chip-inline chat-input-chip-inline--slash-command';
+      chip.setAttribute('contenteditable', 'false');
+      chip.dataset.slashCommand = command;
+
+      const prefix = document.createElement('span');
+      prefix.className = 'chat-input-chip-inline__prefix';
+      prefix.textContent = '/';
+
+      const labelEl = document.createElement('span');
+      labelEl.className = 'chat-input-chip-inline__label';
+      labelEl.textContent = command;
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'chat-input-chip-inline__remove';
+      removeBtn.setAttribute('aria-label', 'remove slash command');
+      removeBtn.innerHTML = closeSvg;
+      removeBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const next = chip.nextSibling;
+        if (next && next.nodeType === Node.TEXT_NODE) {
+          const nextText = next.textContent || '';
+          if (nextText.startsWith(' ')) {
+            next.textContent = nextText.slice(1);
+          }
+        }
+        chip.remove();
+        const activeSid = useChatStore.getState().activeSessionId;
+        if (activeSid) useChatStore.getState().setInputValue(activeSid, extractPlainText());
+      });
+
+      chip.append(prefix, labelEl, removeBtn);
+      el.append(chip);
+      el.append(document.createTextNode(rest || '\u200B'));
+    } else {
+      el.textContent = text;
+    }
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }, [activeSessionId, extractPlainText]);
 
   const composerConversationRef = useRef(conversationId);
   useEffect(() => {

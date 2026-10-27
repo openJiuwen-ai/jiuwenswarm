@@ -30,6 +30,7 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
   const isDelegate = name === QWEN_OMNI_DELEGATE_TOOL_NAME;
   const isLegacyResearch = name === QWEN_OMNI_LEGACY_RESEARCH_TOOL_NAME;
   const isManagement = [
+    'jiuwen_queue_manage',
     'jiuwen_task_query',
     'jiuwen_task_cancel',
     'jiuwen_task_modify',
@@ -45,6 +46,12 @@ export function parseQwenOmniFunctionCall(event: Record<string, unknown>): QwenO
       typeof argumentsObject.title !== 'string' || !argumentsObject.title.trim() ||
       argumentsObject.title.length > 80 || /[\r\n]/.test(argumentsObject.title)
     )) return null;
+    if (name === 'jiuwen_queue_manage') {
+      const instruction = argumentsObject.instruction;
+      if (Object.keys(argumentsObject).length !== 1 || typeof instruction !== 'string' ||
+        !instruction.trim() || instruction.length > 16_000) return null;
+      return { name, callId, arguments: rawArguments, task: instruction.trim() };
+    }
     if (isManagement) return { name, callId, arguments: rawArguments, task: name };
     const schedulingKeys = ['independent', 'depends_on', 'resources', 'title'];
     const taskKeys = Object.keys(argumentsObject).filter((key) => !schedulingKeys.includes(key));

@@ -398,12 +398,12 @@ export function AgentManagementPanel({
   );
   const mineView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
+      buildCatalogViewModel(state.mineCatalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
         scope: 'mine',
         category: '',
         query: mineQuery,
       }),
-    [state.catalog, mineQuery, installationFilter],
+    [state.mineCatalog, mineQuery, installationFilter],
   );
   const groupCatalogView = useMemo(
     () => buildGroupCatalogViewModel(groupCatalog, {
@@ -456,7 +456,7 @@ export function AgentManagementPanel({
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
       if (!options.query) seedAgentCatalog(catalog);
-      dispatch({ type: 'catalog.loaded', catalog });
+      dispatch({ type: 'catalog.loaded', catalog, mineCatalog });
     } catch (error) {
       if (revision !== catalogRevisionRef.current) return;
       const message = formatActionError(error, t('agentManagement.states.loadError'));

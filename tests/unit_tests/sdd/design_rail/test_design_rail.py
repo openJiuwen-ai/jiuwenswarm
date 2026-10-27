@@ -277,6 +277,87 @@ async def test_after_tool_call_ask_user_empty_answer_no_transition(tmp_path: Pat
     assert rail._stage == "analysis"  # unchanged
 
 
+# ── Regression: R3 "需要复审" / "跳过复审" options (#5494) ──
+
+
+@pytest.mark.asyncio
+async def test_after_tool_call_ask_user_需要复审_does_not_advance(
+    tmp_path: Path,
+) -> None:
+    """#5494: R3 option "需要复审" must NOT be treated as approve.
+
+    The SKILL.md R3 condition says "需要复审" → return to R1 for re-gate
+    (internal to the review skill). The rail must NOT transition (re-gate
+    is inside the skill) and must NOT log "approved" (which would mislead
+    the agent into calling sdd_advance prematurely, skipping the re-gate
+    loop and stalling the flow at design stage).
+    """
+    builder = _make_builder()
+    agent = _make_agent(builder)
+    rail = _make_rail(tmp_path)
+    rail.init(agent)
+    rail._stage = "analysis_review"
+
+    ctx = SimpleNamespace(
+        inputs=SimpleNamespace(tool_name="ask_user"),
+        extra={},
+        tool_result="需要复审",
+    )
+    await rail.after_tool_call(ctx)
+
+    # Stage unchanged — re-gate is internal to the review skill
+    assert rail._stage == "analysis_review"
+
+
+@pytest.mark.asyncio
+async def test_after_tool_call_ask_user_跳过复审_waits_for_sdd_advance(
+    tmp_path: Path,
+) -> None:
+    """#5494: R3 option "跳过复审" is approve — the rail waits for the
+    agent to call sdd_advance at R4. "跳过复审" contains "复审" but must
+    NOT trigger regate (the regate keyword is the full "需要复审" phrase)."""
+    builder = _make_builder()
+    agent = _make_agent(builder)
+    rail = _make_rail(tmp_path)
+    rail.init(agent)
+    rail._stage = "analysis_review"
+
+    ctx = SimpleNamespace(
+        inputs=SimpleNamespace(tool_name="ask_user"),
+        extra={},
+        tool_result="跳过复审",
+    )
+    await rail.after_tool_call(ctx)
+
+    # Stage unchanged — agent must call sdd_advance to advance (R4)
+    assert rail._stage == "analysis_review"
+
+
+def test_methodology_frame_review_stage_does_not_conflict_with_r3_regate(
+    tmp_path: Path,
+) -> None:
+    """#5494: the review-stage methodology frame must NOT say "after
+    completing the review, call sdd_advance" unconditionally — that
+    conflicts with the SKILL's R3 "需要复审" → R1 loop. The frame must
+    tell the agent to call sdd_advance only at R4, and to loop back to
+    R1 (without sdd_advance) when the user selects "需要复审"."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis_review")
+    assert payload is not None
+
+    # The actual next stage name is still present (test_review_stage_*
+    # _includes_next_stage_name relies on this)
+    assert "stage=design" in payload
+
+    # The conflicting "after completing the review" hint is gone
+    assert "After completing the review" not in payload
+
+    # The frame explicitly routes "需要复审" to R1 without sdd_advance
+    assert "需要复审" in payload
+    assert "R4" in payload
+    assert "loop back to R1" in payload
+
+
 # ── Regression: important findings F1/F2/F3/R1/P1 ──
 
 

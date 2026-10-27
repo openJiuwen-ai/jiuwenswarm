@@ -216,6 +216,22 @@ test('detail merge preserves detail data and authoritative list capability state
   assert.equal(merged.details, '详情');
 });
 
+test('Expert Team capability and content come only from detail fields', () => {
+  for (const locale of ['zh', 'en']) {
+    const catalogItem = normalizeAgentGroupListItem(rawGroup, locale);
+    for (const displayDescription of [undefined, {}, { zh: '', en: '' }, { zh: '详情介绍', en: 'Detail capability' }]) {
+      const detail = normalizeAgentGroupDetail({
+        ...rawGroup,
+        displayDescription,
+        details: 'Content details',
+      }, locale);
+      const merged = mergeAgentGroupDetailWithCatalog(detail, catalogItem);
+      assert.equal(merged.description, displayDescription?.[locale] || '');
+      assert.equal(merged.details, 'Content details');
+    }
+  }
+});
+
 test('group upload accepts zip, tar and tar.gz only', () => {
   assert.equal(isAgentGroupUploadFilename('team.zip'), true);
   assert.equal(isAgentGroupUploadFilename('team.tar'), true);

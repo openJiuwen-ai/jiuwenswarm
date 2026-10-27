@@ -45,7 +45,8 @@ primitive = obj(
                                "pointer_sequence", "native_scroll", "prepare_receiver",
                                "launch_application"), channel=enum("object", "editor", "keyboard", "pointer"),
         supported=knowledge, readiness=knowledge, pending=array(enum(*pending_conditions), max=5),
-        backgroundPreparation=knowledge, action=obj(dict(name=identity, description=string().optional())).optional()))
+        backgroundPreparation=knowledge, action=obj(dict(name=identity, description=string().optional())).optional(),
+        unavailableReason=identity.optional()))
 
 cleanup = enum("complete", "failed", "unknown")
 # These are wire-contract meanings, not a fallback policy. Both decoded driver

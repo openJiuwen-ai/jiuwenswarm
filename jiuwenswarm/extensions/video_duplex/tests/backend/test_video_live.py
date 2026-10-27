@@ -681,7 +681,7 @@ async def test_video_config_selects_qwen_gateway_without_reference_audio(
         "url": "/ws/video/qwen-omni",
         "model": "qwen3.5-omni-flash-realtime",
         "voice": "Ethan",
-        "tools": video_live.qwen_omni_tools(),
+        "tools": video_live.qwen_omni_tools(queue_manager=True),
         "reply_language": "match",
     }
 
@@ -1807,6 +1807,87 @@ async def test_joyai_invalid_followup_stops_control_loop(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypatch):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend import queue_manager
+
+    channel = _video_channel()
+    service = channel.manager.service
+    service.started = True
+    service.kick = lambda: None
+    wechat = service.submit("test-user", "scope", "wechat", "打开微信")
+    feishu = service.submit("test-user", "scope", "feishu", "打开飞书")
+    provider = AsyncMock(return_value=_joyai_result(
+        "delegation", response="已排好了。",
+        delegation=json.dumps({"name": "jiuwen_queue_manage", "arguments": {"instruction": "先打开飞书，再打开微信"}}),
+    ))
+    monkeypatch.setattr(joyai_provider, "request_frame", provider)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    steps = AsyncMock(side_effect=[
+        json.dumps({"tool": {"name": "jiuwen_task_reorder", "arguments": {
+            "job_id": feishu["id"], "action": "before", "before_job_id": wechat["id"]}}}),
+        json.dumps({"response": "飞书已排在微信前面，两个任务都在等待。"}),
+    ])
+    monkeypatch.setattr(queue_manager, "request_step", steps)
+    params = {"frame_data_url": "", "instruction": "先打开飞书，再打开微信", "request_kind": "user",
+              "search_session_id": "scope", "command_id": "reorder-command"}
+    for request_id in ("request-1", "request-2"):
+        await channel.handlers["video.joyai.frame"](None, request_id, params, "scope")
+        response = channel.responses[-1][1]
+        assert response["ok"] is True
+        payload = response["payload"]
+        assert payload["queue_management"].get("state") != "incomplete", payload["queue_management"]
+        assert payload["response"] == "飞书已排在微信前面，两个任务都在等待。"
+        assert payload["search_job"] is None
+        assert payload["queue_management"]["receipts"][-1]["receipt"]["operation"]["state"] == "reordered"
+    assert steps.await_count == 2, "repeated command must reuse manager result"
+    jobs, _ = service.snapshot("test-user", "scope")
+    assert len(jobs) == 2
+    assert [t["id"] for t in sorted(jobs, key=lambda t: t["position"])] == [feishu["id"], wechat["id"]]
+
+
+@pytest.mark.asyncio
+async def test_joyai_queue_manager_failure_withholds_original_success_claim(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    channel = _video_channel()
+    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result(
+        "delegation", response="已全部调整成功。",
+        delegation=json.dumps({"name": "jiuwen_queue_manage", "arguments": {"instruction": "调整顺序"}}),
+    )))
+    managed = AsyncMock(return_value={"state": "incomplete", "receipts": [{"receipt": {"state": "cancelling"}}]})
+    monkeypatch.setattr(channel.manager, "manage_queue_call", managed)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    await channel.handlers["video.joyai.frame"](None, "failed-manager", {
+        "instruction": "调整顺序", "request_kind": "user", "reply_language": "en",
+    }, "scope")
+    payload = channel.responses[-1][1]["payload"]
+    assert payload["response"] == (
+        "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
+    )
+    assert payload["queue_management"]["receipts"]
+    assert managed.call_args.kwargs == {"allow_answers": False, "reply_language": "en"}
+
+
+@pytest.mark.asyncio
+async def test_joyai_passive_frame_cannot_start_queue_management(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    channel = _video_channel()
+    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(return_value=_joyai_result(
+        "delegation", delegation=json.dumps({"name": "jiuwen_queue_manage", "arguments": {"instruction": "取消任务"}}),
+    )))
+    managed = AsyncMock()
+    monkeypatch.setattr(channel.manager, "manage_queue_call", managed)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    await channel.handlers["video.joyai.frame"](None, "passive", {
+        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "instruction": "", "request_kind": "frame",
+    }, "scope")
+    assert channel.responses[-1][1]["ok"] is False
+    managed.assert_not_called()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("decision, answer", [("silence", ""), ("response", "A cup")])
 async def test_joyai_action_without_diagnostic_fields_is_valid(monkeypatch, decision, answer):
     from unittest.mock import AsyncMock
@@ -2036,7 +2117,8 @@ def test_ground_joyai_user_instruction_marks_tool_context_as_read_only() -> None
     assert "【用户原话】它为什么会这样？" in prompt
     assert "纯视觉问答无需搜索。" in prompt
     assert '</response> 简短说明 </delegation> {"name":"jiuwen_delegate","arguments":{"task":"完整任务描述"}}' in prompt
-    assert "jiuwen_task_query" in prompt
+    assert "jiuwen_queue_manage" in prompt
+    assert "Never select task IDs or claim a change before the manager receipt" in prompt
 
 
 def test_ground_joyai_user_instruction_defers_unresolved_search_and_resumes_it() -> (

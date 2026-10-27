@@ -150,11 +150,12 @@ export function toggleAgent(state: DiagnosisSelectionState, subjectId: string): 
 }
 
 /**
- * Whether the pick contains a whole node of one agent.
+ * Whether the pick contains a whole OTel span of one agent.
  *
- * The whole trajectory contains every node. Otherwise both the start and the
- * end have to lie inside the agent's own window (the shared window, unless
- * that agent is unchecked). Covering only one of the two moments is not enough.
+ * An OTel span counts only when both its start and end on the swimlane lie
+ * inside the agent's window (the shared axis window, unless that agent is
+ * unchecked). Covering only one of the two moments is not enough. The whole
+ * trajectory contains every span.
  */
 export function selectionCoversInterval(
   state: DiagnosisSelectionState,
@@ -205,14 +206,15 @@ export function selectionRanges(
   return ranges;
 }
 
-/** A diagnosis may cover at most this many nodes. One more and it cannot start. */
+/** A diagnosis may cover at most this many OTel spans. One more and it cannot start. */
 export const DIAGNOSIS_NODE_LIMIT = 1_500;
 
 /**
- * How many nodes the pick contains.
+ * How many OTel spans the pick contains.
  *
- * A node counts only when the pick contains it whole (see
- * `selectionCoversInterval`). The whole trajectory contains every node.
+ * A span counts only when the pick covers it whole on the swimlane — both
+ * start and end (see `selectionCoversInterval`). The whole trajectory
+ * contains every span.
  */
 export function selectedNodeCount(
   state: DiagnosisSelectionState,

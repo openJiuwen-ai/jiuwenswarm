@@ -123,6 +123,32 @@ import ApplicationServices
         // Preserve the existing admission of a uniquely observed app-modal,
         // then validate its live boundary without selecting a different view.
         let blocked = try NativeWindowBoundary.blocked(root: appModal ? window : root, target: window, windows: graph)
+        // A choice list can be published under the document's AXChildren while
+        // AXWindow names a separate popup. Change only the physical destination,
+        // with fresh exact child edges and a known non-modal popup in this app.
+        if let node = value.node {
+            let observed = try state.applications.readRoot(node)
+            guard observed.scope == surface, observed.application.isEqual(entry.owner) else {
+                throw DriverError("node belongs to a different surface", code: .staleTarget)
+            }
+            if let popup = WindowGeometry.owningWindow(observed.element, pid: entry.owner.processIdentifier, in: nativeWindow),
+               !CFEqual(popup, nativeWindow), windows.contains(where: { CFEqual($0.element, popup) }),
+               AXAccess.read(popup, kAXSubroleAttribute).value as? String != kAXStandardWindowSubrole,
+               AXAccess.read(popup, kAXModalAttribute).value as? Bool != true,
+               try LocalMenuAttachment.confirms(
+                    leaf: observed.element, ancestors: observed.ancestors, window: nativeWindow,
+                    same: { CFEqual($0, $1) }, role: { AXAccess.read($0, kAXRoleAttribute).value as? String },
+                    children: { element in
+                        try RequestDiagnostics.checkCancellation()
+                        guard let children = AXAccess.elements(element, kAXChildrenAttribute, limit: 2048) else {
+                            throw DriverError("popup attachment cannot be confirmed", code: .inputUnavailable)
+                        }
+                        return children
+                    }) {
+                return InputScope(wire: value.wire, application: entry.owner, window: popup, menuRoot: nil,
+                                  blocked: blocked)
+            }
+        }
         return InputScope(wire: value.wire, application: entry.owner, window: nativeWindow, menuRoot: nil,
                           blocked: blocked)
     }
@@ -335,7 +361,8 @@ import ApplicationServices
         return NativeElementPointerUnit(application: scope.application, window: try scope.requireWindow(),
             element: try state.applications.readRoot(geometry).element,
             member: try actuator.map { try state.applications.readRoot($0.node).element },
-            kind: scrolling ? .scroll : .click)
+            kind: scrolling ? .scroll : .click,
+            logicalWindow: (binding["surface"] as? String).flatMap { directory.surface($0)?.element })
     }
 
     private func menuUnit(_ binding: [String: Any], within: [String] = []) throws -> NativeMenuUnit {
@@ -651,7 +678,7 @@ import ApplicationServices
                 try selection.validate(basis, scope: scope)
                 let previous = contracts[op.token] ?? []
                 var currentContracts = [Contract](), primitives = [[String: Any]]()
-                func declare(_ unit: Unit, supported: Bool,
+                func declare(_ unit: Unit, supported: Bool, reason: String? = nil,
                              readiness: (Bool) throws -> NativeReadiness = { _ in NativeReadiness() }) rethrows {
                     let prior = previous.first { $0.node == binding.node && $0.within == within && $0.actuator == actuator && $0.receiver == receiver && $0.unit == unit
                         && selection.equivalent($0.basis, basis, scope: scope) }
@@ -667,15 +694,19 @@ import ApplicationServices
                         } else { conditions = sampled }
                     }
                     else { conditions = sampled.requiringEnabled(enabled) }
-                    primitives.append(unit.declaration(id: contract.id, supported: supported,
-                        readiness: conditions, exclusive: BackgroundTarget.isExclusive))
+                    var declaration = unit.declaration(id: contract.id, supported: supported,
+                        readiness: conditions, exclusive: BackgroundTarget.isExclusive)
+                    if let reason { declaration["unavailableReason"] = reason }
+                    primitives.append(declaration)
                 }
                 let enabled: Bool?, foreground: Bool
                 var input: [String: Any] = ["keyboardSurface": NSNull(), "focusedNode": NSNull(), "focusAncestors": [],
                     "editor": NSNull(), "editorOwner": NSNull(), "selectionKnown": "unknown",
                     "geometryCurrent": "unknown", "windowRoute": "unknown", "pointerRoute": "unknown"]
+                var pointerUnavailableReason: String?
                 func recordPointer(_ unit: NativeElementPointerUnit, geometryNode: String? = nil) throws -> NativeReadiness {
                     let pointer = try unit.conditions()
+                    pointerUnavailableReason = pointer.reason
                     input["geometryCurrent"] = pointer.geometry ? "yes" : "unknown"
                     input["pointerRoute"] = pointer.geometry ? (pointer.route ? "yes" : "no") : "unknown"
                     if let hit = pointer.hit {
@@ -729,12 +760,12 @@ import ApplicationServices
                     let facts = try state.applications.nativeActionFacts(binding.node!)
                     enabled = facts.enabled; foreground = facts.foreground; nativeRole = facts.role
                     let readiness = try recordPointer(elementPointerUnit(binding.wire, actuator: actuator), geometryNode: actuator.region)
-                    declare(.pointer(.scroll), supported: true, readiness: { _ in readiness })
+                    declare(.pointer(.scroll), supported: true, reason: pointerUnavailableReason, readiness: { _ in readiness })
                 } else if let actuator, actuator.relation == "controlPart" {
                     let facts = try state.applications.nativeActionFacts(binding.node!)
                     enabled = facts.enabled; foreground = facts.foreground; nativeRole = facts.role
                     let readiness = try recordPointer(elementPointerUnit(binding.wire, actuator: actuator))
-                    declare(.pointer(.click), supported: true, readiness: { _ in readiness })
+                    declare(.pointer(.click), supported: true, reason: pointerUnavailableReason, readiness: { _ in readiness })
                 } else if binding.wire["capture"] is String, let kind = NativePointerIntent.Kind(rawValue: op.intent) {
                     let unit = NativePointerUnit(capture: try captures.input(binding.wire).entry)
                     let request = try NativePointerIntent(unit: "pointer_sequence", kind: op.intent,
@@ -742,7 +773,7 @@ import ApplicationServices
                     let point = try unit.point(request.start!)
                     enabled = nil; foreground = unit.foregroundWindow(at: point)
                     input["geometryCurrent"] = "yes"
-                    let ready = unit.ready(at: point)
+                    let ready = unit.ready(at: point, kind: request.kind)
                     input["pointerRoute"] = ready ? "yes" : "no"
                     var pending = [("receiver", ready ? "yes" : "no")]
                     if BackgroundTarget.isExclusive { pending.append(("foreground", foreground ? "yes" : "no")) }
@@ -813,7 +844,7 @@ import ApplicationServices
                     if op.intent == "click", directory.applicationRoot(binding.wire["surface"] as? String ?? "") == nil,
                        !facts.applicationMenuContext {
                         let readiness = try recordPointer(elementPointerUnit(binding.wire))
-                        declare(.pointer(.click), supported: true, readiness: { _ in readiness })
+                        declare(.pointer(.click), supported: true, reason: pointerUnavailableReason, readiness: { _ in readiness })
                     }
                 } else { throw DriverError("this intent requires an element target", code: .invalidRequest) }
                 // A query refreshes only this selection's declarations. Reading
@@ -821,6 +852,10 @@ import ApplicationServices
                 // contract. Its identity and dependencies are still rechecked
                 // by execute; changed declarations for the same selection retire
                 // their old IDs. Never evict an unrelated live contract silently.
+                if let pinned = try op.contentPreparationCandidate(in: currentContracts.map(\.id)) {
+                    currentContracts = currentContracts.filter { $0.id == pinned }
+                    primitives = primitives.filter { $0["id"] as? String == pinned }
+                }
                 let otherContracts = previous.filter {
                     $0.node != binding.node || $0.within != within || $0.actuator != actuator || $0.receiver != receiver
                 }
@@ -867,6 +902,7 @@ import ApplicationServices
                 do {
                     try self.state.sharing.checkAvailable()
                     try op.check(write: true)
+                    try op.requirePreparationCandidate(id)
                     // Resolve the live contract only after step deduplication.
                     // A completed step remains retrievable if a later inspect
                     // found different declarations or the action closed its UI.
@@ -1114,10 +1150,14 @@ import ApplicationServices
                                 try op.requireForegroundPreparation(id, hostAllowed: ForegroundAssist.enabled)
                             }
                             if let captured {
-                                try await captured.prepare(foreground: foreground, atNative: captured.point(pointer.start!),
-                                    check: checkBoundary, onPreparation: receipt.recordPreparation)
+                                try await captured.prepare(foreground: foreground, atNative: captured.point(pointer.start!), kind: pointer.kind,
+                                    check: checkBoundary, onPreparation: receipt.recordPreparation,
+                                    onCleanupUnknown: receipt.recordCleanupUnknown)
                             } else if let element {
-                                try await element.prepare(foreground: foreground, check: checkBoundary, onPreparation: receipt.recordPreparation)
+                                try await element.prepare(foreground: foreground, check: checkBoundary,
+                                    onPreparation: receipt.recordPreparation,
+                                    onContentPreparation: { try op.recordContentPreparation(id) },
+                                    onCleanupUnknown: receipt.recordCleanupUnknown)
                             }
                             receipt.detail = "Pointer window route prepared; no requested pointer event sent."
                             receipt.confirmation = "confirmed"
@@ -1138,6 +1178,10 @@ import ApplicationServices
                     } else if !alreadySatisfied { receipt.dispatch = "dispatched" }
                 } catch {
                     receipt.recordFailure(error)
+                    if op.contentPreparationStarted {
+                        AgentPointer.current?.recordOutcome(success: false)
+                        return receipt.wire
+                    }
                     if receipt.dispatch == "notDispatched", error is NativeSelectionBasis.Changed {
                         receipt.retryReason = "preconditionChanged"
                     } else if receipt.dispatch == "notDispatched", (error as? ClassifiedFailure)?.code == .inputUnavailable,

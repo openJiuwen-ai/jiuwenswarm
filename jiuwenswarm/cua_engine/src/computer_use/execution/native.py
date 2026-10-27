@@ -248,12 +248,16 @@ class Primitive:
     background_preparation: Knowledge = Knowledge.UNKNOWN
     action: str | None = None
     action_description: str | None = None
+    unavailable_reason: str | None = None
 
     def __post_init__(self):
         from ..protocol.execution import unit_contracts
         if self.unit not in unit_contracts or not self.id:
             raise ValueError("Invalid native primitive contract")
         validate_primitive_contract(self.unit, self.channel, self.supported, self.readiness, self.pending, self.action)
+        if self.unavailable_reason is not None:
+            from ..protocol.execution import identity
+            identity.parse(self.unavailable_reason)
 
 
 @dataclass(frozen=True)

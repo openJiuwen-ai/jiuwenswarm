@@ -2871,12 +2871,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _session_get_metadata(ws, req_id, params, session_id, user_id=None):
-        """返回单个会话的元数据（mode / model / project_dir / last_user_message_at 等）。
+        """Return persisted metadata with current Web and owned cron activity.
 
-        经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
-        SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。运行态不属于
-        持久化 metadata：由 WebChannel 已维护的 session busy 状态在响应入队前覆盖，
-        这样页面刷新仍能恢复当前会话的停止按钮，并与随后同一 WS 上的状态事件保持顺序。
+        Project runtime state before enqueueing the response so page restoration
+        sees consistent processing fields without persisting or caching them.
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
@@ -2887,9 +2885,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
             if ok:
-                payload["is_processing"] = channel.is_session_busy(target_session_id)
-                # The busy map drives the stop button on page reload; expose
-                # the value it served for that session's metadata request.
+                is_processing = channel.is_session_busy(target_session_id)
+                cron_activity = getattr(_get_cron(), "is_session_processing", None)
+                if callable(cron_activity):
+                    is_processing = is_processing or cron_activity(target_session_id, user_id=user_id)
+                payload["is_processing"] = is_processing
+                payload["status"] = "processing" if is_processing else "idle"
+                # Cron executes outside the Web busy cache; keep this response
+                # projection separate from the channel's event-driven state.
                 logger.info(
                     "[WebHandlers] session.get_metadata runtime status: "
                     "session_id=%s is_processing=%s",
@@ -3592,7 +3595,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
         # Older clients omit the decision fields; the saved values are then left untouched.
         set_params = {"chrome_path": chrome_path, "headless": headless}
-        for decision_key in ("decision_mode", "decision_provider", "decision_model", "decision_api_base"):
+        for decision_key in (
+            "decision_mode", "decision_provider", "decision_model", "decision_api_base", "decision_display_name",
+        ):
             if params.get(decision_key) is not None:
                 set_params[decision_key] = params[decision_key]
 
@@ -3677,6 +3682,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         decision_updates, error = browser_decision_updates(
             set_params.get("decision_mode"), set_params.get("decision_provider"), get_config(),
             model=set_params.get("decision_model"), api_base=set_params.get("decision_api_base"),
+            display_name=set_params.get("decision_display_name"),
         )
         if error:
             await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
@@ -5259,6 +5265,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
+
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
     _register_config_proxy("models.get", _ConfigReq.MODELS_GET,

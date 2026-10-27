@@ -246,16 +246,6 @@
     "edge": {
       "delete": "Delete connection"
     },
-    "revision": {
-      "title": "Choose which version to keep",
-      "hint": "{{label}} was regenerated. The original is still here — pick which one to keep.",
-      "original": "Original",
-      "incoming": "New version",
-      "keepOriginal": "Keep original",
-      "keepIncoming": "Use new version",
-      "pending": "Needs choice",
-      "compare": "Compare versions"
-    },
     "materials": {
       "title": "Outputs",
       "hint": "Brief and storyboard can be edited by hand. Rerun downstream nodes to pick up the new text.",
@@ -518,7 +508,15 @@
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
-      "jevTab": "Jev",
+      "jevTab": "Decision models",
+      "jevTabHelp": "Optional. Enhances decision-making for browser subagents and multi-model collaboration in single-agent conversations.",
+      "jevModels": "Jev models",
+      "jevDeleteFailed": "Failed to clear the Jev configuration. Please try again.",
+      "jevEmpty": "No Jev model configured",
+      "jevEmptyDescription": "Add one Jev model to share between browser decisions and multi-model collaboration.",
+      "jevDisplayNamePlaceholder": "Enter a model display name",
+      "jevApiBasePlaceholder": "e.g. https://jev.example.com/v1",
+      "jevModelHint": "Enter a Jev model name supported by the provider, such as typesafe/jev-1.13 or jev-1.13.0.",
       "modelGroups": "Model groups",
       "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
@@ -692,7 +690,6 @@
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
         "aliasRequired": "Model display name is required",
         "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
-        "modelNameConflict": "Model ID cannot match another configuration's model display name",
         "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
@@ -746,8 +743,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "Custom",
       "jevConfig": "Jev Model Configuration",
-      "jevKeyMissing": "Jev API key is not configured. Configure it under Models > Jev first.",
-      "clearSharedJevConfirm": "Clear this provider's Jev key? Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
+      "jevKeyMissing": "Jev API key is not configured. Add a Jev model under Models > Decision models first.",
+      "clearSharedJevConfirm": "Clear the current Jev model's API key and display name? Connection settings will be retained. Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
       "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
@@ -828,7 +825,7 @@
       },
       "decision_mode": {
         "title": "Browser decisions",
-        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Jev."
+        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Decision models."
       },
       "decision_provider": {
         "title": "Jev provider",
@@ -1017,7 +1014,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
-        "description": "Use JEV configured under Models > Jev to verify execution progress. When off, use the selected model group’s default model."
+        "description": "Use Jev configured under Models > Decision models to decide whether to consult reference models. When off, use the selected model group’s default model to verify execution progress."
       },
       "moa_verifier_interval": {
         "title": "Verification interval (rounds)",
@@ -1077,14 +1074,15 @@
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
-        "summary": "{{count}} Agent(s) selected · {{nodes}} node(s)",
-        "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
+        "summary": "{{count}} Agent(s) selected · {{spans}} OTel span(s)",
+        "emptyNodes": "The selection has no complete OTel span to diagnose. Spans that are not fully covered (start and end) were left out.",
         "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
-        "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
+        "nodeLimit": "The selection contains {{count}} OTel spans, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
-        "noData": "There is no trajectory to diagnose yet"
+        "noData": "There is no trajectory to diagnose yet",
+        "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
-      "summary": "{{agents}} Agents · {{nodes}} nodes",
+      "summary": "{{agents}} Agents · {{spans}} OTel spans",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -2234,11 +2232,11 @@
       "openFile": "Open file",
       "compatibilityWarning": "The detected version may be incompatible. You can change the executable path, upgrade the version, or click \"Install\" to use the built-in CLI.",
       "compatibilityWarningWithVersion": "The detected version may be incompatible. You can change the executable path, upgrade to {{version}} or later, or click \"Install\" to use the built-in CLI.",
-      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or click \"Install\" to use the built-in CLI.",
-      "missingPath": "Path does not exist: {{path}}. Check the path, or click \"Install\" to use the built-in CLI.",
-      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or click \"Install\" to use the built-in CLI.",
-      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or click \"Install\" to use the built-in CLI.",
-      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or click \"Install\" to use the built-in CLI.",
+      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or cancel and click \"Install\" to use the built-in CLI.",
+      "missingPath": "Path does not exist: {{path}}. Check the path, or cancel and click \"Install\" to use the built-in CLI.",
+      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or cancel and click \"Install\" to use the built-in CLI.",
       "autoSaved": "{{agents}} dependencies finished installing. Your configuration has been saved automatically.",
       "installDialogTitle": "Install optional components",
       "installDialogDescription": "Closing this dialog does not interrupt installation. Your configuration will be saved automatically when installation finishes.",
@@ -3949,6 +3947,7 @@
     "messageQueue": "Message Queue",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
+    "turnStarting": "Starting…",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",

@@ -82,6 +82,7 @@ def project_browser_decision(
         "decision_mode": mode if mode in BROWSER_DECISION_MODES else "llm",
         "decision_provider": provider,
         "decision_model": section.get("model") or defaults["model"],
+        "decision_display_name": section.get("display_name", ""),
         "decision_api_base": section.get("api_base") or defaults["api_base"],
         "jev_key_configured": isinstance(key_env, str) and bool(environment.get(key_env, "").strip()),
     }

@@ -1,6 +1,6 @@
 # Team Organization 专家团与汇总配置
 
-本文说明 JiuwenSwarm 如何把 AgentGroup 模板接入 Team Organization，以及共享 Summary Team 如何读取配置和交付结果。
+本文说明 JiuwenSwarm 如何把 AgentGroup 模板接入 Team Organization，以及 `HIERARCHICAL` 和 `SUMMARY_TEAM` 两种汇总模式如何组织最终交付。依赖安装、实验特性开关和运行前配置统一见[使用指南](TeamOrganization使用指南.md#二运行前配置)。
 
 首次测试建议先运行[使用指南](TeamOrganization使用指南.md)中的用例一：安装商业策划、技术洞察和代码架构设计三个已有专家团，从商业策划专家团进入 Owner Team，无需手动制作模板。本文 1.1、1.2 提供缺少合适模板时的手动配置材料，1.3 说明两种 Owner 入口和能力匹配规则；完整启动步骤、测试提示词与验收标准统一见使用指南。
 
@@ -120,7 +120,32 @@ JiuwenSwarm 通过现有专家团安装登记和包解析入口发现可用模�
 
 同一个 AgentGroup 可以创建多个实例。运行时 `team_id` 由 Launcher 唯一生成，不能在提示词中把 AgentGroup 包名当作目标 `team_id`；创建后应通过 `org_view_organization` 读取真实 ID。
 
-## 三、Summary Team
+## 三、汇总模式
+
+汇总模式可以由用户在任务提示词中明确指定为 `HIERARCHICAL` 或 `SUMMARY_TEAM`，也可以在用户未指定时，由 Agent（根任务负责人）根据任务要求和各团队实际承担的交付范围自主决定。用户明确指定时，在运行时约束允许的范围内优先遵循用户要求；无论采用哪种方式，都由根任务负责团队调用工具设置模式。
+
+根任务负责人认领根任务后、拆分前，通过 `org_update_task(action='set_aggregation_mode', aggregation_mode=...)` 显式选择汇总模式。选择结果会持久化到根任务，当前运行时不允许在选定后切换为另一种模式；不要先拆分执行，再按工作量调整模式。
+
+### 3.1 两种模式的区别与选择
+
+| 对比项 | `HIERARCHICAL` | `SUMMARY_TEAM` |
+|--------|----------------|----------------|
+| 交付关系 | 某个专业团队承担完整根交付，其最终输出本身即可满足根任务；其他团队提供输入、组件或验证 | 各团队提供并列、独立的领域结论，不存在承担完整根交付的专业团队，需要汇集、编排或综合这些结论 |
+| 整合方式 | 沿任务树由上游负责人逐级验收、整合，根任务负责人负责最终交付 | 根任务负责人验收来源后，交给独立 Summary Team 统一汇总 |
+| 是否启动 Summary Team | 不为该根任务创建 Summary Execution 或启动独立汇总团队 | 显式创建 Summary Execution，按需启动组织共享的 Summary Team |
+| 根任务如何完成 | 根任务负责人整合已验收成果后，调用 `org_update_task(action='complete')` | Summary Team 调用 `org_summary_complete` 正式提交，由汇总任务联动完成根任务；负责人不能直接完成根任务 |
+
+用户未指定模式时，Agent 应依据根任务要求和各团队实际承担的交付范围选择，而不是团队数量。单个专业团队的最终输出已经满足完整根任务时，即使其他团队领域彼此正交，也应选择 `HIERARCHICAL`。不存在这样的完整交付团队、需要综合并列领域结论时，必须选择 `SUMMARY_TEAM`。
+
+无论内容多少、任务大小或是否存在冲突，均不得以节约时间、降低开销、只是收集或 Owner 能自行整理为由改选 `HIERARCHICAL`。Owner 名义上的汇总职责不构成完整专业交付，也不得虚设最终集成团队。
+
+### 3.2 HIERARCHICAL：沿任务树整合交付
+
+根任务负责人负责组织验收和最终交付，主体成果可以由受邀专业团队完成，并不要求 Owner 亲自完成所有专业工作。各上游负责人收到下游完成通知后，检查成果并显式验收；需要修正时沿原任务关系处理，不能跳过未完成或未验收的子任务。
+
+所有必需子任务完成并通过验收后，根任务负责人整合已有成品、组件或验证结论，确认满足根任务的输出要求，再提交根任务结果。此模式不调用 `org_create_summary_execution`，也不额外生成一份独立 Summary Team 报告来代替已有交付物。
+
+### 3.3 SUMMARY_TEAM：由独立团队汇总
 
 JiuwenSwarm 的 Summary Team 是一个固定的持久 Team：
 
@@ -132,64 +157,28 @@ JiuwenSwarm 的 Summary Team 是一个固定的持久 Team：
 
 它使用默认 Team 模型，但不会复制用户 Team 的成员、工具或模板提示词。内部 transport 固定为 `inprocess`，成员使用 `build_mode`；中间稿写入自身 Team workspace，最终交付写入 Organization workspace 的 `summary/`。
 
-认领根任务后、拆分前显式选择聚合模式。根据根任务要求和各团队实际承担的交付范围选择模式。不存在承担完整根交付的专业团队，且各团队分别提供并列、独立的领域结论，根任务需要汇集、编排或综合这些结论时，必须选择 SUMMARY_TEAM。无论内容多少、任务大小或是否存在冲突，均不得以节约时间、降低开销、只是收集或 Owner 能自行整理为由改选 HIERARCHICAL。只有某个专业团队承担完整根交付，其最终输出本身即可满足根任务，其他团队提供所需输入、组件或验证时，才选择 HIERARCHICAL。团队领域正交不改变这一条件。Owner 名义上的汇总职责不构成完整专业交付，也不得虚设最终集成团队。用户明确指定模式时，在运行时约束允许的范围内遵循。
-
 `WAITING_SOURCES` 表示汇总尚未开始。所有必需来源都要同时满足 `COMPLETED` 和 `ACCEPTED`，包括 Owner 本团执行的子任务。创建工具等待时返回最新任务状态和 `blocked_sources`，Owner 应先处理未完成来源或待验收项，再等待汇总交付；验收就绪后仍由既有路径自动启动。
-
-对于本团承担的组织子任务，Leader 应在执行或内部派发前调用 `org_update_task(action='start')`；成员完成后，Leader 检查成果并及时回写对应组织子任务，再由创建团队显式验收。内部任务完成不会自动完成或验收组织子任务。
-
-聊天消息、时间线标题和工具分组按当前团队会话解析 Leader 身份；没有保存的身份时，使用该团队名册或团队名。Summary 等运行时团队不继承 Owner 的名称和头像，此显示解析不修改专家团绑定。
 
 每个 Organization 最多有一个共享 Summary Team。第一次创建 `SUMMARY_TEAM` execution 时懒加载，后续根任务复用；完成一次汇总不会立即停止它。
 
 Summary 输入在既有绑定来源外提供 `root_task`（ID、标题、描述和输出规范），用于确定交付格式与验收要求；事实依据仍仅来自绑定来源。保留来源分歧、限制与已有成品入口，不默认另写报告。需要把已有成品作为最终文件发布时，原样复制到组织 `summary/` 后设置 `result_uri`，`result_type` 与实际格式一致，原目录权限校验保持不变。
 
-本地调试分支通过 `uv sync --locked --inexact` 将相邻的 `../../agent-core-0.1.20/agent-core_0.1.20-zeze` 安装为 editable 依赖。修改该 core 仓库的 Python 源码后重启后端即可使用，`uv run` 不再恢复为 Git 固定版本。
-
 使用 `SUMMARY_TEAM` 时，汇总与最终交付按以下流程推进：
 
-1. 根任务负责人先认领根任务，再设置 `SUMMARY_TEAM` 汇总模式，并创建绑定来源子任务的 Summary Execution；不是仅在用户提示词中声明模式就会自动创建汇总。
+1. 根任务负责人先认领根任务，再设置 `SUMMARY_TEAM` 汇总模式，并通过 `org_create_summary_execution` 创建绑定来源子任务的 Summary Execution；不是仅在用户提示词中声明模式就会自动创建汇总。
 2. 作为汇总来源的子任务需要完成并通过验收。`COMPLETED` 但验收仍为 `PENDING` 时不能开始汇总；提前创建的汇总任务会等待来源就绪，根任务负责人仍需处理验收。
 3. Summary Team 只读取绑定的来源快照，整理提纲和最终稿，不新增领域研究。两个成员交付提纲或稿件后结束各自内部任务，`summary-leader` 核验最终稿、摘要和交付路径后，通过 `org_summary_complete` 正式提交汇总结果。仅写出文件或口头回复“已完成”不算汇总完成。
-4. 汇总完成后，根任务负责人继续处理最终交付；使用指南的两个用例均由 Owner 在当前会话展示报告正文并完成整体事项。
+4. 汇总任务正式完成时联动完成根任务，根任务负责人收到结果后继续面向用户交付；使用指南的两个用例均由 Owner 在当前会话展示报告正文，不应再直接调用根任务完成操作。
 
 Summary Team 各角色继承默认 Team 对应角色的有限 `max_iterations` 预算；预算无效时使用 200，不会无限重试。达到预算上限或成员报错不等于汇总完成，应检查执行状态、已有稿件及失败日志，不能仅靠增加轮数代替正式提交结果。
 
-## 四、配置建议
+### 3.4 两种模式共用的任务状态规则
 
-以下片段应合并到现有用户配置中，保留其他实验项、模型及 Team 设置：
+两种模式都要求子任务成果显式验收。对于本团承担的组织子任务，Leader 应在执行或内部派发前调用 `org_update_task(action='start')`；成员完成后，Leader 检查成果并及时回写对应组织子任务，再由创建团队显式验收。内部任务完成不会自动完成或验收组织子任务。
 
-```yaml
-experimental:
-  team_organization_ui_enabled: true
+## 四、生命周期与故障处理
 
-modes:
-  team:
-    jiuwen_team:
-      lifecycle: persistent
-      spawn_mode: inprocess
-      teammate_mode: build_mode
-      agents:
-        leader: $agent_leader
-      workspace:
-        enabled: true
-      transport:
-        type: inprocess
-      storage:
-        type: sqlite
-```
-
-实验开关默认关闭，同时控制前端组织入口和新构建 Team 的后端组织能力。关闭或缺省时，新 Team 不挂载 `org_*` 工具，也不恢复组织绑定，普通 Team 协作不受影响。切换开关不会立即卸载已运行的组织；更改后需完整重启后端（包括常驻 Runtime Worker）并使用新 Team 会话，已有组织任务应先停止。具体操作见[使用指南的运行前配置](TeamOrganization使用指南.md#二运行前配置)。
-
-运行建议：
-
-- 当前 Organization 仅支持同进程协作，各 Team 共享同一 `TeamDatabase` 实例；更换 PostgreSQL 不会开启跨进程组织协作。
-- 启用 Organization Workspace，并确保当前进程可以读写其本机目录。
-- 确保默认 leader 和 teammate 模型均可解析。
-- AgentGroup capabilities 使用稳定、小写、面向领域的标签，提示词中使用完全相同的值。
-- 不要在配置中预启动每一个专家 Team；由 Owner Leader 按任务需要创建。
-
-## 五、生命周期与故障处理
+聊天消息、时间线标题和工具分组按当前团队会话解析 Leader 身份；没有保存的身份时，使用该团队名册或团队名。Summary 等运行时团队不继承 Owner 的名称和头像，此显示解析不修改专家团绑定。
 
 任务完成状态与 Web 执行状态分别收尾：后台组织 turn 结束后，前端关闭对应 Team 本轮的思考与流式输出，不影响其他 Team 正在执行的工作。仅接收消息的 `attach_only` 订阅不会使会话持续显示忙碌；真实任务执行及等待用户输入仍保留忙碌状态。判断汇总是否完成，应查看 Summary Execution 和任务状态，不能只依据某一段回复的 `chat.final`。
 

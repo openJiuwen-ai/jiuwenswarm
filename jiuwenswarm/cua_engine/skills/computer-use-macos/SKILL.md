@@ -9,21 +9,17 @@ description: Operate macOS application UI through computer_use MCP and the Compu
 
 ## macOS environment
 
-Use this Skill when the MCP host operates macOS, even if the Agent runs elsewhere. App selectors accept observed IDs, application names, bundle IDs such as `com.apple.calculator`, and app paths on that host. `super` is Command; typical shortcuts include `super+s` and `super+o`.
+App selectors accept observed IDs, application names, bundle IDs such as `com.apple.calculator`, and app paths. `super` is Command; typical shortcuts include `super+s` and `super+o`.
 
-The host needs Accessibility and Screen Recording permissions. Native accessibility actions and window-directed input are tried before any authorized foreground assistance. Pointer input on an already-frontmost, uncovered target uses the real cursor; background targets remain window-directed. A successful native call is not proof that the intended UI changed; follow the shared observation and recovery rules.
+Reading and capturing a window do not activate the app. Apps may activate themselves during launch or UI actions.
 
 Application menus can also be read for freshly observed windowless apps. Window captures may expose an overview of related windows; use each window’s own capture for coordinates.
 
-On macOS, successfully captured app windows keep a system sharing indicator until reset/disconnection or the window’s capture ends. Capture does not activate the app. If the user stops sharing through macOS, operations are suspended; ask before resuming, then reset and read again. If cleanup is still pending, retry reset rather than replaying earlier actions.
+If the user stops sharing a window, pause and ask before resuming.
 
-Call `computer_use({"title": title, "code": code})` with Python and top-level `await`. Use a short title in the user's language describing the intended action. App selectors and file paths refer to the MCP host, which may be remote.
+Call `computer_use({"title": title, "code": code})` with Python and top-level `await`. Use a short title in the user's language describing the intended action.
 
-The environment provides `computer`, `print(*values)` and `printImage(png)`. Variables persist between calls. Ordinary Python imports and type annotations work; await each SDK operation. SDK methods use normal Python coroutine semantics: calling one without awaiting or scheduling it does not perform the operation. Options are dictionaries with quoted keys and Python True/False/None values. The final expression is not printed automatically.
-
-Make one tool call at a time and await operations sequentially. Reads automatically present text; actions present receipts only. Use `print()` for other values and `printImage()` for PNG images.
-
-Each call permits 256 KiB of UTF-8 text. A block exceeding the remaining budget is rejected in full; earlier output, variables and actions remain. Inspect a smaller part of saved evidence or a relevant UI subtree/menu/text page, without replaying preceding actions.
+The environment provides `computer`, `print(*values)` and `printImage(png)`. Variables persist between calls. Await operations sequentially. Reads present text; actions present receipts only. Use `print()` for other values and `printImage()` for screenshots. The final expression is not printed automatically.
 
 ## Session cleanup
 
@@ -182,7 +178,7 @@ if state.overview is not None:
     printImage(state.overview)  # Related windows and popups.
 ```
 
-Let this call return and inspect the image before choosing coordinates in another call. App coordinates use the selected window's original PNG pixels, origin top-left. Use the App that supplied that image. Overviews show context only; read a popup's own window image to click it. Printing an old image does not refresh it. After a changed capture, return its new screenshot before coordinate input; re-observe when geometry or state changes. A preview or `Screenshot: captured` label does not deliver an image to the model.
+Let this call return and inspect the image before choosing coordinates in another call. Use the pixels of the image actually returned to the model, origin top-left. Use the App that supplied that image. Overviews show context only; read a popup's own window image to click it. Printing an old image does not refresh it. After a changed capture, return its new screenshot before coordinate input; re-observe when geometry or state changes. A preview or `Screenshot: captured` label does not deliver an image to the model.
 
 For system UI, unknown-owner popups or app-level limits, `computer.read()` presents a desktop catalogue and desktop PNG without requiring AX. Computer input uses those desktop coordinates and requires exclusive mode; never mix desktop and App coordinates. Missing displays and gaps are not input regions. AX failure does not necessarily prevent screenshots, but App keyboard input may still require native window confirmation.
 
@@ -192,8 +188,8 @@ For system UI, unknown-owner popups or app-level limits, `computer.read()` prese
 
 On errors, follow `code`, `effect` and `next`. `none` means this command dispatched no action; earlier statements are not undone. `possible`, `partial` or `execution_unknown` may follow changed UI or delivered input. Observe before continuing; never automatically replay uncertain input, switch it to paste, or retry in the foreground. A later read failure does not negate an earlier action. Refresh stale targets or expired screenshots. If a precondition fails inside a batch, raise an exception to stop it; printing a warning does not stop subsequent statements.
 
-The host chooses the desktop policy. Default shared mode targets app windows without automatically activating a background app. Pointer input may move the physical cursor; shared mode does not isolate the desktop. With host-enabled `COMPUTER_USE_FOREGROUND_ASSIST=1`, preparation still tries the background first; it may take foreground only when background preparation is unavailable and requested input has not been dispatched. An already-frontmost target can be operated; apps can also activate themselves. The backend does not restore the previous foreground. Exclusive mode permits activation and physical desktop input. Do not change modes, bypass modal restrictions, or manage system focus yourself to overcome refusals.
+Use the SDK to target windows and controls. Respect tool-reported window, modal and input restrictions; do not bypass them by changing desktop modes or sending input outside the task's scope.
 
-Errors usually preserve Python variables. Timeout, cancellation, failure of the execution process or disconnection can reset them; recreate handles and read again after reset. Previously executed effects remain. Execution resets after 45 seconds without native command progress; command starts/completions renew this watchdog, printing and timers do not. Individual commands have their own deadlines. Do not leave background tasks or timers operating the UI. The executor runs with the MCP user's permissions, not in a security sandbox.
+Errors usually preserve Python variables. If a timeout, cancellation or disconnection clears state, recreate handles and read again; earlier effects remain. Do not leave background tasks or timers operating the UI.
 
 Keep recovery within the requested scope. Resolve loading, filters and truncation before concluding required input is absent; then report it instead of inventing a substitute or searching unrelated locations. Stop after verifying completion, or report the limitation when no supported route remains.

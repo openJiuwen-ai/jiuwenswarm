@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
+    ACTIVITY_KIND_STAGE,
     NODE_ROLE_CHARACTER,
     NODE_ROLE_CLIP,
     NODE_ROLE_SCENE,
@@ -51,14 +52,6 @@ def _find_ffmpeg() -> str | None:
 
 
 
-def parse_shot_duration_seconds(timeline: str, default: int = 5) -> int:
-    from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import (
-        duration_from_timeline,
-    )
-
-    return duration_from_timeline(timeline, default=default)
-
-
 def generates_timed_video(graph: DesignerExecutionGraph, node: DesignerGraphNode) -> bool:
     """True when running ``node`` asks the video model for a clip of some length."""
     from jiuwenswarm.server.runtime.designer.handlers import resolve_handler_key
@@ -80,14 +73,54 @@ def video_duration_seconds(ctx: NodeExecutionContext | None, node: DesignerGraph
     from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import clamp_clip_duration
     from jiuwenswarm.server.runtime.designer.pipeline.model_capacity import active_video_capacity
 
+    requested = requested_video_seconds(ctx, node)
+    if requested is not None:
+        return clamp_clip_duration(requested)
+    if node_pipeline(node) == NODE_ROLE_CLIP:
+        return clamp_clip_duration(5)
+    return clamp_clip_duration(active_video_capacity().default_sec)
+
+
+def requested_video_seconds(
+    ctx: NodeExecutionContext | None, node: DesignerGraphNode
+) -> float | None:
+    """Length the node asks for before it is snapped to the video model.
+
+    ``config.duration_sec``, else a storyboard clip's Timeline window; None when
+    neither is set.
+    """
+    from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import timeline_seconds
+
     cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
     override = cfg.get("duration_sec")
     if isinstance(override, (int, float)) and not isinstance(override, bool):
-        return clamp_clip_duration(override)
+        return float(override)
     if node_pipeline(node) == NODE_ROLE_CLIP:
         _, shot = _shot_for_node(ctx.graph if ctx is not None else {}, node, ctx)
-        return parse_shot_duration_seconds((shot or {}).get("timeline") or "", default=5)
-    return clamp_clip_duration(active_video_capacity().default_sec)
+        return timeline_seconds((shot or {}).get("timeline") or "")
+    return None
+
+
+def note_video_duration(
+    ctx: NodeExecutionContext | None, node: DesignerGraphNode, duration: int
+) -> None:
+    """Tell the node card when the video model cannot make the length the node asks for."""
+    if ctx is None or not callable(ctx.emit_activity):
+        return
+    requested = requested_video_seconds(ctx, node)
+    if requested is None or requested <= 0 or round(requested) == duration:
+        return
+    from jiuwenswarm.server.runtime.designer.pipeline.model_capacity import (
+        active_video_capacity,
+    )
+
+    capacity = active_video_capacity()
+    ctx.emit_activity(
+        ACTIVITY_KIND_STAGE,
+        f"{capacity.model_id} makes {capacity.min_sec}-{capacity.max_sec}s clips: "
+        f"generating {duration}s instead of the requested {requested:g}s",
+        "video_gen",
+    )
 
 
 def collect_clip_scene_image(
@@ -666,6 +699,7 @@ class ClipNodeHandler:
             cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
             node["config"] = cfg
         duration = video_duration_seconds(ctx, node)
+        note_video_duration(ctx, node, duration)
         prompt = build_clip_prompt(ctx.graph, node, ctx)
         payload = connected_payload_clause(
             edge_text_inputs(ctx, node, exclude_roles=frozenset({NODE_ROLE_STORYBOARD})),

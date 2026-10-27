@@ -334,8 +334,6 @@ def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
         state["status"] = NODE_STATUS_COMPLETED
         state["output_ref"] = dict(ref)
         state["output_refs"] = [dict(ref)]
-        state["candidate_output_ref"] = None
-        state["candidate_output_refs"] = []
         state["error"] = None
         states[node_id] = state
         changed = True

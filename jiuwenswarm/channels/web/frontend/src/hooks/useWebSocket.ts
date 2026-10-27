@@ -140,8 +140,10 @@ import {
 import {
   buildAgentGroupSelectionPayloadForMode,
   buildDefinitionSelectionPayloadForMode,
+  isExternalHarnessCatalogItem,
   resolveSelectedSkillsForRequest,
 } from '../features/agentManagement/port';
+import { useAgentCatalogStore } from '../stores/agentCatalogStore';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
@@ -1211,9 +1213,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     streamDeltaBatcherRef.current?.flush(streamDeltaBatchKey(sessionId, streamId));
   }, []);
 
-  // 权威时间回填：乐观 user 气泡只有浏览器钟可盖，与执行机钟有偏差时本轮首个输出
-  // 事件会按时间戳排到用户消息之前（「任务用时」行插到时间线顶部）。runtime.accepted
-  // 的 timestamp 和 chat.output_phase 的 input_timestamp 都携带执行机记录的输入时间，
+  // Confirm the optimistic user bubble against the server's input boundary for stable ordering.
+  // runtime.accepted.timestamp and chat.output_phase.input_timestamp confirm the server input boundary.
+  // Older events only carry timestamp, which retains its original meaning.
   // 按发送时登记的单号回填；旧后端的 output_phase 则退回使用事件时间。
   // 仅匹配 sendMessage 登记的乐观气泡——steer/跨会话/心跳气泡自带服务端时间，不进
   // 登记表；帧无时间戳（旧后端）时保持现状不回填。
@@ -1230,6 +1232,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const chatStore = useChatStore.getState();
     chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
       timestamp: acceptedIso,
+      isTimestampPending: false,
     });
     // 图片提示可先于 ACK/phase 到达；旧后端不带时间戳，提示会盖浏览器钟。
     // 将早于用户边界的同单提示移到边界上，避免落入上一轮；同刻按消息插入顺序排序。
@@ -2031,6 +2034,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const sessionRuntime = useSessionStore.getState().getRuntime(sessionId);
       const selectedSkills = sessionRuntime?.selectedSkills ?? [];
       const agentSelectionIntent = sessionRuntime?.agentSelectionIntent ?? { kind: 'keep' as const };
+      const agentTemplateName = (
+        agentSelectionIntent.kind === 'select'
+          ? agentSelectionIntent.id
+          : agentSelectionIntent.kind === 'clear'
+            ? ''
+            : sessionMetadata?.session_equipment?.agent_template_name
+      )?.trim();
+      const selectedAgent = useAgentCatalogStore.getState().catalog?.find(
+        (item) => item.id === agentTemplateName || item.runtimePackageName === agentTemplateName,
+      );
+      // Only known native Agent paths publish the input timestamp confirmation.
+      const waitForInputTimestamp = !isTeamAgentMode(currentMode) && currentMode !== 'auto_harness' && (
+        !agentTemplateName || (selectedAgent !== undefined && !isExternalHarnessCatalogItem(selectedAgent))
+      );
       const agentSelectionPayload = buildDefinitionSelectionPayloadForMode(currentMode, agentSelectionIntent);
       const agentGroupSelectionIntent = sessionRuntime?.agentGroupSelectionIntent ?? { kind: 'keep' as const };
       const agentGroupSelectionPayload = buildAgentGroupSelectionPayloadForMode(
@@ -2069,6 +2086,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         content: displayedContent,
         mediaItems,
         timestamp: new Date().toISOString(),
+        ...(waitForInputTimestamp ? { isTimestampPending: true } : {}),
         ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
       });
       // 发送后清空输入栏已选技能（一次性语义）；插件/MCP 是会话期间持续启用，不在这里清

@@ -139,6 +139,16 @@ export function resolveAvailableModelSelection(
   return resolveNewConversationModelSelection(models, groups, selection);
 }
 
+/**
+ * True while models.list / groups have not arrived yet.
+ * An empty catalog must not be treated as “selection deleted” (#5860): refresh during
+ * goal execution often restores metadata before the catalog, and clearing then falls
+ * back to the default model.
+ */
+export function isModelCatalogPending(models: ModelEntry[], groups: ModelGroup[]): boolean {
+  return models.length === 0 && groups.length === 0;
+}
+
 export function isModelSelectionAvailable(
   selection: ModelSelection | null,
   models: ModelEntry[],
