@@ -84,7 +84,11 @@ def _fetch_via(host: DiagnosisHost) -> Any:
         response = await host.handle(request)
         payload = dict(response.payload or {})
         if not response.ok:
-            return False, {"error": str(payload.get("error")), "code": str(payload.get("code"))}
+            forwarded = {"error": str(payload.get("error")), "code": str(payload.get("code"))}
+            reported_status = payload.get("status")
+            if isinstance(reported_status, int) and not isinstance(reported_status, bool):
+                forwarded["status"] = reported_status
+            return False, forwarded
         return True, payload
 
     return fetch
@@ -329,26 +333,27 @@ async def test_proxy_rejects_bad_bodies_before_forwarding() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("code", "status"),
+    ("payload", "status"),
     [
-        ("FEATURE_DISABLED", 403),
-        ("DIAGNOSIS_ALREADY_RUNNING", 409),
-        ("MODEL_UNAVAILABLE", 503),
-        ("SERVICE_UNAVAILABLE", 503),
-        ("RUNTIME_WARMING", 503),
-        ("AGENT_SERVER_TIMEOUT", 504),
-        ("SOMETHING_NEW", 500),
+        ({"error": "boom", "code": "FEATURE_DISABLED", "status": 403}, 403),
+        ({"error": "boom", "code": "DIAGNOSIS_ALREADY_RUNNING", "status": 409}, 409),
+        ({"error": "boom", "code": "MODEL_UNAVAILABLE", "status": 503}, 503),
+        ({"error": "boom", "code": "SERVICE_UNAVAILABLE"}, 503),
+        ({"error": "boom", "code": "RUNTIME_WARMING"}, 503),
+        ({"error": "boom", "code": "AGENT_SERVER_TIMEOUT"}, 504),
+        ({"error": "boom", "code": "SOMETHING_NEW"}, 500),
+        ({"error": "boom", "code": "FEATURE_DISABLED", "status": "403"}, 500),
     ],
 )
-async def test_proxy_maps_error_codes_to_http_status(code: str, status: int) -> None:
+async def test_proxy_maps_error_codes_to_http_status(payload: dict[str, Any], status: int) -> None:
     async def fetch(method: ReqMethod, session_id: str, params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
-        return False, {"error": "boom", "code": code}
+        return False, payload
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_app(fetch)), base_url="http://test") as http:
         response = await http.get(_BASE)
 
     assert response.status_code == status
-    assert response.json() == {"error": "boom", "code": code}
+    assert response.json() == {"error": "boom", "code": payload["code"]}
 
 
 @pytest.mark.asyncio

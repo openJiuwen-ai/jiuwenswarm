@@ -244,7 +244,8 @@ async def fetch_agent_unary(
 
     与 ``proxy_unary_request`` 不同，本函数不回写通道响应，供 Gateway 侧
     需要消费 AgentServer 结果后自行决策的桥接场景（如 Git watch 快照计算）
-    使用。目标 AgentServer 不可达/超时/失败时返回 ``(False, {error, code})``。
+    使用。目标 AgentServer 不可达/超时/失败时返回 ``(False, {error, code})``；
+    失败 payload 自带整数 ``status`` 时一并转发。
     """
     if agent_client is None or getattr(agent_client, "server_ready", True) is False:
         return False, {
@@ -316,10 +317,14 @@ async def fetch_agent_unary(
         else (response.payload if response.payload is not None else {})
     )
     if not response.ok:
-        return False, {
+        forwarded = {
             "error": str(payload.get("error") or f"{req_method.value} failed"),
             "code": str(payload.get("code") or "BAD_REQUEST"),
         }
+        reported_status = payload.get("status")
+        if isinstance(reported_status, int) and not isinstance(reported_status, bool):
+            forwarded["status"] = reported_status
+        return False, forwarded
     return True, payload
 
 

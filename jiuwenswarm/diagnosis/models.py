@@ -370,9 +370,9 @@ class DiagnosisHostError(Exception):
         self.status = status
 
 
-#: HTTP status of every error code a diagnosis request can answer. The service
-#: reports codes only across the AgentServer boundary; the Gateway restores the
-#: status from this table. Unknown codes fall back to 500.
+#: HTTP status of every error code a diagnosis request can answer. The host
+#: forwards this integer on the AgentServer error payload. The Gateway uses
+#: that field and does not keep a second copy.
 ERROR_STATUS_BY_CODE: dict[str, int] = {
     "BAD_REQUEST": 400,
     "FEATURE_DISABLED": 403,
