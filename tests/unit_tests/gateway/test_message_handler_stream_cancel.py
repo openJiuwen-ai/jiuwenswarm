@@ -477,6 +477,29 @@ async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_kno
 
 
 @pytest.mark.asyncio
+async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypatch):
+    """元数据传输失败（非"读为空"）时，定向取消不被放大成会话级取消。"""
+    from gateway.routing.session_metadata_remote import SessionMetadataRemoteUnavailable
+
+    handler = _TestMessageHandler.create()
+
+    async def _unavailable(*args, **kwargs):
+        raise SessionMetadataRemoteUnavailable("session metadata read failed")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.is_stream = False
+    msg.params.update({"target_team_id": "expert", "intent": "cancel"})
+
+    # owner 未知 → 照常按定向取消转发（成员校验由 AgentServer 权威执行）
+    assert await handler._is_targeted_expert_cancel(msg) is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [
     TimeoutError(),
     DatabaseTimeoutError("QueuePool limit of size 8 overflow 0 reached, connection timed out, timeout 10.00"),

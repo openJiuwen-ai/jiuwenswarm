@@ -62,7 +62,6 @@ interface OrgSnapshotPayload {
   tasks?: OrgTaskBrief[];
   unclaimed_tasks?: OrgTaskBrief[];
   pending_reviews?: PendingReviewEntry[];
-  stats?: Record<string, number> & { by_status?: Record<string, number> };
 }
 
 /** 任务状态 → 标签配色。后端 OrgTask.status 是 OPEN / CLAIMED / ... 这类大写枚举。 */
@@ -134,20 +133,9 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   const groups = useOrganizationGroupCatalog(organizationUiEnabled && Boolean(organization));
   const tasks = snapshot?.tasks ?? [];
   const reviews = snapshot?.pending_reviews ?? [];
-  const stats = snapshot?.stats ?? {};
   const runtimeTeamById = useMemo(
     () => new Map((runtimeTeams ?? []).map((team) => [team.team_id, team])),
     [runtimeTeams],
-  );
-
-  const statCards = useMemo(
-    () => [
-      { key: 'total', label: t('team.org.statsTotal'), value: stats.total ?? tasks.length },
-      { key: 'open', label: t('team.org.statsOpen'), value: stats.open ?? 0 },
-      { key: 'unclaimed', label: t('team.org.statsUnclaimed'), value: stats.unclaimed ?? 0 },
-      { key: 'reviews', label: t('team.org.statsPendingReviews'), value: stats.pending_reviews ?? reviews.length },
-    ],
-    [reviews.length, stats.open, stats.pending_reviews, stats.total, stats.unclaimed, t, tasks.length],
   );
 
   const ownerTeam = organization?.owner_team_id ? runtimeTeamById.get(organization.owner_team_id) : undefined;
@@ -295,22 +283,6 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
 
         {snapshot && (
           <>
-            <section className="mb-4" data-testid="team-area-org-info-stats">
-              <div className="grid grid-cols-2 gap-2">
-                {statCards.map((card) => (
-                  <div
-                    key={card.key}
-                    className="rounded border border-border bg-secondary/40 px-2 py-1.5"
-                    data-testid="team-area-org-info-stat-card"
-                    data-variant={card.key}
-                  >
-                    <div className="text-[10px] text-text-muted">{card.label}</div>
-                    <div className="text-sm font-semibold text-text">{card.value}</div>
-                  </div>
-                ))}
-              </div>
-            </section>
-
             <section data-testid="team-area-org-info-task-pool">
               <div className="mb-1.5 flex items-baseline justify-between">
                 <span className="text-xs font-medium text-text-muted">{t('team.org.taskPool')}</span>

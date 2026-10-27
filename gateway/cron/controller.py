@@ -457,7 +457,15 @@ class CronController:
         return cron_job_metadata()
 
     @_serialize_mutation
-    async def create_job(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def create_job(
+        self,
+        params: dict[str, Any],
+        *,
+        internal_proactive_sync: bool = False,
+    ) -> dict[str, Any]:
+        # ``internal_proactive_sync`` is a Python-level keyword set only by
+        # proactive_cron_sync. It deliberately does not live in ``params``:
+        # every key in ``params`` can be supplied by a web/tui client (#5853).
         # This marker is set only by the AgentServer-to-Gateway path after the
         # project has been resolved against the user's AgentServer directory.
         # Do not persist it with the job payload.
@@ -486,13 +494,18 @@ class CronController:
         # proactive.tick 是主动推荐开关自动维护的内部模式（proactive_cron_sync
         # 以固定 id 注册）：用户路径创建同模式任务会被后端 mode 保护拒绝启停/
         # 删除，而前端只按固定 id 识别系统任务，导致任务永远停不掉（#5128）。
-        if (
-            mode == "proactive.tick"
-            and str(params.get("id") or "").strip() != PROACTIVE_JOB_ID
-        ):
-            raise ValueError(
-                "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
-            )
+        # 豁免不能依赖客户端可控的 params.id：用户路径携带固定 id 会整体顶替
+        # 内置任务（#5853），因此只认内部 sync 传入的关键字参数。
+        requested_id = str(params.get("id") or "").strip()
+        if not internal_proactive_sync:
+            if mode == "proactive.tick":
+                raise ValueError(
+                    "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
+                )
+            if requested_id == PROACTIVE_JOB_ID:
+                raise ValueError(
+                    f"{PROACTIVE_JOB_ID} 是系统内置主动推荐任务的保留 id，不能手动创建"
+                )
         if enterprise:
             from gateway.cron.enterprise_model import (
                 resolve_enterprise_cron_model,

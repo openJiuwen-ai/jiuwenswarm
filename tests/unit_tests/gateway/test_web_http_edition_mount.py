@@ -181,6 +181,11 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     share_jobs.register_share_job_routes = lambda app: None
     monkeypatch.setitem(sys.modules, share_jobs.__name__, share_jobs)
 
+    # Manager routes have independent mTLS tests; isolate this mount contract.
+    manager = ModuleType("gateway.manager_config")
+    manager.register_manager_config_routes = lambda app: None
+    monkeypatch.setitem(sys.modules, manager.__name__, manager)
+
     # File behavior has separate tests against the AgentServer adapter.
     files = ModuleType("gateway.channel_manager.web.enterprise_files")
     files.register_enterprise_file_routes = lambda app, channel: None

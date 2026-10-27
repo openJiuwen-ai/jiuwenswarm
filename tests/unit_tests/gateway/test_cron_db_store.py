@@ -22,7 +22,7 @@ from gateway.storage.access import (
     clear_persistent_store,
     set_persistent_store,
 )
-from jiuwenswarm.runtime.cron.store import FileCronJobStore
+from gateway.runtime.cron.store import FileCronJobStore
 
 
 class _MemoryPersistent:

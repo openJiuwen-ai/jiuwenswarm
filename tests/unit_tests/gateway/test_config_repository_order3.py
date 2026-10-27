@@ -257,8 +257,11 @@ async def test_start_gateway_storage_wires_enterprise(
             await teardown_gateway_storage_repositories(wired)
 
 
-def test_no_tables_or_audit_under_config() -> None:
-    root = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "gateway" / "config"
-    assert root.is_dir()
-    assert not (root / "audit").exists()
-    assert not (root / "enterprise" / "tables").exists()
+def test_enterprise_schema_catalogue_covers_audit_and_tenant_cron() -> None:
+    from gateway.config.enterprise.tables.table_init import ALL_TABLE_DEFINITIONS
+
+    definitions = {table.table_name: table for table in ALL_TABLE_DEFINITIONS}
+    assert "audit_log_config" in definitions
+    assert "audit_log_config" in ENTERPRISE_RECORD_STORE_NAMES
+    cron_columns = {column.name for column in definitions["cron_job"].columns}
+    assert {"job_id", "user_id", "group_id", "bot_id"}.issubset(cron_columns)

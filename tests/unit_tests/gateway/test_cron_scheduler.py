@@ -3452,7 +3452,7 @@ async def test_stream_cron_publishes_thinking_and_deltas_on_the_live_bus(tmp_pat
                     request_id=envelope.request_id or "",
                     channel_id=envelope.channel or "",
                     payload=payload,
-                    is_complete=False,
+                    is_complete=payload["event_type"] == "chat.final",
                 )
 
     from gateway.cron.live_bus import cron_live_bus
@@ -3468,7 +3468,7 @@ async def test_stream_cron_publishes_thinking_and_deltas_on_the_live_bus(tmp_pat
         push_at_iso="2026-10-24T00:00:00+08:00",
         exec_session_id=session_id,
     )
-    text, ok = await svc.run_stream_cron_job(
+    text, ok, completed = await svc.run_stream_cron_job(
         envelope=SimpleNamespace(request_id="cron-run-live", channel="__cron__"),
         timeout_seconds=5,
         state=state,
@@ -3476,6 +3476,7 @@ async def test_stream_cron_publishes_thinking_and_deltas_on_the_live_bus(tmp_pat
     assert ok is True
     assert "完成" in text
     assert state.live_final_forwarded is True
+    assert completed is True
 
     queue = cron_live_bus.subscribe(session_id, replay=True)
     events = []

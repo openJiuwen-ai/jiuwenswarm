@@ -135,6 +135,15 @@ class WebFileDownloadManager:
             "name": Path(file_name).name,
             "sid": session_id,
         }
+        from jiuwenswarm.edition import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.server.runtime.tenant_context import TenantContext
+
+            tenant_key = TenantContext.current_tenant_key()
+            if not tenant_key:
+                raise ValueError("verified download requires tenant context")
+            payload["tenant_key"] = tenant_key
         return self._sign_payload(payload)
 
     def generate_token(

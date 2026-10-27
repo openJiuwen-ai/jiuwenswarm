@@ -1,10 +1,22 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import test, { after } from 'node:test';
+import { JSDOM } from 'jsdom';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
+
+const previousDocument = globalThis.document;
+const previousWindow = globalThis.window;
+const renderDom = new JSDOM('<!doctype html><html><body></body></html>', { url: 'http://localhost' });
+globalThis.document = renderDom.window.document;
+globalThis.window = renderDom.window;
+after(() => {
+  globalThis.document = previousDocument;
+  globalThis.window = previousWindow;
+  renderDom.window.close();
+});
 
 const panelSource = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
 const groupCatalogSource = readFileSync(
@@ -236,7 +248,107 @@ test('Expert Team loading keeps the back bar outside the centered content', asyn
   assert.equal(content.contains(back), false);
   assert.equal(content.getAttribute('role'), 'status');
   assert.equal(shell.querySelector('[data-testid="agent-management-detail-name"]').textContent, 'Slow Team');
-  assert.match(shell.textContent, /Summary remains visible while details load\./);
+  assert.equal(shell.querySelector('[data-testid="agent-management-detail-ability"]'), null);
+  assert.doesNotMatch(shell.textContent, /Summary remains visible while details load\./);
+});
+
+test('Expert and Expert Team details render independent capability and content in both languages', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { AgentGroupDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
+  const { normalizeAgentTemplateDetail, normalizeAgentGroupDetail } =
+    await import('../node_modules/.cache/agent-management/adapter.js');
+  const { JSDOM } = await import('jsdom');
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+  try {
+    for (const [locale, resources] of [['zh', zhLocale], ['en', enLocale]]) {
+      await i18next.changeLanguage(locale);
+      for (const [Page, normalize, contentTestId, emptyContent] of [
+        [
+          DefinitionDetailPage,
+          normalizeAgentTemplateDetail,
+          'agent-management-detail-content',
+          resources.skills.noContent,
+        ],
+        [
+          AgentGroupDetailPage,
+          normalizeAgentGroupDetail,
+          'agent-group-detail-content',
+          resources.agentManagement.group.detail.noDetails,
+        ],
+      ]) {
+        for (const [description, details] of [['', 'Content only'], ['Capability only', ''], ['Capability', 'Content']]) {
+          const detail = normalize({
+            id: 'expert',
+            displayDescription: { [locale]: description },
+            details,
+          }, locale);
+          const document = new JSDOM(renderToStaticMarkup(React.createElement(Page, {
+            detail,
+            detailStatus: 'success',
+            detailTab: 'content',
+            onBack() {},
+          }))).window.document;
+          assert.equal(
+            document.querySelector('[data-testid="agent-management-detail-ability"] p').textContent,
+            description || resources.agentManagement.unknownDescription,
+          );
+          assert.equal(document.querySelector(`[data-testid="${contentTestId}"]`).textContent, details || emptyContent);
+        }
+      }
+    }
+  } finally {
+    await i18next.changeLanguage('zh');
+  }
+});
+
+test('My Experts renders an empty capability without borrowing the marketplace description', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { normalizeAgentTemplateListItem } = await import('../node_modules/.cache/agent-management/adapter.js');
+  const { agentManagementReducer, createInitialAgentManagementState } =
+    await import('../node_modules/.cache/agent-management/state.js');
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+  try {
+    for (const [locale, resources] of [['zh', zhLocale], ['en', enLocale]]) {
+      await i18next.changeLanguage(locale);
+      const item = {
+        id: 'hub-expert',
+        displayName: { zh: '测试专家', en: 'Test Expert' },
+        source: 'hub',
+        installed: true,
+      };
+      const marketplaceDescription = 'Marketplace capability';
+      const state = agentManagementReducer(createInitialAgentManagementState(), {
+        type: 'catalog.loaded',
+        catalog: [normalizeAgentTemplateListItem({
+          ...item,
+          displayDescription: { [locale]: marketplaceDescription },
+        }, locale)],
+        mineCatalog: [normalizeAgentTemplateListItem(item, locale)],
+      });
+      for (const [scope, items, expected] of [
+        ['mine', state.mineCatalog, resources.agentManagement.unknownDescription],
+        ['catalog', state.catalog, marketplaceDescription],
+      ]) {
+        const document = new JSDOM(renderToStaticMarkup(React.createElement(CatalogPage, {
+          scope,
+          items,
+          totalItems: items.length,
+          query: '',
+          category: '',
+          status: 'success',
+          error: null,
+          busyIds: new Set(),
+        }))).window.document;
+        assert.equal(document.querySelector('[data-testid="agent-card"] .page-card__body').textContent, expected);
+      }
+    }
+  } finally {
+    await i18next.changeLanguage('zh');
+  }
 });
 
 test('publish actions require an installed runtime asset', () => {
@@ -457,7 +569,7 @@ test('group card actions keep uninstall in the detail page and install created g
   );
   assert.match(panelSource, /groupClient\.importGroup\(path\)[\s\S]*groupClient\.installGroup\(result\.id\)/);
   assert.match(panelSource, /client\.createAgent\([\s\S]*handleInstall\(id\)/);
-  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id\)/);
+  assert.match(panelSource, /client\.importAgentTemplate\(path\)[\s\S]*handleInstall\(result\.id, \{ suppressInlineError: true \}\)/);
 });
 
 test('primary management tabs retain tab semantics and chat picker enforces mode locks', () => {
@@ -484,7 +596,7 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
   assert.match(inputAreaSource, /chat\.teamSkillsGroupLocked/);
   assert.match(inputAreaSource, /if \(!activeSessionId \|\| agentSelectionDisabled\) return;/);
   assert.match(inputAreaSource, /if \(agentGroupSelectionDisabled \|\| !activeSessionId\) return;/);
-  assert.match(inputAreaSource, /agentSelectionDisabled && 'is-locked'/);
+  assert.match(inputAreaSource, /\(agentSelectionDisabled \|\| externalSwitchBlocked\) && 'is-locked'/);
   assert.match(inputAreaSource, /agentGroupSelectionDisabled && 'is-locked'/);
   assert.match(inputAreaSource, /!isTeamMode \? \([\s\S]*chat-panel-agent-picker-agent-tab/);
   assert.match(inputAreaSource, /!isAgentMode \? \([\s\S]*chat-panel-agent-picker-agent-group-tab/);

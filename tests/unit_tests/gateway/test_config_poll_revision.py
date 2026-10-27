@@ -10,7 +10,7 @@ import pytest
 
 # 包入口会加载 scheduler。这里只取快照函数，避免把调度依赖带进来。
 _db_path = (
-    Path(__file__).resolve().parents[3] / "jiuwenswarm/gateway/config_poll/db.py"
+    Path(__file__).resolve().parents[3] / "gateway/config_poll/db.py"
 )
 _spec = importlib.util.spec_from_file_location("config_poll_db_under_test", _db_path)
 assert _spec is not None and _spec.loader is not None
@@ -26,6 +26,22 @@ from gateway.storage.registry.store_registry import (
 )
 from openjiuwen_runtime.foundation.db.sqlite_handler import SQLiteHandler
 from openjiuwen_runtime.foundation.db.table_def import ColumnDefinition, TableDefinition
+
+
+@pytest.fixture(autouse=True)
+def _isolated_runtime_orm_registry(monkeypatch):
+    # Each case creates an independent database and may declare a different
+    # schema under the same table name. Do not reuse Runtime's process registry.
+    from sqlalchemy.orm import DeclarativeBase
+    from openjiuwen_runtime.foundation.db import sqlalchemy_handler
+
+    class TestBase(DeclarativeBase):
+        pass
+
+    monkeypatch.setattr(sqlalchemy_handler, "Base", TestBase)
+    yield
+    TestBase.registry.dispose()
+    TestBase.metadata.clear()
 
 
 def test_snapshot_ignores_updated_at_and_sees_revision_or_new_id() -> None:

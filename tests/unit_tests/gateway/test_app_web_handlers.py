@@ -4078,6 +4078,19 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("method", [
+    "group.create", "group.delete", "group.get", "group.history.get", "group.list",
+    "group.member.add", "group.update", "session.assets.list", "session.assets.register",
+    "session.assets.rename",
+])
+def test_web_retains_mainline_group_and_session_asset_forwarding(method):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    assert method not in channel.methods
+    assert method in app_web_handlers._FORWARD_REQ_METHODS
+    assert method in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+
+
 def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
     skill_graph_methods = {
         "skills.graph.build",
@@ -4790,6 +4803,32 @@ async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
 
 
 @pytest.mark.asyncio
+async def test_document_upload_uses_e2a_for_remote_enterprise_client(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    client = object()
+    upload = AsyncMock(return_value=(True, {"path": "/tenant/uploads/report.txt"}))
+    monkeypatch.setattr(
+        "gateway.routing.agent_http_bridge.upload_file_bytes_via_e2a", upload
+    )
+    monkeypatch.setattr(
+        app_web_handlers, "_persist_media_locally",
+        Mock(side_effect=AssertionError("Gateway must not write tenant files")),
+    )
+    result = await app_web_handlers._upload_document_item_via_http(
+        {"filename": "report.txt", "mimeType": "text/plain"}, b"report",
+        session_id="session-a", index=0, agent_client=client, user_id="user-a",
+    )
+    assert result["path"] == "/tenant/uploads/report.txt"
+    assert result["_persisted"] is True
+    upload.assert_awaited_once_with(
+        b"report", "agent/sessions/session-a/uploads/report.txt",
+        agent_client=client, user_id="user-a", channel_id="web", session_id="session-a",
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("upload_succeeds", [True, False])
 async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
     monkeypatch, upload_succeeds,
@@ -5224,3 +5263,24 @@ def test_persist_media_locally_concurrent_same_name_does_not_clobber(tmp_path, m
     assert {path.read_bytes() for path in paths} == {
         f"image-{index}".encode() for index in range(16)
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_busy, gateway_busy", [(True, False), (False, True)])
+async def test_session_metadata_retains_agent_runtime_authority(monkeypatch, runtime_busy, gateway_busy):
+    channel = FakeWebChannel()
+    channel.is_session_busy = lambda _: gateway_busy
+    captured = []
+
+    class AgentClient:
+        server_ready = True
+
+        async def send_request(self, envelope):
+            captured.append(envelope)
+            return SimpleNamespace(ok=True, payload={"session_id": "s1", "is_processing": runtime_busy})
+
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=AgentClient()))
+    ws = SimpleNamespace(_web_routing={"user_id": "u1", "group_id": "g1", "bot_id": "b1"})
+    await channel.methods["session.get_metadata"](ws, "metadata-1", {"session_id": "s1"}, "s1", "u1")
+    assert channel.responses[-1]["payload"]["is_processing"] is runtime_busy
+    assert captured[-1].channel_context["routing"] == {"group_id": "g1", "bot_id": "b1"}

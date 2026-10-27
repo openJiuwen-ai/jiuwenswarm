@@ -4,6 +4,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from jiuwenswarm.common.utils import build_tenant_key
 from jiuwenswarm.server.agent_http_routes import build_http_app
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
@@ -76,7 +77,7 @@ async def test_http_session_list_uses_the_same_tenant_scope(app):
         update_session_metadata,
     )
 
-    with TenantContext.scoped("g::b::u"):
+    with TenantContext.scoped(build_tenant_key("g", "b", "u")):
         update_session_metadata(
             session_id="u-session",
             channel_id="web",
@@ -84,7 +85,7 @@ async def test_http_session_list_uses_the_same_tenant_scope(app):
             title="U only",
             sync_write=True,
         )
-    with TenantContext.scoped("g::b::v"):
+    with TenantContext.scoped(build_tenant_key("g", "b", "v")):
         update_session_metadata(
             session_id="v-session",
             channel_id="web",
@@ -212,7 +213,7 @@ async def test_signed_download_is_bound_to_tenant(app, monkeypatch, tmp_path):
     asset = owner.stage(source, file_name="source.txt", expires_at=time.time() + 600)
     manager = WebFileDownloadManager("local-test-secret" * 3, asset_owner=owner)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
-    with TenantContext.scoped("g::b::u"):
+    with TenantContext.scoped(build_tenant_key("g", "b", "u")):
         token = manager.generate_verified_asset_token(
             asset, file_name="source.txt", session_id="session-one"
         )
@@ -234,6 +235,22 @@ async def test_signed_download_is_bound_to_tenant(app, monkeypatch, tmp_path):
             json={"token": token, "offset": 0, "limit": 512},
         )
         assert not denied.json()["ok"]
+
+
+def test_verified_download_rejects_missing_enterprise_tenant(monkeypatch, tmp_path):
+    import time
+    from jiuwenswarm.common.file_download_token import WebFileDownloadManager
+    from jiuwenswarm.common.verified_download_assets import VerifiedDownloadAssetOwner
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    TenantContext.clear()
+    source = tmp_path / "source.txt"
+    source.write_bytes(b"verified content")
+    owner = VerifiedDownloadAssetOwner(root=tmp_path / "assets")
+    asset = owner.stage(source, file_name="source.txt", expires_at=time.time() + 600)
+    manager = WebFileDownloadManager("local-test-secret" * 3, asset_owner=owner)
+    with pytest.raises(ValueError, match="tenant context"):
+        manager.generate_verified_asset_token(asset, file_name="source.txt", session_id="s")
 
 
 @pytest.mark.parametrize(

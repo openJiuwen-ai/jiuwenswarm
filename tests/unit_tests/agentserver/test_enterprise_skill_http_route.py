@@ -14,7 +14,7 @@ _ROOT = Path(__file__).resolve().parents[3]
 
 
 def _mapped_routes():
-    path = _ROOT / "jiuwenswarm/gateway/channel_manager/web/http_routes/mapped.py"
+    path = _ROOT / "gateway/channel_manager/web/http_routes/mapped.py"
     spec = importlib.util.spec_from_file_location("enterprise_skill_mapped_routes", path)
     module = importlib.util.module_from_spec(spec)
     assert spec is not None and spec.loader is not None
@@ -33,7 +33,7 @@ def _assigned_handler(source: Path, enum_name: str) -> str:
 
 
 def _forward_sets_contain(method: str) -> bool:
-    source = _ROOT / "jiuwenswarm/gateway/channel_manager/web/app_web_handlers.py"
+    source = _ROOT / "gateway/channel_manager/web/app_web_handlers.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     found = {name: False for name in ("_FORWARD_REQ_METHODS", "_FORWARD_NO_LOCAL_HANDLER_METHODS")}
     for node in ast.walk(tree):
@@ -50,8 +50,8 @@ def test_enterprise_install_http_route_reaches_web_install_handler(tmp_path) -> 
     method = "skills.enterprise.install"
     interface = _ROOT / "jiuwenswarm/server/runtime/agent_adapter/interface.py"
     handler_name = _assigned_handler(interface, "SKILLS_ENTERPRISE_INSTALL")
-    message = (_ROOT / "jiuwenswarm/common/schema/message.py").read_text(encoding="utf-8")
-    assert 'SKILLS_ENTERPRISE_INSTALL = "skills.enterprise.install"' in message
+    from jiuwenswarm.common.schema.message import ReqMethod
+    assert ReqMethod.SKILLS_ENTERPRISE_INSTALL.value == method
     assert handler_name == "handle_skills_web_install"
     assert _forward_sets_contain(method)
     matched = [

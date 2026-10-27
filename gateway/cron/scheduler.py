@@ -2250,11 +2250,9 @@ class CronSchedulerService:
                         job.id, exec_session_id,
                     )
                 else:
-                    # 仅当 agent 请求成功时才把执行会话记为 last_session_id：
-                    # last_session_id 表示『最近一次成功执行的会话』，用于后续续跑
-                    # （老会话的 chat_final 是已推送的结果）。请求失败/超时不更新，
-                    # 避免把一次失败的执行会话误当作可续跑的最近成功会话。
-                    if ok:
+                    # Completion and visible output are independent: an empty
+                    # completed stream is still the latest resumable session.
+                    if stream_completed:
                         await self._mark_last_session_ready(job, exec_session_id)
                     state.result_text = text
                     state.status = "succeeded" if ok else "failed"

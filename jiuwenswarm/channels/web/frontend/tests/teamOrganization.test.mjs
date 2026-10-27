@@ -1,11 +1,22 @@
-import test from 'node:test';
+import test, { after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import {
+const previousWindow = globalThis.window;
+const previousDocument = globalThis.document;
+const bootstrapDom = new JSDOM('', { url: 'http://localhost' });
+globalThis.window = bootstrapDom.window;
+globalThis.document = bootstrapDom.window.document;
+after(() => {
+  globalThis.window = previousWindow;
+  globalThis.document = previousDocument;
+  bootstrapDom.window.close();
+});
+
+const {
   setTeamOrganizationUiEnabled,
   isTeamOrganizationUiEnabled,
   selectedExpertTeamId,
@@ -34,7 +45,7 @@ import {
   useSettingsConfig,
   SettingsServicesProvider,
   parseHistoryJsonFileToPreviewMessages,
-} from '../node_modules/.cache/team-organization/organization.mjs';
+} = await import('../node_modules/.cache/team-organization/organization.mjs');
 
 function seed() {
   clearOrganizationRequests('session');
@@ -783,7 +794,7 @@ test('organization panel loads its own Team list and never queries without a Tea
     async ({ calls }) => {
       assert.deepEqual(
         calls.map((call) => call.method),
-        ['team.list', 'org.snapshot'],
+        ['team.list', 'org.snapshot', 'agent_groups.list'],
       );
       assert.deepEqual(calls[1].params, { session_id: 'session', team_id: 'owner' });
       assert.equal(
@@ -1072,6 +1083,7 @@ test('late snapshots cannot overwrite the newly selected Team', async () => {
   await withOrganizationPanel(
     (method, params) => {
       if (method === 'team.list') return ownerList;
+      if (method === 'agent_groups.list') return { agentGroups: [] };
       if (params.team_id === 'owner')
         return new Promise((resolve) => {
           resolveOwner = resolve;
@@ -1106,7 +1118,7 @@ test('periodic refresh is deduplicated while pending and timers are removed when
       (method) =>
         method === 'team.list'
           ? ownerList
-          : new Promise((resolve) => {
+          : method === 'agent_groups.list' ? { agentGroups: [] } : new Promise((resolve) => {
               resolveSnapshot = resolve;
             }),
       async ({ calls, listeners }) => {
@@ -1320,7 +1332,11 @@ test('disabled UI has no organization event subscriptions; disabling unsubscribe
     await act(async () => root.render(React.createElement(Probe)));
     assert.equal(subscriptions.length, 0);
     await act(async () => setTeamOrganizationUiEnabled(true));
-    assert.equal(subscriptions.length, 9);
+    assert.deepEqual(subscriptions.map((entry) => entry.name).sort(), [
+      'session.deleted', 'session.archived', 'chat.delta', 'chat.reasoning',
+      'chat.final', 'chat.error', 'chat.processing_status', 'chat.interrupt_result',
+      'org.turn_completed', 'chat.tool_call', 'chat.tool_result', 'team.task', 'team.member',
+    ].sort());
     assert.ok(subscriptions.some((entry) => entry.name === 'chat.processing_status'));
     assert.ok(subscriptions.some((entry) => entry.name === 'org.turn_completed'));
     await act(async () => setTeamOrganizationUiEnabled(false));

@@ -13,6 +13,7 @@ import pytest
 from gateway.routing import session_metadata_remote
 from gateway.routing.session_metadata_remote import (
     SessionMetadataRemoteProvider,
+    SessionMetadataRemoteUnavailable,
     bind_agent_client,
     remote_enabled,
 )
@@ -71,7 +72,10 @@ async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
     assert result == {"team_name": "remote-team"}
     assert fake_unary.captured["agent_client"] is not None
     assert fake_unary.captured["req_method"].value == "session.get_metadata"
-    assert fake_unary.captured["params"] == {"session_id": "sess-1"}
+    assert fake_unary.captured["params"] == {
+        "session_id": "sess-1",
+        "enable_writeback": True,
+    }
     assert fake_unary.captured["session_id"] == "sess-1"
     # 内部通道标识避开 "web"，不触发 server 侧排队会话消息附加逻辑
     assert fake_unary.captured["channel_id"] == "gateway"
@@ -80,6 +84,18 @@ async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
         fake_unary.captured["timeout_seconds"]
         == session_metadata_remote.SESSION_METADATA_QUERY_TIMEOUT_SECONDS
     )
+
+
+@pytest.mark.asyncio
+async def test_remote_forwards_user_id_for_routed_deployments(fake_unary) -> None:
+    """AgentOS/ADX 多用户路由必需 user_id——路由层对空身份直接拒绝。"""
+    bind_agent_client(SimpleNamespace(name="agent-client"))
+
+    await SessionMetadataRemoteProvider().get_session_metadata_async(
+        "sess-1", user_id="owner-1"
+    )
+
+    assert fake_unary.captured["user_id"] == "owner-1"
     assert session_metadata_remote.SESSION_METADATA_QUERY_TIMEOUT_SECONDS <= 5.0
 
 
@@ -88,13 +104,40 @@ async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
     "result",
     [
         (False, {"error": "session not found", "code": "NOT_FOUND"}),
-        (False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}),
     ],
 )
-async def test_remote_returns_empty_dict_on_error(fake_unary, result) -> None:
+async def test_remote_returns_empty_dict_when_session_missing(fake_unary, result) -> None:
+    """仅"会话不存在"返回空 dict——与本地实现缺失会话语义对齐。"""
     fake_unary.result = result
 
     assert await SessionMetadataRemoteProvider().get_session_metadata_async("sess") == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "result",
+    [
+        (False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}),
+        (False, {"error": "AgentServer request timed out", "code": "AGENT_SERVER_TIMEOUT"}),
+        (False, {"error": "routing rejected", "code": "PERMISSION"}),
+    ],
+)
+async def test_remote_raises_on_transport_failure(fake_unary, result) -> None:
+    """传输失败抛 SessionMetadataRemoteUnavailable——控制路径据此区分"读失败"与"读为空"。"""
+    fake_unary.result = result
+
+    with pytest.raises(SessionMetadataRemoteUnavailable):
+        await SessionMetadataRemoteProvider().get_session_metadata_async("sess")
+
+
+def test_remote_unknown_method_raises_domain_aware_error() -> None:
+    """域内写方法等未知符号给出带域信息的显式错误，而非裸 AttributeError。
+
+    写方法（update_session_model_selection 等）在 AgentServer 进程执行，
+    gateway 远端模式不承载——哑弹必须变成可读的指引。
+    """
+    with pytest.raises(RuntimeError, match="AgentServer process"):
+        SessionMetadataRemoteProvider().update_session_model_selection("sess", {})
 
 
 def test_remote_sync_entry_degrades_to_empty_dict() -> None:
@@ -147,7 +190,7 @@ async def test_local_adapter_async_entry() -> None:
     store = _FakeStore({"team_name": "local-team"})
 
     result = await _LocalSessionMetadataProvider(store).get_session_metadata_async(
-        "sess-3", cache_bust=True, enable_writeback=False
+        "sess-3", cache_bust=True, enable_writeback=False, user_id="owner-9"
     )
 
     assert result == {"team_name": "local-team"}

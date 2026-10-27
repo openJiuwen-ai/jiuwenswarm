@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import importlib.util
 import json
 import logging
@@ -101,8 +102,7 @@ def spawn_background_task(coro: Any, *, name: str) -> None:
     task.add_done_callback(_finish)
 
 
-_CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
-_CODEX_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = {
+_EXTERNAL_CLI_DEPENDENCY_INSTALL_IDLE_STATUS: dict[str, Any] = {
     "status": "idle",
     "phase": "idle",
     "progress_kind": "",
@@ -124,18 +124,27 @@ _CODEX_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = {
     "download_max_attempts": 0,
     "switching_source": False,
 }
+_CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
+_CODEX_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = dict(_EXTERNAL_CLI_DEPENDENCY_INSTALL_IDLE_STATUS)
 _CODEX_DEPENDENCY_INSTALL_LOG_TAIL_LIMIT = 8
 _OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS = 60 * 60
+# Serializes the non-frozen pip installs: parallel pip subprocesses writing the
+# same virtualenv are not safe. Frozen managed-runtime installs are per-agent
+# (independent target directories and file locks) and stay concurrent.
+_OPTIONAL_DEPENDENCY_PIP_INSTALL_LOCK = threading.Lock()
 _CLAUDE_DEPENDENCY_INSTALL_LOCK = threading.Lock()
-_CLAUDE_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = dict(_CODEX_DEPENDENCY_INSTALL_STATUS)
-_EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS = {
+_CLAUDE_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = dict(_EXTERNAL_CLI_DEPENDENCY_INSTALL_IDLE_STATUS)
+# Claude and Codex are always present; other managed runtimes (third-party
+# harness providers) get their lock and status the first time they are used.
+_EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS: dict[str, threading.Lock] = {
     "claude": _CLAUDE_DEPENDENCY_INSTALL_LOCK,
     "codex": _CODEX_DEPENDENCY_INSTALL_LOCK,
 }
-_EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES = {
+_EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES: dict[str, dict[str, Any]] = {
     "claude": _CLAUDE_DEPENDENCY_INSTALL_STATUS,
     "codex": _CODEX_DEPENDENCY_INSTALL_STATUS,
 }
+_EXTERNAL_CLI_DEPENDENCY_INSTALL_REGISTRY_LOCK = threading.Lock()
 
 
 _PROJECT_ROOT = get_root_dir()
@@ -388,6 +397,17 @@ class _DummyBus:
 
 # 仅转发到 Agent 的 Web method
 _FORWARD_REQ_METHODS = frozenset({
+    'group.create',
+    'group.delete',
+    'group.get',
+    'group.history.get',
+    'group.list',
+    'group.member.add',
+    'group.update',
+    'session.assets.list',
+    'session.assets.register',
+    'session.assets.rename',
+
     "initialize",
     "session.switch",
     "session.fork",
@@ -587,6 +607,17 @@ _FORWARD_REQ_METHODS = frozenset({
 })
 
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
+    'group.create',
+    'group.delete',
+    'group.get',
+    'group.history.get',
+    'group.list',
+    'group.member.add',
+    'group.update',
+    'session.assets.list',
+    'session.assets.register',
+    'session.assets.rename',
+
     "initialize",
     "session.switch",
     "session.fork",
@@ -808,9 +839,21 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
     return None
 
 
+def _external_cli_dependency_install_state(cli_agent: str) -> tuple[threading.Lock, dict[str, Any]]:
+    """Return the install lock and status of ``cli_agent``, creating idle ones on first use."""
+    with _EXTERNAL_CLI_DEPENDENCY_INSTALL_REGISTRY_LOCK:
+        lock = _EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS.get(cli_agent)
+        status = _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES.get(cli_agent)
+        if lock is None or status is None:
+            lock = threading.Lock()
+            status = dict(_EXTERNAL_CLI_DEPENDENCY_INSTALL_IDLE_STATUS)
+            _EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent] = lock
+            _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent] = status
+        return lock, status
+
+
 def _snapshot_external_cli_dependency_install_status(cli_agent: str) -> dict[str, Any]:
-    lock = _EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
-    status = _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    lock, status = _external_cli_dependency_install_state(cli_agent)
     with lock:
         result = dict(status)
         result["cli_agent"] = cli_agent
@@ -819,8 +862,7 @@ def _snapshot_external_cli_dependency_install_status(cli_agent: str) -> dict[str
 
 
 def _update_external_cli_dependency_install_status(cli_agent: str, updates: dict[str, Any]) -> None:
-    lock = _EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
-    status = _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    lock, status = _external_cli_dependency_install_state(cli_agent)
     with lock:
         status.update(updates)
         status["updated_at"] = time.time()
@@ -851,8 +893,7 @@ def _append_external_cli_dependency_install_log(cli_agent: str, line: str) -> No
     stripped = line.strip()
     if not stripped:
         return
-    lock = _EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
-    status = _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    lock, status = _external_cli_dependency_install_state(cli_agent)
     with lock:
         log_tail = list(status.get("log_tail") or [])
         log_tail.append(stripped)
@@ -880,11 +921,19 @@ def _activate_managed_external_cli_paths_if_needed() -> None:
 
 def _ensure_claude_dependency_available_or_start_install() -> dict[str, Any] | None:
     _activate_managed_external_cli_paths_if_needed()
-    if importlib.util.find_spec("claude_agent_sdk") is not None:
+    package_available = importlib.util.find_spec("claude_agent_sdk") is not None
+    cli_available = bool(_external_cli_managed_cli_path("claude"))
+    if package_available and cli_available:
         with _CLAUDE_DEPENDENCY_INSTALL_LOCK:
             _CLAUDE_DEPENDENCY_INSTALL_STATUS.update(_external_cli_dependency_install_succeeded_updates())
             _CLAUDE_DEPENDENCY_INSTALL_STATUS["updated_at"] = time.time()
         return None
+    # The SDK package can be importable while its bundled CLI executable is
+    # gone (e.g. the user deleted the file): a plain install would end as a pip
+    # no-op ("already satisfied"), so repair by force-reinstalling the pinned
+    # SDK instead of reporting success — otherwise 一键安装 could never restore
+    # a deleted built-in CLI.
+    force_reinstall = package_available and not cli_available
     if _is_frozen_runtime():
         return _ensure_managed_external_cli_runtime_or_start_install("claude")
     with _CLAUDE_DEPENDENCY_INSTALL_LOCK:
@@ -915,15 +964,22 @@ def _ensure_claude_dependency_available_or_start_install() -> dict[str, Any] | N
             }
         )
     threading.Thread(
-        target=_install_claude_dependency_background, name="claude-dependency-install", daemon=True
+        target=_install_claude_dependency_background,
+        args=(force_reinstall,),
+        name="claude-dependency-install",
+        daemon=True,
     ).start()
     return _snapshot_claude_dependency_install_status()
 
 
-def _install_claude_dependency_background() -> None:
+def _install_claude_dependency_background(force_reinstall: bool = False) -> None:
     try:
         package = _resolve_openjiuwen_extra_package("claude")
-        _install_optional_dependency("claude", package, "claude_agent_sdk")
+        _install_optional_dependency(
+            "claude", package, "claude_agent_sdk", force_reinstall=force_reinstall
+        )
+        if force_reinstall and not _external_cli_managed_cli_path("claude"):
+            raise RuntimeError("claude bundled CLI is still missing after reinstall")
         updates = _external_cli_dependency_install_succeeded_updates()
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config.set] Claude dependency installation failed: %s", exc)
@@ -942,7 +998,7 @@ def _is_frozen_runtime() -> bool:
 
 
 def _snapshot_external_cli_dependency_install_status_unlocked(cli_agent: str) -> dict[str, Any]:
-    status = _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    _lock, status = _external_cli_dependency_install_state(cli_agent)
     result = dict(status)
     result["cli_agent"] = cli_agent
     result["log_tail"] = list(result.get("log_tail") or [])
@@ -950,8 +1006,7 @@ def _snapshot_external_cli_dependency_install_status_unlocked(cli_agent: str) ->
 
 
 def _ensure_managed_external_cli_runtime_or_start_install(cli_agent: str) -> dict[str, Any]:
-    lock = _EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
-    status = _EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    lock, status = _external_cli_dependency_install_state(cli_agent)
     with lock:
         if status.get("status") == "running":
             return _snapshot_external_cli_dependency_install_status_unlocked(cli_agent)
@@ -998,11 +1053,9 @@ def _run_managed_external_cli_runtime_install(cli_agent: str) -> None:
             log_callback=lambda line: _append_external_cli_dependency_install_log(cli_agent, line),
             progress_callback=lambda progress: _update_external_cli_dependency_install_status(cli_agent, progress),
         )
+        # The installer already verified the runtime's modules and provider
+        # entry point against the activated paths.
         activate_external_cli_runtime_paths()
-        importlib.invalidate_caches()
-        required_module = "claude_agent_sdk" if cli_agent == "claude" else "openai_codex"
-        if importlib.util.find_spec(required_module) is None:
-            raise RuntimeError(f"{required_module} is still unavailable after installation")
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config.set] %s managed runtime installation failed: %s", cli_agent, exc)
         _append_external_cli_dependency_install_log(cli_agent, str(exc))
@@ -1111,9 +1164,15 @@ def _append_codex_dependency_install_log(line: str) -> None:
 
 def _ensure_codex_dependency_available_or_start_install() -> dict[str, Any] | None:
     _activate_managed_external_cli_paths_if_needed()
-    if importlib.util.find_spec("openai_codex") is not None:
+    package_available = importlib.util.find_spec("openai_codex") is not None
+    cli_available = bool(_external_cli_managed_cli_path("codex"))
+    if package_available and cli_available:
         _update_codex_dependency_install_status(_external_cli_dependency_install_succeeded_updates())
         return None
+    # Same repair semantics as the claude ensure: the package can be importable
+    # while the bundled CLI executable was deleted; force-reinstall the pinned
+    # SDK so 一键安装 restores it instead of ending as a pip no-op.
+    force_reinstall = package_available and not cli_available
 
     if _is_frozen_runtime():
         return _ensure_managed_external_cli_runtime_or_start_install("codex")
@@ -1150,6 +1209,7 @@ def _ensure_codex_dependency_available_or_start_install() -> dict[str, Any] | No
 
     thread = threading.Thread(
         target=_run_codex_dependency_install_background,
+        args=(force_reinstall,),
         name="codex-dependency-install",
         daemon=True,
     )
@@ -1157,9 +1217,9 @@ def _ensure_codex_dependency_available_or_start_install() -> dict[str, Any] | No
     return _snapshot_codex_dependency_install_status()
 
 
-def _run_codex_dependency_install_background() -> None:
+def _run_codex_dependency_install_background(force_reinstall: bool = False) -> None:
     try:
-        _install_codex_dependency()
+        _install_codex_dependency(force_reinstall=force_reinstall)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config.set] Codex dependency installation failed: %s", exc)
         _append_codex_dependency_install_log(str(exc))
@@ -1174,21 +1234,37 @@ def _run_codex_dependency_install_background() -> None:
     _update_codex_dependency_install_status(_external_cli_dependency_install_succeeded_updates())
 
 
-def _install_codex_dependency() -> None:
+def _install_codex_dependency(force_reinstall: bool = False) -> None:
     if _is_frozen_runtime():
         raise RuntimeError("frozen applications must use the managed Codex runtime installer")
     package = _resolve_openjiuwen_codex_package()
-    _install_optional_dependency("codex", package, "openai_codex")
+    _install_optional_dependency("codex", package, "openai_codex", force_reinstall=force_reinstall)
+    if force_reinstall and not _external_cli_managed_cli_path("codex"):
+        raise RuntimeError("codex bundled CLI is still missing after reinstall")
 
 
 def _install_optional_dependency(
     cli_agent: str,
     package: str,
     required_module: str,
+    force_reinstall: bool = False,
 ) -> None:
     if _is_frozen_runtime():
         raise RuntimeError(f"frozen applications must use the managed {cli_agent} runtime installer")
-    args = _build_optional_dependency_install_args(package, cli_agent)
+    # Parallel pip subprocesses must not write the same virtualenv at once:
+    # queue this install behind any other in-flight pip-based install. The
+    # frozen managed-runtime path is per-agent and stays concurrent.
+    with _OPTIONAL_DEPENDENCY_PIP_INSTALL_LOCK:
+        _run_optional_dependency_pip_install(cli_agent, package, required_module, force_reinstall)
+
+
+def _run_optional_dependency_pip_install(
+    cli_agent: str,
+    package: str,
+    required_module: str,
+    force_reinstall: bool,
+) -> None:
+    args = _build_optional_dependency_install_args(package, cli_agent, force_reinstall=force_reinstall)
     output_lines: list[str] = []
     logger.info(
         "[external-cli] installing %s dependency: interpreter=%s command=%s",
@@ -1330,18 +1406,55 @@ _OPTIONAL_DEPENDENCY_INDEX_URL = os.getenv("PIP_INDEX_URL") or os.getenv("UV_IND
 )
 
 
-def _build_optional_dependency_install_args(package: str, cli_agent: str) -> list[str]:
+def _openjiuwen_url_requirements(extra: str) -> list[str]:
+    """URL-pinned requirements of the installed openjiuwen, restated as direct ones.
+
+    uv pip rejects a URL dependency that only appears transitively (openjiuwen
+    pins protocol packages to git), so the extra install must name them itself.
+    Requirements gated on a different extra are left out.
+    """
+    try:
+        requires = importlib.metadata.requires("openjiuwen") or []
+    except importlib.metadata.PackageNotFoundError:
+        return []
+    forwarded: list[str] = []
+    for raw in requires:
+        spec, _, marker = raw.partition(";")
+        spec = spec.strip()
+        if " @ " not in spec:
+            continue
+        if "extra" in marker and f'"{extra}"' not in marker and f"'{extra}'" not in marker:
+            continue
+        forwarded.append(spec)
+    return forwarded
+
+
+def _build_optional_dependency_install_args(
+    package: str,
+    cli_agent: str,
+    force_reinstall: bool = False,
+) -> list[str]:
     """Build the pip/uv command that installs an optional CLI agent SDK.
 
     ``package`` is the ``openjiuwen[extra]`` requirement; the SDK wheels
     themselves are pinned to the versions recorded in the managed-runtime
     manifest so source installs resolve the same versions the frozen-app
     installer ships, instead of the latest release on the index.
+
+    With ``force_reinstall`` (repair mode: the SDK is importable but its
+    bundled CLI executable was deleted) only the pinned SDK wheel is
+    reinstalled with ``--force-reinstall --no-deps`` — a plain install would
+    end as a pip "already satisfied" no-op and never restore the file.
     """
     # Import lazily: only needed on this rare install path.
     from jiuwenswarm.common.external_cli_runtime import pinned_sdk_requirements
 
     pinned = pinned_sdk_requirements(cli_agent)
+    if force_reinstall:
+        requirements = list(pinned) or [package]
+    else:
+        requirements = [package, *_openjiuwen_url_requirements(cli_agent), *pinned]
+    reinstall_flags = ["--force-reinstall", "--no-deps"] if force_reinstall else []
     uv_cmd = shutil.which("uv")
     if uv_cmd and sys.prefix != sys.base_prefix:
         # Pin the target interpreter: without --python, uv resolves its own
@@ -1356,8 +1469,8 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
             sys.executable,
             "--index-url",
             _OPTIONAL_DEPENDENCY_INDEX_URL,
-            package,
-            *pinned,
+            *reinstall_flags,
+            *requirements,
         ]
     return [
         sys.executable,
@@ -1366,8 +1479,8 @@ def _build_optional_dependency_install_args(package: str, cli_agent: str) -> lis
         "install",
         "--index-url",
         _OPTIONAL_DEPENDENCY_INDEX_URL,
-        package,
-        *pinned,
+        *reinstall_flags,
+        *requirements,
     ]
 
 
@@ -1749,12 +1862,8 @@ async def _upload_document_item_via_http(
     返回带 ``_persisted`` 标记的落盘记录，AgentServer 侧直接透传、不重复解码。
     上传失败返回 ``None``（调用方保留原 base64 项）。
     """
-    from gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
-    from gateway.routing.e2a_proxy import is_agentos_routing_client
     from gateway.common.attachment_safety import (
         is_forbidden_document,
-    )
-    from gateway.embedded.runtime.attachments.upload_storage import (
         safe_session_dirname,
         safe_upload_filename,
     )
@@ -1769,20 +1878,17 @@ async def _upload_document_item_via_http(
         return None
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
-    if is_agentos_routing_client(agent_client):
-        ok, payload = await upload_file_bytes_via_e2a(
-            data,
-            rel_path,
-            agent_client=agent_client,
-            user_id=user_id,
-            channel_id="web",
-            session_id=session_id,
-        )
-    else:
-        # Legacy single-user mode: the AgentServer has no HTTP upload listener.
-        # Write directly to the shared user directory using the same path the
-        # AgentServer ``_store_document_item`` would use.
-        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+    # A1g：legacy/AgentOS 统一走 E2A 分块上传（FILE_UPLOAD_CHUNK 由
+    # WorkspaceFileAdapter 处理，任意 AgentServer 形态可用；旧分支的
+    # "AgentServer 无 HTTP 上传监听"是 HTTP bridge 时代的前提，已不成立）。
+    ok, payload = await upload_file_bytes_via_e2a(
+        data,
+        rel_path,
+        agent_client=agent_client,
+        user_id=user_id,
+        channel_id="web",
+        session_id=session_id,
+    )
     if not ok:
         logger.warning("[document.persist] 大文档上传失败: %s", payload.get("error"))
         return None
@@ -1891,8 +1997,6 @@ async def _upload_media_item_via_http(
     （``agent/sessions/<safe_session_id>/uploads/<safe_filename>``，同名去重）。
     上传失败返回 ``None``（调用方保留原 base64 项，由下游链路处理）。
     """
-    from gateway.routing.agent_http_bridge import upload_file_bytes_via_e2a
-    from gateway.routing.e2a_proxy import is_agentos_routing_client
     from gateway.common.attachment_safety import (
         ensure_image_upload_filename,
         image_suffix_for_mime,
@@ -1914,23 +2018,15 @@ async def _upload_media_item_via_http(
     )
     safe_session_id = safe_session_dirname(session_id)
     rel_path = f"agent/sessions/{safe_session_id}/uploads/{filename}"
-    if is_agentos_routing_client(agent_client):
-        ok, payload = await upload_file_bytes_via_e2a(
-            data,
-            rel_path,
-            agent_client=agent_client,
-            user_id=user_id,
-            channel_id="web",
-            session_id=session_id,
-        )
-    else:
-        # Legacy single-user mode: the AgentServer has no HTTP upload
-        # listener (its upload endpoint would be on ws_port+1, which is
-        # never started).  Write directly to the shared user directory
-        # using the same path the AgentServer ``_store_image_item`` would
-        # use, avoiding a doomed HTTP attempt that always fails with
-        # ConnectionRefused.
-        ok, payload = _persist_media_locally(data, safe_session_id, filename)
+    # A1g：同 document.persist——统一 E2A 分块上传，legacy 不再本地写盘。
+    ok, payload = await upload_file_bytes_via_e2a(
+        data,
+        rel_path,
+        agent_client=agent_client,
+        user_id=user_id,
+        channel_id="web",
+        session_id=session_id,
+    )
     if not ok:
         logger.warning("[media.persist] 大图上传失败: %s", payload.get("error"))
         return None
@@ -2169,17 +2265,43 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _external_cli_install_status(ws, req_id, params, session_id):
         cli_agent = str((params or {}).get("cli_agent") or "").strip().lower()
-        if cli_agent == "claude":
-            payload = _snapshot_claude_dependency_install_status()
-        elif cli_agent == "codex":
-            payload = _snapshot_codex_dependency_install_status()
-            payload["cli_agent"] = "codex"
-        else:
+        if cli_agent not in _known_external_cli_agents():
             await channel.send_response(
                 ws, req_id, ok=False, error="unsupported external cli agent", code="BAD_REQUEST"
             )
             return
+        payload = _snapshot_external_cli_dependency_install_status(cli_agent)
+        if _is_frozen_runtime():
+            payload["runtime"] = _managed_external_cli_runtime_status(cli_agent)
         await channel.send_response(ws, req_id, ok=True, payload=payload)
+
+    async def _external_cli_install(ws, req_id, params, session_id):
+        cli_agent = str((params or {}).get("cli_agent") or "").strip().lower()
+        if cli_agent not in _known_external_cli_agents():
+            await channel.send_response(
+                ws, req_id, ok=False, error="unsupported external cli agent", code="BAD_REQUEST"
+            )
+            return
+        if not _is_frozen_runtime():
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="managed external CLI runtimes are installed by the desktop app only",
+                code="UNSUPPORTED",
+            )
+            return
+        payload = _install_managed_external_cli_runtime_if_needed(cli_agent)
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
+
+    async def _external_cli_custom_agent_remove(ws, req_id, params, session_id):
+        cli_agent = str((params or {}).get("cli_agent") or "").strip().lower()
+        try:
+            await asyncio.to_thread(_remove_custom_external_cli_agent, cli_agent)
+        except ValueError as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
+            return
+        await channel.send_response(ws, req_id, ok=True, payload={"cli_agent": cli_agent})
 
     async def _request_zen_warmup() -> None:
         from gateway.zen_query import request_zen_warmup
@@ -2876,19 +2998,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
         SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。运行态不属于
-        持久化 metadata：由 WebChannel 已维护的 session busy 状态在响应入队前覆盖，
-        这样页面刷新仍能恢复当前会话的停止按钮，并与随后同一 WS 上的状态事件保持顺序。
+        持久化 metadata：由 AgentServer 返回权威执行快照，Gateway 透传，
+        避免 Gateway 重启后用空的本地 busy 缓存覆盖仍在执行的 Worker 状态。
         """
         from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
-
-        target_session_id = str(
-            params.get("session_id") if isinstance(params, dict) else session_id or ""
-        ).strip()
-
-        def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
-            if ok:
-                payload["is_processing"] = channel.is_session_busy(target_session_id)
 
         await proxy_unary_request(
             channel=channel,
@@ -2900,7 +3014,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.SESSION_GET_METADATA,
             label="session.get_metadata",
-            on_done=_attach_runtime_status,
         )
 
     async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):
@@ -3076,7 +3189,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _project_list(ws, req_id, params, session_id, user_id=None):
-        channel.ensure_lifecycle_watch(user_id)
+        channel.ensure_lifecycle_watch(user_id, ws)
         """获取项目列表(含统计),已排序,包含默认项目。
 
         filter: ``"all"``(默认) / ``"pinned"`` / ``"unpinned"``
@@ -3569,7 +3682,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless, **browser_decision_state(config)},
         )
 
     async def _path_set(ws, req_id, params, session_id, user_id=None):
@@ -5031,7 +5144,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     from jiuwenswarm.common.external_providers import provider
 
                     meta = await provider("session_metadata").get_session_metadata_async(
-                        session_id, cache_bust=True
+                        session_id, cache_bust=True, user_id=user_id,
                     )
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
@@ -5333,6 +5446,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("external_cli.detect", _external_cli_detect)
     channel.register_method("external_cli.codex_install_status", _external_cli_codex_install_status)
     channel.register_method("external_cli.install_status", _external_cli_install_status)
+    channel.register_method("external_cli.install", _external_cli_install)
+    channel.register_method("external_cli.custom_agent.remove", _external_cli_custom_agent_remove)
 
     async def _proxy_config_request(ws, req_id, params, session_id, user_id=None, *, req_method):
         """经 E2A 在目标 AgentServer 注入目录执行配置请求（仅 AgentOS 多用户调用）。
@@ -5357,8 +5472,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     def _external_cli_install_gate(params: dict[str, Any]) -> dict[str, Any] | None:
         """外部 CLI 依赖安装门控（原 config.set 本地执行的 ensure 回调语义）。
 
-        这是前端"一键安装"的唯一触发通道（``external_cli.install`` 无前端调用
-        方），安装器与状态轮询（``external_cli.install_status``）都是 gateway
+        这是 config.set 中的依赖安装触发通道；独立安装 RPC 同时保留。
+        安装器与状态轮询（``external_cli.install_status``）都是 gateway
         本地能力，须随 A4g 保留。命中 codex/claude 相关键且依赖未就绪时启动
         安装并返回状态 payload——调用方据此短路本次 config.set（安装完成前
         不写配置，与原本地语义一致，前端装完后重发）。已就绪/未命中返回
@@ -6095,6 +6210,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.tools.get", _PermReq.PERMISSIONS_TOOLS_GET)
     _register_perm("permissions.tools.set", _PermReq.PERMISSIONS_TOOLS_SET)
     _register_perm("permissions.tools.update", _PermReq.PERMISSIONS_TOOLS_UPDATE)
+    _register_perm("permissions.tools.update_user", _PermReq.PERMISSIONS_TOOLS_UPDATE_USER)
     _register_perm("permissions.tools.delete", _PermReq.PERMISSIONS_TOOLS_DELETE)
     _register_perm("permissions.rules.get", _PermReq.PERMISSIONS_RULES_GET)
     _register_perm("permissions.rules.create", _PermReq.PERMISSIONS_RULES_CREATE)

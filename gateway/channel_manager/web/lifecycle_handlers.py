@@ -11,18 +11,12 @@ from gateway.routing.agent_client import DuplicateRequestIdError
 from gateway.routing.e2a_proxy import fetch_agent_unary
 
 
-def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
+def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_session_deleted=None):
     watchers = {}
 
     async def call(method, params, session_id, user_id, ws=None):
-        # 企业版会话放在「群::机器人::用户」目录下。删除、归档只带用户时，
-        # 执行端会去 default 目录找，真实会话就报 session not found。
-        routing = getattr(ws, "_web_routing", None) if ws is not None else None
-        metadata = (
-            apply_routing_metadata(None, routing)
-            if isinstance(routing, dict)
-            else None
-        )
+        routing = getattr(ws, "_web_routing", None)
+        metadata = apply_routing_metadata(None, routing) if isinstance(routing, dict) else None
         return await fetch_agent_unary(
             agent_client=resolve_client(),
             req_method=ReqMethod(method),
@@ -34,20 +28,24 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
             metadata=metadata,
         )
 
-    async def watch(user_id):
+    def scope_key(user_id, ws=None):
+        routing = getattr(ws, "_web_routing", None) or {}
+        return (str(user_id or ""), str(routing.get("group_id") or ""), str(routing.get("bot_id") or ""), str(routing.get("gateway_id") or ""))
+
+    async def watch(user_id, scope):
         revisions = {}
         first = True
         while True:
             clients = [
                 ws
                 for ws in getattr(channel, "clients", ())
-                if str(channel.connection_user_id(ws) or "") == str(user_id or "")
+                if scope_key(channel.connection_user_id(ws), ws) == scope
             ]
             if not clients:
                 return
             try:
                 ok, response = await call(
-                    "project.lifecycle", {"events": True}, None, user_id
+                    "project.lifecycle", {"events": True}, None, user_id, clients[0]
                 )
                 if ok:
                     for entry in response.get("events", []):
@@ -55,7 +53,12 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                         key = (entry["event"], payload["resource_id"])
                         previous = revisions.get(key, -1)
                         revisions[key] = payload["revision"]
-                        if first or payload["revision"] <= previous:
+                        if payload["revision"] <= previous:
+                            continue
+                        if entry["completed"] and entry["kind"] in {"archive", "delete"}:
+                            if entry["event"].startswith("session."):
+                                mark_sessions_idle([payload["resource_id"]])
+                        if first:
                             continue
                         for ws in clients:
                             await channel.send_event(ws, entry["event"], payload)
@@ -93,18 +96,48 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 )
             await asyncio.sleep(2)
 
-    def ensure_watch(user_id):
-        owner = str(user_id or "")
+    def ensure_watch(user_id, ws=None):
+        owner = scope_key(user_id, ws)
         if owner not in watchers or watchers[owner].done():
             watchers[owner] = asyncio.create_task(
-                watch(owner), name="web-lifecycle-events"
+                watch(user_id, owner), name="web-lifecycle-events"
             )
 
     channel.ensure_lifecycle_watch = ensure_watch
 
+    def _completed_session_ids(payload: dict) -> list[str]:
+        results = payload.get("results")
+        items = results if isinstance(results, list) else [payload]
+        session_ids = []
+        for item in items:
+            if not isinstance(item, dict) or not item.get("ok", True):
+                continue
+            if item.get("finalizing") or item.get("stop_pending"):
+                continue
+            if item.get("accepted") and item.get("finalizing") is not False:
+                continue
+            session_id = item.get("session_id")
+            if session_id:
+                session_ids.append(str(session_id))
+        return session_ids
+
+    def mark_sessions_idle(session_ids: list[str]) -> None:
+        """Clear the cached busy flag for Sessions a lifecycle action stopped.
+
+        Archive/delete stop runtime work in the AgentServer without emitting
+        ``chat.processing_status(false)``.  Without this, a later
+        ``session.get_metadata`` (for example after unarchive) would report a
+        stopped Session as still processing.
+        """
+        clear = getattr(channel, "clear_session_busy", None)
+        if not callable(clear):
+            return
+        for sid in dict.fromkeys(session_ids):
+            clear(sid)
+
     def handler(method):
         async def handle(ws, req_id, params, session_id, user_id=None):
-            ensure_watch(user_id)
+            ensure_watch(user_id, ws)
             if not isinstance(params, dict):
                 await channel.send_response(
                     ws,
@@ -127,6 +160,19 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 }:
                     public[k] = v
             ok, payload = await call(method, public, session_id, user_id, ws)
+            if ok and on_session_deleted is not None and method in {
+                "session.delete",
+                "project.sessions.delete_archived",
+            }:
+                # (project_id, session_id) of each deleted conversation, before the caller hears back.
+                for item in payload.get("results", [payload]):
+                    if item.get("ok", True) and item.get("session_id"):
+                        try:
+                            await on_session_deleted(str(item.get("project_id") or ""), item["session_id"])
+                        except Exception:
+                            logging.getLogger(__name__).warning(
+                                "session deletion follow-up failed", exc_info=True
+                            )
             await channel.send_response(
                 ws,
                 req_id,
@@ -135,13 +181,22 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 error=None if ok else payload.get("error"),
                 code=None if ok else payload.get("code"),
             )
+            if ok and method in {
+                "session.archive",
+                "session.delete",
+                "project.sessions.archive",
+                "project.sessions.delete_archived",
+            }:
+                # Acceptance does not prove that file writers have stopped.
+                # Pending work keeps its busy guard until the completion poll.
+                mark_sessions_idle(_completed_session_ids(payload))
             if ok and method == "session.unarchive":
                 project_ids = {
                     item.get("project_id") for item in payload.get("results", [payload])
                     if item.get("ok", True) and item.get("restored") and item.get("project_id")
                 }
                 for client_ws in list(getattr(channel, "clients", ()) or ()):
-                    if str(channel.connection_user_id(client_ws) or "") != str(user_id or ""):
+                    if scope_key(channel.connection_user_id(client_ws), client_ws) != scope_key(user_id, ws):
                         continue
                     for project_id in project_ids:
                         try:
@@ -161,6 +216,13 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 if method.startswith(("session.", "project.sessions.")):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
+                            clear_expert = getattr(channel, "clear_expert_processing", None)
+                            session_closed = (
+                                event in {"session.archived", "session.deleted"}
+                                and "operation_id" not in payload
+                            )
+                            if callable(clear_expert) and session_closed:
+                                clear_expert(item["session_id"])
                             send_event = getattr(channel, "send_event", None)
                             if callable(send_event):
                                 await send_event(ws, event, item)

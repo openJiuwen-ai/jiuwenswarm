@@ -207,8 +207,8 @@ export function useOrganizationEvents(): void {
             timestamp: new Date().toISOString(),
             teamId,
           });
-          chat.setProcessing(key, false);
-          chat.setThinking(key, false);
+          // Request bookkeeping above owns busy state; a stale error must not
+          // clear another active request for the same expert.
         }
       }),
     );

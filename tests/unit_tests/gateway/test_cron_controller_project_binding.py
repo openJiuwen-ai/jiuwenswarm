@@ -369,7 +369,8 @@ async def test_create_job_without_marker_allows_default_project_and_no_fields() 
             "targets": "web",
             "mode": "proactive.tick",
             "id": PROACTIVE_JOB_ID,
-        }
+        },
+        internal_proactive_sync=True,
     )
     assert job["project_id"] == ""
     assert job["work_mode"] == "work"
@@ -500,8 +501,8 @@ async def test_enterprise_create_job_keeps_identity_and_skips_login_binding(
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setenv("GATEWAY_DB_HOST", "db.example")
     monkeypatch.setattr(
-        "gateway.cron.controller.validate_cron_model",
-        lambda raw, zen_entries=None: raw,
+        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        AsyncMock(return_value="some-model"),
     )
     cc = _make_controller()
     job = await cc.create_job(
@@ -660,8 +661,8 @@ async def test_personal_update_rejects_a_different_user() -> None:
 async def test_enterprise_update_requires_identity_and_drops_mcp(monkeypatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setattr(
-        "gateway.cron.controller.validate_cron_model",
-        lambda raw, zen_entries=None: "ok-model",
+        "gateway.cron.enterprise_model.resolve_enterprise_cron_model",
+        AsyncMock(return_value="ok-model"),
     )
     cc = _make_controller()
     cc._store.get_job = AsyncMock(return_value=_owned_job())

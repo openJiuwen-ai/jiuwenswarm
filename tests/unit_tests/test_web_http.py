@@ -19,10 +19,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[2]
-OUTBOUND_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "outbound.py"
-HTTP_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_http_routes.py"
-TIMEOUTS_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_http_timeouts.py"
-ROUTES_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
+OUTBOUND_PATH = ROOT / "gateway" / "channel_manager" / "web" / "outbound.py"
+HTTP_PATH = ROOT / "gateway" / "channel_manager" / "web" / "web_http_routes.py"
+TIMEOUTS_PATH = ROOT / "gateway" / "channel_manager" / "web" / "web_http_timeouts.py"
+ROUTES_PATH = ROOT / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
 
 
 def _load_module(mod_name: str, path: Path) -> ModuleType:
@@ -85,8 +85,8 @@ def app_with_mock(monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, AsyncMock]:
 
     # http_routes package so the real mapped table can load as a submodule.
     routes_pkg = ModuleType("gateway.channel_manager.web.http_routes")
-    routes_pkg.__path__ = []  # type: ignore[attr-defined]
-    sys.modules["gateway.channel_manager.web.http_routes"] = routes_pkg
+    routes_pkg.__path__ = [str(ROUTES_PATH.parent)]  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "gateway.channel_manager.web.http_routes", routes_pkg)
 
     # Real mapped table (no Gateway imports) so routes can be registered.
     _load_module(
@@ -314,14 +314,14 @@ def test_http_dispatch_registers_outbound_not_ws(monkeypatch: pytest.MonkeyPatch
         )
         try:
             assert register_calls == []
-            assert out.outbound_id in channel._request_outbounds
+            assert out.outbound_id in channel.delivery.request_outbounds
             assert getattr(out, "is_http_outbound", False) is True
             frame = await out.wait_response(rid, timeout=2)
             assert frame["ok"] is True
             assert frame["payload"]["pong"] is True
         finally:
             await channel.unregister_request_outbound(out)
-        assert out.outbound_id not in channel._request_outbounds
+        assert out.outbound_id not in channel.delivery.request_outbounds
 
     asyncio.run(_run())
 
@@ -413,21 +413,21 @@ def test_http_sse_unregister_on_cancel():
     async def _run():
         out = HttpSseOutbound(session_id="sess-cancel")
         oid = channel.register_request_outbound(out)
-        assert oid in channel._request_outbounds
-        assert oid in channel._session_request_outbounds.get("sess-cancel", set())
+        assert oid in channel.delivery.request_outbounds
+        assert oid in channel.delivery.session_request_outbounds.get("sess-cancel", set())
 
         # Simulate client disconnect mid-stream: unregister like _stream finally.
         await channel.unregister_request_outbound(out)
-        assert oid not in channel._request_outbounds
-        assert not channel._session_request_outbounds
+        assert oid not in channel.delivery.request_outbounds
+        assert not channel.delivery.session_request_outbounds
         assert out.closed is True
 
         # stop_http / clear_request_outbounds also empties leftovers.
         out2 = HttpSseOutbound(session_id="sess-stop")
         channel.register_request_outbound(out2)
-        await channel.clear_request_outbounds()
-        assert channel._request_outbounds == {}
-        assert channel._session_request_outbounds == {}
+        await channel.delivery.clear()
+        assert channel.delivery.request_outbounds == {}
+        assert channel.delivery.session_request_outbounds == {}
         assert out2.closed is True
 
     asyncio.run(_run())

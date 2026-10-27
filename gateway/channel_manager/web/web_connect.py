@@ -16,6 +16,7 @@ import secrets
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
@@ -152,6 +153,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "rsi.training.status.changed",
         "rsi.training.progress",
         "rsi.training.tree.delta",
+        # The suggestion names the request it follows and its own id for the page's outcome events.
+        "prompt_suggestion.ready",
     }
 )
 
@@ -217,6 +220,11 @@ class WebChannel(BaseWsChannel):
         # 供 /ws/git 写操作(如 discard_turn_changes)查询 agent 是否正在执行。
         # 未跟踪的 session 默认返回 False(不忙碌)。
         self._session_busy: dict[str, bool] = {}
+        self._expert_processing_requests: dict[str, set[tuple[str, str]]] = {}
+        # session_id -> 重新绑定的 ws_id: 刷新后经新连接完成 A4P 授权
+        # (complete/reject) 时登记，把该恢复 turn 的迟到事件改投到这个 ws，
+        # 而不是当孤儿丢弃；turn 的终态事件送达后解除绑定。
+        self._a4p_rebound_ws: dict[str, str] = {}
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -791,7 +799,17 @@ class WebChannel(BaseWsChannel):
             http=guarded_http_protocol(),
             ws=guarded_websockets_protocol(),
         )
-        self._uvicorn_server = uvicorn.Server(uv_cfg)
+
+        class EmbeddedUvicornServer(uvicorn.Server):
+            @contextmanager
+            def capture_signals(self):
+                # The Gateway owns process signals and coordinates all of its
+                # component shutdowns. Re-raising a captured signal from this
+                # nested server would interrupt that cleanup and leave its task
+                # with an unobserved KeyboardInterrupt.
+                yield
+
+        self._uvicorn_server = EmbeddedUvicornServer(uv_cfg)
         self._running = True
         logger.info(
             "WebChannel 已启动: ws://%s:%s%s (HTTP+WS same port)",
@@ -847,6 +865,7 @@ class WebChannel(BaseWsChannel):
         if close_tasks:
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
+        self._expert_processing_requests.clear()
         await self.delivery.clear()
 
         watcher = getattr(self, "web_registry_watcher", None)
@@ -1165,7 +1184,9 @@ class WebChannel(BaseWsChannel):
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
             # ``default`` 是个人版没填用户时写进任务的占位，不是登录名。
             # 按它过滤会和当前网页连接对不上，结果只留在历史里，不刷新就看不到。
-            if not cron_user_id or cron_user_id == "default":
+            from jiuwenswarm.edition import is_enterprise
+
+            if not is_enterprise() and (not cron_user_id or cron_user_id == "default"):
                 clients = list(self.clients)
             else:
                 clients = [
@@ -1340,13 +1361,20 @@ class WebChannel(BaseWsChannel):
             if ws is not None:
                 ws_set.add(ws)
             elif routing_target is None:
-                # 发起该请求的物理连接已断开（unregister_ws 已摘除 ws_id 映射，
-                # 重连必换新 ws_id）：这是在途流的迟到事件。落入 session 桶会投给
-                # 同 session 的新连接，被当作新请求的回复消费，造成跨请求串扰。
-                # 丢弃；重连方通过 history 拉取补齐。team fan_out（带
-                # routing_target）V2 未命中后的回退保留原语义。
-                self._log_orphan_request_drop(msg, request_ws_id)
-                return
+                # 刷新后若用户已在新连接上重新完成 A4P 授权，该恢复 turn 的迟到
+                # 事件应改投到新连接（否则会被当孤儿丢弃，刷新方看不到持续输出）。
+                rebound_ws = self._rebound_ws_for(msg)
+                if rebound_ws is not None:
+                    ws_set.add(rebound_ws)
+                else:
+                    # 发起该请求的物理连接已断开（unregister_ws 已摘除 ws_id 映射，
+                    # 重连必换新 ws_id）：这是在途流的迟到事件。落入 session 桶会投给
+                    # 同 session 的新连接，被当作新请求的回复消费，造成跨请求串扰。
+                    # 丢弃；重连方通过 history 拉取补齐。team fan_out（带
+                    # routing_target）V2 未命中后的回退保留原语义。
+                    self._log_orphan_request_drop(msg, request_ws_id)
+                    await self._notify_orphan_history_changed(msg)
+                    return
 
         if not ws_set and not msg.session_id:
             logger.warning(
@@ -1402,7 +1430,7 @@ class WebChannel(BaseWsChannel):
         # 广播 processing_status{is_processing:false, paused:true}, 此处合成
         # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
         # pause 失败时也不合成 false — 状态未变, 合成会误报.
-        if event_name == "chat.interrupt_result":
+        if event_name == "chat.interrupt_result" and not str(payload.get("source") or "").startswith("org_"):
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
             if intent == "pause":
                 return
@@ -1439,6 +1467,86 @@ class WebChannel(BaseWsChannel):
                 if owner_matched:
                     clients.add(ws)
         return clients
+
+    def record_a4p_rebound(self, session_id: str | None, ws_id: str) -> None:
+        """登记 A4P 恢复 turn 的输出改绑目标（经新连接完成授权时调用）。"""
+        sid = str(session_id or "").strip()
+        if sid and ws_id:
+            self._a4p_rebound_ws[sid] = ws_id
+
+    def clear_a4p_rebound(self, session_id: str | None) -> None:
+        """撤销重新绑定（授权转发失败时调用）。"""
+        sid = str(session_id or "").strip()
+        self._a4p_rebound_ws.pop(sid, None)
+
+    @staticmethod
+    def _resolve_event_name(msg: Message) -> str:
+        """解析事件名：优先 ``event_type.value``，回退 ``payload["event_type"]``。
+
+        ``_chunk_to_message`` 仅在 payload 的事件名能解析为已知 ``EventType`` 时
+        才填充 ``event_type``，否则保持 None；本函数沿用 send() 与
+        ``_serialize_frame`` 既有的回退逻辑，避免同一条终态事件在不同分支被识别
+        成不同类型。
+        """
+        event_type = getattr(msg, "event_type", None)
+        if event_type is not None:
+            value = getattr(event_type, "value", "")
+            if isinstance(value, str) and value:
+                return value
+        payload = getattr(msg, "payload", None)
+        if isinstance(payload, dict):
+            payload_event_type = payload.get("event_type")
+            if isinstance(payload_event_type, str) and payload_event_type.strip():
+                return payload_event_type.strip()
+        return ""
+
+    def _rebound_ws_for(self, msg: Message) -> Any | None:
+        """孤儿事件若属于刚重新授权的恢复 turn，返回应改投的活动 ws，否则 None。"""
+        sid = str(getattr(msg, "session_id", None) or "").strip()
+        if not sid:
+            return None
+        rebound_ws_id = self._a4p_rebound_ws.get(sid)
+        if not rebound_ws_id:
+            return None
+        ws = self._ws_by_id.get(rebound_ws_id)
+        if ws is None or getattr(ws, "closed", False):
+            self._a4p_rebound_ws.pop(sid, None)
+            return None
+        if self._resolve_event_name(msg) in {"chat.final", "chat.error"}:
+            self._a4p_rebound_ws.pop(sid, None)
+        return ws
+
+    async def _notify_orphan_history_changed(self, msg: Message) -> None:
+        """Invalidate authorized observers' history without forwarding an old turn.
+
+        A reconnect may have read history before the original execution finished.
+        Its terminal output must trigger another read, but must never be consumed
+        as the new connection's active chat response.
+        """
+        if self._resolve_event_name(msg) not in {"chat.final", "chat.error"} or not msg.session_id:
+            return
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        # This key is injected from the authenticated Web connection, including
+        # an explicit None for local anonymous connections. Missing is unknown.
+        if "user_id" not in metadata:
+            return
+        owner = metadata["user_id"]
+        app_id = msg.app_id or metadata.get("app_id")
+        if not app_id:
+            return
+        clients: set[Any] = set()
+        for route, sockets in self._clients_by_key.items():
+            if route.session_id != msg.session_id or route.app_id != app_id:
+                continue
+            for socket in sockets:
+                if not getattr(socket, "closed", False) and self.connection_user_id(socket) == owner:
+                    clients.add(socket)
+        if clients:
+            await self._broadcast_to({
+                "type": "event",
+                "event": "runtime.history_required",
+                "payload": {"session_id": msg.session_id},
+            }, clients)
 
     @staticmethod
     def _log_orphan_request_drop(msg: Message, request_ws_id: str) -> None:
@@ -1478,6 +1586,43 @@ class WebChannel(BaseWsChannel):
             event_name = event_type.value
         else:
             event_name = str(payload.get("event_type") or "") if payload is not None else ""
+        if payload is not None and payload.get("source") == "org_stop":
+            sid = payload.get("session_id") or msg.session_id
+            if sid and payload.get("success") is True:
+                self._session_busy[sid] = False
+                requests = self._expert_processing_requests.get(sid, set())
+                items = payload.get("cancelled_requests")
+                if isinstance(items, list):
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        team_id = item.get("team_id")
+                        request_id = item.get("request_id")
+                        if isinstance(team_id, str) and isinstance(request_id, str):
+                            requests.discard((team_id, request_id))
+                if not requests:
+                    self._expert_processing_requests.pop(sid, None)
+            return
+        if payload is not None and str(payload.get("source") or "").startswith("org_"):
+            # Expert terminals cannot clear the owner's busy flag. Keep the
+            # aggregate for Git write guards until every expert request exits.
+            sid = payload.get("session_id") or msg.session_id
+            team_id = str(payload.get("team_id") or payload.get("team_name") or "")
+            terminal = event_name in {"org.turn_completed", "chat.error"}
+            is_processing_event = event_name == "chat.processing_status" or terminal
+            if sid and team_id and is_processing_event:
+                request_id = str(payload.get("request_id") or "").strip()
+                if not request_id:
+                    return
+                request = (team_id, request_id)
+                requests = self._expert_processing_requests.setdefault(sid, set())
+                if not terminal and payload.get("is_processing") is True:
+                    requests.add(request)
+                else:
+                    requests.discard(request)
+                if not requests:
+                    self._expert_processing_requests.pop(sid, None)
+            return
         if event_name == "chat.processing_status" and payload is not None:
             sid = payload.get("session_id") or msg.session_id
             if sid:
@@ -1496,7 +1641,64 @@ class WebChannel(BaseWsChannel):
         供 /ws/git 写操作(如 ``project.git.discard_turn_changes``)在执行前
         校验会话非忙碌,避免与正在进行的 agent 文件写入冲突。
         """
-        return self._session_busy.get(session_id, False)
+        return self._session_busy.get(session_id, False) or bool(self._expert_processing_requests.get(session_id))
+
+    def clear_expert_processing(self, session_id: str) -> None:
+        """Release expert request records after a session is closed."""
+        self._expert_processing_requests.pop(session_id, None)
+
+    async def reconcile_expert_processing(self, session_id: str, user_id: str | None, ws: Any = None) -> None:
+        """Reconcile disconnects with live tasks without declaring running work idle."""
+        baseline = set(self._expert_processing_requests.get(session_id, set()))
+        if not baseline or self.agent_client is None:
+            return
+        from gateway.routing.e2a_proxy import fetch_agent_unary
+        from jiuwenswarm.common.request_identity import apply_routing_metadata
+
+        try:
+            ok, payload = await fetch_agent_unary(
+                agent_client=self.agent_client, req_method=ReqMethod.TEAM_LIST,
+                params={"session_id": session_id}, session_id=session_id,
+                user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
+                metadata=apply_routing_metadata(None, getattr(ws, "_web_routing", None)),
+            )
+            snapshot = payload.get("organization_requests", payload.get("expert_requests"))
+            if not ok or not isinstance(snapshot, list):
+                return
+            live = set()
+            for item in snapshot:
+                if not isinstance(item, dict):
+                    continue
+                team_id = item.get("team_id")
+                request_id = item.get("request_id")
+                if not isinstance(team_id, str):
+                    continue
+                if not isinstance(request_id, str) or not request_id:
+                    continue
+                live.add((team_id, request_id))
+            current = self._expert_processing_requests.get(session_id, set())
+            remaining = (current - baseline) | (current & live)
+            if remaining:
+                self._expert_processing_requests[session_id] = remaining
+            else:
+                self.clear_expert_processing(session_id)
+        except Exception:
+            logger.warning(
+                "[WebChannel] expert processing reconciliation failed: session=%s",
+                session_id,
+                exc_info=True,
+            )
+
+    def clear_session_busy(self, session_id: str) -> None:
+        """Drop the cached busy flag for a Session stopped outside the event flow.
+
+        Archive/delete stop a running turn in the AgentServer without emitting
+        ``chat.processing_status(false)``.  Without this, a later
+        ``session.get_metadata`` (for example after unarchive) would report a
+        stopped Session as still processing.
+        """
+        if session_id:
+            self._session_busy.pop(str(session_id), None)
 
     def get_metadata(self) -> ChannelMetadata:
         """获取 Channel 元数据."""
@@ -1682,6 +1884,10 @@ class WebChannel(BaseWsChannel):
             # 取出该 ws 关联的 session_ids，清理映射
             ws_id = id(ws)
             disconnected_sessions = self._ws_sessions.pop(ws_id, set())
+            await asyncio.gather(*(
+                self.reconcile_expert_processing(sid, self.connection_user_id(ws), ws)
+                for sid in disconnected_sessions
+            ))
             logger.info(
                 "WebChannel 连接关闭: remote=%s sessions=%s",
                 remote,
@@ -1935,6 +2141,7 @@ class WebChannel(BaseWsChannel):
             {
                 "query": query,
                 "method": method,
+                "user_id": req_user_id,
                 # V2: 注入 ws_id 供 MessageHandler 构造 WebDeliveryTarget(ws_id=真值)。
                 "ws_id": getattr(ws, "_jiuwen_ws_id", ""),
                 # 登录会话id（握手时认的)。Gateway据此

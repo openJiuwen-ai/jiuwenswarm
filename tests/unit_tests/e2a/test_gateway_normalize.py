@@ -317,7 +317,7 @@ def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, e
 
 @pytest.mark.parametrize("payload", [None, {}, {"event_type": "chat.delta", "content": "plain"}])
 def test_non_organization_normalization_keeps_protocol_behavior(payload):
-    from gateway_protocol.e2a import gateway_normalize as protocol
+    from openjiuwen_protocol.e2a import gateway_normalize as protocol
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
 

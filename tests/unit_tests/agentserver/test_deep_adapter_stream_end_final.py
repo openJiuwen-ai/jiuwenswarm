@@ -16,6 +16,8 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
+pytestmark = pytest.mark.asyncio
+
 
 def _adapter_ready(monkeypatch: pytest.MonkeyPatch) -> JiuWenSwarmDeepAdapter:
     adapter = JiuWenSwarmDeepAdapter()

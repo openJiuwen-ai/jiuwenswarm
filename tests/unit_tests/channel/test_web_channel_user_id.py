@@ -441,3 +441,21 @@ async def test_session_create_ignores_params_user_id(tmp_path, monkeypatch):
     # 请求 params 中显式携带的 user_id("victim")必须被忽略并移除，
     # 不得覆盖连接身份；envelope.user_id 始终以连接为准。
     assert "user_id" not in agent_client.requests[-1].params
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner", ["", "default"])
+async def test_enterprise_cron_missing_or_default_owner_never_broadcasts(monkeypatch, owner):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    alice = FakeWebSocket(query_user_id="alice")
+    bob = FakeWebSocket(query_user_id="bob")
+    monkeypatch.setattr(WebChannel, "clients", property(lambda _: {alice, bob}))
+    sent = []
+    monkeypatch.setattr(channel, "_enqueue_send", lambda ws, frame: sent.append(ws))
+    await channel.send(Message(
+        id="cron-default", type="event", channel_id="web", session_id=None,
+        params={}, timestamp=0, ok=True, event_type=EventType.CHAT_FINAL,
+        payload={"content": "private", "user_id": owner, "cron": {"job_id": "job-1"}},
+    ))
+    assert sent == []
