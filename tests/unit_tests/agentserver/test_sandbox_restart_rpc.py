@@ -376,6 +376,35 @@ async def test_adapter_restart_uses_scoped_key_and_propagates_error(monkeypatch,
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("strict", [False, True])
+async def test_adapter_missing_scope_does_not_call_core_recreation(monkeypatch, strict):
+    from jiuwenswarm.common import config
+    monkeypatch.setattr(config, "get_config", lambda: {})
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as adapter_module
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox
+
+    launcher = SimpleNamespace(sandbox_type="jiuwenbox", base_url="http://localhost:8321", extra_params={})
+    card = SimpleNamespace(mode=adapter_module.OperationMode.SANDBOX,
+                           gateway_config=SimpleNamespace(launcher_config=launcher))
+    adapter = SimpleNamespace(_sys_operation_card=card, _is_code_agent=False,
+                              _resolve_project_dir_for_sandbox=lambda: None,
+                              _sys_operation_isolation_key=lambda _: None)
+    monkeypatch.setattr(adapter_module, "build_filesystem_policy", lambda *a, **k: ({"filesystem_policy": {}}, []))
+    create, delete = AsyncMock(), AsyncMock()
+    monkeypatch.setattr(jiuwenbox, "force_recreate_jiuwenbox_sandbox", create)
+    monkeypatch.setattr(jiuwenbox, "delete_jiuwenbox_sandbox", delete)
+    apply = adapter_module.JiuWenSwarmDeepAdapter.apply_sandbox_runtime_patch
+    if strict:
+        with pytest.raises(RuntimeError, match="sandbox isolation key is unavailable"):
+            await apply(adapter, {"files": []}, files_changed=True, strict=strict)
+    else:
+        assert await apply(adapter, {"files": []}, files_changed=True, strict=strict) is False
+    create.assert_not_awaited()
+    delete.assert_not_awaited()
+    assert "sandbox_id" not in launcher.extra_params
+
+
+@pytest.mark.asyncio
 async def test_all_old_acl_cleanup_precedes_any_replacement(monkeypatch):
     events = []
 

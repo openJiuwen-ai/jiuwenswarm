@@ -4632,10 +4632,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 return False
             try:
                 isolation_key = self._sys_operation_isolation_key(card)
-                if strict and not isolation_key:
+                if not isolation_key:
                     raise RuntimeError("sandbox isolation key is unavailable")
-                shared_key = (build_jiuwenbox_shared_scope_key(str(launcher.base_url), isolation_key)
-                              if isolation_key else None)
+                shared_key = build_jiuwenbox_shared_scope_key(str(launcher.base_url), isolation_key)
                 if strict:
                     import sys
                     # Windows sandboxes share the account used by ACL entries.
