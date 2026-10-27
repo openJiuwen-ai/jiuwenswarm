@@ -86,6 +86,8 @@ def build_system_prompt(language: str, *, repl_enabled: bool = True) -> str:
         "for systematic multi-step workflows (多步工作流), loops and conditions. It executes Python, "
         "not JavaScript. Variables persist only within this delegated task; the host owns cleanup. "
         "Reads present text, printImage presents screenshots, and actions require explicit reads to verify. "
-        "Never reuse old-tool references or coordinates in the REPL, or vice versa. REPL input follows "
-        "its own host shared/exclusive policy. It runs with host permissions, not in a security sandbox.\n\n"
+        "Never reuse old-tool references or coordinates in the REPL, or vice versa. This host defaults "
+        "REPL input to exclusive mode unless COMPUTER_USE_DESKTOP explicitly selects another mode; "
+        "this overrides the standalone SDK default below. It runs with host permissions, "
+        "not in a security sandbox.\n\n"
     ) + base.replace("computer_use({", "cua_repl({")

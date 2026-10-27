@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import os
 import weakref
 
 from mcp.types import CallToolResult
@@ -38,6 +39,8 @@ class ReplRuntime:
     """One persistent engine session per delegation; the engine owns its worker."""
 
     def __init__(self, *, session=None):
+        # Align the embedded REPL with the host's single-step desktop tools.
+        os.environ.setdefault("COMPUTER_USE_DESKTOP", "exclusive")
         self.session = session
         self.call_lock = asyncio.Lock()
         self.close_task = None
