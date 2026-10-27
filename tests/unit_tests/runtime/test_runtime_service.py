@@ -29,9 +29,11 @@ from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
+    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
     SessionCloseTimeoutError,
     SessionExecutionState,
     SessionWorkKind,
+    TeamExecutionContext,
     TeamExecutionDetails,
     TeamWaiterKind,
 )
@@ -48,6 +50,100 @@ from jiuwenswarm.runtime.session_provisioner import (
 
 async def _collect_events(stream) -> list[RuntimeEvent]:
     return [event async for event in stream]
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("work_mode", ["work", "code"])
+@pytest.mark.parametrize("session_type", ["agent", "team"])
+async def test_runtime_corrects_mode_before_scheduling(monkeypatch, streaming, work_mode, session_type):
+    stored_mode = f"{session_type}.{work_mode}.normal"
+    wrong_type = "team" if session_type == "agent" else "agent"
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"mode": stored_mode, "work_mode": work_mode},
+    )
+    manager = FakeAgentManager()
+    runtime = AgentRuntime(agent_manager=manager)
+    runtime._started = True
+    coordinator = runtime._session_coordinator
+    await coordinator.register_session("mode-scheduling", "web")
+    runtime._ensure_session_registered = AsyncMock()
+    runtime._team_lifecycle = MagicMock()
+    runtime._remove_team_response_waiter = AsyncMock()
+    entered = {name: asyncio.Event() for name in ("first", "second")}
+    release = asyncio.Event()
+    order = []
+    expected_kind = (
+        SessionWorkKind.TEAM_REQUEST if session_type == "team"
+        else SessionWorkKind.CHAT_STREAM if streaming else SessionWorkKind.CHAT_UNARY
+    )
+
+    async def execute(request):
+        await prepare_chat_turn(manager, request, "web", sync_metadata=False)
+        assert request.params["mode"] == stored_mode
+        if streaming and session_type == "team":
+            context = request.metadata[TEAM_EXECUTION_CONTEXT_METADATA_KEY]
+            assert isinstance(context, TeamExecutionContext)
+            assert context.work_kind is SessionWorkKind.TEAM_REQUEST
+        order.append(f"start:{request.request_id}")
+        entered[request.request_id].set()
+        await release.wait()
+        order.append(f"end:{request.request_id}")
+        return RuntimeEvent(
+            request_id=request.request_id, channel_id="web", session_id=request.session_id,
+            payload={"event_type": "chat.final"}, is_complete=True,
+        )
+
+    async def stream_started(request, **kwargs):
+        yield await execute(request)
+
+    async def invoke_started(request, **kwargs):
+        return [await execute(request)]
+
+    monkeypatch.setattr(runtime, "_stream_started", stream_started)
+    monkeypatch.setattr(runtime, "_invoke_started", invoke_started)
+
+    def submit(request_id, mode):
+        request = AgentRequest(
+            request_id=request_id, channel_id="web", session_id="mode-scheduling",
+            req_method=ReqMethod.CHAT_SEND, is_stream=streaming,
+            params={"query": "hello", "mode": mode, "work_mode": work_mode},
+        )
+        return asyncio.create_task(
+            _collect_events(runtime.stream(request)) if streaming else runtime.invoke(request)
+        )
+
+    tasks = [submit("first", stored_mode)]
+    try:
+        await asyncio.wait_for(entered["first"].wait(), timeout=1)
+        tasks.append(submit("second", f"{wrong_type}.{work_mode}.normal"))
+        async with asyncio.timeout(1):
+            while True:
+                snapshot = coordinator.snapshot_session("mode-scheduling")
+                executions = [item for item in snapshot.executions if item.request_id == "second"]
+                if executions:
+                    break
+                await asyncio.sleep(0)
+        execution = executions[0]
+        assert execution.work_kind is expected_kind
+        if session_type == "agent":
+            assert execution.state is SessionExecutionState.QUEUED
+            assert not entered["second"].is_set()
+        else:
+            assert isinstance(execution.team, TeamExecutionDetails)
+            await asyncio.wait_for(entered["second"].wait(), timeout=1)
+        release.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert all(events[0].event_type == "chat.final" for events in results)
+        if session_type == "agent":
+            assert order == ["start:first", "end:first", "start:second", "end:second"]
+    finally:
+        release.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await coordinator.close()
 
 
 @pytest.mark.parametrize(
