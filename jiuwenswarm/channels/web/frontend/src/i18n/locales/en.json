@@ -1237,10 +1237,11 @@
         "partial": "Task partly completed"
       },
       "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
       "ttseReady": "Experience available",
       "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
       "ttseResult": {
-        "triggered": "Triggered; TTSE is generating and saving the experience in the background",
+        "triggered": "Triggered",
         "failed": "Trigger failed"
       },
       "blocked": "Unavailable: {{reason}}",
