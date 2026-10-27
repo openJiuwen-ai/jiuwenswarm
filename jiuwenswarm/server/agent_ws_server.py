@@ -163,15 +163,14 @@ from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.personal_context import PersonalContextHostAPI
 from jiuwenswarm.server.personal_context.ws_handler import (
     PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
+    handle_personal_context_request,
+)
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 from jiuwenswarm.server.runtime.session.session_metadata import (
     build_server_push_message,
     get_all_sessions_metadata,
     get_session_metadata,
-)
-from jiuwenswarm.server.personal_context.ws_handler import (
-    handle_personal_context_request,
 )
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
@@ -242,11 +241,6 @@ from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server.personal_context import PersonalContextHostAPI
-from jiuwenswarm.server.personal_context.ws_handler import (
-    PERSONAL_CONTEXT_REQUEST_METHODS as _PERSONAL_CONTEXT_REQ_METHODS,
-    handle_personal_context_request,
-)
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.runtime.request import (
     PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
