@@ -229,7 +229,9 @@ async def request_completion(
     if response.status_code >= 400:
         detail = response.text.strip()[:1_000]
         if response.status_code == 429:
-            raise JoyAIRateLimitError(f"JoyAI 请求失败 (429): {detail}")
+            raise JoyAIRateLimitError(
+                f"JoyAI 服务商限流 (429，每分钟 token 额度已用完): {detail}"
+            )
         raise RuntimeError(f"JoyAI 请求失败 ({response.status_code}): {detail}")
     try:
         data = response.json()

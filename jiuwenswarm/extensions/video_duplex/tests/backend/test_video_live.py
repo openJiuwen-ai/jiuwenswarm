@@ -1920,7 +1920,7 @@ async def test_joyai_frame_handler_exposes_rate_limit_code(monkeypatch) -> None:
     async def fake_request(*args):
         del args
         raise joyai_provider.JoyAIRateLimitError(
-            'JoyAI 请求失败 (429): {"cause":"tokens limit for minute"}'
+            'JoyAI 服务商限流 (429，每分钟 token 额度已用完): {"cause":"tokens limit for minute"}'
         )
 
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
