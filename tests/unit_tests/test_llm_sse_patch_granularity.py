@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -30,6 +32,7 @@ _MODULE_PATCH_FLAGS = (
     "_RESPONSE_ASSEMBLY_PATCH_APPLIED",
     "_GLM_XML_SANITIZE_PATCH_APPLIED",
     "_MAAS_SPAN_ID_PATCH_APPLIED",
+    "_MAAS_PROFILE_SPAN_PATCH_APPLIED",
 )
 
 _CLIENT_PATCH_FLAGS = (
@@ -53,6 +56,21 @@ def fresh_patch_state(monkeypatch: pytest.MonkeyPatch) -> None:
         raising=False,
     )
     monkeypatch.setattr(headers_helper, "_auth_header_patch_applied", False, raising=False)
+
+    # 新核心 maas profile 的 x-span-id transform 也可能已被替换；还原为原生实现，
+    # 让「未打补丁」状态完整（旧核心无该模块，直接跳过）。
+    try:
+        from openjiuwen.core.foundation.llm.utils import endpoint_profiles
+    except ImportError:
+        pass
+    else:
+        native_transform = getattr(endpoint_profiles, "_inject_x_span_id", None)
+        if callable(native_transform):
+            monkeypatch.setitem(
+                endpoint_profiles.REQUEST_HEADER_TRANSFORMS,
+                "inject_x_span_id",
+                native_transform,
+            )
 
 
 # ── P0：补丁粒度与幂等 ────────────────────────────────────────────────
@@ -115,6 +133,111 @@ def test_aggregate_entry_still_applies_all_patches(fresh_patch_state: None) -> N
     assert oai_mod.OpenAIModelClient._glm_xml_sanitize_patch_applied is True  # pylint: disable=protected-access
     assert oai_mod.OpenAIModelClient._maas_span_id_patch_applied is True  # pylint: disable=protected-access
     assert oai_mod.OpenAIModelClient._response_assembly_patch_applied is True  # pylint: disable=protected-access
+
+
+# ── MaaS x-span-id 注入与既有值 ──────────────────────────────────────
+
+
+def test_maas_span_id_keeps_existing_value(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    """调用方 / 扩展已给出 x-span-id 时保留原值，MaaS 自动注入只做兜底。"""
+    recorded: list[dict[str, Any]] = []
+
+    async def _fake_invoke(self: Any, *args: Any, **kwargs: Any):
+        recorded.append(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_invoke)
+    patch_mod.apply_huawei_maas_span_id_patch()
+
+    client = SimpleNamespace(
+        model_client_config=SimpleNamespace(api_base="https://modelarts-maas.cn/v1"),
+    )
+
+    asyncio.run(
+        oai_mod.OpenAIModelClient.invoke(
+            client, custom_headers={"X-SPAN-ID": "ext-span-1"}
+        )
+    )
+    # 大小写不同也视为已提供，不再生成第二份
+    assert recorded[0]["custom_headers"] == {"X-SPAN-ID": "ext-span-1"}
+
+    asyncio.run(oai_mod.OpenAIModelClient.invoke(client))
+    injected = recorded[1]["custom_headers"]["x-span-id"]
+    assert len(injected) == 32 and all(c in "0123456789abcdef" for c in injected)
+
+
+def test_inject_span_id_keeps_existing_value() -> None:
+    """MaaS profile 的注入实现：已有非空值时保留，空值则兜底并清掉空键。"""
+    headers = patch_mod._ensure_span_id(  # pylint: disable=protected-access
+        {"X-SPAN-ID": "ext-span-1"}
+    )
+    assert headers == {"X-SPAN-ID": "ext-span-1"}
+
+    auto = patch_mod._ensure_span_id(  # pylint: disable=protected-access
+        {"x-span-id": " "}
+    )
+    assert [k for k in auto if k.lower() == "x-span-id"] == ["x-span-id"]
+    assert len(auto["x-span-id"]) == 32
+
+
+def test_maas_profile_transform_is_patched() -> None:
+    """新核心的 maas profile transform 必须被替换为「已有非空值则保留」。"""
+    endpoint_profiles = pytest.importorskip(
+        "openjiuwen.core.foundation.llm.utils.endpoint_profiles"
+    )
+    patch_mod.apply_huawei_maas_span_id_patch()
+
+    transform = endpoint_profiles.REQUEST_HEADER_TRANSFORMS["inject_x_span_id"]
+    headers = transform({"X-SPAN-ID": "ext-span-1"})
+    assert headers == {"X-SPAN-ID": "ext-span-1"}
+
+    auto = transform({"x-span-id": ""})
+    assert [k for k in auto if k.lower() == "x-span-id"] == ["x-span-id"]
+    assert len(auto["x-span-id"]) == 32
+
+
+def test_maas_profile_build_headers_end_to_end() -> None:
+    """端到端：custom_headers 经 _build_request_headers 后只含一个 span id。"""
+    pytest.importorskip("openjiuwen.core.foundation.llm.utils.endpoint_profiles")
+    patch_mod.apply_huawei_maas_span_id_patch()
+
+    client = SimpleNamespace(
+        model_client_config=SimpleNamespace(endpoint_profile="maas"),
+        _endpoint_profile_name=lambda: "maas",
+    )
+    headers = oai_mod.OpenAIModelClient._build_request_headers(  # pylint: disable=protected-access
+        client, {}, {"X-SPAN-ID": "ext-span-1"}
+    )
+    assert [k for k in headers if k.lower() == "x-span-id"] == ["X-SPAN-ID"]
+    assert headers["X-SPAN-ID"] == "ext-span-1"
+
+
+def test_maas_span_id_replaces_blank_value(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None
+) -> None:
+    """空/纯空白 x-span-id 视为未提供：清掉空键并注入 uuid，避免下游收到空值。"""
+    recorded: list[dict[str, Any]] = []
+
+    async def _fake_invoke(self: Any, *args: Any, **kwargs: Any):
+        recorded.append(kwargs)
+        return "ok"
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "invoke", _fake_invoke)
+    patch_mod.apply_huawei_maas_span_id_patch()
+
+    client = SimpleNamespace(
+        model_client_config=SimpleNamespace(api_base="https://modelarts-maas.cn/v1"),
+    )
+    asyncio.run(
+        oai_mod.OpenAIModelClient.invoke(
+            client, custom_headers={"X-SPAN-ID": "   "}
+        )
+    )
+    headers = recorded[0]["custom_headers"]
+    assert [k for k in headers if k.lower() == "x-span-id"] == ["x-span-id"]
+    assert len(headers["x-span-id"]) == 32
 
 
 # ── P1：渠道门控读取路径 ──────────────────────────────────────────────

@@ -3,9 +3,9 @@
 
 覆盖核心埋点的验收要点（F153）：
 
-* 合并规则：保留键丢弃（Authorization / x-span-id / thinking 族）、非法值
-  （含 CR/LF 的头、不可序列化的正文字段）跳过、调用方显式值优先、未写的
-  口袋保持原样；
+* 合并规则：保留键丢弃（Authorization / thinking 族）、x-span-id 允许写入、
+  非法值（含 CR/LF 的头、不可序列化的正文字段）跳过、调用方显式值优先、
+  未写的口袋保持原样；
 * 触发链路：invoke / stream 出口触发事件并合并口袋；
 * 失败语义：handler 抛错、registry 未初始化时请求照常发出（零新增字段）；
 * 幂等：独立标志，重复安装不二次包装。
@@ -111,7 +111,7 @@ def test_event_name_is_scoped() -> None:
     assert AgentServerHookEvents.BEFORE_MODEL_HTTP == "agent_server:before_model_http"
 
 
-def test_merge_drops_reserved_and_invalid_values() -> None:
+def test_merge_keeps_span_id_and_drops_reserved_and_invalid_values() -> None:
     from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
 
     kwargs: dict[str, Any] = {}
@@ -119,7 +119,7 @@ def test_merge_drops_reserved_and_invalid_values() -> None:
         headers={
             "x-client": "miniprogram|vivo|trial",
             "Authorization": "Basic evil",
-            "X-SPAN-ID": "evil",  # 保留键按大小写不敏感匹配
+            "X-SPAN-ID": "ext-span-1",  # 扩展可写，宿主不再丢弃
             "x-bad": "a\r\nSet-Cookie: pwn",
             "x-cn": "用户中文原话",  # 非 latin-1 头值会让 httpx 发送时抛错，必须跳过
             "": "empty-name",
@@ -135,9 +135,58 @@ def test_merge_drops_reserved_and_invalid_values() -> None:
     patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
 
     assert kwargs["custom_headers"] == {
-        "x-client": "miniprogram|vivo|trial"
+        "x-client": "miniprogram|vivo|trial",
+        "X-SPAN-ID": "ext-span-1",
     }
     assert kwargs["extra_body"] == {"report_id": "r-1"}
+
+
+def test_merge_span_id_is_case_insensitive_and_caller_wins() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    kwargs: dict[str, Any] = {"custom_headers": {"X-SPAN-ID": "caller-span"}}
+    ctx = ModelHttpHookContext(headers={"x-span-id": "ext-span"})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+
+    # 调用方非空值优先，且不新增第二个大小写变体（否则 httpx 会合并成双值）
+    assert kwargs["custom_headers"] == {"X-SPAN-ID": "caller-span"}
+
+
+def test_merge_span_id_ignores_blank_extension_value() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    kwargs: dict[str, Any] = {}
+    ctx = ModelHttpHookContext(headers={"x-span-id": " "})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+
+    # 扩展空值视为未提供，不写入；留给 MaaS 兜底 uuid
+    assert kwargs["custom_headers"] == {}
+
+
+def test_merge_span_id_replaces_caller_blank_value() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    kwargs: dict[str, Any] = {"custom_headers": {"X-SPAN-ID": ""}}
+    ctx = ModelHttpHookContext(headers={"x-span-id": "ext-span"})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+
+    # 调用方空值无意义：清掉空键，采用扩展的非空值，最终仍只有一个同名键
+    assert kwargs["custom_headers"] == {"x-span-id": "ext-span"}
+
+
+def test_merge_dedupes_any_header_case_insensitively() -> None:
+    from jiuwenswarm.extensions.hooks_context import ModelHttpHookContext
+
+    # 任意头都按大小写不敏感去重，不需要为每个新增头单独特判
+    kwargs: dict[str, Any] = {"custom_headers": {"X-Client": "caller"}}
+    ctx = ModelHttpHookContext(headers={"x-client": "extension"})
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+    assert kwargs["custom_headers"] == {"X-Client": "caller"}
+
+    # 调用方空值时允许扩展值覆盖，并沿用扩展的键名
+    kwargs = {"custom_headers": {"X-Client": " "}}
+    patch_mod._merge_model_http_hook_ctx(ctx, kwargs)  # pylint: disable=protected-access
+    assert kwargs["custom_headers"] == {"x-client": "extension"}
 
 
 def test_merge_keeps_caller_values_and_empty_pockets() -> None:

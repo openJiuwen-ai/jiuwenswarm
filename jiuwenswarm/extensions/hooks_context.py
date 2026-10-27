@@ -78,8 +78,9 @@ class ModelHttpHookContext:
     发出 HTTP 之前触发；工具循环、重试、换模型都经过该出口。扩展往 ``headers``
     / ``extra_body`` 两个口袋写值，宿主在trigger 返回后按保留键白名单合并进本次请求：
 
-    - ``headers`` 并进 ``custom_headers``（``Authorization``、``x-span-id``
-      扩展写了也丢弃）；
+    - ``headers`` 并进 ``custom_headers``（``Authorization`` 扩展写了也丢弃；其余
+      头按大小写不敏感合并：调用方非空值优先、扩展空值跳过，同名键最终只保留
+      一个，避免 httpx 把 ``X-Foo`` 与 ``x-foo`` 合并成 ``"a, b"``）；
     - ``extra_body`` 并进请求正文扩展字段（``thinking``、
       ``enable_thinking``、``reasoning_effort`` 扩展写了也丢弃）；
     - 未写的口袋保持原样。
