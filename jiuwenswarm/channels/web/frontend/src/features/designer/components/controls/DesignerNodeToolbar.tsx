@@ -3,7 +3,6 @@ import { useTranslation } from 'react-i18next';
 import { useReactFlow } from '@xyflow/react';
 import SendPlaneIcon from '../../../../assets/send_plane.svg?react';
 import { isComfyuiNodeConfig } from '../../comfyuiWorkflow';
-import { hasPendingDesignerRevision } from '../../designerMaterials';
 import { designerToolbarRevealShift } from '../../designerToolbarVisibility';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerRunStore } from '../../designerRunStore';
@@ -53,30 +52,6 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     promptFocusedRef.current = false;
     setPromptDraft(storePrompt);
   }, [nodeId, storePrompt]);
-
-  const rootRef = useRef<HTMLDivElement>(null);
-  const { getViewport, setViewport } = useReactFlow();
-  // The toolbar sits below the node inside the clipped canvas: a node near the
-  // bottom edge would hide its prompt panel, so pan just enough to reveal it.
-  useEffect(() => {
-    const frame = requestAnimationFrame(() => {
-      const root = rootRef.current;
-      const flow = root?.closest('.react-flow');
-      if (!root || !flow) return;
-      const rect = root.getBoundingClientRect();
-      const bounds = flow.getBoundingClientRect();
-      let bottom = bounds.bottom;
-      const dock = flow.parentElement?.querySelector('.designer-canvas-dock')?.getBoundingClientRect();
-      if (dock && dock.height > 0 && dock.left < rect.right && dock.right > rect.left) {
-        bottom = Math.min(bottom, dock.top);
-      }
-      const shift = designerToolbarRevealShift(rect, { top: bounds.top, bottom });
-      if (shift <= 0) return;
-      const viewport = getViewport();
-      void setViewport({ ...viewport, y: viewport.y - shift }, { duration: 200 });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [getViewport, nodeId, setViewport]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const { getViewport, setViewport } = useReactFlow();

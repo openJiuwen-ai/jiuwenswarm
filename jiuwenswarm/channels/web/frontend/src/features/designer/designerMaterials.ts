@@ -231,10 +231,10 @@ export function designerImagePreviewUrl(
 /**
  * The output ref a node shows in a preview or material list.
  *
- * The run store wins (accepted ref, then the pending candidate), then the graph
- * node's own ``output_ref``, then a configured upload. An uploaded reference is
- * never executed and a run reloaded from disk can carry no state for a node, so
- * the run store alone leaves those tiles without a thumbnail.
+ * The run store's accepted ref wins, then the graph node's own ``output_ref``,
+ * then a configured upload. An uploaded reference is never executed and a run
+ * reloaded from disk can carry no state for a node, so the run store alone
+ * leaves those tiles without a thumbnail.
  */
 export function resolveDesignerNodePreviewRef(
   node:
@@ -242,46 +242,6 @@ export function resolveDesignerNodePreviewRef(
     | null
     | undefined,
   state?: DesignerNodeState | null,
-): AssetRef | null {
-  const fromRun = preferredDesignerPreviewRef(state?.output_ref, state?.candidate_output_ref);
-  if (fromRun?.uri && !isPlaceholderAsset(fromRun.uri)) return fromRun;
-
-  const nodeType = String(node?.type ?? '');
-  const declared = node?.output_ref;
-  if (declared?.uri && !isPlaceholderAsset(declared.uri)) {
-    return {
-      kind: declared.kind || nodeType,
-      uri: declared.uri,
-      mime_type: declared.mime_type,
-      label: declared.label,
-    };
-  }
-  return configuredUploadRef(node?.config, nodeType);
-}
-
-/** An uploaded file kept only in the node config (upload slot or attached materials). */
-function configuredUploadRef(config: unknown, nodeType: string): AssetRef | null {
-  const media = readMediaConfig(config as Record<string, unknown> | undefined, nodeType);
-  const slots: Array<{ uri?: string; mime_type?: string; filename?: string }> = [
-    ...(media.materials ?? []),
-    media.upload ?? {},
-  ];
-  for (const slot of slots) {
-    const uri = String(slot?.uri ?? '').trim();
-    if (!uri || isPlaceholderAsset(uri)) continue;
-    return {
-      kind: nodeType || 'file',
-      uri,
-      mime_type: String(slot?.mime_type ?? '') || undefined,
-      label: String(slot?.filename ?? '') || undefined,
-    };
-  }
-  return null;
-}
-
-export function preferredDesignerPreviewRef(
-  accepted?: AssetRef | null,
-  candidate?: AssetRef | null,
 ): AssetRef | null {
   const fromRun = state?.output_ref;
   if (fromRun?.uri && !isPlaceholderAsset(fromRun.uri)) return fromRun;
@@ -318,6 +278,7 @@ function configuredUploadRef(config: unknown, nodeType: string): AssetRef | null
   }
   return null;
 }
+
 
 export function collectDesignerMaterials(
   graph: DesignerExecutionGraph | null | undefined,
