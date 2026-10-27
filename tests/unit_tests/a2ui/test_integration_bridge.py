@@ -400,8 +400,8 @@ async def test_finalize_officeclaw_skips_server_side_repair_and_resend(monkeypat
     repair, no retry, no resend. Broken a2ui content is passed through as-is;
     the frontend does text degradation display (extractTextFromMalformedA2UI
     regex salvage + invalidA2UIFallback fixed error text — degradation, not
-    JSON repair). Skipping entirely eliminates the CR-1 timing issue (resend
-    frame after terminal) and the atomgit-bot duplicate-block concern.
+    JSON repair). Skipping entirely eliminates the timing issue (resend
+    frame after terminal) and the duplicate-block concern.
     """
     import types
 

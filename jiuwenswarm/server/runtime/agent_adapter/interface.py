@@ -139,7 +139,7 @@ def _is_a2ui_client_event_request(request: AgentRequest) -> bool:
 
     此类请求的 inputs["query"] 已由 build_user_prompt 转成可读 a2ui prompt；
     team 分支若再用 raw_query 覆写，raw_query = query if isinstance(query, str)
-    else "" 为空字符串——用空串覆写转换后成品 prompt（检视 CR-5/CR-7）。
+    else "" 为空字符串——用空串覆写转换后成品 prompt。
     """
     params = request.params if isinstance(request.params, dict) else {}
     return is_a2ui_client_event(params.get("content"))
@@ -152,7 +152,7 @@ def _should_skip_team_raw_override(inputs: dict[str, Any], request: AgentRequest
     - InteractiveInput：ask_user/HITL 续答（既有先例）
     - A2UI client_event：query 已是转换后 a2ui prompt（str），但 raw_query 取自
       params.content（dict），raw_query = query if isinstance(query, str) else ""
-      为空字符串——不豁免时用空串覆写转换后成品 prompt（检视 CR-5）
+      为空字符串——不豁免时用空串覆写转换后成品 prompt。
     """
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
@@ -3490,7 +3490,7 @@ class JiuWenSwarm:
             from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
             team_query_is_interactive_input = isinstance(inputs.get("query"), InteractiveInput)
-            # a2ui client_event / InteractiveInput 请求豁免 raw_query 覆写（max评审#2，判定见纯函数）
+            # a2ui client_event / InteractiveInput 请求豁免 raw_query 覆写（判定见纯函数）
             skip_raw_override = _should_skip_team_raw_override(inputs, request)
             if not skip_raw_override:
                 inputs["query"] = raw_query

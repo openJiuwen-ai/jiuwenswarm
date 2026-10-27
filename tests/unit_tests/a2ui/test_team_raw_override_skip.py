@@ -1,10 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""team raw_query 覆写豁免（max评审#2）回归测试。
+"""team raw_query 覆写豁免回归测试。
 
 client_event 请求的 inputs["query"] 已由 build_user_prompt 转为可读 a2ui prompt，
 但 raw_query 取自 params.content（dict），raw_query = query if isinstance(query, str)
-else "" 为空字符串——不豁免时用空串覆写转换后成品 prompt（检视 CR-5）。
+else "" 为空字符串——不豁免时用空串覆写转换后成品 prompt。
 """
 
 from __future__ import annotations

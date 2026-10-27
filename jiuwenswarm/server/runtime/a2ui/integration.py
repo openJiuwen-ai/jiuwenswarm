@@ -50,11 +50,11 @@ def is_a2ui_probe_channel(channel: str | None) -> bool:
 # 仅这些渠道走服务端 A2UI repair/retry/重发（finalize_assistant_response_if_a2ui）。
 # officeclaw (relay-claw) 故意排除，完全跳过服务端 finalize（含校验）：
 # 1. 服务端 repair 后整段 chat.final 重发会与已累积 delta 产生重复块；
-# 2. 该重发帧落在 wire 终结块之后被 relay-claw 消费方 break 丢弃（检视 CR-1）。
+# 2. 该重发帧落在 wire 终结块之后被 relay-claw 消费方 break 丢弃；
 # 3. 破损 a2ui 内容原样透传，由前端做文本降级显示（本仓库 a2uiContent.ts
 #    extractTextFromMalformedA2UI :173-211 正则文本打捞 + invalidA2UIFallback
 #    :162 固定错误文案降级——是降级显示而非 JSON 修复）。
-# 完全跳过 = 不 repair/不校验/不重发，从根上消除 CR-1 时序问题与重复块（检视 CR-3/CR-6）。
+# 完全跳过 = 不 repair/不校验/不重发，从根上消除重发帧时序丢失与重复块。
 _A2UI_FINALIZE_REPAIR_CHANNEL_IDS = frozenset({"web"})
 
 
@@ -144,8 +144,7 @@ async def finalize_assistant_response_if_a2ui(
     # officeclaw (relay-claw) 完全跳过服务端 finalize（含校验）：不 repair、不校验、
     # 不重发。破损 a2ui 内容原样透传，由前端做文本降级显示（本仓库 a2uiContent.ts
     # extractTextFromMalformedA2UI :173-211 正则文本打捞 + invalidA2UIFallback :162
-    # 固定错误文案降级——是降级显示而非 JSON 修复）。完全跳过从根上消除检视
-    # CR-1（重发帧时序丢）+ CR-3/CR-6（注释行为不符+虚构跨仓依赖）+ atomgit-bot 重复块。
+    # 固定错误文案降级——是降级显示而非 JSON 修复）。
     if not should_finalize_repair(channel):
         return content
 
