@@ -19,14 +19,13 @@ from contextlib import aclosing, contextmanager
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
-from agent_gateway.common.mode_matrix import (
+from jiuwenswarm.common.mode_matrix import (
     deprecate_mode,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE, is_client_tool_resume
-from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch, client_tool_answers
 from jiuwenswarm.runtime.interaction import USER_INTERACTION_EVENTS, asked_interaction_ids, interaction_ids
@@ -1731,11 +1730,7 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
-        request = self.normalize_request(request)
-        attachment_completion = self._non_team_attachment_completion(request)
-        if attachment_completion is not None:
-            return [attachment_completion]
-        self._validate_permission_answer(request)
+        request = self._normalize_runtime_request(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -3883,7 +3878,7 @@ class AgentRuntime:
         return is_team_mode(canonical)
 
     @staticmethod
-    def normalize_request(request: AgentRequest) -> AgentRequest:
+    def _normalize_runtime_request(request: AgentRequest) -> AgentRequest:
         """Resolve the effective mode before Runtime classification and dispatch."""
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
