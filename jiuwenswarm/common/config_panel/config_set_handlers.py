@@ -52,6 +52,7 @@ from jiuwenswarm.common.config import (
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
+    update_cua_agent_enabled_in_config,
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
@@ -84,6 +85,7 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     build_models_defaults_from_frontend,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.moa_config import (
     MOA_CONFIG_KEYS,
     build_moa_config_from_frontend,
@@ -372,6 +374,7 @@ CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "rsi_enabled",
+    "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
@@ -1368,6 +1371,10 @@ def apply_config_payload(
         raise ConfigPanelBadRequest(
             "permissions_profile and permissions_enabled are mutually exclusive"
         )
+    if "cua_agent_enabled" in params:
+        value = params["cua_agent_enabled"]
+        if value is not None and not isinstance(value, bool) and value not in ("true", "false"):
+            raise ConfigPanelBadRequest("cua_agent_enabled must be true, false or null")
     moa_params = {key: value for key, value in params.items() if key in MOA_CONFIG_KEYS}
     if moa_params:
         try:
@@ -1463,6 +1470,8 @@ def apply_config_payload(
                 update_setup_guide_enabled_in_config(parsed)
             elif param_key == "rsi_enabled":
                 update_rsi_enabled_in_config(parsed)
+            elif param_key == "cua_agent_enabled":
+                update_cua_agent_enabled_in_config(None if val is None else parsed)
             elif param_key == "enable_free_models":
                 update_enable_free_models_in_config(parsed)
             elif param_key == "memory_forbidden_enabled":
@@ -1555,6 +1564,8 @@ def apply_config_payload(
             raise
         except Exception as e:  # noqa: BLE001
             logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)
+            if param_key == "cua_agent_enabled":
+                raise ConfigPanelInternalError("failed to update cua_agent.enabled") from e
             if param_key == "swarmflow_enabled":
                 raise ConfigPanelInternalError("failed to update enable_swarmflow") from e
             if is_external_cli_agent_config_key(param_key):
@@ -1710,6 +1721,7 @@ async def config_get_handler(
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+    payload["cua_backend_available"] = "true" if is_cua_backend_available() else "false"
     # 合并 config.yaml 中的配置项
     try:
         raw = get_config_raw()
@@ -1726,6 +1738,11 @@ async def config_get_handler(
                     payload[key] = crypto_provider.decrypt(val)
         payload.update(flatten_moa_for_config_panel(raw, resolve_value=resolve_env_vars))
         react_cfg = raw.get("react") or {}
+        payload["cua_agent_enabled"] = (
+            "true" if is_cua_agent_enabled(
+                get_nested_config_value(raw, ("react", "subagents", "cua_agent"), {})
+            ) else "false"
+        )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = "true" if ctx_cfg.get("enabled", False) else "false"
         payload["kv_cache_affinity_enabled"] = (
@@ -1790,6 +1807,7 @@ async def config_get_handler(
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("rsi_enabled", "true")
+        payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")

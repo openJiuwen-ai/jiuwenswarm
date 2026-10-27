@@ -1211,7 +1211,9 @@ async def test_handle_tui_session_create_accepts_explicit_id_without_prewarm(
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code", hidden=False),
+        lambda project_id, cache_bust=True: types.SimpleNamespace(
+            work_mode="code", hidden=False, project_dir=project_dir,
+        ),
     )
 
     request = AgentRequest(
@@ -1278,7 +1280,9 @@ async def test_handle_tui_non_explicit_create_resolves_project_in_agentserver(
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code", hidden=False),
+        lambda project_id, cache_bust=True: types.SimpleNamespace(
+            work_mode="code", hidden=False, project_dir=project_dir,
+        ),
     )
 
     request = AgentRequest(

@@ -45,6 +45,41 @@ def fields():
     }
 
 
+@pytest.mark.parametrize("interval,expected_interval", [(None, "3"), (5, "5")])
+@pytest.mark.parametrize("through_adapter", [False, True], ids=["panel", "agentserver"])
+@pytest.mark.asyncio
+async def test_config_get_moa_interval_preserves_configuration(panel_config, interval, expected_interval, through_adapter):
+    if interval is not None:
+        raw = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+        raw["experimental"] = {"multi_model_collaboration": {"verifier_interval": interval}}
+        panel_config.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    before = panel_config.read_bytes()
+
+    if through_adapter:
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
+
+        on_config_saved = AsyncMock()
+        adapter = ConfigAdapter(on_config_saved=on_config_saved)
+        response = await adapter.handle(AgentRequest(
+            request_id="get-moa", channel_id="web", session_id="session",
+            req_method=ReqMethod.CONFIG_GET, params={}, user_id="test-user",
+        ))
+        assert response.ok is True
+        public = response.payload
+        on_config_saved.assert_not_awaited()
+    else:
+        channel = SimpleNamespace(send_response=AsyncMock())
+        await handlers.config_get_handler(channel, None, "get", {}, None)
+        response = channel.send_response.call_args.kwargs
+        assert response["ok"] is True
+        public = response["payload"]
+
+    assert public["moa_verifier_interval"] == expected_interval
+    assert panel_config.read_bytes() == before
+
+
 @pytest.mark.asyncio
 async def test_save_all_round_trips_with_ui_reload(panel_config, fields):
     channel = SimpleNamespace(send_response=AsyncMock())

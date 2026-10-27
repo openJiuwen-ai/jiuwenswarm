@@ -1017,6 +1017,30 @@ async def test_5544_capacity_wait_names_the_other_conversations_task(tasks):
     )]
 
 
+async def test_restored_open_card_refuses_a_new_task_before_binding(tasks, monkeypatch):
+    # #5487: a card restored from disk would take the new voice task as its answer.
+    # Refusing before bind keeps the task failed rather than unknown.
+    service, executor = tasks
+    task = submit(service, "card-open", session="task-duplex:chat")
+    await until(lambda: executor.calls)
+    card = SimpleNamespace(interrupted_tools={"call_1": object()})
+    adapter = TaskAdapter(
+        _instance=SimpleNamespace(
+            _react_agent=object(), loop_session=SimpleNamespace(get_state=lambda _key: card),
+        ),
+        _is_session_scoped_adapter=True,
+        _voice_agent_task_rail=SimpleNamespace(managed_tasks={}),
+    )
+    request = SimpleNamespace(
+        channel_id="video_tool", session_id=task["core_session_id"], request_id=task["request_id"],
+    )
+    install_bridge(monkeypatch, service.store, request)
+    with pytest.raises(RuntimeError, match="确认卡片"):
+        async with bind_task_execution(request, adapter, {"query": "追加一行"}):
+            pytest.fail("the task must not run while a card is open")
+    assert not service.store.read(task["id"]).get("execution_bound")
+
+
 async def test_cancelled_consumer_waits_for_scheduler_cleanup(tasks, monkeypatch):
     from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
 

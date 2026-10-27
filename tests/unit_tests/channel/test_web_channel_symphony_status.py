@@ -391,10 +391,11 @@ def test_web_channel_preserves_goal_structured_payloads():
         assert WebChannel._build_event_payload(msg, event_name) == expected
 
 
-def test_web_channel_preserves_organization_progress_payload():
+@pytest.mark.parametrize("phase", ["summary_execution_delegated", "summary_execution_waiting_sources"])
+def test_web_channel_preserves_organization_progress_payload(phase):
     """Organization milestones must retain their phase and target Team."""
     msg = Message(
-        id="org-progress-summary_execution_delegated:0",
+        id=f"org-progress-{phase}:0",
         type="event",
         channel_id="web",
         session_id="session-1",
@@ -403,7 +404,7 @@ def test_web_channel_preserves_organization_progress_payload():
         ok=True,
         payload={
             "event_type": "org.progress",
-            "phase": "summary_execution_delegated",
+            "phase": phase,
             "root_task_id": "root-1",
             "team_id": "root-team",
             "team_name": "root-team",
@@ -413,7 +414,7 @@ def test_web_channel_preserves_organization_progress_payload():
 
     assert WebChannel._build_event_payload(msg, "org.progress") == {
         "event_type": "org.progress",
-        "phase": "summary_execution_delegated",
+        "phase": phase,
         "root_task_id": "root-1",
         "team_id": "root-team",
         "team_name": "root-team",

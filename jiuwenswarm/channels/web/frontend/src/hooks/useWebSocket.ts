@@ -39,6 +39,7 @@ import {
   UsageSummary,
   FileDownloadItem,
   ContextCompressionRuntime,
+  MoaStatusPayload,
   ContextCompressionSummary,
   WsEvent,
   GoalRecord,
@@ -127,7 +128,8 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
-import { expertTeamId, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
 import {
   normalizeSubagentActivityEvent,
@@ -2439,6 +2441,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...getSessionWorkContext(sessionId),
         };
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+        const ownerStopTarget = currentMode === 'team' && intent === 'cancel'
+          ? organizationOwnerStopTarget(sessionId) : null;
+        if (ownerStopTarget) {
+          params.intent = 'cancel';
+          params.target_team_id = ownerStopTarget;
+          params.organization_stop = true;
+        }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
           // Plan 打开时补全三段命名 `agent.{work|code}.plan` / `team.{work|code}.plan`，
@@ -4456,6 +4465,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('execution.error', ({ payload }) => {
+        const failedSessionId = getPayloadSessionId(payload);
+        if (failedSessionId && !expertTeamId(payload, failedSessionId)) {
+          const runtime = useChatStore.getState().getRuntime(failedSessionId);
+          if (!payload.execution_id || !runtime?.activeExecutionId || payload.execution_id === runtime.activeExecutionId) {
+            useChatStore.getState().clearMoaStatus(failedSessionId);
+          }
+        }
         const goal = payload.goal;
         if (goal !== undefined) {
           applyGoalSnapshot(payload);
@@ -4495,6 +4511,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on('context.usage', ({ payload }) => {
         receiveContextUsage(payload);
+      }),
+      webClient.on<MoaStatusPayload>('chat.moa_status', ({ payload }) => {
+        const sessionId = getPayloadSessionId(payload);
+        if (!sessionId || expertTeamId(payload, sessionId)) return;
+        // These transient events must never replace the current execution with a late frame's ID.
+        useChatStore.getState().updateMoaStatus(sessionId, payload);
       }),
       webClient.on<ContextCompressionStatePayload>(
         'context.compression_state',
@@ -4548,6 +4570,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
+        // Organization background rounds own their lifecycle in useOrganizationEvents.
+        // They must not close a concurrent foreground Owner request.
+        if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
+          payload.source !== 'org_expert_direct' && payload.team_id) return;
         // A supplemental request never owns the original execution's lifecycle.
         if (handleTaskInputReceipt('chat.processing_status', payload)) return;
         const sessionId = resolveEventSessionId(payload);
@@ -4799,6 +4825,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           void reconcileAgentGroupBinding(sessionId);
         }
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
+        useChatStore.getState().clearMoaStatus(sessionId);
         useChatStore.getState().setThinking(sessionId, false);
         // 任何 chat.error 都应解除历史加载态：faas 侧 history.get 流超时
         // （旧 session runtime 过 TTL 被回收、init 超时）只回发 chat.error
@@ -5787,6 +5814,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const connected = state === 'ready';
       setIsConnected(connected);
       setConnected(connected);
+      if (!connected) {
+        const chatStore = useChatStore.getState();
+        for (const sessionId of Object.keys(chatStore.runtimes)) {
+          chatStore.clearMoaStatus(sessionId);
+        }
+      }
       if (connected && teamConnectionGraceTimerRef.current) {
         const pending = teamConnectionGraceTimerRef.current;
         if (pending.timerId !== null) window.clearTimeout(pending.timerId);

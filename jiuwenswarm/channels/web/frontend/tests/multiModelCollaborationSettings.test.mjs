@@ -252,6 +252,7 @@ test('collaboration and other experimental sections retain their order', () => {
     'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
+    'computer-control',
   ]);
 });
 

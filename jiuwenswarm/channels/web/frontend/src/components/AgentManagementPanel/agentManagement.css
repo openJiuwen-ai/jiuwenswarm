@@ -3064,3 +3064,33 @@
 .agent-management-catalog-card .page-card__tags {
   width: 100%;
 }
+
+.agent-management-group-runtime-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 24px;
+}
+
+.agent-management-group-runtime-dialog > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.agent-management-group-runtime-dialog h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.agent-management-group-runtime-dialog > p {
+  margin: 16px 0 24px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.agent-management-group-runtime-dialog > footer {
+  display: flex;
+  justify-content: flex-end;
+}

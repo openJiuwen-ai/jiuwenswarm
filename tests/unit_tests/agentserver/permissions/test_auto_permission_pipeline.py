@@ -601,6 +601,49 @@ async def test_generic_mcp_honors_complete_policy_allow(tmp_path) -> None:
     assert base.calls == []
 
 
+@pytest.mark.parametrize("level", ["allow", "deny", "ask"])
+async def test_policy_reason_is_only_recorded_for_allowed_policy(tmp_path, level):
+    rail, policy, reviewer, _ = _rail(tmp_path, PolicyEvaluation(level=level, reason="engine_result"))
+    ctx = _runtime_ctx(_Session(), tool_name="mcp_docs_lookup", tool_args={"query": "scope"})
+    try:
+        await rail.before_tool_call(ctx)
+    except AbortError:
+        assert level == "ask"
+    metadata = ctx.extra.get("permission_reviewer_metadata_by_tool_call_id", {}).get("call-1", {})
+    if level == "allow":
+        assert metadata["decision_source"] == "policy_evaluator"
+        assert metadata["final_reviewer_status"] == "approved"
+        assert reviewer.requests == []
+    else:
+        assert (
+            metadata.get("decision_source"), metadata.get("final_reviewer_status")
+        ) != ("policy_evaluator", "approved")
+    assert len(policy.calls) == 1
+
+
+@pytest.mark.parametrize("final_result", ["denied", "manual"])
+async def test_policy_allow_does_not_claim_success_after_final_normalization(tmp_path, monkeypatch, final_result):
+    from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import (
+        build_denied_permission_response, build_manual_approval_required_response,
+    )
+    rail, _, reviewer, _ = _rail(tmp_path, PolicyEvaluation(level="allow", reason="engine_allow"))
+    result = (
+        build_denied_permission_response("final_check_failed")
+        if final_result == "denied"
+        else build_manual_approval_required_response("final_check_required")
+    )
+    monkeypatch.setattr(rail, "_normalize_runtime_permission_result", lambda *_args, **_kwargs: result)
+    ctx = _runtime_ctx(_Session(), tool_name="mcp_docs_lookup", tool_args={"query": "scope"})
+    if final_result == "manual":
+        with pytest.raises(AbortError):
+            await rail.before_tool_call(ctx)
+    else:
+        await rail.before_tool_call(ctx)
+        assert ctx.extra["_skip_tool"] is True
+    assert "permission_reviewer_metadata_by_tool_call_id" not in ctx.extra
+    assert reviewer.requests == []
+
+
 class _Session:
     def __init__(self) -> None:
         self.session_id = "session-a"

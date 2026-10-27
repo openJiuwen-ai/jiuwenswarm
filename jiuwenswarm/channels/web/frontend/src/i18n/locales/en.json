@@ -752,6 +752,7 @@
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
     "experimental": {
+      "computerControl": "Computer control",
       "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-party agents",
@@ -941,6 +942,10 @@
         "title": "Enable RSI",
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
+      "cua_agent_enabled": {
+        "title": "Enable computer control",
+        "description": "Allow the desktop subagent to view and operate local application windows. Requires an image-capable model and the relevant system permissions."
+      },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
@@ -1007,7 +1012,7 @@
       },
       "multi_model_collaboration_enabled": {
         "title": "Multi-model collaboration",
-        "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members."
+        "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members. We recommend using more capable models as reference models to provide suggestions to the aggregator (the group's default model)."
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
@@ -1189,22 +1194,36 @@
         "weak": "Not met"
       },
       "signalSource": {
-        "keyword_tool": "Tool output hit",
-        "keyword_user": "User message hit",
-        "reward": "Reward score"
+        "keyword_tool": "Tool output",
+        "keyword_user": "User message",
+        "reward": "Reward",
+        "user": "User note"
+      },
+      "signalSourceLabel": "Source: {{source}}",
+      "attributionLabel": "Attribution: {{kind}}",
+      "attributionKind": {
+        "artifact": "Artifact",
+        "skill": "Skill",
+        "experience": "Experience"
       },
       "signalScore": "Score {{score}}",
       "signalSurfacedAt": "Surfaced at {{nodes}}",
       "causeAt": "At {{nodes}}",
       "evidence": "Based on",
-      "findingsIssuesOnly": "{{issues}} issues",
-      "findingsIssuesAndExperience": "{{issues}} issues, plus {{experience}} experience verdict(s)",
-      "findingsExperienceOnly": "{{experience}} experience verdict(s)",
+      "dimension": "Dimension",
       "requestCount": "{{count}} model requests",
-      "objectSteps": "Steps",
-      "objectStepsCount": "{{count}} trajectory steps",
+      "objectSteps": "Scope",
+      "objectStepsCount": "{{count}} OTel spans",
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
+      "objectSummary": "Trajectory summary",
+      "findingCauses": "{{count}} artifact finding(s)",
+      "findingSkill": "{{count}} skill finding(s)",
+      "findingExperience": "{{count}} experience finding(s)",
+      "findingJoin": ", ",
+      "findingWithEvolution": "{{causes}}, plus {{evolution}}",
+      "findingLegacyCauses": "{{count}} legacy finding(s)",
+      "relatedSignals": "Related signals",
       "suggestionsUnfinished": "The diagnosis did not finish, so there are no suggestions",
       "process": "Diagnosis process",
       "processSteps": "{{count}} steps",
@@ -1641,6 +1660,8 @@
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
     "teamSelect": {
+      "unavailable": "Unavailable",
+      "unavailableHint": "This Expert Team is unavailable. Reinstall its package to continue; history is preserved.",
       "tooltip": "Switch the Team being viewed",
       "loadingLabel": "Loading teams…",
       "fallbackLabel": "Select Team"
@@ -1708,6 +1729,8 @@
       "completed": "Completed",
       "failed": "Failed"
     },
+    "moaReferenceRunning": "Running reference models…",
+    "moaVerifying": "Evaluating task progress…",
     "contextCompressionCommandRunning": "Compressing context",
     "teamPause": "Pause",
     "teamPauseHint": "After pausing a team, send the next message to continue",
@@ -4066,7 +4089,7 @@
           "manual": "Manual approval",
           "system": "System permission check"
         },
-        "risk": "Risk",
+        "risk": "Tool capability risk",
         "riskValues": {
           "critical": "Critical",
           "high": "High",
@@ -4074,7 +4097,7 @@
           "low": "Low",
           "unknown": "Unknown"
         },
-        "reason": "Reason",
+        "reason": "Approval rationale",
         "reasonValues": {
           "approved": "Permission review allowed this operation.",
           "denied": "Permission review denied this operation.",

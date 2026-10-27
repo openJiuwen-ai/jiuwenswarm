@@ -745,6 +745,7 @@
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
+      "computerControl": "电脑操控",
       "taskAsr": "语音转写",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
@@ -925,6 +926,10 @@
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
+      "cua_agent_enabled": {
+        "title": "启用电脑操控",
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
+      },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
         "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
@@ -991,7 +996,7 @@
       },
       "multi_model_collaboration_enabled": {
         "title": "多模型协同",
-        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
+        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。建议使用能力更强的模型作为参考模型，为聚合模型（组内默认模型）提供建议。"
       },
       "moa_jev_enabled": {
         "title": "JEV 决策",
@@ -1173,22 +1178,36 @@
         "weak": "未达标"
       },
       "signalSource": {
-        "keyword_tool": "工具输出命中",
-        "keyword_user": "用户消息命中",
-        "reward": "Reward 评分"
+        "keyword_tool": "工具输出",
+        "keyword_user": "用户消息",
+        "reward": "Reward",
+        "user": "用户补充"
+      },
+      "signalSourceLabel": "信号来源：{{source}}",
+      "attributionLabel": "归因：{{kind}}",
+      "attributionKind": {
+        "artifact": "产物",
+        "skill": "技能",
+        "experience": "经验"
       },
       "signalScore": "得分 {{score}}",
-      "signalSurfacedAt": "问题露出于 {{nodes}}",
+      "signalSurfacedAt": "问题定位到 {{nodes}}",
       "causeAt": "位于 {{nodes}}",
       "evidence": "依据",
-      "findingsIssuesOnly": "{{issues}} 处问题",
-      "findingsIssuesAndExperience": "{{issues}} 处问题，另有 {{experience}} 条经验判定",
-      "findingsExperienceOnly": "{{experience}} 条经验判定",
+      "dimension": "评分维度",
       "requestCount": "模型请求 {{count}} 次",
-      "objectSteps": "步骤",
-      "objectStepsCount": "{{count}} 个轨迹步骤",
+      "objectSteps": "范围",
+      "objectStepsCount": "{{count}} 个 OTel Span",
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
+      "objectSummary": "轨迹摘要",
+      "findingCauses": "{{count}} 条产物归因",
+      "findingSkill": "{{count}} 条技能归因",
+      "findingExperience": "{{count}} 条经验归因",
+      "findingJoin": "、",
+      "findingWithEvolution": "{{causes}}，另有 {{evolution}}",
+      "findingLegacyCauses": "{{count}} 处旧版归因",
+      "relatedSignals": "相关归因信号",
       "suggestionsUnfinished": "诊断未完成，没有建议",
       "process": "诊断过程",
       "processSteps": "{{count}} 步",
@@ -1624,6 +1643,8 @@
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
     "teamSelect": {
+      "unavailable": "不可用",
+      "unavailableHint": "该专家团已不可用，请重新安装专家团后继续；历史记录仍可查看。",
       "tooltip": "切换当前查看的 Team",
       "loadingLabel": "加载 Team…",
       "fallbackLabel": "选择 Team"
@@ -1692,6 +1713,8 @@
       "completed": "已完成",
       "failed": "失败"
     },
+    "moaReferenceRunning": "正在运行参考模型…",
+    "moaVerifying": "正在评估任务执行进展…",
     "contextCompressionCommandRunning": "正在压缩上下文",
     "teamPause": "暂停",
     "teamPauseHint": "团队暂停后，直接发送下一条消息即可继续",
@@ -4040,7 +4063,7 @@
           "manual": "人工审批",
           "system": "系统权限检查"
         },
-        "risk": "风险",
+        "risk": "工具能力风险",
         "riskValues": {
           "critical": "严重",
           "high": "高",
@@ -4048,7 +4071,7 @@
           "low": "低",
           "unknown": "未知"
         },
-        "reason": "原因",
+        "reason": "本次审批依据",
         "reasonValues": {
           "approved": "权限审查已允许此操作。",
           "denied": "权限审查已拒绝此操作。",

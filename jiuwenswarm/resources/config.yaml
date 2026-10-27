@@ -677,7 +677,7 @@ react:
     # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
     # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
     cua_agent:
-      enabled: false
+      enabled: null # null follows the release default (currently off); user changes persist true/false.
       # max_iterations: 100
       # 上下文中完整保留的窗口截图数量；单窗口任务可设为 1 以大幅缩减上下文。默认 3。
       # snapshot_keep_last_k: 3

@@ -149,6 +149,7 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import { resolveTeamDispatchMode, useTeamScheduledDispatchEnabled } from '../../features/teamDispatch/featureConfig';
@@ -897,6 +898,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const attachmentMenuOpenedByLongPressRef = useRef(false);
   const isComposingRef = useRef(false);
   const { t, i18n } = useTranslation();
+  const organizationEnabled = useTeamOrganizationUiEnabled();
+  const organizationTeamUnavailable = useTeamSelectorStore((s) => {
+    if (!organizationEnabled || !activeSessionId) return false;
+    const runtime = s.runtimes[activeSessionId];
+    return runtime?.teams.find((team) => team.team_id === runtime.selectedTeamId)?.available === false;
+  });
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );
@@ -915,6 +922,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const designLandingSubmitting = isDesignLanding && isProcessing;
   const composerDisabled =
     agentGroupUnavailable ||
+    organizationTeamUnavailable ||
     isCompactRunning ||
     (hasPendingQuestion && !hasRunningAgent) ||
     designLandingSubmitting;
@@ -1082,14 +1090,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setAgentPickerQuery('');
     setPickerTab('agent');
   }, [attachMenuOpen]);
-  const isPaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isPaused ?? false);
+  const conversationIsPaused = useChatStore((s) => s.runtimes[conversationId]?.isPaused ?? false);
+  const organizationIsProcessing = useOrganizationProcessing(activeSessionId);
+  const isPaused = conversationIsPaused;
+  const ownerOrganizationIsProcessing = conversationId === activeSessionId && organizationIsProcessing;
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
   const teamMembers = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? [],
+    (s) => s.runtimes[conversationId]?.teamMembers ?? [],
   ) as InputAreaTeamMember[];
   const currentSession = useSessionStore((s) => s.currentSession);
   const activeSession = useSessionStore((s) => {
@@ -2379,6 +2390,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return text.replace(/\u200B/g, '');
   }, []);
 
+  const composerConversationRef = useRef(conversationId);
+  useEffect(() => {
+    if (composerConversationRef.current === conversationId) return;
+    composerConversationRef.current = conversationId;
+    setComposerSuggestion(null);
+    // Member IDs are scoped to a Team, even when two Teams use the same ID.
+    // Preserve the draft but remove the old Team's member addressing tokens.
+    const editor = inputRef.current;
+    if (!editor) return;
+    const tokens = editor.querySelectorAll<HTMLElement>(
+      '[data-composer-token="member"]:not([data-composer-item-kind="asset"])',
+    );
+    if (!tokens.length) return;
+    tokens.forEach((token) => token.remove());
+    const sid = useChatStore.getState().activeSessionId;
+    if (sid) useChatStore.getState().setInputValue(sid, extractPlainText());
+  }, [conversationId, extractPlainText]);
+
   /** 从 contenteditable 提取富文本（chip 转成 {{skill:名称}} 标记，保留位置用于气泡交织渲染） */
   const extractRichContent = useCallback((): string => {
     const el = inputRef.current;
@@ -2643,8 +2672,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // preparing a follow-up. A pending approval keeps Stop available and blocks Send.
   const hasDraft = hasTextDraft || attachments.length > 0 || isListening || isTranscribing;
   const isImageInterruptBlocked = isInterruptible && !isTeamMode && !isAgentMode && readyMediaItems.length > 0;
-  const showStop =
-    !designLandingSubmitting && isProcessing && !isPaused && (!hasDraft || hasPendingQuestion);
+  const hasRunningWork = (isProcessing && !isPaused) || ownerOrganizationIsProcessing;
+  const showStop = !designLandingSubmitting && hasRunningWork && (!hasDraft || hasPendingQuestion);
   const hasReadyMedia = readyMediaItems.length > 0;
   const canSubmit =
     showStop ||
@@ -2904,7 +2933,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       chip.className = `chat-input-chip-inline chat-input-chip-inline--${kind}`;
       chip.setAttribute('contenteditable', 'false');
       chip.dataset.composerToken = kind;
+      chip.dataset.composerItemKind = slashItemKind ?? kind;
       chip.dataset.value = value;
+      chip.setAttribute('data-testid', 'chat-panel-composer-token');
+      chip.dataset.variant = value;
 
       const prefix = document.createElement('span');
       prefix.className = 'chat-input-chip-inline__prefix';
@@ -3928,7 +3960,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               onBlur={saveSelection}
               onPaste={handlePaste}
               data-placeholder={
-                agentGroupUnavailable
+                organizationTeamUnavailable
+                  ? t('chat.teamSelect.unavailableHint')
+                  : agentGroupUnavailable
                   ? t('chat.placeholderAgentGroupDeleted')
                   : isCompactRunning
                   ? t('chat.placeholderCompacting')
@@ -3939,7 +3973,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       : designLandingSubmitting
                         ? t('chat.placeholder')
                         : isTeamMode
-                          ? isInterruptible && !isPaused
+                          ? (isInterruptible || ownerOrganizationIsProcessing) && !isPaused
                             ? t('chat.placeholderTeamModeProcessing')
                             : t('chat.placeholderTeamMode')
                         : isAutoHarnessMode

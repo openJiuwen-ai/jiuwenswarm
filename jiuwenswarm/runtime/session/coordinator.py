@@ -62,6 +62,34 @@ class _StreamItem:
     done: bool = False
 
 
+
+def _waits_on(handle: SessionExecutionHandle, request_id: str) -> bool:
+    """Whether a click on card ``request_id`` resumes ``handle``.
+
+    One round can raise several cards (e.g. parallel tool calls); each stays
+    clickable, not only the latest (#5738).
+    """
+    return handle.waiting_control_id == request_id or request_id in handle.pending_control_ids
+
+
+def _release_control(handle: SessionExecutionHandle, request_id: str) -> None:
+    handle.pending_control_ids.discard(request_id)
+    if handle.waiting_control_id == request_id:
+        # Unchanged callers read waiting_control_id as "still waiting".
+        handle.waiting_control_id = next(iter(handle.pending_control_ids), None)
+
+
+def _control_ids(value: Any, suspension_key: Callable[[Any], str | None] | None) -> list[str]:
+    """Every card a unary result raises, in order; a resume can re-ask several."""
+    if suspension_key is None:
+        return []
+    ids: list[str] = []
+    for item in value if isinstance(value, (list, tuple)) else (value,):
+        control_id = suspension_key(item)
+        if control_id and control_id not in ids:
+            ids.append(control_id)
+    return ids
+
 class RuntimeSessionCoordinator:
     """Owns ephemeral execution state, not durable Session metadata/history."""
 
@@ -80,6 +108,8 @@ class RuntimeSessionCoordinator:
         self._sessions: dict[str, _SessionRecord] = {}
         self._generations: dict[str, int] = {}
         self._control_claims: set[tuple[str, int, str, str]] = set()
+        # Parents being resumed: two cards of one round must not resume it at once.
+        self._resuming_parents: set[str] = set()
         self._accepting = True
         self._lock = asyncio.Lock()
 
@@ -212,10 +242,7 @@ class RuntimeSessionCoordinator:
                         error=timeout_error,
                     )
                     raise TimeoutError(timeout_error)
-                control_id = (
-                    suspension_key(value) if suspension_key is not None else None
-                )
-                if control_id:
+                for control_id in _control_ids(value, suspension_key):
                     self._registry.mark_awaiting_control(handle, control_id)
                 if handle.waiting_control_id:
                     self._registry.mark_waiting(handle)
@@ -312,8 +339,11 @@ class RuntimeSessionCoordinator:
         parent = self._control_parent(record, request_id)
         if parent is None:
             raise RuntimeError(f"session has no active execution: {session_id}")
+        if parent.execution_id in self._resuming_parents:
+            raise RuntimeError("control input is already being delivered")
         claim = (session_id, record.generation, parent.execution_id, request_id)
         self._control_claims.add(claim)
+        self._resuming_parents.add(parent.execution_id)
         # Everything below belongs to the finally: _new_execution can still
         # fail, and a leaked claim would make every later answer for this
         # request_id look already-in-flight. Resuming the parent is deferred
@@ -367,25 +397,29 @@ class RuntimeSessionCoordinator:
                     f"session={session_id} request={request_id}"
                 )
 
-            control_id = suspension_key(value) if suspension_key is not None else None
+            control_ids = _control_ids(value, suspension_key)
+            control_id = control_ids[-1] if control_ids else None
             heartbeat_root = self._heartbeat_root(parent)
             if control_id and heartbeat_root is not None:
-                self._registry.mark_awaiting_control(heartbeat_root, control_id)
+                _release_control(parent, request_id)
+                for reasked in control_ids:
+                    self._registry.mark_awaiting_control(heartbeat_root, reasked)
                 self._registry.mark_waiting(heartbeat_root)
                 self._registry.mark_terminal(handle, SessionExecutionState.SUCCEEDED)
             else:
                 parent_finished_while_delivering = (
                     parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-                    and parent.waiting_control_id == request_id
+                    and _waits_on(parent, request_id)
                 )
                 if parent_was_waiting or parent_finished_while_delivering:
                     self._registry.mark_terminal(
                         parent, SessionExecutionState.SUCCEEDED
                     )
-                elif parent.waiting_control_id == request_id:
-                    parent.waiting_control_id = None
+                elif _waits_on(parent, request_id):
+                    _release_control(parent, request_id)
             if control_id and heartbeat_root is None:
-                self._registry.mark_awaiting_control(handle, control_id)
+                for reasked in control_ids:
+                    self._registry.mark_awaiting_control(handle, reasked)
                 self._registry.mark_waiting(handle)
             elif not control_id:
                 self._registry.mark_terminal(
@@ -394,6 +428,7 @@ class RuntimeSessionCoordinator:
             return value
         finally:
             self._control_claims.discard(claim)
+            self._resuming_parents.discard(parent.execution_id)
             self._refresh_session_state(record)
 
     def has_control_target(self, session_id: str, request_id: str) -> bool:
@@ -433,8 +468,11 @@ class RuntimeSessionCoordinator:
         """
         record = self._require_open_session(session_id)
         parent = self._stream_control_parent(record, request_id)
+        if parent.execution_id in self._resuming_parents:
+            raise RuntimeError("interaction answer is already in progress")
         parent_was_waiting = parent.state is SessionExecutionState.WAITING_FOR_CONTROL
         record.stream_control_claims.add(request_id)
+        self._resuming_parents.add(parent.execution_id)
         if parent_was_waiting:
             self._registry.resume_waiting(parent)
         handle = self._new_execution(
@@ -472,16 +510,17 @@ class RuntimeSessionCoordinator:
         else:
             if parent_was_waiting:
                 self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
-            elif parent.waiting_control_id == request_id:
+            elif _waits_on(parent, request_id):
                 # The original producer may already have published another
                 # question. Do not erase that newer control locator.
-                parent.waiting_control_id = None
+                _release_control(parent, request_id)
             if handle.waiting_control_id:
                 self._registry.mark_waiting(handle)
             else:
                 self._registry.mark_terminal(handle, SessionExecutionState.SUCCEEDED)
         finally:
             record.stream_control_claims.discard(request_id)
+            self._resuming_parents.discard(parent.execution_id)
             if handle.task is asyncio.current_task():
                 handle.task = None
             self._refresh_session_state(record)
@@ -502,7 +541,7 @@ class RuntimeSessionCoordinator:
             active_only=True,
         )
         for handle in active:
-            if handle.waiting_control_id != request_id:
+            if not _waits_on(handle, request_id):
                 continue
             if handle.state in {
                 SessionExecutionState.RUNNING,
@@ -1071,7 +1110,7 @@ class RuntimeSessionCoordinator:
             generation=record.generation,
             active_only=True,
         ):
-            if handle.waiting_control_id != request_id:
+            if not _waits_on(handle, request_id):
                 continue
             if handle.state not in deliverable:
                 continue
