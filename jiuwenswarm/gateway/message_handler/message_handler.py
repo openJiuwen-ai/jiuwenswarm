@@ -1468,6 +1468,7 @@ class MessageHandler(ABC):
             await _cancel_tasks(tasks_to_cancel)
             await self._pop_stream_tracking_and_broadcast(rids_cancelled)
 
+        await self._finish_cancelled_cron_session_runs(env_interrupt, resp)
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         if payload.get("event_type") == "chat.interrupt_result":
             if not publish_interrupt_result:
@@ -5400,6 +5401,29 @@ class MessageHandler(ABC):
             stream_rid, msg.channel_id, len(self._stream_tasks),
         )
 
+    async def _finish_cancelled_cron_session_runs(
+        self, env: "E2AEnvelope", response: "AgentResponse",
+    ) -> None:
+        """Settle cron waiters only after a successful, session-wide cancel ACK."""
+        params = env.params if isinstance(env.params, dict) else {}
+        if str(params.get("intent", "cancel")).strip().lower() != "cancel":
+            return
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        if not response.ok or payload.get("success") is not True:
+            return
+        controller = getattr(self, "_cron_controller", None)
+        finish_runs = getattr(controller, "finish_cancelled_session_runs", None)
+        session_id = str(getattr(env, "session_id", None) or "").strip()
+        if not callable(finish_runs) or not session_id:
+            return
+        try:
+            await finish_runs(session_id, user_id=getattr(env, "user_id", None))
+        except Exception:
+            logger.warning(
+                "[MessageHandler] cancelled cron waiter cleanup failed: session_id=%s",
+                session_id, exc_info=True,
+            )
+
     async def _send_interrupt_to_agent(
         self,
         env: "E2AEnvelope",
@@ -5420,6 +5444,7 @@ class MessageHandler(ABC):
                 "[MessageHandler] AgentServer 中断响应: request_id=%s ok=%s",
                 resp.request_id, resp.ok,
             )
+            await self._finish_cancelled_cron_session_runs(env, resp)
             payload = resp.payload if isinstance(resp.payload, dict) else {}
             ch = (channel_id or getattr(env, "channel", None) or "").strip()
             sid = (session_id or getattr(env, "session_id", None) or "").strip()
