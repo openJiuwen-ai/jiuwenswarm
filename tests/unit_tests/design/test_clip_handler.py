@@ -678,7 +678,7 @@ def test_mismatched_inputs_skip_stream_copy(tmp_path: Path, monkeypatch: pytest.
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
-    monkeypatch.setattr(compose_mod, "run_ffmpeg", fake_run)
+    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
     compose_mod.concatenate_clip_videos([shot, upload], dest)
 
     assert not any("-f" in cmd and "concat" in cmd for cmd in calls)

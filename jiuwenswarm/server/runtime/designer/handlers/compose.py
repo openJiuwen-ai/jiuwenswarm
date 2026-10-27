@@ -26,12 +26,6 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_clip_index,
     video_concat_source_ids,
 )
-from jiuwenswarm.server.runtime.designer.ffmpeg_runner import (
-    ENCODE_TIMEOUT_S,
-    PROBE_TIMEOUT_S,
-    run_ffmpeg,
-    run_off_loop,
-)
 from jiuwenswarm.server.runtime.designer.handlers import common as handler_io
 from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import (
     is_silent_music_placeholder,
@@ -50,6 +44,7 @@ _STREAM_SIZE = re.compile(r"Stream #0:\d+.*.*?Video:.*?(\d{2,5})x(\d{2,5})")
 _MEDIA_DURATION = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
 _VIDEO_STREAM = re.compile(r"Video:\s*(\w+).*?(\d{2,5}x\d{2,5}).*?(\d+(?:\.\d+)?) fps")
 _AUDIO_STREAM = re.compile(r"Audio:\s*(\w+)")
+_CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
 def _find_ffmpeg() -> str:
@@ -268,7 +263,8 @@ def concatenate_clip_videos(paths: list[Path], dest: Path) -> Path:
 
 def _stream_signature(ffmpeg: str, path: Path) -> tuple[str, str, str, str] | None:
     """Video codec / size / fps and audio codec, as printed by ``ffmpeg -i``; None when unreadable."""
-    text = _probe_text(ffmpeg, path)
+    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())])
+    text = f"{probed.stderr or ''}\n{probed.stdout or ''}"
     video = _VIDEO_STREAM.search(text)
     audio = _AUDIO_STREAM.search(text)
     if video is None:
@@ -993,9 +989,12 @@ class ComposeNodeHandler:
         dest = handler_io.canvas_output_dir(
             ctx.graph if isinstance(ctx.graph, dict) else None
         ) / f"{stem}.mp4"
-        brief = role_output_text(ctx, NODE_ROLE_BRIEF) or ""
-        scored = await run_off_loop(
-            _assemble_film, thread_snapshot(ctx), paths, dest, stem, brief
+        merged = concatenate_clip_videos(paths, dest)
+        scored = mix_compose_soundtrack(
+            merged,
+            dest.parent / f"{stem}_bgm.mp4",
+            ctx=ctx,
+            brief=role_output_text(ctx, NODE_ROLE_BRIEF) or "",
         )
         output_ref: AssetRef = {
             "kind": NODE_TYPE_VIDEO,
