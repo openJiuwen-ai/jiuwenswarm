@@ -751,7 +751,11 @@ def _build_list_card(
     card: dict[str, Any] = {
         "id": pkg_dir.name,
         "displayName": manifest.get("display_name") or pkg_dir.name,
-        "displayDescription": manifest.get("display_description") or {},
+        "displayDescription": (
+            _manifest_display_description(manifest)
+            if package_type == "agent_template"
+            else (manifest.get("display_description") or {})
+        ),
         "category": category if isinstance(category, str) else "",
         "tags": manifest.get("tags") if isinstance(manifest.get("tags"), list) else [],
         "source": source,
