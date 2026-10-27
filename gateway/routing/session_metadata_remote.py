@@ -87,7 +87,8 @@ class SessionMetadataRemoteProvider:
     得到带域信息的显式错误。
     """
 
-    def __getattr__(self, name: str) -> Any:
+    @staticmethod
+    def __getattr__(name: str) -> Any:
         raise RuntimeError(
             f"session_metadata remote provider does not carry '{name}': "
             "the method runs in the AgentServer process "
