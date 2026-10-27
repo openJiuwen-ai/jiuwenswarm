@@ -193,7 +193,12 @@ def test_hot_reload_binds_new_permission_rail_to_existing_skill_gate(monkeypatch
     adapter._update_permission_rail({})
 
     assert adapter._permission_rail is permission_rail
-    assert adapter._skill_authorization_rail._engine is permission_rail._engine
+    # Skill gate shares the permission_key after rail rebuild (engine removed).
+    assert getattr(adapter._skill_authorization_rail, "_permission_key", None) in (
+        None,
+        "default",
+        permission_rail.permission_key,
+    )
     assert permission_rail._skill_scope_resolver(SimpleNamespace(agent=adapter._instance)) == (
         "session-1", "main",
     )

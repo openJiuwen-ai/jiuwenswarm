@@ -159,11 +159,11 @@ def test_disabled_to_enabled_creates_flash_rail(permission_adapter):
     adapter._permission_rail = None
     skill_rail = adapter._build_skill_authorization_rail()
     adapter._skill_authorization_rail = skill_rail
-    assert skill_rail._engine is None
+    assert getattr(skill_rail, "_engine", None) is None
     adapter._update_permission_rail({}, session_id="a")
     assert isinstance(adapter._permission_rail, FlashPermissionRail)
     assert adapter._skill_authorization_rail is skill_rail
-    assert skill_rail._engine is adapter._permission_rail._engine
+    assert skill_rail._permission_key == adapter._permission_rail.permission_key
 
 
 @pytest.mark.parametrize("reload", [False, True])
