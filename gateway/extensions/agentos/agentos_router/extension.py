@@ -2,26 +2,27 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.client.agent_client import AgentServerClient
-from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
-from gateway.extensions.sdk.third_agent import ThirdAgentExtension
-from jiuwenswarm.common.client.third_agent import ThirdAgent
-
-from jiuwenswarm.common.config import get_config
 from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
-from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
-from jiuwenswarm.extensions.agentos.agentos_router.config import (
+from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
+    AgentOSAuthenticator,
+)
+from gateway.extensions.agentos.agentos_router.config import (
     RouterConfig,
     agentos_router_selected,
     load_router_config,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryClient
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import YuanrongSshRelay
-from jiuwenswarm.extensions.agentos.agentos_router.third_agent import AgentOSThirdAgent
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
+from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from gateway.extensions.agentos.agentos_router.ssh_relay import YuanrongSshRelay
+from gateway.extensions.agentos.agentos_router.third_agent import AgentOSThirdAgent
+from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
+from gateway.extensions.sdk.third_agent import ThirdAgentExtension
+from gateway.extensions.yuanrong_frontend_client import (
     YuanrongFrontendAgentClient,
 )
+from jiuwenswarm.common.client.agent_client import AgentServerClient
+from jiuwenswarm.common.client.third_agent import ThirdAgent
+from jiuwenswarm.common.config import get_config
 
 
 class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):

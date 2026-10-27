@@ -20,6 +20,44 @@ from typing import TYPE_CHECKING, Any, TypeVar
 
 from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.session import (
+    RuntimeSessionCoordinator,
+    RuntimeSessionState,
+    SessionCloseTimeoutError,
+    SessionPersistencePolicy,
+    SessionWorkKind,
+)
+from jiuwenswarm.runtime.session.model import (
+    TEAM_ATTACH_ONLY_PARAM,
+    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+    ExecutionCancelCause,
+    ExecutionLifecycleContext,
+    SessionExecutionSnapshot,
+    SessionExecutionState,
+    SessionLifecycleContext,
+    TeamExecutionContext,
+    TeamExecutionDetails,
+    TeamWaiterKind,
+)
+from jiuwenswarm.runtime.session_delete import TeamDeleteResult
+from jiuwenswarm.runtime.session_input import (
+    resolve_session_input_mode,
+    validate_session_input,
+)
+from jiuwenswarm.runtime.session_lifecycle import (
+    RuntimeParticipantRegistry,
+    RuntimeResourceLease,
+    SessionExecutionEvent,
+    SessionExecutionFinishedEvent,
+    SessionInactiveEvent,
+    SessionInputIntentDisposition,
+    SessionInputIntentEvent,
+    SessionKind,
+    SessionLifecycleTarget,
+)
+from jiuwenswarm.runtime.session_lifecycle import (
+    SessionDescriptor as LifecycleSessionDescriptor,
+)
 from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     RuntimeSessionProvisioner,
@@ -36,39 +74,6 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
-from jiuwenswarm.runtime.session import (
-    RuntimeSessionCoordinator,
-    RuntimeSessionState,
-    SessionCloseTimeoutError,
-    SessionPersistencePolicy,
-    SessionWorkKind,
-)
-from jiuwenswarm.runtime.session_delete import TeamDeleteResult
-from jiuwenswarm.runtime.session_lifecycle import (
-    RuntimeParticipantRegistry,
-    RuntimeResourceLease,
-    SessionDescriptor as LifecycleSessionDescriptor,
-    SessionExecutionEvent,
-    SessionExecutionFinishedEvent,
-    SessionInactiveEvent,
-    SessionInputIntentDisposition,
-    SessionInputIntentEvent,
-    SessionKind,
-    SessionLifecycleTarget,
-)
-from jiuwenswarm.runtime.session.model import (
-    TEAM_ATTACH_ONLY_PARAM,
-    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
-    ExecutionCancelCause,
-    ExecutionLifecycleContext,
-    SessionExecutionSnapshot,
-    SessionExecutionState,
-    SessionLifecycleContext,
-    TeamExecutionContext,
-    TeamExecutionDetails,
-    TeamWaiterKind,
-)
-from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 if TYPE_CHECKING:
@@ -82,7 +87,10 @@ if TYPE_CHECKING:
     from jiuwenswarm.runtime.events import RuntimeEvent
     from jiuwenswarm.runtime.interaction import InteractionAnswerInput
     from jiuwenswarm.runtime.mcp_references import McpReferenceValidationResult
-    from jiuwenswarm.runtime.mode_catalog import ModeCatalogResult, RuntimeModeDescriptor
+    from jiuwenswarm.runtime.mode_catalog import (
+        ModeCatalogResult,
+        RuntimeModeDescriptor,
+    )
     from jiuwenswarm.runtime.model_catalog import (
         ModelCatalogResult,
         RuntimeModelDescriptor,
@@ -224,8 +232,8 @@ async def _acquire_process_runtime_extensions() -> bool:
 
     from openjiuwen.core.runner import Runner
 
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         try:
@@ -283,7 +291,7 @@ async def _release_process_runtime_extensions() -> None:
     global _PROCESS_RUNTIME_EXTENSION_REGISTRY
     global _PROCESS_RUNTIME_EXTENSION_USERS
 
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         if _PROCESS_RUNTIME_EXTENSION_USERS <= 0:
@@ -2932,7 +2940,9 @@ class AgentRuntime:
         channel_id: str,
         session_id: str,
     ) -> None:
-        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import forks
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+            forks,
+        )
 
         forks.session_deleted(session_id)
         await self._agent_manager.release_subagent_runtime_for_session(
@@ -3875,9 +3885,9 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
+        from gateway.extensions.registry import ExtensionRegistry
         from jiuwenswarm.common.hook_event import AgentServerHookEvents
         from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):

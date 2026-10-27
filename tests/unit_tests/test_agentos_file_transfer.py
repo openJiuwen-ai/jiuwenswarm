@@ -2,7 +2,6 @@ from __future__ import annotations
 
 # TEST ONLY: URL literals use RFC-reserved domains or ASGI's synthetic
 # ``http://test`` base; loopback listeners bind ephemeral local test servers.
-
 import base64
 import email.message
 import io
@@ -13,27 +12,27 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.channel_manager.web import app_web_handlers
+from gateway.channel_manager.web.web_connect import WebChannel
 from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentManager,
     AgentRuntime,
 )
 from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
+from gateway.extensions.agentos.agentos_router.router_client import (
     AgentOSFileTransferError,
     AgentOSRouterClient,
     build_auth_headers_from_token,
     normalize_agent_file_download_path,
     normalize_agent_file_upload_path,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from gateway.extensions.yuanrong_frontend_client import (
     AgentFileDownloadChunk,
     SandboxInfo,
     YuanrongAgentFileError,
     YuanrongFrontendAgentClient,
 )
-from gateway.channel_manager.web import app_web_handlers
-from gateway.channel_manager.web.web_connect import WebChannel
 from gateway.routing.agent_client import WebSocketAgentServerClient
 
 

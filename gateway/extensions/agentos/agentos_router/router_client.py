@@ -11,18 +11,14 @@ import time
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
-from typing import Any, Mapping, Coroutine
+from typing import Any, Coroutine, Mapping
 
-from jiuwenswarm.common.client.agent_client import AgentServerClient
-from gateway.routing.container_files import (
-    AgentOSFileTransferError,
-    normalize_agent_file_download_path,
-    normalize_agent_file_upload_path,
-)
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.message import ReqMethod
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import ReqMethod
+from gateway.channel_manager.base import ChannelType
+from gateway.channel_manager.channel_manager import ChannelManager
 from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateFailed,
@@ -33,18 +29,15 @@ from gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentRuntime,
     is_third_party_agent_type,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
-from jiuwenswarm.extensions.agentos.auth.common import (
-    extract_token_from_path_and_headers,
-    headers_to_dict,
+from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
+    AgentOSAuthenticator,
 )
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
-from jiuwenswarm.extensions.agentos.agentos_router.config import (
+from gateway.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
-    SshChannelEndpoint,
     TOOL_SANDBOX_CPU_ENV,
     TOOL_SANDBOX_IDLE_TIMEOUT_ENV,
     TOOL_SANDBOX_MEMORY_ENV,
+    SshChannelEndpoint,
     read_mapping_path,
     read_optional_float,
     read_optional_int,
@@ -59,7 +52,7 @@ from gateway.extensions.agentos.agentos_router.models import (
     AgentStatus,
     ImageInfo,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+from gateway.extensions.agentos.agentos_router.registry_client import (
     RegistryClient,
     RegistryConflictError,
     RegistryConnectionError,
@@ -72,13 +65,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     instance_service_id,
     parse_access_mode,
 )
-from gateway.extensions.agentos.registry_watcher.decode import (
-    web_svc_port as _web_svc_port,
-)
-from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
-    cleanup_stale_sandboxes,
-)
-from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
+from gateway.extensions.agentos.agentos_router.ssh_relay import (
     DEFAULT_CLIENT_KEYS_DIR,
     DEFAULT_SSH_PORT,
     SshSouthConnectError,
@@ -86,24 +73,39 @@ from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     _is_ssh_connect_retryable,
     resolve_client_keys_dir,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
-    AgentFileDownloadChunk,
-    AgentRuntimeSpec,
+from gateway.extensions.agentos.agentos_router.stale_cleanup import (
+    cleanup_stale_sandboxes,
+)
+from gateway.extensions.agentos.registry_watcher.decode import (
+    web_svc_port as _web_svc_port,
+)
+from gateway.extensions.auth.common import (
+    extract_token_from_path_and_headers,
+    headers_to_dict,
+)
+from gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
+from gateway.extensions.auth.ssh_key_issuer import SshKeyIssuer
+from gateway.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    AgentFileDownloadChunk,
+    AgentRuntimeSpec,
     RuntimeProbeSettings,
     YuanrongAgentApiError,
     YuanrongAgentFileError,
     YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
     apply_trace_header,
-    extract_trace_id,
     bind_southbound_trace_id,
+    extract_trace_id,
 )
-from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
-from gateway.channel_manager.channel_manager import ChannelManager
-from gateway.channel_manager.base import ChannelType
 from gateway.routing.agent_client import WebSocketAgentServerClient
+from gateway.routing.container_files import (
+    AgentOSFileTransferError,
+    normalize_agent_file_download_path,
+    normalize_agent_file_upload_path,
+)
+from jiuwenswarm.common.client.agent_client import AgentServerClient
 
 logger = logging.getLogger(__name__)
 
@@ -2827,8 +2829,9 @@ class AgentOSRouterClient(AgentServerClient):
                 "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
                 **self._tool_sandbox_env(),
             }
-            from gateway.runtime.cron.factory import load_cron_store_settings
             import json
+
+            from gateway.runtime.cron.factory import load_cron_store_settings
 
             endpoints = load_cron_store_settings(self._server_config).endpoints
             if endpoints:

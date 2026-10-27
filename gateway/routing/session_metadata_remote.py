@@ -29,10 +29,10 @@ import logging
 import os
 from typing import Any
 
-from jiuwenswarm.common.external_providers import register
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 
 from gateway.routing.e2a_proxy import fetch_agent_unary
+from jiuwenswarm.common.external_providers import register
 
 logger = logging.getLogger(__name__)
 

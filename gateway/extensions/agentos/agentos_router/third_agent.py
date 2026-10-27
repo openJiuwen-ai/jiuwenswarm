@@ -8,7 +8,7 @@ from gateway.extensions.agentos.agentos_router.agent_manager import AgentRuntime
 from jiuwenswarm.common.client.third_agent import ThirdAgent
 
 if TYPE_CHECKING:
-    from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
+    from gateway.extensions.agentos.agentos_router.router_client import (
         AgentOSRouterClient,
     )
 

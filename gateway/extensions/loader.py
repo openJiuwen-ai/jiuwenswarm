@@ -5,7 +5,7 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.registry import ExtensionRegistry
 from gateway.extensions.sdk.application_plugin import (
     ApplicationPluginExtension,
     ManifestApplicationPlugin,
@@ -153,7 +153,7 @@ class ExtensionLoader:
 
         module_name = root.name
         spec = importlib.util.spec_from_file_location(
-            f"jiuwenswarm.loaded_extension.{module_name}",
+            f"gateway.loaded_extension.{module_name}",
             entry,
         )
         if spec is None or spec.loader is None:

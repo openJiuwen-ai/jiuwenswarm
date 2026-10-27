@@ -1911,6 +1911,7 @@ async def _run(
         CronSchedulerService,
         create_gateway_cron_store,
     )
+    from gateway.extensions.manager import ExtensionManager
     from gateway.extensions.registry import ExtensionRegistry
     from gateway.health_check import (
         GatewayHealthCheckService,
@@ -1922,7 +1923,6 @@ async def _run(
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
     from jiuwenswarm.common.updater import UpdaterService
-    from jiuwenswarm.extensions.manager import ExtensionManager
 
     logger.info("[App] Gateway starting, connecting AgentServer: %s", agent_server_url)
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
@@ -2031,7 +2031,9 @@ async def _run(
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
     # session_metadata 域 WS 远端实现的客户端绑定（仅远端预演模式消费）
-    from gateway.routing.session_metadata_remote import bind_agent_client as _bind_session_meta_client
+    from gateway.routing.session_metadata_remote import (
+        bind_agent_client as _bind_session_meta_client,
+    )
 
     _bind_session_meta_client(client)
 

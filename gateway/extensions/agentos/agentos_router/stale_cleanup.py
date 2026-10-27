@@ -21,13 +21,13 @@ from collections.abc import Callable
 
 from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
 from gateway.extensions.agentos.agentos_router.logutil import log_agentos
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+from gateway.extensions.agentos.agentos_router.registry_client import (
     InstanceRecord,
     RegistryClient,
     RegistryNotFoundError,
     instance_service_id,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
+from gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
 
 logger = logging.getLogger(__name__)
 

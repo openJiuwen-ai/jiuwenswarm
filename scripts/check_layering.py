@@ -10,7 +10,10 @@
   R3  gateway 禁止 import server / agents / channels
 
 例外：``gateway.common`` 是无状态纯函数/常量的唯一真源（M1 策略调整），
-common / server / runtime 允许反向引用；其余 ``gateway.*`` 仍属传输层，继续禁止。
+common / server / runtime 允许反向引用；扩展治理层
+``gateway.extensions.{registry,manager,loader}`` 同理——扩展发现、注册表与
+加载器收敛为单份实现，避免两侧各持一份进程内单例，其在 AgentServer 侧的
+引用不视为违规。其余 ``gateway.*`` 仍属传输层，继续禁止。
 
 使用时机（《Gateway独立成仓-解耦设计》PR-2，单人解耦精简版）：
 
@@ -63,7 +66,14 @@ _ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
 KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
 
 # 允许的跨层目标：无状态纯组件以 gateway 为唯一真源，母仓反向引用不视为违规。
-ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = ("gateway.common",)
+# extensions 治理层（registry/manager/loader）同样以 gateway 为唯一实现：
+# 三者持有进程内单例与扩展注册表，双份副本会导致状态分裂。
+ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
+    "gateway.common",
+    "gateway.extensions.registry",
+    "gateway.extensions.manager",
+    "gateway.extensions.loader",
+)
 
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 

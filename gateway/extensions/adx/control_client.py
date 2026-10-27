@@ -14,7 +14,7 @@ from urllib.parse import quote, urljoin
 import httpx
 
 from gateway.extensions.adx.config import AdxRouterConfig
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from gateway.extensions.yuanrong_frontend_client import (
     SandboxInfo, YuanrongAgentApiError, YuanrongAgentTimeoutError,
 )
 

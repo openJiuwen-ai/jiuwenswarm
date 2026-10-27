@@ -213,7 +213,7 @@ def test_invalid_ingress_origins_fail_at_startup(monkeypatch, url):
 
 
 async def test_registry_launch_spec_is_forwarded_to_environment_without_template_registration(monkeypatch):
-    from jiuwenswarm.extensions.agentos.agentos_router.registry_client import ImageInfo
+    from gateway.extensions.agentos.agentos_router.registry_client import ImageInfo
 
     router, _clients = _router(_config(monkeypatch, builtin_image='registry.example/builtin:1'))
     spec = {'rootfs': {'imageurl': 'registry.example/third:2', 'user': '10001:10001', 'ports': ['tcp:8080']},
