@@ -27,7 +27,7 @@
     "electron:build:mac:frontend-test": "bash ../../../../scripts/build-electron-exe.sh --test --frontend-only"
   },
   "devDependencies": {
-    "electron": "^43.5.1",
+    "electron": "43.7.6",
     "rcedit": "5.0.2"
   }
 }
