@@ -479,10 +479,10 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
     import json
 
     import httpx
-    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
     from openjiuwen.core.foundation.llm.system_one.schema import ChoiceQuestion
 
     from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
+    from jiuwenswarm.server.runtime.moa_progress import ProgressJevSystemOneClient
 
     monkeypatch.setenv(key_env, "shared-provider-secret")
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
@@ -511,8 +511,8 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         monkeypatch.setattr(
-            "openjiuwen.core.foundation.llm.system_one.JevSystemOneClient",
-            lambda **kwargs: JevSystemOneClient(http_client=client, **kwargs),
+            "jiuwenswarm.server.runtime.moa_progress.ProgressJevSystemOneClient",
+            lambda **kwargs: ProgressJevSystemOneClient(http_client=client, **kwargs),
         )
         runtime = await build_moa_runtime(moa_config, SELECTION)
         try:
@@ -587,7 +587,7 @@ async def test_status_and_single_member_never_construct_jev_transport(moa_config
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
     def unexpected_client(**_kwargs):
         raise AssertionError("Status and a single member must not create JEV transport")
-    monkeypatch.setattr("openjiuwen.core.foundation.llm.system_one.JevSystemOneClient", unexpected_client)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.moa_progress.ProgressJevSystemOneClient", unexpected_client)
     assert moa_status(moa_config, SELECTION)["configured"] is True
     for route in moa_config["models"]["groups"][0]["routes"][1:]:
         route["enabled"] = False
@@ -788,3 +788,65 @@ async def test_runtime_close_propagates_transport_failure_without_primary_failur
     with pytest.raises(ValueError, match="transport failed"):
         await runtime.aclose()
     assert runtime._close_task.done()
+
+
+@pytest.mark.parametrize("jev_enabled", [False, True])
+@pytest.mark.asyncio
+async def test_moa_rail_emits_transient_reference_and_verification_status(moa_config, monkeypatch, jev_enabled):
+    from openjiuwen.core.foundation.llm import AssistantMessage, Model, UserMessage
+    from openjiuwen.core.foundation.llm.system_one import ChoiceAnswer, JevSystemOneClient, SystemOneResponse, SystemOneUsage
+    from openjiuwen.core.session import get_current_session, with_session
+    from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs, ModelCallInputs
+    from openjiuwen.harness.rails.moa_rail import MoARail
+
+    monkeypatch.setenv("TYPESAFE_API_KEY", "test-jev-key")
+    moa_config["experimental"]["multi_model_collaboration"].update({
+        "jev_enabled": jev_enabled, "verifier_interval": 1,
+    })
+    monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)
+    monkeypatch.setattr(Model, "invoke", AsyncMock(return_value=AssistantMessage(content="<c1>D</c1>")))
+    monkeypatch.setattr(JevSystemOneClient, "system_one", AsyncMock(return_value=SystemOneResponse(
+        model="jev-test", usage=SystemOneUsage(input_tokens=1, output_tokens=1, total_tokens=2),
+        answers={"consult_reference": ChoiceAnswer(
+            choice="CONSULT", confidence=0.9, probabilities={"CONSULT": 0.9, "CONTINUE": 0.1},
+        )},
+    )))
+    runtime = await build_moa_runtime(moa_config, SELECTION)
+    mailbox = runtime.progress.open()
+    session = SimpleNamespace(get_session_id=lambda: "moa-progress", write_stream=AsyncMock())
+    model = runtime.aggregator
+    def replace_model(value):
+        nonlocal model
+        model = value
+    agent = SimpleNamespace(get_llm=lambda: model, set_llm=replace_model, ability_manager=None)
+    rail = MoARail(runtime.config)
+    messages = [UserMessage(content="private task"), AssistantMessage(content="private answer")]
+    context = AgentCallbackContext(
+        agent=agent, session=session, inputs=InvokeInputs(query="private task"),
+        context=SimpleNamespace(get_messages=lambda: messages),
+    )
+
+    @with_session()
+    async def invoke_rail(session):
+        await rail.before_invoke(context)
+        try:
+            context.inputs = ModelCallInputs(messages=messages, react_iteration=1)
+            await rail.before_model_call(context)
+            await rail.after_react_iteration(context)
+        finally:
+            await rail.after_invoke(context)
+
+    previous_session = get_current_session()
+    try:
+        await invoke_rail(session=session)
+        assert get_current_session() is previous_session
+        session.write_stream.assert_not_called()
+        assert {event["phase"] for event in mailbox.pending} == {"reference", "verification"}
+        by_operation = {}
+        for event in mailbox.pending:
+            assert set(event) == {"operation_id", "phase", "status"}
+            by_operation.setdefault(event["operation_id"], []).append(event["status"])
+        assert len(by_operation) == 3
+        assert all(statuses == ["started", "completed"] for statuses in by_operation.values())
+    finally:
+        await runtime.aclose()

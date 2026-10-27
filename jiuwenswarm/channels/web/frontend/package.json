@@ -10,6 +10,7 @@
     "test:context-compression-cancel": "esbuild src/utils/contextCompression.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/context-compression-cancel/contextCompression.mjs && node --test tests/contextCompressionCancel.test.mjs",
     "test:moa-settings": "npm run test:multi-model-collaboration-settings",
     "test:jev-settings": "node --test tests/jevSettings.test.mjs tests/jevSettingsDialog.test.mjs tests/multiModelCollaborationSettings.test.mjs tests/browserSettingsFeedback.test.mjs",
+    "test:moa-progress": "node --test tests/moaProgress.test.mjs",
     "test:multi-model-collaboration-settings": "node --test tests/multiModelCollaborationSettings.test.mjs",
     "test:team-organization": "esbuild tests/fixtures/teamOrganizationExports.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/team-organization/organization.mjs --define:import.meta.env={} && node --test tests/teamOrganization.test.mjs",
     "test:organization-leader-identity": "node --test tests/organizationLeaderIdentity.test.mjs",

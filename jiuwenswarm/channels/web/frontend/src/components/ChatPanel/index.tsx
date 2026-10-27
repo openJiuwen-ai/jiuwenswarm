@@ -47,6 +47,7 @@ import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
+import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
@@ -1245,6 +1246,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const toolExecutionOrder = useChatStore((s) => s.runtimes[conversationId]?.toolExecutionOrder ?? []);
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
+  const moaPhase = useChatStore((s) => activeMoaPhase(s.runtimes[activeSessionId ?? '']?.moaOperations));
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const storedTeamGroupIdentity = useSessionStore(
     (s) => s.runtimes[conversationId]?.teamGroupIdentity ?? null,
@@ -1831,6 +1833,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     isThinking,
     contextCompressionRuntime,
     contextCompressionSummary,
+    moaPhase,
     historyPublishedBatchSeq,
     historyLoadingMore,
     historyPrepending,
@@ -2472,6 +2475,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   {/* 内联审批卡片（演进审批 & 权限审批共用） */}
                   <InlineQuestionCard onSubmit={onUserAnswer} />
                   <ContextCompressionLines runtime={contextCompressionRuntime} summary={contextCompressionSummary} />
+                  <MoaProgress phase={moaPhase} />
                 </>
               ) : isHistoryRestoring ? (
                 <div

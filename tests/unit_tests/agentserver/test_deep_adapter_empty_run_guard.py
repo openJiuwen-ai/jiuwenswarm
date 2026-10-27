@@ -8,8 +8,11 @@ as chat.error + WARNING instead of completing silently, while legitimate
 0-token exits (user cancel, HITL ask_user pending, active goal, forwarded
 tool events such as a Web plan-execute resume) must not be flagged.
 """
+import asyncio
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from typing import Any
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -173,6 +176,234 @@ async def test_empty_run_emits_chat_error_and_no_final(monkeypatch):
     } in events
     # The guard must suppress the synthetic stream-end success final.
     assert not any(event.get("event_type") == "chat.final" for event in events)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("as_dict", [False, True])
+async def test_moa_notices_do_not_count_as_round_output(monkeypatch, as_dict):
+    adapter = _adapter_ready(monkeypatch)
+    payload = {"operation_id": "notice", "phase": "reference", "status": "started"}
+    notice = {"event_type": "chat.moa_status", **payload} if as_dict else SimpleNamespace(
+        type="chat.moa_status", payload=payload,
+    )
+    _install_stream(adapter, [notice])
+    observe_round = Mock()
+    monkeypatch.setattr(adapter, "_track_round_output_boundary", observe_round)
+    events = _payload_events([
+        chunk async for chunk in adapter.process_message_stream_impl(_chat_request(), {"query": "你好"})
+    ])
+    observe_round.assert_not_called()
+    assert any(event.get("event_type") == "chat.moa_status" for event in events)
+    assert any(event.get("error_type") == "EmptyLLMRun" for event in events)
+    assert not any(event.get("event_type") == "chat.final" for event in events)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("close_early", [False, True])
+async def test_moa_output_consumer_owns_and_closes_progress(monkeypatch, close_early):
+    from jiuwenswarm.server.runtime.moa_progress import MoaProgress, ReferenceProgressModel
+
+    adapter = _adapter_ready(monkeypatch)
+    progress = MoaProgress()
+    adapter._moa_runtime = SimpleNamespace(progress=progress)
+    release = asyncio.Event()
+    reader_stopped = asyncio.Event()
+    close_output = AsyncMock()
+
+    async def respond(messages, tools):
+        await release.wait()
+        return "answer"
+
+    original = SimpleNamespace(invoke=AsyncMock(side_effect=respond))
+    model = ReferenceProgressModel(original, progress)
+
+    class Output:
+        async def __aiter__(self):
+            try:
+                answer = await model.invoke(messages=[])
+                yield SimpleNamespace(type="llm_output", payload={"content": answer})
+                yield SimpleNamespace(type="answer", payload={"output": answer, "result_type": "answer"})
+            finally:
+                reader_stopped.set()
+
+        close = close_output
+
+    monkeypatch.setattr(adapter, "_attach_and_send_inputs", AsyncMock(return_value=(Output(), False)))
+    observe_round = Mock(wraps=adapter._track_round_output_boundary)
+    monkeypatch.setattr(adapter, "_track_round_output_boundary", observe_round)
+    stream = adapter.process_message_stream_impl(_chat_request(), {"query": "你好"})
+    async for chunk in stream:
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.moa_status":
+            assert chunk.payload["status"] == "started"
+            break
+    mailbox = progress.mailbox
+    assert mailbox is not None
+    observe_round.assert_not_called()
+    if close_early:
+        await asyncio.wait_for(stream.aclose(), 1)
+    else:
+        release.set()
+        events = _payload_events([chunk async for chunk in stream])
+        assert any(event.get("event_type") == "chat.final" and event.get("content") == "answer" for event in events)
+        assert not any(event.get("event_type") == "chat.error" for event in events)
+    original.invoke.assert_awaited_once_with(messages=[], tools=None)
+    close_output.assert_awaited_once()
+    assert reader_stopped.is_set()
+    assert mailbox.closed and progress.mailbox is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("close_early", [False, True])
+@pytest.mark.parametrize("cancel_close", [False, True])
+async def test_moa_close_failure_preserves_owner_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    close_early: bool,
+    cancel_close: bool,
+) -> None:
+    from openjiuwen.harness import observability
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    from jiuwenswarm.server.runtime.moa_progress import MoaProgress
+
+    adapter = _adapter_ready(monkeypatch)
+    progress = MoaProgress()
+    adapter._moa_runtime = SimpleNamespace(progress=progress)
+    output = _FakeInteractionStream([
+        SimpleNamespace(type="llm_output", payload={"content": "answer"}),
+        SimpleNamespace(type="answer", payload={"output": "answer", "result_type": "answer"}),
+    ])
+    output.close = AsyncMock()
+    monkeypatch.setattr(adapter, "_attach_and_send_inputs", AsyncMock(return_value=(output, False)))
+    close_started = asyncio.Event()
+    native_stream = progress.stream
+
+    class FailingCloseStream:
+        def __init__(self, source: AsyncIterator[Any]) -> None:
+            self.source = native_stream(source)
+
+        def __aiter__(self) -> AsyncIterator[Any]:
+            return self.source
+
+        async def aclose(self) -> None:
+            await self.source.aclose()
+            close_started.set()
+            if cancel_close:
+                await asyncio.Event().wait()
+            raise RuntimeError("MoA close failed")
+
+    monkeypatch.setattr(progress, "stream", FailingCloseStream)
+    commit = AsyncMock()
+    finalize = Mock(wraps=adapter._permission_dispatch.finalize)
+    unregister = Mock()
+    unmark = Mock()
+    span_close = Mock()
+    permission_cleanup = Mock(wraps=interface_deep.cleanup_permission_context)
+    authorization_release = Mock(wraps=interface_deep.AUTHORIZATION_EXECUTION_CONTEXTS.release)
+    monkeypatch.setattr(adapter, "_commit_round_state", commit)
+    monkeypatch.setattr(adapter._permission_dispatch, "finalize", finalize)
+    monkeypatch.setattr(adapter, "_unregister_session_agent_task", unregister)
+    monkeypatch.setattr(adapter, "_unmark_session_active", unmark)
+    monkeypatch.setattr(observability, "close_agent_run_span", span_close)
+    monkeypatch.setattr(interface_deep, "cleanup_permission_context", permission_cleanup)
+    monkeypatch.setattr(interface_deep.AUTHORIZATION_EXECUTION_CONTEXTS, "release", authorization_release)
+    request = _chat_request()
+    events = []
+
+    async def consume() -> None:
+        stream = adapter.process_message_stream_impl(request, {"query": "hello"})
+        try:
+            async for chunk in stream:
+                if isinstance(chunk.payload, dict):
+                    events.append(chunk.payload)
+                    if close_early and chunk.payload.get("event_type") == "chat.delta":
+                        break
+        finally:
+            await stream.aclose()
+
+    consumer = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(close_started.wait(), 2)
+        if cancel_close:
+            consumer.cancel("cancel during MoA close")
+            with pytest.raises(asyncio.CancelledError, match="cancel during MoA close"):
+                await consumer
+        else:
+            await asyncio.wait_for(consumer, 2)
+    finally:
+        if not consumer.done():
+            consumer.cancel()
+        await asyncio.gather(consumer, return_exceptions=True)
+
+    output.close.assert_awaited_once_with(abort_active_round=close_early)
+    commit.assert_awaited_once_with(request.session_id)
+    span_close.assert_called_once()
+    finalize.assert_called_once()
+    unregister.assert_called_once_with(request.session_id)
+    permission_cleanup.assert_called_once()
+    authorization_release.assert_called_once_with(request.session_id, request.request_id)
+    unmark.assert_called_once_with(request.session_id, cleanup_rail=True)
+    assert progress.mailbox is None
+    assert not any(event.get("event_type") == "chat.error" for event in events)
+    if cancel_close:
+        assert isinstance(span_close.call_args.kwargs["exception"], asyncio.CancelledError)
+    elif not close_early:
+        assert any(event.get("event_type") == "chat.final" and event.get("content") == "answer" for event in events)
+
+
+@pytest.mark.anyio
+async def test_moa_mailbox_close_failure_preserves_dispatch_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from jiuwenswarm.server.runtime.moa_progress import MoaProgress
+
+    adapter = _adapter_ready(monkeypatch)
+    progress = MoaProgress()
+    adapter._moa_runtime = SimpleNamespace(progress=progress)
+    adapter._instance.has_output_stream = lambda: False
+    monkeypatch.setattr(adapter, "_attach_and_send_inputs", AsyncMock(side_effect=ValueError("dispatch failed")))
+    native_close = progress.close
+
+    def fail_close() -> None:
+        native_close()
+        raise RuntimeError("mailbox close failed")
+
+    monkeypatch.setattr(progress, "close", fail_close)
+    finalize = Mock(wraps=adapter._permission_dispatch.finalize)
+    unmark = Mock()
+    monkeypatch.setattr(adapter._permission_dispatch, "finalize", finalize)
+    monkeypatch.setattr(adapter, "_unmark_session_active", unmark)
+    events = _payload_events([
+        chunk async for chunk in adapter.process_message_stream_impl(_chat_request(), {"query": "hello"})
+    ])
+    assert any(event.get("error") == "dispatch failed" for event in events)
+    assert not any(event.get("event_type") == "chat.final" for event in events)
+    assert progress.mailbox is None
+    finalize.assert_called_once()
+    unmark.assert_called_once_with(_chat_request().session_id, cleanup_rail=True)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("existing_owner", [False, True])
+async def test_moa_dispatch_cleanup_preserves_only_existing_output_owner(monkeypatch, existing_owner):
+    from jiuwenswarm.server.runtime.moa_progress import MoaProgress
+
+    adapter = _adapter_ready(monkeypatch)
+    progress = MoaProgress()
+    adapter._moa_runtime = SimpleNamespace(progress=progress)
+    adapter._instance.has_output_stream = lambda: existing_owner
+    mailbox = progress.open()
+    if existing_owner:
+        dispatch = AsyncMock(return_value=(None, False))
+    else:
+        dispatch = AsyncMock(side_effect=ValueError("dispatch failed"))
+    monkeypatch.setattr(adapter, "_attach_and_send_inputs", dispatch)
+    events = _payload_events([
+        chunk async for chunk in adapter.process_message_stream_impl(_chat_request(), {"query": "你好"})
+    ])
+    if existing_owner:
+        assert progress.mailbox is mailbox and not mailbox.closed
+        assert any(event.get("event_type") == "runtime.accepted" for event in events)
+        progress.close()
+    else:
+        assert progress.mailbox is None and mailbox.closed
+        assert any(event.get("error") == "dispatch failed" for event in events)
 
 
 @pytest.mark.anyio

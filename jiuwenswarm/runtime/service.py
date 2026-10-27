@@ -2916,6 +2916,49 @@ class AgentRuntime:
             if admitted:
                 await end_control(session_id)
 
+    def _moa_control_execution_id(self, request: AgentRequest) -> str | None:
+        """Resolve an admitted control's original execution for MoA notices."""
+        session_id = request.session_id or "default"
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None or snapshot.session_id != session_id:
+            return None
+        control_id = self._control_request_id(request)
+        candidates = [
+            execution for execution in snapshot.executions
+            if execution.session_id == session_id
+            and execution.generation == snapshot.generation
+            and execution.work_kind is SessionWorkKind.CONTROL_INPUT
+            and execution.state is SessionExecutionState.RUNNING
+            and execution.request_id == control_id
+        ]
+        if len(candidates) != 1 or not candidates[0].parent_execution_id:
+            return None
+        execution = candidates[0]
+        by_id = {item.execution_id: item for item in snapshot.executions}
+        visited: set[str] = set()
+        while execution.parent_execution_id:
+            if execution.execution_id in visited:
+                return None
+            visited.add(execution.execution_id)
+            parent = by_id.get(execution.parent_execution_id)
+            if (
+                parent is None
+                or parent.session_id != session_id
+                or parent.generation != snapshot.generation
+            ):
+                return None
+            execution = parent
+        return execution.execution_id
+
+    @staticmethod
+    def _bind_moa_control_execution(event: RuntimeEvent, execution_id: str | None) -> None:
+        """Backfill only unbound MoA notices without changing other events."""
+        if event.event_type != "chat.moa_status" or execution_id is None:
+            return
+        current = event.payload.get("execution_id")
+        if not isinstance(current, str) or not current.strip():
+            event.payload["execution_id"] = execution_id
+
     async def _deliver_control_started(
         self,
         request: AgentRequest,
@@ -2928,7 +2971,19 @@ class AgentRuntime:
 
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
-        agent = self._control_agent(request, manager)
+        moa_execution_id = self._moa_control_execution_id(request)
+        await self._clear_pending_interaction(
+            request.session_id or "default",
+            self._control_request_id(request),
+        )
+        lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
+        agent = (
+            lookup(channel_id, request.session_id or "") if callable(lookup) else None
+        )
+        if agent is None:
+            raise RuntimeError(
+                f"session has no active agent: {request.session_id or 'default'}"
+            )
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
@@ -2944,7 +2999,17 @@ class AgentRuntime:
                     session_id=request.session_id,
                     default_agent_ref=request.agent_ref,
                 )
-                if on_control_event is not None and self._is_permission_control_ack(request, event):
+                self._bind_moa_control_execution(event, moa_execution_id)
+                matching_ack = False
+                if forward_permission_ack and on_control_event is not None:
+                    matching_ack = (
+                        event.event_type == "runtime.accepted"
+                        and event.request_id == request.request_id
+                        and event.session_id == request.session_id
+                        and event.payload.get("request_id") == request.request_id
+                        and event.payload.get("session_id", event.session_id) == request.session_id
+                    )
+                if matching_ack:
                     await on_control_event(event)
                 else:
                     events.append(event)
@@ -3014,8 +3079,15 @@ class AgentRuntime:
 
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
-        session_id = request.session_id or "default"
-        agent = self._control_agent(request, manager)
+        moa_execution_id = self._moa_control_execution_id(request)
+        await self._clear_pending_interaction(
+            request.session_id or "default",
+            self._control_request_id(request),
+        )
+        lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
+        agent = lookup(channel_id, request.session_id or "") if callable(lookup) else None
+        if agent is None:
+            raise RuntimeError(f"session has no active agent: {request.session_id or 'default'}")
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
@@ -3030,6 +3102,7 @@ class AgentRuntime:
                     session_id=request.session_id,
                     default_agent_ref=request.agent_ref,
                 )
+                self._bind_moa_control_execution(event, moa_execution_id)
                 await self._mark_pending_interaction(event)
                 yield event
         except BaseException:
@@ -3682,6 +3755,7 @@ class AgentRuntime:
 
         return bool(
             event.ok
+            and event.event_type != "chat.moa_status"
             and event.event_type not in TERMINAL_ERROR_EVENT_TYPES
         )
 
