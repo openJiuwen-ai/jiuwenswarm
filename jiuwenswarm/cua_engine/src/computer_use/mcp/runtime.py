@@ -180,7 +180,8 @@ class Runtime:
         decode_png(data)
         run = _runs.get()
         self.emit(dict(type="text", text=image_label(png, run is not None and run["imageContexts"].has(png))))
-        self.emit(dict(type="image", mimeType="image/png", data=data))
+        # Coordinate input uses these exact PNG pixels; host thumbnails must not change the model's coordinate space.
+        self.emit(dict(type="image", mimeType="image/png", data=data, _meta={"codex/imageDetail": "original"}))
         if run is not None and run["active"]:
             run["images"].append(png)
             self.send(dict(diagnostic=dict(kind="image_output", capture=image_metadata(png)), executionId=run["id"]))
