@@ -530,8 +530,6 @@ interface BeginHistoryRestoreOptions {
   onSessionTokenUsage?: (payload: SessionTokenUsageSnapshot) => void;
   /** 恢复问题澄清对话框（chat.ask_user_question），重新入 pendingQuestion 队列弹交互框 */
   onPendingQuestionReplay?: (items: HistoryPendingQuestionReplayItem[]) => void;
-  /** 恢复已答的问题澄清（chat.ask_user_answer），用于丢弃快照重新派发的过期问题 */
-  onAnsweredQuestionReplay?: (items: HistoryAnsweredQuestionReplayItem[]) => void;
   /** Called only when the exhausted snapshot has no restorable content. */
   onEmpty?: (cursor: HistoryCursorMeta) => void;
   onFailure?: (failure: HistoryRestoreFailure) => void;
@@ -2349,9 +2347,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   const entries: HistoryTimelineEntry[] = [];
   let requestCursor: string | null = null;
   let cursorMeta: HistoryCursorMeta | null = null;
-  let completionTokenUsage: SessionTokenUsageSnapshot | null = null;
   let snapshotMeta: HistoryCursorMeta | null = null;
-  let discoveredSubagentIds: string[] = [];
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2534,23 +2530,6 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     stopListening();
 
     try {
-      if (tokenUsageSnapshot) {
-        options.onSessionTokenUsage?.(tokenUsageSnapshot);
-      }
-      const isEmpty = (
-        messages.length === 0
-        && toolReplay.length === 0
-        && harnessReplay.length === 0
-        && teamReplay.length === 0
-        && subagentReplay.length === 0
-        && pendingQuestionReplay.length === 0
-        && answeredQuestionReplay.length === 0
-        && !latestContextUsage
-        && (!tokenUsageSnapshot || tokenUsageSnapshot.revision === 0)
-      );
-      if (discoveredSubagentIds.length > 0) {
-        options.onDiscoveredSubagentIds?.(discoveredSubagentIds);
-      }
       if (isEmpty) {
         options.onEmpty?.(cursorMeta);
         return;
