@@ -149,7 +149,7 @@ _REBIND_GEN_LOCK = threading.Lock()
 
 
 def _metadata_cache_key(session_id: str) -> str | tuple[str, str]:
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     return (str(get_agent_sessions_dir()), session_id) if is_enterprise() else session_id
 

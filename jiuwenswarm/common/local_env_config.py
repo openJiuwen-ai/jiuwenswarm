@@ -33,7 +33,7 @@ import sys
 from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from contextvars import ContextVar, Token
 from typing import Any
-from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.enterprise import is_enterprise
 
 DEFAULT_HEADERS_ENV_KEY = "default_headers"
 _DEFAULT_HEADERS_ALIASES = (

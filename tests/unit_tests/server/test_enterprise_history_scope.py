@@ -4,7 +4,7 @@ import time
 from jiuwenswarm.common import utils
 from jiuwenswarm.server.runtime.session import session_history as history
 from jiuwenswarm.server.runtime.session import session_metadata as metadata
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 def test_background_writers_and_caches_keep_same_session_id_isolated(

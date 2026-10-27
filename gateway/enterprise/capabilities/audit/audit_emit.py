@@ -1,0 +1,165 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""兼容封装：优先转调 ``telemetry.audit``；无则直调 foundation ``log_audit``。
+
+新代码请使用 ``jiuwenswarm.telemetry.audit.audit_claw_log``。
+"""
+
+from __future__ import annotations
+
+import inspect
+import logging
+import time
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# caller 要落到业务打点，不能停在本封装或 telemetry / foundation 入口上。
+_CALLER_SKIP_MODULES = (
+    "openjiuwen_runtime.foundation.audit",
+    "jiuwenswarm.telemetry.audit",
+    "gateway.enterprise.capabilities.audit.audit_emit",
+)
+
+
+def capture_audit_caller() -> str:
+    """栈回溯：``模块.函数:行号``，跳过审计封装帧。"""
+    frame = inspect.currentframe()
+    try:
+        while frame is not None:
+            module = str(frame.f_globals.get("__name__", "") or "")
+            if any(
+                module == prefix or module.startswith(prefix + ".")
+                for prefix in _CALLER_SKIP_MODULES
+            ):
+                frame = frame.f_back
+                continue
+            func = frame.f_code.co_name
+            short = module.rsplit(".", 1)[-1] if module else "<unknown>"
+            return f"{short}.{func}:{frame.f_lineno}"
+        return "-"
+    finally:
+        del frame
+
+
+def emit_audit(
+    event_type: str,
+    *,
+    level: str,
+    SUBMDL: str,
+    PROC: str,
+    RSPCD: str = "0000",
+    **fields: Any,
+) -> None:
+    """打点；个人版 no-op；异常只记 warning。"""
+    caller = capture_audit_caller()
+    try:
+        from gateway.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from gateway.enterprise.capabilities.audit.audit_gate import is_audit_config_enabled
+
+        if not is_audit_config_enabled():
+            return
+    except Exception:  # noqa: BLE001
+        return
+
+    try:
+        from jiuwenswarm.telemetry.audit import audit_claw_log
+
+        keyword = str(event_type or "").strip().upper()
+        success = keyword != "EVT"
+        desc = fields.get("UA") or fields.get("EVT") or fields.get("MSG")
+        # UID / session_id / request_id 必须进 audit_claw_log 顶层映射入参，
+        # 不能只塞 extra（否则无 ContextVar 时 trace_id/txn_seq/UID 仍为占位，
+        # 且会把 session_id/request_id 原名泄漏到 attributes）。
+        _lift = ("UA", "EVT", "MSG", "UID", "uid", "session_id", "request_id")
+        rest = {k: v for k, v in fields.items() if k not in _lift}
+        raw_uid = fields.get("UID", fields.get("uid"))
+        uid = str(raw_uid).strip() if raw_uid is not None else ""
+        raw_sid = fields.get("session_id")
+        raw_rid = fields.get("request_id")
+        sid = str(raw_sid).strip() if raw_sid is not None else ""
+        rid = str(raw_rid).strip() if raw_rid is not None else ""
+        audit_claw_log(
+            submdl=SUBMDL,
+            proc=PROC,
+            success=success,
+            uid=uid or None,
+            session_id=sid or None,
+            request_id=rid or None,
+            rspcd=RSPCD,
+            desc=str(desc) if desc is not None else None,
+            message=str(fields.get("MSG") or ""),
+            level=level,
+            caller=caller,
+            extra=rest,
+        )
+        return
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        from openjiuwen_runtime.foundation.audit import log_audit
+
+        payload = dict(fields)
+        payload.setdefault("SUBMDL", SUBMDL)
+        payload.setdefault("PROC", PROC)
+        payload.setdefault("RSPCD", RSPCD)
+        payload["caller"] = caller
+        keyword = str(event_type or "").strip().upper()
+        if keyword == "UA":
+            payload.setdefault("UA", PROC)
+        elif keyword == "EVT":
+            payload.setdefault("EVT", PROC)
+        log_audit(keyword, level=level, **payload)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "emit_audit failed event_type=%s SUBMDL=%s PROC=%s: %s",
+            event_type,
+            SUBMDL,
+            PROC,
+            exc,
+        )
+
+
+def emit_audit_ua(
+    *,
+    SUBMDL: str,
+    PROC: str,
+    RSPCD: str = "0000",
+    level: str = "INFO",
+    **fields: Any,
+) -> None:
+    emit_audit("UA", level=level, SUBMDL=SUBMDL, PROC=PROC, RSPCD=RSPCD, **fields)
+
+
+def emit_audit_evt(
+    *,
+    SUBMDL: str,
+    PROC: str,
+    RSPCD: str = "E999",
+    level: str = "WARN",
+    **fields: Any,
+) -> None:
+    emit_audit("EVT", level=level, SUBMDL=SUBMDL, PROC=PROC, RSPCD=RSPCD, **fields)
+
+
+class AuditTimer:
+    """上下文：记录耗时毫秒。"""
+
+    def __init__(self) -> None:
+        self._start = 0.0
+        self.cost_ms = 0
+
+    def __enter__(self) -> "AuditTimer":
+        self._start = time.perf_counter()
+        self.cost_ms = 0
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.cost_ms = int((time.perf_counter() - self._start) * 1000)

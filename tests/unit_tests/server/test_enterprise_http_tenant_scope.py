@@ -9,7 +9,7 @@ import pytest
 from jiuwenswarm.common import utils
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.http_invoke import invoke_stream, invoke_unary
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 @pytest.mark.asyncio

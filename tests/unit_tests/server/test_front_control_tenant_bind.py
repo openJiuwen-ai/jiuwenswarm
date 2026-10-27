@@ -13,7 +13,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.admission import ExecutionAdmission
 from jiuwenswarm.server.front.router import MethodRouter, _load_control_services
 from jiuwenswarm.server.lifecycle import Readiness
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 def _enterprise_history_request(session_id: str = "web_sid") -> AgentRequest:

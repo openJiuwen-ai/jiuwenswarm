@@ -12455,7 +12455,7 @@ class AgentWebSocketServer:
                 # stale 懒重载，而**新建会话**的首次企业加载不经过懒重载，必须
                 # 能看到最新模板行（如动态 token 凭据热更），否则读到 600s TTL
                 # 旧行（与 dev-stable 的 refresh_config_source 语义对齐）。
-                from jiuwenswarm.common.config_provider import refresh_config_source
+                from jiuwenswarm.enterprise.config.config_provider import refresh_config_source
 
                 await refresh_config_source()
                 await self._agent_manager.reload_agents_config(

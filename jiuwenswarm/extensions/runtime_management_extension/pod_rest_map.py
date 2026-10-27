@@ -399,7 +399,7 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
 
 def _attach_package_allowlist_header(headers: dict[str, str]) -> None:
     """企业版写入刚绑定的名单。未绑定时按空名单发送。"""
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     if not is_enterprise():
         return

@@ -7,7 +7,7 @@ import hmac
 import re
 from typing import Any
 
-from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+from gateway.enterprise.capabilities.audit.audit_emit import emit_audit_evt, emit_audit_ua
 
 
 def hash_credential(value: str) -> str:

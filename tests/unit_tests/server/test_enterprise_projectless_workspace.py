@@ -1,6 +1,6 @@
 """Enterprise task artifacts reuse tenant paths instead of Pod-local Documents."""
 from jiuwenswarm.common import projectless_workspace, utils
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 def test_enterprise_task_roots_are_tenant_scoped_and_stable(tmp_path, monkeypatch):

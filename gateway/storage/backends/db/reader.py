@@ -105,7 +105,7 @@ def sort_by_order(rows: list[dict[str, Any]], order_by: str) -> list[dict[str, A
 # --------------------------------------------------------------------------- #
 async def _handler() -> Any:
     """直连 ``Database`` 单例。"""
-    from jiuwenswarm.infrastructure.db.database import Database
+    from gateway.enterprise.db.database import Database
 
     return await Database.current().ensure_ready(log_prefix="gateway_db_reader")
 

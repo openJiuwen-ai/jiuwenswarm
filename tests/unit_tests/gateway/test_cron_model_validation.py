@@ -412,7 +412,7 @@ async def test_enterprise_cron_model_accepts_library_model_id(
     from types import SimpleNamespace
 
     from gateway.cron.enterprise_model import resolve_enterprise_cron_model
-    from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
+    from gateway.enterprise.config.effective.schemas import TemplateRefSlot
 
     async def _fake_load(request, slots):
         assert TemplateRefSlot.DEFAULT_MODEL in slots
@@ -430,7 +430,7 @@ async def test_enterprise_cron_model_accepts_library_model_id(
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.enterprise_config.loader.load_effective_enterprise_config",
+        "gateway.enterprise.config.effective.loader.load_effective_enterprise_config",
         _fake_load,
     )
     monkeypatch.setattr(
@@ -473,7 +473,7 @@ async def test_enterprise_cron_model_rejects_unknown(
     from types import SimpleNamespace
 
     from gateway.cron.enterprise_model import resolve_enterprise_cron_model
-    from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
+    from gateway.enterprise.config.effective.schemas import TemplateRefSlot
 
     async def _fake_load(request, slots):
         return SimpleNamespace(
@@ -485,7 +485,7 @@ async def test_enterprise_cron_model_rejects_unknown(
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.enterprise_config.loader.load_effective_enterprise_config",
+        "gateway.enterprise.config.effective.loader.load_effective_enterprise_config",
         _fake_load,
     )
     with pytest.raises(ValueError, match="Unknown model 'no-such-model'"):

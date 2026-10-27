@@ -35,11 +35,11 @@ async def _request_tenant_scope(ctx: RequestContext):
                 yield
             return
 
-    from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
-    from jiuwenswarm.server.runtime.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
 
     # 无完整 Runtime 时仍按请求绑 TenantContext（企业盘路径 / 个人 key）。
-    with TenantContext.scoped(TenantAgentPool.extract_tenant_key(ctx.request)):
+    with TenantContext.scoped(extract_tenant_key(ctx.request)):
         yield
 
 

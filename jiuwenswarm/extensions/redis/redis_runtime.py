@@ -15,7 +15,7 @@ import uuid
 from importlib.metadata import entry_points
 from typing import Any
 
-from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.extensions.redis.redis_client import RedisConfig
 
 logger = logging.getLogger(__name__)

@@ -37,7 +37,7 @@ def test_is_skill_prebuilt_tenant_requires_agent_runtime(
 
 
 def test_tenant_workspace_defaults_without_key() -> None:
-    from jiuwenswarm.server.runtime.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     TenantContext.clear()
     path = get_agent_workspace_dir()

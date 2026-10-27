@@ -13,7 +13,7 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.foundation.tool.auth import auth_callback
 from openjiuwen.core.foundation.tool.auth.auth import ToolAuthConfig
 
-from jiuwenswarm.common import config_provider as providers
+from jiuwenswarm.enterprise.config import config_provider as providers
 from jiuwenswarm.common.mcp_config import preflight_mcp_server_reachable
 from jiuwenswarm.common.mcp_dynamic_token_patch import (
     TOKEN_HEADER_NAME,
@@ -251,7 +251,7 @@ def test_apply_silent_when_custom_config_absent():
 
 
 def _enterprise_policy(agent_template: dict | None) -> Any:
-    from jiuwenswarm.server.runtime.enterprise_config.schemas import (
+    from jiuwenswarm.enterprise.config.effective.schemas import (
         EffectiveEnterpriseConfig,
         RoutingContext,
     )

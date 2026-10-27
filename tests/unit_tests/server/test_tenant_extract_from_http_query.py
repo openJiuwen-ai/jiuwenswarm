@@ -6,7 +6,7 @@ import pytest
 
 from jiuwenswarm.common import utils
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
 
 
 @pytest.mark.parametrize(

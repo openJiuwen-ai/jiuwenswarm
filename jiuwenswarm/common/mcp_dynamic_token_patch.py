@@ -58,7 +58,7 @@ Configuration (two levels, both delivered by the upstream Manager):
   合并未携带合法凭据对即清除）。
 
 ``apply_dispatched_credentials`` (wired at the enterprise config merge,
-``config_provider._apply_enterprise_policy``) stores the template's instance
+``enterprise.config.config_provider._apply_enterprise_policy``) stores the template's instance
 credentials wholesale; a merge without the pair clears them. Everything else
 is a code-level contract (the
 ``TOKEN_*`` constants below): POST form ``grant_type=client_credentials`` + the
@@ -186,7 +186,7 @@ def extract_dispatched_credentials(agent_template_row: Any) -> dict[str, str] | 
 def apply_dispatched_credentials(enterprise: Any) -> None:
     """企业配置到达时，提取其中的实例凭据并整份替换（未携带 → 清除）。
 
-    由企业配置合并管线调用（``config_provider._apply_enterprise_policy``）。
+    由企业配置合并管线调用（``enterprise.config.config_provider._apply_enterprise_policy``）。
     ``enterprise`` 为鸭子类型的企业配置对象（带 ``agent_template`` /
     ``resource_id`` / ``ref_template_id`` 属性；None = 配置未加载 → 清除）。
     ``custom_config`` 存在但提取不到合法凭据对视为模板配置错误，打
