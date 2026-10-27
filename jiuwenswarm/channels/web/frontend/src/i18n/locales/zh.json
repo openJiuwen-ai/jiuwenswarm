@@ -1261,10 +1261,11 @@
         "partial": "任务部分完成"
       },
       "ttseHint": "从这次轨迹中提取可复用的经验，由 TTSE 在后台生成并保存",
+      "ttseTriggeredNotice": "已触发TTSE，将在后台完成经验生成和保存",
       "ttseReady": "可生成经验",
       "skillFillPrefix": "根据以下优化建议对相应skill进行演进：",
       "ttseResult": {
-        "triggered": "已触发，TTSE 正在后台生成并保存经验",
+        "triggered": "已触发",
         "failed": "触发失败"
       },
       "blocked": "暂不可用：{{reason}}",
