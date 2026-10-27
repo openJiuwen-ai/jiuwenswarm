@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pytest
 
-async def _usage_metadata_loader(_session_id: str) -> dict[str, str]:
+async def _usage_metadata_loader(
+    _session_id: str,
+    _user_id: str | None = None,
+) -> dict[str, str]:
     return {
         "mode": "agent.work.normal",
         "team_name": "",

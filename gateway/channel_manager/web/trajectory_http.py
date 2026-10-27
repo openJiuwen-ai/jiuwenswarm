@@ -62,8 +62,12 @@ _MAX_SEQUENCE_REQUEST = 200
 
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
 _MAX_CURSOR_LENGTH = 512
+# A blob pull terminates on the peer's ``done`` flag; these guards keep a
+# misbehaving peer (old AgentServer, broken blob read) from hanging the HTTP
+# request in a no-progress loop or streaming an unbounded "archive".
+_MAX_BLOB_CHUNKS = 4096
 
-SessionMetadataLoader = Callable[[str], Awaitable[Mapping[str, Any]]]
+SessionMetadataLoader = Callable[[str, "str | None"], Awaitable[Mapping[str, Any]]]
 TrajectoryFetch = Callable[
     [ReqMethod, dict[str, Any], str | None],
     Awaitable[tuple[bool, dict[str, Any]]],
@@ -123,7 +127,7 @@ class TrajectoryHttpService:
         user_id: str | None = None,
     ) -> Response:
         """List the execution subjects that own a chain in one session."""
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         if after_revision < 0:
@@ -155,7 +159,7 @@ class TrajectoryHttpService:
             An ``application/zip`` download holding one ``trajectory.jsonl``
             entry, or a JSON error response.
         """
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         ok, payload = await self._call(
@@ -199,7 +203,7 @@ class TrajectoryHttpService:
         user_id: str | None = None,
     ) -> Response:
         """Return session-complete request usage partitioned by execution subject."""
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         return await self._json_query(
@@ -214,7 +218,7 @@ class TrajectoryHttpService:
         user_id: str | None = None,
     ) -> Response:
         """Return what retention left for one session's removed turns, with its content."""
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         return await self._json_query(
@@ -233,7 +237,7 @@ class TrajectoryHttpService:
         user_id: str | None = None,
     ) -> Response:
         """Build one page of an execution subject's chain, in commit order."""
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         normalized_subject_id = str(subject_id or "").strip()
@@ -265,7 +269,7 @@ class TrajectoryHttpService:
         user_id: str | None = None,
     ) -> Response:
         """Build one page of a session's stream frames, in commit order."""
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         if since_frame_seq < 0:
@@ -297,7 +301,7 @@ class TrajectoryHttpService:
         user_id: str | None = None,
     ) -> Response:
         """Resolve chains by hash, for a reader whose cache lost them."""
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         requested = [str(value or "").strip() for value in seq_hashes]
@@ -330,7 +334,7 @@ class TrajectoryHttpService:
         user_id: str | None = None,
     ) -> Response:
         """Return the exact stored OTLP bytes for one session-owned span."""
-        error = await self._validate_access(session_id)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         normalized_trace_id = str(trace_id or "").strip().lower()
@@ -363,12 +367,12 @@ class TrajectoryHttpService:
             },
         )
 
-    async def _validate_access(self, session_id: str) -> Response | None:
+    async def _validate_access(self, session_id: str, user_id: str | None) -> Response | None:
         normalized_session_id = str(session_id or "").strip()
         if normalized_session_id != session_id or not is_valid_session_id(normalized_session_id):
             return _error_response("invalid session_id", "BAD_REQUEST", 400)
         try:
-            metadata = await self._metadata_loader(normalized_session_id)
+            metadata = await self._metadata_loader(normalized_session_id, user_id)
         except Exception:
             logger.exception(
                 "Trajectory session metadata lookup failed: session_id=%s",
@@ -460,6 +464,7 @@ class TrajectoryHttpService:
 
     async def _copy_blob(self, export_id: str, target: IO[bytes], user_id: str | None) -> None:
         offset = 0
+        chunks = 0
         try:
             while True:
                 ok, payload = await self._call(
@@ -473,9 +478,31 @@ class TrajectoryHttpService:
                 if not isinstance(encoded, str):
                     raise _QueryFailed(_error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500))
                 target.write(base64.b64decode(encoded))
-                offset = int(payload.get("next_offset", offset))
+                chunks += 1
                 if payload.get("done"):
                     return
+                next_offset = _blob_next_offset(payload.get("next_offset"))
+                if next_offset is None or next_offset <= offset:
+                    # A peer that keeps reporting the same window would spin
+                    # here forever; fail closed so the request still ends in
+                    # JSON and the finally below returns the held blob.
+                    logger.warning(
+                        "[trajectory] blob read made no progress: export_id=%s offset=%s",
+                        export_id,
+                        offset,
+                    )
+                    raise _QueryFailed(
+                        _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+                    )
+                if chunks >= _MAX_BLOB_CHUNKS:
+                    raise _QueryFailed(
+                        _error_response(
+                            "trajectory export exceeds the chunk limit",
+                            "TRAJECTORY_EXPORT_TOO_LARGE",
+                            500,
+                        )
+                    )
+                offset = next_offset
         finally:
             await self._call(ReqMethod.TRAJECTORY_BLOB_CLOSE, {"export_id": export_id}, user_id)
 
@@ -495,6 +522,13 @@ def _failure(payload: Mapping[str, Any]) -> JSONResponse:
         code,
         error_status(code, payload.get("status")),
     )
+
+
+def _blob_next_offset(value: Any) -> int | None:
+    """Return the peer's next blob offset, or None when it is malformed."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
 
 
 def build_trajectory_fetch(channel: WebChannel) -> TrajectoryFetch:
@@ -522,10 +556,25 @@ def build_trajectory_fetch(channel: WebChannel) -> TrajectoryFetch:
 
 
 def _request_user_id(request: Request) -> str | None:
+    """Resolve the caller identity the AgentServer routes the read by.
+
+    A middleware-injected ``request.state.agentos_user_id`` wins; otherwise
+    this resolves exactly like the container file API (claimed query value,
+    ``x-user-id`` header, then the token username), so an AgentOS/ADX
+    multi-user deployment gets the non-empty routing identity its routing
+    layer requires. Single-user routing tolerates the omitted case, which
+    stays None. A claim that contradicts the IAM identity raises
+    FileApiUserMismatch; the route boundary maps that to a 403.
+    """
     value = getattr(request.state, "agentos_user_id", None)
     if isinstance(value, str) and value.strip():
         return value.strip()
-    return None
+    from gateway.channel_manager.web.container_file_http import (
+        resolve_request_user_id,
+    )
+
+    uid = resolve_request_user_id(request, request.query_params.get("user_id"))
+    return uid or None
 
 
 def attach_trajectory_routes(
@@ -550,6 +599,8 @@ def attach_trajectory_routes(
         metadata_loader=metadata_loader,
         fetch=fetch or build_trajectory_fetch(channel),
     )
+    from gateway.channel_manager.web.container_file_http import FileApiUserMismatch
+
     app.state.trajectory_http_service = service
     app.state.trajectory_web_channel = channel
 
@@ -567,6 +618,8 @@ def attach_trajectory_routes(
             return await call_next(request)
         try:
             response = await call_next(request)
+        except FileApiUserMismatch:
+            return _error_response("user_id 与 token 不匹配", "USER_MISMATCH", 403)
         except Exception:
             logger.exception("Unhandled trajectory HTTP request failure: path=%s", path)
             return _error_response(
@@ -760,13 +813,17 @@ def attach_trajectory_routes(
     return service
 
 
-async def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
+async def _load_session_metadata(
+    session_id: str,
+    user_id: str | None = None,
+) -> Mapping[str, Any]:
     from jiuwenswarm.common.external_providers import provider
 
     return await provider("session_metadata").get_session_metadata_async(
         session_id,
         cache_bust=True,
         enable_writeback=False,
+        user_id=user_id or None,
     )
 
 
@@ -915,9 +972,12 @@ def validate_http_origin(request: Request) -> Response | None:
     return _validate_http_origin(request)
 
 
-async def load_session_metadata(session_id: str) -> Mapping[str, Any]:
+async def load_session_metadata(
+    session_id: str,
+    user_id: str | None = None,
+) -> Mapping[str, Any]:
     """Load persisted session metadata without writing back."""
-    return await _load_session_metadata(session_id)
+    return await _load_session_metadata(session_id, user_id)
 
 
 __all__ = [
