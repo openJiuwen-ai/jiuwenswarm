@@ -9,7 +9,7 @@ import io
 import json
 import uuid
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from PIL import Image
@@ -122,14 +122,16 @@ async def _upload_images(tmp_path, monkeypatch, session_id):
     return items, payloads
 
 
-async def _new_active_agent(tmp_path, media_items, *, native_images):
+async def _new_active_agent(tmp_path, media_items, *, native_images, model=None):
     await Runner.start()
     operation_id = f"steer-images-{uuid.uuid4().hex}"
     Runner.resource_mgr.add_sys_operation(SysOperationCard(
         id=operation_id, mode=OperationMode.LOCAL, work_config=LocalWorkConfig(),
     ))
     operation = Runner.resource_mgr.get_sys_operation(operation_id)
-    model, gate = ImageSteerModel(media_items, native_images=native_images), ImageSteerGate()
+    if model is None:
+        model = ImageSteerModel(media_items, native_images=native_images)
+    gate = ImageSteerGate()
     agent = create_deep_agent(
         model=model, tools=[gate, ReadFileTool(operation, enable_image_multimodal=native_images)],
         rails=[MultimodalImageRail(native_images)], workspace=str(tmp_path / "workspace"),
@@ -327,3 +329,122 @@ async def test_target_finishing_during_image_validation_never_starts_a_fresh_tur
             delivery.cancel()
             await asyncio.gather(delivery, return_exceptions=True)
         await _close_active_agent(agent, gate, operation_id, stream, reader)
+
+
+class DeliveryContinuationModel(ImageSteerModel):
+    """Finish the original draft only after its output boundary became hidden."""
+
+    def __init__(self, media_items, action):
+        super().__init__(media_items)
+        self.action = action
+        self.entered, self.release = asyncio.Event(), asyncio.Event()
+
+    async def invoke(self, messages, **kwargs):
+        self.messages.append(copy.deepcopy(messages))
+        if len(self.messages) == 1:
+            self.entered.set()
+            await self.release.wait()
+            return AssistantMessage(content="99 * 99 = 9801", usage_metadata=UsageMetadata(
+                model_name="image-steer-test", finish_reason="stop",
+            ))
+        notes = [message for message in messages if message.metadata.get(
+            "_openjiuwen_message_source_kind"
+        ) == "session_input_delivery"]
+        assert len(notes) == 1
+        delivery = json.loads(notes[0].content.rsplit("\n", 1)[1])
+        assert delivery["input_request_ids"] == ["new-supplement"]
+        assert delivery["quoted_prior_output"] == [{"text": "99 * 99 = 9801", "truncated": False}]
+        assert any(message.role == "assistant" and message.content == "99 * 99 = 9801" for message in messages)
+        if self.action == "image" and len(self.messages) == 2:
+            return AssistantMessage(content="", tool_calls=[ToolCall(
+                id="read-supplement", type="function", name="read_file",
+                arguments=json.dumps({"file_path": self.media_items[0]["path"]}),
+            )], usage_metadata=UsageMetadata(model_name="image-steer-test", finish_reason="tool_calls"))
+        if self.action == "cancel":
+            assert "cancelling or replacing earlier work take precedence" in notes[0].content
+            content = "CANCELLED"
+        elif self.action == "image":
+            assert any(isinstance(message.content, list) and any(
+                isinstance(part, dict) and part.get("type") == "image_url" for part in message.content
+            ) for message in messages)
+            content = "99 * 99 = 9801. The supplied image has been read."
+        else:
+            content = "99 * 99 = 9801. The supplemental text answer is 7."
+        return AssistantMessage(content=content, usage_metadata=UsageMetadata(
+            model_name="image-steer-test", finish_reason="stop",
+        ))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["image", "text", "cancel"])
+async def test_hidden_original_answer_is_carried_to_next_visible_reply(tmp_path, monkeypatch, action):
+    from jiuwenswarm.agents.harness import agent_observability
+
+    session_id = f"steer-delivery-{uuid.uuid4().hex}"
+    media_items, _ = await _upload_images(tmp_path, monkeypatch, session_id)
+    media_items = media_items[:1] if action == "image" else []
+    model = DeliveryContinuationModel(media_items, action)
+    agent, _, gate, operation_id = await _new_active_agent(
+        tmp_path, media_items, native_images=True, model=model,
+    )
+    session = create_agent_session(session_id=session_id, card=agent.card)
+    await session.pre_run(inputs={})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = agent
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = session_id
+    adapter._enable_auto_permission = False
+    monkeypatch.setattr(adapter, "_model_config_error", lambda _request: None)
+    monkeypatch.setattr(adapter, "_ensure_chat_extensions", AsyncMock(return_value=None))
+    monkeypatch.setattr(adapter, "_update_runtime_config", AsyncMock())
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda _request: model)
+    monkeypatch.setattr(adapter, "_prepare_root_input_dispatch", AsyncMock(side_effect=lambda _request, inputs: inputs))
+    monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda **_kwargs: None)
+    facade = JiuWenSwarm()
+    facade._adapter = adapter
+    reader = None
+    payloads = []
+
+    async def collect():
+        original = AgentRequest(
+            request_id="original-math", channel_id="web", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND, is_stream=True, params={"mode": "agent"},
+        )
+        async for chunk in adapter._process_message_stream_impl(original, {"query": "Calculate 99 * 99"}):
+            if isinstance(chunk.payload, dict):
+                payloads.append(chunk.payload)
+
+    try:
+        await adapter.install_session_input_guard()
+        await agent.start(session=session)
+        reader = asyncio.create_task(collect())
+        await asyncio.wait_for(model.entered.wait(), 15)
+        query = {
+            "image": "Identify the supplied image as well.",
+            "text": "Also answer the supplemental text question with 7.",
+            "cancel": "Cancel the earlier calculation and answer only CANCELLED.",
+        }[action]
+        acknowledgements = [chunk async for chunk in facade.deliver_session_input(AgentRequest(
+            request_id="new-supplement", channel_id="web", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND, is_stream=True,
+            params={"mode": "agent", "input_mode": "steer", "query": query,
+                    **({"media_items": media_items} if media_items else {})},
+        ))]
+        assert acknowledgements[0].payload["event_type"] == "runtime.accepted"
+        model.release.set()
+        await asyncio.wait_for(reader, 25)
+        assert not any(payload.get("event_type") == "chat.error" for payload in payloads)
+        assert any(payload.get("output_suppressed") and "9801" in str(payload.get("content")) for payload in payloads)
+        visible = [payload for payload in payloads if payload.get("event_type") == "chat.final"
+                   and not payload.get("output_suppressed") and payload.get("content")]
+        assert visible
+        assert ("9801" in visible[-1]["content"]) is (action != "cancel")
+        assert ("image has been read" in visible[-1]["content"]) is (action == "image")
+        assert "Runtime delivery note" not in "\n".join(str(payload.get("content", "")) for payload in payloads)
+        phases = [payload["applied_input_ids"] for payload in payloads
+                  if payload.get("event_type") == "chat.output_phase" and payload.get("applied_input_ids")]
+        assert phases == [["new-supplement"]]
+        assert agent.event_handler.interaction_queues.steering.empty()
+    finally:
+        model.release.set()
+        await _close_active_agent(agent, gate, operation_id, None, reader)

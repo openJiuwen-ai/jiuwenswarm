@@ -203,6 +203,14 @@ async def test_steering_survives_ask_user_resume(tmp_path, arrival, bound):
         assert "Write 200 lines" in str(final_messages)
         assert "Python utility" in str(final_messages)
         assert str(final_messages).count("CHANGE_TO_100_LINES") == 1
+        delivery_notes = [message for message in final_messages if message.metadata.get(
+            "_openjiuwen_message_source_kind"
+        ) == "session_input_delivery"]
+        assert len(delivery_notes) == 1
+        delivery_data = json.loads(delivery_notes[0].content.rsplit("\n", 1)[1])
+        assert delivery_data["input_request_ids"] == ["supplement"]
+        expected_draft = "Please choose the code type." if arrival == "before_question" else "completed"
+        assert delivery_data["quoted_prior_output"][0]["text"] == expected_draft
         answer_index = next(
             i for i, msg in enumerate(final_messages) if getattr(msg, "tool_call_id", None) == "clarify-code"
         )

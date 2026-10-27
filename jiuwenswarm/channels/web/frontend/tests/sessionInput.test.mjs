@@ -1179,6 +1179,127 @@ test('accepted steering preserves the thinking display while recording a lazy re
   }
 });
 
+function answerCarryContract(c) {
+  act(() => c.store.clearMessages(c.sid));
+  addOriginalUser(c, '99 * 99');
+  const user = c.runtime().messages.find((message) => message.role === 'user');
+  const history = [{ id: 'carry-original-user', role: 'user', content: user.content, timestamp: user.timestamp }];
+  let sequence = 0;
+  const emit = (event, phase, payload = {}) => {
+    const frame = {
+      request_id: 'original', output_phase_id: phase,
+      output_order: { request_id: 'original', sequence: ++sequence },
+      timestamp: Date.now(), ...payload,
+    };
+    c.receive(event, frame);
+    if (event === 'chat.final') {
+      history.push({ ...frame, id: `carry-final-${sequence}`, role: 'assistant', event_type: event });
+    }
+    return frame;
+  };
+  const supplement = async (phase, content, image) => {
+    const taskId = c.queue(content, [image]);
+    await c.click(taskId, 'send');
+    const request = c.requests().at(-1);
+    c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+    const frame = emit('chat.input_received', phase, {
+      input_request_id: request.id, execution_id: 'execution-A', content,
+      media_items: request.params.media_items,
+    });
+    history.push({
+      id: `carry-user-${request.id}`, role: 'user', content, timestamp: frame.timestamp,
+      request_id: request.id, output_order: frame.output_order,
+      is_supplemental_input: true, supplemental_input: { execution_id: 'execution-A' },
+      media_items: frame.media_items,
+    });
+    return request.id;
+  };
+  const assertVisibleAnswer = async (content, expected9801Count) => {
+    await c.flush();
+    const assistants = c.runtime().messages.filter((message) => message.role === 'assistant');
+    assert.deepEqual(assistants.map((message) => message.content), [content]);
+    const visibleText = [...document.querySelectorAll('[data-testid="chat-panel-message-bubble"]')]
+      .map((node) => node.textContent).join('\n');
+    assert.equal((visibleText.match(/9801/g) ?? []).length, expected9801Count);
+    const restored = parseHistoryJsonFileToPreviewMessages(history, c.sid);
+    const presentation = (messages) => messages.map((message) => ({
+      role: message.role, content: message.content, images: (message.mediaItems ?? []).map((item) => item.path),
+    }));
+    const live = buildTimelineItems(c.runtime().messages, [], []).map((item) => item.message);
+    assert.deepEqual(presentation(restored), presentation(live), 'live and refreshed history show the same answer and images');
+    assert.equal((restored.map((message) => message.content).join('\n').match(/9801/g) ?? []).length, expected9801Count);
+    assert.equal(c.runtime().isProcessing, false);
+  };
+  return { emit, supplement, assertVisibleAnswer };
+}
+
+test('server reissues an unseen arithmetic answer with the image answer once in live and restored history', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'carry-old', { applied_input_ids: [] });
+    const inputId = await supplement('carry-old', 'Also describe this image', steerImages[0]);
+    emit('chat.delta', 'carry-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.final', 'carry-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    assert.ok(!c.runtime().messages.some((message) => message.content.includes('9801')));
+    assert.equal(c.runtime().isProcessing, true);
+    emit('chat.output_phase', 'carry-new', { applied_input_ids: [inputId] });
+    const answer = '99 * 99 = 9801. The image contains a red square.';
+    emit('chat.delta', 'carry-new', { content: answer });
+    await c.tick(16);
+    emit('chat.final', 'carry-new', { content: answer });
+    await assertVisibleAnswer(answer, 1);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('an explicit replacement does not restore the cancelled arithmetic answer into live or history', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'replace-old', { applied_input_ids: [] });
+    const inputId = await supplement('replace-old', 'Cancel the arithmetic task. Only describe this image.', steerImages[0]);
+    emit('chat.final', 'replace-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.output_phase', 'replace-new', { applied_input_ids: [inputId] });
+    const answer = 'The image contains a red square.';
+    emit('chat.delta', 'replace-new', { content: answer });
+    await c.tick(16);
+    emit('chat.final', 'replace-new', { content: answer });
+    await assertVisibleAnswer(answer, 0);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('consecutive supplemented phases carry the unseen answer only into the final visible phase', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'multi-old', { applied_input_ids: [] });
+    const first = await supplement('multi-old', 'Also describe the first image', steerImages[0]);
+    emit('chat.final', 'multi-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.output_phase', 'multi-middle', { applied_input_ids: [first] });
+    const second = await supplement('multi-middle', 'And compare this second image', steerImages[1]);
+    emit('chat.final', 'multi-middle', {
+      content: '99 * 99 = 9801. The first image contains a red square.', output_suppressed: true,
+    });
+    assert.equal(c.runtime().messages.filter((message) => message.supplementalInput).length, 2);
+    assert.ok(!c.runtime().messages.some((message) => message.content.includes('9801')));
+    emit('chat.output_phase', 'multi-final', { applied_input_ids: [second] });
+    const answer = '99 * 99 = 9801. The first image is red and the second image is blue.';
+    emit('chat.delta', 'multi-final', { content: answer });
+    await c.tick(16);
+    emit('chat.final', 'multi-final', { content: answer });
+    await assertVisibleAnswer(answer, 1);
+    assert.equal(c.requests().length, 2);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 2);
+  } finally {
+    await c.dispose();
+  }
+});
+
 for (const ackFirst of [true, false]) {
   test(`ordered input boundary freezes old output with ${ackFirst ? 'early' : 'late'} ACK`, async (context) => {
     const c = await mount(context);
