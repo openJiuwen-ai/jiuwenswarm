@@ -61,6 +61,15 @@ def bind_agent_client(client: Any) -> None:
     _agent_client = client
 
 
+class SessionMetadataRemoteUnavailable(RuntimeError):
+    """远端读传输失败（不可达/超时/路由拒绝）——区别于"会话不存在"。
+
+    控制路径消费方必须区分这两种失败：读失败时不应把"未知"当成"读为
+    空"下结论（例如定向取消会被误放大成会话级取消）。仅 server 侧明确
+    返回"未找到"（NOT_FOUND）时才返回空 dict。
+    """
+
+
 class SessionMetadataRemoteProvider:
     """session_metadata 域的 WS 远端实现（异步为主入口）。
 
@@ -69,7 +78,22 @@ class SessionMetadataRemoteProvider:
     dict 并告警（远端模式下没有本地桥可回落，未迁移的同步消费方——如
     ``trajectory_http`` 的 metadata_loader 注入契约——以"读不到元数据"
     优雅降级而非报错），其迁移随拆仓批次单独处理。
+
+    失败语义：传输失败（不可达/超时/路由拒绝）抛
+    ``SessionMetadataRemoteUnavailable``；仅 server 侧判定会话不存在
+    （NOT_FOUND）返回空 dict——与本地实现"缺失会话返回空 dict"的语义
+    对齐。本域的写方法（update_session_model_selection 等）在
+    AgentServer 进程执行，gateway 远端模式不承载，经 ``__getattr__``
+    得到带域信息的显式错误。
     """
+
+    def __getattr__(self, name: str) -> Any:
+        raise RuntimeError(
+            f"session_metadata remote provider does not carry '{name}': "
+            "the method runs in the AgentServer process "
+            "(registered there via provider_setup); the gateway remote "
+            "mode only serves the read entries"
+        )
 
     @staticmethod
     def get_session_metadata(
@@ -94,7 +118,12 @@ class SessionMetadataRemoteProvider:
         *,
         enable_writeback: bool = True,
     ) -> dict[str, Any]:
-        """经 WS 读取目标会话元数据；不可达/未找到/超时一律返回空 dict。"""
+        """经 WS 读取目标会话元数据。
+
+        传输失败（不可达/超时/路由拒绝）抛
+        ``SessionMetadataRemoteUnavailable``；会话不存在（NOT_FOUND）
+        返回空 dict，对齐本地实现语义。
+        """
         ok, payload = await fetch_agent_unary(
             agent_client=_agent_client,
             req_method=ReqMethod.SESSION_GET_METADATA,
@@ -106,13 +135,18 @@ class SessionMetadataRemoteProvider:
             timeout_seconds=SESSION_METADATA_QUERY_TIMEOUT_SECONDS,
         )
         if not ok:
+            code = (payload or {}).get("code")
+            if code == "NOT_FOUND":
+                return {}
             logger.warning(
                 "[session-metadata-remote] get failed: session_id=%s error=%s code=%s",
                 session_id,
                 (payload or {}).get("error"),
-                (payload or {}).get("code"),
+                code,
             )
-            return {}
+            raise SessionMetadataRemoteUnavailable(
+                f"session metadata read failed: session_id={session_id} code={code}"
+            )
         if not isinstance(payload, dict):
             return {}
         return payload

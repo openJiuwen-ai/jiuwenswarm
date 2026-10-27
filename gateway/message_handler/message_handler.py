@@ -4007,6 +4007,10 @@ class MessageHandler(ABC):
         route = self._expert_stream_route(msg.params)
         if not route or not msg.session_id:
             return False
+        from gateway.routing.session_metadata_remote import (
+            SessionMetadataRemoteUnavailable,
+        )
+
         try:
             from jiuwenswarm.common.external_providers import provider
 
@@ -4014,6 +4018,16 @@ class MessageHandler(ABC):
                 msg.session_id, enable_writeback=False,
             )
             owner_id = str((metadata or {}).get("team_name") or "").strip()
+        except SessionMetadataRemoteUnavailable:
+            # 传输失败≠读为空：owner 未知时宁可照常走定向取消分支（成员
+            # 校验由 AgentServer 权威执行，最坏是被拒），绝不放大成会话级
+            # 取消——该分支上方的约束是"Never enter the session-wide path"。
+            logger.warning(
+                "[MessageHandler] expert cancel owner lookup unavailable; "
+                "forwarding as targeted cancel: session=%s",
+                msg.session_id,
+            )
+            return True
         except Exception:
             logger.warning(
                 "[MessageHandler] expert cancel owner lookup failed: session=%s",
@@ -4345,12 +4359,21 @@ class MessageHandler(ABC):
             user_id=getattr(msg, "user_id", None),
         )
 
-    async def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str:
+    async def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str | None:
+        """返回会话生效模型名；``None`` 表示读取失败（未知），空串表示明确无模型。
+
+        登录提示判定消费 ``None`` 跳过结论——传输失败时把"未知"当"无模型"
+        会产生假登录提示（"" != owner.model_name 恒成立）。
+        """
         if isinstance(params.get("model_selection"), dict):
             return ""
         explicit = str(params.get("model_name") or "").strip()
         if explicit:
             return explicit
+        from gateway.routing.session_metadata_remote import (
+            SessionMetadataRemoteUnavailable,
+        )
+
         try:
             from jiuwenswarm.common.external_providers import provider
             from jiuwenswarm.common.model_selection_store import (
@@ -4362,6 +4385,13 @@ class MessageHandler(ABC):
             metadata = await provider("session_metadata").get_session_metadata_async(
                 session_id, cache_bust=True, enable_writeback=False,
             )
+        except SessionMetadataRemoteUnavailable:
+            # 传输失败≠读为空：模型未知，调用方应跳过登录提示判定
+            logger.warning(
+                "[MessageHandler] 会话模型读取不可用，跳过登录提示判定 session=%s",
+                session_id,
+            )
+            return None
         except Exception:  # noqa: BLE001 — 读不到就当没有
             logger.debug("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
             return ""
@@ -4403,8 +4433,12 @@ class MessageHandler(ABC):
             from jiuwenswarm.common.auth.login_credentials import bare_model_name
 
             owner = session_owners.lookup(session_id)
+            effective_model = await self._effective_session_model(session_id, params)
+            if effective_model is None:
+                # 模型未知（传输失败）：不下登录结论，放行本条
+                return
             if owner is None or (
-                bare_model_name(await self._effective_session_model(session_id, params)) != owner.model_name
+                bare_model_name(effective_model) != owner.model_name
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return

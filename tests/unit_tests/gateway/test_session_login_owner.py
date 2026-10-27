@@ -115,3 +115,16 @@ def test_agent_server_uses_the_gateway_hint_for_login_required():
 
     assert _message({E2A_LOGIN_REQUIRED_HINT_PARAM_KEY: _LOGIN_HINT_NO_OWNER}) == _LOGIN_HINT_NO_OWNER
     assert _message({}) == "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+
+
+def test_login_hint_skipped_when_model_unknown():
+    """模型读取失败（None 未知）时不下登录结论，放行报文。"""
+    env = _env("tui", {"q": "hi"})
+    handler = SimpleNamespace(agent_client=None)
+
+    async def _unknown(sid, params):
+        return None
+
+    handler._effective_session_model = _unknown
+    asyncio.run(MessageHandler._apply_session_login_owner(handler, env))
+    assert E2A_LOGIN_REQUIRED_HINT_PARAM_KEY not in env.params
