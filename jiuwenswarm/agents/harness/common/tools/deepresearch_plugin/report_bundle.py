@@ -23,9 +23,10 @@ CHART_PLACEHOLDER_RE = re.compile(r"\(#insertChart:([^)]+)\)")
 SAFE_BUNDLE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 RESPONSE_CONTENT_MAX_BYTES = 10 * 1024 * 1024
-INFER_MESSAGE_MAX = 20
-# Multi-section SDK reports can contain dozens of charts. Bound their count
-# separately from the per-image and aggregate decoded-byte limits below.
+# Multi-section SDK reports can contain dozens of inference graphs and charts.
+# Bound their counts separately from the per-field base64 and aggregate
+# decoded-byte limits below; the byte limits are the real blast-containment.
+INFER_MESSAGE_MAX = 512
 CHART_MESSAGE_MAX = 512
 BASE64_FIELD_MAX_BYTES = 5 * 1024 * 1024
 DECODED_BINARY_TOTAL_MAX_BYTES = 100 * 1024 * 1024

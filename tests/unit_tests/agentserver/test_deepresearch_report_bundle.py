@@ -80,6 +80,40 @@ def test_build_report_bundle_rejects_more_than_512_charts_before_writing(tmp_pat
     assert not list(tmp_path.iterdir())
 
 
+@pytest.mark.parametrize("infer_count", [32, 104, 512])
+def test_build_report_bundle_preserves_large_infer_sets(tmp_path, infer_count):
+    inferences = [_infer(str(index)) for index in range(infer_count)]
+    bundle = build_report_bundle(
+        _payload(
+            response_content="\n".join(
+                f"[detail {index}](#inference:{index})" for index in range(infer_count)
+            ),
+            infer_messages=inferences,
+        ),
+        tmp_path / "report-v1",
+    )
+
+    assert len(bundle.inference_manifest) == infer_count
+    snapshot = json.loads(serialize_final_result_snapshot(bundle.final_result_snapshot))
+    assert len(snapshot["infer_messages"]) == infer_count
+    for message in snapshot["infer_messages"]:
+        path = tmp_path / message["artifact_path"]
+        assert path.read_bytes() == b"<html>safe</html>"
+        assert message["artifact_path"] in bundle.markdown_text
+        assert "html_base64" not in message
+    assert "(#inference:" not in bundle.markdown_text
+
+
+def test_build_report_bundle_rejects_more_than_512_infer_before_writing(tmp_path):
+    with pytest.raises(ValueError, match="infer_messages exceeds the message count limit"):
+        build_report_bundle(
+            _payload(infer_messages=[_infer(str(index)) for index in range(513)]),
+            tmp_path / "report-v1",
+        )
+
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize(
     "occupied_kind",
     ["directory", "directory_symlink", "file_symlink", "file_hardlink"],
