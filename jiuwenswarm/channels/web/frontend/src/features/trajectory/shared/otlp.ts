@@ -177,12 +177,25 @@ export function attributeMap(attributes: readonly OtlpKeyValue[] | undefined): R
   return new ConvertedAttributeMap(values)
 }
 
+/** The value the last entry for `key` states, read without touching the others. */
+function lastAttributeValue(
+  attributes: readonly OtlpKeyValue[] | undefined,
+  key: string,
+): unknown {
+  if (attributes === undefined) return undefined
+  for (let index = attributes.length - 1; index >= 0; index -= 1) {
+    const attribute = attributes[index]
+    if (attribute?.key === key) return otlpValue(attribute.value)
+  }
+  return undefined
+}
+
 /** Read a string attribute without coercing another OTLP value type. */
 export function stringAttribute(
   attributes: readonly OtlpKeyValue[] | undefined,
   key: string,
 ): string | undefined {
-  const value = attributeMap(attributes).get(key)
+  const value = lastAttributeValue(attributes, key)
   return typeof value === 'string' ? value : undefined
 }
 
@@ -191,7 +204,7 @@ export function numberAttribute(
   attributes: readonly OtlpKeyValue[] | undefined,
   key: string,
 ): number | undefined {
-  const value = attributeMap(attributes).get(key)
+  const value = lastAttributeValue(attributes, key)
   if (typeof value === 'number' && Number.isFinite(value)) return value
   if (typeof value !== 'string' || value.trim() === '') return undefined
   const parsed = Number(value)

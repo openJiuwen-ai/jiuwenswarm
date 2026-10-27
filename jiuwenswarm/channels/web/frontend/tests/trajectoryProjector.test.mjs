@@ -3610,3 +3610,29 @@ test('model calls restating the same tool list parse it once', () => {
 
   assert.equal(parsed.filter(text => text === tools).length, 1);
 });
+
+test('projecting a schema-v2 record never reads an attribute it does not use', () => {
+  // A value stated by reference assembles its whole history on each read;
+  // looking up the event kind or subject must not read every other value.
+  let reads = 0;
+  const restated = {};
+  Object.defineProperty(restated, 'stringValue', {
+    enumerable: true,
+    get: () => {
+      reads += 1;
+      return '[]';
+    },
+  });
+  const record = v2Record({
+    eventId: 'event-restated',
+    sequence: 1,
+    payload: contextCommit('window-restated', null, [
+      contextMessage('m1', 'user', 'hello', 'external_user'),
+    ], []),
+  });
+  spansOf([record])[0].attributes.push({ key: 'openjiuwen.test.restated', value: restated });
+
+  projectOtelTrajectory([record], { v2Reducer: createTrajectoryV2Reducer() });
+
+  assert.equal(reads, 0);
+});

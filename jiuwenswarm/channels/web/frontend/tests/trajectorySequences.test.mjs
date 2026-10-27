@@ -13,6 +13,7 @@ import {
   sequenceHeadsOf,
   unresolvedAttributesByRecordId,
   unresolvedHeadsOf,
+  withSequenceText,
 } from '../node_modules/.cache/trajectory-sequences/trajectorySequences.mjs';
 
 const HEAD = 'a'.repeat(64);
@@ -254,4 +255,43 @@ test('an element that is not JSON leaves the chain to be read as its text', () =
   const content = rebuiltValueOf(rebuildRecord(record(HEAD), cache))[SEQUENCE_CONTENT];
 
   assert.equal(content.parsedElements(), undefined);
+});
+
+test('an element stating JSON null still parses with its chain', () => {
+  const cache = createSequenceCache();
+  absorbSequencePage(cache, {
+    sequences: { [HEAD]: ['h1', 'h2'] },
+    blobs: { h1: 'null', h2: '{"role":"user"}' },
+  });
+
+  const content = rebuiltValueOf(rebuildRecord(record(HEAD), cache))[SEQUENCE_CONTENT];
+
+  assert.deepEqual(content.parsedElements(), [null, { role: 'user' }]);
+});
+
+test('the inspector copy states each referenced value as plain text', () => {
+  const cache = createSequenceCache();
+  absorbSequencePage(cache, {
+    sequences: { [HEAD]: ['h1'] },
+    blobs: { h1: '{"role":"user"}' },
+  });
+  const rebuilt = rebuildRecord(record(HEAD), cache);
+
+  const copy = withSequenceText(rebuilt.otlp);
+  const value = rebuiltValueOf({ otlp: copy });
+
+  assert.deepEqual(Object.getOwnPropertyDescriptor(value, 'stringValue'), {
+    value: '[{"role":"user"}]',
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  assert.equal(value[SEQUENCE_CONTENT], undefined);
+  // Nothing else is copied, and a record stating no reference is returned as is.
+  assert.equal(
+    copy.resourceSpans[0].scopeSpans[0].spans[0].attributes[1],
+    rebuilt.otlp.resourceSpans[0].scopeSpans[0].spans[0].attributes[1],
+  );
+  const plain = { resourceSpans: [] };
+  assert.equal(withSequenceText(plain), plain);
 });

@@ -12,9 +12,10 @@
  */
 
 import type { TrajectoryDetailRecord } from './trajectoryClient'
-import type { OtlpExportTraceServiceRequest } from './shared/otlp'
+import type { OtlpAnyValue, OtlpExportTraceServiceRequest } from './shared/otlp'
 import {
   sequenceBackedValue,
+  sequenceContentOf,
   sequenceText,
 } from './shared/sequenceValue.ts'
 import type { SequenceContent } from './shared/sequenceValue.ts'
@@ -29,7 +30,7 @@ export interface SequenceCache {
   chains: Map<string, readonly string[]>
   /** Chains resolved in full, shared by every record that states them. */
   contents: Map<string, SequenceContent>
-  /** Elements parsed so far, by hash; null for one that is not JSON. */
+  /** Elements parsed so far, by hash; `NOT_JSON` for one that is not JSON. */
   parsed: Map<string, unknown>
 }
 
@@ -134,6 +135,10 @@ function sequenceContent(
   return content
 }
 
+// What an element that is not JSON parses to. Not null: `null` is a JSON
+// document an element may well state.
+const NOT_JSON: unique symbol = Symbol('trajectory.notJson')
+
 function parseElements(
   cache: SequenceCache,
   hashes: readonly string[],
@@ -141,16 +146,17 @@ function parseElements(
 ): readonly unknown[] | null {
   const parsed: unknown[] = []
   for (const [index, hash] of hashes.entries()) {
-    let value = cache.parsed.get(hash)
-    if (value === undefined) {
+    if (!cache.parsed.has(hash)) {
+      let value: unknown
       try {
         value = JSON.parse(elements[index] as string) as unknown
       } catch {
-        value = null
+        value = NOT_JSON
       }
-      cache.parsed.set(hash, value ?? null)
+      cache.parsed.set(hash, value)
     }
-    if (value === null) return null
+    const value = cache.parsed.get(hash)
+    if (value === NOT_JSON) return null
     parsed.push(value)
   }
   return parsed
@@ -238,6 +244,45 @@ export function rebuildRecord(
     otlp: (changed ? { ...otlp, resourceSpans } : otlp) as unknown as OtlpExportTraceServiceRequest,
     ...(unresolved.size === 0 ? {} : { incomplete_sequences: [...unresolved] }),
   } as TrajectoryDetailRecord
+}
+
+/**
+ * The record with each value stated by reference turned into its text.
+ *
+ * Such a value assembles its text on every read. A view that walks the whole
+ * record on each render -- the raw inspector -- reads one copy made here, so
+ * a history is assembled once per record shown rather than once per render.
+ */
+export function withSequenceText(
+  otlp: OtlpExportTraceServiceRequest,
+): OtlpExportTraceServiceRequest {
+  const listOf = (value: unknown): readonly UnknownRecord[] => (
+    Array.isArray(value) ? value as UnknownRecord[] : NO_ITEMS
+  )
+  const source = otlp as unknown as UnknownRecord
+  const sourceResources = listOf(source.resourceSpans)
+  const resourceSpans = mapChanged(sourceResources, (resource) => {
+    const sourceScopes = listOf(resource.scopeSpans)
+    const scopeSpans = mapChanged(sourceScopes, (scope) => {
+      const sourceSpans = listOf(scope.spans)
+      const spans = mapChanged(sourceSpans, (span) => {
+        const sourceAttributes = listOf(span.attributes)
+        const attributes = mapChanged(sourceAttributes, (entry) => {
+          const value = entry.value as OtlpAnyValue | undefined
+          const content = value === undefined ? undefined : sequenceContentOf(value)
+          return content === undefined
+            ? entry
+            : { ...entry, value: { stringValue: sequenceText(content.elements) } }
+        })
+        return attributes === sourceAttributes ? span : { ...span, attributes }
+      })
+      return spans === sourceSpans ? scope : { ...scope, spans }
+    })
+    return scopeSpans === sourceScopes ? resource : { ...resource, scopeSpans }
+  })
+  return resourceSpans === sourceResources
+    ? otlp
+    : { ...source, resourceSpans } as unknown as OtlpExportTraceServiceRequest
 }
 
 /**
