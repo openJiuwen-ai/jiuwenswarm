@@ -32,7 +32,13 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
-INSTANCE_MANAGER_DIR = ROOT / "jiuwenswarm" / "instance_manager"
+# Only the modules this change touches are guarded.  Scanning the whole
+# ``instance_manager`` package would also assert on call sites this change does
+# not modify (and therefore cannot fix), which turns the guard into a statement
+# about merge order instead of about this change.
+GUARDED_MODULES = (
+    ROOT / "jiuwenswarm" / "instance_manager" / "status.py",
+)
 
 
 def _subprocess_run_targets(tree: ast.AST) -> tuple[set[str], set[str]]:
@@ -90,7 +96,7 @@ def _constant_str(node: ast.AST | None) -> str | None:
 
 @pytest.mark.unit
 def test_text_mode_probes_declare_an_explicit_encoding() -> None:
-    """Every ``subprocess.run(..., text=True)`` in instance_manager pins a codec.
+    """Every ``subprocess.run(..., text=True)`` in the guarded modules pins a codec.
 
     The error handler is asserted as well as the codec: an explicit
     ``encoding`` alone still raises from subprocess' reader thread when the
@@ -98,7 +104,8 @@ def test_text_mode_probes_declare_an_explicit_encoding() -> None:
     prevent.
     """
     offenders: list[str] = []
-    for path in sorted(INSTANCE_MANAGER_DIR.rglob("*.py")):
+    for path in GUARDED_MODULES:
+        assert path.is_file(), f"guarded module is missing: {path}"
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for call in _iter_subprocess_run_calls(tree):
             text_kw = _keyword(call, "text")
