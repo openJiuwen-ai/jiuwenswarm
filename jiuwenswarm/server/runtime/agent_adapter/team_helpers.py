@@ -4619,6 +4619,23 @@ async def _consume_stream_with_query(
                 continue
             parsed = await run_stream_parser(parse_stream_chunk, chunk)
             if parsed is not None:
+                if (
+                    parsed.get("event_type") == "chat.error"
+                    and parsed.get("code") == "SWARMFLOW_SESSION_BUDGET_EXHAUSTED"
+                ):
+                    # 预算耗尽的 chat.error 只在会话里没有 swarmflow run 时才发；
+                    # 有 run（无论运行中还是已终态）时，预算耗尽由 run 自身的终态体现，
+                    # 丢弃这条，避免它提前触发 is_processing=false。
+                    tm = get_team_manager(channel_id)
+                    wf_handler = tm.get_workflow_handler(session_id)
+                    if wf_handler is not None and wf_handler.get_run_states():
+                        logger.info(
+                            "[TeamHelpers] budget-exhausted chat.error ignored "
+                            "(swarmflow run present): channel_id=%s session_id=%s",
+                            _resolve_channel_id(channel_id),
+                            session_id,
+                        )
+                        continue
                 # Time to first token: the first frame actually produced by a
                 # model (reasoning counts — on a thinking model it comes first).
                 if first_model_output_at is None and parsed.get("event_type") in _MODEL_OUTPUT_EVENT_TYPES:
@@ -5465,18 +5482,6 @@ async def _consume_workflow_events(
             # channel_id 随事件传下去：终态事件在 waiter 已被 cancel 拆除时，
             # broadcast_event 用它走 gateway server-push 兜底投递。
             await _broadcast_event(channel_id, session_id, event)
-
-            if not is_tui and wf.get("budget_exhausted_scope") == "session":
-                await _broadcast_event(
-                    channel_id,
-                    session_id,
-                    {
-                        "event_type": "chat.error",
-                        "session_id": session_id,
-                        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
-                        "error": "Session budget exhausted",
-                    },
-                )
 
             # The idle guard may be holding a swallowed team.idle for this
             # session. A pause / stop takes the run out of the active set
