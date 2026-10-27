@@ -1414,6 +1414,10 @@ function parseSessionHistoryTimelineEntry(
   // （不弹实时交互框——web 重连后后端不重发挂起中断，弹框 + resume 会报
   // "session has no active execution"，见下方未配对分支）。
   if (eventType === 'chat.ask_user_question') {
+    // Permission approvals share this event but are not clarification questions.
+    if (payload.source === 'permission_interrupt') {
+      return null;
+    }
     const rawQuestions = payload.questions;
     if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
       return null;
