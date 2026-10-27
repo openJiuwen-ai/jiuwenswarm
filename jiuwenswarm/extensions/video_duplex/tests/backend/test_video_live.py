@@ -1850,9 +1850,7 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
     channel = _video_channel()
     service = channel.manager.service
     service.started = True
-    from unittest.mock import Mock
-
-    service.kick = Mock(return_value=None)
+    service.kick = lambda: None
     wechat = service.submit("test-user", "scope", "wechat", "打开微信")
     feishu = service.submit("test-user", "scope", "feishu", "打开飞书")
     provider = AsyncMock(return_value=_joyai_result(
@@ -2155,7 +2153,8 @@ def test_ground_joyai_user_instruction_marks_tool_context_as_read_only() -> None
     assert "【用户原话】它为什么会这样？" in prompt
     assert "纯视觉问答无需搜索。" in prompt
     assert '</response> 简短说明 </delegation> {"name":"jiuwen_delegate","arguments":{"task":"完整任务描述"}}' in prompt
-    assert "jiuwen_task_query" in prompt
+    assert "jiuwen_queue_manage" in prompt
+    assert "Never select task IDs or claim a change before the manager receipt" in prompt
 
 
 def test_ground_joyai_user_instruction_defers_unresolved_search_and_resumes_it() -> (

@@ -79,6 +79,36 @@ test('voice-only turns reach JoyAI before and after screen sharing without idle 
 
 const brief = { status: 'completed', summary: '代码已生成，详情见界面。', source: 'core_agent' };
 
+test('queue manager receipt text reaches both chat and speech without creating a task', async (t) => {
+  const answers = [];
+  const speech = [];
+  const requests = [];
+  let tick;
+  t.mock.method(globalThis, 'setInterval', callback => { tick = callback; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  globalThis.joyaiTestRequest = async (method, params, options) => {
+    requests.push({ method, params, options });
+    return { response: '已将飞书排在微信前面。', search_job: null,
+      queue_management: { managed_by: 'text_queue_manager', receipts: [] } };
+  };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'scope', getLatestFrameDataUrl: () => '', getFrameCount: () => 0,
+    rememberSearchJob(job) { assert.equal(job, null, 'management must not create a new task'); },
+    report() {}, commitAssistantAnswer: text => answers.push(text),
+  });
+  provider.sessionId = 'manage';
+  provider.speakText = text => speech.push(text);
+  provider.startFramePolling();
+  const pending = provider.submitUserInstruction('先打开飞书，再打开微信。');
+  tick();
+  await pending;
+  assert.deepEqual(answers, ['已将飞书排在微信前面。']);
+  assert.deepEqual(speech, answers);
+  assert.equal(requests[0].options.timeoutMs, 90_000);
+  provider.stop();
+});
+
 function pollingHarness(t) {
   let now = 10_000;
   let tick;

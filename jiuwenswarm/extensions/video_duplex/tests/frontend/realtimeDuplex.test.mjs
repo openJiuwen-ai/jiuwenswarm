@@ -156,6 +156,17 @@ test('pending information questions are announced once without completing their 
   assert.deepEqual(dispatchedToolResults, []);
 });
 
+test('operation receipts route unfinished management through the exposed queue tool', () => {
+  const { session, sent } = createSession();
+  session.enqueueOperationResult('query', { operation: 'query', applied: false, jobs: [] });
+  const instructions = sent.find(event => event.type === 'response.create').response.instructions;
+  assert.match(instructions, /call jiuwen_queue_manage/);
+  assert.doesNotMatch(instructions, /call jiuwen_task_(?:answer|reorder|modify|query|cancel)/);
+  assert.match(instructions, /Do not call low-level task tools or jiuwen_queue_manage again for the same request/);
+  assert.match(instructions, /a failed write means the task was unsuccessful and its final state is unconfirmed/);
+  assert.doesNotMatch(instructions, /read-only when applied=false/);
+});
+
 test('pending approval cards ask the user to click instead of answering by voice', () => {
   // Voice must never approve cards, so it must not invite a spoken "允许" either.
   const { session, sent } = createSession();
@@ -1625,17 +1636,17 @@ test('completed cancellation receipt permits Core follow-up for the user request
     task_id: 'created', task_status: 'completed', state: 'completed', stopped: false,
   });
   const continuation = sent.find(event => event.type === 'response.create').response.instructions;
-  assert.match(continuation, /removing, disabling or undoing/);
-  assert.match(continuation, /jiuwen_task_modify/);
-  assert.match(continuation, /or delegate the full requested action to Core/);
-  assert.match(continuation, /Never repeat the same ineffective cancellation/);
+  assert.match(continuation, /call jiuwen_queue_manage/);
+  assert.doesNotMatch(continuation, /call jiuwen_task_modify/);
+  assert.match(continuation, /Further external actions may also be delegated to Core/);
+  assert.match(continuation, /never repeat the same ineffective cancellation/);
   session.handleEvent({ type: 'response.created', response: { id: 'continue-effects' } });
-  session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_task_modify',
+  session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_queue_manage',
     call_id: 'remove-effect', response_id: 'continue-effects',
-    arguments: JSON.stringify({ job_id: 'created', revision: 2, instruction: 'Remove the previously created result and verify' }),
+    arguments: JSON.stringify({ instruction: 'Remove the previously created result for job created and verify' }),
   });
   assert.equal(functionCalls.length, 1);
-  assert.equal(functionCalls[0].name, 'jiuwen_task_modify');
+  assert.equal(functionCalls[0].name, 'jiuwen_queue_manage');
 });
 
 

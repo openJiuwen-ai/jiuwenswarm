@@ -57,9 +57,7 @@ class QwenOmniToolCall:
 
 def qwen_omni_tools(*, queue_manager: bool = False) -> list[dict[str, Any]]:
     """Return fresh Qwen-compatible tool definitions for each session."""
-    return ([queue_management_tool(), next(
-        tool for tool in task_management_tools() if tool["function"]["name"] == "jiuwen_task_answer"
-    )] if queue_manager else task_management_tools()) + [
+    return ([queue_management_tool()] if queue_manager else task_management_tools()) + [
         {
             "type": "function",
             "function": {
@@ -160,6 +158,11 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("arguments must be a JSON object")
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
+    if name == "jiuwen_queue_manage":
+        instruction = arguments.get("instruction")
+        if set(arguments) != {"instruction"} or not isinstance(instruction, str) or not 1 <= len(instruction.strip()) <= 16000:
+            raise ValueError("Queue management requires a nonempty instruction")
+        return QwenOmniToolCall(name, call_id, {"instruction": instruction.strip()}, instruction.strip())
     if "title" in arguments:
         title = arguments["title"]
         if not isinstance(title, str) or not title.strip() or len(title) > 80 or "\n" in title or "\r" in title:

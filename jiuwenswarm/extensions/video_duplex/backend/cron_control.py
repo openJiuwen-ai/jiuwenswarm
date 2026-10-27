@@ -311,7 +311,7 @@ class CronControl:
 
     def _get_controller(self) -> Any:
         if self._controller is None:
-            from agent_gateway.cron.controller import CronController
+            from jiuwenswarm.gateway.cron.controller import CronController
 
             self._controller = CronController.get_instance()
         return self._controller
@@ -320,8 +320,8 @@ class CronControl:
         if job is None:
             return False
         if not self.user_id:
-            # Anonymous reads are limited to anonymous jobs; writes need an owner.
-            return not write and not str(job.get("user_id") or "").strip()
+            # Keep the legacy all-owner view for reads only; writes need an owner.
+            return not write
         return str(job.get("user_id") or "").strip() == self.user_id
 
     async def execute(self, name: str, arguments: Any) -> dict[str, Any]:
@@ -351,13 +351,12 @@ class CronControl:
     async def _query(self, controller: Any, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = str(arguments.get("job_id") or "")
         if job_id:
-            job = await controller.get_job(job_id, user_id=self.user_id, project_id=None)
+            job = await controller.get_job(job_id)
             if not self._owned(job):
                 return _not_found(CRON_QUERY_TOOL, job_id)
             runs: list[Any] = []
             try:
-                preview = await controller.preview_job(job_id, _PREVIEW_COUNT, user_id=self.user_id)
-                runs = [item.get("push_at") for item in preview]
+                runs = [item.get("push_at") for item in await controller.preview_job(job_id, _PREVIEW_COUNT)]
             except Exception:  # noqa: BLE001 - a preview is optional detail
                 logger.info("[video-duplex] cron preview failed job=%s", job_id, exc_info=True)
             return {
@@ -367,7 +366,7 @@ class CronControl:
                 "total": 1,
                 "message": _QUERY_MESSAGE,
             }
-        jobs = await controller.list_jobs(user_id=self.user_id)
+        jobs = await controller.list_jobs(user_id=self.user_id or None)
         needle = str(arguments.get("query") or "").casefold()
         if needle:
             jobs = [
@@ -388,13 +387,13 @@ class CronControl:
 
     async def _update(self, controller: Any, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = arguments["job_id"]
-        job = await controller.get_job(job_id, user_id=self.user_id, project_id=None)
+        job = await controller.get_job(job_id)
         if not self._owned(job, write=True):
             return _not_found(CRON_UPDATE_TOOL, job_id)
         if _compact(job or {})["protected"]:
             return _protected(CRON_UPDATE_TOOL, job_id)
         patch = dict(arguments["patch"])
-        updated = await controller.update_job(job_id, patch, user_id=self.user_id)
+        updated = await controller.update_job(job_id, patch)
         if not isinstance(updated, dict) or updated.get("id") != job_id:
             return _failed(CRON_UPDATE_TOOL, "The update did not return a valid job receipt.")
         return {
@@ -409,12 +408,12 @@ class CronControl:
 
     async def _delete(self, controller: Any, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = arguments["job_id"]
-        job = await controller.get_job(job_id, user_id=self.user_id, project_id=None)
+        job = await controller.get_job(job_id)
         if not self._owned(job, write=True):
             return _not_found(CRON_DELETE_TOOL, job_id)
         if _compact(job or {})["protected"]:
             return _protected(CRON_DELETE_TOOL, job_id)
-        deleted = await controller.delete_job(job_id, user_id=self.user_id)
+        deleted = await controller.delete_job(job_id)
         if not deleted:
             return _not_found(CRON_DELETE_TOOL, job_id)
         return {

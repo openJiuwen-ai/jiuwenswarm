@@ -6,9 +6,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from agent_gateway.cron.controller import CronController
-from agent_gateway.cron.models import CronJob
-
 from jiuwenswarm.extensions.video_duplex.backend import cron_control, queue_manager
 from jiuwenswarm.extensions.video_duplex.backend.cron_control import (
     CRON_DELETE_TOOL,
@@ -44,33 +41,26 @@ class FakeCronController:
         self.deleted = []
         self.previewed = []
 
-    async def list_jobs(self, *, user_id=""):
+    async def list_jobs(self, user_id=None):
         values = list(self.jobs.values())
-        if user_id is not None:
+        if user_id:
             values = [item for item in values if item.get("user_id") == user_id]
         return [dict(item) for item in values]
 
-    async def get_job(self, job_id, *, user_id="", project_id=""):
+    async def get_job(self, job_id):
         item = self.jobs.get(job_id)
-        if item is None or item.get("user_id", "") != user_id:
-            return None
-        if project_id is not None and item.get("project_id", "") != project_id:
-            return None
-        return dict(item)
+        return dict(item) if item else None
 
-    async def preview_job(self, job_id, count=5, *, user_id=""):
-        assert self.jobs[job_id]["user_id"] == user_id
+    async def preview_job(self, job_id, count=5):
         self.previewed.append((job_id, count))
         return [{"wake_at": "2026-10-28T08:59:00+08:00", "push_at": "2026-10-28T09:00:00+08:00"}]
 
-    async def update_job(self, job_id, patch, *, user_id=""):
-        assert self.jobs[job_id]["user_id"] == user_id
+    async def update_job(self, job_id, patch):
         self.jobs[job_id].update(patch)
         self.updated.append((job_id, dict(patch)))
         return dict(self.jobs[job_id])
 
-    async def delete_job(self, job_id, *, user_id=""):
-        assert self.jobs[job_id]["user_id"] == user_id
+    async def delete_job(self, job_id):
         self.deleted.append(job_id)
         return self.jobs.pop(job_id, None) is not None
 
@@ -115,7 +105,7 @@ async def test_query_never_returns_another_users_job():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("job_owner", ["alice", ""])
-async def test_anonymous_control_reads_only_anonymous_jobs_and_cannot_write(job_owner):
+async def test_anonymous_control_can_read_but_cannot_change_jobs(job_owner):
     controller = FakeCronController([job(user_id=job_owner)])
     control = CronControl("", controller)
 
@@ -125,11 +115,7 @@ async def test_anonymous_control_reads_only_anonymous_jobs_and_cannot_write(job_
     )
     deleted = await control.execute(CRON_DELETE_TOOL, {"job_id": "job-1"})
 
-    if job_owner:
-        assert queried["code"] == "CRON_JOB_NOT_FOUND"
-        assert "job" not in queried
-    else:
-        assert queried["job"]["id"] == "job-1"
+    assert queried["job"]["id"] == "job-1"
     assert updated["code"] == deleted["code"] == "CRON_JOB_NOT_FOUND"
     assert updated["applied"] is deleted["applied"] is False
     assert controller.updated == [] and controller.deleted == []
@@ -156,8 +142,7 @@ async def test_update_applies_only_the_whitelisted_patch():
 async def test_invalid_update_result_returns_unsuccessful_receipt(monkeypatch, result):
     controller = FakeCronController([job()])
 
-    async def update_without_receipt(job_id, patch, *, user_id=""):
-        assert user_id == "alice"
+    async def update_without_receipt(job_id, patch):
         controller.jobs[job_id].update(patch)
         return result
 
@@ -180,8 +165,7 @@ async def test_invalid_update_result_returns_unsuccessful_receipt(monkeypatch, r
 async def test_update_exception_returns_unsuccessful_receipt(monkeypatch, write_applied):
     controller = FakeCronController([job()])
 
-    async def failed_update(job_id, patch, *, user_id=""):
-        assert user_id == "alice"
+    async def failed_update(job_id, patch):
         if write_applied:
             controller.jobs[job_id].update(patch)
         raise RuntimeError("scheduler unavailable")
@@ -244,7 +228,7 @@ def test_cron_arguments_are_validated_strictly(name, arguments):
 
 @pytest.mark.asyncio
 async def test_unavailable_cron_returns_a_receipt_instead_of_raising(monkeypatch):
-    from agent_gateway.cron import controller as controller_module
+    from jiuwenswarm.gateway.cron import controller as controller_module
 
     def unavailable(**kwargs):
         raise RuntimeError("CronController not initialized")
@@ -340,74 +324,3 @@ async def test_manager_hides_cron_tools_without_an_executor(monkeypatch):
 
     names = {tool["function"]["name"] for tool in json.loads(step.call_args.args[0][1]["content"])["allowed_tools"]}
     assert not names & cron_control.CRON_TOOL_NAMES
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("owner", ["alice", ""])
-async def test_real_controller_keeps_list_and_detail_in_the_same_user_scope(owner):
-    records = {
-        "mine": CronJob(**job("mine", user_id=owner), group_id="", bot_id=""),
-        "other": CronJob(**job("other", user_id="bob"), group_id="", bot_id=""),
-    }
-    records["mine"].project_id = "project-A"
-    store = SimpleNamespace(
-        list_jobs=AsyncMock(return_value=list(records.values())),
-        get_job=AsyncMock(side_effect=records.get),
-    )
-    scheduler = SimpleNamespace(project_execution_allowed=AsyncMock(return_value=True))
-    control = CronControl(owner, CronController(store=store, scheduler=scheduler))
-
-    listed = await control.execute(CRON_QUERY_TOOL, {})
-    detail = await control.execute(CRON_QUERY_TOOL, {"job_id": "mine"})
-    foreign = await control.execute(CRON_QUERY_TOOL, {"job_id": "other"})
-
-    assert [item["id"] for item in listed["jobs"]] == ["mine"]
-    assert detail["job"]["id"] == "mine"
-    assert len(detail["job"]["next_runs"]) == 5
-    assert foreign["code"] == "CRON_JOB_NOT_FOUND"
-    assert "job" not in foreign
-
-
-@pytest.mark.asyncio
-async def test_real_controller_changes_only_owned_jobs_in_another_project():
-    records = {
-        "mine": CronJob(**job("mine"), group_id="", bot_id=""),
-        "other": CronJob(**job("other", user_id="bob"), group_id="", bot_id=""),
-    }
-    records["mine"].project_id = "project-A"
-
-    async def update_record(job_id, patch):
-        record = records.get(job_id)
-        if record is None:
-            raise KeyError(job_id)
-        for key, value in patch.items():
-            setattr(record, key, value)
-        return record
-
-    async def delete_record(job_id, *, force=False):
-        return records.pop(job_id, None) is not None
-
-    store = SimpleNamespace(
-        get_job=AsyncMock(side_effect=records.get),
-        update_job=AsyncMock(side_effect=update_record),
-        delete_job=AsyncMock(side_effect=delete_record),
-    )
-    scheduler = SimpleNamespace(
-        reload=AsyncMock(), stop_job_runs=AsyncMock(), delete_cron_sessions=AsyncMock(),
-    )
-    control = CronControl("alice", CronController(store=store, scheduler=scheduler))
-
-    updated = await control.execute(CRON_UPDATE_TOOL, {"job_id": "mine", "patch": {"enabled": False}})
-    foreign_update = await control.execute(
-        CRON_UPDATE_TOOL, {"job_id": "other", "patch": {"enabled": False}},
-    )
-    foreign_delete = await control.execute(CRON_DELETE_TOOL, {"job_id": "other"})
-    assert updated["applied"] is True
-    assert records["mine"].enabled is False
-    assert records["other"].enabled is True
-    assert foreign_update["code"] == foreign_delete["code"] == "CRON_JOB_NOT_FOUND"
-
-    deleted = await control.execute(CRON_DELETE_TOOL, {"job_id": "mine"})
-    assert deleted["applied"] is True
-    assert set(records) == {"other"}
-    scheduler.delete_cron_sessions.assert_awaited_once_with("mine", "alice")

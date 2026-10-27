@@ -419,6 +419,7 @@ class VideoSearchManager:
         self.subscribers = {}
         self._approval_cards = {}
         self._execution_targets = {}
+        self._queue_requests = {}
 
     @property
     def service(self):
@@ -910,6 +911,30 @@ class VideoSearchManager:
             "arguments": str(params.get("arguments") or "")[:6000],
             "question": str(params.get("question") or "")[:1000],
         })
+
+    async def manage_queue_call(self, owner, scope, call, instruction, *, allow_answers=True, reply_language="match"):
+        """Share deduplication and lifecycle for provider queue management calls."""
+        from .cron_control import CronControl
+        from .queue_manager import manage_queue
+
+        key = (owner, scope, call.call_id)
+        signature = (call.task, instruction, allow_answers, reply_language)
+        existing = self._queue_requests.get(key)
+        if existing is not None and existing[0] != signature:
+            raise ValueError("Queue command ID reused with different instructions")
+        if existing is None:
+            if len(self._queue_requests) >= 128:
+                expired = next((k for k, v in self._queue_requests.items() if v[1].done()), None)
+                if expired is None:
+                    raise ValueError("Too many queue management requests")
+                del self._queue_requests[expired]
+            task = asyncio.create_task(manage_queue(
+                self, owner, scope, call, instruction,
+                allow_answers=allow_answers, reply_language=reply_language,
+                cron=CronControl(owner),
+            ))
+            self._queue_requests[key] = (signature, task)
+        return await asyncio.shield(self._queue_requests[key][1])
 
     async def operate(self, owner, scope, call, *, user_instruction=""):
         args = call.arguments
