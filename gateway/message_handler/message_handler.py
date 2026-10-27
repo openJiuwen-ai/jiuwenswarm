@@ -4044,6 +4044,7 @@ class MessageHandler(ABC):
     @staticmethod
     def _should_emit_processing_status_for_stream(msg: "Message") -> bool:
         from jiuwenswarm.common.schema.message import ReqMethod
+        from gateway.runtime.session_input import SessionInputMode
 
         if msg.req_method != ReqMethod.CHAT_SEND:
             return False
@@ -4052,7 +4053,15 @@ class MessageHandler(ABC):
         # authoritative is_processing=False of the streams that actually own
         # the turn (a blocked terminal leaves the busy map stuck on True).
         params = msg.params if isinstance(msg.params, dict) else {}
-        return params.get(TEAM_ATTACH_ONLY_PARAM) is not True
+        if params.get(TEAM_ATTACH_ONLY_PARAM) is True:
+            return False
+        # STEER 是注入已有 execution 的短回执流：正文仍走父流。若对本请求发
+        # processing_status=true，HTTP SSE 上父流仍在时又常被挡住补 false，
+        # 前端会卡在「执行中」；强行补 false 又会误清父轮（WS/正常场景回归）。
+        # 因此 STEER 不抬 session busy，交给父流的 true/false 管理。
+        if resolve_session_input_mode(params) is SessionInputMode.STEER:
+            return False
+        return True
 
     def _session_has_streams_blocking_processing_false(
         self, session_id: str | None, *, exclude_rid: str | None = None
@@ -4262,6 +4271,7 @@ class MessageHandler(ABC):
                 msg.channel_id,
                 is_processing=False,
                 app_id=msg.app_id or "",
+                metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
             )
             return
 
@@ -4295,6 +4305,7 @@ class MessageHandler(ABC):
             msg.channel_id,
             is_processing=False,
             app_id=msg.app_id or "",
+            metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
         )
 
     @staticmethod
@@ -5350,6 +5361,11 @@ class MessageHandler(ABC):
                     await self._send_processing_status(
                         rid, session_id, channel_id,
                         is_processing=False, app_id=stream_app_id,
+                        metadata=(
+                            request_metadata
+                            if isinstance(request_metadata, dict)
+                            else None
+                        ),
                     )
                     logger.info(
                         "[MessageHandler] 该 session 流式任务已结束（cancelled=%s），已发送 is_processing=false: session_id=%s",
@@ -5469,6 +5485,7 @@ class MessageHandler(ABC):
                 msg.channel_id,
                 is_processing=True,
                 app_id=msg.app_id or "",
+                metadata=msg.metadata if isinstance(msg.metadata, dict) else None,
             )
         task = asyncio.create_task(
             self.process_stream(
@@ -5578,11 +5595,20 @@ class MessageHandler(ABC):
     async def _send_processing_status(
         self, request_id: str, session_id: str | None, channel_id: str, *,
         is_processing: bool, app_id: str = "",
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         """发送 chat.processing_status 事件到客户端。"""
         from jiuwenswarm.common.schema.message import Message, EventType
 
         _mode = self._stream_modes.get(request_id)
+        # 带上入站 ws_id，避免 HTTP cancel-replace 时旧 false 经 session
+        # 兜底打进新 SSE（与 chat.delta/final 的 request-scoped 路由对齐）。
+        # 同时保留 stream mode，供飞书等通道透传。
+        status_metadata: dict[str, Any] = (
+            dict(metadata) if isinstance(metadata, dict) else {}
+        )
+        if _mode:
+            status_metadata["mode"] = _mode
         status_msg = Message(
             id=request_id,
             type="event",
@@ -5595,11 +5621,12 @@ class MessageHandler(ABC):
             payload={
                 "event_type": "chat.processing_status",
                 "session_id": session_id,
+                "request_id": request_id,
                 "is_processing": is_processing,
                 "is_complete": not is_processing
             },
             event_type=EventType.CHAT_PROCESSING_STATUS,
-            metadata={"mode": _mode} if _mode else None,
+            metadata=status_metadata or None,
         )
         await self.publish_robot_messages(status_msg)
         # 广播全局运行态快照给所有 ws 客户端（不按 session 路由），用于多窗口配置保存锁。

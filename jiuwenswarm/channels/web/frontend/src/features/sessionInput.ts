@@ -56,7 +56,9 @@ export async function sendQueuedTaskInput(
         },
       },
     );
-    useChatStore.getState().settleTaskInput(sessionId, taskId, requestId, 'accepted');
+    // Admission settle is event-driven (runtime.accepted / chat.input_received).
+    // Do not settle here: HTTP used to resolve on SSE headers alone, and a
+    // delivery-less settle would insert user-steer-* before the stream boundary.
   } catch (error) {
     const failure: WebError = error instanceof Error ? error : new Error(String(error));
     useChatStore
