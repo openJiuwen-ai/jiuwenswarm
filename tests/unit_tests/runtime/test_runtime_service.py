@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,8 @@ from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
+    CancelExecutionResult,
+    RuntimeSessionState,
     SessionCloseTimeoutError,
     SessionExecutionState,
     SessionWorkKind,
@@ -44,6 +47,8 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionProvisionState,
     SessionSwitchResult,
 )
+
+test_logger = logging.getLogger("tests.runtime_service")
 
 
 async def _collect_events(stream) -> list[RuntimeEvent]:
@@ -996,6 +1001,138 @@ async def test_prepare_chat_turn_requires_atomic_manager_admission() -> None:
         )
 
     manager.get_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registered", "paused", "timed_out", "expect_push"),
+    [
+        (True, True, (), True),
+        (True, False, (), False),
+        (True, True, ("observer",), False),
+        (False, True, (), True),
+        (False, False, (), False),
+    ],
+)
+async def test_team_pause_pushes_once_after_response_consumers_drain(
+    monkeypatch: pytest.MonkeyPatch,
+    registered: bool,
+    paused: bool,
+    timed_out: tuple[str, ...],
+    expect_push: bool,
+) -> None:
+    from jiuwenswarm.runtime.host_services import (
+        install_runtime_push_handler,
+        restore_runtime_push_handler,
+    )
+
+    order: list[str] = []
+    pushes: list[dict[str, Any]] = []
+    observer = asyncio.create_task(asyncio.Event().wait())
+
+    async def pause_session(*args: object, **kwargs: object) -> bool:
+        order.append("pause")
+        return paused
+
+    async def cancel_agent(*args: object, **kwargs: object) -> AgentResponse:
+        order.append("adapter")
+        return AgentResponse(
+            request_id="pause-request",
+            channel_id="web",
+            # A second adapter pause finds no runtime after lifecycle cleanup.
+            payload={"success": paused if not registered else False},
+        )
+
+    async def cancel_execution(*args: object, **kwargs: object) -> CancelExecutionResult:
+        observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)
+        order.append("drained")
+        return CancelExecutionResult(matched=1, cancelled=1, timed_out=timed_out)
+
+    async def push(message: dict[str, Any]) -> bool:
+        if registered:
+            assert observer.cancelled()
+            assert order[-1] == "drained"
+        pushes.append(message)
+        order.append("push")
+        return True
+
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: (
+            SimpleNamespace(session_id=session_id, generation=2, state=RuntimeSessionState.READY)
+            if registered else None
+        ),
+        cancel_execution=AsyncMock(side_effect=cancel_execution),
+    )
+    lifecycle = SimpleNamespace(pause_session=AsyncMock(side_effect=pause_session))
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=lifecycle,
+    )
+    request = AgentRequest(
+        request_id="pause-request",
+        channel_id="web",
+        session_id="session-a",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"mode": "team", "intent": "pause"},
+    )
+    monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
+    previous = install_runtime_push_handler(push)
+    try:
+        response = await runtime.cancel_request(request)
+    finally:
+        restore_runtime_push_handler(push, previous)
+        observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)
+
+    assert response.ok is True
+    assert len(pushes) == int(expect_push)
+    if registered:
+        assert order[:3] == ["pause", "adapter", "drained"]
+    if expect_push:
+        assert pushes[0] == {
+            "request_id": "",
+            "channel_id": "web",
+            "session_id": "session-a",
+            "payload": {
+                "event_type": "chat.processing_status",
+                "session_id": "session-a",
+                "is_processing": False,
+                "is_complete": True,
+            },
+            "is_complete": False,
+        }
+    test_logger.info("Pause order=%s pushes=%s", order, len(pushes))
+
+
+@pytest.mark.asyncio
+async def test_team_pause_push_failure_preserves_completed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
+    response = AgentResponse(request_id="pause", channel_id="web", payload={"success": True})
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.request.cancel_request",
+        AsyncMock(return_value=response),
+    )
+    push = AsyncMock(side_effect=RuntimeError("Gateway unavailable"))
+    monkeypatch.setattr("jiuwenswarm.runtime.host_services.send_runtime_push", push)
+
+    result = await runtime.cancel_request(
+        AgentRequest(
+            request_id="pause",
+            channel_id="web",
+            session_id="session-a",
+            req_method=ReqMethod.CHAT_CANCEL,
+            params={"mode": "team", "intent": "pause"},
+        )
+    )
+
+    assert result is response
+    push.assert_awaited_once()
+    test_logger.info("Push failure did not replace the pause response")
 
 
 @pytest.mark.asyncio

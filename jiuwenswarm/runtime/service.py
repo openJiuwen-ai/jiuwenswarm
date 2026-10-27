@@ -1143,13 +1143,14 @@ class AgentRuntime:
             else None
         )
         is_team_request = self._request_targets_team(request)
+        team_paused = False
         if is_team_request and snapshot is not None:
             context = SessionLifecycleContext(
                 session_id=snapshot.session_id,
                 generation=snapshot.generation,
             )
             if intent == "pause":
-                await self._team_lifecycle().pause_session(
+                team_paused = await self._team_lifecycle().pause_session(
                     context,
                     reason=ExecutionCancelCause.USER_PAUSE.value,
                     channel_id=request.channel_id,
@@ -1167,6 +1168,13 @@ class AgentRuntime:
             request,
             allow_create=allow_create,
         )
+        if is_team_request and intent == "pause" and snapshot is None:
+            # Without a registered Session, the adapter owns the pause result.
+            team_paused = (
+                response.ok
+                and isinstance(response.payload, dict)
+                and response.payload.get("success") is True
+            )
         if (
             response.ok
             and intent in {"cancel", "supplement"}
@@ -1176,14 +1184,52 @@ class AgentRuntime:
             )
         ):
             await self._clear_pending_interaction(request.session_id or "default")
+        cancellation_drained = True
         if request.session_id and self._owns_session(request.session_id):
             target_request_id = str(params.get("target_request_id") or "").strip()
-            await self._session_coordinator.cancel_execution(
+            cancellation = await self._session_coordinator.cancel_execution(
                 request.session_id,
                 request_id=target_request_id or None,
                 generation=snapshot.generation if snapshot is not None else None,
             )
+            cancellation_drained = not cancellation.timed_out
+        if team_paused and cancellation_drained:
+            await self._push_team_pause_completed(request)
         return response
+
+    @staticmethod
+    async def _push_team_pause_completed(request: AgentRequest) -> None:
+        """Push Session completion after all cancelled consumers have drained."""
+        from jiuwenswarm.runtime.host_services import send_runtime_push
+
+        # A request waiter may already be cancelled or have buffered output.
+        # Use the Session push route, without a request-owned response stream.
+        try:
+            pushed = await send_runtime_push(
+                {
+                    "request_id": "",
+                    "channel_id": request.channel_id or "web",
+                    "session_id": request.session_id,
+                    "payload": {
+                        "event_type": "chat.processing_status",
+                        "session_id": request.session_id,
+                        "is_processing": False,
+                        "is_complete": True,
+                    },
+                    "is_complete": False,
+                }
+            )
+            logger.info(
+                "[Runtime] Team pause completion push: session_id=%s delivered=%s",
+                request.session_id,
+                pushed,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Runtime] Team pause completion push failed: session_id=%s error=%s",
+                request.session_id,
+                exc,
+            )
 
     async def cancel_all_inflight_work(
         self,

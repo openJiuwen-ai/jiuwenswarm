@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -11,6 +12,8 @@ import pytest
 
 from jiuwenswarm.runtime.session.model import SessionLifecycleContext
 from jiuwenswarm.runtime.team_session_lifecycle import TeamSessionLifecycleAdapter
+
+test_logger = logging.getLogger("tests.team_session_lifecycle")
 
 
 class _RecordingTeamManager:
@@ -122,61 +125,20 @@ def test_adapter_rejects_manager_without_round_state_reporter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pause_session_broadcasts_terminal_frame_after_successful_pause() -> None:
-    manager = _RecordingTeamManager(paused=True)
+@pytest.mark.parametrize("paused", [True, False])
+async def test_pause_session_returns_result_without_broadcasting(paused: bool) -> None:
+    manager = _RecordingTeamManager(paused=paused)
     adapter = TeamSessionLifecycleAdapter(
         coordinator=_RecordingCoordinator(),
         team_manager=manager,
     )
 
-    await adapter.pause_session(
+    result = await adapter.pause_session(
         SessionLifecycleContext(session_id="session-a", generation=2),
         reason="user_pause",
         channel_id="web",
     )
 
-    assert manager.broadcast_events == [
-        (
-            "session-a",
-            {
-                "event_type": "chat.processing_status",
-                "session_id": "session-a",
-                "is_processing": False,
-                "is_complete": True,
-            },
-            "web",
-        ),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_pause_session_skips_terminal_frame_when_nothing_paused() -> None:
-    manager = _RecordingTeamManager(paused=False)
-    adapter = TeamSessionLifecycleAdapter(
-        coordinator=_RecordingCoordinator(),
-        team_manager=manager,
-    )
-
-    await adapter.pause_session(
-        SessionLifecycleContext(session_id="session-a", generation=2),
-        reason="user_pause",
-    )
-
+    assert result is paused
     assert manager.broadcast_events == []
-
-
-@pytest.mark.asyncio
-async def test_pause_session_swallows_terminal_frame_delivery_failure() -> None:
-    manager = _RecordingTeamManager(paused=True, broadcast_error=RuntimeError("push failed"))
-    adapter = TeamSessionLifecycleAdapter(
-        coordinator=_RecordingCoordinator(),
-        team_manager=manager,
-    )
-
-    await adapter.pause_session(
-        SessionLifecycleContext(session_id="session-a", generation=2),
-        reason="user_pause",
-        channel_id="web",
-    )
-
-    assert len(manager.broadcast_events) == 1
+    test_logger.info("Pause result=%s; completion delivery remains Runtime-owned", paused)
