@@ -72,6 +72,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_kv_cache_affinity_config,
     parse_int,
 )
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    apply_discovery_metadata,
+)
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
     CodeGraphFlags, parse_source_volume_to_bytes, resolve_code_graph_flags,
@@ -883,13 +886,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """Collect tools materialized by either Code or standard providers."""
         context = self._code_build_context
         if isinstance(context, code_agent_spec.CodeBuildContext):
-            return [
+            cards = [
                 tool.card
                 for tool in context.artifacts.tools
                 if getattr(tool, "card", None) is not None
             ]
-        deep_config = getattr(self._instance, "deep_config", None)
-        return list(getattr(deep_config, "tools", None) or [])
+        else:
+            deep_config = getattr(self._instance, "deep_config", None)
+            cards = list(getattr(deep_config, "tools", None) or [])
+        return [apply_discovery_metadata(card) for card in cards]
 
     def _build_code_spec_snapshot(
         self,
