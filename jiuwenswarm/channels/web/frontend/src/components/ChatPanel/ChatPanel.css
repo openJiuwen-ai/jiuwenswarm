@@ -1552,6 +1552,12 @@
   background: transparent;
 }
 
+.chat-input-container--enterprise .chat-mode-select__trigger:disabled {
+  color: var(--color-text-primary);
+  cursor: default;
+  opacity: 1;
+}
+
 .chat-mode-select__trigger:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgba(var(--color-action-primary-rgb), 0.18);

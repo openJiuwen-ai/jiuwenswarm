@@ -18,6 +18,7 @@ import {
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
+import { isEnterprise } from '../../edition';
 
 function openModelSettings(): void {
   requestSettingsModule('models');
@@ -30,7 +31,8 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
     && (left.type !== 'model_group' || left.route_id === right.route_id);
 }
 
-export default function ChatModelSelector({ disabled = false }: { disabled?: boolean }): JSX.Element | null {
+export default function ChatModelSelector({ disabled: disabledByParent = false }: { disabled?: boolean }): JSX.Element | null {
+  const disabled = disabledByParent || isEnterprise();
   const { t } = useTranslation();
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
@@ -147,7 +149,7 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
           void persistSelection(next);
         }}
         disabled={disabled}
-        onAddModel={openModelSettings}
+        onAddModel={disabled ? undefined : openModelSettings}
       />
       {selectionError ? (
         <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">
