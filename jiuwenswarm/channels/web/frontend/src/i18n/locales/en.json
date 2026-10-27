@@ -3709,7 +3709,7 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
-      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
+      "installOutcomeUnknown": "The connection dropped before the install result was confirmed. The package is kept — retry the install from My Experts later.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",

@@ -3686,7 +3686,7 @@
       "connectionUnavailable": "依赖的连接器尚未连接，请先连接后再使用",
       "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
       "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
-      "uploadImportedInstallFailed": "专家包 {{id}} 已导入，但安装失败，请在我的专家中重试安装",
+      "installOutcomeUnknown": "网络中断，安装结果未确认。专家包已保留，可稍后在我的专家中重试安装。",
       "uploadError": "上传并导入专家失败，请检查文件后重试",
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",

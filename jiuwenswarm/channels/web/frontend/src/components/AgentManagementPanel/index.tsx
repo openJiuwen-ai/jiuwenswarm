@@ -41,6 +41,8 @@ import {
   type SkillOption,
   type SkillListOptions,
   type RequestStatus,
+  type InstallOutcome,
+  isUncertainInstallError,
   agentManagementReducer,
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
@@ -894,7 +896,10 @@ export function AgentManagementPanel({
     t,
   ]);
 
-  const handleInstall = async (id: string, options: { includeTeamCompatibility?: boolean } = {}): Promise<boolean> => {
+  const handleInstall = async (
+    id: string,
+    options: { includeTeamCompatibility?: boolean; suppressInlineError?: boolean; onError?: (message: string) => void } = {},
+  ): Promise<InstallOutcome> => {
     markBusy(id);
     setActionNotice(null);
     clearConnectorError();
@@ -902,14 +907,17 @@ export function AgentManagementPanel({
     try {
       const result = await client.installDefinition(id);
       if (result.kind === 'auth_required') {
-        throw new Error(t('agentManagement.states.authRequired'));
+        // The expert package is valid but needs authentication first. Keep
+        // the imported package: returning 'queued' avoids rollback and lets
+        // the user retry the install after authenticating.
+        return 'queued';
       }
       if (options.includeTeamCompatibility) {
         await loadCatalog({ includeTeamCompatibility: true });
       } else {
         await refreshAfterAction(id);
       }
-      return true;
+      return 'installed';
     } catch (error) {
       if (error instanceof AgentInstallPendingError) {
         queuedForConnect = true;
@@ -920,10 +928,17 @@ export function AgentManagementPanel({
             pendingConnectors: error.pendingConnectors,
           }),
         );
-        return true;
+        return 'queued';
       }
-      showActionError(formatActionError(error, t('agentManagement.states.actionError')));
-      return false;
+      // The upload flow owns the final presentation: it shows the raw
+      // backend error in the notice slot, so hand the message over before
+      // the generic fallback toast here (#5678 PR review).
+      const friendly = formatActionError(error, t('agentManagement.states.actionError'));
+      options.onError?.(error instanceof Error && error.message.trim() ? error.message : friendly);
+      showActionError(friendly, {
+        inline: !options.suppressInlineError,
+      });
+      return isUncertainInstallError(error) ? 'uncertain' : 'failed';
     } finally {
       if (!queuedForConnect) clearBusy(id);
     }
@@ -1203,6 +1218,8 @@ export function AgentManagementPanel({
         ? await groupClient.importGroup(path)
         : await client.importAgentTemplate(path);
       let installFailed = false;
+      let installOutcomeUnknown = false;
+      let installErrorMessage = '';
       if (kind === 'group') {
         try {
           await groupClient.installGroup(result.id);
@@ -1211,13 +1228,29 @@ export function AgentManagementPanel({
           // group visible and report "imported but install failed" instead of
           // bubbling up as a misleading upload failure (#5431 PR review).
           installFailed = true;
-          showActionError(formatActionError(installError, t('agentManagement.states.actionError')), { inline: false });
+          installErrorMessage = formatActionError(installError, t('agentManagement.states.actionError'));
+          showActionError(installErrorMessage, { inline: false });
         }
         await loadGroups('mine');
         setMineKind('group');
         setGroupMineQuery('');
       } else {
-        installFailed = !(await handleInstall(result.id));
+        const outcome = await handleInstall(result.id, {
+          suppressInlineError: true,
+          onError: (message) => { installErrorMessage = message; },
+        });
+        installFailed = outcome === 'failed';
+        installOutcomeUnknown = outcome === 'uncertain';
+        if (installFailed) {
+          // A definite install failure must fail the whole upload: roll back
+          // the just-imported package so no half-imported expert is left
+          // behind. An uncertain outcome (timeout/disconnect) keeps the
+          // import: the backend may still be installing, so deleting here
+          // could remove a working expert.
+          try {
+            await client.deleteDefinition(result.id);
+          } catch { /* best-effort rollback; keep the import for a manual retry */ }
+        }
         await loadCatalog();
         setMineKind('agent');
         setMineQuery('');
@@ -1227,15 +1260,12 @@ export function AgentManagementPanel({
       setGroupUploadDialogOpen(false);
       setView('mine');
       if (installFailed) {
-        showActionNotice(
-          t(
-            kind === 'group'
-              ? 'agentManagement.group.states.uploadImportedInstallFailed'
-              : 'agentManagement.states.uploadImportedInstallFailed',
-            { id: result.id },
-          ),
-          true,
-        );
+        // Show the raw backend error in the same inline notice slot the
+        // success message uses, replacing the old canned "imported but
+        // install failed" text.
+        showActionNotice(installErrorMessage || t('agentManagement.states.actionError'), true);
+      } else if (installOutcomeUnknown) {
+        showActionNotice(t('agentManagement.states.installOutcomeUnknown'), true);
       } else {
         showActionNotice(t(kind === 'group' ? 'agentManagement.group.states.uploadSuccess' : 'agentManagement.states.uploadSuccess', { id: result.id }));
       }

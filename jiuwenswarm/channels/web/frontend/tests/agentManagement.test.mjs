@@ -56,6 +56,7 @@ import {
   createPendingInstallQueue,
   enqueuePendingInstall,
 } from '../node_modules/.cache/agent-management/pendingInstallQueue.js';
+import { isUncertainInstallError } from '../node_modules/.cache/agent-management/installOutcome.js';
 
 test('pending Expert installs keep target identity while connector flows run serially', () => {
   const first = {
@@ -738,7 +739,6 @@ test('expert package IDs stay distinct for non-Latin names created in the same m
   for (const id of ids) assert.match(id, /^agent-/);
 });
 
-
 test('mine search excludes hidden English names from Chinese cards (#4473)', () => {
   const raw = {
     id: 'hidden-s-6', source: 'local', installed: true,
@@ -757,4 +757,33 @@ test('mine search excludes hidden English names from Chinese cards (#4473)', () 
   for (const query of ['s', ' CASEWORK ', 'ＣＡＳＥＷＯＲＫ']) assert.equal(search('en', query), 1);
   const fallback = normalizeAgentTemplateListItem({ ...raw, displayName: { en: 'Casework Organizer' } }, 'zh');
   assert.equal(buildCatalogViewModel([fallback], { scope: 'mine', category: '', query: 'Casework' }).items.length, 1);
+});
+test('in-flight transport deaths are the only uncertain install outcomes', () => {
+  // webClient raises these codes itself when a request dies after being
+  // sent but before the backend could answer (timeout, dropped socket —
+  // including WS_CLOSED, which disconnect() uses to reject in-flight
+  // requests). The backend may still complete the install, so the
+  // just-imported package must be kept. WS_NOT_READY is deliberately
+  // excluded: the request never left the client, so rollback is safe.
+  for (const code of ['REQUEST_TIMEOUT', 'WS_DISCONNECTED', 'WS_CLOSED', 'WS_ERROR', 'REQUEST_ABORTED']) {
+    assert.equal(isUncertainInstallError({ code }), true, code);
+  }
+  assert.equal(isUncertainInstallError({ code: 'WS_NOT_READY' }), false);
+});
+
+test('backend verdicts without a code stay definite so the upload rollback fires', () => {
+  // webClient leaves `code` undefined only on backend rejection responses
+  // (resolvePending / resolveRuntimeAcceptedPending), and rethrowAgentError
+  // maps that shape onto the agent_management_request_failed fallback. The
+  // backend answered, so this is a verdict: the install must count as
+  // failed and handleUpload must roll back the just-imported package
+  // instead of leaving a half-imported expert behind (issue #5677 shape).
+  assert.equal(isUncertainInstallError({ code: 'agent_management_request_failed' }), false);
+  // A rejection that carries a backend code stays definite as well.
+  assert.equal(isUncertainInstallError({ code: 'HUB_ASSET_NOT_FOUND' }), false);
+  // Codeless plain Error throws on this path are definite too.
+  assert.equal(isUncertainInstallError(new Error('auth required')), false);
+  assert.equal(isUncertainInstallError({ code: '' }), false);
+  assert.equal(isUncertainInstallError(null), false);
+  assert.equal(isUncertainInstallError('backend exploded'), false);
 });
