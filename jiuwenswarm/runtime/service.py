@@ -18,6 +18,12 @@ from contextlib import aclosing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from gateway.common.mode_matrix import (
+    deprecate_mode,
+    is_code_profile_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
 from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (
@@ -1068,7 +1074,6 @@ class AgentRuntime:
         from gateway.common.mode_matrix import (
             NEW_AGENT_CODE_NORMAL,
             NEW_AGENT_WORK_NORMAL,
-            deprecate_mode,
         )
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
@@ -1105,7 +1110,6 @@ class AgentRuntime:
             channel_id,
             **prepare_kwargs,
         )
-        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
 
         if (is_team_mode((request.params or {}).get("mode"))
@@ -1363,6 +1367,7 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
+        request = self._normalize_runtime_request(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -3237,7 +3242,6 @@ class AgentRuntime:
     @staticmethod
     def _request_targets_team(request: AgentRequest) -> bool:
         """Resolve Team admission before agent execution begins."""
-        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
         params = request.params if isinstance(request.params, dict) else {}
@@ -3274,11 +3278,9 @@ class AgentRuntime:
 
     @staticmethod
     def _normalize_runtime_request(request: AgentRequest) -> AgentRequest:
-        """Resolve a missing mode once before Runtime classification and dispatch."""
+        """Resolve the effective mode before Runtime classification and dispatch."""
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
-        if isinstance(raw_mode, str) and raw_mode.strip():
-            return request
         session_id = str(request.session_id or "").strip()
         if not session_id:
             return request
@@ -3304,6 +3306,22 @@ class AgentRuntime:
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
             return request
+        if isinstance(raw_mode, str) and raw_mode.strip():
+            from jiuwenswarm.runtime.request import resolve_request_runtime_mode
+
+            if not (is_single_agent_mode(deprecate_mode(resolved_mode)) or is_team_mode(resolved_mode)):
+                return request
+            work_mode = metadata.get("work_mode")
+            if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
+                work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
+            requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
+            if requested_mode.is_team == is_team_mode(resolved_mode):
+                return request
+            logger.warning(
+                "Runtime corrected cross-type mode: session=%s request=%s channel=%s "
+                "requested=%r effective=%r",
+                session_id, request.request_id, request.channel_id, raw_mode, resolved_mode,
+            )
         normalized_params = dict(params)
         normalized_params["mode"] = resolved_mode
         if not normalized_params.get("work_mode") and metadata.get("work_mode"):
@@ -3572,7 +3590,6 @@ class AgentRuntime:
         target = self._participant_registry.target(session_id)
         if target is not None:
             return target
-        from gateway.common.mode_matrix import is_team_mode
 
         mode = str(params.get("mode") or "agent.plan")
         target = SessionLifecycleTarget(
