@@ -8,6 +8,7 @@ import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useSta
 import { createPortal } from 'react-dom';
 import {
   Activity,
+  ArrowRight,
   CheckCircle2,
   ClipboardList,
   Copy,
@@ -346,6 +347,32 @@ function SuggestionCard({
       )}
     </div>
   );
+}
+
+// Generic entrance kept for the welcome page when the pool read settles without a card to show.
+function StaticSuggestionCard({
+  text,
+  onClick,
+  disabled = false,
+}: {
+  text: string;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="chat-suggestion-card" data-testid="chat-panel-welcome-suggestion" data-variant={text}>
+      <button type="button" className="chat-suggestion-card__main" onClick={onClick} disabled={disabled}>
+        <span className="chat-suggestion-card__text">{text}</span>
+        <ArrowRight className="chat-suggestion-card__arrow" strokeWidth={2} aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+// While the pool read is pending ('') or preparing it owns the area: generic entrances there would
+// only be swapped out. A settled read without cards hands the page back to them.
+function showsStaticWelcomeSuggestions(state: string, hasCards: boolean): boolean {
+  return !hasCards && Boolean(state) && state !== 'preparing';
 }
 
 let topicStarterVisitSequence = 0;
@@ -2961,6 +2988,15 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   );
                 })}
+                {showsStaticWelcomeSuggestions(recommendationState, Boolean(visibleTopicSlate?.topics?.length)) &&
+                  [t('chat.welcomeSuggestions.journey'), t('chat.welcomeSuggestions.skills')].map(text => (
+                    <StaticSuggestionCard
+                      key={text}
+                      text={text}
+                      onClick={() => void handleSendMessage(text)}
+                      disabled={isSending}
+                    />
+                  ))}
               </div>
               {isGroupCreateWelcome && (
                 <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">

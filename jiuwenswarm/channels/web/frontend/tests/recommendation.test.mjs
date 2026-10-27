@@ -747,6 +747,32 @@ test('a pool that answers at once is shown without a static entrance first', asy
   }
 });
 
+test('an empty pool falls back to the static welcome entrances', async () => {
+  const sentMessages = [];
+  const panel = await mountWelcome('sess-static-fallback', {
+    onSendMessage: async prompt => {
+      sentMessages.push(prompt);
+      return 'sess-static-fallback';
+    },
+  });
+  try {
+    // The fake pool answers "unavailable": once that read settles, the page falls back to the two
+    // generic entrances instead of leaving the suggestion area empty.
+    await react.act(settle);
+    const journey = i18next.t('chat.welcomeSuggestions.journey');
+    assert.deepEqual(visibleSuggestionTitles(), [journey, i18next.t('chat.welcomeSuggestions.skills')]);
+    const cardButton = dom.window.document.querySelector('.chat-suggestion-card__main');
+    assert.ok(cardButton);
+    await react.act(async () => {
+      cardButton.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }));
+    });
+    await react.act(settle);
+    assert.deepEqual(sentMessages, [journey]);
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test('project new-chat requests and accepts only its selected project pool', async () => {
   const panel = await mountWelcome('sess-project', {
     holdResponses: true,
