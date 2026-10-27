@@ -104,7 +104,7 @@ import {
   type Session,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
-import { resolveAvailableModelSelection } from './stores/sessionStore';
+import { isModelCatalogPending, resolveAvailableModelSelection } from './stores/sessionStore';
 import type { ProjectInfo, WorkMode } from './features/workspace/projectTypes';
 import { isDefaultInputProject } from './components/ChatPanel/projectSelection';
 import {
@@ -277,6 +277,12 @@ function restoreSessionModelSelection(
   const store = useSessionStore.getState();
   const restoredSelection = parseModelSelection(modelSelection);
   if (restoredSelection) {
+    // Catalog often arrives after session.get_metadata on refresh (#5860). Keep the
+    // server selection until models.list is ready; do not clear or write back yet.
+    if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) {
+      store.setSelectedModelSelection(sessionId, restoredSelection);
+      return;
+    }
     const resolved = resolveAvailableModelSelection(
       restoredSelection,
       store.chatAvailableModels,
