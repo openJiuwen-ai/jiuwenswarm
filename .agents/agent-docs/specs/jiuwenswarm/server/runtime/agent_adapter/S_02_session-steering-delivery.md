@@ -10,12 +10,14 @@ modules:
   - jiuwenswarm/channels/web/frontend
   - jiuwenswarm/channels/process_cli
   - jiuwenswarm/channels/tui/frontend
+  - gateway/channel_manager/web
 files:
   - jiuwenswarm/server/runtime/agent_adapter/session_input.py
   - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
   - jiuwenswarm/server/runtime/agent_adapter/steer_delivery.py
   - jiuwenswarm/agents/harness/common/prompt/priority_registry.py
   - jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts
+  - gateway/channel_manager/web/web_connect.py
 ---
 
 # 当前执行补充输入的回答交付契约
@@ -47,6 +49,8 @@ files:
 原请求的 adapter 在同一 Runtime 执行内，用开始时选定的 `resolved_model` 进行一次 compact、无图片、无工具的最终整理，不重新计算或执行任务。输出必须为严格 JSON：非空 reply，及覆盖原请求 ID 和全部补充 ID 各一次的 coverage。included 必须引用最终 reply 中实际存在的字面证据；superseded 必须引用该项之后到达的人类补充中的取消或替代证据，最后一条补充不能自行声称被替代。拒绝工具调用、重复 JSON 键、遗漏 ID 和无效证据。
 
 每次整理最多 30 秒，仅格式校验失败允许一次重试；provider 或超时错误不伪装为成功。失败报告 `SESSION_INPUT_DELIVERY_FAILED`，不回落到漏答草稿。成功后先通过公开 context API 写入并保存最终 assistant，再发送唯一可见 `chat.final`（`delivery_reconciled=true`）；整理用量计入本轮统计。Runtime 在整个 adapter 迭代完成前保持执行中。
+
+Web Gateway 必须原样透传 phase 的 `delivery_reconciliation_pending` 与 final 的 `delivery_reconciled`，包括显式 false；旧 payload 不携带这些字段时不伪造标记。
 
 ## 客户端展示与持久化
 

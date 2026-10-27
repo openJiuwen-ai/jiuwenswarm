@@ -10,6 +10,7 @@ modules:
   - jiuwenswarm/channels/web/frontend
   - jiuwenswarm/channels/process_cli
   - jiuwenswarm/channels/tui/frontend
+  - gateway/channel_manager/web
 files:
   - jiuwenswarm/server/runtime/agent_adapter/session_input.py
   - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
@@ -19,6 +20,7 @@ files:
   - tests/unit_tests/agentserver/test_session_input_delivery.py
   - tests/integration/test_session_steering_sdk.py
   - tests/integration/test_steer_image_paths_sdk.py
+  - gateway/channel_manager/web/web_connect.py
 designs: []
 design_note: 在 Issue 4516 当前 PR 的人工验收中确认，对现有 steer 回答交付语义进行局部修复，无独立设计文档。
 ---
@@ -53,6 +55,7 @@ Issue #4516 的 PR !8990 在候选 `dcf0e099dc58773387c4578aefcb36850521e431` �
 - 交付状态 unit 32 项、严格整理 helper unit 21 项；图片 SDK 8 项包括业务草稿故意不含 9801 时的图片/文本/取消成功，以及无效 coverage 失败后没有可见草稿。验证一次性完整计划、Core 写回及唯一可见 final。原有四项 ask-user resume 与 Agent mailbox 来源断言保留。
 - 前端 session-input 68 项、i18n 4 项及新增错误码定向用例通过；未将既有 chatError 全模块未通过误报为通过。实时 React 和历史恢复一致，隐藏草稿不提前显示或完成，整理失败有中英文提示。
 - Process CLI 196 项回归及实际 TUI 源码行为测试通过。修复 render、machine result、duplex 和非交互完成判据；TUI live/history 不泄露隐藏草稿或提前 Idle，原始 JSON/JSONL 和权限/工具/错误事件保留。
+- 最终整理版完整 Work 首次已正确给出联合答案，但 Gateway 的 final 字段白名单漏掉 `delivery_reconciled`，wire 与持久历史标记不一致。补一项已知字段透传后，Gateway/E2A 73 项通过，覆盖实际 stream callback→WebChannel→WebSocket writer、true/false、隐藏草稿及旧 payload；phase 原有 full-payload 分支不变。
 - 持续约束候选的实际 Qwen3.8-Flash 三例通过：在真实首答生成 `9801`、尚未向 SDK 释放时投递 steer，再原样释放首答 chunks。自然补图使用完整服务失败时相同的原句，不额外提示合并，最终答包含 `9801` 和图片独有文字；补文本最终答包含 `9801` 和 `15`；明确取消原题后最终仅有 `15`。记录实际模型输入、每个工具前后调用的持续 system section、隐藏输出、请求身份、真实读图及图片字节 SHA，62 项捕获证据断言通过；终态 section、Runner 和队列完成清理。本轮视觉 probe 获得支持结论，没有改写用户配置。
 - 较早 UserMessage 候选的 probe 超时、过严 final 形态断言及完整服务失败记录均保留，未混入当前候选通过证据。外层 PowerShell 对真实模型日志返回 1、Python 原生退出码未捕获的记录单独保留；三例实际捕获及清理证据完整且经独立断言复核，不将外壳状态改写为 0。
 - 对 `15fa7701` 完整服务的真实失败记录做一次实际 Qwen compact 回放：8.281 秒、单次无工具，严格 coverage 校验通过，最终包含 `9801` 和 `PROOF-122166AA`；569 输入/421 输出 tokens 已记录。没有重跑识图或业务任务。

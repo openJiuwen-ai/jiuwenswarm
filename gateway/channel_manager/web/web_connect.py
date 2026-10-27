@@ -1021,6 +1021,7 @@ class WebChannel(BaseWsChannel):
                 # 不能把它的流式输出复用到上一轮用户消息上。
                 "request_id", "turn_request_id", "execution_id", "final_mode", "segment_id",
                 "output_phase_id", "output_suppressed", "output_order", "timestamp",
+                "delivery_reconciled",
                 "message_origin", "session_message_id", "cross_session",
                 "team_name", "team_id",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
