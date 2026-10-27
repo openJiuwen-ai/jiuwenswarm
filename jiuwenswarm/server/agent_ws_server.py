@@ -1272,6 +1272,8 @@ class AgentWebSocketServer:
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
         self._diagnosis_host: Any = None
+        # Trajectory read host (lazy, see _get_trajectory_host)
+        self._trajectory_host: Any = None
         # Topic recommendation host (lazy, see _recommendation_host_instance)
         self._recommendation_host: Any = None
         # Optional production Provider injection point.  The concrete class is

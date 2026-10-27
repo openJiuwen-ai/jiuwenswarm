@@ -242,13 +242,13 @@ class TrajectoryHost:
             session_id,
             after_revision=after_revision,
         )
-        return _json_body({
+        return self._json_body({
             "schema_version": 1,
             "session_id": session_id,
             "items": items,
             "watermark": watermark,
             "store_epoch": store_epoch,
-        }, self)
+        })
 
     async def _stream_frames(self, reader: Any, session_id: str, params: dict[str, Any]) -> dict[str, Any]:
         since_frame_seq = _required_int(params.get("since_frame_seq", 0), "since_frame_seq")
@@ -260,7 +260,7 @@ class TrajectoryHost:
         )
         if result is None:
             raise TrajectoryQueryError("session not found", "NOT_FOUND", 404)
-        return _json_body({"schema_version": 1, "session_id": session_id, **result}, self)
+        return self._json_body({"schema_version": 1, "session_id": session_id, **result})
 
     async def _sequences(self, reader: Any, session_id: str, params: dict[str, Any]) -> dict[str, Any]:
         raw_hashes = params.get("hashes") or []
@@ -287,7 +287,7 @@ class TrajectoryHost:
         )
         if resolved is None:
             raise TrajectoryQueryError("session not found", "NOT_FOUND", 404)
-        return _json_body({"schema_version": 1, "session_id": session_id, **resolved}, self)
+        return self._json_body({"schema_version": 1, "session_id": session_id, **resolved})
 
     async def _checkpoints(self, reader: Any, session_id: str) -> dict[str, Any]:
         result = await reader.get_retention_checkpoints(session_id)
@@ -298,17 +298,17 @@ class TrajectoryHost:
                 "sequences": {},
                 "blobs": {},
             }
-        return _json_body({"schema_version": 1, "session_id": session_id, **result}, self)
+        return self._json_body({"schema_version": 1, "session_id": session_id, **result})
 
     async def _usage(self, reader: Any, session_id: str) -> dict[str, Any]:
         items, store_epoch = await reader.get_session_request_usage(session_id)
-        return _json_body({
+        return self._json_body({
             "schema_version": 1,
             "session_id": session_id,
             "store_epoch": store_epoch,
             "scope": "session",
             "items": items,
-        }, self)
+        })
 
     async def _subject(
         self,
@@ -345,13 +345,13 @@ class TrajectoryHost:
             )
             if found is not None:
                 resolved = found
-        return _json_body({
+        return self._json_body({
             "schema_version": 1,
             "session_id": session_id,
             "subject_id": subject_id,
             **result,
             **resolved,
-        }, self)
+        })
 
     async def _raw(self, reader: Any, session_id: str, params: dict[str, Any]) -> dict[str, Any]:
         trace_id = str(params.get("trace_id") or "").strip().lower()
@@ -376,6 +376,12 @@ class TrajectoryHost:
             spool.close()
             raise
         return self._hold(spool, "application/zip")
+
+    def _json_body(self, result: dict[str, Any]) -> dict[str, Any]:
+        encoded = json.dumps(result).encode("utf-8")
+        if len(encoded) > _CHUNK_BYTES:
+            return self._hold(encoded, "application/json")
+        return {"result": result}
 
     def _hold(self, data: bytes | IO[bytes], content_type: str) -> dict[str, Any]:
         while len(self._blobs) >= _MAX_HELD_BLOBS:
@@ -411,13 +417,6 @@ class TrajectoryHost:
         if blob is not None:
             blob.close()
         return {}
-
-
-def _json_body(result: dict[str, Any], host: TrajectoryHost) -> dict[str, Any]:
-    encoded = json.dumps(result).encode("utf-8")
-    if len(encoded) > _CHUNK_BYTES:
-        return host._hold(encoded, "application/json")
-    return {"result": result}
 
 
 def _required_int(value: Any, name: str) -> int:
