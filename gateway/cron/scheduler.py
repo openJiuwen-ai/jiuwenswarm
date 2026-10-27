@@ -439,7 +439,7 @@ class CronSchedulerService:
         """
         if state is None or not state.manually_triggered:
             return False
-        from jiuwenswarm.edition import is_enterprise
+        from gateway.enterprise import is_enterprise
 
         return is_enterprise()
 

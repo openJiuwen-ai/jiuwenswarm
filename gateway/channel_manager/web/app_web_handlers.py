@@ -2224,10 +2224,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             apply_routing_metadata,
             normalize_routing_identity,
         )
-        from jiuwenswarm.server.runtime.enterprise_config.loader import (
+        from gateway.enterprise.config.effective.loader import (
             load_effective_enterprise_config,
         )
-        from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
+        from gateway.enterprise.config.effective.schemas import TemplateRefSlot
 
         identity = normalize_routing_identity(params if isinstance(params, dict) else {})
         request = SimpleNamespace(metadata=apply_routing_metadata({}, identity))
@@ -2269,7 +2269,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         }
 
     async def _models_list(ws, req_id, params, session_id):
-        from jiuwenswarm.edition import is_enterprise
+        from gateway.enterprise import is_enterprise
 
         if is_enterprise():
             routing = getattr(ws, "_web_routing", None)
@@ -5406,7 +5406,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         # 共享目录的外部 CLI 依赖安装门控保留在 gateway。
 
         async def _handler(ws, req_id, params, session_id, user_id=None):
-            from jiuwenswarm.edition import is_enterprise
+            from gateway.enterprise import is_enterprise
             from gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
             resolved_client = _resolve(agent_client)

@@ -19,12 +19,12 @@ from jiuwenswarm.server.context import (
     bind_request_tenant,
 )
 from jiuwenswarm.server.dispatch import try_dispatch
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 class _FakePool:
     def extract_tenant_key(self, request: AgentRequest) -> str:
-        from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+        from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
 
         return TenantAgentPool.extract_tenant_key(request)
 
@@ -118,7 +118,7 @@ async def test_try_dispatch_uses_tenant_manager(monkeypatch):
 async def test_personal_edition_collapses_to_single_manager(monkeypatch):
     """个人版无论请求身份如何，池键与 extract 均落到默认槽."""
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
-    from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+    from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
 
     default_key = build_tenant_key()
     req_a = AgentRequest(

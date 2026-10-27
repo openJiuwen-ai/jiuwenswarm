@@ -1934,7 +1934,7 @@ async def _run(
     # 企业版在 MessageHandler / config_poll 之前装配存储屏蔽层并注入各配置模块。
     # 个人版不进入该路径，配置读写保持原来的文件直读。
     storage_ctx = None
-    from jiuwenswarm.edition import is_enterprise
+    from gateway.enterprise import is_enterprise
 
     if is_enterprise():
         from jiuwenswarm.extensions.redis import init_gateway_redis_from_config

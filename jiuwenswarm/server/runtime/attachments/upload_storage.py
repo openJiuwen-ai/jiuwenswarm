@@ -32,7 +32,7 @@ def read_session_upload_chunk(session_id: str, raw_path: str, offset: int, limit
     """Read a bounded chunk from this tenant's direct session-upload children."""
     from jiuwenswarm.common.obs_files import MAX_FILE_BYTES
     from jiuwenswarm.common.utils import get_agent_sessions_dir
-    from jiuwenswarm.server.runtime.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     if not session_id or safe_session_dirname(session_id) != session_id:
         raise ValueError("invalid session_id")
@@ -98,10 +98,10 @@ def atomic_write_unique(target: Path, data: bytes, *, directory_fd: int | None =
     actually written.  After 999 name collisions (a pathological state)
     it raises ``FileExistsError`` rather than silently overwriting.
     """
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     if is_enterprise():
-        from jiuwenswarm.common.workspace.quota import (
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
             check_workspace_write, is_workspace_quota_enabled, resolve_effective_quota,
         )
 

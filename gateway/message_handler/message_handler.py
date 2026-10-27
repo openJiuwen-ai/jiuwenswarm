@@ -3664,7 +3664,7 @@ class MessageHandler(ABC):
                     merge_routing_into_params,
                     web_routing_identity,
                 )
-                from jiuwenswarm.edition import is_enterprise as _is_enterprise_edition
+                from gateway.enterprise import is_enterprise
 
                 identity_meta = (
                     request_metadata
@@ -3682,7 +3682,7 @@ class MessageHandler(ABC):
                 # for the authenticated owner in AgentOS.
                 if owner_user_id:
                     params["user_id"] = owner_user_id
-                if _is_enterprise_edition():
+                if is_enterprise():
                     identity = web_routing_identity(identity_meta)
                     for key in ("group_id", "bot_id"):
                         routed = str(identity.get(key) or "").strip()

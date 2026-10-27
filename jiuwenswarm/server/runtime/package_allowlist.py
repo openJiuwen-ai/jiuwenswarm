@@ -241,7 +241,7 @@ def _scope_allows(match_expr: Any, identity: dict[str, str]) -> bool:
 
 def allows(kind: str, package_id: str) -> bool:
     """个人版放行。企业版放行用户自己的包，以及范围命中的受控包。"""
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     if not is_enterprise():
         return True

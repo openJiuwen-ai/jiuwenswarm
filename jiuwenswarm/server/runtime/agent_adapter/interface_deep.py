@@ -7730,7 +7730,7 @@ class JiuWenSwarmDeepAdapter:
         ``create_instance`` 时合并配置。预热出来的会话没有 request，缓存里仍是
         本地空配置，这里在真正校验前按 routing 补一次。
         """
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         if not is_enterprise() or not self._is_session_scoped_adapter:
             return
@@ -11684,8 +11684,8 @@ class JiuWenSwarmDeepAdapter:
         self, request: AgentRequest | None, *, base: dict | None = None,
     ):
         """Load + apply enterprise config for this request (read then merge)."""
-        from jiuwenswarm.common.config_provider import resolve_agent_config
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise.config.config_provider import resolve_agent_config
+        from jiuwenswarm.enterprise import is_enterprise
 
         cached_policy = getattr(self, "_enterprise_config", None)
         cached_resource_id = getattr(self, "_enterprise_config_resource_id", None)
@@ -11757,14 +11757,14 @@ class JiuWenSwarmDeepAdapter:
 
     async def _sync_enterprise_skill_prebuilt(self) -> None:
         """Install template prebuilt skills into the tenant SkillManager workspace."""
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
         from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
         from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
             SkillPrebuiltSynchronizer,
             is_skill_prebuilt_tenant,
             parse_agent_skill_prebuilt,
         )
-        from jiuwenswarm.server.runtime.tenant_context import TenantContext
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
         if not is_enterprise():
             return
@@ -12208,7 +12208,7 @@ class JiuWenSwarmDeepAdapter:
         # 企业配置源：失效企业配置进程缓存（模板实体 + 实例/模板行 TTL 缓存）
         # 并重载 memory 的 gateway DB 配置——否则 reload 后企业加载仍命中
         # 600s TTL 旧行（与 dev-stable 的 reload 快照流程对齐）。
-        from jiuwenswarm.common.config_provider import refresh_config_source
+        from jiuwenswarm.enterprise.config.config_provider import refresh_config_source
 
         await refresh_config_source()
         # 清 MemoryRail 实际使用的 openjiuwen lite INDEX_CACHE（而非仓内并行实现的那份），

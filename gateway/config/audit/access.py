@@ -48,7 +48,7 @@ def apply_audit_log_config_payload(
     process_service = str(service or SERVICE_GATEWAY).strip() or SERVICE_GATEWAY
     if payload is None:
         mgr.apply_config({"service": process_service})
-        from jiuwenswarm.common.audit_gate import set_audit_config_enabled
+        from gateway.enterprise.capabilities.audit.audit_gate import set_audit_config_enabled
 
         set_audit_config_enabled(False)
         return {"ok": True, "source": "disabled", "service": process_service}
@@ -60,7 +60,7 @@ def apply_audit_log_config_payload(
         except SchemaValidationError as exc:
             raise ValueError(str(exc)) from exc
     mgr.apply_config(data)
-    from jiuwenswarm.common.audit_gate import set_audit_config_enabled
+    from gateway.enterprise.capabilities.audit.audit_gate import set_audit_config_enabled
 
     set_audit_config_enabled(True)
     return {"ok": True, "source": "db", "service": process_service}
@@ -87,7 +87,7 @@ async def reload_audit_log_config_from_db(
     """从 Gateway 本地库冷加载 audit_log_config（企业版）；失败不阻断启动。"""
     process_service = str(service or SERVICE_GATEWAY).strip() or SERVICE_GATEWAY
     try:
-        from jiuwenswarm.edition import is_enterprise
+        from gateway.enterprise import is_enterprise
 
         if not is_enterprise():
             return apply_audit_log_config_payload(None, service=process_service)
@@ -103,7 +103,7 @@ async def reload_audit_log_config_from_db(
         if repo is not None:
             row = await repo.get()
         else:
-            from jiuwenswarm.server.runtime.enterprise_config import db_queries
+            from gateway.enterprise.config.effective import db_queries
 
             rows = await db_queries.list_records(AUDIT_LOG_CONFIG_TABLE)
             row = rows[0] if rows else None

@@ -18,7 +18,7 @@ from fastapi import Body, FastAPI, File, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 from gateway.channel_manager.web.http_routes.mapped import (
     WebHttpMappedRoute,
     catalog_entries,
@@ -567,7 +567,7 @@ async def _history_json(
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] history json failed: %s", exc)
         try:
-            from jiuwenswarm.common.audit_emit import emit_audit_evt
+            from gateway.enterprise.capabilities.audit.audit_emit import emit_audit_evt
 
             emit_audit_evt(
                 SUBMDL="gateway",
@@ -665,7 +665,7 @@ async def _unary(
     except Exception as exc:  # noqa: BLE001
         logger.exception("[WebHTTP] unary %s failed: %s", method, exc)
         try:
-            from jiuwenswarm.common.audit_emit import emit_audit_evt
+            from gateway.enterprise.capabilities.audit.audit_emit import emit_audit_evt
 
             emit_audit_evt(
                 SUBMDL="gateway",

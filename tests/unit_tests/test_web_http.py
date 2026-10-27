@@ -376,7 +376,7 @@ def test_http_dispatch_session_create_emits_resolve_identity(
         audit_calls.append(kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.audit_emit.emit_audit_ua",
+        "gateway.enterprise.capabilities.audit.audit_emit.emit_audit_ua",
         _capture_ua,
     )
     monkeypatch.setattr(disp, "is_enterprise", lambda: True)

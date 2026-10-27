@@ -70,11 +70,11 @@ class _StreamScope:
 
 async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
     """企业版先读库再组头。个人版直接组请求。"""
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     if not is_enterprise():
         return assemble_rest_request(envelope, base_url=api_root)
-    from gateway.manager_config.core.application_config.package_allowlist import (
+    from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
         read_package_allowlist_packages,
     )
     from jiuwenswarm.server.runtime.package_allowlist import bind_outbound_allowlist

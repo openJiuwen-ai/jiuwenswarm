@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
@@ -160,7 +160,7 @@ async def reload_memory_config_from_gateway_db() -> dict[str, Any]:
 
     global _memory_config_db_cache, _memory_config_cache_source
     try:
-        from jiuwenswarm.server.runtime.enterprise_config import db_queries
+        from jiuwenswarm.enterprise.config.effective import db_queries
 
         rows = await db_queries.list_records(MEMORY_CONFIG_TABLE)
         row = rows[0] if rows else None
@@ -574,7 +574,7 @@ async def reload_task_memory_config_from_gateway_db() -> None:
     if not is_enterprise():
         return
     try:
-        from jiuwenswarm.server.runtime.enterprise_config import db_queries
+        from jiuwenswarm.enterprise.config.effective import db_queries
 
         rows = await db_queries.list_records("task_memory_config")
         row = rows[0] if rows else None

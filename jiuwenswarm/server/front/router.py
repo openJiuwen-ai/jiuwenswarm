@@ -151,7 +151,7 @@ class MethodRouter:
         method = request.req_method.value if request.req_method is not None else ""
         # Control-plane reads (session.list / history.get / …) must use the same
         # tenant workspace as chat.send. Front never calls dispatch_parsed_request.
-        from jiuwenswarm.server.runtime.tenant_identity import bind_control_tenant
+        from jiuwenswarm.enterprise.tenant.tenant_identity import bind_control_tenant
 
         try:
             with bind_control_tenant(request):
@@ -199,8 +199,8 @@ class MethodRouter:
         request: AgentRequest,
         send_lock: Any,
     ) -> None:
-        from jiuwenswarm.server.runtime.tenant_context import TenantContext
-        from jiuwenswarm.server.runtime.tenant_identity import extract_tenant_key
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+        from jiuwenswarm.enterprise.tenant.tenant_identity import extract_tenant_key
 
         _load_history_service()
         params = request.params if isinstance(request.params, dict) else {}

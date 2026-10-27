@@ -1400,7 +1400,7 @@ class AgentManager:
                 }
             # 企业版：创建时带上本次请求，create_instance 才能按 bot 读模型模板。
             if request is not None:
-                from jiuwenswarm.edition import is_enterprise
+                from jiuwenswarm.enterprise import is_enterprise
 
                 if is_enterprise():
                     config = {**config, "request": request}

@@ -10,7 +10,7 @@ import logging
 import uuid
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 
 logger = logging.getLogger(__name__)
 

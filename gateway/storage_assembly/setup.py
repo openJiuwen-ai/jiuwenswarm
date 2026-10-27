@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 from gateway.storage.backends.memory_ephemeral import MemoryEphemeralBackend
 from gateway.storage.context import StorageContext
 from gateway.storage.errors import StorageUnavailableError

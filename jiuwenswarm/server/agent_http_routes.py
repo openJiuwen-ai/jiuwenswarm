@@ -452,7 +452,7 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         else:
             if ext:
                 metadata[METADATA_KEY] = ext
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     if is_enterprise():
         from jiuwenswarm.server.runtime.package_allowlist import (

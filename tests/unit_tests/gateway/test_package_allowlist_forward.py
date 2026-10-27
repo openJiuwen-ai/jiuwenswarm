@@ -16,7 +16,7 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import 
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     identity_headers,
 )
-from gateway.manager_config.core.application_config.package_allowlist import (
+from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
     PackageAllowlistService,
     read_package_allowlist_packages,
 )
@@ -32,11 +32,11 @@ from jiuwenswarm.server.runtime.package_allowlist import (
 _KEEP = [{"kind": "agent_template", "id": "keep"}]
 _EVIL = [{"kind": "agent_template", "id": "evil"}]
 _REPO = (
-    "gateway.manager_config.core.application_config."
+    "gateway.enterprise.config.manager_config.core.application_config."
     "package_allowlist.require_enterprise_repository"
 )
 _READ = (
-    "gateway.manager_config.core.application_config."
+    "gateway.enterprise.config.manager_config.core.application_config."
     "package_allowlist.read_package_allowlist_packages"
 )
 

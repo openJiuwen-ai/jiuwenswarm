@@ -155,7 +155,7 @@ class _CronToolsCronBackend(CronToolBackend):
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
-            from jiuwenswarm.edition import is_enterprise
+            from jiuwenswarm.enterprise import is_enterprise
 
             # 企业版不在本机核对：名单在 Gateway 企业库。这里只把会话模型带上。
             if is_enterprise():

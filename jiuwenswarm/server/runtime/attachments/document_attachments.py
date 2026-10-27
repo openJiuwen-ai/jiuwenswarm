@@ -82,7 +82,7 @@ def persist_and_parse_documents(
 
     stored: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     max_count = 20 if is_enterprise() else _MAX_DOCUMENT_COUNT
 

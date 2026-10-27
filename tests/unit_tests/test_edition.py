@@ -1,11 +1,11 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-"""Minimal unit tests for jiuwenswarm.edition (gateway feature order 1)."""
+"""Minimal unit tests for jiuwenswarm.enterprise.edition (gateway feature order 1)."""
 
 from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.enterprise.edition import is_enterprise
 
 
 @pytest.mark.parametrize(

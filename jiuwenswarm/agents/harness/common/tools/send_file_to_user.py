@@ -110,8 +110,8 @@ _SENT_FILE_PATHS_BY_SESSION: dict[str | tuple[str, str], set[str]] = {}
 
 
 def _sent_files_key(session_id: str) -> str | tuple[str, str]:
-    from jiuwenswarm.edition import is_enterprise
-    from jiuwenswarm.server.runtime.tenant_context import TenantContext
+    from jiuwenswarm.enterprise import is_enterprise
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     sid = (session_id or "").strip() or "default"
     tenant = TenantContext.current_tenant_key() if is_enterprise() else None
@@ -421,7 +421,7 @@ class SendFileToolkit:
     def _snapshot_runtime_envelope(self) -> _SendFileRuntimeEnvelope:
         """Freeze every mutable host field before the first await."""
 
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         enterprise = is_enterprise()
         asset_owner = None if enterprise else self._asset_owner
@@ -568,7 +568,7 @@ class SendFileToolkit:
                 append_history_record,
             )
 
-            from jiuwenswarm.edition import is_enterprise
+            from jiuwenswarm.enterprise import is_enterprise
 
             if envelope.require_execution_authorization and not is_enterprise():
                 if envelope.asset_owner is None:
@@ -687,7 +687,7 @@ class SendFileToolkit:
         assets_by_path: dict[str, VerifiedDownloadAsset],
     ) -> list[dict[str, Any]]:
         files_payload: list[dict[str, Any]] = []
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         if is_enterprise():
             from jiuwenswarm.agents.harness.common.tools.obs_file_delivery import (

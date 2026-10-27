@@ -38,7 +38,7 @@ def resolve_agent_cron_model(raw: Any) -> str | None:
     个人版：配置与登录模型走 :func:`validate_cron_model`；未命中再查本进程
     的 Zen 免费模型缓存。
     """
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     if is_enterprise():
         if raw is None:

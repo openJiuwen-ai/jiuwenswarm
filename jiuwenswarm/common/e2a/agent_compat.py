@@ -15,7 +15,7 @@ from jiuwenswarm.common.request_identity import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.enterprise import is_enterprise
 
 logger = logging.getLogger(__name__)
 

@@ -13,7 +13,7 @@ from jiuwenswarm.common.request_identity import (
     web_routing_identity,
 )
 from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 
 logger = logging.getLogger(__name__)
 

@@ -20,7 +20,7 @@ ENTERPRISE_HIDDEN_HUB_ASSET_IDS = frozenset(
 
 def hidden_from_enterprise(package_id: str) -> bool:
     """Return whether this Hub asset id is withheld from the enterprise edition."""
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     if not is_enterprise():
         return False

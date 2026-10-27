@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.server.runtime.skill.skill_manager import (
     SkillManager,
     SkillNameConflictError,
