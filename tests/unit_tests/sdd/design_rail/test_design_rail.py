@@ -8,6 +8,7 @@ review approve/reject, against the real ``RailStateMachineBase`` + real
 """
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -111,9 +112,9 @@ def test_sdd_advance_rejects_invalid_next(tmp_path: Path) -> None:
     agent = _make_agent(builder)
     rail = _make_rail(tmp_path)
     rail.init(agent)
-    rail._stage = "analysis"  # analysis.next = [analysis_review] only
+    rail._stage = "analysis"  # analysis.next = [analysis_review, design]
 
-    result = rail._handle_advance({"stage": "design"})
+    result = rail._handle_advance({"stage": "done"})
 
     assert result["ok"] is False
     assert "not a valid next" in result["error"]
@@ -645,3 +646,378 @@ def test_analysis_skill_a3_uses_correct_document_name(tmp_path: Path) -> None:
     assert "需求分析文档的生成" in body
     assert "设计文档的生成" not in body  # old misleading wording
     assert "sdd_advance" in body  # instructs to call advance tool
+
+
+# ── Regression: skip semantics + reachable "skip the review" path (#5495) ──
+
+
+def test_sdd_advance_allows_skipping_review_stage(tmp_path: Path) -> None:
+    """#5495: the user declining the review must be able to reach the next
+    production stage directly.
+
+    The review stage has no "skip review" entry point before its own user
+    gate (R1/R2 run first), so "skip the review" has to be expressible as a
+    forward edge: analysis -> design (and design -> done).
+    """
+    design_dir = tmp_path / ".aet" / "features" / "feat" / "design"
+    design_dir.mkdir(parents=True)
+    (design_dir / "requirements-analysis.md").write_text("# RAS\n", encoding="utf-8")
+
+    builder = _make_builder()
+    agent = _make_agent(builder)
+    rail = _make_rail(tmp_path)
+    rail.init(agent)
+    rail._stage = "analysis"
+
+    result = rail._handle_advance({"stage": "design"})
+
+    assert result["ok"] is True
+    assert result["from"] == "analysis"
+    assert result["to"] == "design"
+    assert rail._stage == "design"
+
+
+def test_sdd_advance_allows_skipping_review_stage_from_design(
+    tmp_path: Path,
+) -> None:
+    """#5495: same for design -> done (the user declines the design review)."""
+    design_dir = tmp_path / ".aet" / "features" / "feat" / "design"
+    design_dir.mkdir(parents=True)
+    (design_dir / "requirements-design.md").write_text("# RDS\n", encoding="utf-8")
+
+    builder = _make_builder()
+    agent = _make_agent(builder)
+    rail = _make_rail(tmp_path)
+    rail.init(agent)
+    rail._stage = "design"
+
+    result = rail._handle_advance({"stage": "done"})
+
+    assert result["ok"] is True
+    assert result["to"] == "done"
+    assert rail._stage == "done"
+
+
+def test_sdd_advance_skip_review_still_enforces_artifact_gate(
+    tmp_path: Path,
+) -> None:
+    """#5495: skipping the review must not bypass the artifact gate — the
+    produced deliverable is still required before advancing."""
+    builder = _make_builder()
+    agent = _make_agent(builder)
+    rail = _make_rail(tmp_path)
+    rail.init(agent)
+    rail._stage = "analysis"  # no requirements-analysis.md on disk
+
+    result = rail._handle_advance({"stage": "design"})
+
+    assert result["ok"] is False
+    assert "requirements-analysis.md" in result["error"]
+    assert rail._stage == "analysis"
+
+
+def test_production_frame_lists_review_and_skip_targets(tmp_path: Path) -> None:
+    """#5495: the analysis frame names both forward targets so the agent can
+    choose "skip the review" instead of guessing (or entering the review
+    stage in order to skip it)."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis")
+    assert payload is not None
+
+    assert "stage=analysis_review" in payload
+    assert "stage=design" in payload
+    assert "skip the review stage" in payload
+
+
+def test_production_frame_states_skip_does_not_skip_the_flow(
+    tmp_path: Path,
+) -> None:
+    """#5495: a skipped clarification question must not be read as "skip the
+    SDD flow" — the frame states the artifact must still be produced."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis")
+    assert payload is not None
+
+    assert "never means skipping the SDD flow" in payload
+    assert "you must still produce the artifact" in payload
+
+
+def test_review_frame_provides_absolute_path_and_existence(
+    tmp_path: Path,
+) -> None:
+    """#5495: the review frame carries the resolved absolute path and whether
+    it exists, so the agent does not probe the filesystem with a
+    non-portable shell test (`test -f` fails on Windows PowerShell)."""
+    design_dir = tmp_path / ".aet" / "features" / "feat" / "design"
+    design_dir.mkdir(parents=True)
+    (design_dir / "requirements-analysis.md").write_text("# RAS\n", encoding="utf-8")
+
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis_review")
+    assert payload is not None
+
+    assert "Resolved absolute path:" in payload
+    assert str(design_dir / "requirements-analysis.md") in payload
+    assert "Exists: yes" in payload
+    assert "test -f" in payload  # the warning names the trap explicitly
+
+
+def test_review_frame_reports_missing_deliverable(tmp_path: Path) -> None:
+    """#5495: when the deliverable is missing the frame says so."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis_review")
+    assert payload is not None
+
+    assert "Exists: no" in payload
+
+
+def test_review_skill_r3_uses_structured_question(tmp_path: Path) -> None:
+    """#5495: the R3 user gate must be a choice, not a free-text box — an empty
+    free-text confirmation is dropped by the transport and the gate then
+    re-asks the same question forever."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis_review")
+    assert payload is not None
+
+    body_start = payload.find("--- Methodology Body Start ---")
+    body_end = payload.find("--- Methodology Body End ---")
+    body = payload[body_start:body_end]
+
+    assert '"options"' in body
+    assert "无需修改，进入下一阶段" in body
+    assert "需要修改（请补充具体意见）" in body
+
+
+def test_review_skill_defines_empty_skip_cancel_semantics(tmp_path: Path) -> None:
+    """#5495: an empty confirmation, a skip and a cancel all mean "no
+    modifications" and must go straight to R4 — never re-ask."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis_review")
+    assert payload is not None
+
+    body_start = payload.find("--- Methodology Body Start ---")
+    body_end = payload.find("--- Methodology Body End ---")
+    body = payload[body_start:body_end]
+
+    assert "用户已跳过此题，未选择任何选项。" in body
+    assert "用户已取消本次问答，未作答。" in body
+    assert "NEVER call `ask_user` again" in body
+
+
+def test_analysis_skill_a3_defines_reachable_skip_path(tmp_path: Path) -> None:
+    """#5495: A3 must offer a reachable "skip the review" path (stage=design)
+    instead of the unreachable "enter the review stage then skip"."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis")
+    assert payload is not None
+
+    body_start = payload.find("--- Methodology Body Start ---")
+    body_end = payload.find("--- Methodology Body End ---")
+    body = payload[body_start:body_end]
+
+    assert "stage=design" in body
+    assert "跳过审查" in body
+    assert "跳过复审" not in body  # the unreachable instruction is gone
+
+
+def test_analysis_skill_a1_defines_skip_handling(tmp_path: Path) -> None:
+    """#5495: A1 must define what a skipped clarification question means."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis")
+    assert payload is not None
+
+    body_start = payload.find("--- Methodology Body Start ---")
+    body_end = payload.find("--- Methodology Body End ---")
+    body = payload[body_start:body_end]
+
+    assert "Skip Handling" in body
+    assert "public assumption" in body
+    assert "NEVER re-ask" in body
+
+
+def test_elicitation_sop_defines_skip_handling(tmp_path: Path) -> None:
+    """#5495: the elicitation SOP must treat a skipped question as answered
+    "no preference" instead of blocking document generation."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis")
+    assert payload is not None
+
+    sop_path = Path(
+        rail._rail_pkg_dir
+    ) / "skills" / "aet-req-analysis" / "workflows" / "sop-elicitation.md"
+    sop = sop_path.read_text(encoding="utf-8")
+
+    assert "Skip handling" in sop
+    assert "public assumption" in sop
+    assert "Never re-ask a skipped question" in sop
+
+
+def test_design_skill_a2_confirmation_and_a4_skip_are_structured(
+    tmp_path: Path,
+) -> None:
+    """#5495: the design confirmation (A2.2) and the review authorization
+    (A4) are free-text gates too — both must be choices so an empty answer
+    cannot be lost."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("design")
+    assert payload is not None
+
+    body_start = payload.find("--- Methodology Body Start ---")
+    body_end = payload.find("--- Methodology Body End ---")
+    body = payload[body_start:body_end]
+
+    assert '"options"' in body
+    assert "同意此设计，继续生成设计文档" in body
+    assert "stage=done" in body
+    assert "跳过复审" not in body  # the unreachable instruction is gone
+
+
+@pytest.mark.asyncio
+async def test_after_tool_call_ask_user_revision_requested_does_not_advance(
+    tmp_path: Path,
+) -> None:
+    """#5495: the R3 option "需要修改（请补充具体意见）" means the user asks for
+    changes — the rail must not treat it as approve (which would log
+    "approved" while the review is still unfinished)."""
+    builder = _make_builder()
+    agent = _make_agent(builder)
+    rail = _make_rail(tmp_path)
+    rail.init(agent)
+    rail._stage = "analysis_review"
+
+    ctx = SimpleNamespace(
+        inputs=SimpleNamespace(tool_name="ask_user"),
+        extra={},
+        tool_result=(
+            "是否需要修改？如有其他意见请说明，无需修改请直接确认。: "
+            "需要修改（请补充具体意见）"
+        ),
+    )
+    await rail.after_tool_call(ctx)
+
+    # Stage unchanged — the skill owns the in-place revision
+    assert rail._stage == "analysis_review"
+
+
+@pytest.mark.asyncio
+async def test_after_tool_call_ask_user_approve_option_is_not_revision(
+    tmp_path: Path,
+) -> None:
+    """#5495: the approving option must not be misread as a revision request —
+    the R3 question text itself contains "是否需要修改"."""
+    builder = _make_builder()
+    agent = _make_agent(builder)
+    rail = _make_rail(tmp_path)
+    rail.init(agent)
+    rail._stage = "analysis_review"
+
+    ctx = SimpleNamespace(
+        inputs=SimpleNamespace(tool_name="ask_user"),
+        extra={},
+        tool_result=(
+            "是否需要修改？如有其他意见请说明，无需修改请直接确认。: "
+            "无需修改，进入下一阶段"
+        ),
+    )
+    await rail.after_tool_call(ctx)
+
+    assert rail._stage == "analysis_review"
+    assert rail._is_gate_revision(
+        "是否需要修改？如有其他意见请说明，无需修改请直接确认。: 无需修改，进入下一阶段"
+    ) is False
+
+
+# ── Contract: the SKILL's structured questions pass the ask_user validation ──
+
+
+def _skill_question_block(stage: str) -> dict:
+    """Extract the JSON question block a SKILL.md tells the agent to send."""
+    rail = _make_rail(Path("/tmp"))  # only used to read the shipped SKILL.md
+    payload = rail._load_skill_methodology(stage)
+    assert payload is not None
+    blocks = []
+    in_block = False
+    buffer: list[str] = []
+    for line in payload.splitlines():
+        if line.strip() == "```json":
+            in_block = True
+            buffer = []
+            continue
+        if in_block and line.strip() == "```":
+            in_block = False
+            blocks.append("\n".join(buffer))
+            continue
+        if in_block:
+            buffer.append(line)
+    assert blocks, f"no json question block found in {stage}"
+    return json.loads(blocks[0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["analysis", "design", "analysis_review"])
+async def test_skill_structured_questions_pass_ask_user_validation(
+    stage: str,
+) -> None:
+    """#5495: the structured questions the skills prescribe must be accepted by
+    the ask_user tool contract — a rejected question never reaches the user,
+    and the gate silently stalls."""
+    from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
+    from openjiuwen.harness.rails.interrupt.interrupt_base import RejectResult
+
+    from jiuwenswarm.agents.harness.common.rails.ask_user_rail import (
+        StructuredAskUserRail,
+    )
+
+    arguments = _skill_question_block(stage)
+    tool_call = ToolCall(
+        id="tc_ask",
+        type="function",
+        name="ask_user",
+        arguments=json.dumps(arguments),
+    )
+
+    decision = await StructuredAskUserRail().resolve_interrupt(
+        MagicMock(), tool_call, None
+    )
+
+    assert not isinstance(decision, RejectResult), getattr(
+        decision, "tool_result", ""
+    )
+
+
+@pytest.mark.asyncio
+async def test_r3_question_carries_the_other_free_text_slot() -> None:
+    """#5495: the R3 gate needs the free-text slot so the user can describe
+    the modification; the label must stay the literal 'Other' the frontend
+    recognises."""
+    arguments = _skill_question_block("analysis_review")
+    labels = [
+        option["label"]
+        for question in arguments["questions"]
+        for option in question.get("options", [])
+    ]
+
+    assert "无需修改，进入下一阶段" in labels
+    assert "Other" in labels
+
+
+def test_review_skill_r1_uses_the_system_prompt_subagent_call(tmp_path: Path) -> None:
+    """#5495: the R1 gate must delegate with the subagent call the system
+    prompt prescribes.
+
+    In code mode `explore_agent` is a runtime subagent (subagent_spawn /
+    subagent_wait); the synchronous `task_tool` only accepts the synchronous
+    types, so instructing the agent to call `task_tool` with `explore_agent`
+    is rejected before the gate starts.
+    """
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis_review")
+    assert payload is not None
+
+    body_start = payload.find("--- Methodology Body Start ---")
+    body_end = payload.find("--- Methodology Body End ---")
+    body = payload[body_start:body_end]
+
+    assert "subagent_spawn" in body
+    assert "subagent_wait" in body
+    assert "Use `task_tool` with an available subagent type" not in body
