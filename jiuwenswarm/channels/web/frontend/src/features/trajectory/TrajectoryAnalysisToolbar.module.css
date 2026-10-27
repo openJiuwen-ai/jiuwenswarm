@@ -8,6 +8,18 @@
   padding: 0.375rem 0;
 }
 
+.replay {
+  min-width: 0;
+  flex: 1 1 auto;
+  margin-right: auto;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  line-height: 1.125rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .menu,
 .folds {
   position: relative;

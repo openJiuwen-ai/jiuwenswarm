@@ -310,8 +310,9 @@ def resolve_ranges(snapshot: TrajectorySnapshot, scope: DiagnosisScope) -> list[
     """Derive the per-subject time ranges of a scope.
 
     A full scope yields one range per subject covering all of its finished
-    records. A selection keeps each requested range that contains the start of
-    at least one finished record; ranges without records are dropped.
+    records. A selection keeps each requested range that wholly covers at least
+    one finished record (start and end both inside); ranges without such
+    records are dropped.
 
     Args:
         snapshot: Snapshot of the finished records.
@@ -341,22 +342,37 @@ def resolve_ranges(snapshot: TrajectorySnapshot, scope: DiagnosisScope) -> list[
                 continue
             start = int(item.start_unix_nano)
             end = int(item.end_unix_nano)
-            if any(start <= record.start_nano <= end for record in subject.records):
+            # Same rule as the analysis swimlane: a span counts only when both
+            # its start and end lie inside the selected window.
+            if any(_span_fully_in_range(record, start, end) for record in subject.records):
                 ranges.append(SubjectRange(subject_id=item.subject_id, start_nano=start, end_nano=end))
     if not ranges:
         raise DiagnosisHostError("EMPTY_SCOPE", "no finished steps in the selected scope", 422)
     return ranges
 
 
+def _span_fully_in_range(record: TrajectoryRecord, start_nano: int, end_nano: int) -> bool:
+    """Return whether both the span start and end lie inside ``[start, end]``."""
+    return start_nano <= record.start_nano and record.end_nano <= end_nano
+
+
 def count_records_in_ranges(snapshot: TrajectorySnapshot, ranges: Sequence[SubjectRange]) -> int:
-    """Count finished records whose start lies inside their subject's range."""
+    """Count finished records wholly covered by their subject's range.
+
+    Matches the trajectory analysis pick: an OTel span counts only when both
+    its start and end lie inside the window (partial coverage does not count).
+    """
     window = {item.subject_id: item for item in ranges}
     total = 0
     for subject in snapshot.subjects:
         item = window.get(subject.subject_id)
         if item is None:
             continue
-        total += sum(1 for record in subject.records if item.start_nano <= record.start_nano <= item.end_nano)
+        total += sum(
+            1
+            for record in subject.records
+            if _span_fully_in_range(record, item.start_nano, item.end_nano)
+        )
     return total
 
 

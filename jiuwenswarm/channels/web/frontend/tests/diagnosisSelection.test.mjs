@@ -159,7 +159,7 @@ test('a pick covers the main agent interval only while that agent is included', 
   assert.equal(selectionCoversInterval(axis, 'main', { startMs: 5, endMs: 1 }, false), false);
 });
 
-test('a pick counts a node only when it contains the node whole', () => {
+test('a pick counts an OTel span only when start and end are both covered', () => {
   const lanes = [
     {
       subjectId: 'main',
@@ -177,6 +177,14 @@ test('a pick counts a node only when it contains the node whole', () => {
   assert.equal(selectedNodeCount(axis, lanes, false), 2);
   assert.equal(selectedNodeCount(toggleAgent(axis, 'a'), lanes, false), 1);
   assert.equal(selectedNodeCount(EMPTY_DIAGNOSIS_SELECTION, lanes, true), 4);
+  assert.equal(
+    selectionCoversInterval(axis, 'main', { startMs: 1_500, endMs: 2_500 }, false),
+    false,
+  );
+  assert.equal(
+    selectionCoversInterval(axis, 'main', { startMs: 1_100, endMs: 1_200 }, false),
+    true,
+  );
   const many = [{ subjectId: 'main', intervals: Array.from({ length: DIAGNOSIS_NODE_LIMIT + 1 }, () => ({
     startMs: 1_100,
     endMs: 1_200,
@@ -184,6 +192,28 @@ test('a pick counts a node only when it contains the node whole', () => {
   assert.equal(selectedNodeCount(axis, many, false) > DIAGNOSIS_NODE_LIMIT, true);
   const exactly = [{ subjectId: 'main', intervals: many[0].intervals.slice(0, DIAGNOSIS_NODE_LIMIT) }];
   assert.equal(selectedNodeCount(axis, exactly, false) > DIAGNOSIS_NODE_LIMIT, false);
+});
+
+test('full-scope selected count matches the header span total from raw intervals', () => {
+  const lanes = [
+    {
+      subjectId: 'main',
+      intervals: [
+        { startMs: 1_000, endMs: 1_100 },
+        { startMs: 2_000, endMs: 2_500 },
+        { startMs: 3_000, endMs: 3_000 },
+      ],
+    },
+    { subjectId: 'a', intervals: [{ startMs: 1_500, endMs: 1_600 }] },
+    { subjectId: 'b', intervals: [] },
+  ];
+  const headerSpans = lanes.reduce((sum, lane) => sum + lane.intervals.length, 0);
+  assert.equal(headerSpans, 4);
+  assert.equal(selectedNodeCount(EMPTY_DIAGNOSIS_SELECTION, lanes, true), headerSpans);
+  assert.equal(
+    selectedNodeCount(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, window1), lanes, true),
+    headerSpans,
+  );
 });
 
 test('without a pick no scope is built unless the whole trajectory is chosen', () => {
