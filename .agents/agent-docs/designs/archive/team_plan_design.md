@@ -1,3 +1,13 @@
+---
+title: Team Plan 模式设计文档
+author: null
+author_note: 历史作者待确认；未用迁入者或原 owner 推断作者
+id: team_plan_design
+type: D
+modules: []
+files: []
+---
+
 # Team Plan 模式设计文档
 
 ## 1. 目标

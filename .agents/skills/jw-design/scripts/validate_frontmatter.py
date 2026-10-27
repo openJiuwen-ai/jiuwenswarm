@@ -61,6 +61,8 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
 
     # 必填字段
     for key in lib.REQUIRED_FIELDS:
+        if key == "author" and fm.get("author") is None and fm.get("author_note"):
+            continue
         if key not in fm or fm[key] in (None, "", []):
             err("missing-field", f"缺少必填字段 '{key}'")
 
@@ -118,10 +120,10 @@ def _check_doc(rec: lib.DocRecord, all_ids: set[str], findings: list[Finding]) -
     if domain and domain not in lib.DOMAINS:
         err("domain", f"domain '{domain}' 不在受控词表内（{', '.join(lib.DOMAINS)}）")
 
-    # owner 形态（轻量约束 → WARN）
-    owner = fm.get("owner")
-    if owner and not (isinstance(owner, str) and owner.startswith("@")):
-        warn("owner-format", f"owner 建议为单个 @handle，当前为 {owner!r}")
+    # Author identifies the Git account that created the document.
+    author = fm.get("author")
+    if author is not None and (not isinstance(author, str) or not author.strip()):
+        err("author-format", "author 必须为非空 Git 账号；历史未知作者使用 null 并说明原因")
 
     # reviewers：draft 之外必须非空列表
     if status in lib.REVIEWERS_REQUIRED_STATUSES:

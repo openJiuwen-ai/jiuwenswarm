@@ -4,7 +4,6 @@ title: jiuwen TUI 适配 SwarmFlow 三算子（human / human_session / agent_ses
 slug: jiuwen-tui-swarmflow-human-session-adaptation
 status: shipped
 stage: archive
-owner: "@chenchunzhou"
 reviewers: ["@chenchunzhou"]
 created: 2026-07-17
 updated: 2026-07-28
@@ -22,6 +21,11 @@ implementation:
   prs: []
   commits: []
   tracking: "openspec/changes/archive/2026-07-20-swarmflow-human-session-adaptation"
+author: '@chenchunzhou'
+author_note: 由历史 owner 字段原值迁移
+type: D
+files: []
+author_email: null
 ---
 
 # jiuwen TUI 适配 SwarmFlow 三算子（human / human_session / agent_session）

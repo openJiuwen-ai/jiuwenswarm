@@ -4,7 +4,8 @@ title: <一句话特性标题> # Keep identical to the document H1.
 slug: <kebab-slug>
 status: draft # draft / in-review / changes-requested / approved / rejected
 stage: proposals # proposals / active / archive
-owner: "@your-handle" # Replace with the actual design owner; never invent an identity.
+author: null # Filled from the repository Git identity when the document is created.
+author_email: null # Filled together with author; do not invent attribution.
 reviewers: [] # Actual participants; fill when a review takes place.
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -214,7 +215,7 @@ related: [] # Stable design IDs, including legacy SDD IDs.
 | --- | --- | --- | --- |
 | I-01 | 〈实际路径或符号〉 | 〈实现、接线、消费适配、测试或文档修改〉 | 〈最小前置与关联验证场景〉 |
 
-〈按检索结果列齐实际受影响的生产者、消费者、存储、导出、配置和使用入口，说明必要顺序。设计负责人和状态引用本设计 frontmatter；任务分工与排期引用开发计划，不在此重复登记。核对旧调用、数据和会话的影响；有影响时展开“兼容与迁移”，无影响时在此简述核对范围与结论。〉
+〈按检索结果列齐实际受影响的生产者、消费者、存储、导出、配置和使用入口，说明必要顺序。设计作者和状态引用本设计 frontmatter；任务分工与排期引用开发计划，不在此重复登记。核对旧调用、数据和会话的影响；有影响时展开“兼容与迁移”，无影响时在此简述核对范围与结论。〉
 
 ### 6.2 文档同步
 

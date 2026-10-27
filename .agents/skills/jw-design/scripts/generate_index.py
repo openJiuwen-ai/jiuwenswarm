@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 
 import lib_frontmatter as lib
+from document_identity import git_identity
+import yaml
 
 _GENERATED_AT_RE = re.compile(r"^<!-- generated-at:.*-->\s*$", re.MULTILINE)
 
@@ -31,7 +33,7 @@ STAGE_GROUPS = (
     ("已否决 (rejected)", "proposals", ("rejected",)),
 )
 
-_COLUMNS = ("ID", "标题", "状态", "负责人", "领域", "更新日期")
+_COLUMNS = ("ID", "标题", "状态", "作者", "领域", "更新日期")
 
 
 def _cell(value) -> str:
@@ -49,7 +51,7 @@ def _row(rec: lib.DocRecord) -> str:
         id_link,
         _cell(fm.get("title")),
         _cell(fm.get("status")),
-        _cell(fm.get("owner")),
+        _cell(fm.get("author") or "待确认"),
         _cell(fm.get("domain")),
         _cell(fm.get("updated")),
     )
@@ -163,6 +165,10 @@ def main(argv: list[str] | None = None) -> int:
         records = lib.iter_docs(root, None)
         timestamp = _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=8))).isoformat(timespec="minutes")
         content = build_index(records, timestamp)
+        identity = git_identity(root.resolve())
+        metadata = {"title": "设计文档索引", "author": identity.name, "author_email": identity.email, "generated": True}
+        header = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).rstrip()
+        content = f"---\n{header}\n---\n\n{content}"
         index_path = root / lib.INDEX_FILE
 
         if args.check:

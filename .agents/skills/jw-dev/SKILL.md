@@ -19,13 +19,24 @@ description: 在 JiuwenSwarm 项目中落实已确认方案，编写实现与测
 3. 契约变化及时维护 `.agents/agent-docs/specs/<module>/`；写法见
    [spec-template.md](references/spec-template.md)。spec 描述当前有效约束，不积累进度日志。
 4. 设计是开发前资产；features 是开发落地后的实施与决策归档。一次连贯特性在
-   `.agents/agent-docs/features/<module>/` 记录实际实现、实际决策及 why / why-not、设计偏差、验证和遗留；
+   `.agents/agent-docs/features/` 记录实际实现、实际决策及 why / why-not、设计偏差、验证和遗留；
    引用稳定设计标识与相关 spec，不复制整篇设计，不向设计回填实际结果。
    根因涉及契约或定位过程值得复用的修复，在 `.agents/agent-docs/bugfix/<module>/` 留存现象、根因和证据。
    可复制 [feature.md](assets/templates/feature.md)；详细结构及开发文档记忆规则见 [development-memory.md](references/development-memory.md)。
    修改应用 Harness、服务或接入层时另读 [swarm-documentation.md](references/swarm-documentation.md)，按实际目录维护契约和消费方。
 5. 读到文档与代码不一致时，核实后修订当前 spec / 记忆，明确设计意图、实际实现和验证结果。
    归档设计的方向不重写；偏差写在开发记录，方向变化交回设计阶段。
+
+## 决策归属、行为证据与故障复用
+
+- 记录实施前按 [决策归属与替代](../jw-design/references/decision-records.md) 判断续写或新建，明确旧结论的效力；不重写历史验证事实。
+- 按 [行为验证与证据](references/behavior-evidence.md) 选择实际入口、模型/用户可见结果和独立副作用验证；快照不能自己生成自己的正确性依据。
+- 证据写入已有实施/故障记录，注明候选、环境、覆盖及重验条件；只重验受后续变化影响的范围，不把旧版本通过直接当成新版本通过。
+- 有复用价值的根因按 [防错模式提炼](references/defensive-patterns.md) 更新所属 AGENTS/spec 与回归；不为普通修复机械新增模式文档。
+
+按 [因果流程与资料可信度](references/context-and-flows.md) 选择上下文、追踪跨边界影响，
+资料缺失时直接从源码和现有证据推进，不先建设全仓知识库。验证后同步本次影响的规则、契约和已有模块/流程资料，
+交接明确盘点、理解、检视与验证各自的覆盖和仍待完成部分。
 
 ## 命名
 
@@ -40,7 +51,7 @@ description: 在 JiuwenSwarm 项目中落实已确认方案，编写实现与测
 
 设计生命周期和字段复用 [lifecycle.md](../jw-design/references/lifecycle.md)，不重复定义。
 开始实际开发时将已批准设计移到 `designs/active/`，同步 `stage`、`status`、日期；
-设计负责人、评审人、状态与日期继续以设计 frontmatter 为唯一来源；计划及 features 引用该处。
+设计作者、评审人、状态与日期继续以设计 frontmatter 为唯一来源；计划及 features 引用该处。
 随实现将版本、实现定位、实际决策、偏差、验证证据和遗留归档到 features，
 不在设计中填写 `implementation` 或实际执行章节。设计中的验证计划只定义预期与通过条件。
 目标方案需要变更时返回 jw-design，经确认后按日期更新设计，不把意外实现自动写成已确认方案。
@@ -53,3 +64,9 @@ feature 的写法还可参考 [feature-design-template.md](../jw-design/referenc
 需要转测文档时，将实际实现版本、范围和测试证据交给 [jw-testing](../jw-testing/SKILL.md)；
 转测资料的撰写与状态维护由该 skill 负责，开发阶段继续维护实现和测试本身。
 遵循模块提交组织要求，先展示具体提交计划并取得用户确认；不自动提交或创建 PR。
+
+## 文档元数据与索引
+
+遵循 [作者、设计关联与索引规则](../jw-design/references/document-metadata.md)：受管文档以 frontmatter 标注 Git author，移除 owner；新 F 平铺在 features/，F/B 显式声明 designs。
+写作/修改后自动运行文档同步工具刷新索引；检视只报告缺口，不改写待审资料。
+新故障记录可复制 [bugfix.md](assets/templates/bugfix.md)。

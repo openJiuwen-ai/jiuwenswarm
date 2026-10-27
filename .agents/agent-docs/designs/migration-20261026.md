@@ -1,3 +1,13 @@
+---
+title: 设计文档迁移与跨仓引用
+author: null
+author_note: 历史作者待确认；缺少原 owner 和可靠创建署名
+id: migration-20261026
+type: D
+modules: []
+files: []
+---
+
 # 设计文档迁移与跨仓引用
 
 2026-10-26：JiuwenSwarm 应用及应用接入设计从 agent-core 迁至 JiuwenSwarm 仓库；core 保留通用技能和底层设计。

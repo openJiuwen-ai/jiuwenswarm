@@ -4,7 +4,6 @@ title: jiuwen TUI 嵌套 Workflow 与 Budget 可观测性
 slug: jiuwen-tui-nested-workflow-and-budget-observability
 status: shipped
 stage: archive
-owner: "@chenchunzhou"
 reviewers: ["@chenchunzhou"]
 created: 2026-07-30
 updated: 2026-08-06
@@ -20,6 +19,11 @@ implementation:
   repos: [agent-core, jiuwenswarm]
   prs: []
   commits: []
+author: '@chenchunzhou'
+author_note: 由历史 owner 字段原值迁移
+type: D
+files: []
+author_email: null
 ---
 
 # jiuwen TUI 嵌套 Workflow 与 Budget 可观测性
