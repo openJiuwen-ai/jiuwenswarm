@@ -268,9 +268,6 @@ type InputAreaTeamMember = {
   status?: string;
 };
 
-const EMPTY_SKILLS: string[] = [];
-const EMPTY_TEAM_MEMBERS: InputAreaTeamMember[] = [];
-
 type ComposerSuggestionKind = 'member' | 'role' | 'slash' | 'skill';
 type WorkIconName = 'add' | 'arrow' | 'check' | 'close' | 'collapse' | 'expand' | 'folder' | 'search';
 
