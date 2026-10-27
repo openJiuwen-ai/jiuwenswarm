@@ -3,8 +3,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -13,32 +11,46 @@ from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
 
 @pytest.mark.parametrize(
-    "method_value",
+    "method",
     [
-        "skills.swarmskillshub.recommend",
-        "skills.swarmskillshub.detail",
-        "skills.online_search.search",
-        "skills.list",
-        "plugins.list",
+        ReqMethod.SKILLS_SWARMSKILLS_HUB_RECOMMEND,
+        ReqMethod.SKILLS_SWARMSKILLS_HUB_DETAIL,
+        ReqMethod.SKILLS_ONLINE_SEARCH,
+        ReqMethod.SKILLS_LIST,
+        ReqMethod.PLUGINS_LIST,
     ],
 )
-def test_skill_plaza_methods_are_stateless(method_value: str) -> None:
-    """Plaza / catalog reads are prefix-matched as stateless and skip lifecycle.guard."""
+def test_skill_plaza_reads_skip_session_lifecycle_guard(method: ReqMethod) -> None:
+    """Plaza / catalog reads bypass lifecycle.guard when the chat session is gone."""
     request = AgentRequest(
         request_id="r1",
         channel_id="web",
-        req_method=SimpleNamespace(value=method_value),  # type: ignore[arg-type]
+        req_method=method,
         session_id="web_deleted_session",
         params={"session_id": "web_deleted_session"},
     )
-    assert AgentWebSocketServer._is_stateless_method_request(request) is True
+    assert AgentWebSocketServer._skips_session_lifecycle_guard(request) is True
 
 
-def test_chat_send_still_requires_lifecycle_guard() -> None:
+@pytest.mark.parametrize(
+    "method",
+    [
+        ReqMethod.SKILLS_TOGGLE,
+        ReqMethod.SKILLS_REBUILD,
+        ReqMethod.CHAT_SEND,
+    ],
+)
+def test_skill_writes_and_chat_still_require_lifecycle_guard(method: ReqMethod) -> None:
+    """Write / chat RPCs must not inherit the plaza read bypass."""
     request = AgentRequest(
         request_id="r2",
         channel_id="web",
-        req_method=ReqMethod.CHAT_SEND,
+        req_method=method,
         session_id="web_deleted_session",
+        params={"session_id": "web_deleted_session"},
     )
-    assert AgentWebSocketServer._is_stateless_method_request(request) is False
+    assert AgentWebSocketServer._skips_session_lifecycle_guard(request) is False
+    # Broader "stateless" (skip adapter) still covers skills.* writes; that is
+    # intentional and distinct from the session-lifecycle bypass.
+    if method.value.startswith("skills."):
+        assert AgentWebSocketServer._is_stateless_method_request(request) is True
