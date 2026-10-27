@@ -93,6 +93,18 @@ test('scheduleDtoToForm/scheduleFormToDto round-trip for once uses job timezone 
   assert.deepEqual(scheduleFormToDto(form), dto);
 });
 
+test('scheduleDtoToForm never yields an empty timezone for interval/cron/once', () => {
+  assert.equal(scheduleDtoToForm({ type: 'interval', interval_seconds: 60 }, '').timezone, 'Asia/Shanghai');
+  assert.equal(
+    scheduleDtoToForm({ type: 'cron', cron_expr: '0 9 * * *', timezone: '' }, '').timezone,
+    'Asia/Shanghai',
+  );
+  assert.equal(
+    scheduleDtoToForm({ type: 'once', run_at: Date.UTC(2026, 9, 22, 4, 0, 0) / 1000 }, '').timezone,
+    'Asia/Shanghai',
+  );
+});
+
 test('summarizeHeartbeatSchedule once uses provided timezone for wall clock', () => {
   const epoch = Date.UTC(2026, 9, 21, 2, 30, 0) / 1000;
   const summary = summarizeHeartbeatSchedule(
