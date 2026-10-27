@@ -191,6 +191,38 @@ async def test_conflicting_modes_do_not_kill_forward_loop(gateway):
     assert [e.request_id for e in client.calls] == ["good"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_image_only_steer_reference_reaches_running_request(gateway, stream):
+    handler, client = gateway
+    images = [{
+        "type": "image", "path": "/server/sessions/sess-input-gateway/uploads/shot.png",
+        "filename": "shot.png", "mime_type": "image/png",
+    }]
+    await handler.publish_user_messages(message("original", stream=True))
+    assert await asyncio.wait_for(client.started.get(), 5) == "original"
+    await handler.publish_user_messages(message("image-steer", mode="steer", stream=stream, query="", media_items=images))
+    assert await asyncio.wait_for(client.started.get(), 5) == "image-steer"
+    await receive(handler, "image-steer", event_type="runtime.accepted")
+    assert client.calls[-1].params["media_items"] == images
+    assert not client.release.is_set() and not client.cancelled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attachments", [
+    {"media_items": [{"type": "image", "base64Data": "AAAA", "mime_type": "image/png"}]},
+    {"files": {"uploaded_images": [{"path": "/server/shot.png"}]}},
+    {"attachments": [{"path": "/server/document.pdf"}]},
+])
+async def test_invalid_steer_attachments_are_not_forwarded(gateway, attachments):
+    handler, client = gateway
+    await handler.publish_user_messages(message("bad-image", mode="steer", **attachments))
+    await receive(handler, "bad-image", ok=False)
+    await handler.publish_user_messages(message("valid-text", mode="steer"))
+    await receive(handler, "valid-text", event_type="runtime.accepted")
+    assert [call.request_id for call in client.calls] == ["valid-text"]
+
+
 _IM_CHANNELS = (
     "feishu",
     "wecom",

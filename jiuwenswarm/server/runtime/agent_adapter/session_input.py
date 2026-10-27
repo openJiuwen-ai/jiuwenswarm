@@ -21,11 +21,19 @@ from openjiuwen.harness.schema.interaction import InputDispatchMode
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY, SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.runtime.session.model import SessionExecutionState
-from jiuwenswarm.runtime.session_input import SessionInputTargetError, resolve_session_input_mode
+from jiuwenswarm.runtime.session_input import (
+    SessionInputRejectedError, SessionInputTargetError, resolve_session_input_mode,
+)
 from jiuwenswarm.server.runtime.agent_adapter.session_message_input import cross_session_model_messages
 
 
 _INPUT_BOUNDARY_TIMEOUT_SECONDS = 5.0
+
+
+class SessionInputImageUnavailableError(SessionInputRejectedError):
+    """The active owner cannot read an uploaded image through its tools."""
+
+    code = "SESSION_INPUT_IMAGE_UNAVAILABLE"
 
 
 class QueuedSessionInput(str):
@@ -39,6 +47,7 @@ class QueuedSessionInput(str):
         value = super().__new__(cls, text)
         value.request_id = request_id
         value.display_content = text
+        value.media_items = []
         value.cross_session = None
         value.message_route = None
         value.boundary_ready = asyncio.Event()
@@ -46,7 +55,9 @@ class QueuedSessionInput(str):
         return value
 
 
-def enqueue_bound_session_input(instance, target_round, request, sdk_request) -> QueuedSessionInput:
+def enqueue_bound_session_input(
+    instance, target_round, request, sdk_request, *, media_items=None,
+) -> QueuedSessionInput:
     """Check and enqueue synchronously: the SDK send_input idle fallback is forbidden.
 
     Use the same public queue API as DeepAgent.send_input's active STEER
@@ -83,7 +94,14 @@ def enqueue_bound_session_input(instance, target_round, request, sdk_request) ->
     if getattr(handler, "interaction_queues", None) is None:
         raise RuntimeError("active execution has no steering queue; supplemental input was not sent")
     entry = QueuedSessionInput(str(sdk_request.inputs["query"]), request.request_id)
-    entry.display_content = str(request.params.get("content") or request.params.get("query") or entry)
+    if media_items:
+        # An image-only supplement has no display text. Never publish the
+        # internal tool prompt (including paths) as the person's own words.
+        content = request.params.get("content") or request.params.get("query") or ""
+        entry.display_content = content if isinstance(content, str) else ""
+        entry.media_items = [dict(item) for item in media_items]
+    else:
+        entry.display_content = str(request.params.get("content") or request.params.get("query") or entry)
     cross_session = request.params.get(SESSION_MESSAGE_INTERNAL_KEY)
     if isinstance(cross_session, dict):
         entry.cross_session = {**cross_session, "content": entry.display_content}
@@ -168,7 +186,8 @@ class SessionInputGuard(AgentRail):
                 self._session.write_stream(OutputSchema(
                     type="session_input_received", index=0,
                     payload={"input_request_id": entry.request_id, "content": entry.display_content,
-                             "timestamp": time.time() * 1000, **provenance},
+                             "timestamp": time.time() * 1000, **provenance,
+                             **({"media_items": entry.media_items} if entry.media_items else {})},
                 )),
                 timeout=_INPUT_BOUNDARY_TIMEOUT_SECONDS,
             )

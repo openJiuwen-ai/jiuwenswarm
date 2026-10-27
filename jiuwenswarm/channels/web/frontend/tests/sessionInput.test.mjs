@@ -9,7 +9,7 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { A2UIProvider } from '@a2ui/react';
 
 const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
-let useWebSocket, useChatStore, useSessionStore, useGoalStore, webClient, TaskQueue, ChatTimelineList, buildTimelineItems;
+let useWebSocket, useChatStore, useSessionStore, useGoalStore, webClient, TaskQueue, ChatTimelineList, buildTimelineItems, parseHistoryJsonFileToPreviewMessages, i18n;
 
 before(async () => {
   const outdir = join(frontendRoot, 'node_modules/.cache/session-input');
@@ -21,6 +21,8 @@ before(async () => {
       goalStore: 'src/stores/goalStore.ts',
       webClient: 'src/services/webClient.ts',
       timeline: 'src/features/chatTimeline/buildTurnTimeline.ts',
+      history: 'src/features/historyRestore.ts',
+      i18n: 'src/i18n/index.ts',
       TaskQueue: 'queue-component',
     },
     absWorkingDir: frontendRoot,
@@ -61,6 +63,8 @@ before(async () => {
   ({ useGoalStore } = await load('goalStore'));
   ({ webClient } = await load('webClient'));
   ({ buildTimelineItems } = await load('timeline'));
+  ({ parseHistoryJsonFileToPreviewMessages } = await load('history'));
+  ({ default: i18n } = await load('i18n'));
   ({ TaskQueue, ChatTimelineList } = await load('TaskQueue'));
 });
 
@@ -157,6 +161,7 @@ async function mount(context) {
     runtime,
     receive,
     socket,
+    sockets,
     find,
     receipt: (taskId) => runtime().taskInputReceipts[taskId],
     api: () => api,
@@ -738,6 +743,236 @@ test('attachments and pending interactions stay queued without changing the exis
     assert.deepEqual(c.runtime().taskQueue[0].mediaItems, media);
     assert.ok(c.runtime().taskQueue.every((item) => item.status === 'queued'));
     assert.equal(c.runtime().interruptResult.success, false);
+  } finally {
+    await c.dispose();
+  }
+});
+
+const steerImages = [
+  { type: 'image', filename: 'compare.png', mimeType: 'image/png', path: 'C:/session/uploads/compare.png' },
+  { type: 'image', filename: 'compare-1.png', mimeType: 'image/png', path: 'C:/session/uploads/compare-1.png' },
+];
+const steerImageRecords = steerImages.map(({ mimeType, ...item }) => ({ ...item, mime_type: mimeType }));
+
+for (const ackFirst of [true, false]) {
+  test(`uploaded images steer by reference and render once with ${ackFirst ? 'early' : 'late'} ACK`, async (context) => {
+    const c = await mount(context);
+    try {
+      const original = 'Compare these two screenshots';
+      const id = c.queue(original, steerImages);
+      await c.click(id, 'send');
+      await c.click(id, 'send');
+      assert.equal(c.requests().length, 1);
+      const request = c.requests()[0];
+      assert.equal(request.params.content, original);
+      assert.equal(request.params.input_mode, 'steer');
+      assert.equal(request.params.expected_execution_id, 'execution-A');
+      assert.deepEqual(request.params.media_items, steerImageRecords);
+      assert.equal(request.params.files, undefined);
+      assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+      act(() => c.socket.response(request.id));
+      assert.equal(c.receipt(id).status, 'sending', 'Gateway response alone is not Runtime acceptance');
+      if (ackFirst) c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+      const boundary = {
+        request_id: 'original', input_request_id: request.id, execution_id: 'execution-A',
+        content: original, media_items: steerImageRecords, timestamp: Date.now(),
+      };
+      c.receive('chat.input_received', boundary);
+      if (!ackFirst) c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+      c.receive('chat.input_received', boundary);
+      await c.flush();
+      assert.equal(c.receipt(id).status, 'accepted');
+      assert.equal(c.runtime().taskQueue.length, 0);
+      assert.equal(c.runtime().isProcessing, true);
+      const users = c.runtime().messages.filter((message) => message.supplementalInput?.requestId === request.id);
+      assert.equal(users.length, 1);
+      assert.equal(users[0].content, original);
+      assert.deepEqual(users[0].mediaItems.map((item) => item.path), steerImages.map((item) => item.path));
+      assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 2);
+      assert.ok(!document.body.textContent.includes('C:/session/uploads/'));
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('an uploaded image-only supplement keeps its empty user text', async (context) => {
+  const c = await mount(context);
+  try {
+    const id = c.queue('', [steerImages[0]]);
+    await c.click(id, 'send');
+    const request = c.requests()[0];
+    assert.equal(request.params.content, '');
+    assert.deepEqual(request.params.media_items, [steerImageRecords[0]]);
+    c.receive('runtime.accepted', { request_id: request.id, input_boundary: 'stream' });
+    c.receive('chat.input_received', {
+      request_id: 'original', input_request_id: request.id, content: '',
+      media_items: [steerImageRecords[0]], timestamp: Date.now(),
+    });
+    await c.flush();
+    const message = c.runtime().messages.find((item) => item.supplementalInput?.requestId === request.id);
+    assert.equal(message.content, '');
+    assert.equal(message.mediaItems.length, 1);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const [name, mediaItems] of [
+  ['a document', [{ type: 'document', filename: 'notes.txt', path: '/notes.txt' }]],
+  ['mixed images and files', [steerImages[0], { type: 'document', filename: 'notes.txt', path: '/notes.txt' }]],
+  ['an image with no persisted path', [{ ...steerImages[0], path: undefined }]],
+  ['an unfinished binary upload', [{ ...steerImages[0], base64Data: 'eA==' }]],
+  ['a snake-case binary upload', [{ ...steerImages[0], base64_data: 'eA==' }]],
+  ['a remote image URL', [{ ...steerImages[0], url: 'https://example.invalid/image.png' }]],
+]) {
+  test(`${name} stays queued with an explicit image-reference error`, async (context) => {
+    const c = await mount(context);
+    try {
+      const id = c.queue('inspect', mediaItems);
+      await c.click(id, 'send');
+      assert.equal(c.requests().length, 0);
+      assert.equal(c.runtime().taskQueue[0].status, 'queued');
+      assert.deepEqual(c.runtime().taskQueue[0].mediaItems, mediaItems);
+      assert.equal(c.receipt(id), undefined);
+      assert.match(c.runtime().interruptResult.message, /已上传的图片|uploaded images/);
+      assert.equal(c.runtime().isProcessing, true);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+test('a rejected image reference retains both screenshots for manual retry', async (context) => {
+  const c = await mount(context);
+  try {
+    const id = c.queue('compare', steerImages);
+    await c.click(id, 'send');
+    c.receive('chat.error', { request_id: c.requests()[0].id, error: 'Image is outside this session uploads directory' });
+    await c.flush();
+    assert.equal(c.runtime().taskQueue[0].status, 'failed');
+    assert.deepEqual(c.runtime().taskQueue[0].mediaItems, steerImages);
+    assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().messages.filter((message) => message.supplementalInput).length, 0);
+    assert.equal(c.runtime().interruptResult.message, 'Image is outside this session uploads directory');
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const language of ['zh', 'en']) {
+  test(`image capability rejection shows actionable ${language} guidance without dropping attachments`, async (context) => {
+    const c = await mount(context);
+    const previousLanguage = i18n.language;
+    try {
+      await act(async () => i18n.changeLanguage(language));
+      const id = c.queue('compare', steerImages);
+      await c.click(id, 'send');
+      c.receive('chat.error', {
+        request_id: c.requests()[0].id, code: 'SESSION_INPUT_IMAGE_UNAVAILABLE', error: 'raw backend capability error',
+      });
+      await c.flush();
+      assert.equal(c.receipt(id).status, 'failed');
+      assert.equal(c.receipt(id).errorCode, 'SESSION_INPUT_IMAGE_UNAVAILABLE');
+      assert.equal(c.receipt(id).error, i18n.t('chat.steerImageUnavailable'));
+      assert.equal(c.runtime().interruptResult.message, i18n.t('chat.steerImageUnavailable'));
+      assert.match(c.receipt(id).error, language === 'zh' ? /配置图片理解工具/ : /configure an image understanding tool/);
+      assert.deepEqual(c.runtime().taskQueue[0].mediaItems, steerImages);
+      assert.equal(c.runtime().isProcessing, true);
+    } finally {
+      await act(async () => i18n.changeLanguage(previousLanguage));
+      await c.dispose();
+    }
+  });
+}
+
+test('idle image steering rejection retains the images without starting an ordinary chat', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    await c.flush();
+    const streamId = c.runtime().currentStreamId;
+    const messageIds = c.runtime().messages.map((message) => message.id);
+    const id = c.queue('inspect these images', steerImages);
+    await c.click(id, 'send');
+    const request = c.requests()[0];
+    assert.equal(request.params.expected_execution_id, undefined);
+    c.receive('chat.error', {
+      request_id: request.id, code: 'SESSION_INPUT_TARGET_CHANGED',
+      error: 'The image input target has completed; keep these images queued for the next task.',
+    });
+    await c.flush();
+    assert.equal(c.requests().length, 1, 'rejection must not resend the images as ordinary chat');
+    assert.equal(c.receipt(id).status, 'failed');
+    assert.equal(c.receipt(id).errorCode, 'SESSION_INPUT_TARGET_CHANGED');
+    assert.equal(c.runtime().taskQueue[0].id, id);
+    assert.equal(c.runtime().taskQueue[0].status, 'failed');
+    assert.deepEqual(c.runtime().taskQueue[0].mediaItems, steerImages);
+    assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().activeExecutionId, null);
+    assert.equal(c.runtime().currentStreamId, streamId);
+    assert.deepEqual(c.runtime().messages.map((message) => message.id), messageIds);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('reconnecting never resends images and a replayed input boundary restores their bubble once', async (context) => {
+  const c = await mount(context);
+  try {
+    const id = c.queue('compare after reconnect', steerImages);
+    await c.click(id, 'send');
+    const request = c.requests()[0];
+    act(() => c.socket.response(request.id));
+    await act(async () => webClient.reconnect('test image delivery recovery'));
+    assert.equal(c.receipt(id).status, 'unknown');
+    assert.equal(c.runtime().taskQueue[0].status, 'unknown');
+    assert.deepEqual(c.receipt(id).mediaItems, steerImages);
+    const nextSocket = c.sockets.at(-1);
+    assert.notEqual(nextSocket, c.socket);
+    const boundary = {
+      session_id: c.sid, request_id: 'original', input_request_id: request.id,
+      content: 'compare after reconnect', media_items: steerImageRecords, timestamp: Date.now(),
+    };
+    act(() => {
+      nextSocket.receive('chat.input_received', boundary);
+      nextSocket.receive('chat.input_received', boundary);
+    });
+    await c.flush();
+    assert.equal(c.sockets.flatMap((socket) => socket.requests).filter((item) => item.method === 'chat.send').length, 1);
+    assert.equal(c.receipt(id).status, 'accepted');
+    assert.equal(c.runtime().taskQueue.length, 0);
+    const users = c.runtime().messages.filter((message) => message.supplementalInput?.requestId === request.id);
+    assert.equal(users.length, 1);
+    assert.equal(users[0].mediaItems.length, 2);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 2);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('image input replay without a local receipt and refreshed history keep user text and both images', async (context) => {
+  const c = await mount(context);
+  try {
+    const boundary = {
+      session_id: c.sid, request_id: 'original', input_request_id: 'image-from-another-client',
+      content: 'original user words', media_items: steerImageRecords, timestamp: Date.now(),
+    };
+    c.receive('chat.input_received', boundary);
+    const message = c.runtime().messages.find((item) => item.supplementalInput?.requestId === boundary.input_request_id);
+    assert.equal(message.content, boundary.content);
+    assert.equal(message.mediaItems.length, 2);
+    const restored = parseHistoryJsonFileToPreviewMessages([
+      { id: 'image-input', role: 'user', content: boundary.content, timestamp: Date.now(), event_payload: boundary },
+      { id: 'image-only-input', role: 'user', content: '', timestamp: Date.now() + 1, media_items: steerImageRecords },
+    ], c.sid);
+    assert.equal(restored.length, 2);
+    assert.deepEqual(restored.map((item) => item.content), [boundary.content, '']);
+    assert.ok(restored.every((item) => item.mediaItems.length === 2));
+    assert.deepEqual(restored[0].mediaItems.map((item) => item.path), steerImages.map((item) => item.path));
   } finally {
     await c.dispose();
   }

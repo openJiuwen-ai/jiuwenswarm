@@ -9,6 +9,7 @@ import { parseModelSelection } from '../features/settings/modules/models/modelGr
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { readOutputOrder } from '../features/sessionOutput';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
   assetKindFromMime,
   findReferencedAssets,
@@ -1997,6 +1998,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
+        const queuedTask = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
+        if (queuedTask && !areSteerImagesReady(queuedTask.mediaItems)) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement', success: false, message: t('chat.steerImagesOnly'),
+          });
+          return false;
+        }
+        if (queuedTask?.mediaItems?.length && ['queued', 'failed'].includes(queuedTask.status)) {
+          store.setInterruptResult(sessionId, null);
+        }
         // The button supplies input intent; Runtime decides whether it can steer the target.
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
         await sendQueuedTaskInput(sessionId, taskId, request, {
@@ -2006,6 +2017,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         });
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const task = runtime?.taskQueue.find((item) => item.id === taskId);
+        const receipt = runtime?.taskInputReceipts[taskId];
+        if (receipt?.mediaItems?.length && ['failed', 'unknown'].includes(receipt.status)) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement', success: false, message: receipt.error || t('network.supplementFailed'),
+          });
+        }
         if (task?.status === 'queued') {
           store.setInterruptResult(sessionId, {
             intent: 'supplement', success: false,

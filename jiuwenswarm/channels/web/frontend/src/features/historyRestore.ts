@@ -927,7 +927,7 @@ function appendHistoryMediaItems(
   }
 }
 
-function extractHistoryMediaItems(record: Record<string, unknown>): MediaItem[] {
+export function extractHistoryMediaItems(record: Record<string, unknown>): MediaItem[] {
   const mediaItems: MediaItem[] = [];
   const seenKeys = new Set<string>();
 

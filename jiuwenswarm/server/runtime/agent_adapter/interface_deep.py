@@ -8334,13 +8334,16 @@ class JiuWenSwarmDeepAdapter:
         enable_read_image_multimodal: bool,
         vision_tool_available: bool,
         image_input_status: str = "unknown",
+        steer_image_tool: str | None = None,
     ) -> dict[str, Any]:
-        """Expose image paths when native image input is unavailable."""
-        if enable_read_image_multimodal:
+        """Expose image paths for fallback tools or a text-only steer queue."""
+        if enable_read_image_multimodal and steer_image_tool is None:
             return inputs
 
         query = inputs.get("query")
-        if not isinstance(query, str) or "jiuwenswarm_image_tool_context" in query:
+        if not isinstance(query, str) or (
+            steer_image_tool is None and "jiuwenswarm_image_tool_context" in query
+        ):
             return inputs
 
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
@@ -8358,6 +8361,8 @@ class JiuWenSwarmDeepAdapter:
         if not isinstance(raw_question, str) or not raw_question.strip():
             raw_question = params.get("content")
         question = raw_question.strip() if isinstance(raw_question, str) else ""
+        if steer_image_tool and not question:
+            question = "Read the attached images and use them to continue the current task."
         first_path = str(image_files[0].get("path") or "").strip()
         if not first_path:
             return inputs
@@ -8403,6 +8408,18 @@ class JiuWenSwarmDeepAdapter:
                 )
             ),
         }
+        if steer_image_tool:
+            invocation = (
+                "read_file(file_path=mediaPath)"
+                if steer_image_tool == "read_file"
+                else "visual_question_answering(image_path_or_url=mediaPath, question=question)"
+            )
+            tool_context["toolHint"] = (
+                "This is supplemental input for the current task. The steering queue carries text only; "
+                "the uploaded images have not yet been read. For every entry in mediaItems, call "
+                f"{invocation} using that entry's mediaPath before describing or comparing the images. "
+                "If reading fails or returns only metadata, explain the failure; do not guess image contents."
+            )
 
         updated = dict(inputs)
         updated.pop("_multimodal_image_files", None)
@@ -17714,6 +17731,56 @@ class JiuWenSwarmDeepAdapter:
                 "supplemental input was not sent"
             )
 
+    def _select_steer_image_tool(self) -> str:
+        """Use the active owner's registered tools and live native-image policy."""
+        from openjiuwen.harness.rails._multimodal import should_enable_read_image_multimodal
+        from openjiuwen.harness.schema.config import is_vision_model_config_complete
+
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputImageUnavailableError
+
+        instance = self._instance
+        manager = getattr(instance, "ability_manager", None)
+        cards = {card.name: card for card in manager.list()} if manager is not None else {}
+        for name in ("read_file", "visual_question_answering"):
+            card = cards.get(name)
+            tool = Runner.resource_mgr.get_tool(card.id) if card is not None else None
+            if tool is None:
+                continue
+            if name == "read_file":
+                # Upload references are AgentServer-local paths. Do not hand
+                # them to a sandbox filesystem without an existing mapping.
+                local_operation = getattr(getattr(tool, "operation", None), "mode", None) == OperationMode.LOCAL
+                if (
+                    local_operation and should_enable_read_image_multimodal(instance)
+                    and getattr(tool, "enable_image_multimodal", False)
+                ):
+                    return name
+            elif is_vision_model_config_complete(getattr(tool, "vision_model_config", None)):
+                return name
+        raise SessionInputImageUnavailableError(
+            "the active agent has no image-reading capability; enable native image input "
+            "with read_file or configure a visual_question_answering tool before retrying"
+        )
+
+    async def _prepare_steer_image_inputs(
+        self, request: AgentRequest, inputs: dict[str, Any],
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Resolve uploads off-loop, then send only their text references to Core."""
+        from jiuwenswarm.server.runtime.attachments.steer_images import resolve_steer_image_references
+
+        media_items = await asyncio.to_thread(
+            resolve_steer_image_references, request.params, request.session_id,
+        )
+        tool_name = self._select_steer_image_tool()
+        prepared = {**inputs, "_multimodal_image_files": media_items}
+        prepared = self._prepare_react_image_tool_prompt(
+            request, prepared,
+            enable_read_image_multimodal=False,
+            vision_tool_available=tool_name == "visual_question_answering",
+            steer_image_tool=tool_name,
+        )
+        return prepared, media_items
+
     async def deliver_active_session_input(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> bool:
@@ -17727,7 +17794,7 @@ class JiuWenSwarmDeepAdapter:
             sdk_input_mode,
         )
 
-        from jiuwenswarm.runtime.session_input import SessionInputRejectedError
+        from jiuwenswarm.runtime.session_input import SessionInputRejectedError, SessionInputTargetError
 
         mode = sdk_input_mode(request.params)
         cross_session_steer = mode is InputDispatchMode.STEER and isinstance(
@@ -17735,10 +17802,13 @@ class JiuWenSwarmDeepAdapter:
         )
         if cross_session_steer:
             self._require_cross_session_task_admission(request)
+        image_steer = mode is InputDispatchMode.STEER and bool(request.params.get("media_items"))
         instance = self._instance
-        if instance is None or instance.active_round is None:
-            return False
-        if not instance.has_output_stream():
+        if instance is None or instance.active_round is None or not instance.has_output_stream():
+            if image_steer:
+                raise SessionInputTargetError(
+                    "image supplemental input requires an active execution; supplemental input was not sent"
+                )
             return False
         if self._stream_completion_state(had_interaction=False) == "suspended":
             raise SessionInputRejectedError(
@@ -17764,15 +17834,24 @@ class JiuWenSwarmDeepAdapter:
                     )
 
         require_open_input()
+        media_items = []
+        if image_steer:
+            inputs, media_items = await self._prepare_steer_image_inputs(request, inputs)
         prepared = await self._prepare_root_input_dispatch(request, inputs)
         try:
             if instance.active_round is None or not instance.has_output_stream():
+                if image_steer:
+                    raise SessionInputTargetError(
+                        "the targeted execution ended during image preparation; supplemental input was not sent"
+                    )
                 return False
 
             async def send(sdk_request: SendInputRequest) -> None:
                 require_open_input()
                 if mode is InputDispatchMode.STEER:
-                    entry = enqueue_bound_session_input(instance, bound_round, request, sdk_request)
+                    entry = enqueue_bound_session_input(
+                        instance, bound_round, request, sdk_request, media_items=media_items,
+                    )
                     await self._session_input_guard.publish_input_received(entry)
                     return
                 await instance.send_input(sdk_request)

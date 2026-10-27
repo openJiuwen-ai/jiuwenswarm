@@ -88,6 +88,12 @@ class ChatSendParams(TypedDict, total=False):
     attachments: NotRequired[list[dict]]
     """附件列表（@file 等）。结构待统一定义。"""
 
+    media_items: NotRequired[list[dict]]
+    """Media records. Steer accepts only image paths returned by media.persist
+    for this Session; the server validates them and sends text references to
+    the active agent's image-reading tools instead of SDK attachments.
+    """
+
     files: NotRequired[dict]
     """文件更新字典（传统字段）。逐步迁出到 attachments，当前兼容保留。"""
 
