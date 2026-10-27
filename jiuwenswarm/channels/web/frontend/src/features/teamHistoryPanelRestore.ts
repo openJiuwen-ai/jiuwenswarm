@@ -19,11 +19,6 @@ import {
   findOverlappingFileExecutionEvent,
   mergeFileDownloadItems,
 } from '../utils/fileDownloadDedup';
-import {
-  createTaskProgressBaseline,
-  registerConfirmedTaskCreation,
-  type TaskProgressBaseline,
-} from './teamTaskProgressBaseline';
 
 interface TeamMember {
   id: string;
@@ -71,7 +66,6 @@ export interface TeamHistoryPanelState {
   organizationExecutionEvents?: Record<string, TeamMemberExecutionEvent[]>;
   messages: Message[];
   humanShareCommands: HumanShareCommand[];
-  taskProgressBaseline: TaskProgressBaseline;
 }
 
 interface TeamHistoryGetResponse {
@@ -368,7 +362,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
   // 被移出名册的成员快照：旧历史里休眠退场也只记了 shutdown，
   // 随后的 status_changed → dormant 要靠它找回展示名 / mode / role。
   const retiredMembers = new Map<string, TeamMember>();
-  let taskProgressBaseline = createTaskProgressBaseline();
 
   const addMember = (memberId: string, timestamp: number) => {
     if (!shouldKeepMember(memberId)) {
@@ -482,14 +475,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       skills: skills || existing?.skills,
       files: files || existing?.files,
       workflow_run_id: pickString(rawTask, ['workflow_run_id']) || existing?.workflow_run_id,
-      // A paused run's visual progress must not creep after a reload; the
-      // freeze point is this record's own timestamp (the pause event).
-      ...(typeof rawTask.progress_frozen === 'boolean'
-        ? {
-            progress_frozen: rawTask.progress_frozen,
-            progress_frozen_at: rawTask.progress_frozen ? nextTimestamp : undefined,
-          }
-        : { progress_frozen: existing?.progress_frozen, progress_frozen_at: existing?.progress_frozen_at }),
       // Truncation flags: read raw with explicit guards so a status-only
       // record (no flags) falls back to `existing?` — never resets to false.
       // Mirrors the title/content `|| existing?` pattern above.
@@ -798,14 +783,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     const content = pickString(event, ['content']);
     const teamId = pickString(event, ['team_id']);
 
-    if (type === 'team.task.created') {
-      taskProgressBaseline = registerConfirmedTaskCreation(
-        Array.from(tasks.values()),
-        taskProgressBaseline,
-        taskId
-      );
-    }
-
     const timelineEntry = toTaskTimelineEntry(event, eventTimestamp);
     if (timelineEntry) {
       taskTimeline.push(timelineEntry);
@@ -836,7 +813,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     executionEvents: Array.from(executionEvents.values()),
     messages,
     humanShareCommands: Array.from(humanShareCommands.values()),
-    taskProgressBaseline,
   };
 }
 

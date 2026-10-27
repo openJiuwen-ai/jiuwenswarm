@@ -5465,9 +5465,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             clearPendingTeamConnectionMember(sessionId, memberId);
             useSessionStore.getState().clearTeamConnectionPresentation(sessionId, memberId);
           }
-          if (e.type === 'team.task.created' && e.task_id) {
-            useSessionStore.getState().registerConfirmedTeamTaskCreation(sessionId, e.task_id);
-          }
           useSessionStore.getState().addTeamTaskEvent(sessionId, {
             id: `task-${Date.now()}`,
             type: e.type || '',
