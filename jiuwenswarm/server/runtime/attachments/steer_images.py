@@ -54,7 +54,13 @@ def _image_mime_type(data: bytes) -> str:
             # truncated first frame before an Agent is told it can read it.
             with Image.open(io.BytesIO(data)) as image:
                 image.load()
-    except (UnidentifiedImageError, OSError, SyntaxError, Image.DecompressionBombError, Image.DecompressionBombWarning) as exc:
+    except (
+        UnidentifiedImageError,
+        OSError,
+        SyntaxError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ) as exc:
         raise ValueError("steer image is invalid or exceeds the safe decoded size") from exc
     return mime_type
 
@@ -71,7 +77,7 @@ def _resolve_image(item: Mapping[str, Any], upload_dir: Path) -> dict[str, Any]:
     if info.st_size <= 0 or info.st_size > MAX_STEER_IMAGE_BYTES:
         raise ValueError("steer image must be non-empty and at most 10 MiB")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(raw, flags)
+    descriptor = os.open(raw, flags, mode=0o600)
     with os.fdopen(descriptor, "rb") as stream:
         opened = os.fstat(stream.fileno())
         if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino) or not stat.S_ISREG(opened.st_mode):

@@ -431,7 +431,8 @@ class _MachineRun:
                 and event.payload.get("output_suppressed") is True
                 and event.event_type in {"chat.delta", "chat.final", "chat.reasoning"}
             )
-            if event.ok and not hidden_text and (event.is_complete or event.event_type == "chat.final"):
+            visible_success = event.ok and not hidden_text
+            if visible_success and (event.is_complete or event.event_type == "chat.final"):
                 completed = True
             if event.event_type in _INTERACTION_EVENTS:
                 raise MachineRunError(

@@ -323,12 +323,16 @@ class SessionInputGuard(AgentRail):
             or not self._original_request_id or self._original_request_provenance
         ):
             return
-        expected = {
-            part.undelivered_response_full_text for part in parts
-            if isinstance(part, QueuedSessionInput) and not part.cross_session
-            and part.delivery_round is active_round and part.boundary_error is None
-            and part.undelivered_response_full_text.strip()
-        }
+        expected = set()
+        for part in parts:
+            if not isinstance(part, QueuedSessionInput):
+                continue
+            if part.cross_session or part.delivery_round is not active_round:
+                continue
+            if part.boundary_error is not None:
+                continue
+            if part.undelivered_response_full_text.strip():
+                expected.add(part.undelivered_response_full_text)
         get_messages = getattr(ctx.context, "get_messages", None)
         set_messages = getattr(ctx.context, "set_messages", None)
         if not expected or not callable(get_messages) or not callable(set_messages):
@@ -391,10 +395,11 @@ class SessionInputGuard(AgentRail):
         if entries:
             active_round = getattr(self.owner, "active_round", None)
             known = {id(entry) for entry in self._delivery_obligations}
-            self._delivery_obligations.extend(
-                entry for entry in entries if entry.delivery_round is active_round
-                and entry.boundary_error is None and id(entry) not in known
-            )
+            for entry in entries:
+                if entry.delivery_round is not active_round or entry.boundary_error is not None:
+                    continue
+                if id(entry) not in known:
+                    self._delivery_obligations.append(entry)
             consumed = {id(entry) for entry in entries}
             self._pending_delivery_inputs = [
                 item for item in self._pending_delivery_inputs if id(item) not in consumed
