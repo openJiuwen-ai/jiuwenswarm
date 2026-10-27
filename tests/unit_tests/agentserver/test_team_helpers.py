@@ -6703,8 +6703,9 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
 
 @pytest.mark.anyio
-async def test_consume_workflow_events_reports_session_budget_exhaustion_as_chat_error(monkeypatch):
-    """The web UI must show a terminal session-budget failure even with no active run."""
+async def test_consume_workflow_events_does_not_emit_budget_exhausted_chat_error(monkeypatch):
+    """Budget exhaustion is conveyed by the workflow.updated frame's
+    budget_exhausted_scope; the consumer must not emit a separate chat.error."""
     broadcasted: list[dict[str, object]] = []
     event = {
         "event_type": "workflow.updated",
@@ -6737,13 +6738,8 @@ async def test_consume_workflow_events_reports_session_budget_exhaustion_as_chat
         "web", "sess-budget", _FakeWorkflowHandler(),
     )
 
-    errors = [item for item in broadcasted if item.get("event_type") == "chat.error"]
-    assert errors == [{
-        "event_type": "chat.error",
-        "session_id": "sess-budget",
-        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
-        "error": "Session budget exhausted",
-    }]
+    assert "workflow.updated" in [item.get("event_type") for item in broadcasted]
+    assert not [item for item in broadcasted if item.get("event_type") == "chat.error"]
 
 
 @pytest.mark.anyio
