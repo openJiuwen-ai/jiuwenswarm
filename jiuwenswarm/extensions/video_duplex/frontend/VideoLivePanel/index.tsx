@@ -1040,7 +1040,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   search_session_id: searchSessionId,
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
                 },
-                { timeoutMs: 10_000 },
+                { timeoutMs: call.name === 'jiuwen_queue_manage' ? 45_000 : 10_000 },
               )
                 .then((action) => {
                   reportRealtimeEvent('qwen_tool_call_receipt', {

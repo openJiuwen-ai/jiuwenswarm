@@ -259,7 +259,7 @@ def register_video_live_handler(
                 "url": QWEN_OMNI_PROXY_PATH,
                 "model": config.model,
                 "voice": config.voice,
-                "tools": qwen_omni_tools(),
+                "tools": qwen_omni_tools(queue_manager=True),
                 "reply_language": settings.reply_language(),
                 **context_payload,
             },
@@ -451,6 +451,9 @@ def register_video_live_handler(
         scheduling = None
         task_title = ""
         operation_count = 0
+        queue_management = None
+        search_job = None
+        tools_used: list[str] = []
         while operation_count < 3:
             delegation = str(result.get("delegation") or "").strip()
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
@@ -463,6 +466,7 @@ def register_video_live_handler(
                     raise ValueError("Invalid task operation")
                 if value.get("name") not in {
                     "jiuwen_delegate",
+                    "jiuwen_queue_manage",
                     "jiuwen_task_query",
                     "jiuwen_task_modify",
                     "jiuwen_task_cancel",
@@ -479,6 +483,28 @@ def register_video_live_handler(
                         "call_id": f"{params.get('command_id') or req_id}:{operation_count}",
                     }
                 )
+                if call.name == "jiuwen_queue_manage":
+                    if request_kind != "user":
+                        raise ValueError("Queue management requires an explicit user request")
+                    management_instruction = question or instruction
+                    queue_management = await search_manager.manage_queue_call(
+                        owner, scope, call, management_instruction,
+                        allow_answers=False, reply_language=reply_language,
+                    )
+                    tools_used.append(call.name)
+                    response_text = queue_management.get("response", "")
+                    if queue_management.get("state") == "incomplete":
+                        response_text = (
+                            "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
+                            if reply_language == "en" or (
+                                reply_language == "match" and not re.search(r"[\u4e00-\u9fff]", question or instruction)
+                            ) else "队列管理未全部完成，请查看任务列表和定时任务确认已执行的操作。"
+                        )
+                    # Only the manager's receipt-based answer reaches chat/TTS.
+                    # Never speak JoyAI's unconfirmed acknowledgement or ask it
+                    # to issue another operation for the same request.
+                    result = {**result, "decision": "response", "response": response_text, "delegation": ""}
+                    break
                 if call.name == "jiuwen_delegate":
                     task_title = call.arguments.get("title", "")
                     scheduling = {
@@ -510,8 +536,6 @@ def register_video_live_handler(
             )
             return
 
-        search_job = None
-        tools_used: list[str] = []
         delegation = str(result.get("delegation") or "").strip()
         if result.get("decision") == "delegation" and delegation:
             try:
@@ -548,6 +572,7 @@ def register_video_live_handler(
                 "timing": result.get("timing"),
                 "tools_used": tools_used,
                 "search_job": search_job,
+                **({"queue_management": queue_management} if queue_management is not None else {}),
             },
         )
         await channel.send_response(
@@ -557,6 +582,7 @@ def register_video_live_handler(
             payload={
                 "response": result.get("response"),
                 "search_job": search_job,
+                **({"queue_management": queue_management} if queue_management is not None else {}),
             },
         )
 

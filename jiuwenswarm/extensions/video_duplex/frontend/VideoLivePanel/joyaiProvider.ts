@@ -413,7 +413,7 @@ export class JoyAIProvider {
             ...(toolContext.text ? { tool_context: toolContext.text } : {}),
             ...(requestKind === 'user' && this.restoreToken ? { restore_token: this.restoreToken } : {}),
           },
-          { timeoutMs: 60_000 },
+          { timeoutMs: requestKind === 'user' ? 90_000 : 60_000 },
         );
         if (frameDataUrl) this.lastFrameRequestAt = Date.now();
         try {
