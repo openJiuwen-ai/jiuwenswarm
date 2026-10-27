@@ -36,8 +36,11 @@ from gateway.routing.e2a_proxy import fetch_agent_unary
 
 logger = logging.getLogger(__name__)
 
-#: 会话元数据远端读取的 unary 超时（秒），对齐 video_duplex 的 AGENT_QUERY_TIMEOUT。
-SESSION_METADATA_QUERY_TIMEOUT_SECONDS = 20.0
+#: 会话元数据远端读取的 unary 超时（秒）。刻意低于 video_duplex 的
+#: AGENT_QUERY_TIMEOUT（20s）：元数据是小载荷单条读，且消费方含
+#: CHAT_CANCEL 等时延敏感控制路径——超时即按"读不到"降级，宁可短等待
+#: 也不要把控制报文阻塞在元数据查询后面。
+SESSION_METADATA_QUERY_TIMEOUT_SECONDS = 5.0
 
 #: 内部调用通道标识；刻意避开 ``web``，不触发 server 侧排队会话消息的附加逻辑。
 _SESSION_METADATA_CHANNEL_ID = "gateway"

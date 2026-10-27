@@ -54,6 +54,12 @@ def _fake_unary(monkeypatch: pytest.MonkeyPatch) -> _FakeUnary:
     return fake
 
 
+@pytest.fixture(autouse=True)
+def _reset_agent_client(monkeypatch: pytest.MonkeyPatch):
+    """bind_agent_client 写的是模块级全局，跨用例必须复位防状态泄漏。"""
+    monkeypatch.setattr(session_metadata_remote, "_agent_client", None)
+
+
 @pytest.mark.asyncio
 async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
     bind_agent_client(SimpleNamespace(name="agent-client"))
@@ -69,6 +75,12 @@ async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
     assert fake_unary.captured["session_id"] == "sess-1"
     # 内部通道标识避开 "web"，不触发 server 侧排队会话消息附加逻辑
     assert fake_unary.captured["channel_id"] == "gateway"
+    # 控制路径（CHAT_CANCEL 等）复用本读取，超时上限必须保持短等待
+    assert (
+        fake_unary.captured["timeout_seconds"]
+        == session_metadata_remote.SESSION_METADATA_QUERY_TIMEOUT_SECONDS
+    )
+    assert session_metadata_remote.SESSION_METADATA_QUERY_TIMEOUT_SECONDS <= 5.0
 
 
 @pytest.mark.asyncio
