@@ -2024,6 +2024,9 @@
       "slack": "Enable the Slack channel. Disabling preserves existing settings.",
       "whatsapp": "Enable the WhatsApp channel. Disabling preserves existing settings."
     },
+    "availability": {
+      "xiaoyi": "Xiaoyi does not currently support scheduled tasks or file delivery."
+    },
     "configurationGuide": "Configuration guide",
     "addConfiguration": "Add configuration",
     "enable": "Enable",
@@ -2505,6 +2508,7 @@
       "web": "Web (web)",
       "tui": "Terminal (tui)",
       "xiaoyi": "Xiaoyi (xiaoyi)",
+      "xiaoyiUnsupported": "Xiaoyi (unsupported)",
       "feishu": "Lark (feishu)",
       "dingtalk": "DingTalk (dingtalk)",
       "whatsapp": "WhatsApp (whatsapp)",

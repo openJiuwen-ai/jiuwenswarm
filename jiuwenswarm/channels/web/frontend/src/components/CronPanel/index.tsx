@@ -19,7 +19,7 @@ import CronTaskDrawer, { jobToForm, templateToForm, type CronTaskFormValue } fro
 import { resolveCronJobProjectName } from './cronProjectDisplay';
 import { useClickOutside } from './useClickOutside';
 import SimpleSelect from './SimpleSelect';
-import { hasXiaoyiPushApiId, isCronTargetOptionDisabled } from './xiaoyiCronTarget';
+import { isCronTargetOptionDisabled } from './xiaoyiCronTarget';
 import emptyIllustration from '../../assets/cron-empty.svg';
 import { PageToolbarSearch, toast } from '../ui';
 
@@ -329,8 +329,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const [jobs, setJobs] = useState<CronTaskUI[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [enabledChannels, setEnabledChannels] = useState<Set<string>>(new Set());
-  // 小艺推送依赖 api_id；频道已注册但未配 api_id 时仍应置灰（Issue #2497）
-  const [xiaoyiPushReady, setXiaoyiPushReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -593,24 +591,23 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       setEnabledChannels(new Set());
     }
 
-    try {
-      const xiaoyiPayload = await webRequest<{ config?: unknown }>('channel.xiaoyi.get_conf');
-      setXiaoyiPushReady(hasXiaoyiPushApiId(xiaoyiPayload?.config));
-    } catch {
-      // 拉不到小艺配置时保守置为不可用，避免无 api_id 仍可选
-      setXiaoyiPushReady(false);
-    }
   }, []);
 
-  const targetOptions = useMemo(
-    () =>
-      SELECTABLE_TARGET_KEYS.map((id) => ({
+  const targetOptions = useMemo(() => {
+    const options = SELECTABLE_TARGET_KEYS.map((id) => ({
         value: id,
         label: t(`cron.targets.${id}`),
-        disabled: isCronTargetOptionDisabled(id, enabledChannels, xiaoyiPushReady),
-      })),
-    [enabledChannels, t, xiaoyiPushReady],
-  );
+        disabled: isCronTargetOptionDisabled(id, enabledChannels),
+      }));
+    if (drawer?.mode === 'edit' && drawer.initial?.targets === 'xiaoyi') {
+      options.unshift({
+        value: 'xiaoyi',
+        label: t('cron.targets.xiaoyiUnsupported'),
+        disabled: true,
+      });
+    }
+    return options;
+  }, [drawer, enabledChannels, t]);
 
   useEffect(() => {
     void (async () => {

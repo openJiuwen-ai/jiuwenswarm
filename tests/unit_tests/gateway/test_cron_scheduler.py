@@ -529,6 +529,18 @@ class TestCronLastSessionId:
         assert [request.method for request in agent.unary_requests].count("session.create") == 1
 
     @pytest.mark.asyncio
+    async def test_run_now_rejects_xiaoyi_target(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="xiaoyi")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        with pytest.raises(ValueError, match="not supported for target: xiaoyi"):
+            await svc.trigger_run_now_info(job.id)
+
+        assert not agent.unary_requests
+
+    @pytest.mark.asyncio
     async def test_run_now_info_does_not_allocate_session_for_proactive_tick(self, tmp_path):
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, mode="proactive.tick")
@@ -1125,6 +1137,16 @@ class TestReloadKeepsDueUnconsumedEvents:
         await svc.reload()
 
         assert all(ev.run_id != stale_run_id for _, _, ev in svc.events)
+
+    @pytest.mark.asyncio
+    async def test_reload_does_not_schedule_xiaoyi_target(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="xiaoyi")
+        svc = _make_scheduler(store)
+
+        await svc.reload()
+
+        assert not [ev for _, _, ev in svc.events if ev.job_id == job.id]
 
     @pytest.mark.asyncio
     async def test_reload_drops_due_events_for_removed_job(self, tmp_path):
