@@ -1076,14 +1076,15 @@
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
-        "summary": "{{count}} Agent(s) selected · {{nodes}} node(s)",
-        "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
+        "summary": "{{count}} Agent(s) selected · {{spans}} OTel span(s)",
+        "emptyNodes": "The selection has no complete OTel span to diagnose. Spans that are not fully covered (start and end) were left out.",
         "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
-        "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
+        "nodeLimit": "The selection contains {{count}} OTel spans, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
-        "noData": "There is no trajectory to diagnose yet"
+        "noData": "There is no trajectory to diagnose yet",
+        "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
-      "summary": "{{agents}} Agents · {{nodes}} nodes",
+      "summary": "{{agents}} Agents · {{spans}} OTel spans",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
