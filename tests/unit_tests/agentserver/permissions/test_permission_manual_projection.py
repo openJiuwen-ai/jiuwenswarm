@@ -169,6 +169,20 @@ async def test_public_question_names_the_interrupt_it_answers(answer_host, monke
     assert question["kind"] == ("ask_user" if kind == "ask" else "permission")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_public_ask_question_is_answered_by_the_interrupt_id_it_names(answer_host, monkeypatch, mode):
+    h = answer_host
+    question = await _start(h, monkeypatch, mode=mode, kind="ask")
+    item = question["questions"][0]
+    await _stream_request(h, source=question["source"], request_id=question["request_id"],
+                          interrupt_id=question["interrupt_id"],
+                          answers=[{"question": item["question"], "custom_input": "blue"}])
+    _questions_once(h, 0)
+    assert list(h.dispatches[-1].inputs["query"].interrupt_answers) == [question["interrupt_id"]]
+    assert "blue" in repr(h.script.calls[-1]) and h.executions == []
+
+
 def _manual_interaction(call_id="manual-call"):
     return {"id": call_id, "value": ToolCallInterruptRequest(
         tool_call_id=call_id, tool_name="run_command", message="Approve this tool?",
