@@ -88,6 +88,30 @@ async def test_required_failure_stops_and_network_prohibition(tmp_path):
         await m.prepare_materials(context, "35c0b386-7e75-4923-b373-720ed2ed848b")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('suffix', ['docx', 'pdf'])
+async def test_attachment_only_offline_request_explains_limit_before_reading(tmp_path, monkeypatch, suffix):
+    from unittest.mock import AsyncMock
+
+    extract = AsyncMock()
+    fetch = AsyncMock()
+    monkeypatch.setattr(m, 'extract_attachment', extract)
+    monkeypatch.setattr(m, 'fetch_url', fetch)
+    context = {'original_query': '仅根据这份材料分析，不要联网',
+               'files': [{'path': str(tmp_path / f'material.{suffix}')}],
+               'scope': 's', 'output_dir': str(tmp_path)}
+
+    with pytest.raises(m.MaterialsPolicyError) as error:
+        await m.prepare_materials(context, '35c0b386-7e75-4923-b373-720ed2ed848b')
+
+    assert '支持本地附件作为研究信源' in str(error.value)
+    assert '暂不支持“仅依据材料、禁止外部检索”' in str(error.value)
+    assert '明确允许联网补缺' in str(error.value)
+    extract.assert_not_awaited()
+    fetch.assert_not_awaited()
+    assert not (tmp_path / '.deepresearch-materials').exists()
+
+
 def test_candidates_only_from_original_message():
     context = {"original_query": "参考 https://example.org/a 和 https://example.org/a。", "files": []}
     assert [c["source"] for c in m.candidates(context)] == ["https://example.org/a"]

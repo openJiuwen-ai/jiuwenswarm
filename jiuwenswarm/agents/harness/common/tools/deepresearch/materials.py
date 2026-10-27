@@ -361,7 +361,10 @@ def _parse_worker(suffix):
 async def prepare_materials(context, conversation_id):
     query = str(context.get('original_query') or '')
     if _offline_request(query):
-        raise MaterialsPolicyError("当前版本需要允许联网补缺；请调整要求后重新发起。")
+        raise MaterialsPolicyError(
+            "当前支持本地附件作为研究信源，但暂不支持“仅依据材料、禁止外部检索”的研究模式。"
+            "已停止启动研究；仅在你明确允许联网补缺时，才可调整要求后重新发起。"
+        )
     rows = candidates(context)
     if not rows:
         return None
