@@ -12,7 +12,7 @@ import math
 import os
 import shutil
 import sys
-from contextlib import aclosing
+from contextlib import aclosing, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
 from weakref import WeakValueDictionary
@@ -5470,6 +5470,8 @@ class AgentWebSocketServer:
         """处理 permissions.* E2A 请求（与 Web ``register_method`` 同名 method）。"""
         from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import \
             dispatch_permissions_config_request
+        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import \
+            get_permissions_read_only_req_methods
 
         from jiuwenswarm.server.security_config_rpc import (
             dispatch_security_config_request,
@@ -5482,6 +5484,11 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.security_config_service import SecurityConfigService
 
         service = SecurityConfigService()
+        # Reads return a saved configuration snapshot; they do not apply it to
+        # sandboxes. Do not queue them behind a potentially minute-long rebuild.
+        read_only = request.req_method in get_permissions_read_only_req_methods() or request.req_method in {
+            ReqMethod.SECURITY_CONFIG_GET, ReqMethod.SECURITY_CONFIG_SANDBOX_GET, ReqMethod.SECURITY_BUILTIN_GET,
+        }
         try:
             managed_legacy = service.is_initialized() and is_managed_permissions_method(request.req_method)
         except RuntimeError as exc:
@@ -5499,7 +5506,7 @@ class AgentWebSocketServer:
                 apply_lock = getattr(self, "_security_config_apply_lock", None)
                 if apply_lock is None:
                     apply_lock = self._security_config_apply_lock = asyncio.Lock()
-                async with apply_lock:
+                async with (nullcontext() if read_only else apply_lock):
                     if managed_legacy:
                         payload = await dispatch_managed_permissions_request(
                             request.req_method, request.params or {},
@@ -5536,7 +5543,7 @@ class AgentWebSocketServer:
         if apply_lock is None:
             apply_lock = self._security_config_apply_lock = asyncio.Lock()
         used_legacy_direct = False
-        async with apply_lock:
+        async with (nullcontext() if read_only else apply_lock):
             try:
                 if service.is_initialized() and is_managed_permissions_method(request.req_method):
                     payload = await dispatch_managed_permissions_request(
@@ -5566,10 +5573,6 @@ class AgentWebSocketServer:
         # reload agent config so the PermissionInterruptRail picks up the
         # change immediately instead of waiting for the next tool call's
         # get_permissions_snapshot refresh.
-        from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
-            get_permissions_read_only_req_methods,
-        )
-
         if resp.ok and used_legacy_direct and request.req_method not in get_permissions_read_only_req_methods():
             # 后台异步重载: 不阻塞权限 RPC 回包(避免 reload 慢导致 AgentServer
             # request timed out)。reload_agents_config 内部有 _reload_lock 串行化

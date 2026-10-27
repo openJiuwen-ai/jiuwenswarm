@@ -56,6 +56,71 @@ async def test_bulk_cleanup_failure_prevents_all_replacement_acl_installation(mo
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failures", [1, 2, 3])
+async def test_restart_retries_cleanup_and_never_creates_before_revocation(monkeypatch, failures):
+    # Isolate provider singleton state and invoke the actual private restart path.
+    # pylint: disable=protected-access
+    import httpx
+    from openjiuwen.core.sys_operation.sandbox.gateway.gateway import SandboxGateway
+    from openjiuwen.extensions.sys_operation.sandbox.providers import jiuwenbox as box
+    from jiuwenswarm.common import config
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as mod
+
+    cls = box._JiuwenBoxProviderMixin
+    for name in ("_shared_sandbox_ids", "_creation_locks", "_creation_failures", "_lifecycle_hooks",
+                 "_pending_deletions", "_delete_tasks", "_idle_timeout_cache"):
+        monkeypatch.setattr(cls, name, {})
+    monkeypatch.setattr(box, "_SANDBOX_DELETE_RETRY_SLEEP_SECONDS", 0)
+    monkeypatch.setattr(SandboxGateway, "_instance", SandboxGateway())
+    monkeypatch.setattr(config, "get_config", lambda: {})
+    monkeypatch.setattr(mod, "build_filesystem_policy", lambda *a, **kw: ({"filesystem_policy": {}}, []))
+    url, key = "http://localhost:8321", "http://localhost:8321|scope"
+    cls.register_shared_sandbox_id(key, "old-id")
+    events = []
+    client = Mock(__enter__=Mock(), __exit__=Mock(return_value=False))
+    client.__enter__.return_value = client
+
+    def delete(_sid):
+        events.append("delete")
+        if events.count("delete") <= failures:
+            raise httpx.ReadTimeout("ACL cleanup timeout")
+
+    def create(**_kwargs):
+        events.append("create")
+        return "new-id"
+
+    client.delete_sandbox.side_effect = delete
+    client.create_sandbox.side_effect = create
+    monkeypatch.setattr(box, "_JiuwenBoxClient", Mock(return_value=client))
+    launcher = SimpleNamespace(sandbox_type="jiuwenbox", base_url=url, extra_params={"sandbox_id": "old-id"})
+    adapter = SimpleNamespace(
+        _sys_operation_card=SimpleNamespace(
+            mode=mod.OperationMode.SANDBOX, gateway_config=SimpleNamespace(launcher_config=launcher),
+        ),
+        _sys_operation_isolation_key=lambda card: "scope", _is_code_agent=False,
+        _resolve_project_dir_for_sandbox=lambda: None,
+    )
+    adapter.apply_sandbox_runtime_patch = MethodType(mod.JiuWenSwarmDeepAdapter.apply_sandbox_runtime_patch, adapter)
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(agents={"web": {"a": adapter}}), _resolve_adapter=lambda agent: agent,
+    )
+    monkeypatch.setattr(server_module, "get_sandbox_runtime", lambda: {"enabled": True, "files": []})
+    monkeypatch.setattr(server_module, "get_sandbox_endpoint", lambda: {"type": "jiuwenbox"})
+    restart = server_module.AgentWebSocketServer._restart_configured_sandboxes
+    if failures < 3:
+        assert (await restart(server, {}))["restarted"] == 1
+        assert events == ["delete"] * (failures + 1) + ["create"]
+        assert launcher.extra_params["sandbox_id"] == "new-id"
+    else:
+        with pytest.raises(RuntimeError, match="after 3 attempts.*replacement creation blocked"):
+            await restart(server, {})
+        assert events == ["delete"] * 3
+        client.create_sandbox.assert_not_called()
+        with pytest.raises(RuntimeError, match="deletion is pending"):
+            cls.ensure_not_deleting(key)
+
+
+@pytest.mark.asyncio
 async def test_dead_owned_service_port_change_can_rebuild_after_failed_delete(monkeypatch, saved_service_policy):
     import httpx
     from openjiuwen.core.runner import Runner
@@ -66,6 +131,7 @@ async def test_dead_owned_service_port_change_can_rebuild_after_failed_delete(mo
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as mod
 
     cls = box._JiuwenBoxProviderMixin
+    monkeypatch.setattr(box, "_SANDBOX_DELETE_RETRY_SLEEP_SECONDS", 0)
     for name in ("_shared_sandbox_ids", "_creation_locks", "_creation_failures", "_lifecycle_hooks",
                  "_pending_deletions", "_delete_tasks", "_idle_timeout_cache"):
         monkeypatch.setattr(cls, name, {})
@@ -135,7 +201,7 @@ async def test_dead_owned_service_port_change_can_rebuild_after_failed_delete(mo
     result = await server_module.AgentWebSocketServer._restart_configured_sandboxes(server, {})
     assert result["restarted"] == 1
     assert launcher.extra_params["sandbox_id"] == "new-id"
-    assert [url for url, _ in requests].count(old_url) == 1
+    assert [url for url, _ in requests].count(old_url) == 3
     assert not cls._pending_deletions and old_key not in cls._shared_sandbox_ids
 
 
@@ -272,7 +338,8 @@ async def test_restart_rebinds_old_session_before_deduplicating(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_adapter_restart_uses_scoped_key_and_propagates_error(monkeypatch):
+@pytest.mark.parametrize("strict", [False, True])
+async def test_adapter_restart_uses_scoped_key_and_propagates_error(monkeypatch, strict):
     from jiuwenswarm.common import config
     monkeypatch.setattr(config, "get_config", lambda: {})
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as adapter_module
@@ -293,16 +360,19 @@ async def test_adapter_restart_uses_scoped_key_and_propagates_error(monkeypatch)
     calls.attach_mock(delete, "delete")
     calls.attach_mock(create, "create")
     apply = adapter_module.JiuWenSwarmDeepAdapter.apply_sandbox_runtime_patch
-    assert await apply(adapter, {"files": []}, files_changed=True, strict=True)
+    assert await apply(adapter, {"files": []}, files_changed=True, strict=strict)
     assert create.await_args.kwargs["shared_key"] == "http://localhost:8321|scope-1"
     assert launcher.extra_params["sandbox_id"] == "new-id"
     import sys
-    if sys.platform == "win32":
+    if sys.platform == "win32" and strict:
         assert delete.await_args.kwargs["raise_on_error"] is True
         assert [call[0] for call in calls.mock_calls] == ["delete", "create"]
     create.side_effect = RuntimeError("create failed")
-    with pytest.raises(RuntimeError, match="create failed"):
-        await apply(adapter, {"files": []}, files_changed=True, strict=True)
+    if strict:
+        with pytest.raises(RuntimeError, match="create failed"):
+            await apply(adapter, {"files": []}, files_changed=True, strict=strict)
+    else:
+        assert await apply(adapter, {"files": []}, files_changed=True, strict=strict) is False
 
 
 @pytest.mark.asyncio

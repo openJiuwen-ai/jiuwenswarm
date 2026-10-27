@@ -101,6 +101,7 @@ async def test_rpc_commands_and_restart_share_apply_lock(monkeypatch, first, sec
 
 @pytest.fixture(autouse=True)
 def isolated_provider_state(monkeypatch):
+    monkeypatch.setattr(box, "_SANDBOX_DELETE_RETRY_SLEEP_SECONDS", 0)
     for name in ("_shared_sandbox_ids", "_creation_locks", "_creation_failures", "_lifecycle_hooks",
                  "_pending_deletions", "_delete_tasks", "_idle_timeout_cache"):
         monkeypatch.setattr(box._JiuwenBoxProviderMixin, name, {})
@@ -236,7 +237,7 @@ async def test_cli_disable_cleans_external_and_historical_entries_and_retries_fa
     with pytest.raises(RuntimeError, match="external unavailable"):
         await disable(server, "web")
     assert runtime["enabled"] is False
-    assert requests == [("http://localhost:8321", "external"), ("http://localhost:9000", "historical")]
+    assert requests == [("http://localhost:8321", "external")] * 3 + [("http://localhost:9000", "historical")]
     assert (failed_key, "external") in cls._pending_deletions
     assert (healthy_key, "historical") not in cls._pending_deletions
     unavailable = False
@@ -349,7 +350,9 @@ async def test_disable_attempts_all_deletes_after_stop_failure(monkeypatch, entr
             assert caught.value is stop_error
     else:
         assert await disable() is None
-    assert events == ["stop", ("http://localhost:8321", "live"), ("http://localhost:9000", "historical")]
+    assert events == ["stop"] + [("http://localhost:8321", "live")] * (3 if cleanup_failure else 1) + [
+        ("http://localhost:9000", "historical"),
+    ]
     if cleanup_failure:
         assert cls._shared_sandbox_ids == {live_key: "live"}
         assert set(cls._pending_deletions) == {(live_key, "live")}

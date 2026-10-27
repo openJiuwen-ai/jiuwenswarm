@@ -1285,3 +1285,95 @@ async def test_handle_permissions_config_rechecks_mode_after_waiting_for_apply_l
     await server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock())
     assert called == [ReqMethod.PERMISSIONS_TOOLS_UPDATE]
     assert fake_ws.sent[0]["ok"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("method", [ReqMethod.PERMISSIONS_FILE_GUARD_GET, ReqMethod.PERMISSIONS_NET_GUARD_GET])
+async def test_guard_reads_do_not_wait_for_sandbox_rebuild(server, fake_ws, monkeypatch, managed, method):
+    from jiuwenswarm.common.schema.agent import AgentResponse
+    from jiuwenswarm.common.security_config_service import SecurityConfigService
+    from jiuwenswarm.server import security_config_legacy_rpc
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_config_rpc
+
+    monkeypatch.setattr(SecurityConfigService, "is_initialized", lambda self: managed)
+    response = AgentResponse(request_id="guard-read", channel_id="tui", ok=True, payload={"snapshot": True})
+    monkeypatch.setattr(permissions_config_rpc, "dispatch_permissions_config_request", lambda _request: response)
+
+    async def read_managed(*_args, **_kwargs):
+        return {"snapshot": True}
+
+    monkeypatch.setattr(security_config_legacy_rpc, "dispatch_managed_permissions_request", read_managed)
+    lock = server._security_config_apply_lock = asyncio.Lock()
+    await lock.acquire()
+    try:
+        request = AgentRequest(request_id="guard-read", channel_id="tui", req_method=method, params={})
+        await asyncio.wait_for(server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock()), 1)
+        assert fake_ws.sent[0]["ok"] is True
+        assert fake_ws.sent[0]["payload"] == {"snapshot": True}
+        assert lock.locked()
+    finally:
+        lock.release()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,params", [
+    (ReqMethod.SECURITY_CONFIG_GET, {}),
+    (ReqMethod.SECURITY_CONFIG_SANDBOX_GET, {}),
+    (ReqMethod.SECURITY_BUILTIN_GET, {"module": "net_guard"}),
+])
+async def test_security_reads_return_applying_snapshot_without_waiting(server, fake_ws, monkeypatch, method, params):
+    from jiuwenswarm.common.security_config_service import SecurityConfigService
+    from jiuwenswarm.server import security_config_rpc
+
+    monkeypatch.setattr(SecurityConfigService, "is_initialized", lambda self: True)
+    snapshot = {"apply": {"status": "applying", "applied": False}}
+    calls = []
+
+    async def read_security(actual_method, actual_params, **_kwargs):
+        calls.append((actual_method, actual_params))
+        return snapshot
+
+    monkeypatch.setattr(security_config_rpc, "dispatch_security_config_request", read_security)
+    lock = server._security_config_apply_lock = asyncio.Lock()
+    await lock.acquire()
+    try:
+        request = AgentRequest(request_id="security-read", channel_id="tui", req_method=method, params=params)
+        await asyncio.wait_for(server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock()), 1)
+        assert calls == [(method, params)]
+        assert fake_ws.sent[0]["ok"] is True
+        assert fake_ws.sent[0]["payload"] == snapshot
+        assert lock.locked()
+    finally:
+        lock.release()
+
+
+@pytest.mark.asyncio
+async def test_guard_writes_still_wait_for_sandbox_rebuild(server, fake_ws, monkeypatch):
+    from jiuwenswarm.common.security_config_service import SecurityConfigService
+    from jiuwenswarm.server import security_config_legacy_rpc
+
+    monkeypatch.setattr(SecurityConfigService, "is_initialized", lambda self: True)
+    edited = asyncio.Event()
+
+    async def write_managed(*_args, **_kwargs):
+        edited.set()
+        return {"saved": True, "applied": True}
+
+    monkeypatch.setattr(security_config_legacy_rpc, "dispatch_managed_permissions_request", write_managed)
+    lock = server._security_config_apply_lock = asyncio.Lock()
+    await lock.acquire()
+    request = AgentRequest(
+        request_id="guard-write", channel_id="tui", req_method=ReqMethod.PERMISSIONS_NET_GUARD_SET,
+        params={"net_guard": {"defaults": "deny"}},
+    )
+    task = asyncio.create_task(server.handle_permissions_config_for_test(fake_ws, request, asyncio.Lock()))
+    try:
+        await asyncio.sleep(0)
+        assert not edited.is_set()
+        assert not task.done()
+    finally:
+        lock.release()
+        await asyncio.wait_for(task, 1)
+    assert edited.is_set()
+    assert fake_ws.sent[0]["ok"] is True
