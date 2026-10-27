@@ -361,7 +361,7 @@ export function MarketplacePage({
         if (pluginCategory === 'other' ? pluginTopCategorySet.has(cat) : cat !== pluginCategory) return false;
       }
 
-      if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language)])) return false;
+      if (topTab === 'my' && !matchesAssetName(query, [localizedText(pkg.displayName, i18n.language) ?? ''])) return false;
       return true;
     });
   }, [
