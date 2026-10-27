@@ -11,6 +11,7 @@ import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLi
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
 import {
+  isModelCatalogPending,
   isModelSelectionAvailable,
   resolveAvailableModelSelection,
   resolveChatModelSelection,
@@ -65,6 +66,9 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
   useEffect(() => {
     if (!activeSessionId || disabled || groupBlocked) return;
     if (!selectedModelSelection) return;
+    // Empty catalog means models.list has not arrived yet — not that the selection
+    // was deleted. Clearing here races metadata restore on refresh (#5860).
+    if (isModelCatalogPending(models, modelGroups)) return;
     if (isModelSelectionAvailable(selectedModelSelection, models, modelGroups)) return;
     if (useChatStore.getState().getRuntime(activeSessionId)?.isProcessing) return;
     const next = resolveAvailableModelSelection(selectedModelSelection, models, modelGroups);
@@ -101,7 +105,9 @@ export default function ChatModelSelector({ disabled = false }: { disabled?: boo
     selectedModelSelection
     ?? selectionFromModel(selected)
     ?? null;
+  const catalogPending = isModelCatalogPending(models, modelGroups);
   const healedSelection = selectedModelSelection
+    && !catalogPending
     && !isModelSelectionAvailable(selectedModelSelection, models, modelGroups)
     ? resolveAvailableModelSelection(selectedModelSelection, models, modelGroups)
     : inferredSelection;
