@@ -536,7 +536,7 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                     </div>
                     <p className="mt-1.5 line-clamp-2 text-sm text-text-muted" data-testid="heartbeat-panel-task-prompt">{job.prompt}</p>
                     <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-muted" data-testid="heartbeat-panel-task-meta">
-                      <span data-testid="heartbeat-panel-task-schedule">{summarizeHeartbeatSchedule(job.schedule, t)}</span>
+                      <span data-testid="heartbeat-panel-task-schedule">{summarizeHeartbeatSchedule(job.schedule, t, job.timezone)}</span>
                       {formatHeartbeatTimestamp(job.nextRunAt) && (
                         <span data-testid="heartbeat-panel-task-next-run">{t('heartbeat.panel.nextRunAt', { time: formatHeartbeatTimestamp(job.nextRunAt) })}</span>
                       )}

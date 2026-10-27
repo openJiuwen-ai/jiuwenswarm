@@ -29,10 +29,28 @@ import {
   formatAxisClock,
   formatElapsed,
   mainAgentLastNode,
+  otelSpanWallInterval,
+  rawOtelSpanInterval,
+  rawOtelSpanIntervals,
   sharedWallClockDomain,
   visibleAxisTicks,
   wallToCompressed,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisTimeSelection.mjs';
+
+function msToNano(ms) {
+  return String(BigInt(ms) * 1_000_000n);
+}
+
+function rawOtelRecord({ startMs, endMs, empty = false } = {}) {
+  if (empty) return { otlp: null };
+  const span = { startTimeUnixNano: msToNano(startMs) };
+  if (endMs !== undefined) span.endTimeUnixNano = msToNano(endMs);
+  return {
+    otlp: {
+      resourceSpans: [{ scopeSpans: [{ spans: [span] }] }],
+    },
+  };
+}
 
 const TRACE = 'a'.repeat(32);
 const ref = (spanId, subject = 'main') => ({ trace_id: TRACE, span_id: spanId.padEnd(16, '0'), subject_id: subject });
@@ -314,6 +332,39 @@ test('a zero-width domain stays selectable', () => {
   assert.deepEqual(
     sharedWallClockDomain([{ startedAt: 4_000, timeSeconds: 0 }], 0),
     { startMs: 4_000, endMs: 4_001 },
+  );
+});
+
+test('otelSpanWallInterval reads start/end nanos and collapses a missing end', () => {
+  assert.deepEqual(
+    otelSpanWallInterval({
+      startTimeUnixNano: msToNano(1_000),
+      endTimeUnixNano: msToNano(1_250),
+    }),
+    { startMs: 1_000, endMs: 1_250 },
+  );
+  assert.deepEqual(
+    otelSpanWallInterval({ startTimeUnixNano: msToNano(500) }),
+    { startMs: 500, endMs: 500 },
+  );
+  assert.equal(otelSpanWallInterval({ startTimeUnixNano: 'not-a-number' }), null);
+  assert.equal(otelSpanWallInterval({ startTimeUnixNano: msToNano(-1) }), null);
+});
+
+test('rawOtelSpanIntervals keep every timed raw record and skip unusable ones', () => {
+  assert.equal(rawOtelSpanInterval(rawOtelRecord({ empty: true })), null);
+  assert.equal(rawOtelSpanInterval({ otlp: { resourceSpans: [] } }), null);
+  assert.deepEqual(
+    rawOtelSpanIntervals([
+      rawOtelRecord({ startMs: 1_000, endMs: 1_100 }),
+      rawOtelRecord({ empty: true }),
+      rawOtelRecord({ startMs: 2_000 }),
+      { otlp: { resourceSpans: [{ scopeSpans: [{ spans: [] }] }] } },
+    ]),
+    [
+      { startMs: 1_000, endMs: 1_100 },
+      { startMs: 2_000, endMs: 2_000 },
+    ],
   );
 });
 

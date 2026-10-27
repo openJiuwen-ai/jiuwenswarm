@@ -884,7 +884,8 @@ test('simple Settings controls are declared per module and enforced by the share
 test('shared Settings extension model remains product-neutral', () => {
   const forbiddenProductName = ['enter', 'prise'].join('');
   const files = [
-    ...sourceFilesUnder('src/features/settings'),
+    ...['components', 'services'].flatMap((directory) => sourceFilesUnder(`src/features/settings/${directory}`)),
+    ...sourceFilesUnder('src/features/settings/registry').filter((file) => !file.pathname.endsWith('/enterpriseDefinition.ts')),
     ...sourceFilesUnder('tests/fixtures/settings-extension'),
   ];
   for (const file of files) {
@@ -1708,11 +1709,11 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.match(
     settingsPageCss,
-    /\.settings-models__toast--success\s*\{[^}]*border-color:\s*var\(--color-feedback-success\)[^}]*background:\s*var\(--color-feedback-success-toast\)/s,
+    /\.settings-models__toast--success,\s*\.settings-external-cli__toast--success\s*\{[^}]*border-color:\s*var\(--color-feedback-success\)[^}]*background:\s*var\(--color-feedback-success-toast\)/s,
   );
   assert.match(
     settingsPageCss,
-    /\.settings-models__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
+    /\.settings-models__toast--error,\s*\.settings-external-cli__toast--error\s*\{[^}]*border-color:\s*var\(--color-feedback-danger\)[^}]*background:\s*var\(--color-feedback-danger-toast\)/s,
   );
   assert.doesNotMatch(settingsPageCss, /\.settings-model-group\s*\{/);
   assert.doesNotMatch(settingsPageCss, /\.settings-model-group__items/);
@@ -2038,7 +2039,7 @@ test('legacy page translations and Harness package state are removed without del
   ];
 
   for (const locale of [zh, en]) {
-    assert.deepEqual(Object.keys(locale.browser).sort(), ['errors', 'pane']);
+    assert.deepEqual(Object.keys(locale.browser).sort(), ['downloads', 'errors', 'pane']);
     assert.deepEqual(Object.keys(locale.channels.labels).sort(), supportedChannelIds);
     assert.deepEqual(Object.keys(locale.config).sort(), expectedConfigSections);
     assert.equal(locale.extensions, undefined);

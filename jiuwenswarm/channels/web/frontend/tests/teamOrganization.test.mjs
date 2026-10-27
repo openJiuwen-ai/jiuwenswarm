@@ -1175,8 +1175,13 @@ test('composer mentions follow the selected Team and discard old member chips', 
   visit(source);
   assert.equal(statements.length, 6);
   const body = ts.transpileModule(statements.join('\n'), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
+  const fallback = source.statements.find((node) => ts.isVariableStatement(node)
+    && node.declarationList.declarations.some((d) => d.name.getText(source) === 'EMPTY_TEAM_MEMBERS'));
+  assert.ok(fallback, 'composer fallback must be stable before the component renders');
+  const fallbackBody = ts.transpileModule(fallback.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
   const probe = new Function('useOrganizationConversationKey', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
     const { useMemo, useRef, useEffect, useCallback } = React;
+    ${fallbackBody}
     return function Probe({ activeSessionId }) {
       const inputRef = useRef(editor);
       const setComposerSuggestion = (value) => report.closed.push(value);

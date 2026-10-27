@@ -207,6 +207,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     enqueue_history_request_completion,
     history_exists,
     is_valid_session_id,
+    list_session_subagent_ids,
     load_history_records,
     read_history_cursor_page,
     read_member_history_records,
@@ -8560,22 +8561,41 @@ class AgentWebSocketServer:
                 )
             next_seq += 1
 
+        done_payload: dict[str, Any] = {
+            "event_type": "history.message",
+            "status": "done",
+            "session_id": str(session_id or ""),
+            "subagent_id": str(response_subagent_id or subagent_id or ""),
+            "total_pages": total_pages,
+            "page_idx": page,
+            "cursor": request_cursor if cursor_protocol else None,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "snapshot_id": snapshot_id,
+            "snapshot_end": snapshot_end,
+        }
+        # Parent history cold-start: advertise on-disk subagent buckets so the
+        # frontend can fetch per-subagent transcripts even when parent history
+        # never persisted chat.subtask_update roster frames (GitCode #4887).
+        # Keep the if-condition to <=3 boolean expressions (G.CTL.03).
+        parent_session_id = session_id.strip() if isinstance(session_id, str) else ""
+        is_parent_history_request = not response_subagent_id and not subagent_id
+        if is_initial_history_batch and is_parent_history_request and parent_session_id:
+            try:
+                discovered_ids = list_session_subagent_ids(parent_session_id)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[history.get] list_session_subagent_ids failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+                discovered_ids = []
+            if discovered_ids:
+                done_payload["subagent_ids"] = discovered_ids
         done_chunk = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,
-            payload={
-                "event_type": "history.message",
-                "status": "done",
-                "session_id": str(session_id or ""),
-                "subagent_id": str(response_subagent_id or subagent_id or ""),
-                "total_pages": total_pages,
-                "page_idx": page,
-                "cursor": request_cursor if cursor_protocol else None,
-                "next_cursor": next_cursor,
-                "has_more": has_more,
-                "snapshot_id": snapshot_id,
-                "snapshot_end": snapshot_end,
-            },
+            payload=done_payload,
             is_complete=True,
         )
         wire_done = encode_agent_chunk_for_wire(
@@ -9560,12 +9580,173 @@ class AgentWebSocketServer:
             payload=resp_payload,
         )
 
+    @staticmethod
+    def _command_mcp_internal_state(request: AgentRequest) -> AgentResponse:
+        """Gateway 内部状态访问：command.mcp 的受限 action 族。
+
+        为 gateway 侧远端 provider（拆仓后 ``server_store_bridge`` 的替代）
+        暴露 MCP 连接状态/注册表/凭据三个域的原子读写。与 UI 导向的
+        list/show/add/enable/update 不同，这些响应**不脱敏**（config 视图
+        构建与凭据解析需要原始数据），因此整族 action 仅对 gateway 的
+        内部通道放行，其余通道一律拒绝。
+        """
+        if str(getattr(request, "channel_id", "") or "") != "gateway":
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": "internal MCP state actions are gateway-only",
+                    "code": "PERMISSION",
+                },
+            )
+        params = request.params if isinstance(request.params, dict) else {}
+        action = str(params.get("action", "") or "").strip().lower()
+        name = str(params.get("name", "") or "").strip()
+
+        def _ok(payload: dict[str, Any]) -> AgentResponse:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=payload,
+            )
+
+        try:
+            if action == "state_config_view":
+                # config.py 视图循环的服务端整段执行：一次往返替代逐记录
+                # is_stale/record_to_entry 的 N 次调用。
+                from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
+                from jiuwenswarm.server.runtime.mcp import state_store
+
+                entries = []
+                for rec in state_store.list_connected_mcps():
+                    rec_name = str(rec.get("name", "") or "")
+                    if not rec_name or mcp_registry.is_stale_marketplace_record(rec_name, rec):
+                        continue
+                    entry = state_store.record_to_mcp_entry(rec_name, rec)
+                    if entry is not None:
+                        entries.append(entry)
+                return _ok({"type": "state_config_view", "entries": entries})
+
+            from jiuwenswarm.server.runtime.mcp import state_store
+
+            if action == "state_list":
+                view = str(params.get("view", "connected") or "connected").strip()
+                view_map = {
+                    "connected": state_store.list_connected_mcps,
+                    "truly_connected": state_store.list_truly_connected_mcps,
+                    "connecting": state_store.list_connecting_mcps,
+                    "tui_enabled": state_store.list_tui_enabled_mcps,
+                    "registered": state_store.list_registered_mcps,
+                }
+                items = view_map.get(view, state_store.list_connected_mcps)()
+                return _ok({"type": "state_list", "view": view, "items": items})
+            if action == "state_get_record":
+                return _ok({"record": state_store.get_mcp_record(name)})
+            if action == "state_upsert":
+                record = state_store.upsert_mcp_record(
+                    name,
+                    params.get("entry") or {},
+                    state=str(params.get("state", "connected") or "connected"),
+                    integration_type=params.get("integration_type"),
+                    skills=params.get("skills"),
+                    enabled=params.get("enabled"),
+                )
+                return _ok({"record": record})
+            if action == "state_set_enabled":
+                state_store.set_mcp_enabled(name, enabled=bool(params.get("enabled")))
+                return _ok({})
+            if action == "state_remove":
+                return _ok({"record": state_store.remove_mcp_record(name)})
+            if action == "oauth_callback":
+                # 已移交异步方法 _command_mcp_oauth_callback（外部 HTTP 往返）
+                raise AssertionError("unreachable: oauth_callback dispatches to the async handler")
+            if action == "credential_get_all":
+                from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
+
+                return _ok({"tokens": CredentialStore().get_all(name)})
+            if action == "credential_resolve":
+                from jiuwenswarm.server.runtime.mcp.credential import (
+                    CredentialStore,
+                    resolve_placeholders,
+                )
+
+                resolved = resolve_placeholders(
+                    params.get("entry") or {}, CredentialStore(), name or None
+                )
+                return _ok({"entry": resolved})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] command.mcp internal state failed: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": f"unknown internal action: {action}", "code": "MCP_BAD_REQUEST"},
+        )
+
+    async def _command_mcp_oauth_callback(self, request: AgentRequest) -> AgentResponse:
+        """``oauth_callback`` 的异步形态：换码经 to_thread 执行（见分发处注释）。"""
+        if str(getattr(request, "channel_id", "") or "") != "gateway":
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": "internal MCP state actions are gateway-only",
+                    "code": "PERMISSION",
+                },
+            )
+        params = request.params if isinstance(request.params, dict) else {}
+        try:
+            from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
+
+            completed = await mcp_registry.complete_oauth_callback_async(
+                params.get("query") or {}
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"completed": bool(completed)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] command.mcp oauth callback failed: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "MCP_INTERNAL"},
+            )
+
     async def _handle_command_mcp(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         try:
             params = request.params or {}
             action = str(params.get("action", "list")).strip().lower()
 
-            if action == "list":
+            if action == "oauth_callback":
+                # 换码含外部 HTTP 往返（IdP 最长 20s），必须经异步孪生走
+                # to_thread，不得在事件循环上同步执行（否则冻结本进程
+                # 全部通道的流式帧与心跳）
+                resp = await self._command_mcp_oauth_callback(request)
+            elif action in {
+                "state_config_view",
+                "state_list",
+                "state_get_record",
+                "state_upsert",
+                "state_set_enabled",
+                "state_remove",
+                "credential_get_all",
+                "credential_resolve",
+            }:
+                resp = self._command_mcp_internal_state(request)
+            elif action == "list":
                 items = [self._mask_sensitive_fields(item) for item in get_mcp_servers()]
                 resp = AgentResponse(
                     request_id=request.request_id,

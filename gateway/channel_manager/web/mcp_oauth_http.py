@@ -8,10 +8,9 @@ import html
 import logging
 
 from fastapi import FastAPI, Request
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 
-from jiuwenswarm.common.mcp_oauth import McpOAuthError, complete_oauth_flow
+from jiuwenswarm.common.mcp_oauth import McpOAuthError, complete_oauth_flow_async
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +39,8 @@ def attach_mcp_oauth_routes(app: FastAPI) -> None:
     async def mcp_oauth_callback(request: Request) -> HTMLResponse:
         query = dict(request.query_params)
         try:
-            await run_in_threadpool(complete_oauth_flow, query)
+            # 统一异步入口：本地桥（to_thread 语义）与 WS 远端 provider 同签名
+            await complete_oauth_flow_async(query)
         except McpOAuthError as exc:
             logger.warning("[MCP OAuth] callback failed: %s", exc)
             return _landing(False, "授权未完成", str(exc), 400)

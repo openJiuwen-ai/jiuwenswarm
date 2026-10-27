@@ -383,7 +383,11 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
             }],
         },
     )
-    callback = AsyncMock(side_effect=lambda event: received.append(event))
+    def record_ack(event):
+        assert get_current_runtime() is runtime
+        received.append(event)
+
+    callback = AsyncMock(side_effect=record_ack)
     callback_arg = None if case == "no_callback" else callback
     task = asyncio.create_task(
         _collect_events(runtime.stream(answer, trigger_hook=False, on_control_event=callback_arg))
@@ -397,10 +401,7 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
             if task.done():
                 await task
             raise
-        # Unary + smart permission still early-acks via on_control_event.
-        # Streaming permission_interrupt now shares the ask_user stream path, so
-        # runtime.accepted rides the main event stream (not the callback).
-        assert len(received) == (1 if case == "smart" and not streaming else 0)
+        assert len(received) == (1 if case == "smart" else 0)
         if case == "failed_handoff":
             with pytest.raises(RuntimeError, match="handoff failed"):
                 await task
@@ -410,7 +411,7 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
             events = await asyncio.wait_for(task, timeout=1)
             assert [event.event_type for event in events] == (
                 ["chat.final"]
-                if case == "smart" and not streaming
+                if case == "smart"
                 else ["runtime.accepted", "chat.final"]
             )
             if received:
@@ -4210,129 +4211,59 @@ async def test_stop_session_for_archive_cancels_requests_without_waiting_for_cac
         )
 
 @pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_delegates_without_starting_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
+@pytest.mark.parametrize("stop_fails", [False, True])
+async def test_close_stops_owned_team_via_session_lifecycle(stop_fails) -> None:
+    """The unified Team lifecycle replaces the removed global stream API."""
+    from jiuwenswarm.runtime.session_lifecycle import (
+        SessionDescriptor as LifecycleDescriptor,
+        SessionKind,
+        SessionLifecycleTarget,
     )
+
+    manager = FakeAgentManager()
     initializer = AsyncMock()
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=initializer)
-
-    await runtime.cancel_all_team_stream_tasks(
-        reason="[gateway ws closed] ",
-        exclude_session_ids=("heartbeat-session",),
+    lifecycle = SimpleNamespace(stop_session=AsyncMock(
+        side_effect=RuntimeError("team stop failed") if stop_fails else None,
+    ))
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=initializer,
+        session_runtime_lifecycle=lifecycle,
     )
-
-    helper.assert_awaited_once_with(
-        reason="[gateway ws closed] ",
-        exclude_session_ids={"heartbeat-session"},
-    )
-    assert runtime.started is False
+    snapshot = await runtime._session_coordinator.register_session("owned-team", "web")
+    await runtime._session_coordinator.register_session("ordinary-agent", "web")
+    runtime._participant_registry.remember_target(SessionLifecycleTarget(
+        descriptor=LifecycleDescriptor(
+            session_id="owned-team", channel_id="web", mode="team", work_mode="work",
+        ),
+        kind=SessionKind.TEAM,
+    ))
+    if stop_fails:
+        with pytest.raises(RuntimeError, match="team stop failed"):
+            await runtime.close()
+    else:
+        await runtime.close()
+    lifecycle.stop_session.assert_awaited_once()
+    context = lifecycle.stop_session.await_args.args[0]
+    assert context.session_id == "owned-team"
+    assert context.generation == snapshot.generation
+    assert lifecycle.stop_session.await_args.kwargs == {"reason": "runtime_closed"}
+    assert manager.cleanup_calls == 1
+    assert runtime.closed is True
     initializer.assert_not_awaited()
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_preserves_none_exclusions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
-
-    await runtime.cancel_all_team_stream_tasks(
-        reason="cancel all teams",
-        exclude_session_ids=None,
-    )
-
-    helper.assert_awaited_once_with(
-        reason="cancel all teams",
-        exclude_session_ids=None,
-    )
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_materializes_generator_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
-    consumed: list[str] = []
-
-    def exclusions() -> Iterable[str]:
-        for session_id in ("heartbeat-1", "heartbeat-2"):
-            consumed.append(session_id)
-            yield session_id
-
-    excluded = exclusions()
-    await runtime.cancel_all_team_stream_tasks(
-        exclude_session_ids=excluded,
-    )
-
-    helper.assert_awaited_once_with(
-        reason="[runtime cancel all team streams] ",
-        exclude_session_ids={"heartbeat-1", "heartbeat-2"},
-    )
-    assert consumed == ["heartbeat-1", "heartbeat-2"]
-    assert list(excluded) == []
-
-@pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_rejects_closed_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock()
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
     await runtime.close()
+    assert lifecycle.stop_session.await_count == 1
 
-    with pytest.raises(RuntimeStateError, match="runtime is already closed"):
-        await runtime.cancel_all_team_stream_tasks()
-
-    helper.assert_not_awaited()
 
 @pytest.mark.asyncio
-async def test_cancel_all_team_stream_tasks_propagates_helper_error(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from jiuwenswarm.agents.harness import team as team_module
-
-    helper = AsyncMock(side_effect=RuntimeError("team cancel failed"))
-    monkeypatch.setattr(
-        team_module,
-        "cancel_all_team_stream_tasks_across_managers",
-        helper,
-    )
-    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock())
-
-    with pytest.raises(RuntimeError, match="team cancel failed"):
-        await runtime.cancel_all_team_stream_tasks(
-            reason="disconnect",
-            exclude_session_ids=("heartbeat-session",),
-        )
-
-    helper.assert_awaited_once_with(
-        reason="disconnect",
-        exclude_session_ids={"heartbeat-session"},
-    )
+async def test_runtime_close_does_not_clear_another_runtime_managers() -> None:
+    first_manager, second_manager = FakeAgentManager(), FakeAgentManager()
+    first = AgentRuntime(agent_manager=first_manager, initializer=AsyncMock())
+    second = AgentRuntime(agent_manager=second_manager, initializer=AsyncMock())
+    await first.close()
+    assert first_manager.cleanup_calls == 1
+    assert second_manager.cleanup_calls == 0
+    assert second.agent_manager is second_manager
+    await second.start()
+    await second.close()
+    assert second_manager.cleanup_calls == 1

@@ -2030,6 +2030,10 @@ async def _run(
     from gateway.routing.session_metadata_remote import bind_agent_client as _bind_session_meta_client
 
     _bind_session_meta_client(client)
+    # mcp_registry 域 WS 远端实现（oauth 回调）的客户端绑定，同款装配
+    from gateway.routing.mcp_remote import bind_agent_client as _bind_mcp_client
+
+    _bind_mcp_client(client)
 
     # Heartbeat Store/Controller/Scheduler/Execution live in AgentServer.
     # Gateway keeps only the stable public-interface proxy wired to Web/TUI.
@@ -3924,7 +3928,7 @@ def main() -> None:
     # Per-workspace singleton lock: prevents a second Gateway process from
     # serving the same workspace (two CronSchedulerService instances over one
     # cron_jobs.json => duplicate cron executions).
-    from jiuwenswarm.instance_manager.lock import GatewayLock
+    from gateway.gateway_lock import GatewayLock
 
     gateway_lock = GatewayLock(get_user_workspace_dir())
     if not gateway_lock.acquire():

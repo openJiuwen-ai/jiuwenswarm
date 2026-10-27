@@ -221,6 +221,58 @@ async def test_response_prompt_rail_splits_input_and_output_rules():
 
 
 @pytest.mark.asyncio
+async def test_response_prompt_rail_omits_send_file_for_xiaoyi(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"channels": {"xiaoyi": {"send_file_allowed": True}}},
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+    assert "生成并投递文件" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_fails_closed_without_config(monkeypatch):
+    def unavailable_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        unavailable_config,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+
+
+@pytest.mark.asyncio
 async def test_symphony_orchestration_rail_respects_config_snapshot():
     enabled_builder = SystemPromptBuilder(language="cn")
     enabled_agent = _FakeAgent(enabled_builder)
@@ -1058,33 +1110,34 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
             "en",
             "# A4P Intent Authorization",
             (
-                "call `request_a4p_intent_authorization`",
-                "including read-only operations",
-                "Unprotected tools may be used first",
-                "may include multiple `actions`",
-                "ordinary parameters not used for authorization matching need not be known in advance",
-                "authorize each complete exact command by default",
-                "cannot absorb whitespace, Shell operators, redirections, or extra arguments",
-                "a filename glob under a fixed directory",
-                "Never use a bare `*`",
-                "Use dedicated file tools for file writes",
-                "Once these checks pass, immediately make the next tool call",
-                "Without new information, do not reconsider",
-                "Revise only affected steps and their dependencies",
-                "Plans may describe variables and substitution rules",
-                "actual tool calls must use resolved values",
-                "do not guess parameters or broaden authorization to compensate",
-                "request another authorization only if the later stage is not covered by an approved scope",
-                "Cron authorization cannot be staged",
-                "otherwise, do not enable the job",
-                "put task execution and necessary preparation in the future plan",
-                "Generate the job `description` and authorization `actions` from the same execution plan",
-                "Use the system-designated default Cron creation tool",
-                "create disabled",
-                "authorize the complete future scope using the returned `cronJobId`",
-                "enable after `ok=true`",
-                "keep the job disabled",
-                "do not repeatedly submit the same request",
+                'call `request_a4p_intent_authorization`',
+                'Read-only operations also require this preparation',
+                'Only tools outside this list may be',
+                'Submit multiple actions together',
+                'Ordinary parameters need not be known',
+                'complete exact commands',
+                'must not absorb whitespace, Shell operators, redirections, or extra arguments',
+                'a filename glob under a fixed directory',
+                'never a bare *',
+                'Use dedicated file tools for writes',
+                'Choose a feasible plan once and proceed',
+                'revise only for new facts',
+                'execute with resolved values, never placeholders',
+                'Do not broaden scopes or guess missing information',
+                'Reuse approved scopes',
+                'Cron authorization cannot be staged',
+                'every planned action is permitted',
+                'put execution/preparation in the future plan',
+                'actions from the same plan',
+                'system-designated default creation tool',
+                'create disabled',
+                'complete future scope using the returned cronJobId',
+                'enable after ok=true',
+                'Keep the job disabled',
+                'Do not repeat rejected or failed requests unchanged',
+                'Execute only permittedActions',
+                'unapprovedActions still lack approval',
+                'actual calls still recheck permissions',
             ),
             (
                 "determine and freeze the most direct future call list",
@@ -1103,33 +1156,34 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
             "cn",
             "# A4P 意图授权",
             (
-                "调用 `request_a4p_intent_authorization`",
-                "只读操作也不例外",
-                "受保护列表外的工具",
-                "可通过多个 `actions` 覆盖当前已确定的范围",
-                "无需提前确定不参与授权匹配的普通参数",
-                "默认分别授权完整精确命令",
-                "通配不会覆盖空白、Shell 运算符、重定向或额外参数",
-                "固定目录下的文件名 glob",
-                "不得使用裸 *",
-                "使用专用文件工具完成文件写入",
-                "三项检查通过后，立即进入下一步工具调用",
-                "没有新增信息时，不重新比较",
-                "才修改受影响的步骤及其依赖",
-                "计划可以描述变量和替换关系",
-                "实际调用时必须使用已解析的真实参数",
-                "不得以扩大授权或猜测参数代替解决问题",
-                "仅当后续阶段不在已批准范围内时再申请授权",
-                "Cron 授权不能分阶段",
-                "无法表达时，不启用任务",
-                "将任务执行及其必要准备操作纳入未来执行计划",
-                "从同一份执行计划生成任务 description 和授权 actions",
-                "使用系统指定的默认 Cron 创建工具",
-                "create disabled",
-                "使用返回的 cronJobId 一次性授权完整未来范围",
-                "ok=true 后 enable",
-                "保持任务禁用",
-                "不反复提交相同请求",
+                '必须先调用 `request_a4p_intent_authorization`',
+                '只读操作也必须先提交',
+                '只有列表外的工具',
+                '合并提交多个 actions',
+                '无需提前确定普通参数',
+                '默认授权完整精确命令',
+                '不得覆盖空白、Shell 运算符、重定向或额外参数',
+                '固定目录下的文件名 glob',
+                '不得使用裸 *',
+                '使用专用文件工具写入',
+                '选定可行计划后执行',
+                '仅因新事实、需求变化或实际错误调整',
+                '动态参数用有界范围表达',
+                '实际执行使用真实值而非占位符',
+                '不扩大范围或猜测缺失信息',
+                '复用已批准范围',
+                'Cron 不能分阶段授权',
+                '范围不足时保持禁用',
+                '准备和执行放入未来计划',
+                '同一计划生成 description 和 actions',
+                '使用系统指定的默认创建工具',
+                'create disabled',
+                'cronJobId 一次性授权完整未来范围',
+                'ok=true 且计划内全部操作获准后 enable',
+                '拒绝或失败后不要原样重复请求',
+                '只能执行 permittedActions 中的操作',
+                'unapprovedActions 仍缺授权',
+                '实际调用仍重新校验权限',
             ),
             (
                 "确定并冻结一份最直接的未来调用清单",

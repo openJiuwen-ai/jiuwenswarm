@@ -30,12 +30,15 @@ logger = logging.getLogger(__name__)
 
 
 class TenantAgentPool:
-    """多租户 AgentManager 管理器（单例）.
+    """多租户 AgentManager 管理器，由所属 Runtime 创建并清理.
 
     职责：
     1. 按 ``tenant_key`` 用 LRU 创建 / 缓存多个 ``AgentManager``
     2. 请求进入时绑定 ``TenantContext``，再分发到对应 Manager
     3. 管理实例生命周期（cleanup / 测试重置）
+
+    Runtime uses an owned pool so closing one Runtime cannot clear another.
+    The legacy singleton helpers remain available to compatibility callers.
 
     每个 AgentManager 仍管理该租户内多个 Agent（按 channel_id 等区分）。
     """

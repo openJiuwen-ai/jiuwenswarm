@@ -40,8 +40,8 @@ async def test_concurrent_tenant_scopes_yield_isolated_managers(
         iter_agent_managers_nowait=lambda: [default],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.runtime.service.TenantAgentPool.get_instance",
-        staticmethod(lambda: pool),
+        "jiuwenswarm.runtime.service.TenantAgentPool",
+        lambda: pool,
     )
 
     runtime = AgentRuntime(agent_manager=default, initializer=AsyncMock())
@@ -71,3 +71,34 @@ async def test_concurrent_tenant_scopes_yield_isolated_managers(
     assert seen["a"] == ["tenant-a"]
     assert seen["b"] == ["tenant-b"]
     assert runtime.agent_manager is default
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+async def test_owned_pool_preserves_edition_routing_and_runtime_isolation(monkeypatch, enterprise):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise" if enterprise else "personal")
+    first_default = SimpleNamespace(cleanup=AsyncMock(), cancel_all_inflight_work=AsyncMock())
+    second_default = SimpleNamespace(cleanup=AsyncMock(), cancel_all_inflight_work=AsyncMock())
+    first = AgentRuntime(agent_manager=first_default, initializer=AsyncMock())
+    second = AgentRuntime(agent_manager=second_default, initializer=AsyncMock())
+    requests = [AgentRequest(
+        request_id=f"request-{user}", channel_id="web", session_id=f"session-{user}",
+        metadata={"user_id": user, "routing": {"group_id": "group", "bot_id": "bot"}},
+    ) for user in ("alice", "bob")]
+    managers = []
+    for request in requests:
+        manager = SimpleNamespace(cleanup=AsyncMock(), cancel_all_inflight_work=AsyncMock())
+        managers.append(first.tenant_pool.put_nowait(first.tenant_pool.extract_tenant_key(request), manager))
+    assert (managers[0] is managers[1]) is (not enterprise)
+    for request, expected in zip(requests, managers):
+        async with first.tenant_pool.tenant_scope(request) as actual:
+            assert actual is expected
+            assert await first.resolve_manager(request) is expected
+    await second.close()
+    for request, expected in zip(requests, managers):
+        assert await first.resolve_manager(request) is expected
+        expected.cleanup.assert_not_awaited()
+    second_default.cleanup.assert_awaited_once()
+    await first.close()
+    for expected in {id(manager): manager for manager in managers}.values():
+        expected.cleanup.assert_awaited_once()

@@ -20184,6 +20184,10 @@ class JiuWenSwarmDeepAdapter:
             **projection,
             "task_id": subagent_id,
             "description": description,
+            # Parent-stream history persist uses payload.content; without it the
+            # empty-shell filter drops roster frames and refresh loses the panel
+            # (GitCode #4887). Mirror description so parent history rediscovers ids.
+            "content": description,
             "legacy_status": legacy_status,
             "index": index,
             "total": total,
