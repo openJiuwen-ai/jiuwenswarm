@@ -127,6 +127,7 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
         detail = core_agent_text(tool.get("formatted_args") or tool.get("arguments"))
         return {
             "stage": "tool_call",
+            "tool_payload": payload,
             "title": f"调用工具：{name}",
             "detail": detail,
             "status": "running",
@@ -189,6 +190,7 @@ def core_agent_progress(payload: dict[str, Any]) -> dict[str, Any] | None:
             raw_result = result.get("error") or result.get("summary")
         return {
             "stage": "tool_result",
+            "tool_payload": payload,
             "title": f"{name}{'执行失败' if failed else '执行完成'}",
             "detail": detail,
             "status": "failed" if failed else "completed",

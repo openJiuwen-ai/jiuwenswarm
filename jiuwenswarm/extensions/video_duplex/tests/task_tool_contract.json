@@ -147,5 +147,15 @@
     },
     "server_accepts": true,
     "client_accepts": true
+  },
+  {
+    "id": "create-invalid-title",
+    "name": "jiuwen_delegate",
+    "arguments": {
+      "task": "weather",
+      "title": "first\nsecond"
+    },
+    "server_accepts": false,
+    "client_accepts": false
   }
 ]

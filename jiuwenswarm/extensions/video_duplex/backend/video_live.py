@@ -13,6 +13,7 @@ from typing import Any
 import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend import (
+    joyai_action_helper,
     joyai_provider,
     settings,
     video_search,
@@ -44,7 +45,7 @@ _CONVERSATION_EVENT_KINDS = {
 
 
 _REALTIME_TELEMETRY_EVENT = re.compile(
-    r"^(?:realtime|qwen|joyai|search_result|barge_in)_[a-z0-9_]{1,80}$"
+    r"^(?:realtime|qwen|joyai|search_result|barge_in|task_trace)_[a-z0-9_]{1,80}$"
 )
 _REALTIME_TELEMETRY_FIELDS = {
     "event", "client_time", "level", "peak_level", "threshold",
@@ -57,7 +58,7 @@ _REALTIME_TELEMETRY_FIELDS = {
     "speech_epoch", "tts_generation", "resumed_text_chars", "text_chars",
     "transcript_chars", "user_speech_active", "response_generation",
     "current_generation", "stream_id", "streamed", "cooldown_ms",
-    "rate_limit_strikes", "request_kind", "audio_append_sequence",
+    "rate_limit_strikes", "frame_interval_ms", "request_kind", "audio_append_sequence",
     "image_append_sequence", "has_deferred_image", "response_id",
     "audio_level", "speech_threshold", "cancel_event_sent",
     "replacing_pending_prompt", "instruction_chars", "frame_time_range",
@@ -65,6 +66,9 @@ _REALTIME_TELEMETRY_FIELDS = {
     "speech_probability",
     "queued_count", "result_kind", "brief_chars",
     "latency_ms", "inference_ms", "wait_ms", "dropped_chunks",
+    "rpc_request_id", "action", "before_job_id", "queue_version", "sequence",
+    "status", "queue_position", "stored_status", "stored_sequence",
+    "stored_queue_version", "stored_queue_position", "output_chars", "item_id",
 }
 
 
@@ -376,7 +380,49 @@ def register_video_live_handler(
             request_args = [frame_data_url, model_instruction, upstream_session_id]
             if frame_time_range:
                 request_args.append(frame_time_range)
-            result = await joyai_provider.request_frame(*request_args)
+            protocol_invalid = False
+            try:
+                result = await joyai_provider.request_frame(*request_args)
+            except joyai_provider.JoyAIActionProtocolError as exc:
+                if request_kind != "user":
+                    raise
+                protocol_invalid = True
+                result = {**exc.completion, "decision": "response", "response": "", "delegation": ""}
+            if request_kind == "user" and result.get("decision") != "delegation":
+                try:
+                    owner, scope = await search_manager.scope(ws, {"search_session_id": search_session_id})
+                    snapshot = search_manager.snapshot(owner, scope)
+                    jobs = snapshot["jobs"]
+                    active = [job for job in jobs if job["status"] not in {"completed", "failed", "cancelled"}]
+                    recent = active[:8] + [job for job in jobs[-8:] if job not in active[:8]]
+                    task_context = [{key: job.get(key) for key in (
+                        "job_id", "title", "question", "status", "revision", "parent_id", "successor_id",
+                    )} for job in recent]
+                    for task in task_context:
+                        task["question"] = str(task.get("question") or "")[:1000]
+                    result = await joyai_action_helper.review_action(
+                        instruction=instruction,
+                        result=result,
+                        context=json.dumps({"restored_history": restore_instructions,
+                                            "confirmed_tool_results": tool_context}, ensure_ascii=False),
+                        current_tasks=task_context,
+                        reply_language=reply_language,
+                        command_id=str(params.get("command_id") or req_id),
+                        protocol_invalid=protocol_invalid,
+                    )
+                except Exception as exc:
+                    # The original answer may promise an action that was never
+                    # submitted. Withhold it if review cannot establish a result.
+                    await asyncio.to_thread(_append_joyai_log, {
+                        **request_log, "stage": "failed", "error_code": "JOYAI_ACTION_HELPER_ERROR",
+                        "error_type": type(exc).__name__,
+                    })
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error="JoyAI action review failed; no new task was submitted. Retry or check the task list.",
+                        code="JOYAI_ACTION_HELPER_ERROR",
+                    )
+                    return
             _validate_joyai_result(result)
         except Exception as exc:  # noqa: BLE001
             error = str(exc) or "JoyAI frame request failed"
@@ -400,10 +446,12 @@ def register_video_live_handler(
             return
 
         # JoyAI has a delegation marker rather than native function calls. Only
-        # explicit schema-validated JSON is a control; no text intent classifier.
+        # explicit schema-validated JSON is a control. Reviewed proposals enter
+        # the same validation and command deduplication path as native calls.
         scheduling = None
         task_title = ""
-        for operation_index in range(3):
+        operation_count = 0
+        while operation_count < 3:
             delegation = str(result.get("delegation") or "").strip()
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
                 break
@@ -428,7 +476,7 @@ def register_video_live_handler(
                 call = parse_qwen_omni_tool_call(
                     {
                         **value,
-                        "call_id": f"{params.get('command_id') or req_id}:{operation_index}",
+                        "call_id": f"{params.get('command_id') or req_id}:{operation_count}",
                     }
                 )
                 if call.name == "jiuwen_delegate":
@@ -440,7 +488,8 @@ def register_video_live_handler(
                     }
                     result = {**result, "delegation": call.task}
                     break
-                receipt = await search_manager.operate(owner, scope, call)
+                receipt = await search_manager.operate(owner, scope, call, user_instruction=question or instruction)
+                operation_count += 1
                 # Feed facts through the same provider conversation, including ids
                 # needed for query -> modify. A receipt cannot manufacture a task.
                 followup = model_instruction + "\n\n" + task_receipt_followup(receipt)
@@ -453,16 +502,13 @@ def register_video_live_handler(
                     ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
                 )
                 return
-        else:
-            if result.get("decision") == "delegation":
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="Task operation limit reached; query current state",
-                    code="TASK_REQUEST_REJECTED",
-                )
-                return
+        if operation_count == 3 and result.get("decision") == "delegation":
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="Task operation limit reached; query current state",
+                code="TASK_REQUEST_REJECTED",
+            )
+            return
 
         search_job = None
         tools_used: list[str] = []
@@ -486,6 +532,8 @@ def register_video_live_handler(
                 )
                 return
             tools_used.append("jiuwen_delegate")
+            if result.get("action_helper_delegated"):
+                result["response"] = joyai_action_helper.submission_response(search_job, reply_language, instruction)
         await asyncio.to_thread(
             _append_joyai_log,
             {
@@ -520,18 +568,37 @@ def register_video_live_handler(
                 ws, req_id, ok=False, error="unsupported telemetry event", code="BAD_REQUEST"
             )
             return
-        allowed: dict[str, str | int | float | bool] = {}
+        allowed: dict[str, Any] = {}
         for key, value in params.items():
             if key not in _REALTIME_TELEMETRY_FIELDS:
                 continue
             if isinstance(value, (str, int, float, bool)):
                 allowed[key] = value
+        if event_name == "qwen_tool_call_invalid":
+            arguments = params.get("arguments")
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            if isinstance(arguments, str):
+                allowed["arguments"] = arguments[:2_000]
         for key in ("question", "query", "text", "transcript"):
             if isinstance(allowed.get(key), str):
                 allowed[key] = allowed[key][:1_000]
         for key in ("result", "realtime_answer"):
             if isinstance(allowed.get(key), str):
                 allowed[key] = allowed[key][:50_000]
+        if event_name.startswith(("task_trace_", "qwen_tool_")) or event_name in {
+            "qwen_realtime_error", "qwen_text_input_dispatched",
+        }:
+            from .tasks.diagnostics import trace_task
+
+            if event_name.startswith("task_trace_") and isinstance(params.get("jobs"), list):
+                allowed["jobs"] = [
+                    {key: job.get(key) for key in (
+                        "job_id", "status", "sequence", "queue_position", "queue_version",
+                    ) if isinstance(job.get(key), (str, int, float, bool))}
+                    for job in params["jobs"][:100] if isinstance(job, dict)
+                ]
+            trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
         if event_name in {
             "realtime_answer_final",
             "search_result_received",

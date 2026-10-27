@@ -93,3 +93,18 @@ def test_rendered_history_keeps_recent_six_and_bounds_long_context():
     assert 0 < len(bounded) <= 8000
     assert "MUST_BE_TRUNCATED" not in bounded
     assert items[-1]["result"].endswith("MUST_BE_TRUNCATED")
+
+
+def test_file_revision_prompt_uses_delivered_file_receipt():
+    context = video_search._delegation_context_text([{
+        "question": "Save the introduction as a PDF",
+        "query": "Save the introduction as a PDF",
+        "files": [{"name": "intro.pdf", "path": "/work/intro.pdf"}],
+        "result": "The file is ready.",
+    }])
+    prompt = video_search.build_execution_prompt(
+        "Where was the PDF saved?", "Where was the PDF saved?", "", context,
+    )
+    assert "/work/intro.pdf" in prompt
+    assert "send_file_to_user" in prompt
+    assert "Never invent a location or claim delivery without a file receipt" in prompt

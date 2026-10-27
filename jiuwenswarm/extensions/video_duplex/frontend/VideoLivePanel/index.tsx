@@ -35,6 +35,7 @@ import { JoyAIProvider } from './joyaiProvider';
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
+import { reportedRuntimeState } from './runtimeState';
 import {
   mergeSearchProgressJob,
   searchAwareToolStatus,
@@ -80,7 +81,7 @@ function isUsefulTranscript(text: string): boolean {
 }
 
 export interface VideoLivePanelHandle {
-  startScreenDuplex: (searchSessionId?: string, shareScreen?: boolean, visualSource?: 'screen' | 'camera') => Promise<boolean>;
+  startScreenDuplex: (searchSessionId?: string, shareScreen?: boolean) => Promise<boolean>;
   stop: () => void;
   setMicrophoneMuted: (muted: boolean) => void;
   setSpeakerMuted: (muted: boolean) => void;
@@ -168,6 +169,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       {
         event,
         client_time: new Date().toISOString(),
+        search_session_id: searchSessionRef.current,
         ...details,
       },
       { timeoutMs: 5_000 },
@@ -911,6 +913,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onAssistantText: (text, final, toolJobId, responseId) => {
               const visibleText = text.trim();
+              if (final && visibleText) reportRealtimeEvent('task_trace_assistant_final', {
+                text: visibleText, job_id: toolJobId, response_id: responseId,
+              });
               if (final && toolJobId) {
                 searchJobsRef.current.delete(toolJobId);
                 setSearchStatus('');
@@ -942,6 +947,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
             },
             onUserText: (text, final) => {
               if (final) {
+                reportRealtimeEvent('task_trace_user_transcript', { text });
                 handleFinalRealtimeUserText(text);
               } else {
                 const partialTranscript = text.trim();
@@ -1013,9 +1019,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               const searchSessionId = searchSessionRef.current;
               const latestInstruction = {text: call.originalInstruction || call.task, turnId: call.inputId || ''};
               const originalInstruction = latestInstruction.text.trim();
+              const toolArguments = JSON.parse(call.arguments) as { job_id?: string };
               reportRealtimeEvent('qwen_tool_call_forwarding', {
                 name: call.name,
                 call_id: call.callId,
+                job_id: toolArguments.job_id,
+                search_session_id: searchSessionId,
                 question: originalInstruction,
                 task: call.task,
                 turn_id: latestInstruction.turnId,
@@ -1073,7 +1082,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 });
             },
             onDiagnostic: (event) => {
-              void webRequest('video.realtime.telemetry', event, {
+              void webRequest('video.realtime.telemetry', {
+                ...event, search_session_id: searchSessionRef.current,
+              }, {
                 timeoutMs: 5_000,
               }).catch(() => undefined);
             },
@@ -1135,14 +1146,16 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
 
   useEffect(() => {
     const running = isRealtimeStarting || isRecording;
-    if (headless && wasDuplexRunningRef.current && !running) {
+    const wasRunning = wasDuplexRunningRef.current;
+    if (headless && wasRunning && !running) {
       releaseScreens();
       releaseSource();
       setSource(null);
       setSourceName('');
     }
     wasDuplexRunningRef.current = running;
-    onRuntimeState?.(isRealtimeStarting ? 'starting' : isRecording ? 'active' : 'idle');
+    const runtimeState = reportedRuntimeState(wasRunning, isRealtimeStarting, isRecording);
+    if (runtimeState) onRuntimeState?.(runtimeState);
   }, [headless, isRealtimeStarting, isRecording, onRuntimeState, releaseScreens, releaseSource]);
 
   useEffect(() => {
@@ -1154,13 +1167,13 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   }, [screens.length, source, onScreenSharingChange]);
 
   useImperativeHandle(ref, () => ({
-    startScreenDuplex: async (searchSessionId, shareScreen = true, visualSource = 'screen') => {
+    startScreenDuplex: async (searchSessionId, shareScreen = true) => {
       conversationSearchSessionRef.current = searchSessionId || '';
       if (!shareScreen) {
         await startRealtime();
         return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
       }
-      const result = visualSource === 'camera' ? await startCamera() : await startScreen(true);
+      const result = await startScreen(true);
       if (result === 'unsupported') {
         // Fallback, not a root-cause fix: keep voice duplex usable when the
         // runtime cannot share the screen (#5283).

@@ -16,8 +16,9 @@ const QWEN_MAX_BASE64_IMAGE_BYTES = 256 * 1024;
 const QWEN_SESSION_INSTRUCTIONS = [
   'Streaming Omni Conversation.',
   '你是九问实时视觉助手。',
-  '始终结合当前会话中的近期聊天、近期画面和最新画面回答；最新画面优先，不得把已经消失的物体当成仍在画面中。',
-  '只把当前可见画面、当前可辨语音、用户明确提供的信息和九问工具结果作为事实依据。画面模糊、文字不完整、对象无法确认时，明确说明无法确认或请用户调整画面，不得猜测品牌、文字、人物、数量或状态。',
+  '只有本次回答前确实收到当前共享屏幕、摄像头或视频的新图像，才能说明现在看到了什么。没有新图像时，明确说当前没有收到画面、无法确认现在的画面；不要声称正在接收画面。',
+  '聊天记录、任务结果、用户语音和旧画面不能证明当前画面内容。不要根据它们猜测当前显示的对象；有新图像时也不得把已经消失的物体当成仍在画面中。',
+  '只把实际收到的当前画面、当前可辨语音、用户明确提供的信息和九问工具结果作为事实依据。画面模糊、文字不完整、对象无法确认时，明确说明无法确认或请用户调整画面，不得猜测品牌、文字、人物、数量或状态。',
   '当你无法仅凭当前音视频和会话直接完成用户要求时，必须调用九问工具交给 Core Agent 处理，不得直接以无法联网、无法访问文件、无法计算、无法操作或能力不足为由拒绝。',
   '收到九问工具结果后，只回答结果正文能够直接支持的内容。结果表示材料不足、存在冲突或无法确认时，必须保留该不确定性，不得自行补齐结论。',
   QWEN_OMNI_TOOL_INSTRUCTIONS,
@@ -104,6 +105,16 @@ export class QwenOmniMediaSequencer {
   private audioAppendSequence = 0;
   private imageAppendSequence = 0;
   private deferredVideoFrame: string | null = null;
+  private videoPaused = false;
+
+  pauseVideo(): void {
+    this.deferredVideoFrame = null;
+    this.videoPaused = true;
+  }
+
+  resumeVideo(): void {
+    this.videoPaused = false;
+  }
 
   createBatch(audio: string, includeVideo: boolean, frame: string | null): QwenOmniMediaBatch {
     const events: Array<Record<string, unknown>> = [
@@ -114,7 +125,7 @@ export class QwenOmniMediaSequencer {
     ];
     const diagnostics: QwenOmniMediaBatch['diagnostics'] = [];
     this.audioAppendSequence += 1;
-    if (!includeVideo) return { events, diagnostics };
+    if (!includeVideo || this.videoPaused) return { events, diagnostics };
 
     const deferredFrame = this.deferredVideoFrame;
     this.deferredVideoFrame = null;
@@ -156,5 +167,6 @@ export class QwenOmniMediaSequencer {
     this.audioAppendSequence = 0;
     this.imageAppendSequence = 0;
     this.deferredVideoFrame = null;
+    this.videoPaused = false;
   }
 }

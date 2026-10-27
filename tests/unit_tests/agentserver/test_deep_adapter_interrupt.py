@@ -1206,23 +1206,43 @@ async def test_interaction_cancel_skips_pause_when_no_goal() -> None:
 
 
 @pytest.mark.asyncio
-async def test_interaction_cancel_stops_scheduler_task_before_cancel_round() -> None:
+@pytest.mark.parametrize("channel,managed_cua,resumed", [
+    ("tui", False, False), ("video_tool", False, False),
+    ("video_tool", True, False), ("video_tool", True, True),
+])
+async def test_interaction_cancel_stops_scheduler_task_before_cancel_round(channel, managed_cua, resumed, monkeypatch) -> None:
     """A synchronous task_tool subagent must not block the interrupt response."""
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    monkeypatch.setattr(execution, "close_task_output", AsyncMock())
     child_started = asyncio.Event()
     child_cancelled = asyncio.Event()
 
     async def _run_child() -> None:
+        from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
+            bind_managed_task_request,
+            register_cua_execution,
+            reset_managed_task_request,
+            unregister_cua_execution,
+        )
+
+        token = bind_managed_task_request("managed-cancel-test")
+        execution = register_cua_execution(
+            parent_session_id="sess-task-tool", sub_session_id="cua-child"
+        ) if managed_cua else None
         child_started.set()
         try:
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             child_cancelled.set()
             raise
+        finally:
+            unregister_cua_execution(execution)
+            reset_managed_task_request(token)
 
     child_task = asyncio.create_task(_run_child())
     await child_started.wait()
 
-    scheduler = SimpleNamespace(_running_tasks={"round-task": (None, child_task)})
+    scheduler = SimpleNamespace(_running_tasks={} if resumed else {"round-task": (None, child_task)})
     instance = MagicMock()
     instance._interaction_started = True
     instance._loop_controller = SimpleNamespace(_task_scheduler=scheduler)
@@ -1241,15 +1261,25 @@ async def test_interaction_cancel_stops_scheduler_task_before_cancel_round() -> 
         _active_session_ids={"sess-task-tool": 1},
         _stream_event_rail=rail,
         _instance=instance,
+        _voice_agent_task_rail=SimpleNamespace(managed_tasks={
+            "sess-task-tool": SimpleNamespace(request_id="managed-cancel-test", native_executions=set()),
+        }),
     )
     adapter._cancel_pending_todos = AsyncMock(return_value=None)
     adapter._cancel_session_agent_tasks = AsyncMock(return_value=0)
 
     try:
+        request = _build_cancel_request("sess-task-tool")
+        request.channel_id = channel
+        if channel == "video_tool":
+            request.params["managed_task_request"] = "managed-cancel-test"
         response = await asyncio.wait_for(
-            adapter.process_interrupt(_build_cancel_request("sess-task-tool")),
+            adapter.process_interrupt(request),
             timeout=0.5,
         )
+        assert child_cancelled.is_set(), "Cancellation must reach execution before test cleanup"
+        repeated = await adapter.process_interrupt(request)
+        assert repeated.payload["success"] is True
     finally:
         if not child_task.done():
             child_task.cancel()
@@ -1257,7 +1287,8 @@ async def test_interaction_cancel_stops_scheduler_task_before_cancel_round() -> 
 
     assert child_task.cancelled()
     adapter._cancel_session_agent_tasks.assert_not_awaited()
-    instance.cancel_round.assert_awaited_once_with(reason="user_cancel")
+    assert instance.cancel_round.await_count == 2
+    instance.cancel_round.assert_awaited_with(reason="user_cancel")
     assert response.payload["event_type"] == "chat.interrupt_result"
     assert response.payload["success"] is True
 

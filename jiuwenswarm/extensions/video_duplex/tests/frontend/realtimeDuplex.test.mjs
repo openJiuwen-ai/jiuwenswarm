@@ -6,6 +6,22 @@ import { runInNewContext } from 'node:vm';
 import { RealtimeDuplexSession } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/realtimeDuplex.mjs';
 import { SpeechGate } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/speechGate.mjs';
 
+test('tool output diagnostics distinguish sending from provider acknowledgement without result text', () => {
+  const { session, diagnostics, sent } = createSession();
+  session.enqueueOperationResult('call-trace', { state: 'accepted', result: 'private result body' });
+  const transmitted = diagnostics.find(event => event.event === 'qwen_tool_output_sent');
+  assert.equal(transmitted.call_id, 'call-trace');
+  assert.equal(sent[0].item.call_id, 'call-trace');
+  assert.equal(diagnostics.some(event => event.event === 'qwen_tool_output_acknowledged'), false);
+  session.handleEvent({ type: 'conversation.item.created', item: {
+    type: 'function_call_output', call_id: 'call-trace', id: 'item-trace',
+  } });
+  const acknowledged = diagnostics.find(event => event.event === 'qwen_tool_output_acknowledged');
+  assert.equal(acknowledged.call_id, 'call-trace');
+  assert.equal(acknowledged.item_id, 'item-trace');
+  assert.equal(JSON.stringify(diagnostics).includes('private result body'), false);
+});
+
 test('accepted delegation returns its ID before completion and never sends two outputs for one call', () => {
   const {session,sent}=createSession();
   session.enqueueOperationResult('create-a',{state:'accepted',job_id:'a'});
@@ -18,6 +34,25 @@ test('accepted delegation returns its ID before completion and never sends two o
   assert.equal(sent.filter(e=>e.type==='response.create').length,2);
   assert.equal(sent.at(-1).response, undefined, 'completion notice uses its own existing presentation path');
   assert.match(sent.at(-2).item.content[0].text,/杭州/);
+});
+
+test('a tool receipt delayed past a new spoken turn does not use its expired call ID', () => {
+  const { session, sent, diagnostics } = createSession();
+  session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_delegate',
+    call_id: 'call-old', arguments: JSON.stringify({ task: 'First task' }) });
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'new-input' });
+  session.enqueueOperationResult('call-old', { state: 'accepted', job_id: 'first-job' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'new-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'new-input', transcript: 'Second task' });
+  session.handleEvent({ type: 'response.created', response: { id: 'second-answer' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'second-answer' } });
+
+  assert.deepEqual(sent.map((event) => event.type), ['conversation.item.create', 'response.create']);
+  assert.equal(sent[0].item.type, 'message');
+  assert.match(sent[0].item.content[0].text, /first-job/);
+  assert.equal(sent.some((event) => event.item?.type === 'function_call_output'), false);
+  assert.equal(diagnostics.some((event) => event.event === 'qwen_late_tool_output_rerouted'), true);
 });
 
 test('provider speech and its pending automatic answer exclude notification responses', () => {
@@ -118,6 +153,115 @@ test('pending information questions are announced once without completing their 
   session.enqueueQuestion('trip', { ...question, id: 'interaction-b' });
   assert.equal(sent.filter(event => event.type === 'response.create').length, 2);
   assert.deepEqual(dispatchedToolResults, []);
+});
+
+test('pending approval cards ask the user to click instead of answering by voice', () => {
+  // Voice must never approve cards, so it must not invite a spoken "允许" either.
+  const { session, sent } = createSession();
+  session.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending',
+    source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] });
+  const text = sent.find(e => e.type === 'conversation.item.create').item.content[0].text;
+  assert.match(text, /操作确认: cua_agent/);
+  assert.match(text, /click/);
+  assert.match(text, /Do not call jiuwen_task_answer/);
+  assert.doesNotMatch(text, /then call jiuwen_task_answer/);
+});
+
+test('an open approval card stays in the session instructions until it closes', () => {
+  // A one-off notice is forgotten by the next turn, so a spoken "允许" was
+  // answered as consent (#8941). Every reply must see the open card.
+  const { session, sent } = createSession();
+  const card = { id: 'card-a', request_id: 'core-approval', state: 'pending',
+    source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] };
+  session.enqueueQuestion('cua', card);
+  const updates = () => sent.filter(e => e.type === 'session.update');
+  assert.equal(updates().length, 1);
+  assert.match(updates()[0].session.instructions, /\[Pending approval cards\].*操作确认: cua_agent/);
+  assert.match(updates()[0].session.instructions, /Never say a pending card was allowed/);
+
+  session.enqueueQuestion('cua', card); // A repeated progress event must not resend.
+  assert.equal(updates().length, 1);
+
+  session.enqueueQuestion('cua', { ...card, state: 'accepted' });
+  assert.equal(updates().length, 2);
+  assert.doesNotMatch(updates()[1].session.instructions, /Pending approval cards/);
+});
+
+const openCard = (session) => session.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending',
+  source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] });
+
+test('every reply to speech while a card is open reads the card status last', () => {
+  // The model hears audio, not the transcript ("允许" was transcribed as "人是"), and it
+  // answered a spoken "允许" with "你已经在屏幕上点击了允许" despite the instructions (#8941).
+  const { session, sent } = createSession();
+  openCard(session);
+  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  sent.length = 0;
+
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
+  assert.deepEqual(sent.map(e => e.type), ['response.cancel'], 'the automatic reply is cancelled');
+
+  session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
+  assert.deepEqual(sent.slice(1).map(e => e.type), ['conversation.item.create', 'response.create']);
+  const status = sent[1].item.content[0].text;
+  assert.match(status, /操作确认: cua_agent/);
+  assert.match(status, /has NOT clicked/);
+  assert.match(status, /Never say the card was allowed/);
+
+  session.handleEvent({ type: 'response.created', response: { id: 'replacement' } });
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 1, 'the re-requested reply plays');
+});
+
+test('without an open card, and for the assistant notices, replies are left alone', () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  session.handleEvent({ type: 'response.created', response: { id: 'r1' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'r1', status: 'completed' } });
+  openCard(session); // its notice reply is not a user turn
+  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
+});
+
+test('a card that opens before the reply to just-finished speech redirects that reply', () => {
+  // Consent spoken just before the card appeared was answered "已收到您的确认…继续执行"
+  // just after it (#5538 robustness run): the reply had been formed without the card.
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  openCard(session);
+  sent.length = 0;
+  session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
+  assert.deepEqual(sent.map(e => e.type), ['response.cancel']);
+  session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
+  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT clicked/);
+});
+
+test('a card that opens while the reply to speech is playing cancels and redirects it', () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
+  session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
+  sent.length = 0;
+  openCard(session);
+  assert.ok(sent.some(e => e.type === 'response.cancel'), 'the playing reply is cancelled');
+  session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
+  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT clicked/);
+});
+
+test('a card that opens while an assistant notice plays leaves the notice alone', () => {
+  const { session, sent } = createSession();
+  session.enqueueQuestion('ask', { id: 'q-a', request_id: 'ask-1', state: 'pending',
+    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] });
+  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+  sent.length = 0;
+  openCard(session);
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
+});
+
+test('information questions do not add approval instructions', () => {
+  const { session, sent } = createSession();
+  session.enqueueQuestion('ask', { id: 'q-a', request_id: 'ask-1', state: 'pending',
+    source: 'ask_user_interrupt', questions: [{ question: '预算多少？' }] });
+  assert.equal(sent.filter(e => e.type === 'session.update').length, 0);
 });
 
 test('delegation retains valid scheduling arguments and dispatches only once', () => {
@@ -261,6 +405,62 @@ test('speech before and after delegation is discarded; acceptance is spoken exac
   assert.equal(posted.filter(item => item.type === 'audio').length, 1);
 });
 
+test('a spoken action promise and its later tool receipt both retain audio', async () => {
+  const { session, assistantTexts, posted, sent, functionCalls } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'wechat-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'wechat-input', transcript: '你打开微信。' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'wechat-input' });
+  session.handleEvent({ type: 'response.created', response: { id: 'wechat-response' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'wechat-response',
+    item: { id: 'promise', type: 'message' } });
+  session.handleEvent({ type: 'response.text.done', response_id: 'wechat-response',
+    item_id: 'promise', text: '这就帮你把微信打开。' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'wechat-response',
+    item_id: 'promise', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.equal(assistantTexts.at(-1).text, '这就帮你把微信打开。');
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+
+  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'wechat-response',
+    name: 'jiuwen_delegate', call_id: 'wechat-call', arguments: '{"task":"打开微信"}' });
+  session.handleEvent({ type: 'response.done', response: { id: 'wechat-response', status: 'completed' } });
+  assert.equal(functionCalls.length, 1);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你把微信打开。']);
+  session.enqueueOperationResult('wechat-call', { state: 'accepted', job_id: 'wechat-job' });
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
+  session.handleEvent({ type: 'response.created', response: { id: 'wechat-receipt' } });
+  session.handleEvent({ type: 'response.text.done', response_id: 'wechat-receipt', text: '微信任务已排队。' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'wechat-receipt', delta: btoa('bb') });
+  session.handleEvent({ type: 'response.done', response: { id: 'wechat-receipt', status: 'completed' } });
+  await session.playbackOperation;
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你把微信打开。', '微信任务已排队。']);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
+});
+
+test('an action turn without a tool streams its message text and audio', async () => {
+  const { session, assistantTexts, posted } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'action-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'action-input', transcript: '帮我查询任务状态' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'action-input' });
+  session.handleEvent({ type: 'response.created', response: { id: 'no-tool' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'no-tool',
+    item: { id: 'answer', type: 'message' } });
+  session.handleEvent({ type: 'response.text.done', response_id: 'no-tool',
+    item_id: 'answer', text: '目前没有待执行任务。' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'no-tool',
+    item_id: 'answer', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.equal(assistantTexts.at(-1).text, '目前没有待执行任务。');
+  assert.equal(assistantTexts.at(-1).final, false);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  session.handleEvent({ type: 'response.done', response: { id: 'no-tool', status: 'completed' } });
+  await session.playbackOperation;
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['目前没有待执行任务。']);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+});
+
 test('direct answers release text and audio once, only after response.done', async () => {
   const { session, assistantTexts, posted } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'direct' } });
@@ -286,6 +486,153 @@ test('a tool listed only in response.done still suppresses the buffered answer',
   await session.playbackOperation;
   assert.deepEqual(assistantTexts, []);
   assert.ok(posted.every(item => item.type !== 'audio'));
+});
+
+test('message item text and audio stream before response.done and finalize only once', async () => {
+  const { session, assistantTexts, posted } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'stream' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'stream', item: { id: 'message', type: 'message' } });
+  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'stream', delta: 'Hello.' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'stream', item_id: 'message', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.deepEqual(posted.map(item => item.type), ['audio']);
+  assert.equal(assistantTexts[0].text, 'Hello.');
+  assert.equal(assistantTexts[0].final, false);
+  session.handleEvent({ type: 'response.audio.done', response_id: 'stream', item_id: 'message' });
+  await session.playbackOperation;
+  assert.deepEqual(posted.map(item => item.type), ['audio', 'drain']);
+  session.handleEvent({ type: 'response.done', response: { id: 'stream', status: 'completed' } });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1, 'completion does not replay streamed audio');
+  assert.equal(assistantTexts.at(-1).text, 'Hello.');
+  assert.equal(assistantTexts.filter(update => update.final).length, 1);
+});
+
+for (const streamType of ['text', 'audio_transcript', 'output_audio_transcript']) {
+  test(`${streamType} message deltas update one text stream without repeating done content`, () => {
+    const { session, assistantTexts } = createSession();
+    session.handleEvent({ type: 'response.created', response: { id: 'text-stream' } });
+    session.handleEvent({ type: 'response.output_item.added', response_id: 'text-stream', item: { type: 'message', id: 'message' } });
+    const delta = text => session.handleEvent({ type: `response.${streamType}.delta`, response_id: 'text-stream', item_id: 'message', delta: text });
+    delta('Hello');
+    delta(' world');
+    assert.deepEqual(assistantTexts.map(update => update.text), ['Hello', 'Hello world']);
+    assert.ok(assistantTexts.every(update => !update.final));
+    session.handleEvent({ type: `response.${streamType}.done`, response_id: 'text-stream', item_id: 'message', text: 'Hello world', transcript: 'Hello world' });
+    assert.equal(assistantTexts.length, 2);
+    session.handleEvent({ type: 'response.done', response: { id: 'text-stream', status: 'completed' } });
+    session.handleEvent({ type: 'response.done', response: { id: 'text-stream', status: 'completed' } });
+    assert.deepEqual(assistantTexts.map(update => [update.text, update.final]), [
+      ['Hello', false], ['Hello world', false], ['Hello world', true],
+    ]);
+  });
+}
+
+test('text received before its item type is released once when that message item arrives', () => {
+  const { session, assistantTexts } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'delayed-text' } });
+  session.handleEvent({ type: 'response.text.delta', response_id: 'delayed-text', item_id: 'message', delta: 'Hello' });
+  assert.equal(assistantTexts.length, 0);
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'delayed-text', item: { type: 'message', id: 'other' } });
+  assert.equal(assistantTexts.length, 0);
+  const added = { type: 'response.output_item.added', response_id: 'delayed-text', item: { type: 'message', id: 'message' } };
+  session.handleEvent(added);
+  session.handleEvent(added);
+  assert.deepEqual(assistantTexts.map(update => [update.text, update.final]), [['Hello', false]]);
+});
+
+for (const ending of ['interrupt', 'failed']) {
+  test(`streamed text is finalized on ${ending} and late deltas cannot reopen it`, () => {
+    const { session, assistantTexts } = createSession();
+    session.handleEvent({ type: 'response.created', response: { id: 'partial-text' } });
+    const added = { type: 'response.output_item.added', response_id: 'partial-text', item: { type: 'message' } };
+    const delta = { type: 'response.text.delta', response_id: 'partial-text', delta: 'Partial answer' };
+    session.handleEvent(added);
+    session.handleEvent(delta);
+    if (ending === 'interrupt') session.interruptQwenResponse('new-turn', 200, 100, 80);
+    else session.handleEvent({ type: 'response.done', response: { id: 'partial-text', status: 'failed' } });
+    session.handleEvent(added);
+    session.handleEvent(delta);
+    assert.deepEqual(assistantTexts.map(update => [update.text, update.final]), [['Partial answer', false], ['Partial answer', true]]);
+  });
+}
+
+test('stopping media finalizes the visible text stream and clears output item state', () => {
+  const { session, assistantTexts } = createSession();
+  session.socket.close = () => {};
+  session.handleEvent({ type: 'response.created', response: { id: 'stop-text' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'stop-text', item: { type: 'message' } });
+  session.handleEvent({ type: 'response.text.delta', response_id: 'stop-text', delta: 'Partial answer' });
+  session.stop();
+  assert.deepEqual(assistantTexts.map(update => [update.text, update.final]), [['Partial answer', false], ['Partial answer', true]]);
+  assert.equal(session.messageOutputItems.size, 0);
+});
+
+test('a message following a tool item retains audio without executing incomplete arguments', async () => {
+  const { session, assistantTexts, posted, functionCalls } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'tool' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'tool', delta: btoa('aa') });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'tool', item: { type: 'function_call', call_id: 'call' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'tool', item: { type: 'message' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'tool', delta: btoa('bb') });
+  session.handleEvent({ type: 'response.text.done', response_id: 'tool', text: 'Unverified answer' });
+  session.handleEvent({ type: 'response.done', response: { id: 'tool', status: 'completed' } });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.equal(assistantTexts.at(-1).text, 'Unverified answer');
+  assert.equal(assistantTexts.at(-1).final, true);
+  assert.deepEqual(functionCalls, [], 'an item announcement must not execute incomplete arguments');
+});
+
+test('audio waits for matching item type and a delayed message item releases it only once', async () => {
+  const { session, posted } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'delayed' } });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'delayed', item_id: 'a', delta: btoa('aa') });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'delayed', item_id: 'b', delta: btoa('bb') });
+  await session.playbackOperation;
+  assert.equal(posted.length, 0);
+  const added = { type: 'response.output_item.added', response_id: 'delayed', item: { id: 'a', type: 'message' } };
+  session.handleEvent(added);
+  session.handleEvent(added);
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  session.handleEvent({ ...added, item: { id: 'b', type: 'message' } });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
+});
+
+test('late tool item preserves the remaining audio and text of the same message', async () => {
+  const { session, posted, assistantTexts } = createSession();
+  session.handleEvent({ type: 'response.created', response: { id: 'mixed' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'mixed', item: { type: 'message' } });
+  session.handleEvent({ type: 'response.text.delta', response_id: 'mixed', delta: '这就帮你查查' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'mixed', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'mixed', item: { type: 'function_call' } });
+  session.handleEvent({ type: 'response.text.delta', response_id: 'mixed', delta: '今天香港的天气情况。' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'mixed', delta: btoa('bb') });
+  session.handleEvent({ type: 'response.done', response: { id: 'mixed', status: 'completed' } });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你查查今天香港的天气情况。']);
+  assert.equal(session.messageOutputItems.size, 0);
+});
+
+test('user interruption clears streaming audio and late item events cannot reopen playback', async () => {
+  const { session, posted } = createSession();
+  const added = { type: 'response.output_item.added', response_id: 'interrupted-stream', item: { type: 'message' } };
+  session.handleEvent({ type: 'response.created', response: { id: 'interrupted-stream' } });
+  session.handleEvent(added);
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'interrupted-stream', delta: btoa('aa') });
+  await session.playbackOperation;
+  session.interruptQwenResponse('new-turn', 200, 100, 80);
+  assert.equal(session.messageOutputItems.size, 0);
+  assert.ok(posted.some(item => item.type === 'clear'));
+  session.handleEvent(added);
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'interrupted-stream', delta: btoa('bb') });
+  await session.playbackOperation;
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
 });
 
 function createSession(videoFrame = null, callbackOverrides = {}) {
@@ -431,6 +778,48 @@ test('the first image is deferred until a previous audio append exists', () => {
   assert.equal(sent[2].image, 'dGVzdC1qcGVn');
 });
 
+test('Qwen drops deferred video at speech end and waits for new speech before resuming video', () => {
+  const { session, sent } = createSession('dGVzdC1qcGVn');
+  session.sendAudio(new Int16Array([1]), true);
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped' });
+  session.sendAudio(new Int16Array([2]), true);
+  session.sendAudio(new Int16Array([3]), true);
+  assert.deepEqual(sent.map((event) => event.type), Array(3).fill('input_audio_buffer.append'));
+
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'new-speech' });
+  session.sendAudio(new Int16Array([4]), true);
+  session.sendAudio(new Int16Array([5]), true);
+  assert.deepEqual(sent.slice(3).map((event) => event.type), [
+    'input_audio_buffer.append', 'input_audio_buffer.append', 'input_image_buffer.append',
+  ]);
+});
+
+test('rejected Qwen image frame stays diagnostic and does not report voice failure', () => {
+  const errors = [];
+  const { session, sent, diagnostics } = createSession('dGVzdC1qcGVn', {
+    onError: (message) => errors.push(message),
+  });
+  session.sendAudio(new Int16Array([1]), true);
+  session.sendAudio(new Int16Array([2]), true);
+  session.handleEvent({ type: 'response.created', response: { id: 'answered' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'answered', status: 'completed' } });
+  session.handleEvent({
+    type: 'error', error: { type: 'invalid_request_error', message: 'Error append image before append audio.' },
+  });
+  assert.deepEqual(errors, []);
+  assert.equal(diagnostics.at(-1).event, 'qwen_realtime_error');
+  assert.equal(diagnostics.at(-1).message, 'Error append image before append audio.');
+
+  session.sendAudio(new Int16Array([3]), true);
+  assert.equal(sent.filter((event) => event.type === 'input_image_buffer.append').length, 1);
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'later-speech' });
+  session.sendAudio(new Int16Array([4]), true);
+  session.sendAudio(new Int16Array([5]), true);
+  assert.equal(sent.filter((event) => event.type === 'input_image_buffer.append').length, 2);
+  session.handleEvent({ type: 'error', error: { message: 'A different provider failure' } });
+  assert.deepEqual(errors, ['A different provider failure']);
+});
+
 test('user speech cancels an active response and discards unclassified text', () => {
   const { session, posted, sent, states, assistantTexts, diagnostics } = createSession();
   session.responseId = 'qwen-speaking';
@@ -447,6 +836,23 @@ test('user speech cancels an active response and discards unclassified text', ()
   assert.equal(session.heldOutput.size, 0);
   assert.equal(states.at(-1), 'listening');
   assert.equal(diagnostics.at(-1).event, 'qwen_response_interrupted_by_user');
+});
+
+test('continuous speech cancels a reserved response only after response.created', () => {
+  const errors = [];
+  const { session, sent, diagnostics } = createSession(undefined, { onError: (message) => errors.push(message) });
+  session.enqueueOperationResult('alarm', { state: 'accepted', job_id: 'alarm-job' });
+  assert.equal(session.responseId, null);
+  for (let i = 0; i < 5; i++) session.interruptQwenResponse('next-speech', 256 + i * 32, 900, 80);
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 0);
+  assert.equal(diagnostics.filter((event) => event.event === 'qwen_response_interrupted_by_user').length, 1);
+  session.handleEvent({ type: 'response.created', response: { id: 'receipt-response' } });
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 1);
+  session.handleEvent({ type: 'response.done', response: { id: 'receipt-response', status: 'cancelled' } });
+  session.handleEvent({ type: 'response.created', response: { id: 'next-answer' } });
+  session.handleEvent({ type: 'error', error: { message: 'Response request cancelled by new input' } });
+  assert.equal(session.responseActive, true, 'an old cancellation must not discard the new answer');
+  assert.deepEqual(errors, []);
 });
 
 test('server cancellation discards held assistant text', () => {
@@ -549,6 +955,28 @@ test('function calls are emitted once with parsed arguments', () => {
     },
   ]);
   assert.equal(diagnostics.at(-1).event, 'qwen_tool_call_received');
+});
+
+test('a separate tool response preserves the earlier message and its delayed audio', async () => {
+  const { session, assistantTexts, posted, functionCalls } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'weather-input' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'weather-input' });
+  session.handleEvent({ type: 'response.created', response: { id: 'weather-ack' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'weather-ack',
+    item: { type: 'message', id: 'weather-message' } });
+  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'weather-ack',
+    item_id: 'weather-message', delta: '这就帮你查查今天香港的天气情况。' });
+  session.handleEvent({ type: 'response.created', response: { id: 'weather-tool' } });
+  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'weather-tool',
+    name: 'jiuwen_delegate', call_id: 'weather-call', arguments: '{"task":"查询香港天气"}' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'weather-ack',
+    item_id: 'weather-message', delta: btoa('aa') });
+  session.handleEvent({ type: 'response.done', response: { id: 'weather-ack', status: 'completed' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'weather-tool', status: 'completed' } });
+  await session.playbackOperation;
+  assert.equal(functionCalls.length, 1);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你查查今天香港的天气情况。']);
 });
 
 test('a new response cannot release an earlier unclassified acknowledgement', () => {
@@ -699,6 +1127,22 @@ test('an earlier task still gets a spoken follow-up after a newer question', () 
   assert.doesNotMatch(sent[0].item.output, /Do not answer it again/);
   assert.equal(session.responseActive, true);
   assert.equal(diagnostics.at(-1).event, 'qwen_tool_result_returned');
+});
+
+test('a completed earlier task avoids a function output after a newer spoken input', () => {
+  const { session, sent } = createSession();
+  session.handleEvent({ type: 'response.function_call_arguments.done', name: 'jiuwen_delegate',
+    call_id: 'call-earlier', arguments: JSON.stringify({ task: 'Read a file' }) });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'new-input', transcript: 'Check the weather' });
+  session.handleEvent({ type: 'response.created', response: { id: 'new-answer' } });
+  session.enqueueToolResult({ jobId: 'earlier-job', question: 'Read a file',
+    brief: realtimeBrief('The file was read.', 'file'), callId: 'call-earlier' });
+  session.handleEvent({ type: 'response.done', response: { id: 'new-answer' } });
+
+  assert.deepEqual(sent.map((event) => event.type), ['conversation.item.create', 'response.create']);
+  assert.equal(sent[0].item.type, 'message');
+  assert.match(sent[0].item.content[0].text, /earlier-job/);
 });
 
 test('each task waits for user speech to finish and is sent exactly once in completion order', () => {
@@ -1189,4 +1633,17 @@ test('completed cancellation receipt permits Core follow-up for the user request
   });
   assert.equal(functionCalls.length, 1);
   assert.equal(functionCalls[0].name, 'jiuwen_task_modify');
+});
+
+
+test('converted completed cancellation is announced as a pending Core followup', () => {
+  const { session, sent } = createSession();
+  session.enqueueOperationResult('cancel', {
+    state: 'followup', converted_to: 'modify', task_status: 'completed', stopped: false, successor_id: 'child',
+  });
+  assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
+  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
+  assert.match(continuation, /backend already submitted the original user action to Core/);
+  assert.match(continuation, /do not issue another cancellation/);
+  assert.match(continuation, /followup means a linked revision/);
 });

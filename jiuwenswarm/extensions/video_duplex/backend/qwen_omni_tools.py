@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import Any
 
 
@@ -19,6 +20,26 @@ _TASK_TOOLS = {
     "jiuwen_task_answer",
 }
 _DELEGATE_ARGUMENT_NAMES = ("task", "query", "instruction", "request")
+
+
+def delegate_matches_input(question: str, task: str) -> bool:
+    """Reject a new task with no recognizable subject from a full voice turn.
+
+    Short answers such as "十九点" depend on earlier conversation and remain valid.
+    This check only catches clear drift; it is not a semantic classifier.
+    """
+    source = re.sub(r"[^\u4e00-\u9fff]", "", question)
+    target = re.sub(r"[^\u4e00-\u9fff]", "", task)
+    if len(source) >= 6 and len(target) >= 4:
+        source_pairs = {source[index:index + 2] for index in range(len(source) - 1)}
+        target_pairs = {target[index:index + 2] for index in range(len(target) - 1)}
+        if source_pairs & target_pairs:
+            return True
+        # A Latin product, path, or name may be the shared subject.
+        source_words = set(re.findall(r"[a-z0-9]{3,}", question.casefold()))
+        target_words = set(re.findall(r"[a-z0-9]{3,}", task.casefold()))
+        return bool(source_words & target_words)
+    return True
 
 
 @dataclass(frozen=True)
@@ -128,7 +149,22 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("arguments must be a JSON object")
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
+    if "title" in arguments:
+        title = arguments["title"]
+        if not isinstance(title, str) or not title.strip() or len(title) > 80 or "\n" in title or "\r" in title:
+            raise ValueError("Invalid title")
+        arguments["title"] = title.strip()
     if name in _TASK_TOOLS:
+        if name == "jiuwen_task_reorder" and "queue_version" in arguments:
+            version = arguments["queue_version"]
+            if isinstance(version, str) and (
+                version == "0" or (version.isascii() and version.isdecimal() and not version.startswith("0"))
+            ) and len(version) <= 16:
+                version = int(version)
+            if type(version) is not int or not 0 <= version <= 2**53 - 1:
+                # The model may miscopy this large internal token. Let the
+                # server read the current version instead of rejecting the action.
+                arguments.pop("queue_version")
         schema = next(
             t["function"]["parameters"]
             for t in task_management_tools()
@@ -143,8 +179,18 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
                 if not isinstance(item, list) or not 1 <= len(item) <= 32:
                     raise ValueError("Invalid answers")
             elif key in {"revision", "offset", "queue_version"}:
+                # Some providers quote JSON integers despite the integer schema.
+                # Normalize only canonical decimal queue tokens; never coerce
+                # booleans, fractions, signs, exponents or arbitrary text.
+                if key == "queue_version" and isinstance(item, str) and (
+                    item == "0" or (item.isascii() and item.isdecimal() and not item.startswith("0"))
+                ) and len(item) <= 16:
+                    item = int(item)
+                    arguments[key] = item
                 if type(item) is not int or item < (1 if key == "revision" else 0):
                     raise ValueError(f"Invalid {key}")
+                if key == "queue_version" and item > 2**53 - 1:
+                    raise ValueError("Invalid queue_version: exceeds JavaScript safe integer range")
             elif (
                 not isinstance(item, str)
                 or not item.strip()
@@ -215,11 +261,12 @@ def task_management_tools():
             ),
             {
                 "job_id": {"type": "string"},
-                "queue_version": {"type": "integer", "minimum": 0},
+                "queue_version": {"type": "integer", "minimum": 0,
+                                  "description": "Optional legacy concurrency token. Omit it; the server reads the current queue version."},
                 "action": {"type": "string", "enum": ["next", "before"]},
                 "before_job_id": {"type": "string"},
             },
-            ["job_id", "queue_version", "action"],
+            ["job_id", "action"],
         ),
         (
             "jiuwen_task_answer",

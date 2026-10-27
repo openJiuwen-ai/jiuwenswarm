@@ -78,6 +78,161 @@ test('voice-only turns reach JoyAI before and after screen sharing without idle 
 });
 
 const brief = { status: 'completed', summary: '代码已生成，详情见界面。', source: 'core_agent' };
+
+function pollingHarness(t) {
+  let now = 10_000;
+  let tick;
+  let frame = 'data:image/jpeg;base64,ZmFrZQ==';
+  let outcome = { response: '', search_job: null };
+  const requests = [], reports = [], errors = [], statuses = [];
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(globalThis, 'setInterval', (callback) => { tick = callback; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  globalThis.joyaiTestRequest = async (method, params) => {
+    requests.push({ at: now, method, ...params });
+    if (outcome instanceof Error) throw outcome;
+    if (typeof outcome === 'function') return outcome();
+    return outcome;
+  };
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'scope', getLatestFrameDataUrl: () => frame, getFrameCount: () => 1,
+    rememberSearchJob() {}, commitAssistantAnswer() {},
+    report: (event, details) => reports.push({ event, ...details }),
+    setError: message => errors.push(message), setStatus: message => statuses.push(message),
+  });
+  provider.sessionId = 'adaptive-media';
+  provider.startFramePolling();
+  t.after(() => { provider.stop(); delete globalThis.joyaiTestRequest; });
+  return {
+    provider, requests, reports, errors, statuses,
+    setOutcome(value) { outcome = value; },
+    setFrame(value) { frame = value; },
+    async pollAt(time) {
+      now = time;
+      tick();
+      await new Promise(resolve => setImmediate(resolve));
+    },
+  };
+}
+
+const rateLimitError = () => Object.assign(new Error('Too many requests'), { code: 'JOYAI_RATE_LIMIT' });
+
+test('JoyAI keeps a lower image rate after success and reduces it again on later limits', async (t) => {
+  const h = pollingHarness(t);
+  h.setOutcome(rateLimitError());
+  await h.pollAt(10_000);
+  await h.pollAt(69_999);
+  assert.equal(h.requests.length, 1, 'cooldown sends no extra images');
+  h.setFrame('data:image/jpeg;base64,bmV3');
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(70_000);
+  assert.equal(h.requests[1].frame_data_url, 'data:image/jpeg;base64,bmV3', 'retry uses the latest image');
+  assert.equal(h.errors.at(-1), '');
+  assert.equal(h.statuses.at(-1), '');
+  await h.pollAt(71_000);
+  assert.equal(h.requests.length, 2, 'success must not restore one image per second');
+  await h.pollAt(72_000);
+  assert.equal(h.requests.length, 3);
+  h.setOutcome(rateLimitError());
+  await h.pollAt(74_000);
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(134_000);
+  await h.pollAt(137_999);
+  assert.equal(h.requests.length, 5);
+  await h.pollAt(138_000);
+  assert.equal(h.requests.length, 6);
+  assert.deepEqual(h.reports.filter(r => r.event === 'joyai_rate_limited').map(r => r.frame_interval_ms), [2_000, 4_000]);
+});
+
+test('rate-limited user instructions wait for cooldown and retry once with a fresh image', async (t) => {
+  const h = pollingHarness(t);
+  await h.pollAt(10_000);
+  h.setOutcome(rateLimitError());
+  let settled = false;
+  const instruction = h.provider.submitUserInstruction('查看这个页面').then(result => { settled = true; return result; });
+  await h.pollAt(11_000);
+  assert.equal(settled, false);
+  await h.pollAt(70_999);
+  assert.equal(h.requests.length, 2);
+  h.setFrame('data:image/jpeg;base64,bGF0ZXN0');
+  const result = { response: '', search_job: null };
+  h.setOutcome(result);
+  await h.pollAt(71_000);
+  assert.equal(await instruction, result);
+  assert.equal(h.requests[2].instruction, '查看这个页面');
+  assert.equal(h.requests[2].frame_data_url, 'data:image/jpeg;base64,bGF0ZXN0');
+  await h.pollAt(72_000);
+  assert.equal(h.requests.length, 3, 'no duplicate instruction or image between adaptive ticks');
+});
+
+test('repeated limits cap backoff and stop resets the next session to the default image rate', async (t) => {
+  const h = pollingHarness(t);
+  h.setOutcome(rateLimitError());
+  for (let i = 0; i < 11; i += 1) await h.pollAt(10_000 + i * 300_000);
+  const limits = h.reports.filter(r => r.event === 'joyai_rate_limited');
+  assert.equal(limits.length, 11);
+  assert.equal(limits.at(-1).frame_interval_ms, 300_000);
+  assert.equal(limits.at(-1).cooldown_ms, 300_000);
+  h.provider.stop();
+  h.provider.sessionId = 'new-media';
+  h.provider.startFramePolling();
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(3_310_000);
+  const count = h.requests.length;
+  await h.pollAt(3_311_000);
+  assert.equal(h.requests.length, count + 1, 'new session starts at one image per second');
+});
+
+test('lower image rate does not slow voice-only turns after quota cooldown', async (t) => {
+  const h = pollingHarness(t);
+  h.setOutcome(rateLimitError());
+  for (let i = 0; i < 4; i += 1) await h.pollAt(10_000 + i * 300_000);
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(1_210_000);
+  h.setFrame('');
+  const pending = h.provider.submitUserInstruction('停止共享后继续说话');
+  await h.pollAt(1_211_000);
+  await pending;
+  assert.equal(h.requests.at(-1).frame_data_url, '');
+  assert.equal(h.requests.at(-1).request_kind, 'user');
+  const count = h.requests.length;
+  await h.pollAt(1_212_000);
+  assert.equal(h.requests.length, count, 'no idle inference without sharing or a prompt');
+});
+
+test('ordinary failures do not reduce image rate or replay user instructions', async (t) => {
+  const h = pollingHarness(t);
+  await h.pollAt(10_000);
+  h.setOutcome(new Error('Network disconnected'));
+  const pending = h.provider.submitUserInstruction('检查页面');
+  const rejected = assert.rejects(pending, /Network disconnected/);
+  await h.pollAt(11_000);
+  await rejected;
+  h.setOutcome({ response: '', search_job: null });
+  await h.pollAt(12_000);
+  assert.equal(h.requests.length, 3);
+  assert.equal(h.requests.at(-1).request_kind, 'frame');
+  assert.equal(h.reports.some(r => r.event === 'joyai_rate_limited'), false);
+});
+
+test('a late rate limit from a stopped session cannot throttle its replacement', async (t) => {
+  const h = pollingHarness(t);
+  let reject;
+  h.setOutcome(() => new Promise((resolve, fail) => { reject = fail; }));
+  await h.pollAt(10_000);
+  h.provider.stop();
+  h.provider.sessionId = 'replacement';
+  reject(rateLimitError());
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.reports.some(r => r.event === 'joyai_rate_limited'), false);
+  assert.deepEqual(h.errors, []);
+  h.setOutcome({ response: '', search_job: null });
+  h.provider.startFramePolling();
+  await h.pollAt(11_000);
+  await h.pollAt(12_000);
+  assert.equal(h.requests.length, 3);
+});
+
 test('long user instructions and their final constraints reach the RPC intact', async (t) => {
   const calls = [];
   globalThis.joyaiTestRequest = async (...args) => {

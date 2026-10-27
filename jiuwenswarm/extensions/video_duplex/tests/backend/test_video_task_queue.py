@@ -64,15 +64,17 @@ async def queue(monkeypatch, tmp_path):
 
     async def execute(_client, **kwargs):
         name = kwargs["question"]
-        executed.append(name)
-        execution_users.append(kwargs.get("user_id"))
-        await gates[name].wait()
         with manager.service.store.transaction() as db:
             task = next(
                 t
                 for t in manager.service.store.rows(db)
                 if t["request_id"] == kwargs["request_id"]
             )
+        # This fake represents a running Core invocation, after admission.
+        manager.service.store.update(task["id"], lambda t: t.update(execution_bound=True))
+        executed.append(name)
+        execution_users.append(kwargs.get("user_id"))
+        await gates[name].wait()
         manager.service.store.update(
             task["id"], lambda t: t.update(execution_settled=True)
         )
@@ -286,6 +288,7 @@ async def test_connection_identity_and_saved_conversation_scope(monkeypatch, cas
 
     monkeypatch.setattr(task_adapter, "task_agent_query", metadata)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager.authorize, manager.client = task_identity, object()
     ws = SimpleNamespace(
         remote_address=("127.0.0.1", 1234), request_headers={"Origin": "http://127.0.0.1:5384"},
@@ -493,6 +496,7 @@ async def test_query_summary_covers_unfinished_tasks_beyond_first_page(tmp_path)
     service.started = True  # No executions: use isolated persisted records only.
     service.kick = Mock(return_value=None)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager._service, manager.concurrency = service, 2
     for i in range(7):
         task = service.submit("alice", "scope", str(i), str(i))
@@ -548,7 +552,7 @@ async def test_native_file_history_is_bound_to_exact_execution(queue, monkeypatc
         ]
 
     monkeypatch.setattr(session_history, "load_history_records", history)
-    from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter import VoiceTaskServerAdapter
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
     from jiuwenswarm.server.runtime.session import session_metadata, lifecycle
     monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *a, **k: {"user_id": "alice"})
@@ -573,6 +577,7 @@ async def test_voice_reorder_rejects_stale_queue_then_accepts_new_request(tmp_pa
     service.started = True
     service.kick = Mock(return_value=None)
     manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
     manager._service, manager.concurrency = service, 2
     jobs = [service.submit("alice", "scope", str(i), str(i)) for i in range(8)]
     stale_version = manager.snapshot("alice", "scope").get("queue_version")
@@ -691,3 +696,79 @@ async def test_untyped_validation_errors_are_never_treated_as_conflicts(queue, m
     reject.assert_called_once()
     assert queue.record(task_id) == before
     assert queue.executed == queue.cancels == []
+
+
+@pytest.mark.parametrize("source", ["confirm_interrupt", "permission_interrupt"])
+async def test_voice_is_told_to_click_approval_cards_and_cannot_approve_them(tmp_path, source):
+    # Voice never approves cards (#7352); it must say so instead of implying "allowed".
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskService
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.store import TaskStore
+    service = TaskService(TaskStore(tmp_path / "approval.sqlite"), None)
+    service.started = True
+    service.kick = Mock(return_value=None)
+    manager = object.__new__(video_search.VideoSearchManager)
+    manager._execution_targets = {}
+    manager._service, manager.concurrency = service, 2
+    card = {"id": "card-a", "request_id": "core-approval", "state": "pending", "source": source,
+            "questions": [{"question": "cua_agent 将操作桌面：打开计算器", "header": "操作确认: cua_agent",
+                           "options": [{"label": "允许"}, {"label": "拒绝"}]}]}
+    task = service.submit("alice", "scope", "cua", "打开计算器")
+    service.store.update(task["id"], lambda t: t.update(status="waiting_user", interaction=card))
+    asking = service.submit("alice", "scope", "trip", "规划行程")
+    service.store.update(asking["id"], lambda t: t.update(status="waiting_user", interaction={
+        "id": "question-a", "request_id": "q", "state": "pending", "source": "ask_user_interrupt",
+        "questions": [{"question": "预算是多少？"}]}))
+
+    query = await manager.operate("alice", "scope", SimpleNamespace(name="jiuwen_task_query", arguments={}))
+    jobs = {job["id"]: job for job in query["jobs"]}
+    assert jobs[task["id"]]["requires_click"] is True
+    assert jobs[task["id"]]["approval_cards"] == [
+        {"header": "操作确认: cua_agent", "message": "cua_agent 将操作桌面：打开计算器"}]
+    assert jobs[asking["id"]]["requires_click"] is False, "Information questions stay voice-answerable"
+    assert "requires_click" in query["message"]
+
+    call = SimpleNamespace(name="jiuwen_task_answer", call_id="voice-allow", arguments={
+        "job_id": task["id"], "interaction_id": "card-a", "answers": ["允许"]})
+    result = await manager.operate("alice", "scope", call)
+    assert result["applied"] is False and result["state"] == "rejected"
+    assert result["code"] == "APPROVAL_REQUIRES_CLICK"
+    assert result["approval_cards"] == jobs[task["id"]]["approval_cards"]
+    assert "NOT approved" in result["message"] and "Do not claim" in result["message"]
+    stored = service.store.read(task["id"])
+    assert stored["status"] == "waiting_user" and stored["interaction"]["state"] == "pending"
+
+
+@pytest.mark.parametrize("version_kind", ["quoted", "invalid", "omitted"])
+async def test_voice_reorder_with_quoted_version_pushes_queue_and_changes_execution_order(queue, version_kind):
+    q = queue
+    await q.start("A")
+    await until(lambda: q.executed == ["A"])
+    desktop, weather = await q.start("B"), await q.start("C")
+    before = q.manager.snapshot("alice", "scope")
+    q.events.clear()
+    await q.manager.handle_qwen_tool(None, "voice-move", {
+        "name": "jiuwen_task_reorder", "call_id": "move-weather",
+        "search_session_id": "scope", "question": "把天气任务调到最前面",
+        "arguments": json.dumps({
+            "job_id": weather, "action": "next",
+            **({"queue_version": str(before["queue_version"])} if version_kind == "quoted" else
+               {"queue_version": "invalid"} if version_kind == "invalid" else {}),
+        }),
+    }, None)
+    assert q.responses[-1]["ok"]
+    receipt = q.responses[-1]["payload"]["tool_result"]
+    assert receipt["operation"]["state"] == "reordered"
+    assert receipt["queue_version"] > before["queue_version"]
+    await until(lambda: any(name == "video.search.queue" for name, _ in q.events))
+    pushed = next(payload for name, payload in q.events if name == "video.search.queue")
+    positions = {job["job_id"]: job["queue_position"] for job in pushed["jobs"]}
+    assert positions[weather] == 1 and positions[desktop] == 2
+    assert q.executed == ["A"], "Reordering must not interrupt current work"
+    q.gates["A"].set()
+    await until(lambda: len(q.executed) == 2)
+    assert q.executed == ["A", "C"]
+    q.gates["C"].set()
+    await until(lambda: len(q.executed) == 3)
+    assert q.executed == ["A", "C", "B"]
+    q.gates["B"].set()
+    await until(lambda: q.record(desktop)["status"] == "completed")
