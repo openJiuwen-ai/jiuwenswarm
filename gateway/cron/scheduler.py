@@ -353,7 +353,7 @@ class CronSchedulerService:
         # etcd/HA 后端没有本地文件，退化为本机默认路径（每个 Gateway 各持一份）。
         lifecycle_source = getattr(store, "path", None)
         if lifecycle_source is None:
-            from jiuwenswarm.common.utils import get_cron_jobs_path
+            from gateway.common.paths import get_cron_jobs_path
 
             lifecycle_source = get_cron_jobs_path()
         self._lifecycle_owner_store = LifecycleOwners(lifecycle_source)

@@ -5,12 +5,12 @@ import importlib.util
 from pathlib import Path
 from typing import Any
 
+from gateway.common.paths import logger
 from gateway.extensions.registry import ExtensionRegistry
 from gateway.extensions.sdk.application_plugin import (
     ApplicationPluginExtension,
     ManifestApplicationPlugin,
 )
-from jiuwenswarm.common.utils import logger
 
 MANIFEST_FILENAME = "extension.yaml"
 ENTRY_FILENAME = "extension.py"

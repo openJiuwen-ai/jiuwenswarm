@@ -4,7 +4,7 @@ import json
 from enum import Enum
 from pathlib import Path
 
-from jiuwenswarm.common.utils import get_checkpoint_dir, logger
+from gateway.common.paths import get_checkpoint_dir, logger
 
 
 class SessionMapScope(str, Enum):

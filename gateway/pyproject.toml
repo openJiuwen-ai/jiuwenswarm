@@ -30,6 +30,8 @@ dependencies = [
     # 配置 / 序列化 / 日志
     "pydantic>=2.0,<3.0",
     "pyyaml>=6.0,<7",
+    # 日志配置解析（logging 段）走 ruamel 的 safe load
+    "ruamel.yaml>=0.18.0,<0.20",
     "python-dotenv>=1.0,<2",
     "json-repair>=0.30.0,<0.60",
     "loguru>=0.7.3,<0.8",

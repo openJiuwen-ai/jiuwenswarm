@@ -26,6 +26,12 @@ from openjiuwen_protocol.hooks import GatewayChatHookContext, GatewayHookEvents
 from openjiuwen_protocol.message import TEAM_ATTACH_ONLY_PARAM
 
 from gateway.channel_manager.base import ChannelType
+from gateway.common.event_names import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    SESSION_REQUEST_COMPLETED_EVENT,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+)
 from gateway.common.mode_matrix import (
     DEPRECATION_MAP,
     MODE_ALIASES,
@@ -75,12 +81,6 @@ from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
-)
-from jiuwenswarm.common.schema.message import (
-    PROMPT_SUGGESTION_READY_EVENT,
-    SESSION_REQUEST_COMPLETED_EVENT,
-    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
-    TOPIC_STARTERS_READY_EVENT,
 )
 
 logger = logging.getLogger(__name__)

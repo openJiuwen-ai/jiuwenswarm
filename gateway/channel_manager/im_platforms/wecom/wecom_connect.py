@@ -28,9 +28,9 @@ from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
 from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from gateway.common.paths import get_agent_workspace_dir
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
 

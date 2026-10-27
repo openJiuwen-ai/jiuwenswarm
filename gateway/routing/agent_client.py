@@ -22,13 +22,13 @@ from openjiuwen_protocol.e2a.wire_codec import (
 )
 from websockets.exceptions import ConnectionClosed, PayloadTooBig
 
+from gateway.common.moa_config import redact_moa_credentials
 from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
 from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.common.moa_config import redact_moa_credentials
 
 logger = logging.getLogger(__name__)
 _STREAM_TRAILING_MESSAGE_GRACE_SECONDS = 0.7

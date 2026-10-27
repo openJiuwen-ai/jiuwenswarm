@@ -59,9 +59,15 @@ from gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 parse_dotenv_early("jiuwenswarm-gateway")
 _mark_startup_import_phase("dotenv_parsed")
 
+# Gateway 自带日志初始化：共同安装时母仓已配置则复用，独立安装时按同一路径自建
+from gateway.common.logging_setup import setup_gateway_logger
+
+setup_gateway_logger()
+_mark_startup_import_phase("logging_ready")
+
 # Standalone entrypoints retain workspace preparation; Desktop/app already do
 # it before spawning us and pass the marker to avoid duplicate disk work.
-from jiuwenswarm.common.utils import (
+from gateway.common.paths import (
     cleanup_stale_openjiuwen_descs,
     prepare_runtime_workspace,
 )
@@ -71,7 +77,9 @@ if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
     prepare_runtime_workspace(cleanup_stale_descs=False)
 _mark_startup_import_phase("runtime_workspace_ready")
 
-from openjiuwen.core.common.logging import LogManager  # pylint: disable=wrong-import-order
+from openjiuwen.core.common.logging import (
+    LogManager,  # pylint: disable=wrong-import-order
+)
 
 from gateway.channel_manager.base import BaseWebChannel
 
@@ -81,6 +89,17 @@ _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 from gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
 from gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
+)
+from gateway.common.event_names import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+)
+from gateway.common.paths import (
+    apply_free_search_runtime_defaults,
+    get_env_file,
+    get_root_dir,
+    get_user_workspace_dir,
 )
 from gateway.common.process_supervision import (
     GATEWAY_RESTART_EXIT_CODE,
@@ -95,17 +114,6 @@ from gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.debug_dump import (
     install_async_dump_handler,
     install_crash_exit_handler,
-)
-from jiuwenswarm.common.schema.message import (
-    PROMPT_SUGGESTION_READY_EVENT,
-    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
-    TOPIC_STARTERS_READY_EVENT,
-)
-from jiuwenswarm.common.utils import (
-    apply_free_search_runtime_defaults,
-    get_env_file,
-    get_root_dir,
-    get_user_workspace_dir,
 )
 
 _mark_startup_import_phase("gateway_core_imports_loaded")
@@ -1705,7 +1713,7 @@ class GatewayServer(BaseWebChannel):
                 metadata["project_dir"] = project_dir.strip()
                 # 记录会话首条消息时所在的 git 分支，供 /resume 按分支过滤（Ctrl+B）。
                 # 非 git/detached/失败时为哨兵 "HEAD"。
-                from jiuwenswarm.common.utils import resolve_git_branch
+                from gateway.common.paths import resolve_git_branch
 
                 metadata["git_branch"] = resolve_git_branch(project_dir.strip())
             client_timeout_ms = coerce_client_timeout_ms(data.get("timeout_ms"))
