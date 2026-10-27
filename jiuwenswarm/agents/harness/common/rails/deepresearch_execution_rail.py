@@ -40,6 +40,17 @@ DEEPRESEARCH_DELIVERY_INDEX_KEY = "deepresearch_delivery_index"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
 _TOOL_NAME = "deepresearch_execute"
 
+# HITL 暂停占位文案（interaction 分支写入 tool_msg）。必须注册进
+# StreamEventRail 的占位模板白名单（_is_legacy_tool_interrupt_placeholder_text）：
+# resume 完成后占位与 completed tool_msg 挂同一原始 tool_call_id，
+# 白名单识别使孤儿清理按"占位被真实结果替换"收敛，而非 duplicate
+# 规则保留占位删掉完成态（后者会让历史停留在"等待答复"）。
+DEEPRESEARCH_INTERACTION_PLACEHOLDER = (
+    "DeepResearch 已暂停并向用户发起结构化问答，正在等待用户答复。"
+    "用户答复后本工具将自动恢复执行并返回后续结果；请勿代替用户"
+    "作答，也无需重复调用本工具轮询进度。"
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -434,8 +445,15 @@ class DeepResearchExecutionRail(DeepAgentRail):
         # open_calls/pending 泄漏 -> 下一轮 LLM 误判「研究未完成」触发重弹问题/重跑。
         # 这里把 tool_call.id 重写回 workflow_id（经 alias 解析的原始 id），使
         # StreamEventRail(priority=80) 发出的 chat.tool_call/chat.tool_result 都对齐原始 id。
+        # bridge 场景（模型换新 id 重试被桥接旧 state）例外：本次调用 id 本身就是
+        # 历史 id，原样保留——按 interaction 后缀模式判断，而非"是否在 aliases 中"
+        # （bridge 的 alias 不带该后缀），否则 tool_msg.tool_call_id 会被改写成旧
+        # workflow_id 而与 assistant 消息 tool_calls 的新 id 不匹配（issue #5131 回归）。
         original_workflow_id = workflow_id
-        if tool_call_id != original_workflow_id:
+        if (
+            tool_call_id != original_workflow_id
+            and tool_call_id.startswith(f"{original_workflow_id}_interaction_")
+        ):
             try:
                 ctx.inputs.tool_call.id = original_workflow_id
             except (AttributeError, TypeError):
@@ -494,11 +512,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 # 保持不变，打断/恢复流程不受影响。tool_call_id 必须用原始
                 # 调用 id，与 assistant 消息中的 tool_calls 对齐。
                 ctx.inputs.tool_msg = ToolMessage(
-                    content=(
-                        "DeepResearch 已暂停并向用户发起结构化问答，正在等待"
-                        "用户答复。用户答复后本工具将自动恢复执行并返回后续"
-                        "结果；请勿代替用户作答，也无需重复调用本工具轮询进度。"
-                    ),
+                    content=DEEPRESEARCH_INTERACTION_PLACEHOLDER,
                     tool_call_id=tool_call_id,
                 )
                 return
@@ -554,11 +568,31 @@ class DeepResearchExecutionRail(DeepAgentRail):
             }
             _save_aliases(ctx.session, aliases)
             content = payload.get("content")
-            if isinstance(content, str) and content.strip():
+
+            if payload.get("kind") == "completed":
+                # 完成态回写：completed 结果不再以原始 JSON payload（含
+                # state/revision/timing/token usage 等内部字段，由框架默认
+                # 序列化成 tool_msg）裸入 LLM 历史，改为与 interaction/
+                # stopped 同口径的短文案。旁路自恢复（用户答复交互卡后的
+                # interrupt continuation）不重入 LLM 主循环，本次执行的
+                # tool_msg 是完成态进入历史的唯一通道——若不显式改写，
+                # 历史中该 tool_call_id 下最后一条 tool 消息会停留在暂停
+                # 占位文案，后续轮模型误判任务未完成（实测事故：任务已
+                # 完成，模型答"还在第一阶段暂停等待用户答复"）。payload
+                # content 即完成摘要（报告名/章节结构/交付说明），短载荷
+                # 同时避开部署版按体积拒收 llm_context 的守卫；前端交付
+                # 不受影响——chat.tool_result 帧使用 tool_result 原始
+                # payload（StreamEventRail），与 tool_msg 解耦。
                 ctx.inputs.tool_msg = ToolMessage(
-                    content=content.strip(),
+                    content=(
+                        content.strip()
+                        if isinstance(content, str) and content.strip()
+                        else "DeepResearch 任务已完成，报告已交付。"
+                    ),
                     tool_call_id=tool_call_id,
                 )
+
+            if isinstance(content, str) and content.strip():
                 # 不改写 tool_result：保留结构化信封（kind=completed +
                 # workflow_llm_token_usage），使 StreamEventRail raw_output 与
                 # interface_deep._extract_deepresearch_sdk_usage 能提取 SDK token
@@ -579,5 +613,6 @@ __all__ = [
     "DEEPRESEARCH_DELIVERY_INDEX_KEY",
     "DEEPRESEARCH_EXECUTION_ALIAS_KEY",
     "DEEPRESEARCH_EXECUTION_STATE_KEY",
+    "DEEPRESEARCH_INTERACTION_PLACEHOLDER",
     "DeepResearchExecutionRail",
 ]

@@ -744,6 +744,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY,
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2,
         )
+        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+        )
 
         legacy_templates = [
             f"[Tool execution interrupted] Tool {tool_name} was interrupted by user during execution, "
@@ -759,6 +762,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             else "",
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2
             if tool_name == "skill_acceleration_exec"
+            else "",
+            # HITL 暂停 tool_msg（deepresearch_execute 专用文案）。注册后
+            # 孤儿清理把"占位 + resume 完成态同 id 两条消息"收敛为"占位被
+            # 真实结果替换"，而非 duplicate 规则保留占位删掉完成态。
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER
+            if tool_name == "deepresearch_execute"
             else "",
         ]
         normalized_content = self._normalize_tool_interrupt_text(content)
