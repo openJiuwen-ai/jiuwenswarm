@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
-import re
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -23,7 +24,7 @@ from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE, ModelInfo
 from jiuwenswarm.diagnosis.service import DiagnosisService
 from jiuwenswarm.diagnosis.store import DiagnosisStore
-from gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes
+from gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
 from gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
 from jiuwenswarm.server.diagnosis.host import DiagnosisHost
 from tests.unit_tests.diagnosis.diagnosis_fixtures import (
@@ -356,6 +357,30 @@ async def test_proxy_maps_error_codes_to_http_status(payload: dict[str, Any], st
     assert response.json() == {"error": "boom", "code": payload["code"]}
 
 
+def test_missing_status_is_logged_and_transport_codes_are_not() -> None:
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture()
+    target = logging.getLogger("gateway.channel_manager.web.diagnosis_http")
+    target.addHandler(handler)
+    try:
+        assert error_status("SOMETHING_NEW") == 500
+        assert error_status("FEATURE_DISABLED", "403") == 500
+        assert error_status("SERVICE_UNAVAILABLE") == 503
+        assert error_status("AGENT_SERVER_TIMEOUT") == 504
+    finally:
+        target.removeHandler(handler)
+
+    assert [record.message for record in records] == [
+        "[diagnosis] error payload has no usable status, using 500: code=SOMETHING_NEW",
+        "[diagnosis] error payload has no usable status, using 500: code=FEATURE_DISABLED",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_proxy_answers_500_when_the_forward_raises() -> None:
     async def fetch(method: ReqMethod, session_id: str, params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
@@ -367,11 +392,37 @@ async def test_proxy_answers_500_when_the_forward_raises() -> None:
     assert (response.status_code, response.json()["code"]) == (500, "INTERNAL_ERROR")
 
 
-def test_every_service_error_code_has_a_status() -> None:
-    root = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "diagnosis"
-    codes: set[str] = set()
-    for source in root.glob("*.py"):
-        codes |= set(re.findall(r'DiagnosisHostError\(\s*"([A-Z_]+)"', source.read_text(encoding="utf-8")))
+def _diagnosis_host_error_calls() -> list[tuple[str, int | None, Path]]:
+    """Return ``(code, literal status, path)`` for each raise with a string code."""
+    repo = Path(__file__).resolve().parents[3]
+    files = list((repo / "jiuwenswarm" / "diagnosis").glob("*.py"))
+    files.append(repo / "jiuwenswarm" / "server" / "diagnosis" / "host.py")
+    found: list[tuple[str, int | None, Path]] = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+                continue
+            call = node.exc
+            func = call.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            if name != "DiagnosisHostError" or not call.args:
+                continue
+            code_node = call.args[0]
+            if not isinstance(code_node, ast.Constant) or not isinstance(code_node.value, str):
+                continue
+            status: int | None = None
+            if len(call.args) >= 3 and isinstance(call.args[2], ast.Constant) and isinstance(call.args[2].value, int):
+                status = call.args[2].value
+            found.append((code_node.value, status, path))
+    return found
 
-    assert codes
-    assert codes <= set(ERROR_STATUS_BY_CODE)
+
+def test_every_service_error_code_has_a_status() -> None:
+    found = _diagnosis_host_error_calls()
+
+    assert found
+    for code, status, path in found:
+        assert code in ERROR_STATUS_BY_CODE, path
+        if status is not None:
+            assert status == ERROR_STATUS_BY_CODE[code], (path, code)

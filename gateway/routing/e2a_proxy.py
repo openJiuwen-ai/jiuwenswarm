@@ -317,7 +317,7 @@ async def fetch_agent_unary(
         else (response.payload if response.payload is not None else {})
     )
     if not response.ok:
-        forwarded = {
+        forwarded: dict[str, Any] = {
             "error": str(payload.get("error") or f"{req_method.value} failed"),
             "code": str(payload.get("code") or "BAD_REQUEST"),
         }

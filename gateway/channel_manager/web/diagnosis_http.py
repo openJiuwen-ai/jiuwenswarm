@@ -74,6 +74,7 @@ def error_status(code: str, reported_status: Any = None) -> int:
         return 503
     if code == _TIMEOUT_CODE:
         return 504
+    logger.warning("[diagnosis] error payload has no usable status, using 500: code=%s", code)
     return 500
 
 

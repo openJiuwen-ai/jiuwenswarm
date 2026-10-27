@@ -361,18 +361,23 @@ class TtseTriggerRequest(_Model):
 
 
 class DiagnosisHostError(Exception):
-    """Business error carrying the HTTP status and contract error code."""
+    """Business error carrying the HTTP status and contract error code.
+
+    A known ``code`` takes its status from ``ERROR_STATUS_BY_CODE``. The
+    ``status`` argument is only the fallback for a code that is not in that
+    table, and a literal at a raise site must match the table.
+    """
 
     def __init__(self, code: str, message: str, status: int) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
-        self.status = status
+        self.status = ERROR_STATUS_BY_CODE.get(code, status)
 
 
-#: HTTP status of every error code a diagnosis request can answer. The host
-#: forwards this integer on the AgentServer error payload. The Gateway uses
-#: that field and does not keep a second copy.
+#: HTTP status of every error code a diagnosis request can answer.
+#: ``DiagnosisHostError`` copies the value for a known code, and the host
+#: forwards that status. Changing this table changes the status on the wire.
 ERROR_STATUS_BY_CODE: dict[str, int] = {
     "BAD_REQUEST": 400,
     "FEATURE_DISABLED": 403,
