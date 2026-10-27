@@ -283,6 +283,20 @@ def _protected(operation: str, job_id: str) -> dict[str, Any]:
     }
 
 
+def _failed(operation: str, error: str) -> dict[str, Any]:
+    return {
+        "operation": operation,
+        "applied": False,
+        "state": "failed",
+        "code": "CRON_OPERATION_FAILED",
+        "error": error[:500],
+        "message": (
+            "The scheduled-job task did not complete successfully. Its final state is unconfirmed. "
+            "Query the job before retrying; do not claim success, rollback or that no change occurred."
+        ),
+    }
+
+
 class CronControl:
     """Run cron tools for one conversation user inside the Gateway process."""
 
@@ -332,14 +346,7 @@ class CronControl:
             return await self._delete(controller, normalized)
         except Exception as exc:  # noqa: BLE001 - rejections are receipts, not exceptions
             logger.warning("[video-duplex] cron tool failed name=%s", name, exc_info=True)
-            return {
-                "operation": name,
-                "applied": False,
-                "state": "failed",
-                "code": "CRON_OPERATION_FAILED",
-                "error": str(exc)[:500] or type(exc).__name__,
-                "message": "The scheduled-job change was not applied. Report the error without claiming success.",
-            }
+            return _failed(name, str(exc) or type(exc).__name__)
 
     async def _query(self, controller: Any, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = str(arguments.get("job_id") or "")
@@ -387,6 +394,8 @@ class CronControl:
             return _protected(CRON_UPDATE_TOOL, job_id)
         patch = dict(arguments["patch"])
         updated = await controller.update_job(job_id, patch)
+        if not isinstance(updated, dict) or updated.get("id") != job_id:
+            return _failed(CRON_UPDATE_TOOL, "The update did not return a valid job receipt.")
         return {
             "operation": CRON_UPDATE_TOOL,
             "applied": True,

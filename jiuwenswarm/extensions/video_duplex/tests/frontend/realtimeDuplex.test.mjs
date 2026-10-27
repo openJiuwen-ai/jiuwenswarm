@@ -163,6 +163,8 @@ test('operation receipts route unfinished management through the exposed queue t
   assert.match(instructions, /call jiuwen_queue_manage/);
   assert.doesNotMatch(instructions, /call jiuwen_task_(?:answer|reorder|modify|query|cancel)/);
   assert.match(instructions, /Do not call low-level task tools or jiuwen_queue_manage again for the same request/);
+  assert.match(instructions, /a failed write means the task was unsuccessful and its final state is unconfirmed/);
+  assert.doesNotMatch(instructions, /read-only when applied=false/);
 });
 
 test('pending approval cards ask the user to click instead of answering by voice', () => {

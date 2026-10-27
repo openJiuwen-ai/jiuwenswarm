@@ -138,6 +138,51 @@ async def test_update_applies_only_the_whitelisted_patch():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("result", [None, False, True, "job-1", {}])
+async def test_invalid_update_result_returns_unsuccessful_receipt(monkeypatch, result):
+    controller = FakeCronController([job()])
+
+    async def update_without_receipt(job_id, patch):
+        controller.jobs[job_id].update(patch)
+        return result
+
+    monkeypatch.setattr(controller, "update_job", update_without_receipt)
+    receipt = await CronControl("alice", controller).execute(
+        CRON_UPDATE_TOOL, {"job_id": "job-1", "patch": {"enabled": False}},
+    )
+
+    assert receipt["state"] == "failed"
+    assert receipt["code"] == "CRON_OPERATION_FAILED"
+    assert receipt["applied"] is False
+    assert "did not complete successfully" in receipt["message"]
+    assert "final state is unconfirmed" in receipt["message"]
+    assert "job" not in receipt
+    assert controller.jobs["job-1"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("write_applied", [False, True])
+async def test_update_exception_returns_unsuccessful_receipt(monkeypatch, write_applied):
+    controller = FakeCronController([job()])
+
+    async def failed_update(job_id, patch):
+        if write_applied:
+            controller.jobs[job_id].update(patch)
+        raise RuntimeError("scheduler unavailable")
+
+    monkeypatch.setattr(controller, "update_job", failed_update)
+    receipt = await CronControl("alice", controller).execute(
+        CRON_UPDATE_TOOL, {"job_id": "job-1", "patch": {"enabled": False}},
+    )
+
+    assert receipt["state"] == "failed"
+    assert receipt["applied"] is False
+    assert receipt["error"] == "scheduler unavailable"
+    assert "final state is unconfirmed" in receipt["message"]
+    assert controller.jobs["job-1"]["enabled"] is not write_applied
+
+
+@pytest.mark.asyncio
 async def test_update_refuses_protected_jobs():
     controller = FakeCronController([job("system", mode="proactive.tick")])
     control = CronControl("alice", controller)

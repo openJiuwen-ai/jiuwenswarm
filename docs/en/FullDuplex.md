@@ -92,7 +92,9 @@ timeout with `jiuwen_cron_update`, and removes one with `jiuwen_cron_delete`. Ev
 copy a `job_id` from an earlier query receipt; the model may not guess one. Jobs driven by a
 settings switch (`proactive.tick`) cannot be changed or deleted by voice. Legacy anonymous
 connections retain read-only access; updates and deletion require an identified user who owns
-the job. Creating a scheduled
+the job. If an update returns no valid job record or the controller raises an error, the receipt
+reports that the task was unsuccessful. The final state is unconfirmed: do not claim no change
+or rollback, and query the job before retrying. Creating a scheduled
 job is new work: `jiuwen_delegate` hands it to Core, which creates it through its cron tools with
 the current project, so project binding and credential resolution stay unchanged.
 
