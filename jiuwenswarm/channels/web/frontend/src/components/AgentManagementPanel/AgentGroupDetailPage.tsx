@@ -80,7 +80,7 @@ export function AgentGroupDetailPage({
             <>
               <EntityHeader
                 testId="agent-management-detail-header"
-                avatar={<GroupAvatar item={loadingSummary} />}
+                avatar={{ name: loadingSummary.displayName, iconUrl: loadingSummary.avatarUrl, testId: 'agent-management-detail-avatar' }}
                 title={loadingSummary.displayName}
                 titleTestId="agent-management-detail-name"
                 tags={[
@@ -145,7 +145,10 @@ export function AgentGroupDetailPage({
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
         <EntityHeader
           testId="agent-management-detail-header"
-          avatar={<GroupAvatar item={detail} />}
+          /* 头像走 EntityHeader 的结构化 EntityImageAvatar（共享 EntityAvatar 组件），与
+             agent 模板详情页（agent-management-detail-avatar）同款，不再用自定义 GroupAvatar
+             ReactNode：字母兜底取色与技能面板 / Agent 管理 / 连接器市场保持一致。 */
+          avatar={{ name: detail.displayName, iconUrl: detail.avatarUrl, testId: 'agent-management-detail-avatar' }}
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[

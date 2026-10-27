@@ -1,4 +1,4 @@
-import { useRef, useState, ReactNode } from 'react';
+import { useState, useRef, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
@@ -200,23 +200,6 @@ export default function CronTaskDrawer({
 }: CronTaskDrawerProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
-  const models = useSessionStore((state) => state.chatAvailableModels);
-  const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
-  const defaultModelName = useSessionStore((state) => state.defaultModelName);
-  // 任务未存模型（新建/模板创建未选，或编辑一个本就未下发模型的任务）时，在
-  // picker 下方展示任务触发时实际执行的默认模型说明。仅提示、不写 form：
-  // 提交值保持不携带任何模型字段，「新建任务不借用聊天默认模型」的产品约束
-  // （!5666）不变。任务存了模型时 form 非空，提示自然消失（模型被删的旧任务
-  // 由既有 unavailable 提示接管）。清单加载完成（modelsLoaded）后才判定，
-  // 避免加载中把空目录误报成「未检测到可用模型」。
-  const defaultModelHint =
-    modelsLoaded && !form.modelName && !form.modelSelection
-      ? resolveCronDefaultHint(models, defaultModelName)
-      : null;
-  // 有稳定选择按 model_id 核对（重名模型也能正确判定可用性）；旧数据退回名字核对
-  const modelUnavailable = modelsLoaded && (form.modelSelection
-    ? !models.some((model) => model.model_id === form.modelSelection?.id)
-    : Boolean(form.modelName) && !models.some((model) => model.model_name === form.modelName));
   // 修复"在名称/描述输入框里选中文字、拖动选区移出抽屉后松开鼠标，抽屉被误关"：
   // 该手势的 mousedown 在抽屉内、mouseup 在遮罩上，浏览器会把产生的 click 派发到
   // 两者的最近公共祖先（即遮罩层本身），click 不经过抽屉冒泡，抽屉上的
