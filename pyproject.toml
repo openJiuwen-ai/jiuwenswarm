@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "workswarm"
 version = "0.2.5.beta1"
 description = "WorkSwarm"
-requires-python = ">=3.11,<3.14"
+requires-python = ">=3.11,<3.15"
 license = { text = "Apache-2.0" }
 classifiers = [
     "License :: OSI Approved :: Apache Software License",
@@ -23,7 +23,7 @@ dependencies = [
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@edfdae9a8a876b7a15dbf6bce501b929d235b6dc#subdirectory=openjiuwen-protocol",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@10a03dd263c33042558bbd67a815952458a25fa9#subdirectory=openjiuwen-protocol",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -149,13 +149,13 @@ jiuwenswarm = "jiuwenswarm.channels.cli.main:main"
 jiuwenswarm-process = "jiuwenswarm.channels.process_cli.main:main"
 jiuwenswarm-app = "jiuwenswarm.app:main"
 jiuwenswarm-agentserver = "jiuwenswarm.server.app_agentserver:main"
-jiuwenswarm-gateway = "jiuwenswarm.gateway.app_gateway:main"
+jiuwenswarm-gateway = "gateway.app_gateway:main"
 jiuwenswarm-web = "jiuwenswarm.channels.web.app_web:main"
 jiuwenswarm-start = "jiuwenswarm.start_services:main"
 jiuwenswarm-stop = "jiuwenswarm.debug_launcher:main"
 jiuwenswarm-init = "jiuwenswarm.init_workspace:main"
 jiuwenswarm-desktop = "jiuwenswarm.channels.desktop.desktop_app:main"
-jiuwenswarm-acp = "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect:main"
+jiuwenswarm-acp = "gateway.channel_manager.protocol.acp.acp_connect:main"
 jiuwenswarm-acp-chat = "jiuwenswarm.acp.cli:main"
 jiuwenbox = "jiuwenbox.cli.jiuwenbox:main"
 jiuwenbox-server = "jiuwenbox.server.launcher:main"
@@ -169,7 +169,7 @@ package-dir = {"jiuwenbox" = "jiuwenbox/src/jiuwenbox"}
 
 [tool.setuptools.packages.find]
 where = [".", "jiuwenbox/src"]
-include = ["jiuwenswarm*", "jiuwenbox*"]
+include = ["jiuwenswarm*", "jiuwenbox*", "gateway*"]
 exclude = ["jiuwenswarm.web*"]
 namespaces = false
 
@@ -215,7 +215,7 @@ default-groups = ['dev']
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "0ab5913b250d565b35bff3828dae438939cb1acd" }
-openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "edfdae9a8a876b7a15dbf6bce501b929d235b6dc", subdirectory = "openjiuwen-protocol" }
+openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "10a03dd263c33042558bbd67a815952458a25fa9", subdirectory = "openjiuwen-protocol" }
 
 
 [dependency-groups]

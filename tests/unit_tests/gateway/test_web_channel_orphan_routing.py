@@ -15,8 +15,8 @@ import time
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
+from gateway.channel_manager.web.web_connect import WebChannel
+from gateway.routing.keys import AgentRef, RoutingKey
 
 
 class _FakeWs:
@@ -208,8 +208,8 @@ async def test_event_without_ws_id_keeps_session_fallback() -> None:
 
 async def test_team_routing_target_fallthrough_keeps_session_fallback() -> None:
     """team fan_out（routing_target）V2 未命中后的回退保留原语义，不受孤儿丢弃影响。"""
-    from jiuwenswarm.gateway.routing.keys import WebDeliveryTarget
-    from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+    from gateway.routing.keys import WebDeliveryTarget
+    from gateway.routing.session_sharing import RoutingTarget
 
     channel = _make_channel()
     new_ws = _FakeWs("ws-new")
@@ -339,7 +339,7 @@ def test_orphan_drop_log_level(event_name: str, expected_method: str) -> None:
     """终态事件（final/error）INFO 便于现场定位，其余 DEBUG 防刷屏。"""
     from unittest.mock import patch
 
-    from jiuwenswarm.gateway.channel_manager.web import web_connect
+    from gateway.channel_manager.web import web_connect
 
     event_type = EventType(event_name)
     msg = Message(

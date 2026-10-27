@@ -965,7 +965,7 @@ class TestCleanupStaleOpenjiuwenDescs:
         "relative_path",
         (
             "jiuwenswarm/app.py",
-            "jiuwenswarm/gateway/app_gateway.py",
+            "gateway/app_gateway.py",
         ),
     )
     def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
@@ -1012,3 +1012,36 @@ class TestCleanupStaleOpenjiuwenDescs:
 
         assert stages.count("cleanup") == (0 if workspace_ready else 1)
         assert stages[-2:] == ["logging", "patches"]
+
+
+def test_gateway_logger_propagates_into_jiuwenswarm_handlers(tmp_path, monkeypatch):
+    """M0-c 回归守护：顶层 gateway 包的日志必须仍能到达 jiuuwenswarm 的 handler。
+
+    gateway 升为顶层包后 ``logging.getLogger("gateway.x")`` 不再是
+    ``jiuwenswarm`` 的子 logger——setup_logger 显式 reparent，此测试
+    断言 gateway 日志仍被 jiuwenswarm 树的 handler 捕获（否则
+    gateway.log / 控制台全部丢日志）。
+    """
+    import logging
+
+    from jiuwenswarm.common.utils import setup_logger
+
+    root = setup_logger("INFO")
+    captured: list[str] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.name)
+
+    capture = _Capture()
+    logging.getLogger("jiuwenswarm").addHandler(capture)
+    try:
+        logging.getLogger("gateway.app_gateway").warning("gateway log routed?")
+        logging.getLogger("gateway.channel_manager.web.app_web_handlers").warning("nested routed?")
+    finally:
+        logging.getLogger("jiuwenswarm").removeHandler(capture)
+        capture.close()
+
+    assert "gateway.app_gateway" in captured
+    assert "gateway.channel_manager.web.app_web_handlers" in captured
+    del root

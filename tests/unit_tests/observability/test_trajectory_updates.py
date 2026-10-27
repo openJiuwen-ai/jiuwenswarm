@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+from gateway.channel_manager.web.web_connect import WebChannel
 from jiuwenswarm.observability.models import CommittedTraceUpdate
 
 test_logger = logging.getLogger("tests.trajectory_updates")
@@ -68,7 +68,7 @@ async def test_webchannel_coalesces_running_backlog_into_latest_final_hint(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect."
+        "gateway.channel_manager.web.web_connect."
         "_TRAJECTORY_HINT_COALESCE_SECONDS",
         0,
     )
@@ -122,7 +122,7 @@ async def test_webchannel_hint_survives_when_only_frames_advanced(monkeypatch) -
     leaving a live answer frozen until the span ended.
     """
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.web_connect."
+        "gateway.channel_manager.web.web_connect."
         "_TRAJECTORY_HINT_COALESCE_SECONDS",
         0,
     )

@@ -247,16 +247,6 @@
     "edge": {
       "delete": "删除连线"
     },
-    "revision": {
-      "title": "选择要保留的版本",
-      "hint": "{{label}} 已重新生成。原版还在，请选择保留哪一份。",
-      "original": "原版",
-      "incoming": "新内容",
-      "keepOriginal": "保留原版",
-      "keepIncoming": "采用新内容",
-      "pending": "待选择",
-      "compare": "比较版本"
-    },
     "materials": {
       "title": "产出物料",
       "hint": "Brief 和分镜表可手动编辑。保存后重跑下游节点会读到新内容。",
@@ -799,7 +789,8 @@
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "multiModelCollaboration": "多模型协同"
+      "multiModelCollaboration": "多模型协同",
+      "toolOptimize": "工具检索优化"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -978,6 +969,10 @@
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
         "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
+      },
+      "progressive_tool_optimize": {
+        "title": "启用工具检索优化",
+        "description": "开启后模型通过 tool_search 分类目录按需检索工具。"
       },
       "team_scheduled_dispatch_enabled": {
         "title": "启用调度模式",
@@ -1734,6 +1729,8 @@
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
     "teamSelect": {
+      "unavailable": "不可用",
+      "unavailableHint": "该专家团已不可用，请重新安装专家团后继续；历史记录仍可查看。",
       "tooltip": "切换当前查看的 Team",
       "loadingLabel": "加载 Team…",
       "fallbackLabel": "选择 Team"
@@ -3740,6 +3737,7 @@
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",
       "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
+      "uploadSkillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
       "newVersion": "该专家有新版本，可更新",
       "teamUnavailable": "专家团管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
@@ -4148,7 +4146,7 @@
           "manual": "人工审批",
           "system": "系统权限检查"
         },
-        "risk": "风险",
+        "risk": "工具能力风险",
         "riskValues": {
           "critical": "严重",
           "high": "高",
@@ -4156,7 +4154,7 @@
           "low": "低",
           "unknown": "未知"
         },
-        "reason": "原因",
+        "reason": "本次审批依据",
         "reasonValues": {
           "approved": "权限审查已允许此操作。",
           "denied": "权限审查已拒绝此操作。",
@@ -4310,6 +4308,7 @@
     "pipRestart": "立即重启",
     "restoreDefaults": "恢复默认更新源",
     "currentVersion": "当前版本",
+    "builtOn": "构建于",
     "latestVersion": "最新版本",
     "state": "更新状态",
     "publishedAt": "发布时间",
@@ -4841,7 +4840,8 @@
       "invalidType": "仅支持 .zip / .tar 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
-      "missingReadme": "插件包缺少 README.md 文件"
+      "missingReadme": "插件包缺少 README.md 文件",
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
     },
     "common": {
       "back": "返回",

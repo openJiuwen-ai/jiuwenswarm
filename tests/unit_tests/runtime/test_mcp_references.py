@@ -352,7 +352,7 @@ unexpected = sorted(
     or name == 'jiuwenswarm.common.config'
     or name.startswith('jiuwenswarm.server.runtime.mcp')
     or name.startswith('jiuwenswarm.server.agent_ws_server')
-    or name.startswith('jiuwenswarm.gateway')
+    or name.startswith('gateway')
     or name.startswith('jiuwenswarm.channels.process_cli')
     or name.startswith('openjiuwen.core.runner')
     or name == 'websockets'
@@ -375,7 +375,7 @@ print('UNEXPECTED=' + repr(unexpected))
 def test_source_has_no_transport_probe_process_or_state_write_dependency() -> None:
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"), filename=str(SOURCE))
     forbidden_imports = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server.agent_ws_server",
         "jiuwenswarm.channels.process_cli",
         "jiuwenswarm.common.mcp_config",

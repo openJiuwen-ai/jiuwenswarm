@@ -211,6 +211,7 @@ import {
 } from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
+import { organizationOwnerStopTarget } from './features/teamOrganization/conversation';
 import {
   normalizeTeamBootstrapMode,
   normalizeTeamDispatchMode,
@@ -2572,6 +2573,11 @@ function AppContent({
     // 开始历史会话加载
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
+      requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
+        session_id: sessionId,
+        cursor,
+        limit: 50,
+      }),
       onReady: (messages, cursorMeta) => {
         historyRestoreFromPanelHintRef.current = false;
         // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
@@ -3553,7 +3559,11 @@ function AppContent({
     // （paused/blocked/completed/无目标）下，停止只结束会话，不碰目标本身。
     const isGoalActive = useGoalStore.getState().runtimes[currentSessionId]?.goal?.status === 'active';
     if (mode === 'team') {
-      void pause(currentSessionId);
+      if (organizationOwnerStopTarget(currentSessionId)) {
+        void cancel(currentSessionId);
+      } else {
+        void pause(currentSessionId);
+      }
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }

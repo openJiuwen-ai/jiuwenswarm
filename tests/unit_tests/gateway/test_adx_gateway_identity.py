@@ -10,12 +10,12 @@ from fastapi.testclient import TestClient
 
 from jiuwenswarm.extensions.adx.config import load_router_config
 from jiuwenswarm.extensions.adx.router_client import AdxRouterClient
-from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthResult
-from jiuwenswarm.gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
-from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.extensions.auth.credential_authenticator import AuthResult
+from gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.tui.tui_channel import TuiChannel
+from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
 
 def _client(monkeypatch):
@@ -105,7 +105,7 @@ async def test_extension_registers_only_when_adx_backend_is_selected(monkeypatch
 @pytest.mark.parametrize("method", ["history.get", "chat.send", "command.goal"])
 async def test_adx_cron_snapshot_is_turn_only_and_owner_scoped(monkeypatch, method):
     from jiuwenswarm.common.e2a.models import E2AEnvelope
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from gateway.message_handler.message_handler import MessageHandler
 
     client = _client(monkeypatch)
     jobs = [{"id": "alice-job", "user_id": "alice"}]
@@ -115,7 +115,7 @@ async def test_adx_cron_snapshot_is_turn_only_and_owner_scoped(monkeypatch, meth
     handler._cron_controller = controller
     send = AsyncMock(return_value=SimpleNamespace(ok=True))
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.send_agent_request_with_timeout", send,
+        "gateway.message_handler.message_handler.send_agent_request_with_timeout", send,
     )
     try:
         await handler._sync_agentos_cron_jobs(E2AEnvelope(

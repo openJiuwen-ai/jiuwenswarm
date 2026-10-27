@@ -126,5 +126,16 @@ export const experimentalModule: SettingsModuleDefinition = {
         },
       ],
     },
+    {
+      id: 'tool-optimize',
+      titleKey: 'settingsPanel.experimental.toolOptimize',
+      items: [
+        {
+          id: 'progressive-tool-optimize-enabled',
+          component: 'switch',
+          key: 'progressive_tool_optimize',
+        },
+      ],
+    },
   ],
 };

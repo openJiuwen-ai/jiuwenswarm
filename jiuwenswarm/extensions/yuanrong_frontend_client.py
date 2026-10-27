@@ -77,7 +77,7 @@ def apply_trace_header(
     } | {TRACE_ID_HEADER: resolved}
 
 from jiuwenswarm.common.client.agent_client import AgentServerClient
-from jiuwenswarm.gateway.routing.container_files import AgentFileDownloadChunk
+from gateway.routing.container_files import AgentFileDownloadChunk
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.models import E2AEnvelope

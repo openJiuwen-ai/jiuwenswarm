@@ -1,3 +1,13 @@
+---
+title: Team Teammate Worktree Isolation 设计文档
+author: null
+author_note: 历史作者待确认；未用迁入者或原 owner 推断作者
+id: team_worktree_isolation_agenttool_cn
+type: D
+modules: []
+files: []
+---
+
 # Team Teammate Worktree Isolation 设计文档
 
 ## 1. 元信息

@@ -15,7 +15,7 @@ import pytest
 RUNTIME_DIR = Path(__file__).parents[3] / "jiuwenswarm" / "runtime"
 PROJECT_ROOT = Path(__file__).parents[3]
 FORBIDDEN_IMPORT_PREFIXES = (
-    "jiuwenswarm.gateway",
+    "gateway",
     "jiuwenswarm.server.agent_ws_server",
     "websockets",
 )
@@ -138,7 +138,7 @@ async def main():
         await runtime.start()
         names = sorted(
             name for name in sys.modules
-            if name.startswith('jiuwenswarm.gateway')
+            if name.startswith('gateway')
             or name.startswith('jiuwenswarm.server.agent_ws_server')
         )
         print('TRANSPORT_MODULES=' + repr(names))

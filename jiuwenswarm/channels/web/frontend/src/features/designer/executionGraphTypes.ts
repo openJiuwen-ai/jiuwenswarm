@@ -363,8 +363,6 @@ export type DesignerNodeState = {
   completed_at?: number | null;
   output_ref?: AssetRef | null;
   output_refs?: AssetRef[] | null;
-  candidate_output_ref?: AssetRef | null;
-  candidate_output_refs?: AssetRef[] | null;
   error?: string | null;
   blocked_by?: string[];
   activity?: DesignerNodeActivity | null;

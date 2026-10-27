@@ -14,7 +14,7 @@ from contextlib import nullcontext
 
 import pytest
 
-from jiuwenswarm.gateway.app_gateway import _connect_with_retry
+from gateway.app_gateway import _connect_with_retry
 
 
 class _FakeClient:

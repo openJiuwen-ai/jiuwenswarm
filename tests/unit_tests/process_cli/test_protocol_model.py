@@ -374,7 +374,7 @@ unexpected = sorted(
     name for name in sys.modules
     if name == 'jiuwenswarm.runtime.service'
     or name.startswith('jiuwenswarm.server.agent_ws_server')
-    or name.startswith('jiuwenswarm.gateway')
+    or name.startswith('gateway')
     or name == 'websockets'
 )
 print('UNEXPECTED=' + repr(unexpected))
@@ -397,7 +397,7 @@ def test_protocol_modules_have_no_server_or_transport_imports() -> None:
         PROJECT_ROOT / "jiuwenswarm" / "channels" / "process_cli" / "protocol"
     )
     forbidden_prefixes = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server",
         "websockets",
     )

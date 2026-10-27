@@ -718,6 +718,13 @@ class SessionArchiveService:
         await asyncio.to_thread(
             lc.complete, "session", session_id, deleted=True, result=payload
         )
+        from jiuwenswarm.server.runtime.recommendation_host import (
+            active_recommendation_host,
+        )
+
+        host = active_recommendation_host()
+        if host is not None:
+            await host.session_left_project(str(project_id or ""), session_id)
 
     @staticmethod
     def _save_cleanup_failure(

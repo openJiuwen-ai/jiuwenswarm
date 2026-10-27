@@ -623,7 +623,7 @@ def _dispatch() -> int | None:
         agent_main()
         return None
     if _pop_flag(_DESKTOP_RUN_GATEWAY):
-        from jiuwenswarm.gateway.app_gateway import main as gateway_main
+        from gateway.app_gateway import main as gateway_main
         gateway_main()
         return None
     if _DESKTOP_INSTALL_UPDATE in sys.argv:

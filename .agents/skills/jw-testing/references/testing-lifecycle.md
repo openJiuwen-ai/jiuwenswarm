@@ -22,7 +22,7 @@ completed / rejected 是本次转测的终态，新增范围需明确记录新�
 
 ## 元信息与结果边界
 
-- 通用字段为 id、title、slug、status、stage、owner、reviewers、created、updated、version、domain。
+- 通用字段为 id、title、slug、status、stage、author、author_email、reviewers、created、updated、version、domain。
   负责人、评审者未知时明确待确认，不把模板示例当事实。
 - `design-id` 指向实际关联设计，支持新 D- 标识和旧 SDD；无设计时说明实际 feature / spec 依据。
 - `test-type` 按实际范围选 functional / integration / e2e / performance / security / regression。

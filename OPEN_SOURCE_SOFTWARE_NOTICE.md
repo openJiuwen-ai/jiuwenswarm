@@ -47,7 +47,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
-### Software: Python 3.11.x, 3.12.x, 3.13.x
+### Software: Python 3.11.x, 3.12.x, 3.13.x, 3.14.x
 
 **License:** Python Software Foundation License V2
 

@@ -8,7 +8,7 @@ all three.
 
 from __future__ import annotations
 
-# Same literal as jiuwenswarm.gateway.configs.etcd_sync.CONFIG_SYNC_KEY.
+# Same literal as jiuwenswarm.extensions.agentos.config_updater.CONFIG_SYNC_KEY.
 CONFIG_SYNC_KEY = "/agentos/config/data-plane"
 COMPONENT_NAME = "jiuwenbox"
 ETCD_ENDPOINTS_ENV = "JIUWENBOX_ETCD_ENDPOINTS"

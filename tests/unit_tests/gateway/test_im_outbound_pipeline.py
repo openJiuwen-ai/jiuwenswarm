@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.gateway.im_pipeline.im_outbound import IMOutboundPipeline
+from gateway.im_pipeline.im_outbound import IMOutboundPipeline
 
 
 @dataclass

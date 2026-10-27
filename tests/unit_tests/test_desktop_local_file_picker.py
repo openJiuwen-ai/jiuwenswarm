@@ -214,7 +214,7 @@ def test_picker_dir_state_mime_map_matches_gateway_copy():
     gateway 侧没有的键——两侧任一漂移本测试即失败。
     """
     from jiuwenswarm.channels.desktop import picker_dir_state
-    from jiuwenswarm.gateway.channel_manager.web import file_picker as gateway_picker
+    from gateway.channel_manager.web import file_picker as gateway_picker
 
     assert picker_dir_state._IMAGE_MIME_BY_EXTENSION == (
         gateway_picker._IMAGE_MIME_BY_EXTENSION

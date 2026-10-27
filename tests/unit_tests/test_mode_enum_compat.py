@@ -17,10 +17,10 @@ import pytest
 
 from jiuwenswarm.common.mode_matrix import DEPRECATION_MAP, deprecate_mode
 from jiuwenswarm.common.schema.message import Mode
-from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
+from gateway.message_handler.command_parser.slash_command import (
     ModeSubcommand,
 )
-from jiuwenswarm.gateway.message_handler.message_handler import ChannelMode
+from gateway.message_handler.message_handler import ChannelMode
 
 
 # ── 三套枚举新成员 ─────────────────────────────────────────────────────

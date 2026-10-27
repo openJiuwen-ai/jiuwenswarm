@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, AsyncMock
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
+from gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.common.schema.message import Message, EventType
 
 

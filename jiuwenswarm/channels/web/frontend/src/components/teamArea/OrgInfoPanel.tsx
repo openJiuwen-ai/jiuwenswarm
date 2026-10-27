@@ -24,6 +24,7 @@ import {
 } from '../../features/teamOrganization/teamIdentity';
 
 interface OrgTeamHandle {
+  available?: boolean;
   organization_id?: string | null;
   team_id?: string | null;
   capabilities?: string[];
@@ -248,6 +249,11 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                           <span className="truncate" data-testid="team-area-org-info-team-name" data-variant={teamId}>
                             {teamName}
                           </span>
+                          {(team.available === false || runtimeTeam?.available === false) && (
+                            <span className="text-xs text-danger" data-testid="team-area-org-info-team-unavailable" data-variant={teamId}>
+                              {t('chat.teamSelect.unavailable')}
+                            </span>
+                          )}
                         </div>
                         {teamName !== teamId && (
                           <div className="truncate text-[10px] text-text-muted" title={teamId}>

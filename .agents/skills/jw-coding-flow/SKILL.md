@@ -37,6 +37,24 @@ description: 串联 JiuwenSwarm AI coding 的需求澄清、设计、开发、�
 故障证据写入 bugfix，不向设计回填开发事实，不另造重复状态台账。
 每阶段只读取所需 skill 与 reference，不把全部模板一次性载入。
 
+## 决策与验证的交接规则
+
+- 新建记录前按 [决策归属与替代](../jw-design/references/decision-records.md) 查找已有维护位置，说明续写、新决策或局部/完全替代；不按提交数复制文档。
+- 设计定义可观察验收条件；开发按 [行为证据](../jw-dev/references/behavior-evidence.md) 核对模型/用户可见内容、真实入口和实际副作用。
+- 检视与转测引用候选版本、适用范围和重验条件；候选、依赖或前提变化时只沿用已核实仍有效的证据。
+- 有复用价值的修复按 [防错模式提炼](../jw-dev/references/defensive-patterns.md) 更新所属模块规则/spec 并链接 bugfix，不把局部事故自动变成全仓禁令。
+
+以上规则复用 design/spec/feature/bugfix 和已有交接记录，不新建全局状态台账或另设阶段。
+
+上下文与影响分析按 [因果流程与资料可信度](../jw-dev/references/context-and-flows.md) 执行：
+按任务选择模块、路径、关键符号和跨边界流程，核实旧资料版本并区分事实、推断与缺口。
+交接分别说明已盘点、已理解、已检视、已验证的范围；验证后同步本次影响的既有资料，不要求先建库或补齐全仓。
+
 实际文档在 `.agents/agent-docs/`，命名与存放遵循各阶段 skill。
 提交、推送、PR、分支和 worktree 遵循仓库及用户约定；本流程不扩展授权。
 不自动启动多代理，不运行格式化或静态检查。
+
+## 文档元数据与索引
+
+遵循 [作者、设计关联与索引规则](../jw-design/references/document-metadata.md)：受管文档以 frontmatter 标注 Git author，移除 owner；新 F 平铺在 features/，F/B 显式声明 designs。
+写作/修改后自动运行文档同步工具刷新索引；检视只报告缺口，不改写待审资料。

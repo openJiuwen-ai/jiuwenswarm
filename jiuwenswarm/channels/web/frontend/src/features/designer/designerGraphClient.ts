@@ -123,13 +123,6 @@ export const designerGraphClient = {
 
   cancelRun: (runId: string) => webRequest<{ run: DesignerExecutionRun }>('designer.run.cancel', { run_id: runId }),
 
-  chooseOutput: (params: { runId: string; nodeId: string; choice: 'original' | 'new' }) =>
-    webRequest<{ run: DesignerExecutionRun }>('designer.run.choose_output', {
-      run_id: params.runId,
-      node_id: params.nodeId,
-      choice: params.choice,
-    }),
-
   listAgentTemplates: () =>
     webRequest<{ templates?: Array<{ id?: string; displayName?: { zh?: string; en?: string } }> }>(
       'agent_templates.list',

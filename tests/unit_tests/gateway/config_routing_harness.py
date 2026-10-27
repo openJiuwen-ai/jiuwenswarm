@@ -48,7 +48,7 @@ def make_legacy_config_routing_client(on_config_saved: Any = None) -> Any:
     ConfigAdapter 执行（legacy 单用户的 AgentServer 与 Gateway 同机共享目录，
     测试中以同进程执行等价）。
     """
-    from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+    from gateway.routing.agent_client import WebSocketAgentServerClient
 
     base = make_config_routing_client(on_config_saved)
 

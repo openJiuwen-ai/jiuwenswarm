@@ -276,7 +276,7 @@ function serviceCommand(name, extraArgs = []) {
   }
   const moduleNames = {
     agent: 'jiuwenswarm.server.app_agentserver',
-    gateway: 'jiuwenswarm.gateway.app_gateway',
+    gateway: 'gateway.app_gateway',
     web: 'jiuwenswarm.channels.web.app_web',
     lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
   };

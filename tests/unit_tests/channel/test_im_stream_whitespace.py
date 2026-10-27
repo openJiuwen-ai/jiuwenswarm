@@ -8,12 +8,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import (
     DingTalkChannel,
     DingTalkConfig,
 )
-from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import (
+from gateway.channel_manager.im_platforms.wecom.wecom_connect import (
     WecomChannel,
     WecomConfig,
 )

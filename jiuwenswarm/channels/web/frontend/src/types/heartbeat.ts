@@ -1,5 +1,5 @@
 // src/types/heartbeat.ts
-/** 后端 heartbeat.job.* 系列 RPC 实际收发的字段，对齐 jiuwenswarm/gateway/heartbeat/models.py 的 HeartbeatJob.to_dict() */
+/** 后端 heartbeat.job.* 系列 RPC 实际收发的字段，对齐 gateway/heartbeat/models.py 的 HeartbeatJob.to_dict() */
 
 export type HeartbeatJobStatus = 'scheduled' | 'running' | 'completed' | 'expired' | 'disabled';
 export type HeartbeatRunStatus = 'succeeded' | 'failed' | 'skipped' | 'cancelled';

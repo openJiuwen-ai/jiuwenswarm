@@ -212,7 +212,7 @@ os.environ["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
 forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
-    "jiuwenswarm.gateway.channel_manager.web.app_web_handlers",
+    "gateway.channel_manager.web.app_web_handlers",
     "jiuwenswarm.agents.harness",
     "jiuwenswarm.common.config",
     "jiuwenswarm.server.runtime.gateway_adapter",

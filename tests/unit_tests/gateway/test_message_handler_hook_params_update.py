@@ -6,7 +6,7 @@ import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 
 
 class _FakeAgentClient:

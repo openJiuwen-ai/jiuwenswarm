@@ -17,7 +17,7 @@ import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, PermissionContext
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.keys import AgentRef
+from gateway.routing.keys import AgentRef
 from jiuwenswarm.server.front.admission import ExecutionAdmission
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.server.ipc.client import connect, endpoint_is_listening

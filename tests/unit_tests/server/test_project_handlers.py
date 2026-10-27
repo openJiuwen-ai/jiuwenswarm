@@ -272,7 +272,7 @@ def project_store_dir(tmp_path, monkeypatch):
 
 @pytest.fixture()
 def registered_channel(sessions_dir, project_store_dir):
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )

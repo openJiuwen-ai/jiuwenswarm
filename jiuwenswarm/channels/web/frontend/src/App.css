@@ -359,14 +359,6 @@ input[type="password"]::-ms-reveal {
     min-width: 0;
   }
 
-  .chat-welcome {
-    padding: 12px 0;
-  }
-
-  .chat-welcome__heading {
-    font-size: 22px;
-  }
-
   .chat-input-toolbar,
   .chat-input-toolbar-left {
     flex-wrap: wrap;

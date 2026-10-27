@@ -21,10 +21,10 @@ from jiuwenswarm.extensions.adx.config import AdxRouterConfig
 from jiuwenswarm.extensions.adx.control_client import AdxControlClient
 from jiuwenswarm.extensions.adx.errors import AdxRoutingError
 from jiuwenswarm.extensions.adx.file_client import AdxFileMixin
-from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthResult
-from jiuwenswarm.gateway.channel_manager.base import ChannelType
-from jiuwenswarm.gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
-from jiuwenswarm.gateway.routing.agent_client import (
+from gateway.extensions.auth.credential_authenticator import AuthResult
+from gateway.channel_manager.base import ChannelType
+from gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
+from gateway.routing.agent_client import (
     AgentServerUnaryTimeout,
     DuplicateRequestIdError,
     WebSocketAgentServerClient,

@@ -204,7 +204,7 @@ async def test_btw_command_system_roundtrip(
             [
                 sys.executable,
                 "-m",
-                "jiuwenswarm.gateway.app_gateway",
+                "gateway.app_gateway",
                 "--port",
                 str(web_port),
             ],
@@ -295,7 +295,7 @@ async def test_btw_command_empty_question(
             [
                 sys.executable,
                 "-m",
-                "jiuwenswarm.gateway.app_gateway",
+                "gateway.app_gateway",
                 "--port",
                 str(web_port),
             ],
@@ -387,7 +387,7 @@ async def test_btw_no_context_when_no_session(
             [
                 sys.executable,
                 "-m",
-                "jiuwenswarm.gateway.app_gateway",
+                "gateway.app_gateway",
                 "--port",
                 str(web_port),
             ],

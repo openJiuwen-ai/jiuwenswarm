@@ -8,8 +8,8 @@ import pytest
 
 from jiuwenswarm.extensions.adx.control_client import AdxControlClient, AdxControlError
 from jiuwenswarm.extensions.adx.router_client import AdxRouterClient, AdxRoutingError
-from jiuwenswarm.gateway.routing.container_files import AgentOSFileTransferError
-from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthResult
+from gateway.routing.container_files import AgentOSFileTransferError
+from gateway.extensions.auth.credential_authenticator import AuthResult
 from test_adx_router import _config, FakeClient, _request
 
 
@@ -70,8 +70,8 @@ def _files(monkeypatch):
 
 
 def _file_channel(router, *, with_auth=True):
-    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+    from gateway.channel_manager.base import RobotMessageRouter
+    from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
     async def authenticate(*, headers, path, remote, channel):
         if headers.get('authorization') != 'Bearer business-test-token':
@@ -90,7 +90,7 @@ def _file_channel(router, *, with_auth=True):
 
 @pytest.mark.parametrize('connected', [True, False])
 async def test_gateway_health_check_is_mocked_without_activation(monkeypatch, connected):
-    from jiuwenswarm.gateway.health_check import (
+    from gateway.health_check import (
         HEALTH_CHECK_OK,
         GatewayHealthCheckService,
         HealthCheckConfig,
@@ -144,7 +144,7 @@ async def test_file_upload_is_atomic_and_scoped_to_activated_user(monkeypatch):
 
 @pytest.mark.parametrize('replace_during_stream', [False, True])
 async def test_http_download_keeps_adapter_scope_across_streaming_tasks(monkeypatch, replace_during_stream):
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
     router, control = _files(monkeypatch)
     await router.connect('')
@@ -200,7 +200,7 @@ async def test_rebuild_closes_old_socket_and_recreates_binding_on_next_request(m
 
 
 async def test_http_file_routes_require_business_auth_and_reject_other_users(monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
     router, control = _files(monkeypatch)
     await router.connect('')
     control.invoke.side_effect = lambda env, action, args: (
@@ -238,7 +238,7 @@ async def test_http_file_routes_require_business_auth_and_reject_other_users(mon
     ('binding', 502, 'SERVICE_UNAVAILABLE'),
 ])
 async def test_http_file_routes_map_adx_failures(monkeypatch, route, params, failure, status, code):
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
     router, control = _files(monkeypatch)
     await router.connect('')
@@ -311,7 +311,7 @@ async def test_first_ws_supplies_rendering_parameters_without_management_calls(m
 
 @pytest.mark.parametrize('auth_result', [None, AuthResult(True)])
 async def test_file_routes_fail_closed_without_authenticated_business_identity(monkeypatch, auth_result):
-    from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
+    from gateway.channel_manager.web.web_channel_app import build_web_channel_app
 
     router, control = _files(monkeypatch)
     await router.connect('')

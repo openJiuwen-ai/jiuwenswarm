@@ -10,6 +10,7 @@ import {
   type DesignerAddTemplate,
   type DesignerNodePortSide,
 } from '../../designerCanvasNodes';
+import { designerConnectionSources, designerConnectionTargets } from '../../designerConnectionRules';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../../designerStore';
 import { useDesignerUiStore } from '../../designerUiStore';
@@ -45,6 +46,15 @@ export function DesignerNodePortControl({ nodeId, side }: DesignerNodePortContro
   }, [closeDock, editingLocked, nodeId, nodePortMenu, side]);
   const suppressClickRef = useRef(false);
   const isSuccessor = side === 'successor';
+  // A port can accept a wire even when no node type can be *added* from it
+  // (e.g. an image node can be preceded by text/table, which are not add-menu
+  // templates). Connectability therefore comes from the wire matrix, not from
+  // the add menu.
+  const connectable = useMemo(
+    () =>
+      (isSuccessor ? designerConnectionTargets(nodeType) : designerConnectionSources(nodeType)).length > 0,
+    [isSuccessor, nodeType],
+  );
   const testId = isSuccessor ? 'designer-node-add' : 'designer-node-add-predecessor';
   const menuTestId = isSuccessor ? 'designer-node-add-menu' : 'designer-node-add-predecessor-menu';
   const testIdPrefix = isSuccessor ? 'designer-node-add' : 'designer-node-add-predecessor';
@@ -115,14 +125,14 @@ export function DesignerNodePortControl({ nodeId, side }: DesignerNodePortContro
       <Handle
         type={isSuccessor ? 'source' : 'target'}
         position={isSuccessor ? Position.Right : Position.Left}
-        className={`designer-node__port designer-node__port--${side}${menuOpen ? ' is-open' : ''}${editingLocked && hasOptions ? ' designer-edit-control' : ''}`}
+        className={`designer-node__port designer-node__port--${side}${menuOpen ? ' is-open' : ''}${connectable && !hasOptions ? ' designer-node__port--anchor' : ''}${editingLocked && hasOptions ? ' designer-edit-control' : ''}`}
         aria-label={hasOptions ? ariaLabel : undefined}
         title={hasOptions ? ariaLabel : undefined}
         aria-expanded={hasOptions ? menuOpen : undefined}
         // Kept mounted (just inert) so existing edges still dock to this side.
-        isConnectable={hasOptions && !editingLocked}
+        isConnectable={connectable && !editingLocked}
         data-testid={testId}
-        data-variant={hasOptions ? 'menu' : 'empty'}
+        data-variant={hasOptions ? 'menu' : connectable ? 'anchor' : 'empty'}
         onClick={onClick}
         onMouseDown={onMouseDown}
       >

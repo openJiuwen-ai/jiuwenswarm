@@ -6,7 +6,7 @@
 「会话」（:class:`~jiuwenswarm.common.auth.session_store.AuthSessionStore`）粘起来：
 
 * 发起授权 / 浏览器回调 / 发起方认领 / 登出 —— 接在 HTTP 路由上
-  （``jiuwenswarm/gateway/channel_manager/web/web_http_auth.py``）
+  （``gateway/channel_manager/web/web_http_auth.py``）
 * :func:`live_session` / :func:`resolve_id_token` —— 给模型层取凭据
 """
 

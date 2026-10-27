@@ -18,8 +18,8 @@ from aiohttp import web
 from yarl import URL
 
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     WEB_PROXY_COOKIE_NAME,
     WEB_PROXY_USER_COOKIE,
     WebProxyChannelConfig,
@@ -37,18 +37,18 @@ from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect im
     _ensure_http_proxy_session,
     _ensure_proxy_session,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy import (
+from gateway.channel_manager.protocol.web_proxy import (
     web_proxy_listen,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+from gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
     WebPortManager,
     _manager_for,
     _request_target_summary,
     build_agent_port_app,
     handle_3rdagent_web,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
 
 def _free_port() -> int:

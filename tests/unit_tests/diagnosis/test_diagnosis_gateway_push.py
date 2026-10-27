@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
 _SESSION_ID = "session-1"

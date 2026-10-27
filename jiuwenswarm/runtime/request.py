@@ -492,11 +492,32 @@ async def prepare_chat_turn(
                 if isinstance(locked, str) and locked.strip():
                     project_dir = locked.strip()
 
+        from jiuwenswarm.server.runtime.session.session_metadata import _repair_session_project_dir
+
+        _repair_session_project_dir(session_metadata)
+        bound_project_id = str(session_metadata.get("project_id") or "").strip()
+        if bound_project_id:
+            from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
+
+            request.params["project_id"] = bound_project_id
+            if not is_agentos_workspace_fallback(
+                channel_id=request.channel_id,
+                project_id=bound_project_id,
+                project_dir=project_dir,
+            ):
+                project_dir = str(session_metadata.get("project_dir") or "").strip() or None
+            request.metadata = dict(request.metadata or {})
+            request.metadata["project_id"] = bound_project_id
+
         if isinstance(project_dir, str) and project_dir.strip():
             project_dir = project_dir.strip()
             request.params["project_dir"] = project_dir
             request.metadata = dict(request.metadata or {})
             request.metadata["project_dir"] = project_dir
+        else:
+            request.params.pop("project_dir", None)
+            if isinstance(request.metadata, dict):
+                request.metadata.pop("project_dir", None)
         return project_dir
 
     await agent_manager.wait_for_session_prewarm(request.session_id)

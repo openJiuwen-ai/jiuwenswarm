@@ -24,7 +24,7 @@ from jiuwenswarm.common.schema.message import Message, ReqMethod
 def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     chunk = AgentResponseChunk(
         request_id="request-A", channel_id="web", is_complete=event_type == "chat.final",
@@ -48,7 +48,7 @@ def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
 def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, is_complete):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {
         "turn_request_id": "turn-A",
@@ -74,7 +74,7 @@ def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, 
 def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {"output_phase_id": "phase-1", "output_suppressed": True,
               "output_order": {"request_id": "original", "sequence": 42}, "timestamp": 1800000000042}
@@ -94,7 +94,7 @@ def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
 def test_proactive_markers_survive_chat_delta_wire_and_web_payload():
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {
         "source": "proactive_recommendation",

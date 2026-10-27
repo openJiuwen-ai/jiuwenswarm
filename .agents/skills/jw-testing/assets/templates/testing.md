@@ -4,7 +4,8 @@ title: <转测文档标题>      # 与下方 H1 保持一致
 slug: <kebab-slug>        # 必须等于文件夹名的 slug 段（小写、连字符）
 status: draft             # draft|in-review|in-testing|completed|failed|rejected
 stage: testing            # Independent testing document stage, outside the design lifecycle
-owner: "@your-handle"     # 单一负责人（DRI）
+author: null              # Filled from the repository Git identity on creation.
+author_email: null        # Filled together with author.
 reviewers: []             # Fill actual reviewers when review starts; never invent approval
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
@@ -69,6 +70,17 @@ related: []              # Related designs; both D-prefixed and legacy SDD IDs a
 - 执行用例总数 / 通过数 / 失败数 / 阻塞数
 - 通过率
 - 测试执行时间范围>
+
+### 证据适用范围与重验条件
+
+<引用实际证据对应的候选版本、环境/依赖、真实入口、记录路径和已证明范围。
+模型/用户可见输出与文件/数据库/进程副作用分别列证据；回放注明模拟边界和独立预期来源。
+说明哪些代码、配置、协议、fixture 或环境变化使结论需要重验；未执行或未核实的新候选填写待重验。>
+
+### 覆盖与资料可信度
+
+<分别说明资料/用例已盘点、链路已理解、候选已检视及场景已执行验证的范围。
+引用资料版本，列出推断、待核实/待重验、排除项与理由；关键链路或环境缺口对应具体后续入口，不用已整理用例数代替实际通过结果。>
 
 ## 6. 缺陷清单
 

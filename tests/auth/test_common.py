@@ -6,8 +6,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
-from jiuwenswarm.gateway.extensions.auth.common import (
+from gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
+from gateway.extensions.auth.common import (
     extract_token,
     extract_headers,
     get_remote_addr

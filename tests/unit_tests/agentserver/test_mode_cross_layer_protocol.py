@@ -14,9 +14,9 @@ import pytest
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.channel_manager.tui.tui_channel import TuiChannel
+from gateway.channel_manager.web.web_connect import WebChannel
+from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.server import agent_ws_server

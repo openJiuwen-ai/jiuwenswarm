@@ -21,6 +21,7 @@ from typing import Any, Callable, Iterator
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
+from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,6 @@ _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
-SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
 SESSION_REQUEST_TERMINAL_STATUSES = frozenset({
     "success",
     "error",
