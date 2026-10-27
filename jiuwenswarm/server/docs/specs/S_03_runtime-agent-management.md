@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_03 / runtime-agent-management |
 | 关联模块 | jiuwenswarm/server/runtime/{agent_manager.py, tenant_agent_pool.py, agent_warm_pool.py, agent_adapter/, a2ui/, debug_trace/, session/, skill/, workspace/, agent_config_service.py, prewarm.py, proactive_adapter.py, team_binding_store.py, team_entity_store.py, team_snapshot_refresh.py} |
-| 最近一次修订日期 | 2026-10-27 |
+| 最近一次修订日期 | 2026-10-22 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -48,27 +48,6 @@
 11. **code.normal/plan 首建与重载共享工具懒加载策略**：首次创建的 None/空白 sub_mode 默认 normal；后续 `create_instance(sub_mode=None)` 沿用保存的 profile，并把有效 sub_mode 传入 rail 装配及后续 session 子 adapter，显式 normal/空白可切回 normal。首建按入参规范化后的 sub_mode 排队并显式传给 builder，配置热重载未传该参数时使用 `_session_instance_sub_mode`；仅 normal/plan 装配 `ProgressiveToolRail`。code.team 对齐普通 team，首建和完整/部分重载均不新增该 rail；历史误挂实例在 configure 成功后注销。单 agent 复用 `react.tool_lazy_load` 的开关、模型白名单及请求级 MCP allowlist，配置缺省重载保持既有 rail；编码记忆、LSP、模式切换与计划审批工具保持 eager，最终可见性仍受模式、技能门控及 `disabled_tools` 约束。一次 code 挂载仅记录一条带 `[JiuwenSwarmCodeAdapter]` 和规范化 sub_mode 的适配器日志。普通 agent/team 的装配、日志及重载策略不因此改变。
 
 ## 接口契约
-
-### 普通工作请求的 Flash 默认实现
-
-`resolve_request_runtime_mode()` 对 `officeclaw` 普通工作请求采用与其它渠道相同的
-`flash.enabled` 默认选型。该配置沿用配置加载层对
-`JIUWENSWARM_FLASH_ENABLED` 的解析；环境变量未设置时保留配置回退。
-显式 `mode=flash` 不受默认开关关闭影响。历史办公参数 `agent.plan` 未满足
-真正的 Plan 准入条件时，先归一为普通 Agent，再应用默认选型。
-Code、Team 和真正的 Plan 保留既有路由。
-
-环境配置选中 Flash 时，普通请求保留 `agent` / `agent.work.normal` 业务模式，
-通过 `adapter_mode=flash` 选择实现；会话创建将同一实现选择传给预热。
-已有 Flash 亲和、暂停实例查找及审批恢复保护继续复用；OfficeClaw 的审批、确认、
-问答及技能演进中断续跑不应用默认开关，沿用恢复出的模式。请求准备、默认选型和
-AgentManager 统一使用恢复判定；子代理审批也保留原绑定，兼容无来源但带合法
-`subagent_skill_load_` / `subagent_tool_permission_` 请求 ID 的旧载荷。
-旧版 `skill_evolution_approval` 复用现有演进协议判定，只有中断传输或
-`call_` 工具调用 ID 才按中断恢复；任意答案与请求 ID 组合不自动视为恢复。
-本次默认选型调整不新增
-Deep 会话锁定：没有暂停实例保护的普通 Deep 续聊可能随当前开关改选 Flash。
-技能检索仍由 `flash.skill_selection.enabled` 独立控制。
 
 ### AgentManager（简化）
 
@@ -186,7 +165,6 @@ UsageReconciler:    start_usage_reconciler()（启动周期回收）
 
 ## 修改检查单
 
-- **改 Flash 默认选型** → 覆盖 OfficeClaw 环境开关双向取值、显式 Flash、普通请求业务模式、会话创建到预热的实现传递、流式与非流式聊天及审批 owner 恢复；确认 Code、Team 和真正的 Plan 不被默认开关覆盖。
 - **新增 agent_adapter 接口** → 确认归哪一路（deep/code/flash）→ AgentWebSocketServer._resolve_adapter 里加分支 → 默认路径 fallback 里跑双接口一致性测试。
 - **改 code 工具装配或懒加载策略** → 验证首次模型调用已过滤大量 MCP schema、编码工具仍可见、deferred 工具可搜索调用；确认关闭开关、模型白名单、禁用工具及热重载替换行为。
 - **改 AgentWarmPool WarmKey 结构** → 同步 sync() 里的重建条件 → 排除 acp/a2a 分支不被意外打破 → 跑预热池一致性测试。

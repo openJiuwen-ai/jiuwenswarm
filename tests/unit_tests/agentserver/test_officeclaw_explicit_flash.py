@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""OfficeClaw 默认与显式 Flash 的路由、存量会话及恢复契约。"""
+"""OfficeClaw 显式 Flash 的路由隔离、存量会话与恢复契约。"""
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -34,7 +34,6 @@ def global_flash(monkeypatch):
     ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER,
     ReqMethod.SESSION_CREATE,
 ])
-@pytest.mark.parametrize("enabled", [False, True])
 @pytest.mark.parametrize("params,expected", [
     ({}, "agent"),
     ({"mode": "agent"}, "agent"),
@@ -43,18 +42,10 @@ def global_flash(monkeypatch):
     ({"mode": "agent.work.normal", "work_mode": "work"}, "agent"),
     ({"mode": "flash"}, "flash"),
 ])
-def test_foreground_mode_uses_config_unless_flash_is_explicit(
-    global_flash, method, enabled, params, expected,
-):
-    global_flash["flash"]["enabled"] = enabled
-    if enabled:
-        expected = "flash"
+def test_foreground_mode_is_explicit(global_flash, method, params, expected):
     resolved = _shared.resolve_request_runtime_mode(request(params, method=method))
     assert resolved.manager_mode == expected
     assert resolved.adapter_mode == expected
-    if params.get("mode") != "flash":
-        assert resolved.canonical_mode in {"agent", "agent.work.normal"}
-        assert resolved.normal_mode == resolved.canonical_mode
 
 
 @pytest.mark.parametrize("channel", ["web", "tui", "__cron__"])
@@ -101,42 +92,42 @@ def test_active_plan_wins_over_relay_default_flash(global_flash):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stored_mode,adapter,incoming_params,expected_mode,expected_sub,expected_business", [
-    ("flash", "flash", {"query": "continue"}, "flash", None, "flash"),
+@pytest.mark.parametrize("stored_mode,adapter,incoming_params,expected_mode,expected_sub", [
+    ("flash", "flash", {"query": "continue"}, "flash", None),
     ("flash", "flash", {
         "source": "permission_interrupt", "answers": [],
         "request_id": "original-request",
-    }, "flash", None, "flash"),
+    }, "flash", None),
     ("code.normal", "code", {
         "source": "permission_interrupt", "answers": [],
         "request_id": "child-request",
-    }, "code", "normal", "code.normal"),
-    ("agent", "flash", {"mode": "agent.plan", "query": "continue"}, "flash", None, "agent"),
-    ("agent.work.plan", "agent", {"mode": "flash", "query": "continue"}, "agent", "plan", "agent.work.plan"),
-    ("agent", "agent", {"mode": "agent.plan", "query": "continue"}, "flash", None, "agent"),
+    }, "code", "normal"),
+    ("agent", "flash", {"mode": "agent.plan", "query": "continue"}, "flash", None),
+    ("agent.work.plan", "agent", {"mode": "flash", "query": "continue"}, "agent", "plan"),
+    ("agent", "agent", {"mode": "agent.plan", "query": "continue"}, "agent", None),
     ("agent", "flash", {
         "source": "permission_interrupt", "answers": [],
         "request_id": "old-flash-request",
-    }, "flash", None, "flash"),
+    }, "flash", None),
     ("agent.work.normal", "flash", {
         "mode": "flash", "source": "permission_interrupt", "answers": [],
         "request_id": "old-flash-explicit-request",
-    }, "flash", None, "flash"),
+    }, "flash", None),
     ("agent.work.plan", "flash", {
         "mode": "flash", "query": "continue plan",
-    }, "agent", "plan", "agent.work.plan"),
+    }, "agent", "plan"),
     ("agent", "agent", {
         "mode": "flash", "source": "permission_interrupt", "answers": [],
         "request_id": "old-deep-request",
-    }, "agent", None, "agent"),
+    }, "agent", None),
     ("code.normal", "code", {
         "mode": "flash", "source": "permission_interrupt", "answers": [],
         "request_id": "hosted-child-request",
-    }, "code", "normal", "code.normal"),
+    }, "code", "normal"),
 ])
 async def test_prepare_and_tenant_lookup_keep_same_owner_mode(
     global_flash, monkeypatch, tmp_path, stored_mode, adapter,
-    incoming_params, expected_mode, expected_sub, expected_business,
+    incoming_params, expected_mode, expected_sub,
 ):
     incoming = request(incoming_params)
     metadata = {
@@ -162,7 +153,8 @@ async def test_prepare_and_tenant_lookup_keep_same_owner_mode(
     lookup_mode, lookup_sub, _ = tenant._agent_lookup_from_request(incoming)
     assert (lookup_mode, lookup_sub) == (expected_mode, expected_sub)
     assert incoming.resolved_adapter_mode == expected_mode
-    assert incoming.params["mode"] == expected_business
+    if expected_mode == "flash":
+        assert incoming.params["mode"] == "flash"
 
 
 def test_manager_restores_mode_for_officeclaw_followup(global_flash, monkeypatch):

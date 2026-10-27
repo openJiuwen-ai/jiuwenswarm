@@ -156,10 +156,7 @@ def _build_acp_agent_config(extra_config: dict[str, Any] | None = None) -> dict[
 
 
 _INTERRUPT_RESUME_SOURCES = frozenset(
-    {
-        "permission_interrupt", "confirm_interrupt", "ask_user_interrupt",
-        "evolution_interrupt", "subagent_skill_load", "subagent_tool_permission",
-    }
+    {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
 )
 
 
@@ -169,28 +166,17 @@ def _is_cron_session_request(request: Any) -> bool:
 
 
 def _is_interrupt_resume_request(request: Any) -> bool:
-    """Recognize HITL and hosted approval answers that must keep their routing."""
+    """HITL / permission resume (any channel), not a plain follow-up chat.send."""
     params = getattr(request, "params", None)
     if not isinstance(params, dict):
         return False
+    source = str(params.get("source") or "").strip()
+    if source not in _INTERRUPT_RESUME_SOURCES:
+        return False
+    # Align with ``_prepare_code_mode_chat_turn`` interrupt continuation.
     if not isinstance(params.get("answers"), list):
         return False
-    request_id = str(params.get("request_id") or "").strip()
-    if not request_id:
-        return False
-    source = str(params.get("source") or "").strip()
-    if source in _INTERRUPT_RESUME_SOURCES:
-        return True
-    # Legacy hosted approvals omit source; the adapter accepts these ID prefixes.
-    if request_id.startswith(("subagent_skill_load_", "subagent_tool_permission_")):
-        return True
-    # Reuse the adapter's protocol distinction: regular evolution approval is
-    # not an outer-loop interrupt, while legacy interrupt transport is.
-    from jiuwenswarm.gateway.message_handler.evolution_approval import (
-        is_interrupt_evolution_approval_answer_payload,
-    )
-
-    return is_interrupt_evolution_approval_answer_payload(params)
+    return bool(str(params.get("request_id") or "").strip())
 
 
 def _is_cron_permission_resume(request: Any) -> bool:
@@ -2061,7 +2047,13 @@ class AgentManager:
             project_dir = project_dir.strip() or None
         else:
             project_dir = None
-        is_interrupt_continuation = _is_interrupt_resume_request(request)
+        source = str(params.get("source") or "").strip()
+        is_interrupt_continuation = (
+            source
+            in {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
+            and isinstance(params.get("answers"), list)
+            and bool(str(params.get("request_id") or "").strip())
+        )
         if project_dir is None and is_interrupt_continuation:
             sid = str(getattr(request, "session_id", "") or "").strip()
             if sid:

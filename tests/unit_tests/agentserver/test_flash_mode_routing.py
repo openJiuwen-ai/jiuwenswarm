@@ -114,7 +114,7 @@ def test_explicit_plan_entry_keeps_plan_when_flash_enabled(flash_config, channel
     assert resolved.is_plan
 
 
-def test_legacy_officeclaw_plan_token_uses_flash_config_without_entering_plan(flash_config):
+def test_legacy_officeclaw_plan_token_keeps_deep_despite_flash_config(flash_config):
     request = make_request(
         {"mode": "agent.plan", "work_mode": "work"}, channel="officeclaw",
     )
@@ -122,9 +122,8 @@ def test_legacy_officeclaw_plan_token_uses_flash_config_without_entering_plan(fl
     resolved = _shared.resolve_request_runtime_mode(request)
 
     assert resolved.canonical_mode == "agent"
-    assert resolved.manager_mode == "flash"
-    assert resolved.adapter_mode == "flash"
-    assert resolved.normal_mode == "agent"
+    assert resolved.manager_mode == "agent"
+    assert resolved.adapter_mode == "agent"
     assert not resolved.is_plan
 
 

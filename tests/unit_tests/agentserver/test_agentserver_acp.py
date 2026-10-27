@@ -905,16 +905,11 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "wire_mode,global_enabled,expected,business_mode",
-    [
-        ("flash", False, "flash", "flash"),
-        ("agent.plan", True, "flash", "agent"),
-        ("agent.plan", False, "agent", "agent"),
-        (None, True, "flash", "agent"),
-    ],
+    "wire_mode,global_enabled,expected",
+    [("flash", False, "flash"), ("agent.plan", True, "agent")],
 )
-async def test_officeclaw_session_create_persists_selected_adapter(
-    monkeypatch, tmp_path, wire_mode, global_enabled, expected, business_mode,
+async def test_officeclaw_session_create_persists_explicit_adapter(
+    monkeypatch, tmp_path, wire_mode, global_enabled, expected,
 ):
     from unittest.mock import AsyncMock
     from jiuwenswarm.server.handlers import _shared
@@ -947,9 +942,8 @@ async def test_officeclaw_session_create_persists_selected_adapter(
     metadata = json.loads(
         (sessions_root / manager.session_id / "metadata.json").read_text(encoding="utf-8"),
     )
-    assert metadata["mode"] == business_mode
-    assert metadata["adapter_mode"] == expected
-    assert prewarm.await_args.kwargs["mode"] == business_mode
+    assert metadata["mode"] == metadata["adapter_mode"] == expected
+    assert prewarm.await_args.kwargs["mode"] == expected
     assert prewarm.await_args.kwargs["adapter_mode"] == expected
 
 
