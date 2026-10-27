@@ -48,6 +48,7 @@ from jiuwenswarm.server.jiuwenmate.workspace_relative_tools import install_offic
 
 install_dropped_stream_retry()
 install_office_relative_write_tools()
+install_presentation_handoff()
 
 logger = logging.getLogger(__name__)
 

@@ -26,6 +26,22 @@ _SLIDE_SIZE = re.compile(r"<(?P<prefix>[A-Za-z0-9]+):sldSz\b(?P<attrs>[^>]*?)/>"
 _ATTRIBUTE = re.compile(r"([A-Za-z_][\w:.-]*)=\"([^\"]*)\"")
 
 
+def install_presentation_handoff() -> None:
+    """Normalize a presentation before core reads it for the shared-output digest."""
+    from openjiuwen.harness.persistent_agent.execution import handoff
+
+    if getattr(handoff, "_presentation_normalized", False):
+        return
+    original = handoff.read_for_handoff
+
+    def read_for_handoff(resolved, max_bytes):
+        normalize_presentation_package(resolved.path)
+        return original(resolved, max_bytes)
+
+    handoff.read_for_handoff = read_for_handoff
+    handoff._presentation_normalized = True
+
+
 def normalize_presentation_package(path: Path) -> bool:
     """Rewrite one presentation's slide-size declaration. Return whether the file changed."""
     if path.suffix.lower() not in _PRESENTATIONS or not path.is_file():
