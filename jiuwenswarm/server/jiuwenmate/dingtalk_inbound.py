@@ -201,6 +201,23 @@ class DingTalkInboundHandler:
                 return InboundDisposition.HANDLED
             snapshot = await asyncio.to_thread(self._service.current_snapshot, binding.namespace_id, binding.agent_id)
             received_at = event.received_at.astimezone(timezone.utc)
+            is_group = event.conversation_type == "2"
+            scope = frozenset({"chat", WORKSPACE_READ}) if is_group else frozenset(
+                {"chat", "workspace_read", "workspace_knowledge_read"}
+            )
+            target_id = event.conversation_id if is_group else event.sender_staff_id
+            policy_revision = "jm21-dingtalk-group-v1" if is_group else "jm21-dingtalk-direct-v1"
+            access = AccessSnapshot(
+                principal_ref=f"dingtalk:{binding.app_id}:{event.sender_staff_id}",
+                startup_scope=scope, source_scope=scope, policy_revision=policy_revision,
+            )
+            if await self._manager.handle_im_permission_reply(
+                event.text, namespace_id=binding.namespace_id, agent_id=binding.agent_id,
+                access=access, channel="dingtalk", target_id=target_id,
+                app_id=binding.app_id, source_message_id=event.message_id,
+                is_direct_message=not is_group,
+            ):
+                return InboundDisposition.HANDLED
             if event.conversation_type == "2":
                 group = await asyncio.to_thread(
                     self._manager.group_chats.resolve,
@@ -294,9 +311,6 @@ class DingTalkInboundHandler:
                     source=source,
                     reply_target=event.conversation_id,
                 )
-                scope = frozenset({"chat", WORKSPACE_READ})
-                target_id = event.conversation_id
-                policy_revision = "jm21-dingtalk-group-v1"
             else:
                 conversation = ConversationRef.im_direct(
                     "dingtalk", json.dumps([binding.app_id, event.conversation_id], separators=(",", ":")),
@@ -312,9 +326,6 @@ class DingTalkInboundHandler:
                     ),
                     reply_target=event.sender_staff_id,
                 )
-                scope = frozenset({"chat", "workspace_read", "workspace_knowledge_read"})
-                target_id = event.sender_staff_id
-                policy_revision = "jm21-dingtalk-direct-v1"
             session = await asyncio.to_thread(
                 self._sessions.resolve_session, binding.namespace_id, binding.agent_id, conversation,
                 now=received_at,
@@ -322,10 +333,7 @@ class DingTalkInboundHandler:
             await self._manager.scheduler.accept(
                 session, snapshot=snapshot,
                 source_ref="dingtalk:message:" + json.dumps([binding.app_id, event.message_id], separators=(",", ":")),
-                access=AccessSnapshot(
-                    principal_ref=f"dingtalk:{binding.app_id}:{event.sender_staff_id}",
-                    startup_scope=scope, source_scope=scope, policy_revision=policy_revision,
-                ),
+                access=access,
                 request_input=request_input,
                 received_at=received_at,
                 route_snapshot=RequestRouteSnapshot(

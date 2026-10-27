@@ -242,7 +242,19 @@ If not using `tiered_policy`, typically **only** `external_directory` is updated
 
 ---
 
-## 9. See Also
+## 9. JiuwenMate Tool Approvals in Feishu and DingTalk
+
+When a tool needs human confirmation, JiuwenMate sends an approval notice to the original conversation. Only the original initiator can decide through the original application and conversation:
+
+- For one pending approval containing one tool call, reply `approve` or `reject` (Chinese equivalents are supported).
+- For multiple calls, copy a complete command from the notice. Only the selected call is approved; all remaining calls are rejected. `reject APPROVAL_ID` rejects the entire batch.
+- Invalid, missing, processed and expired approvals receive explicit feedback. Approvals expire after 15 minutes and are rejected on expiry.
+- Approval replies bypass the business queue. Other business messages remain queued with a reminder to resolve the pending approval.
+- Redelivery of an approval message cannot execute the operation twice or approve a later interruption.
+
+Publishing a permission profile affects new requests only. Switching to full access does not approve an existing paused operation. Explicit approval or rejection resumes the original request with its original configuration. Tool execution confirmation is separate from Feishu or DingTalk application permissions and user OAuth authorization.
+
+## 10. See Also
 
 - [Configuration](Configuration.md): `JIUWENSWARM_CONFIG_DIR`, configuration file location.
 - [CLI Commands](CLI.md): CLI/TUI entry points (including slash commands).
