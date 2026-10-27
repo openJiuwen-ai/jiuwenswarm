@@ -104,6 +104,25 @@ async def test_query_never_returns_another_users_job():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("job_owner", ["alice", ""])
+async def test_anonymous_control_can_read_but_cannot_change_jobs(job_owner):
+    controller = FakeCronController([job(user_id=job_owner)])
+    control = CronControl("", controller)
+
+    queried = await control.execute(CRON_QUERY_TOOL, {"job_id": "job-1"})
+    updated = await control.execute(
+        CRON_UPDATE_TOOL, {"job_id": "job-1", "patch": {"enabled": False}},
+    )
+    deleted = await control.execute(CRON_DELETE_TOOL, {"job_id": "job-1"})
+
+    assert queried["job"]["id"] == "job-1"
+    assert updated["code"] == deleted["code"] == "CRON_JOB_NOT_FOUND"
+    assert updated["applied"] is deleted["applied"] is False
+    assert controller.updated == [] and controller.deleted == []
+    assert controller.jobs["job-1"]["enabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_update_applies_only_the_whitelisted_patch():
     controller = FakeCronController([job()])
     control = CronControl("alice", controller)

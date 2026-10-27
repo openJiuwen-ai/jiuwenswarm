@@ -1815,8 +1815,8 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
     service = channel.manager.service
     service.started = True
     service.kick = lambda: None
-    wechat = service.submit("", "scope", "wechat", "打开微信")
-    feishu = service.submit("", "scope", "feishu", "打开飞书")
+    wechat = service.submit("test-user", "scope", "wechat", "打开微信")
+    feishu = service.submit("test-user", "scope", "feishu", "打开飞书")
     provider = AsyncMock(return_value=_joyai_result(
         "delegation", response="已排好了。",
         delegation=json.dumps({"name": "jiuwen_queue_manage", "arguments": {"instruction": "先打开飞书，再打开微信"}}),
@@ -1841,7 +1841,7 @@ async def test_joyai_queue_manager_reorders_real_queue_without_new_task(monkeypa
         assert payload["search_job"] is None
         assert payload["queue_management"]["receipts"][-1]["receipt"]["operation"]["state"] == "reordered"
     assert steps.await_count == 2, "repeated command must reuse manager result"
-    jobs, _ = service.snapshot("", "scope")
+    jobs, _ = service.snapshot("test-user", "scope")
     assert len(jobs) == 2
     assert [t["id"] for t in sorted(jobs, key=lambda t: t["position"])] == [feishu["id"], wechat["id"]]
 

@@ -302,12 +302,12 @@ class CronControl:
             self._controller = CronController.get_instance()
         return self._controller
 
-    def _owned(self, job: dict[str, Any] | None) -> bool:
+    def _owned(self, job: dict[str, Any] | None, *, write: bool = False) -> bool:
         if job is None:
             return False
         if not self.user_id:
-            # Anonymous legacy connections keep the Web handler's all-owner view.
-            return True
+            # Keep the legacy all-owner view for reads only; writes need an owner.
+            return not write
         return str(job.get("user_id") or "").strip() == self.user_id
 
     async def execute(self, name: str, arguments: Any) -> dict[str, Any]:
@@ -381,7 +381,7 @@ class CronControl:
     async def _update(self, controller: Any, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = arguments["job_id"]
         job = await controller.get_job(job_id)
-        if not self._owned(job):
+        if not self._owned(job, write=True):
             return _not_found(CRON_UPDATE_TOOL, job_id)
         if _compact(job or {})["protected"]:
             return _protected(CRON_UPDATE_TOOL, job_id)
@@ -400,7 +400,7 @@ class CronControl:
     async def _delete(self, controller: Any, arguments: dict[str, Any]) -> dict[str, Any]:
         job_id = arguments["job_id"]
         job = await controller.get_job(job_id)
-        if not self._owned(job):
+        if not self._owned(job, write=True):
             return _not_found(CRON_DELETE_TOOL, job_id)
         if _compact(job or {})["protected"]:
             return _protected(CRON_DELETE_TOOL, job_id)

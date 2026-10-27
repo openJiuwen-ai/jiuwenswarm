@@ -90,7 +90,9 @@ The manager reads the user's real cron jobs, next runs and timezones with `jiuwe
 changes name, cron expression, timezone, description, enabled state, push channel, mode or
 timeout with `jiuwen_cron_update`, and removes one with `jiuwen_cron_delete`. Every write must
 copy a `job_id` from an earlier query receipt; the model may not guess one. Jobs driven by a
-settings switch (`proactive.tick`) cannot be changed or deleted by voice. Creating a scheduled
+settings switch (`proactive.tick`) cannot be changed or deleted by voice. Legacy anonymous
+connections retain read-only access; updates and deletion require an identified user who owns
+the job. Creating a scheduled
 job is new work: `jiuwen_delegate` hands it to Core, which creates it through its cron tools with
 the current project, so project binding and credential resolution stay unchanged.
 
