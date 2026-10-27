@@ -9,6 +9,9 @@
   R2  server  禁止 import gateway
   R3  gateway 禁止 import server / agents / channels
 
+例外：``gateway.common`` 是无状态纯函数/常量的唯一真源（M1 策略调整），
+common / server / runtime 允许反向引用；其余 ``gateway.*`` 仍属传输层，继续禁止。
+
 使用时机（《Gateway独立成仓-解耦设计》PR-2，单人解耦精简版）：
 
   1. 每次同步 upstream 后——母仓是共享仓库，上游提交可能引入新耦合；
@@ -59,22 +62,19 @@ _ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
 # （14 对）随本 MR 缩减为空。
 KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
 
+# 允许的跨层目标：无状态纯组件以 gateway 为唯一真源，母仓反向引用不视为违规。
+ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = ("gateway.common",)
+
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
-# gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）；
-# agents.browser_config 为上游 PR #8083（Jev 集成，2026-10-13）引入，待其
-# 开发稳定后下沉 common（届时缩减此白名单）。
+# gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）已消除。
+# browser_config 已下沉 jiuwenswarm.common.browser_config，不再占用本白名单。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
-    "jiuwenswarm.gateway.channel_manager.web.app_web_handlers": {
-        "jiuwenswarm.channels.web.directory_picker",
-        "jiuwenswarm.channels.web.file_picker",
-        "jiuwenswarm.agents.harness.common.browser_config",
-    },
     # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
-    # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
-    # cron_store_factory → runtime.cron.factory：B2.5 后 gateway 侧注册
-    # gateway/runtime 副本的 factory（原位 re-export common.cron_settings）。
-    "jiuwenswarm.gateway.server_store_bridge": {
+    # gateway 独立成仓时整体删除并由 WS 远端实现替代（session_metadata
+    # 域已就绪 gateway/routing/session_metadata_remote.py）。
+    # （runtime.cron.factory 一条已随 M0-a 的 router_client 改向消除）
+    "gateway.server_store_bridge": {
         "jiuwenswarm.server.runtime.mcp.state_store",
         "jiuwenswarm.server.runtime.mcp.registry",
         "jiuwenswarm.server.runtime.mcp.credential",
@@ -82,7 +82,6 @@ KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
         "jiuwenswarm.server.runtime.team_binding_store",
         "jiuwenswarm.server.runtime.team_entity_store",
         "jiuwenswarm.server.runtime.session.session_metadata",
-        "jiuwenswarm.runtime.cron.factory",
     },
 }
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
@@ -120,7 +119,9 @@ def _all_local_top_modules() -> tuple[str, ...]:
     tops: set[str] = set()
     for rel in collect_py_files():
         parts = rel.split("/")
-        if len(parts) >= 2 and parts[0] == PKG:
+        if parts[0] == "gateway":
+            tops.add("gateway")  # M0-c 顶层包：R1 语义下 common 不得 import gateway
+        elif len(parts) >= 2 and parts[0] == PKG:
             tops.add(parts[1][:-3] if parts[1].endswith(".py") else parts[1])
     tops.discard("")
     tops.discard("common")  # R1 语义：common 只能 import common
@@ -136,8 +137,9 @@ def _git(*args: str) -> str:
 
 
 def collect_py_files() -> list[str]:
-    tracked = _git("ls-files", f"{PKG}/").splitlines()
-    untracked = _git("ls-files", "--others", "--exclude-standard", f"{PKG}/").splitlines()
+    # M0-c 后 gateway 为顶层包（与 jiuwenswarm 并列）；两者都纳入依赖图
+    tracked = _git("ls-files", f"{PKG}/", "gateway/").splitlines()
+    untracked = _git("ls-files", "--others", "--exclude-standard", f"{PKG}/", "gateway/").splitlines()
     return sorted(f for f in set(tracked) | set(untracked) if f.endswith(".py"))
 
 
@@ -276,7 +278,19 @@ def _check_rule(
         if not mod.startswith(source_prefixes):
             continue
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
-            if any(tgt.startswith(f"{PKG}.{p}.") or tgt == f"{PKG}.{p}" for p in forbidden_pkgs):
+            # 无状态纯组件（gateway.common）允许被母仓反向引用。
+            if any(
+                tgt == allowed or tgt.startswith(allowed + ".")
+                for allowed in ALLOWED_CROSS_LAYER_PREFIXES
+            ):
+                continue
+            # M0-c 后 gateway 为顶层包：forbidden 匹配需同时覆盖
+            # ``jiuwenswarm.<pkg>`` 与裸顶层 ``<pkg>`` 两种模块名形态。
+            if any(
+                tgt.startswith(f"{PKG}.{p}.") or tgt == f"{PKG}.{p}"
+                or tgt.startswith(f"{p}.") or tgt == p
+                for p in forbidden_pkgs
+            ):
                 violations[mod].add(tgt)
 
     known_flat = {(s, t) for s, ts in known.items() for t in ts}
@@ -321,7 +335,7 @@ def run_rules(graph: ImportGraph) -> int:
     )
     exit_code |= _check_rule(
         graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
-        (f"{PKG}.gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
+        ("gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
     return exit_code
@@ -340,7 +354,7 @@ def _fmt_delta(cur: int, base: int) -> str:
 
 
 def run_baseline(graph: ImportGraph) -> None:
-    gw_roots = {m for m in graph.modules if m.startswith(f"{PKG}.gateway.")}
+    gw_roots = {m for m in graph.modules if m.startswith("gateway.")}
 
     logger.info("== 闭包（从 gateway 出发可达的外部模块，非 gateway/common）==")
     for label, edges, base_key in (
@@ -351,7 +365,7 @@ def run_baseline(graph: ImportGraph) -> None:
         by_pkg: dict[str, int] = defaultdict(int)
         for m in reach:
             parts = m.split(".")
-            if len(parts) < 2 or m.startswith((f"{PKG}.gateway", f"{PKG}.common")):
+            if len(parts) < 2 or m.startswith(("gateway", f"{PKG}.common")):
                 continue
             by_pkg[parts[1]] += 1
         total = sum(by_pkg.values())
@@ -388,7 +402,7 @@ def run_baseline(graph: ImportGraph) -> None:
     direct = set()
     for mod in gw_roots:
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
-            if len(tgt.split(".")) < 2 or tgt.startswith((f"{PKG}.gateway", f"{PKG}.common")):
+            if len(tgt.split(".")) < 2 or tgt.startswith(("gateway", f"{PKG}.common")):
                 continue
             direct.add(tgt)
     logger.info("\n== gateway 直接 import 的外部模块（非 gateway/common）==")
@@ -401,10 +415,10 @@ def run_baseline(graph: ImportGraph) -> None:
 def run_list_deps(graph: ImportGraph) -> None:
     deps: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
     for mod in graph.modules:
-        if not mod.startswith(f"{PKG}.gateway."):
+        if not mod.startswith("gateway."):
             continue
         for tgt in graph.hard.get(mod, set()) | graph.lazy.get(mod, set()):
-            if len(tgt.split(".")) < 2 or tgt.startswith((f"{PKG}.gateway", f"{PKG}.common")):
+            if len(tgt.split(".")) < 2 or tgt.startswith(("gateway", f"{PKG}.common")):
                 continue
             deps[tgt][graph.modules[mod]].add("hard" if tgt in graph.hard.get(mod, set()) else "lazy")
     logger.info("gateway 直接依赖的外部模块（非 gateway/common）：共 %s 个\n", len(deps))

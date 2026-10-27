@@ -7,7 +7,7 @@ import pytest
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import (
+from gateway.extensions.video_duplex.backend.tasks.bridge import (
     GatewayTaskEndpoint,
     handle_checkpoint_push,
 )

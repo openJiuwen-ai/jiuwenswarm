@@ -108,6 +108,10 @@ Scheduled task configurations are saved at:
 ~/.jiuwenswarm/agent/home/cron_jobs.json
 ```
 
+### Execution Session Status
+
+Scheduled tasks use independent execution sessions. When the same user, app, and agent query a session through different channels with `session.get_metadata`, warming, queued, and running work returns `is_processing=true` and `status=processing`. Completed work and Teams waiting for new input return `is_processing=false` and `status=idle`. Passive subscriptions and history queries do not make a session busy.
+
 ### Create via Chat
 
 When the Agent has the `cron_create_job` tool capability, you can create scheduled tasks directly through natural language conversation.

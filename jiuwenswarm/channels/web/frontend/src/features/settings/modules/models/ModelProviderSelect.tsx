@@ -11,6 +11,10 @@ import {
   vendorSelectionKey,
   type ModelProtocol,
 } from './modelAdapters';
+import { getVendorLabel } from './modelVendorLabels';
+
+export type { ModelTranslate } from './modelTranslation';
+export { getPresetLabel, getVendorLabel } from './modelVendorLabels';
 
 type ProviderOption =
   | { kind: 'preset'; value: string; plan: ModelPlan; preset: VendorPreset }
@@ -30,34 +34,10 @@ function getPresetApiAddress(preset: VendorPreset, protocol: ModelProtocol): str
 }
 
 const DEFAULT_GROUPS: Array<ModelPlan | 'other'> = ['token_plan', 'coding_plan', 'custom_api', 'other'];
-const VENDOR_TRANSLATION_KEYS: Record<string, string> = {
-  alibaba: 'alibaba',
-  baidu: 'baidu',
-  deepseek: 'deepseek',
-  kimi: 'kimi',
-  maas: 'maas',
-  minimax: 'minimax',
-  mimo: 'mimo',
-  openrouter: 'openrouter',
-  'vllm-omni': 'vllm-omni',
-  volcengine: 'volcengine',
-  zhipu: 'zhipu',
-};
-
-export function getVendorLabel(vendorKey: string, t: ReturnType<typeof useTranslation>['t']): string {
-  const translationKey = VENDOR_TRANSLATION_KEYS[vendorKey];
-  return translationKey
-    ? t(`settingsPanel.models.vendors.${translationKey}`)
-    : t('settingsPanel.models.vendors.unrecognized', { vendor: vendorKey });
-}
 
 function useVendorLabel() {
   const { t } = useTranslation();
   return useCallback((vendorKey: string) => getVendorLabel(vendorKey, t), [t]);
-}
-
-export function getPresetLabel(preset: VendorPreset, t: ReturnType<typeof useTranslation>['t']): string {
-  return getVendorLabel(preset.vendor_key, t);
 }
 
 export function ModelProviderSelect({

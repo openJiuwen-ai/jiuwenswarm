@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
+from gateway.cron.controller import CronController
+from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
 
 

@@ -93,6 +93,6 @@ Also verify the UI switch and conversation isolation:
 4. Stop an expert request and confirm that the owner's running task is not cancelled. Targeted expert requests do not support pause/resume; unsupported intentions must not fall back to controlling the owner.
 5. Disable the switch and confirm that organization UI and event subscriptions are removed. Reload to verify persistence, then enable it again to check restored conversation history.
 
-Expert message history is isolated; restoring expert tool execution history is not covered by this UI iteration. Automated regression tests do not replace this real-model acceptance run.
+Expert message history is isolated. Completed reply segments from background expert and Summary Teams are saved even while the browser is disconnected; refreshing and selecting the Team restores those replies. Text still being generated becomes restorable at the next output boundary or when the turn ends. Restoring expert tool execution history is not covered by this UI iteration. Automated regression tests do not replace this real-model acceptance run.
 
 See [Expert and Summary Team Configuration](TeamOrganizationExpertAndSummary.md) for package validation and lifecycle details.

@@ -146,6 +146,11 @@ class StoreNodeSpawner:
     def apply_agent_graph_patch(
         self, graph_id: str, patch: dict[str, Any]
     ) -> DesignerExecutionGraph:
+        if self._coordinator_provider().is_active():
+            raise RuntimeError(
+                "a trigger is executing on this graph: wait for it to finish "
+                "before editing the canvas"
+            )
         graph = self._store.get_graph(graph_id)
         if graph is None:
             raise ValueError(f"designer graph not found: {graph_id!r}")

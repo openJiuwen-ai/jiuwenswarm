@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup
+from gateway.common.model_selection import ResolvedModel, ResolvedModelGroup
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.diagnosis.models import DiagnosisHostError, ModelInfo
 
@@ -99,7 +99,7 @@ class ResolvedDiagnosisModel:
 
 
 def _team_selection(team_name: str) -> Any:
-    from jiuwenswarm.common.model_selection import ModelSelection
+    from gateway.common.model_selection import ModelSelection
     from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
 
     raw = get_team_binding_store().get_team_selection(team_name)

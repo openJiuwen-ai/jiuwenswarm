@@ -10,7 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.observability.gateway_hints import TrajectoryGatewayHintBridge
 from jiuwenswarm.observability.models import CommittedTraceUpdate
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire

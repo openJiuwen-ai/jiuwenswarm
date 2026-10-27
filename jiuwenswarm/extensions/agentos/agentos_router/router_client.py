@@ -10,15 +10,20 @@ import stat
 import time
 import urllib.parse
 from collections.abc import AsyncIterator, Awaitable, Callable
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any, Mapping, Coroutine
 
 from jiuwenswarm.common.client.agent_client import AgentServerClient
+from gateway.routing.container_files import (
+    AgentOSFileTransferError,
+    normalize_agent_file_download_path,
+    normalize_agent_file_upload_path,
+)
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateFailed,
     AgentCreatingTimeout,
@@ -44,12 +49,12 @@ from jiuwenswarm.extensions.agentos.agentos_router.config import (
     read_optional_float,
     read_optional_int,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
+from gateway.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
     format_agentos,
     log_agentos,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.models import (
+from gateway.extensions.agentos.agentos_router.models import (
     AgentInfo,
     AgentStatus,
     ImageInfo,
@@ -67,7 +72,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     instance_service_id,
     parse_access_mode,
 )
-from jiuwenswarm.extensions.agentos.registry_watcher.decode import (
+from gateway.extensions.agentos.registry_watcher.decode import (
     web_svc_port as _web_svc_port,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
@@ -96,12 +101,9 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     bind_southbound_trace_id,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
-from jiuwenswarm.gateway import ChannelManager
-from jiuwenswarm.gateway.channel_manager.base import ChannelType
-from jiuwenswarm.common.attachment_safety import is_forbidden_document
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
-from jiuwenswarm.common.attachment_safety import safe_upload_filename
-
+from gateway.channel_manager.channel_manager import ChannelManager
+from gateway.channel_manager.base import ChannelType
+from gateway.routing.agent_client import WebSocketAgentServerClient
 
 logger = logging.getLogger(__name__)
 
@@ -109,11 +111,6 @@ _WORKSPACE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # Builtin jiuwenswarm create only: sandbox env so agentserver can locate
 # the host workspace bind path (``/home/agentos/users/<user_id>``).
 USER_DIRECTORY_ENV_KEY = "JIUWENSWARM_USER_DIRECTORY"
-
-# Container file root. Upload size is not capped on Gateway; YuanRong
-# Frontend / working-directory quota (default 512MB) rejects oversized files
-# with HTTP 413, mapped to ``file_too_large``.
-_AGENT_FILE_PATH_ROOT = "/home/agentos"
 
 _TEAM_MODES = frozenset({"team", "code.team", "team.plan"})
 # Web/TUI 握手成功后预热内置沙箱；SSH/IM 等不走 agentserver WS，不预热。
@@ -284,98 +281,6 @@ class UnsupportedAgentType(ValueError):
 
 class EphemeralKeyIssueError(RuntimeError):
     """A configured issuer could not mint an ephemeral SSH key."""
-
-
-class AgentOSFileTransferError(RuntimeError):
-    """Raised when AgentOS container file transfer cannot be completed."""
-
-    def __init__(self, message: str, *, code: str = "INTERNAL_ERROR") -> None:
-        super().__init__(message)
-        self.code = str(code)
-
-
-# Upload: relative path (+ optional dir prefix) → ``/home/agentos/<relative>``.
-# Download / list / mkdir: absolute path under ``/home/agentos``.
-
-
-def _normalize_upload_dir_prefix(dir_prefix: str) -> str:
-    """Return a clean relative directory prefix, or empty string for default root."""
-    text = str(dir_prefix or "").strip().replace("\\", "/")
-    if not text or text == ".":
-        return ""
-    if text.startswith("/"):
-        raise AgentOSFileTransferError(
-            "upload dir must be relative (AgentOS prefixes /home/agentos)",
-            code="BAD_REQUEST",
-        )
-    text = text.strip("/")
-    if not text or text == ".":
-        return ""
-    posix = PurePosixPath(text)
-    if ".." in posix.parts or posix.is_absolute():
-        raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-    return posix.as_posix()
-
-
-def normalize_agent_file_upload_path(
-    path: str,
-    *,
-    dir_prefix: str = "",
-    user_id: str = "",
-) -> str:
-    """Normalize upload path: relative (+ optional ``dir_prefix``) → ``/home/agentos/...``.
-
-    - ``dir_prefix`` empty: land under ``/home/agentos`` (e.g. ``a.pdf`` → ``/home/agentos/a.pdf``)
-    - ``dir_prefix`` set: prefix directory (e.g. ``docs`` + ``a.pdf`` → ``/home/agentos/docs/a.pdf``)
-    """
-    del user_id  # reserved for future per-user upload roots
-    text = str(path or "").strip().replace("\\", "/")
-    if not text or text in {".", "/"}:
-        raise AgentOSFileTransferError("path is required", code="BAD_REQUEST")
-    if text.startswith("/"):
-        raise AgentOSFileTransferError(
-            "upload path must be relative (AgentOS prefixes /home/agentos)",
-            code="BAD_REQUEST",
-        )
-    posix = PurePosixPath(text)
-    if ".." in posix.parts or posix.is_absolute():
-        raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-
-    raw_name = posix.name
-    if not raw_name or raw_name in {".", ".."}:
-        raise AgentOSFileTransferError("path is required", code="BAD_REQUEST")
-    safe_name = safe_upload_filename(raw_name, fallback="upload.bin")
-    if is_forbidden_document(filename=safe_name):
-        raise AgentOSFileTransferError("forbidden extension", code="BAD_REQUEST")
-
-    path_parent = posix.parent.as_posix().strip(".")
-    prefix = _normalize_upload_dir_prefix(dir_prefix)
-    parts: list[str] = []
-    if prefix:
-        parts.append(prefix)
-    if path_parent and path_parent != ".":
-        parts.append(path_parent)
-    parts.append(safe_name)
-    return f"{_AGENT_FILE_PATH_ROOT}/{'/'.join(parts)}"
-
-
-def normalize_agent_file_download_path(path: str) -> str:
-    """Normalize download/list path: absolute and under ``/home/agentos``."""
-    text = str(path or "").strip().replace("\\", "/")
-    if not text:
-        raise AgentOSFileTransferError("path is required", code="BAD_REQUEST")
-    if not text.startswith("/"):
-        raise AgentOSFileTransferError("download path must be absolute", code="BAD_REQUEST")
-    posix = PurePosixPath(text)
-    if ".." in posix.parts:
-        raise AgentOSFileTransferError("path must not contain '..'", code="BAD_REQUEST")
-    root = _AGENT_FILE_PATH_ROOT
-    if text != root and not text.startswith(f"{root}/"):
-        raise AgentOSFileTransferError(
-            f"path must be under {root}",
-            code="BAD_REQUEST",
-        )
-    return text
 
 
 def build_auth_headers_from_mapping(headers: Mapping[str, str] | None) -> dict[str, str]:
@@ -2907,7 +2812,7 @@ class AgentOSRouterClient(AgentServerClient):
                 "JIUWENSWARM_RUNTIME_PROFILE": "agentos",
                 **self._tool_sandbox_env(),
             }
-            from jiuwenswarm.gateway.runtime.cron.factory import load_cron_store_settings
+            from gateway.runtime.cron.factory import load_cron_store_settings
             import json
 
             endpoints = load_cron_store_settings(self._server_config).endpoints

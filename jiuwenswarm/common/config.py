@@ -56,6 +56,10 @@ _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
 # whose config.yaml predates this switch.
 DEFAULT_PROGRESSIVE_TOOL_ENABLED = False
+# Opt-in gate for the tool_search retrieval layer: the layer mounts only when
+# progressive_tool_enabled (AbilityManager deferred assignment) and this switch
+# are both true.
+DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE = False
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -438,16 +442,45 @@ def get_progressive_tool_enabled(config: dict[str, Any] | None = None) -> bool:
     return bool(value)
 
 
+def get_progressive_tool_optimize(config: dict[str, Any] | None = None) -> bool:
+    """Return the top-level ``progressive_tool_optimize`` switch.
+
+    Opt-in companion to ``progressive_tool_enabled``: the ``tool_search``
+    retrieval layer requires both switches so AbilityManager's deferred
+    assignment can stay armed while the retrieval layer stays off.
+    """
+    if not isinstance(config, dict):
+        return DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE
+
+    value = config.get("progressive_tool_optimize", DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
+
+
 def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether the ``tool_search`` progressive disclosure is enabled.
 
-    Reuses the single top-level ``progressive_tool_enabled`` switch (the same
-    one historically documented for the deferred-tool pipeline). ``true`` means
-    our skill_index-framework ``tool_search`` is mounted and deferred tools are
-    hidden until discovered; ``false`` disables it and every tool stays direct.
+    True only when both top-level switches are true: ``progressive_tool_enabled``
+    (AbilityManager deferred assignment) and ``progressive_tool_optimize`` (the
+    retrieval layer itself). ``true`` means our skill_index-framework
+    ``tool_search`` is mounted and deferred tools are hidden until discovered;
+    ``false`` disables it and every tool stays direct.
     """
 
-    return False
+    return get_progressive_tool_enabled(config) and get_progressive_tool_optimize(config)
+
+
+def update_progressive_tool_optimize_in_config(enabled: bool) -> None:
+    """Atomically update the top-level ``progressive_tool_optimize`` switch."""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        data["progressive_tool_optimize"] = bool(enabled)
+        return data
+
+    update_config(mutator)
 
 
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
@@ -1057,11 +1090,19 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
 
 
 def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
-    """Update the trajectory diagnosis feature switch and persist config.yaml."""
+    """Update the trajectory diagnosis feature switch and persist config.yaml.
+
+    The standalone trajectory UI switch and chat/trajectory tabs were removed;
+    the diagnosis switch drives the diagnosis entry and the data-plane
+    ``enabled`` flag so recording stays aligned with the single user-facing
+    control.
+    """
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "trajectory_ui" not in data or data["trajectory_ui"] is None:
         data["trajectory_ui"] = {}
-    data["trajectory_ui"]["diagnosis_enabled"] = bool(enabled)
+    flag = bool(enabled)
+    data["trajectory_ui"]["diagnosis_enabled"] = flag
+    data["trajectory_ui"]["enabled"] = flag
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -1071,6 +1112,15 @@ def update_team_organization_ui_in_config(enabled: bool) -> None:
     if "experimental" not in data or data["experimental"] is None:
         data["experimental"] = {}
     data["experimental"]["team_organization_ui_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_comfyui_workflow_enabled_in_config(enabled: bool) -> None:
+    """Persist the experimental ComfyUI workflow import switch."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["comfyui_workflow_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -3442,11 +3492,12 @@ def migrate_config_from_template(
         if not user_data:
             return False
 
-        # Write the program version with any changes to the merged config.
-        from jiuwenswarm.common._build_config import VERSION
+        # This diagnostic label does not control whether template migration runs.
+        from jiuwenswarm.common.version import get_runtime_version_label
 
-        if user_data.get("config_version") != VERSION:
-            user_data["config_version"] = VERSION
+        version_label = get_runtime_version_label()
+        if user_data.get("config_version") != version_label:
+            user_data["config_version"] = version_label
             changes += 1
 
         # Only write if there are actual changes

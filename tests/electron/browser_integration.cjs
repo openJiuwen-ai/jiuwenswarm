@@ -132,6 +132,31 @@ async function main() {
     }
     await alice.tool('browser_navigate', { url: `${base}/alice` });
     await bob.tool('browser_navigate', { url: `${base}/bob` });
+    const targetsBefore = await electron.evaluate(() => [...global.browserTest.browserViews.values()]
+      .filter(entry => entry.leases.size).map(entry => [entry.panelId, entry.targetId]));
+    await ui.evaluate(() => window.browserTestDisplay({ headless: true }));
+    await ui.getByTestId('browser-test-headless').waitFor();
+    assert.equal(await ui.getByTestId('desktop-browser-pane').count(), 0);
+    assert.equal(await ui.evaluate(() => window.jiuwenDesktop.browser.setVisible(true, 'session-one')), false);
+    assert.equal(await electron.evaluate(() => [...global.browserTest.browserViews.values()]
+      .some(entry => entry.visible || entry.view.getVisible())), false);
+    const hiddenResult = await alice.tool('browser_run_code', {
+      code: "async page => { await page.getByRole('textbox', { name: 'Query' }).fill('Background result'); await page.getByRole('button', { name: 'Submit' }).click(); return await page.locator('h1').innerText(); }",
+    });
+    assert.match(JSON.stringify(hiddenResult), /Background result/);
+    await ui.evaluate(() => window.browserTestDisplay({ headless: false }));
+    await ui.getByTestId('desktop-browser-pane').waitFor();
+    await ui.waitForFunction(async () => {
+      const state = await fetch('/browser-diagnostics').then(response => response.json());
+      return state.views.some(entry => entry.visible);
+    });
+    assert.equal(await electron.evaluate(() => [...global.browserTest.browserViews.values()]
+      .some(entry => entry.visible && entry.view.getVisible())), true);
+    const targetsAfter = await electron.evaluate(() => [...global.browserTest.browserViews.values()]
+      .filter(entry => entry.leases.size).map(entry => [entry.panelId, entry.targetId]));
+    assert.deepEqual(targetsAfter, targetsBefore);
+    assert.match(JSON.stringify(await alice.tool('browser_snapshot', {})), /Background result/);
+    console.log('PASS: headless hides panels without stopping MCP actions; headed restores the same targets.');
     const viewport = await alice.tool('browser_run_code', { code: 'async page => page.evaluate(() => innerWidth > 0 && innerHeight > 0)' });
     assert.match(JSON.stringify(viewport), /Result\\ntrue/);
     await alice.tool('browser_run_code_unsafe', { code: "async page => { await page.getByRole('textbox', { name: 'Query' }).fill('Alice result'); await page.getByRole('button', { name: 'Submit' }).click(); return await page.locator('h1').innerText(); }" });

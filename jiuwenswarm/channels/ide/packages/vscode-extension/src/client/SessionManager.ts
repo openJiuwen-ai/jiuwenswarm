@@ -62,7 +62,19 @@ export class SessionManager {
     if (mode) params.mode = mode;
     const payload = await this.request('session.switch', params, sid);
     this.setSessionId(sid);
-    this._sessionTitle = (payload.title as string) || sid;
+    const serverTitle = (payload.title as string) || '';
+    this._sessionTitle = serverTitle || sid;
+    if (!serverTitle) {
+      // session.switch has no title; use the persisted title (e.g. a user rename)
+      // instead of falling back to the session id.
+      try {
+        const sessions = await this.listSessions();
+        const match = sessions.find((s) => s.session_id === sid && !!s.title);
+        if (match?.title) this._sessionTitle = match.title;
+      } catch {
+        // keep the sid fallback
+      }
+    }
   }
 
   /**

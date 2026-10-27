@@ -116,6 +116,24 @@ export type ModelReasoningCatalog = {
   model_fallbacks: ModelReasoningRule[];
 };
 
+export interface ChatInputProvenance {
+  input_origin: 'manual_free_text' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'pasted_or_unknown';
+  assistance_origin: 'none' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'unknown';
+  topic_starter?: {
+    manifest_id: string;
+    generation_batch_id: string;
+    exposure_id: string;
+    card_revision_id: string;
+    context_scope: string;
+    project_id: string | null;
+  };
+  // The in-conversation suggestion the user accepted, sent as it was or edited.
+  prompt_suggestion?: {
+    suggestion_id: string;
+    edited: boolean;
+  };
+}
+
 export interface ModelEntry {
   /** Backend stable model ID. Zen free models may omit this field. */
   model_id?: string;
@@ -211,7 +229,7 @@ export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {
 
 export interface VendorFetchModelsResult {
   models: string[];
-  source: 'remote' | 'preset';
+  source: 'remote' | 'preset' | 'unavailable';
   reason?: string;
 }
 

@@ -80,6 +80,10 @@ def _get_machine_id() -> str:
             r = subprocess.run(
                 ["/usr/sbin/ioreg", "-d2", "-c", "IOPlatformExpertDevice"],
                 capture_output=True, text=True, timeout=2,
+                # macOS tools emit UTF-8. Without an explicit codec a decode
+                # error happens in the reader thread, stdout comes back empty
+                # and the machine id silently falls back to a constant.
+                encoding="utf-8", errors="replace",
             )
             for line in r.stdout.splitlines():
                 if "IOPlatformUUID" in line:

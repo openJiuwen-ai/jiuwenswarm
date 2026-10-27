@@ -22,12 +22,12 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_INTERNAL,
     HOST_USER_PROMPT_PREFIX_EN,
     HOST_USER_PROMPT_PREFIX_ZH,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,9 @@ class UserTurn:
             event, or the value unchanged when it is not renderable text (an
             ``InteractiveInput`` resume carries its own structure).
         """
-        from jiuwenswarm.server.runtime.a2ui.integration import build_user_prompt_if_a2ui_event
+        from jiuwenswarm.server.runtime.a2ui.integration import (
+            build_user_prompt_if_a2ui_event,
+        )
 
         a2ui_prompt = build_user_prompt_if_a2ui_event(
             self.text,

@@ -2,7 +2,7 @@ import logging
 
 import httpx
 
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
+from gateway.extensions.agentos.agentos_router.logutil import log_agentos
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
     CredentialAuthenticator,
     AuthContext,

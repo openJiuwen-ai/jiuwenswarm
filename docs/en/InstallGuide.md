@@ -69,7 +69,7 @@ The desktop installers already include the Python runtime and front-end static a
 
 | Dependency | Version | Applies to | Notes |
 |------------|---------|------------|-------|
-| Python | ≥3.11, <3.14 | pip and source installs | Python 3.11 recommended |
+| Python | ≥3.11 (3.11/3.12 recommended; 3.13, 3.14 also supported) | pip and source installs | Python 3.11 recommended |
 | Node.js | 18.x or newer | Source install only | Builds the Web front end; the pip package already includes the static assets |
 | Node.js | 20.x or newer | Browser runtime in pip/wheel and source installs | Runs the bundled Playwright MCP CLI; normal application use does not need Node |
 | Git | Latest | Source install only | Clones and updates the source tree |
@@ -79,7 +79,7 @@ Run the checks that apply to your installation method:
 ```bash
 # pip and source installs: check Python
 python --version
-# Expect: Python 3.11.x, 3.12.x, or 3.13.x
+# Expect: Python 3.11.x, 3.12.x, 3.13.x, or 3.14.x
 
 # Source install only: check Node.js
 node --version
@@ -508,9 +508,7 @@ jiuwenswarm-start
 
 ### Q: On start I see "Python version not supported"
 
-JiuwenSwarm requires Python **3.11, 3.12, or 3.13** (i.e. ≥3.11 and <3.14). 3.10 and earlier, as well as 3.14 and newer, are not supported. 3.11 and 3.12 have the best compatibility. See [Environment check](#environment-check) for details.
-
-> ℹ️ If a page renders something like `Python >=3.11 ❤️ 3.14` or `Python 3.11 3.14`, that is the `<=` angle brackets being parsed as an HTML tag or triggering an emoji substitution. The full intent is `≥3.11, <3.14`.
+JiuwenSwarm requires Python **≥3.11**, supporting 3.11, 3.12, 3.13, and 3.14. 3.10 and earlier are not supported. 3.11 and 3.12 have the best compatibility. See [Environment check](#environment-check) for details.
 
 ### Q: Windows prompts "Do you want to allow this app to make changes to your device?"
 

@@ -69,7 +69,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_TEAM_CODE_NORMAL,
     NEW_TEAM_CODE_PLAN,
     NEW_TEAM_DESIGN,
@@ -138,7 +138,6 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     # registrar.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -196,7 +195,6 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     # rail; declaring SKILL_TOOLKIT here too would double-register them.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -848,17 +846,25 @@ def build_member_capability_specs(
     Returns:
         A ``(rails_specs, tool_specs)`` tuple of openjiuwen specs.
     """
+    if role == "leader" and (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        availability = RailSpec(type=registry.ORGANIZATION_AVAILABILITY)
+    else:
+        availability = None
     if _is_code_mode(mode):
-        return _build_code_capability_specs(
+        rails, tools = _build_code_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
-    if _is_design_mode(mode):
-        return _build_design_capability_specs(
+    elif _is_design_mode(mode):
+        rails, tools = _build_design_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
-    return _build_team_capability_specs(
-        config, mode, role, enable_permissions=enable_permissions
-    )
+    else:
+        rails, tools = _build_team_capability_specs(
+            config, mode, role, enable_permissions=enable_permissions
+        )
+    if availability is not None:
+        rails.append(availability)
+    return rails, tools
 
 
 def _is_subagent_enabled(sub_cfg: Any) -> bool:

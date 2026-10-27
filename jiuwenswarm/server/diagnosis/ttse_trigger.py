@@ -34,7 +34,7 @@ def _result(result: str, message: str | None = None) -> dict[str, Any]:
 def _is_agent_work_session(session_id: str) -> bool | None:
     """Return whether the session is ``agent.work``; ``None`` when unknown."""
     try:
-        from jiuwenswarm.common.mode_matrix import (
+        from gateway.common.mode_matrix import (
             canonicalize_mode_text,
             is_code_profile_mode,
             is_single_agent_mode,

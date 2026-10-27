@@ -298,6 +298,33 @@ class ChatPanel(
     // ──────────────────────────────────────────
     // Webview → Plugin messages
     // ──────────────────────────────────────────
+    /** Re-fetch models.list so a session created before model config stops showing a stale placeholder. */
+    private fun refreshModels() {
+        val sid = service.session.sessionId ?: return
+        ApplicationManager.getApplication().executeOnPooledThread {
+            try {
+                val (models, model) = service.session.listModels()
+                if (service.session.sessionId != sid) return@executeOnPooledThread
+                val modelList = models.map { m ->
+                    mapOf(
+                        "model_name" to (m.get("model_name")?.asString ?: ""),
+                        "alias" to (m.get("alias")?.asString ?: ""),
+                        "model_provider" to (m.get("model_provider")?.asString ?: ""),
+                    )
+                }
+                dispatchToWebview(
+                    mapOf(
+                        "type" to "models_updated",
+                        "models" to modelList,
+                        "activeModel" to model,
+                    )
+                )
+            } catch (_: Exception) {
+                debug("models.list refresh failed")
+            }
+        }
+    }
+
     private fun handleWebviewMessage(jsonStr: String) {
         try {
             val msg = gson.fromJson(jsonStr, JsonObject::class.java)
@@ -426,9 +453,10 @@ class ChatPanel(
                 "switch_model" -> {
                     val model = msg.get("model")?.asString ?: ""
                     activeModel = model
-                    debug("ACTION→ switch_model $model")
+                    debug("ACTION�+' switch_model $model")
                     dispatchToWebview(mapOf("type" to "model_changed", "model" to model))
                 }
+                "refresh_models" -> refreshModels()
                 "rename_session" -> {
                     val title = msg.get("title")?.asString ?: return
                     ApplicationManager.getApplication().executeOnPooledThread {

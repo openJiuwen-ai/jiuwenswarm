@@ -8,7 +8,7 @@
 
 ### Q: 启动时报错 "Python version not supported"
 
-请确保 Python 版本 ≥3.11 且 <3.14（推荐 3.11 或 3.12）。
+请确保 Python 版本 ≥3.11（推荐 3.11 或 3.12，3.13、3.14 亦可）。
 
 ```bash
 python --version

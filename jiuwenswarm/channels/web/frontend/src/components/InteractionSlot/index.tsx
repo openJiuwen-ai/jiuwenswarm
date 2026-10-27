@@ -11,7 +11,7 @@
  * 不参与消息滚动，紧贴输入框顶部。
  */
 
-import { useChatStore } from '../../stores';
+import { useChatStore, useSessionStore } from '../../stores';
 import { A4PAuthorizationCard } from '../../features/A4PAuthorizationModal';
 import type { UserAnswer } from '../../types';
 import { AuthorizationPrompt } from './AuthorizationPrompt';
@@ -30,6 +30,12 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
   );
   const pendingA4P = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.pendingA4PAuthorization ?? null,
+  );
+  // Team-mode ask_user keeps the legacy in-stream card anchors on the prompt so
+  // existing team automation can drive the same interaction surface the agent
+  // channel exposes through InlineQuestionCard.
+  const isTeamMode = useSessionStore(
+    (s) => (s.runtimes[activeSessionId ?? '']?.mode ?? 'agent') === 'team',
   );
 
   if (pendingA4P) {
@@ -65,7 +71,11 @@ export function InteractionSlot({ onSubmit }: InteractionSlotProps) {
         {isAuth ? (
           <AuthorizationPrompt pending={pending} onSubmit={onSubmit} />
         ) : (
-          <InteractionPrompt pending={pending} onSubmit={onSubmit} />
+          <InteractionPrompt
+            pending={pending}
+            onSubmit={onSubmit}
+            legacyCardAnchors={isTeamMode}
+          />
         )}
       </div>
     </>

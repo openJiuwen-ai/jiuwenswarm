@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.extensions.agentos.config_updater.service import (
+from gateway.extensions.agentos.config_updater.service import (
     ApplyResult,
     ConfigUpdaterService,
     build_refresh_handler,
@@ -241,7 +241,7 @@ async def test_retryable_apply_retries_without_restarting_watch(monkeypatch):
 
     fake.watch_loop = watch_loop  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.agentos.config_updater.service._APPLY_RETRY_INITIAL_DELAY",
+        "gateway.extensions.agentos.config_updater.service._APPLY_RETRY_INITIAL_DELAY",
         0.01,
     )
     task = asyncio.create_task(service._watch(fake, FakeApplier()))  # type: ignore[arg-type]

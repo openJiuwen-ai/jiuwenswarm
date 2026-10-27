@@ -7,6 +7,7 @@ import { act, createElement, Fragment } from 'react';
 import { createRoot } from 'react-dom/client';
 import { JSDOM, VirtualConsole } from 'jsdom';
 import { A2UIProvider } from '@a2ui/react';
+import i18n from 'i18next';
 
 const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
 let useWebSocket, useChatStore, useSessionStore, useGoalStore, webClient, TaskQueue, ChatTimelineList, buildTimelineItems;
@@ -713,6 +714,54 @@ for (const failure of ['timeout', 'disconnect']) {
       await c.dispose();
     }
   });
+}
+
+for (const [language, hint] of [
+  ['zh', '带附件的消息无法插队发送，请先点击“编辑”移除附件后再发送。'],
+  ['en', 'Messages with attachments cannot be sent immediately. Click "Edit" to remove the attachments, then send again.'],
+]) {
+  for (const [content, media] of [
+    ['read notes', [{ type: 'document', filename: 'notes.txt', path: '/notes.txt' }]],
+    ['', [{ type: 'image', filename: 'photo.png', path: '/photo.png' }]],
+  ]) {
+    test(`queued attachments explain how to edit before sending (${language}, ${media[0].type})`, async (context) => {
+      const c = await mount(context);
+      const previousLanguage = i18n.language;
+      try {
+        await act(async () => i18n.changeLanguage(language));
+        const taskId = c.queue(content, media);
+        const queuedTask = c.runtime().taskQueue[0];
+        const streamId = c.runtime().currentStreamId;
+        let sent;
+        await act(async () => {
+          sent = await c.api().sendMessage('', c.sid, [], { queuedTaskId: taskId });
+        });
+
+        assert.equal(sent, false);
+        assert.equal(c.runtime().interruptResult.success, false);
+        assert.equal(c.runtime().interruptResult.message, hint);
+        assert.equal(c.requests().length, 0);
+        assert.deepEqual(c.runtime().taskQueue, [queuedTask]);
+        assert.deepEqual(c.runtime().taskQueue[0].mediaItems, media);
+        assert.equal(c.receipt(taskId), undefined);
+        assert.equal(c.runtime().isProcessing, true);
+        assert.equal(c.runtime().currentStreamId, streamId);
+        assert.equal(c.find(taskId, 'edit').disabled, false);
+
+        const confirm = context.mock.method(window, 'confirm', () => false);
+        await c.click(taskId, 'edit');
+        assert.deepEqual(c.runtime().taskQueue, [queuedTask]);
+        confirm.mock.mockImplementation(() => true);
+        await c.click(taskId, 'edit');
+        assert.equal(c.runtime().taskQueue.length, 0);
+        assert.equal(c.runtime().inputValue, content);
+        assert.equal(c.requests().length, 0);
+      } finally {
+        await act(async () => i18n.changeLanguage(previousLanguage));
+        await c.dispose();
+      }
+    });
+  }
 }
 
 test('attachments and pending interactions stay queued without changing the existing buttons', async (context) => {

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
 
@@ -171,8 +171,8 @@ async def test_cron_push_without_request_login_rejects_supplied_session(action) 
 @pytest.mark.asyncio
 async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, monkeypatch) -> None:
     from jiuwenswarm.common.auth.model_catalog import LoginModel
-    from jiuwenswarm.gateway.cron.controller import CronController
-    from jiuwenswarm.gateway.cron.store import CronJobStore
+    from gateway.cron.controller import CronController
+    from gateway.cron.store import CronJobStore
 
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_config", lambda *a, **k: None)
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])

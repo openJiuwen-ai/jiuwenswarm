@@ -9,7 +9,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     ResolvedMode,
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
@@ -20,7 +20,8 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 
 logger = logging.getLogger(__name__)
 
@@ -155,11 +156,46 @@ def sync_chat_request_metadata(
     explicit_mode_provided: bool = False,
     user_id: str = "",
 ) -> str | None:
-    """Persist chat request metadata and return the locked project directory."""
+    """Persist chat request metadata and return the locked project directory.
+
+    An attach-only subscription is a passive observer: it submits no input,
+    so it carries no request-scoped semantics and must not touch session
+    metadata.  Writing here would refresh ``last_message_at`` (sidebar
+    ordering) and ``last_user_message_at`` merely because the user opened or
+    refreshed a Team session in the Web UI.
+    """
     session_id = (request.session_id or "").strip()
     if not session_id:
         return project_dir
     params = request.params if isinstance(request.params, dict) else {}
+    if params.get(TEAM_ATTACH_ONLY_PARAM) is True:
+        # Passive subscription: never touch session metadata. The locked
+        # project_dir is still resolved read-only so agent admission keys
+        # and request routing stay consistent with the session's owner.
+        if session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    get_session_metadata,
+                )
+
+                readonly_metadata = get_session_metadata(
+                    session_id,
+                    cache_bust=True,
+                    enable_writeback=False,
+                )
+                locked = (
+                    readonly_metadata.get("project_dir")
+                    if isinstance(readonly_metadata, dict)
+                    else None
+                )
+                if isinstance(locked, str) and locked.strip():
+                    return locked.strip()
+            except (OSError, ValueError):
+                logger.debug(
+                    "attach-only locked project_dir resolution failed: session_id=%s",
+                    session_id,
+                )
+        return project_dir
     raw_model_name = params.get("model_name")
     explicit_model_provided = isinstance(raw_model_name, str) and bool(
         raw_model_name.strip()
@@ -456,11 +492,32 @@ async def prepare_chat_turn(
                 if isinstance(locked, str) and locked.strip():
                     project_dir = locked.strip()
 
+        from jiuwenswarm.server.runtime.session.session_metadata import _repair_session_project_dir
+
+        _repair_session_project_dir(session_metadata)
+        bound_project_id = str(session_metadata.get("project_id") or "").strip()
+        if bound_project_id:
+            from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
+
+            request.params["project_id"] = bound_project_id
+            if not is_agentos_workspace_fallback(
+                channel_id=request.channel_id,
+                project_id=bound_project_id,
+                project_dir=project_dir,
+            ):
+                project_dir = str(session_metadata.get("project_dir") or "").strip() or None
+            request.metadata = dict(request.metadata or {})
+            request.metadata["project_id"] = bound_project_id
+
         if isinstance(project_dir, str) and project_dir.strip():
             project_dir = project_dir.strip()
             request.params["project_dir"] = project_dir
             request.metadata = dict(request.metadata or {})
             request.metadata["project_dir"] = project_dir
+        else:
+            request.params.pop("project_dir", None)
+            if isinstance(request.metadata, dict):
+                request.metadata.pop("project_dir", None)
         return project_dir
 
     await agent_manager.wait_for_session_prewarm(request.session_id)

@@ -4,18 +4,24 @@ from __future__ import annotations
 
 import asyncio
 from concurrent.futures import Future as ConcurrentFuture
+from copy import deepcopy
+from dataclasses import dataclass
+from functools import lru_cache
 import hashlib
 import inspect
 import json
 import logging
 import os
+import stat
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
-import tempfile
 from typing import Any, Callable, TypeAlias
 
 import openjiuwen.symphony as core_symphony  # type: ignore[import-untyped]
+from openjiuwen.symphony import FINGERPRINT_ARTIFACT_FILENAME
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
@@ -39,7 +45,12 @@ from jiuwenswarm.symphony.config import (
 )
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
-from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
+from jiuwenswarm.symphony.graph_state import GRAPH_STATE_FILENAME
+from jiuwenswarm.symphony.graph_storage import (
+    BUILD_RUNS_DIRNAME,
+    CURRENT_POINTER_FILENAME,
+    resolve_graph_artifact_dir,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -226,6 +237,11 @@ class SwarmSymphonyService:
         self._install_receipts: dict[str, dict[str, Any]] = {}
         self._retired_runtime_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
+        self._graph_status_lock = asyncio.Lock()
+        self._graph_status_cache_key: _GraphStatusCacheKey | None = None
+        self._graph_status_cache_payload: dict[str, Any] | None = None
+        self._graph_status_cache_created_at = 0.0
+        self._graph_status_generation = 0
 
     async def graph_status(
         self,
@@ -234,9 +250,38 @@ class SwarmSymphonyService:
         skills_root = config.paths.skills_root
         graph_dir = config.paths.graph_dir
         await self._repair_interrupted_build_state(graph_dir)
+        cache_key = await asyncio.to_thread(
+            _graph_status_cache_key,
+            config,
+            skills_root,
+            graph_dir,
+        )
+        graph_payload = await self._cached_graph_status(
+            config,
+            skills_root,
+            graph_dir,
+            cache_key,
+        )
+        return await asyncio.to_thread(
+            _compose_graph_status_payload,
+            graph_payload,
+            graph_dir,
+        )
+
+    async def _cached_graph_status(
+        self,
+        config: SymphonyConfig,
+        skills_root: Path,
+        graph_dir: Path,
+        cache_key: _GraphStatusCacheKey,
+    ) -> dict[str, Any]:
+        """Cache only the expensive graph scan. Build progress stays live."""
+        cached = self._graph_status_cache_payload
+        if self._graph_status_cache_is_fresh(cache_key) and cached is not None:
+            return cached
 
         def status() -> dict[str, Any]:
-            payload = graph_status(
+            return graph_status(
                 skills_root,
                 graph_dir,
                 # Freshness follows the model identity captured by the published
@@ -245,11 +290,34 @@ class SwarmSymphonyService:
                 llm_config=None,
                 symphony_config=config,
             ).to_dict()
-            payload.update(_build_log_payload(graph_dir))
-            _prefer_build_failure_detail(payload)
+
+        async with self._graph_status_lock:
+            cached = self._graph_status_cache_payload
+            if self._graph_status_cache_is_fresh(cache_key) and cached is not None:
+                return cached
+            generation = self._graph_status_generation
+            payload = await asyncio.to_thread(status)
+            if generation == self._graph_status_generation:
+                self._graph_status_cache_key = cache_key
+                self._graph_status_cache_payload = payload
+                self._graph_status_cache_created_at = time.monotonic()
             return payload
 
-        return await asyncio.to_thread(status)
+    def _graph_status_cache_is_fresh(self, cache_key: _GraphStatusCacheKey) -> bool:
+        if (
+            self._graph_status_cache_key != cache_key
+            or self._graph_status_cache_payload is None
+        ):
+            return False
+        age = time.monotonic() - self._graph_status_cache_created_at
+        return age < _GRAPH_STATUS_CACHE_TTL_SECONDS
+
+    def _invalidate_graph_status_cache(self) -> None:
+        """Drop the cached status after a build changes its inputs."""
+        self._graph_status_generation += 1
+        self._graph_status_cache_key = None
+        self._graph_status_cache_payload = None
+        self._graph_status_cache_created_at = 0.0
 
     async def refresh_graph(
         self,
@@ -274,6 +342,7 @@ class SwarmSymphonyService:
         config = load_symphony_config()
         graph_dir = config.paths.graph_dir
         async with self._build_guard:
+            self._invalidate_graph_status_cache()
             task = self._active_build_task
             if task is not None and not task.done():
                 payload = {
@@ -335,6 +404,7 @@ class SwarmSymphonyService:
                 if task is not None:
                     self._active_build_task = None
                 _repair_interrupted_build_log(graph_dir)
+                self._invalidate_graph_status_cache()
                 payload = {
                     "success": False,
                     "graph_dir": str(graph_dir),
@@ -348,6 +418,7 @@ class SwarmSymphonyService:
             build_logger.record("update.cancel_requested")
             task.cancel("skills.graph.cancel")
             build_logger.record("update.cancelled")
+            self._invalidate_graph_status_cache()
         try:
             await task
         except asyncio.CancelledError:
@@ -534,6 +605,7 @@ class SwarmSymphonyService:
                 payload.update(_build_log_payload(graph_dir))
                 return payload
             self._active_build_task = current_task
+            self._invalidate_graph_status_cache()
         progress_dispatcher = _OrderedProgressDispatcher(progress)
         progress_dispatcher.start()
         build_logger = _BuildProcessLogger(
@@ -628,6 +700,7 @@ class SwarmSymphonyService:
             result.update(_build_log_payload(graph_dir))
             return result
         finally:
+            self._invalidate_graph_status_cache()
             try:
                 if abort_progress:
                     await progress_dispatcher.abort()
@@ -1171,7 +1244,10 @@ class SwarmSymphonyService:
                 return False
             if task is not None:
                 self._active_build_task = None
-            return await asyncio.to_thread(_repair_interrupted_build_log, graph_dir)
+            repaired = await asyncio.to_thread(_repair_interrupted_build_log, graph_dir)
+            if repaired:
+                self._invalidate_graph_status_cache()
+            return repaired
 
 
 _SHARED_SERVICE: SwarmSymphonyService | None = None
@@ -1486,6 +1562,450 @@ _BUILD_STAGE_PROGRESS = {
 }
 
 
+@dataclass(frozen=True)
+class _FileStamp:
+    """File identity used to invalidate graph-status caches."""
+
+    mtime_ns: int
+    ctime_ns: int
+    size: int
+    inode: int
+    device: int
+
+
+def _path_stamp(path: Path) -> _FileStamp | None:
+    """Return the identity used to invalidate graph-status caches."""
+    try:
+        info = path.stat()
+    except OSError:
+        return None
+    return _FileStamp(
+        mtime_ns=info.st_mtime_ns,
+        ctime_ns=info.st_ctime_ns,
+        size=info.st_size,
+        inode=info.st_ino,
+        device=info.st_dev,
+    )
+
+
+# Keep these rules aligned with the pinned Symphony Scanner. The cache key must
+# change when the Scanner would read different Skill inputs, and no more often.
+_MAX_CACHE_SCAN_DIRECTORIES = 50_000
+_MAX_CACHE_DIRECTORY_ENTRIES = 20_000
+_MAX_CACHE_ENTRYPOINTS = 10_000
+_MAX_CACHE_ASSET_FILES_PER_SKILL = 10_000
+_MAX_CACHE_ASSET_FILES = 100_000
+_EXCLUDED_CACHE_DIRECTORY_NAMES = frozenset(
+    {
+        ".cache",
+        ".git",
+        ".hg",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".svn",
+        ".tox",
+        ".venv",
+        ".ssh",
+        "__pycache__",
+        "cache",
+        "caches",
+        "credential",
+        "credentials",
+        "key",
+        "keys",
+        "node_modules",
+        "private_keys",
+        "secret",
+        "secrets",
+    }
+)
+_SENSITIVE_DIRECTORY_TOKENS = frozenset(
+    {
+        "credential",
+        "credentials",
+        "key",
+        "keys",
+        "password",
+        "passwords",
+        "private",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+    }
+)
+_SENSITIVE_FILE_TOKENS = frozenset(
+    {
+        "credential",
+        "credentials",
+        "key",
+        "keys",
+        "password",
+        "private",
+        "secret",
+        "secrets",
+        "token",
+        "tokens",
+    }
+)
+_KEY_MATERIAL_SUFFIXES = frozenset(
+    {
+        ".der",
+        ".jks",
+        ".key",
+        ".keystore",
+        ".p12",
+        ".pem",
+        ".pfx",
+        ".pkcs12",
+        ".ppk",
+        ".pub",
+    }
+)
+_SENSITIVE_EXACT_FILENAMES = frozenset(
+    {
+        ".netrc",
+        ".npmrc",
+        ".pypirc",
+        "authorized_keys",
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+        "id_rsa",
+    }
+)
+
+
+# Token checks intentionally under-exclude compared with the Scanner. Extra
+# files only cause a cache miss; a false exclusion would hide a real change.
+@lru_cache(maxsize=4096)
+def _cache_name_tokens(name: str) -> frozenset[str]:
+    normalized = "".join(
+        char if char.isalnum() else "_" for char in name.casefold()
+    )
+    return frozenset(token for token in normalized.split("_") if token)
+
+
+def _cache_excludes_directory(name: str) -> bool:
+    lowered = name.casefold()
+    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
+        return True
+    if lowered in _EXCLUDED_CACHE_DIRECTORY_NAMES or lowered.endswith(".cache"):
+        return True
+    return bool(_cache_name_tokens(name) & _SENSITIVE_DIRECTORY_TOKENS)
+
+
+def _cache_excludes_file(name: str) -> bool:
+    lowered = name.casefold()
+    if lowered == ".env" or lowered.startswith(".env.") or lowered == ".envrc":
+        return True
+    if lowered in {".git", "__pycache__", "cache"}:
+        return True
+    stem, suffix = os.path.splitext(lowered)
+    if lowered in _SENSITIVE_EXACT_FILENAMES or suffix in _KEY_MATERIAL_SUFFIXES:
+        return True
+    if lowered.endswith((".pyc", ".pyo")):
+        return True
+    return bool(_cache_name_tokens(stem) & _SENSITIVE_FILE_TOKENS)
+
+
+def _cache_is_link_stat(info: os.stat_result) -> bool:
+    file_attributes = getattr(info, "st_file_attributes", 0)
+    reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    return stat.S_ISLNK(info.st_mode) or bool(file_attributes & reparse_flag)
+
+
+class _MetadataBudget:
+    __slots__ = ("directories", "entrypoints", "files")
+
+    def __init__(self) -> None:
+        self.directories = 0
+        self.entrypoints = 0
+        self.files = 0
+
+
+class _MetadataScanLimitExceeded(RuntimeError):
+    """The metadata walk reached a Scanner resource limit."""
+
+
+def _cache_relative_path(path: str, root: str) -> str:
+    try:
+        return os.path.relpath(path, root).replace(os.sep, "/")
+    except ValueError:
+        return os.path.basename(path)
+
+
+def _read_metadata_entries(
+    directory: str,
+    budget: _MetadataBudget,
+) -> list[tuple[str, str, os.stat_result]]:
+    """List directory entries with the Scanner's limits and ordering."""
+    if budget.directories >= _MAX_CACHE_SCAN_DIRECTORIES:
+        raise _MetadataScanLimitExceeded
+    budget.directories += 1
+    entries: list[tuple[str, str, os.stat_result]] = []
+    with os.scandir(directory) as iterator:
+        for entry in iterator:
+            if len(entries) >= _MAX_CACHE_DIRECTORY_ENTRIES:
+                raise _MetadataScanLimitExceeded
+            try:
+                info = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            entries.append((entry.name, entry.path, info))
+    entries.sort(key=lambda item: (item[0].casefold(), item[0]))
+    return entries
+
+
+def _discover_skill_roots(
+    root: Path,
+    max_depth: int | None,
+    budget: _MetadataBudget,
+) -> list[str]:
+    """Find Skill roots with the Scanner's ``max_depth`` semantics."""
+    root_path = str(root)
+    pending: list[tuple[str, int]] = [(root_path, 0)]
+    roots: set[str] = set()
+    while pending:
+        directory, depth = pending.pop()
+        try:
+            entries = _read_metadata_entries(directory, budget)
+        except OSError:
+            if directory == root_path:
+                raise
+            continue
+        subdirectories: list[str] = []
+        for name, path, info in entries:
+            if _cache_is_link_stat(info):
+                continue
+            if stat.S_ISREG(info.st_mode) and name == "SKILL.md":
+                budget.entrypoints += 1
+                if budget.entrypoints > _MAX_CACHE_ENTRYPOINTS:
+                    raise _MetadataScanLimitExceeded
+                roots.add(os.path.dirname(path))
+                continue
+            if stat.S_ISDIR(info.st_mode) and not _cache_excludes_directory(
+                name
+            ):
+                if max_depth is None or depth < max_depth:
+                    subdirectories.append(path)
+        pending.extend((child, depth + 1) for child in reversed(subdirectories))
+    return sorted(
+        roots,
+        key=lambda path: _cache_relative_path(path, root_path).casefold(),
+    )
+
+
+def _collect_skill_asset_files(
+    skill_root: str,
+    budget: _MetadataBudget,
+) -> tuple[list[tuple[str, os.stat_result]], bool]:
+    """Collect Skill asset metadata. ``max_depth`` does not limit assets."""
+    pending: list[tuple[str, str]] = [(skill_root, "")]
+    files: list[tuple[str, os.stat_result]] = []
+    limited = False
+    while pending:
+        directory, prefix = pending.pop()
+        try:
+            entries = _read_metadata_entries(directory, budget)
+        except OSError:
+            continue
+        subdirectories: list[tuple[str, str]] = []
+        for name, path, info in entries:
+            if _cache_is_link_stat(info):
+                continue
+            relative_path = f"{prefix}/{name}" if prefix else name
+            if stat.S_ISDIR(info.st_mode):
+                if not _cache_excludes_directory(name):
+                    subdirectories.append((path, relative_path))
+                continue
+            if not stat.S_ISREG(info.st_mode) or _cache_excludes_file(name):
+                continue
+            budget.files += 1
+            if budget.files > _MAX_CACHE_ASSET_FILES:
+                raise _MetadataScanLimitExceeded
+            files.append((relative_path, info))
+            if len(files) > _MAX_CACHE_ASSET_FILES_PER_SKILL:
+                limited = True
+                files.sort(key=lambda item: (item[0].casefold(), item[0]))
+                return files, limited
+        pending.extend(reversed(subdirectories))
+    files.sort(key=lambda item: (item[0].casefold(), item[0]))
+    return files, limited
+
+
+def _skills_metadata_digest(root: Path, *, max_depth: int | None) -> str:
+    """Hash Skill asset metadata without reading file contents.
+
+    Entry discovery follows ``max_depth``. Asset collection always walks each
+    discovered Skill recursively, matching ``SkillFolderScanner``.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"skills-metadata-v1\0")
+    try:
+        root_stat = root.lstat()
+    except OSError:
+        digest.update(b"missing")
+        return digest.hexdigest()
+    if _cache_is_link_stat(root_stat) or not stat.S_ISDIR(
+        root_stat.st_mode
+    ):
+        digest.update(b"invalid")
+        return digest.hexdigest()
+
+    budget = _MetadataBudget()
+    root_path = str(root)
+    try:
+        skill_roots = _discover_skill_roots(root, max_depth, budget)
+        for skill_root in skill_roots:
+            digest.update(b"skill\0")
+            digest.update(
+                _cache_relative_path(skill_root, root_path).encode(
+                    "utf-8", "surrogateescape"
+                )
+            )
+            digest.update(b"\0")
+            files, limited = _collect_skill_asset_files(skill_root, budget)
+            if limited:
+                digest.update(b"limited\0")
+            for relative_path, info in files:
+                digest.update(
+                    relative_path.encode("utf-8", "surrogateescape")
+                )
+                digest.update(b"\0")
+                digest.update(
+                    (
+                        f"{info.st_mode}:{info.st_size}:{info.st_mtime_ns}:"
+                        f"{info.st_ctime_ns}:{info.st_ino}:{info.st_dev}"
+                    ).encode("ascii")
+                )
+                digest.update(b"\0")
+    except (_MetadataScanLimitExceeded, OSError):
+        # Force a cache miss so the real Scanner can report its own limit error.
+        return f"unavailable:{os.urandom(8).hex()}"
+    return digest.hexdigest()
+
+
+def _build_runs_digest(graph_dir: Path) -> str:
+    """Hash build run directories and checkpoints used by resume status."""
+    digest = hashlib.sha256()
+    runs_root = graph_dir / BUILD_RUNS_DIRNAME
+    if not runs_root.is_dir():
+        digest.update(b"missing")
+        return digest.hexdigest()
+    try:
+        with os.scandir(runs_root) as entries:
+            ordered = sorted(entries, key=lambda entry: entry.name)
+    except OSError:
+        digest.update(b"unreadable")
+        return digest.hexdigest()
+    for entry in ordered:
+        run_dir = Path(entry.path)
+        digest.update(entry.name.encode("utf-8", "surrogateescape"))
+        digest.update(b"\0")
+        digest.update(repr(_path_stamp(run_dir)).encode("ascii"))
+        digest.update(b"\0")
+        digest.update(
+            repr(_path_stamp(run_dir / "checkpoint.json")).encode("ascii")
+        )
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+# Bound staleness when metadata cannot prove a change. On Unix, ctime detects
+# content edits that restore mtime. On Windows, ctime is creation time.
+_GRAPH_STATUS_CACHE_TTL_SECONDS = 60.0
+
+
+@dataclass(frozen=True)
+class _GraphStatusCacheKey:
+    skills_root: str
+    graph_dir: str
+    max_depth: int | None
+    config_digest: str
+    skills_digest: str
+    graph_dir_stamp: _FileStamp | None
+    pointer_stamp: _FileStamp | None
+    artifact_stamps: tuple[_FileStamp | None, ...]
+    build_runs_digest: str
+
+
+def _graph_status_cache_key(
+    config: Any,
+    skills_root: Path,
+    graph_dir: Path,
+) -> _GraphStatusCacheKey:
+    """Build a cheap identity for everything graph status reads."""
+    fingerprint_config = getattr(config, "fingerprint", None)
+    scan_config = getattr(fingerprint_config, "scan", None)
+    max_depth = getattr(scan_config, "max_depth", None)
+    try:
+        artifact_dir = resolve_graph_artifact_dir(graph_dir)
+    except (OSError, ValueError):
+        artifact_dir = None
+
+    artifact_stamps: tuple[_FileStamp | None, ...] = ()
+    if artifact_dir is not None:
+        artifact_stamps = (
+            _path_stamp(artifact_dir / "graph.json"),
+            _path_stamp(artifact_dir / GRAPH_STATE_FILENAME),
+            _path_stamp(artifact_dir / FINGERPRINT_ARTIFACT_FILENAME),
+        )
+
+    return _GraphStatusCacheKey(
+        skills_root=str(skills_root),
+        graph_dir=str(graph_dir),
+        max_depth=max_depth,
+        config_digest=hashlib.sha256(
+            repr(config).encode("utf-8", "surrogateescape")
+        ).hexdigest(),
+        skills_digest=_skills_metadata_digest(skills_root, max_depth=max_depth),
+        graph_dir_stamp=_path_stamp(graph_dir),
+        pointer_stamp=_path_stamp(graph_dir / CURRENT_POINTER_FILENAME),
+        artifact_stamps=artifact_stamps,
+        build_runs_digest=_build_runs_digest(graph_dir),
+    )
+
+
+_BUILD_LOG_READ_CHUNK_BYTES = 64 * 1024
+
+
+def _tail_lines(path: Path, limit: int) -> list[str]:
+    """Read at most the last ``limit`` lines without loading the whole file."""
+    with path.open("rb") as handle:
+        handle.seek(0, os.SEEK_END)
+        position = handle.tell()
+        chunks: list[bytes] = []
+        newline_count = 0
+        # Keep one extra newline so the first decoded line can be dropped when
+        # the chunk started in the middle of a line.
+        while position > 0 and newline_count <= limit:
+            read_size = min(_BUILD_LOG_READ_CHUNK_BYTES, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+        data = b"".join(reversed(chunks))
+        if position > 0:
+            first_newline = data.find(b"\n")
+            if first_newline >= 0:
+                data = data[first_newline + 1:]
+        return data.decode("utf-8").splitlines()
+
+
+def _compose_graph_status_payload(
+    graph_payload: dict[str, Any],
+    graph_dir: Path,
+) -> dict[str, Any]:
+    """Merge cached graph facts with live build progress."""
+    payload = deepcopy(graph_payload)
+    payload.update(_build_log_payload(graph_dir))
+    _prefer_build_failure_detail(payload)
+    return payload
+
+
 def _build_log_payload(graph_dir: Path | str, *, limit: int = 80) -> dict[str, Any]:
     resolved_graph_dir = Path(graph_dir)
     entries = _read_build_log(resolved_graph_dir, limit=limit)
@@ -1508,12 +2028,12 @@ def _read_build_log(graph_dir: Path, *, limit: int = 80) -> list[dict[str, Any]]
     log_path = graph_dir / "build_log.jsonl"
     if not log_path.is_file():
         return []
+    line_limit = max(1, limit)
     try:
-        lines = log_path.read_text(encoding="utf-8").splitlines()
+        lines = _tail_lines(log_path, line_limit)
     except OSError:
         return []
     entries: list[dict[str, Any]] = []
-    line_limit = max(1, limit)
     for line in lines[-line_limit:]:
         try:
             payload = json.loads(line)

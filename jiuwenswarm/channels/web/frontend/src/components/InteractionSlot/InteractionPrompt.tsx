@@ -37,6 +37,12 @@ const CANCELLED_ANSWER_TEXT = '用户已取消本次问答，未作答。';
 interface InteractionPromptProps {
   pending: AskUserQuestionPayload;
   onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
+  /**
+   * Team sessions expose the legacy in-stream card anchors on this prompt:
+   * the agent channel keeps those anchors on InlineQuestionCard, and team
+   * automation drives the same interaction surface through them.
+   */
+  legacyCardAnchors?: boolean;
 }
 
 interface PageState {
@@ -56,7 +62,7 @@ function emptyPage(): PageState {
   return { selected: [], custom: '', customActive: false };
 }
 
-export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps) {
+export function InteractionPrompt({ pending, onSubmit, legacyCardAnchors = false }: InteractionPromptProps) {
   const { t } = useTranslation();
   const addMessage = useChatStore((s) => s.addMessage);
   const isSwarmflowHuman = pending.source === 'swarmflow_human';
@@ -286,7 +292,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
 
   if (!current) return null;
 
-  return (
+  const prompt = (
     <div className="ix-prompt" role="dialog" aria-label={t('interactionPrompt.title')} data-testid="interaction-slot-ix-prompt">
       <div className="ix-prompt__head" data-testid="interaction-slot-ix-head">
         <div className="ix-prompt__title" data-testid="interaction-slot-ix-title">
@@ -343,7 +349,11 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
                 className={`ix-option${selected ? ' ix-option--selected' : ''}`}
                 onClick={() => toggleOption(value)}
                 disabled={submitting}
-                data-testid="interaction-slot-ix-option"
+                data-testid={
+                  legacyCardAnchors
+                    ? 'chat-panel-inline-question-item-option'
+                    : 'interaction-slot-ix-option'
+                }
                 data-variant={option.label}
               >
                 <span className={`ix-option__mark ix-option__mark--${isMulti ? 'check' : 'radio'}`} />
@@ -441,7 +451,11 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
               className="ix-btn ix-btn--primary"
               onClick={handleNextOrConfirm}
               disabled={submitting || incompleteCustom}
-              data-testid="interaction-slot-ix-confirm-button"
+              data-testid={
+                legacyCardAnchors
+                  ? 'chat-panel-inline-question-submit'
+                  : 'interaction-slot-ix-confirm-button'
+              }
               data-variant={isLast ? 'confirm' : 'next'}
             >
               {isLast ? t('interactionPrompt.confirm') : t('interactionPrompt.nextStep')}
@@ -451,4 +465,8 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
       </div>
     </div>
   );
+
+  return legacyCardAnchors ? (
+    <div data-testid="chat-panel-inline-question-card">{prompt}</div>
+  ) : prompt;
 }

@@ -509,7 +509,16 @@ class RailStateMachineBase(DeepAgentRail):
                 f"under .aet/features/; if none exists, ask the user for a feature "
                 f"name and create the directory)\n\n"
             )
-            advance_hint = "After producing the file, "
+            if next_stage:
+                advance_instruction = (
+                    f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
+                    f"(with stage={next_stage}) to advance to the next stage."
+                )
+            else:
+                advance_instruction = (
+                    f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
+                    f"to advance the flow."
+                )
         else:
             prev_artifact = self._find_previous_stage_artifact(stage)
             review_target = prev_artifact or "<previous-stage-artifact>"
@@ -519,17 +528,25 @@ class RailStateMachineBase(DeepAgentRail):
                 f"(<feature-name> is resolved from the latest-modified subdirectory "
                 f"under .aet/features/)\n\n"
             )
-            advance_hint = "After completing the review, "
-
-        if next_stage:
-            advance_instruction = (
-                f"{advance_hint}call the `{self.ADVANCE_TOOL}` tool "
-                f"(with stage={next_stage}) to advance to the next stage."
-            )
-        else:
-            advance_instruction = (
-                f"{advance_hint}call the `{self.ADVANCE_TOOL}` tool to advance the flow."
-            )
+            # Review stages run the SKILL.md R1->R2->R3->R4 pipeline. The
+            # advance instruction must NOT say "after completing the review,
+            # call sdd_advance" unconditionally — R3's "需要复审" option loops
+            # back to R1 (re-gate) without advancing, and only R4 (End &
+            # Advance) calls sdd_advance. Saying otherwise conflicts with the
+            # SKILL's <condition> block and stalls the flow (#5494).
+            if next_stage:
+                advance_instruction = (
+                    f"Follow the review methodology's R1-R4 pipeline. Only call "
+                    f"`{self.ADVANCE_TOOL}(stage={next_stage})` at the R4 (End & "
+                    f"Advance) step — do NOT call it after R1/R2/R3. If the user "
+                    f"selects \"需要复审\" in R3, loop back to R1 without calling "
+                    f"{self.ADVANCE_TOOL}."
+                )
+            else:
+                advance_instruction = (
+                    f"Follow the review methodology's R1-R4 pipeline. Only call "
+                    f"`{self.ADVANCE_TOOL}` at the R4 (End & Advance) step."
+                )
 
         return (
             f"[{rail_name} Methodology — {stage_label} Stage]\n"

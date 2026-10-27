@@ -17,8 +17,8 @@ from jiuwenswarm.server.runtime.group_service import (
     read_group,
 )
 from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
-from jiuwenswarm.common.protocol_ids import validate_session_id
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.protocol_ids import validate_session_id
+from gateway.common.mode_matrix import is_team_mode
 
 logger = logging.getLogger(__name__)
 

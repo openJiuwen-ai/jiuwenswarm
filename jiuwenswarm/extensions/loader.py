@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.extensions.sdk.application_plugin import (
+from gateway.extensions.sdk.application_plugin import (
     ApplicationPluginExtension,
     ManifestApplicationPlugin,
 )

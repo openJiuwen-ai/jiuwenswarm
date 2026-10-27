@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from jiuwenswarm.gateway.channel_manager.web import transport_stall_guard as tsg
+from gateway.channel_manager.web import transport_stall_guard as tsg
 
 
 class _FakeTimer:

@@ -164,18 +164,17 @@ def load_trajectory_store_settings(
 def is_trajectory_diagnosis_enabled(config: Mapping[str, Any] | None = None) -> bool:
     """Return whether the trajectory diagnosis feature is switched on.
 
-    The switch lives next to ``trajectory_ui.enabled`` and is independent of
-    the trajectory view: it only feeds ``TrajectoryStoreSettings.enabled`` so
-    the trajectory data plane records the data diagnosis reads. Toggling it
-    while the trajectory view is on leaves the resolved store settings
-    unchanged, so the writer is not restarted.
+    This is the user-facing experimental switch: it drives the diagnosis UI
+    and (via ``update_trajectory_diagnosis_in_config``) the data-plane
+    ``trajectory_ui.enabled`` flag. The standalone chat/trajectory tabs were
+    removed. ``load_trajectory_store_settings`` still ORs the two keys so older
+    configs that only set ``enabled`` keep recording.
 
     Args:
         config: Optional complete JiuwenSwarm configuration mapping.
 
     Returns:
-        ``True`` when the diagnosis switch is on, whatever the trajectory view
-        switch says.
+        ``True`` when the diagnosis switch is on.
     """
     source = config if config is not None else get_config()
     raw_section = source.get("trajectory_ui", {}) if isinstance(source, Mapping) else {}

@@ -136,6 +136,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
     ? mapLocalPackageImportError(error, t, {
         readme: 'connectorMarket.upload.missingReadme',
         manifest: 'connectorMarket.upload.missingManifest',
+        skillPathNotRelative: 'connectorMarket.upload.skillPathNotRelative',
       })
     : null;
 

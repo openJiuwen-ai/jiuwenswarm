@@ -17,7 +17,7 @@ from typing import Any
 from datetime import datetime, timezone
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_CODE_NORMAL,
     NEW_AGENT_WORK_NORMAL,
     deprecate_mode,
@@ -231,6 +231,23 @@ def _build_project_lookup() -> tuple[
         return dir_to_projects, id_to_work_mode
     except Exception:
         return {}, {}
+
+
+def _repair_session_project_dir(metadata: dict[str, Any]) -> None:
+    """Keep an explicitly bound session's directory consistent with its project ID."""
+    from gateway.common.work_mode import is_default_project_id
+    from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+
+    project_id = str(metadata.get("project_id") or "").strip()
+    if not project_id or "project_dir" not in metadata:
+        return
+    project_dir = ""
+    if not is_default_project_id(project_id):
+        project = get_project_by_id(project_id, cache_bust=True)
+        if project is None:
+            return
+        project_dir = project.project_dir
+    metadata["project_dir"] = project_dir
 
 
 def _apply_metadata_defaults_with_inference(
@@ -743,6 +760,10 @@ def _write_metadata_unfenced(
         if effective_preserve_rebound and current is not None:
             to_write = _merge_rebound_fields(current, to_write)
 
+        # Recheck after merging so partial writes follow the current binding.
+        to_write = to_write.copy()
+        _repair_session_project_dir(to_write)
+
         # Atomic write: write a temp file then rename, so that truncation by
         # write_text can never expose empty content to a concurrent reader
         # (precisely how session identity was being lost).
@@ -944,6 +965,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     顶部完成,与异步路径行为一致,避免 ``init_session_metadata`` 污染缓存。
     """
     global _WRITE_REVISION
+    _repair_session_project_dir(metadata)
     # 立即更新缓存,确保后续读取能看到最新状态
     # 入队前捕获 rebind 版本号: worker 处理时据此判断本快照是否早于一次重绑
     from jiuwenswarm.server.runtime.session import lifecycle as lc
@@ -1559,6 +1581,13 @@ def sync_session_request_metadata(
 
     _enqueue_write(session_id, metadata, preserve_pin_fields=True,
                    merge_fields=_changed_fields(before, metadata))
+    # Execution fallback may come from legacy metadata rather than the request.
+    if not is_agentos_workspace_fallback(
+        channel_id=channel_id,
+        project_dir=effective_project_dir,
+        project_id=str(metadata.get("project_id") or ""),
+    ):
+        effective_project_dir = str(metadata.get("project_dir") or "").strip() or None
     return effective_project_dir
 
 
@@ -1774,11 +1803,17 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
             sessions_dir = get_agent_sessions_dir()
             pinned_list: list[tuple[str, int]] = []
             if sessions_dir.is_dir():
+                from jiuwenswarm.server.runtime.session import lifecycle as lc
                 for session_dir in sessions_dir.iterdir():
                     if not session_dir.is_dir():
                         continue
                     sid = session_dir.name
                     if sid.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
+                        continue
+                    state = lc.state("session", sid)
+                    if lc.logically_deleted(state) or lc.logically_archived(state):
+                        # Accepted but not yet moved/deleted: it already left
+                        # the active pin ordering.
                         continue
                     scanned += 1
                     m = meta if sid == session_id else _read_metadata(sid)
@@ -2178,6 +2213,11 @@ def get_all_sessions_metadata(
         if session_id.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
             continue
         state = lc.state("session", session_id)
+        # Lifecycle state is authoritative for visibility: archive and delete
+        # are accepted before the directory moves or disappears, so the active
+        # list must hide the Session while cleanup runs in the background.
+        if lc.logically_deleted(state) or lc.logically_archived(state):
+            continue
         archived = lc.session_paths(session_id)[1].exists()
         if archived:
             continue
@@ -2317,6 +2357,10 @@ def _collect_all_sessions_metadata(
             continue
         state = lc.state("session", sid)
         if lc.session_paths(sid, sessions_root=sessions_dir)[1].exists():
+            continue
+        # Lifecycle state is authoritative for visibility: archive and delete
+        # are accepted before the directory moves or disappears.
+        if lc.logically_deleted(state) or lc.logically_archived(state):
             continue
         if user_id:
             # 按用户家目录读时,绕过走全局单例的 _read_metadata,直接读该目录下文件,

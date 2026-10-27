@@ -5,18 +5,18 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from openjiuwen_protocol.message import EventType, Message
 
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
     _register_web_handlers,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+from gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
     _MethodHandlerInvocation,
 )
-from jiuwenswarm.common.schema.message import EventType, Message
 
 
 class _FakeRequestHeaders:
@@ -338,7 +338,7 @@ async def test_openai_account_unexpected_error_uses_method_dispatcher(monkeypatc
         })
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._openai_account_auth_status_payload",
+        "gateway.channel_manager.web.app_web_handlers._openai_account_auth_status_payload",
         raise_unexpected_error,
     )
     monkeypatch.setattr(channel, "send_response", capture_response)

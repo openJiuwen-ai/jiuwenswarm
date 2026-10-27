@@ -126,6 +126,8 @@ export interface JiuwenElectronDesktopApi {
     showDownloadBubble: (anchorRect: ElectronBubbleAnchorRect | null) => Promise<boolean>;
     hideDownloadBubble: () => Promise<boolean>;
     onDownloadBubbleChanged: (callback: (visible: boolean) => void) => () => void;
+    /** Optional for older shells; hides pages without closing their MCP bindings. */
+    setHeadless?: (headless: boolean) => Promise<boolean>;
     getState: (sessionId: string) => Promise<ElectronBrowserState>;
     listPanels: (sessionId: string) => Promise<ElectronBrowserState[]>;
     onPanelsChanged: (callback: (panels: ElectronBrowserState[]) => void) => () => void;

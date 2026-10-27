@@ -44,6 +44,7 @@ import {
   GoalRecord,
   GoalAction,
   Message,
+  ChatInputProvenance,
 } from '../types';
 import {
   ensureSessionRuntimes,
@@ -127,7 +128,8 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
-import { expertTeamId, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
 import {
   normalizeSubagentActivityEvent,
@@ -727,7 +729,13 @@ interface UseWebSocketReturn {
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   discardMedia: (sessionId: string, path: string) => Promise<{ deleted?: boolean }>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => Promise<boolean>;
+  sendMessage: (
+    content: string,
+    sessionId: string,
+    mediaItems?: MediaItem[],
+    options?: ChatSendOptions,
+    provenance?: ChatInputProvenance,
+  ) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -1942,7 +1950,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+    async (
+      content: string,
+      sessionId: string,
+      mediaItems: MediaItem[] = [],
+      options?: ChatSendOptions,
+      provenance: ChatInputProvenance = {
+        input_origin: 'manual_free_text',
+        assistance_origin: 'none',
+      },
+    ): Promise<boolean> => {
       if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
@@ -1980,6 +1997,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
+        const queuedTask = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
+        if (queuedTask && ['queued', 'failed'].includes(queuedTask.status) && queuedTask.mediaItems?.length) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement',
+            success: false,
+            message: t('network.supplementAttachmentsUnsupported'),
+          });
+          return false;
+        }
         // The button supplies input intent; Runtime decides whether it can steer the target.
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
         await sendQueuedTaskInput(sessionId, taskId, request, {
@@ -2201,17 +2227,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // plugin_names/mcp 的组装+字段语义说明见 utils/enabledExtensions.ts 的
           // buildExtensionSendPayload 头注释（未恢复时省略，恢复后发送完整装备快照）。
           ...extensionPayload,
+          input_origin: provenance.input_origin,
+          assistance_origin: provenance.assistance_origin,
+          ...(provenance.topic_starter ? { topic_starter: provenance.topic_starter } : {}),
+          ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
           ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
-            : {}),
-          // 会话级 worktree 开关：仅用户显式拨过（非 undefined）才发送，
-          // 后端按 params > 会话持久化 > 团队模板配置 回退。
-          ...(sessionRt?.swarmflowWorktree !== undefined
-            ? { swarmflow_worktree: sessionRt.swarmflowWorktree }
             : {}),
           // 会话级团队调度模式：新建会话时由欢迎页开关落成显式值，恢复会话时从 metadata 读回；
           // 未设置时不发送，后端按 会话持久化 > 团队配置 回退。
@@ -2420,11 +2445,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return (await sendExpertMessage(newInput, sessionId)) ?? false;
         }
         const result = await request<{ success?: boolean }>('chat.interrupt', {
-          session_id: sessionId, target_team_id: expertId, mode: 'team', intent,
+          session_id: sessionId,
+          target_team_id: expertId,
+          mode: 'team',
+          // The team composer stops via pause; direct expert streams only support cancel.
+          intent: intent === 'pause' ? 'cancel' : intent,
         });
-        if (result?.success) {
-          useChatStore.getState().setProcessing(`${sessionId}::${expertId}`, false);
-        }
         return result?.success === true;
       }
       if (intent === 'supplement' && newInput) {
@@ -2448,6 +2474,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...getSessionWorkContext(sessionId),
         };
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+        const ownerStopTarget = currentMode === 'team' && intent === 'cancel'
+          ? organizationOwnerStopTarget(sessionId) : null;
+        if (ownerStopTarget) {
+          params.intent = 'cancel';
+          params.target_team_id = ownerStopTarget;
+          params.organization_stop = true;
+        }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
           // Plan 打开时补全三段命名 `agent.{work|code}.plan` / `team.{work|code}.plan`，
@@ -4557,6 +4590,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
+        // Organization background rounds own their lifecycle in useOrganizationEvents.
+        // They must not close a concurrent foreground Owner request.
+        if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
+          payload.source !== 'org_expert_direct' && payload.team_id) return;
         // A supplemental request never owns the original execution's lifecycle.
         if (handleTaskInputReceipt('chat.processing_status', payload)) return;
         const sessionId = resolveEventSessionId(payload);
@@ -4854,11 +4891,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           closeHeartbeatSessionState(sessionId, hbChatErrorAutomation.run_id);
           return;
         }
+        // 会话预算耗尽提示按会话去重：后端对同一耗尽可能多次广播（终态事件
+        // 重放、新 run 撞同一干账本），重复到达时上面的思考态/历史加载态清理
+        // 已完成，这里直接返回，不再追加提示或触发后续错误通知。
+        const isSessionBudgetExhausted = payload.code === 'SWARMFLOW_SESSION_BUDGET_EXHAUSTED';
+        const sessionBudgetErrorId = `session-budget-exhausted-${sessionId}`;
+        if (
+          isSessionBudgetExhausted &&
+          useChatStore.getState().getRuntime(sessionId)?.messages.some((message) => message.id === sessionBudgetErrorId)
+        ) {
+          return;
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
         useChatStore.getState().addMessage(sessionId, {
-          id: prefixedMessageId('error-'),
+          id: isSessionBudgetExhausted ? sessionBudgetErrorId : prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),

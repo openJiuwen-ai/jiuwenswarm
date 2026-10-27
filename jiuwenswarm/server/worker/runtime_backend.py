@@ -198,6 +198,15 @@ def _prepare_worker_configuration() -> None:
     from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
 
     migrate_legacy_model_selections()
+    # Retire the legacy topic switch key and move the consent state out of config.yaml. Idempotent,
+    # and deliberately outside the workspace-ready guard above so every process consults them.
+    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+        migrate_legacy_recommendation_switches,
+        migrate_recommendation_consent_state,
+    )
+
+    migrate_legacy_recommendation_switches()
+    migrate_recommendation_consent_state()
     _log_preparation_stage("model_migrations", began)
 
 

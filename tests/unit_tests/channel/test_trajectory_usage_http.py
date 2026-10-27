@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.web.trajectory_http import TrajectoryHttpService
+from gateway.channel_manager.web.trajectory_http import TrajectoryHttpService
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
 
 

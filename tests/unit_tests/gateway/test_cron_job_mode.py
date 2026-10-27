@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     NEW_AGENT_CODE_NORMAL,
@@ -13,7 +13,7 @@ from jiuwenswarm.common.mode_matrix import (
     NEW_TEAM_CODE_PLAN,
     deprecate_mode,
 )
-from jiuwenswarm.gateway.cron.models import (
+from gateway.cron.models import (
     CRON_DEFAULT_TIMEOUT_SECONDS,
     CRON_JOB_DEFAULT_MODE,
     CRON_JOB_MODES,
@@ -288,7 +288,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.store import CronJobStore
 
 
 def _write_cron_jobs(path: Path, jobs: list[dict]) -> None:
@@ -455,7 +455,7 @@ class TestCronJobLazyMigration:
         )
 
         with patch(
-            "jiuwenswarm.gateway.runtime.cron.cron_job_mutations.logger.warning"
+            "gateway.runtime.cron.cron_job_mutations.logger.warning"
         ) as warning_mock:
             jobs = await CronJobStore(path=store_path).list_jobs()
 

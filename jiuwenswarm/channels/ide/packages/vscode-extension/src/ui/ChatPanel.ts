@@ -240,8 +240,13 @@ export class ChatPanel implements vscode.Disposable {
       case 'switch_model': {
         const model = (msg.model as string) || null;
         this.activeModel = model;
-        this.debug(`ACTION→ switch_model ${model}`);
+        this.debug(`ACTION�+' switch_model ${model}`);
         this.postToWebview({ type: 'model_changed', model });
+        break;
+      }
+
+      case 'refresh_models': {
+        void this.refreshModels();
         break;
       }
 
@@ -338,6 +343,12 @@ export class ChatPanel implements vscode.Disposable {
       // Auto-open the Swarm Map panel when the first agent spawns
       if (snap.lanes.length === 1 && snap.lanes[0].status !== 'SHUTDOWN') {
         this.swarmMapPanel?.show();
+      }
+      // Leader/peer messages addressed to the user are chat content too, not
+      // just swarm-map activity. Forward them so the transcript is not empty.
+      const teamText = this.extractUserFacingTeamMessage(rawTeamEvent);
+      if (teamText) {
+        this.postToWebview({ type: 'team_message', content: teamText });
       }
       return;
     }
@@ -473,6 +484,29 @@ export class ChatPanel implements vscode.Disposable {
     this.debug(`CONV  → event_type=${et} request_id=${converted.request_id}`);
     this.postToWebview({ type: 'jiuwen_event', event: converted });
     this.trackTokenUsage(converted);
+  }
+
+  /**
+   * Returns the text of a team event when the message is addressed to the user
+   * (leader-to-user, or a p2p message whose target is `user`), otherwise null.
+   * Mirrors the WebUI's `teamEventUtils` predicate so both clients show the
+   * same leader feedback in the transcript.
+   */
+  private extractUserFacingTeamMessage(rawTeamEvent: string): string | null {
+    try {
+      const parsed = JSON.parse(rawTeamEvent) as Record<string, unknown>;
+      const event = (parsed.event as Record<string, unknown> | undefined) || parsed;
+      const content = typeof event.content === 'string' ? event.content : '';
+      if (!content.trim()) return null;
+      const fromMember = typeof event.from_member === 'string' ? event.from_member : '';
+      const toMember = typeof event.to_member === 'string' ? event.to_member : '';
+      const eventType = typeof event.type === 'string' ? event.type : '';
+      const toUser = fromMember === 'team_leader'
+        || (eventType === 'team.message.p2p' && toMember === 'user');
+      return toUser ? content : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -757,6 +791,25 @@ export class ChatPanel implements vscode.Disposable {
     } catch (e) {
       this.debug(`delete_session failed: ${e}`);
       this.postToWebview({ type: 'sessions_error', message: String(e) });
+    }
+  }
+
+  private async refreshModels(): Promise<void> {
+    if (!this.session.sessionId || !this.ws.isConnected()) return;
+    try {
+      const { models, activeModel } = await this.session.listModels();
+      const modelList = models.map((m) => ({
+        model_name: (m.model_name as string) || '',
+        alias: (m.alias as string) || '',
+        model_provider: (m.model_provider as string) || '',
+      }));
+      this.postToWebview({
+        type: 'models_updated',
+        models: modelList,
+        activeModel: activeModel || undefined,
+      });
+    } catch {
+      this.debug('models.list refresh failed');
     }
   }
 

@@ -158,8 +158,41 @@ def _inject_sdk_creds_and_root(
             if isinstance(params, dict) and not params.get("root"):
                 from jiuwenswarm.common.utils import get_user_workspace_dir
 
-                params["root"] = str(Path(get_user_workspace_dir()) / "agent" / "memory-docs")
+                params["root"] = str(Path(get_user_workspace_dir()) / "agent" / "workspace")
     return cfg
+
+
+def _build_security_provider(org: str, user: str) -> Any:
+    """进程内直连（sdk）模式的可信身份来源（mem2.0 P1-2 角色感知授权）。
+
+    mem2.0 起身份不由业务 scope 自述——provider 只声明「要操作哪个 scope」，
+    不能声明「我是谁」。进程内直连没有网络认证层，身份由本装配层（composition
+    root）显式产出：actor 用 user 单主体（org=scope_id、user=user_id），
+    ``role=USER`` 保留 org 硬边界；agent/session 维留空，在默认 ``USER_AGENT``
+    主体路径下覆盖该 user 名下任意 agent（provider 的 ``bound_scope`` 把 target
+    映射成 ``Scope(org=scope_id, user=user_id, agent=agent_id, session=session_id)``，
+    与 actor 的 org/user 精确对齐）。
+
+    安全类型走函数内 import——与文件头部约定的 lazy import 语义一致：缺包
+    只影响 sdk 装配，不影响模块加载。
+    """
+    from datetime import UTC, datetime
+
+    from jiuwen_memory.api import Scope, Surface
+    from jiuwen_memory.common.security import new_request_context
+    from jiuwen_memory.common.security.types import AuthContext, Role
+
+    context = new_request_context(
+        AuthContext(
+            actor=Scope(org=org, user=user),
+            role=Role.USER,
+            credential_type="internal",
+            auth_method="internal",
+            authenticated_at=datetime.now(UTC),
+        ),
+        surface=Surface.INTERNAL,
+    )
+    return lambda: context
 
 
 def build_jiuwen_memory_rail(
@@ -205,6 +238,10 @@ def build_jiuwen_memory_rail(
             #   1. config.yaml 内联的 sdk 两层命名空间 dict（凭证注入 + root 默认后直传）
             #   2. provider 内置 agent 场景默认装配（_agent_default_config()，serve-doc 的代码化副本）
             # http-only 字段（base_url/api_key/identity_*）忽略。
+            # mem2.0 进程内直连需注入可信身份（fail-closed）：缺 security_provider
+            # 时 provider.is_available() 为 False，rail 静默降级（memory 停用）。
+            # 身份由本装配层产出（composition root），不从业务 user_id/scope_id 自述。
+            security_provider = _build_security_provider(scope_id, user_id)
             inline = _custom_sdk_config_dict(j)
             if inline:
                 final_dict = _inject_sdk_creds_and_root(inline, config)
@@ -213,6 +250,7 @@ def build_jiuwen_memory_rail(
                     user_id=user_id,
                     agent_id=agent_id,
                     space=str(j.get("space") or ""),
+                    security_provider=security_provider,
                 )
                 logger.info(
                     "[JiuwenRailBuilder] using inline kernel config dict from config.yaml"
@@ -223,6 +261,7 @@ def build_jiuwen_memory_rail(
                     user_id=user_id,
                     agent_id=agent_id,
                     space=str(j.get("space") or ""),
+                    security_provider=security_provider,
                 )
                 config_desc = "provider-builtin-agent-default"
         else:

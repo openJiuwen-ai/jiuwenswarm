@@ -8,6 +8,9 @@ from contextvars import ContextVar
 from copy import deepcopy
 from typing import Any
 
+from jiuwenswarm.common.permission_tools import normalize_permission_tool_name
+from jiuwenswarm.runtime.run_context import CURRENT_RUN_CONTEXT
+
 
 RUN_PERMISSIONS: ContextVar[dict[str, str] | None] = ContextVar(
     "jiuwenswarm_run_permissions", default=None
@@ -18,6 +21,16 @@ def overlay_run_permissions(config: dict[str, Any]) -> dict[str, Any]:
     """Apply per-tool choices while retaining all installed safety guards."""
 
     levels = RUN_PERMISSIONS.get()
+    if levels is None:
+        context = CURRENT_RUN_CONTEXT.get()
+        if context is not None and context.tool_permissions is not None:
+            # Runtime workers can predate the request's RUN_PERMISSIONS binding.
+            levels = {}
+            for name, level in context.tool_permissions:
+                canonical = normalize_permission_tool_name(name)
+                if not canonical or canonical in levels:
+                    raise ValueError("Run permission tool names are ambiguous.")
+                levels[canonical] = level
     if not levels:
         return config
     result = deepcopy(config)

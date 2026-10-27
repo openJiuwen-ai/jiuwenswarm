@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from jiuwenswarm.common.cleanup import (
+from gateway.cleanup import (
     cleanup_old_sessions,
     cleanup_orphan_file_ops,
 )
@@ -26,8 +26,8 @@ class TestCleanup:
         old_time = time.time() - 999 * 86400
         os.utime(stale, (old_time, old_time))
 
-        monkeypatch.setattr("jiuwenswarm.common.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
-        monkeypatch.setattr("jiuwenswarm.common.cleanup._get_cleanup_period_days", lambda: 30)
+        monkeypatch.setattr("gateway.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
+        monkeypatch.setattr("gateway.cleanup._get_cleanup_period_days", lambda: 30)
 
         result = cleanup_old_sessions()
         assert result["removed"] >= 1
@@ -44,9 +44,9 @@ class TestCleanup:
         fop = hist_dir / "file_ops_jiuwenswarm_dead_session.json"
         fop.write_text("{}", encoding="utf-8")
 
-        monkeypatch.setattr("jiuwenswarm.common.cleanup.get_agent_workspace_dir", lambda: tmp_path / "agent-ws")
-        monkeypatch.setattr("jiuwenswarm.common.cleanup.get_user_workspace_dir", lambda: tmp_path / "user-ws")
-        monkeypatch.setattr("jiuwenswarm.common.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
+        monkeypatch.setattr("gateway.cleanup.get_agent_workspace_dir", lambda: tmp_path / "agent-ws")
+        monkeypatch.setattr("gateway.cleanup.get_user_workspace_dir", lambda: tmp_path / "user-ws")
+        monkeypatch.setattr("gateway.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
 
         result = cleanup_orphan_file_ops()
         assert result["removed"] >= 1

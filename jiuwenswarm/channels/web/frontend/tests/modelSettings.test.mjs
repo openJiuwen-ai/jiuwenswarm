@@ -684,6 +684,9 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /activeTab === 'models'/);
   assert.match(definition, /id: 'models', labelKey: 'settingsPanel\.models\.modelsTab'/);
   assert.match(definition, /id: 'groups', labelKey: 'settingsPanel\.models\.modelGroups'/);
+  assert.match(definition, /id: 'jev', labelKey: 'settingsPanel\.models\.jevTab'/);
+  assert.match(page, /activeTab === 'jev'/);
+  assert.match(page, /<JevSettings disabled=\{disabled\}/);
   assert.match(definition, /defaultModelSettingsTab: ModelSettingsTabId = 'models'/);
   assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(defaultTab\)/);
   assert.match(tabLayout, /items=\{tabs\.map\(\(tab\) => \(\{ value: tab\.id, label: t\(tab\.labelKey\) \}\)\)\}/);

@@ -217,7 +217,7 @@ def _login(store, ttl_s: float, user_id: str = "openid-1"):
 
 
 def test_gateway_refreshes_ahead_of_its_own_threshold(gateway_auth):
-    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+    from gateway.auth.passthrough import refreshed_credential_for_ref
 
     store, flow = gateway_auth
     session = _login(store, ttl_s=10 * 60)
@@ -227,14 +227,14 @@ def test_gateway_refreshes_ahead_of_its_own_threshold(gateway_auth):
 
 
 def test_gateway_revokes_when_the_session_is_gone(gateway_auth):
-    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+    from gateway.auth.passthrough import refreshed_credential_for_ref
 
     ref = credential_ref_for_user("openid-logged-out")
     assert refreshed_credential_for_ref(ref) == {"credential_ref": ref, "revoked": True}
 
 
 def test_gateway_revokes_when_expired_and_refresh_fails(gateway_auth):
-    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+    from gateway.auth.passthrough import refreshed_credential_for_ref
 
     store, flow = gateway_auth
     flow.result = None
@@ -244,7 +244,7 @@ def test_gateway_revokes_when_expired_and_refresh_fails(gateway_auth):
 
 
 def test_gateway_keeps_the_old_token_when_refresh_fails_but_it_is_still_valid(gateway_auth):
-    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+    from gateway.auth.passthrough import refreshed_credential_for_ref
 
     store, flow = gateway_auth
     flow.result = None
@@ -254,7 +254,7 @@ def test_gateway_keeps_the_old_token_when_refresh_fails_but_it_is_still_valid(ga
 
 
 def test_gateway_picks_the_right_users_session(gateway_auth):
-    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+    from gateway.auth.passthrough import refreshed_credential_for_ref
 
     store, _flow = gateway_auth
     _login(store, ttl_s=3600, user_id="openid-alice")
@@ -265,7 +265,7 @@ def test_gateway_picks_the_right_users_session(gateway_auth):
 
 
 def test_gateway_finds_the_account_after_it_logged_in_again(gateway_auth):
-    from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+    from gateway.auth.passthrough import refreshed_credential_for_ref
 
     store, _flow = gateway_auth
     first = _login(store, ttl_s=3600, user_id="openid-1")

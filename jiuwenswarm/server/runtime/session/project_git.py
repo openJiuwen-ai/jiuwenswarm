@@ -200,7 +200,7 @@ def resolve_git_project(
         ``(project, error_message, error_code)``: 成功时后两项为 ``None``;
         失败时 project 为 ``None``,调用方应直接 ``send_response`` 返回错误。
     """
-    from jiuwenswarm.common.work_mode import is_default_project_id
+    from gateway.common.work_mode import is_default_project_id
     if not project_id:
         return None, "project_id is required", "BAD_REQUEST"
     if is_default_project_id(project_id):
