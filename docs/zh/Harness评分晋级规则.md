@@ -52,3 +52,57 @@
 
 本配套提交固定用于两组实验。agent-core 第一笔提交只改变连续评分与晋级；第二笔才加入 Judge 基线产物和评分对照。两次运行使用相同数据、模型、rubric 和预算，分别创建新任务。
 
+## 诊断不可用时的继续规则
+
+单次诊断耗尽反馈后产生 `AnalysisUnavailableError`，记录为诊断不可用，保留
+`analysis_ref.yaml`、逐题错误及原始尝试记录。生成候选前诊断不可用时，消耗
+当前尝试，按原有限额继续；没有可用诊断就不生成修改。候选评估后的失败诊断
+不可用时，保留原评分与拒绝结果，回到正式父 Harness，继续后续尝试或其他题。
+
+报告单列 `analysis_unavailable_count` 和 `analysis_failures`，不会把诊断失败
+当成“没有问题”，也不会因此放宽评分或晋级要求。旧 epoch 流程跳过该诊断批次，
+继续之后的批次。
+
+## 候选注册与修复
+
+Prompt 注册的 `file` 使用包根目录相对路径，例如
+`prompt_sections/files/foo.md`；Skill 的 `dir` 指向目录，例如 `skills/foo`。
+Action 和 Repair 共用路径归一与冲突检查。等价注册合并；同名但文件、priority
+或其他配置冲突时，反馈具体条目，由 Agent 明确修复，保留无关注册。
+缺失、歧义、绝对路径和包外引用不靠猜测补齐。
+
+工程校验检查主配置与 sidecar 合并后的有效 Prompt 绑定，提前发现重复名称和
+宿主 identity 冲突。确定性修正后仍用同一校验决定 Repair 是否成功，反馈次数
+和无进展上限保持原设置。
+
+候选生成失败单独记录 `candidate_generation_failed`，附原阶段、错误和验证/修复
+产物路径；规划拒绝及正常跳过保留各自原因。生成失败不进入有效候选缓存。
+只有成功生成且内容与父包相同，才记录 `candidate_content_unchanged`。
+
+## 执行模型采样
+
+新任务的执行模型配置 `models/evaluation.yaml` 固定
+`model_request_config.temperature: 0.0`。基线、目标题评估和全量复评共用
+此配置，配置指纹包含该值。已有任务保留原配置快照；服务重启后创建的新任务
+使用此设置。降低采样随机性不保证执行完全一致。
+
+## 规划反馈上限
+
+Action Planner 单独使用最多 10 次输出尝试（含首次），配置参数为
+`training_options.action_planning_max_attempts`，下发到引擎的
+`member_optimizer.action_planning_max_attempts`。解析、schema 与语义校验共用
+同一个预算，内外层不重复叠加计数。相同错误和相同输出连续重复时，仍按
+`max_stagnant_attempts` 提前停止。后续做控制变量比较时，两组都应统一这项设置。
+
+规划反馈耗尽后，记录 `planning_rejected` 并保留原 Harness，继续后续流程；
+JSON、schema 和计划语义校验都使用明确的拒绝异常类型，避免因错误文案变化
+导致整个任务退出。实际执行或配置异常仍按错误上报。
+
+每个 Action 的问题归属由 `attributed_issue_ids` 和依赖关系校验，仍要求一次
+只归属一个诊断问题。说明文字可以对比或明确排除其他问题，提及其他 issue ID
+不会被当作越界修改。
+
+优化 Agent 不再在包目录生成个人工作区模板，防止 `IDENTITY.md`、`SOUL.md`
+被作为 Harness 插件加载。显式声明的 identity/soul 包文件修改仍可执行。
+代码修改后需同时重启服务前台和常驻 Runtime Worker，已有进程不会自动加载新预算。
+

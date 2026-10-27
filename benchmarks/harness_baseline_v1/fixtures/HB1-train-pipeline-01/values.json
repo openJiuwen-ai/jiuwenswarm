@@ -1,0 +1,9 @@
+{
+  "job_id": "batch-11",
+  "amounts_minor": [
+    26,
+    49,
+    18
+  ],
+  "required_scale": 3
+}

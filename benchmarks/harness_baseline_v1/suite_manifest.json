@@ -1,0 +1,17 @@
+{
+  "version": "harness-baseline-v1.0",
+  "splits": {
+    "train": 12,
+    "holdout": 6,
+    "controls": 6
+  },
+  "model_calibration": "not_run",
+  "families": [
+    "delivery",
+    "pipeline",
+    "oracle",
+    "regression",
+    "schema",
+    "logs"
+  ]
+}

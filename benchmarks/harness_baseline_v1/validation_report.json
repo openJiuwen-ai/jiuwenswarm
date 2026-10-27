@@ -1,0 +1,21 @@
+{
+  "status": "passed",
+  "model_calls": 0,
+  "real_solver_baseline": "not_run",
+  "case_count": 24,
+  "splits": {
+    "train": 12,
+    "holdout": 6,
+    "controls": 6
+  },
+  "deterministic_contract_checks": 160,
+  "native_adapter_check": "serial_and_parallel_with_fake_backend",
+  "cli_validation": [
+    "train",
+    "holdout",
+    "controls"
+  ],
+  "baseline_package": "valid",
+  "run_input_and_mh_isolation": "valid",
+  "frontend_custom_verifier_integration": "not_implemented"
+}

@@ -912,6 +912,25 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
             "single-harness optimization requires one candidate and no improver evolution policy"
         )
 
+    solver_max_iterations = value("solver_max_iterations")
+    if isinstance(solver_max_iterations, (bool, float)):
+        raise RsiBadRequest("solver_max_iterations 必须是正整数")
+    solver_iterations = _positive_int(solver_max_iterations, default=300, field="solver_max_iterations")
+    hard_limit_raw = value("solver_max_iterations_hard_limit")
+    if isinstance(hard_limit_raw, (bool, float)):
+        raise RsiBadRequest("solver_max_iterations_hard_limit 必须是正整数")
+    hard_limit = _positive_int(
+        hard_limit_raw, default=max(300, solver_iterations), field="solver_max_iterations_hard_limit"
+    )
+    if hard_limit < solver_iterations:
+        raise RsiBadRequest("solver_max_iterations_hard_limit 不能小于初始迭代预算")
+    on_max_iterations = str(value("solver_on_max_iterations", "error"))
+    if on_max_iterations not in {"error", "return_observations"}:
+        raise RsiBadRequest("solver_on_max_iterations 必须是 error 或 return_observations；不追加收尾模型调用")
+    for name in ("output_repair_max_attempts", "output_repair_max_stagnant_attempts", "action_planning_max_attempts"):
+        if isinstance(value(name), (bool, float)):
+            raise RsiBadRequest(f"{name} 必须是正整数")
+
     return {
         "domain": domain_raw,
         "min_improvement": float(margin),
@@ -920,6 +939,18 @@ def _harness_profile_options(params: Mapping[str, Any]) -> dict[str, Any]:
         "execution_mode": execution_mode,
         "evaluation_method": evaluation_method,
         "max_epochs": _positive_int(value("max_epochs"), default=1, field="max_epochs"),
+        "solver_max_iterations": solver_iterations,
+        "solver_max_iterations_hard_limit": hard_limit,
+        "solver_on_max_iterations": on_max_iterations,
+        "output_repair_max_attempts": _positive_int(
+            value("output_repair_max_attempts"), default=3, field="output_repair_max_attempts"
+        ),
+        "action_planning_max_attempts": _positive_int(
+            value("action_planning_max_attempts"), default=10, field="action_planning_max_attempts"
+        ),
+        "output_repair_max_stagnant_attempts": _positive_int(
+            value("output_repair_max_stagnant_attempts"), default=2, field="output_repair_max_stagnant_attempts"
+        ),
         "batch_size": _positive_int(value("batch_size"), default=1, field="batch_size"),
         "max_issue_attempts": _non_negative_int(
             value("max_issue_attempts"), default=8, field="max_issue_attempts"
