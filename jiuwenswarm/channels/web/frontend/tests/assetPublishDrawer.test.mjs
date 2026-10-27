@@ -328,7 +328,7 @@ test('record errors show the Hub guidance instead of the generic fallback', asyn
   assetPublishApi.records = async () => ({ records: [record] });
   await act(async () => openAssetPublish({ kind: 'skill', local_id: 'hub-guidance' }));
   await tick();
-  // #4765: the result card is opened from the history list instead of covering the form on open.
+  // The result card is opened from the history list instead of covering the form on open.
   await act(async () => find('asset-publish-record').click());
   const message = document.querySelector('.asset-publish-result-error').textContent;
   assert.equal(message, '发布新版本时不能修改 Skill 可见性，请沿用现有设置');
@@ -346,7 +346,7 @@ test('curated local text keeps priority for known codes', async () => {
   assetPublishApi.records = async () => ({ records: [record] });
   await act(async () => openAssetPublish({ kind: 'skill', local_id: 'version-clash' }));
   await tick();
-  // #4765: the result card is opened from the history list instead of covering the form on open.
+  // The result card is opened from the history list instead of covering the form on open.
   await act(async () => find('asset-publish-record').click());
   const message = document.querySelector('.asset-publish-result-error').textContent;
   assert.match(message, /This version exists/);
@@ -384,7 +384,7 @@ test('completed records use the same local text, variants, and icon regardless o
     await act(async () => openAssetPublish({ kind: 'plugin', local_id: record.operation_id }));
     await tick();
 
-    // #4765: the drawer opens on the form now, the result card is opened from the history list.
+    // The drawer opens on the form now, the result card is opened from the history list.
     await act(async () => find('asset-publish-record').click());
     assert.equal(find('asset-publish-result').dataset.variant, 'submitted');
     assert.equal(find('asset-publish-result-status').textContent, 'Submitted');
@@ -409,7 +409,7 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   await act(async () => openAssetPublish({ kind: 'plugin', local_id: record.operation_id }));
   await tick();
 
-  // #4765: opening the history record is what shows the result card.
+  // Opening the history record is what shows the result card.
   await act(async () => find('asset-publish-record').click());
   assert.equal(find('asset-publish-result').dataset.variant, 'unconfirmed');
   assert.equal(find('asset-publish-result-status').textContent, 'Submission result unconfirmed');
@@ -417,7 +417,7 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   const status = find('asset-publish-record-status');
   assert.equal(status.textContent, 'Submission result unconfirmed');
   assert.equal(status.dataset.variant, 'unconfirmed');
-  // #4749: an unverified outcome must not lock the asset; the drawer keeps an exit.
+  // An unverified outcome must not lock the asset; the drawer keeps an exit.
   const entry = find('asset-publish-result-edit');
   assert.ok(entry);
   assert.equal(entry.disabled, false);
@@ -440,7 +440,7 @@ test('opening the drawer with history lands on the form and the result card reop
   await act(async () => openAssetPublish({ kind: 'skill', local_id: 'history-only' }));
   await tick();
 
-  // #4765: a stale record must not cover the form; the drawer opens on the editable fields.
+  // A stale record must not cover the form; the drawer opens on the editable fields.
   assert.ok(find('asset-publish-form'));
   assert.equal(!!find('asset-publish-result'), false);
   assert.equal(find('asset-publish-version').value, '1.0.0');
