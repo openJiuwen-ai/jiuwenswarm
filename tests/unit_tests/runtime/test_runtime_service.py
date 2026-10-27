@@ -404,7 +404,11 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
             }],
         },
     )
-    callback = AsyncMock(side_effect=lambda event: received.append(event))
+    def record_ack(event):
+        assert get_current_runtime() is runtime
+        received.append(event)
+
+    callback = AsyncMock(side_effect=record_ack)
     callback_arg = None if case == "no_callback" else callback
     task = asyncio.create_task(
         _collect_events(runtime.stream(answer, trigger_hook=False, on_control_event=callback_arg))
