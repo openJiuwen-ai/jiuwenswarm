@@ -394,7 +394,9 @@ export function signalEvidenceBody(signal: SignalRef | null | undefined, dimensi
 
 export interface ArtifactSuggestionItem {
   id: string;
-  /** The suggestion text of this cause (its suggestions joined); the summary is the defensive fallback. */
+  /** Each suggestion of this cause; the summary stands in when the cause has none. */
+  parts: string[];
+  /** `parts` joined, kept for callers that still want one block. */
   text: string;
   dimension: string;
   summary: string;
@@ -402,13 +404,29 @@ export interface ArtifactSuggestionItem {
   signal?: SignalRef | null;
 }
 
-/** One expandable entry per failure cause, in report order (interface section 6.1). */
+/** Trimmed non-empty lines. `fallback` is used only when every line is blank. */
+export function suggestionParts(values: readonly string[], fallback = ''): string[] {
+  const parts = values.map(item => item.trim()).filter(item => item !== '');
+  if (parts.length > 0) return parts;
+  const standIn = fallback.trim();
+  return standIn === '' ? [] : [standIn];
+}
+
+/** One suggestion stays as written. Several are numbered so they are not run together. */
+export function numberedSuggestions(parts: readonly string[], separator = '\n\n'): string {
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  return parts.map((part, index) => `${index + 1}. ${part}`).join(separator);
+}
+
+/** One entry per failure cause, in report order (interface section 6.1). */
 export function artifactSuggestionItems(record: DiagnosisRecord): ArtifactSuggestionItem[] {
   return (record.reward_failure_causes ?? []).map((cause) => {
-    const text = cause.suggestion.map(item => item.trim()).filter(item => item !== '').join('\n\n');
+    const parts = suggestionParts(cause.suggestion, cause.summary);
     return {
       id: cause.id,
-      text: text === '' ? cause.summary : text,
+      parts,
+      text: parts.join('\n\n'),
       dimension: cause.dimension,
       summary: cause.summary,
       evidence: cause.evidence,
@@ -426,11 +444,10 @@ export function artifactSuggestion(record: DiagnosisRecord, useExperimentalArtif
   if (useExperimentalArtifactFix && (record.artifact_improvement ?? '').trim() !== '') {
     return (record.artifact_improvement ?? '').trim();
   }
-  return (record.reward_failure_causes ?? [])
-    .flatMap(cause => cause.suggestion)
-    .map(text => text.trim())
-    .filter(text => text !== '')
-    .join('\n\n');
+  return numberedSuggestions(
+    (record.reward_failure_causes ?? []).flatMap(cause => suggestionParts(cause.suggestion)),
+    '\n',
+  );
 }
 
 /** The artifact-fix text of a record written before the switch; empty once a new table exists. */
@@ -440,9 +457,9 @@ export function legacyArtifactInstruction(record: DiagnosisRecord): string {
   return record.suggestions?.artifact_fix?.instruction?.trim() ?? '';
 }
 
-/** The whole advice of one skill item (the md_string block). */
+/** The whole advice of one skill item. Several suggestion entries are numbered. */
 export function skillSuggestionText(judge: Pick<EvolutionJudge, 'suggestion'>): string {
-  return (judge.suggestion[0] ?? '').trim();
+  return numberedSuggestions(suggestionParts(judge.suggestion));
 }
 
 /**

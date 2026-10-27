@@ -22,6 +22,8 @@ import {
   skillSuggestionText,
   splitStageOutput,
   stageViews,
+  stripLeadingHeading,
+  suggestionParts,
   suggestionsState,
   truncateText,
   type ArtifactSuggestionItem,
@@ -32,7 +34,7 @@ import { FillButton } from './DiagnosisFillButton';
 import { RewardSummary } from './DiagnosisReward';
 import { Findings } from './DiagnosisFindings';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
-import { ClampedMarkdown, PlainFold } from './DiagnosisText';
+import { ClampedMarkdown, PlainFold, WholeMarkdown } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
 import css from './DiagnosisSubpage.module.css';
 
@@ -146,7 +148,10 @@ function RecordCards({
   const reward = asRewardPayload(record.reward);
   const skills = skillJudges(record);
   const experience = experienceJudge(record);
-  const artifactText = artifactSuggestion(record, false);
+  const artifactBody = artifactSuggestion(record, false);
+  const artifactText = artifactBody === ''
+    ? ''
+    : `${t('trajectory.diagnosis.artifactFillPrefix')}\n${artifactBody}`;
   const artifactItems = artifactSuggestionItems(record);
   const outlets = suggestionsState(record.status);
 
@@ -279,7 +284,7 @@ function RecordCards({
                   />
                 )}
               >
-                <ClampedMarkdown text={skillSuggestionText(judge)} />
+                <SuggestionLines lines={skillSuggestionParts(judge)} />
               </EvolutionCard>
             ))}
             {experience === null ? null : (
@@ -324,21 +329,36 @@ function RecordCards({
   );
 }
 
-/**
- * The artifact-fix outlet of the new interface: one entry per failure cause, showing only
- * its suggestion text until the user opens it onto the full attribution fields.
- */
-/** The artifact-fix suggestions: one text per cause, no per-item expansion. */
+/** The artifact-fix suggestions: one numbered line per suggestion, not one block per cause. */
 function ArtifactCauseList({ items }: { items: readonly ArtifactSuggestionItem[] }) {
+  return <SuggestionLines lines={items.flatMap(item => item.parts)} />;
+}
+
+/** One suggestion as written. Several are a numbered list so they stay distinct. */
+function SuggestionLines({ lines }: { lines: readonly string[] }) {
+  if (lines.length === 0) return null;
+  if (lines.length === 1) return <SuggestionMarkdown text={lines[0]} />;
   return (
-    <ol className={css.artifactItems} data-testid="trajectory-diagnosis-artifact-list">
-      {items.map(item => (
-        <li key={item.id}>
-          <ClampedMarkdown text={item.text} />
+    <ol className={css.suggestionLines} data-testid="trajectory-diagnosis-suggestion-lines">
+      {lines.map((line, index) => (
+        <li key={`${index}:${line.slice(0, 32)}`}>
+          <SuggestionMarkdown text={line} />
         </li>
       ))}
     </ol>
   );
+}
+
+function SuggestionMarkdown({ text }: { text: string }) {
+  return (
+    <div className={css.suggestionBody}>
+      <WholeMarkdown text={stripLeadingHeading(text)} />
+    </div>
+  );
+}
+
+function skillSuggestionParts(judge: EvolutionJudge): string[] {
+  return suggestionParts(judge.suggestion);
 }
 
 /** One evolution item: the advice/verdict text and its action; details live in the findings list. */
@@ -445,7 +465,9 @@ function SuggestionCard({ tone, kind, title, mono = false, action, testId, child
         <span className={css.spacer} />
         {action}
       </div>
-      {children}
+      <div className={css.suggestionScroll}>
+        {children}
+      </div>
     </div>
   );
 }
