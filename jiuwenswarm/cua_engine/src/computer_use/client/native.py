@@ -73,6 +73,7 @@ class NativeController:
     def __init__(self, port=None):
         self._states = WeakIdentityMap()
         self._bound_apps = weakref.WeakValueDictionary()
+        self._window_catalogues = OrderedDict()
         self.desktop = DesktopStore()
         self.transport = port.connection if port is not None else Connection(self.invalidate)
         self.port = port or ConnectionPort(
@@ -102,6 +103,7 @@ class NativeController:
     def invalidate(self):
         self.desktop.reset()
         self._bound_apps.clear()
+        self._window_catalogues.clear()
         observations_invalidated(self)
         # Existing App/Element bindings keep their old session and must fail;
         # clearing their selection would silently turn them into fresh lookups.
@@ -115,22 +117,38 @@ class NativeController:
 
     def window(self, owner, ref):
         state = self.state(owner)
-        if not reference(ref) or ref not in state.windows or state.directory is None:
+        if not reference(ref):
             raise local_failure('window is not in this App\'s observed catalogue',
-                                'read the App and select a decimal reference from Windows', 'stale_target')
-        if state.directory['session'] != self.transport.session:
-            raise local_failure('window catalogue belongs to an expired driver session', 'observe a new App',
-                                'stale_target')
-        selected = self.reader.selection_from_directory(
-            state.application, state.name, state.directory, state.windows[ref])
+                'read the App and select a decimal reference from Windows', 'stale_target')
+        if state.directory is not None and state.directory['session'] != self.transport.session:
+            raise local_failure('window catalogue belongs to an expired driver session',
+                'observe a new App', 'stale_target')
+        # Window aliases are already unique across this Computer's reader. A
+        # popup observed through another fixed view of this exact application
+        # is explicit selection evidence, not an invitation to rebind owner.
+        # A fresh wrapper may explicitly select a known window through the exact
+        # running-application identity observed by this Computer. Human names,
+        # unknown identities and selectors from another session do not resolve
+        # through this cache, and the new wrapper itself stays unbound.
+        cached = self._window_catalogues.get((self.transport.session, state.application or state.selector))
+        if cached is not None:
+            running, directory, windows = cached
+        elif state.directory is not None:
+            running, directory, windows = state.running, state.directory, state.windows
+        else:
+            raise local_failure('window is not in this App\'s observed catalogue',
+                'read the App or use its exact already-observed running application identity', 'stale_target')
+        if ref not in windows:
+            raise local_failure('window is not in this application\'s observed catalogue',
+                'read the intended App and select a decimal reference from Windows', 'stale_target')
+        selected = self.reader.selection_from_directory(running.application, running.name, directory, windows[ref])
         if state.selection == selected:
             return owner
         app = self._bound_apps.get(selected.root)
         if app is None:
-            selected_state = AppState(
-                state.selector, selection=selected, running=RunningApplication(selected.application, selected.name,
-                                                                               selected.root.session),
-                directory=state.directory, windows=dict(state.windows))
+            selected_state = AppState(state.selector, selection=selected,
+                running=RunningApplication(selected.application, selected.name, selected.root.session),
+                directory=directory, windows=dict(windows))
             app = App(self, dict(selector=state.selector, _nativeState=selected_state), _internal=True)
             self._bound_apps[selected.root] = app
         return app
@@ -207,7 +225,7 @@ class NativeController:
             state.refs.clear()
             if isinstance(observed, MenuAppObservation):
                 state.selection = observed.selection
-                state.directory, state.windows = observed.directory, dict(observed.windows)
+                self._catalogue(state, observed.directory, observed.windows)
                 state.query_target = observed.menu.target
                 state.query_scope_kind = observed.menu.scope_kind
                 for part in observed.menu.parts:
@@ -220,7 +238,7 @@ class NativeController:
             state.selection, state.observation = observed.selection, observed
             state.query_target = observed.target
             state.query_scope_kind = 'window'
-            state.directory, state.windows = observed.directory, dict(observed.windows)
+            self._catalogue(state, observed.directory, observed.windows)
             state.delivered, state.capture_expired = None, False
             if observed.tree is not None:
                 self._remember(state, observed.target, observed.tree)
@@ -238,10 +256,9 @@ class NativeController:
 
     def _choices(self, owner, state, choices, full):
         state.running = RunningApplication(choices.application, choices.display_name, choices.directory['session'])
-        state.directory = choices.directory
         if choices.selection is not None:
             state.selection = choices.selection
-        state.windows = self.reader.window_aliases(state.directory)
+        self._catalogue(state, choices.directory, self.reader.window_aliases(choices.directory))
         state.observation, state.query_target, state.delivered = None, None, None
         state.refs.clear()
         lines = [
@@ -265,6 +282,14 @@ class NativeController:
             dict(source=self, owner=owner, scope='catalogue:' + state.application, view='catalogue', state=result,
                  refs=frozen({}), full=True, observed=state.directory['observed']))
         return result
+
+    def _catalogue(self, state, directory, windows):
+        state.directory, state.windows = directory, dict(windows)
+        key = (directory['session'], state.application)
+        self._window_catalogues.pop(key, None)
+        self._window_catalogues[key] = (state.running, directory, dict(windows))
+        while len(self._window_catalogues) > 32:
+            self._window_catalogues.popitem(last=False)
 
     def _remember(self, state, target, tree):
         if 'nativeRelationPages' in self.transport.capabilities:

@@ -113,12 +113,29 @@
   },
   "behavior_port": {
     "commit": "bc7448445cc31751e4eae90b08f3df7802086fd5",
-    "scope": "Retained-element scroll exposure, attached choice-list popup routing, and unavailable-route reasons only. Adapted to the existing v5 executor; excludes the pipeline refactor and desktop App reference changes.",
+    "related_commits": [
+      "9133f9270670e86e7d4e5df0f69547b68e7c81c8",
+      "1b90088029fa1ddfa49f96bd3cfd52a25ec1656d",
+      "505c4a16c31957ad80dc5b467a0000540ac488e5",
+      "c6c5bafc18b197c456f72884970dfb6d5386d018"
+    ],
+    "scope": "Retained-element scroll exposure, attached choice-list popup routing, unavailable-route reasons, verified pointer hits and first-content-click preparation. Adapted to the existing v5 executor and desktop adapter; excludes pipeline refactoring and unrelated read/write changes.",
     "files": {
-      "Sources/Control/NativeElementPointerUnit.swift": "e4608ffc0f6d9d64ccddf8c3486197092a09c0eacdf29256297cfd3ae50e502c",
+      "Sources/Control/BackgroundEvents.swift": "59fb21372083f7e187442251dd6d8b3440b8319222e1b51b57a91bf3ac79207b",
+      "Sources/Control/BackgroundTarget.swift": "63004f1f239192c458569066a7c9c69ce99ea00528eb010123872cedfc94b3ac",
+      "Sources/Control/ForegroundActivation.swift": "30bf9c223e5e1ce9a274994015285b3f9b0ba5c9618a173b401ac62b4b892a6e",
+      "Sources/Control/ForegroundAssist.swift": "75330e9d6a534fd3e08e06871c29916fdce9ff72161016914f805f65f05b10e0",
+      "Sources/Control/NativeDocumentContext.swift": "073d57e8684c3d9d1f113d706a8f843b7cbf573986fc959f4626a75306bf9d46",
+      "Sources/Control/NativeElementHitSelection.swift": "08e9ac31bbee5541a8794fe3d4407da8719ce6aeb2022f3c25ff6492b0f71b02",
+      "Sources/Control/NativeElementPointerUnit.swift": "9b57c64ed92898f30a05c0ec543a1197b7bf23d4f7c9a9bb5c9b1430fcee0b03",
       "Sources/Control/NativeElementViewport.swift": "ebf3e70056da6bd6532933b78e9dd00adfea8a409ba7e407d3d693dfd5ffc5bf",
-      "Sources/Runtime/NativeExecution.swift": "e3041ff6ce83d463bf99ddb9ff22174bc002ceb584beb432907b3d6df726005c",
+      "Sources/Control/NativeInputWindowHit.swift": "18c99ed4848bc5d275524d4b5f6c791e0fbe46ccf15f0eeffb1947c63d2cfb57",
+      "Sources/Control/NativeInputWindowQuery.swift": "d124c78746be1adc4f6639321a1db69a385e2cf351c95e8c1c7b7791f978638d",
+      "Sources/Control/NativePointerUnit.swift": "c185f2300a9afc1c07e724e4e77720a94897dc6b629ac67c6a69d3a70d9afea7",
+      "Sources/Runtime/CuaDesktopBackend.swift": "6cde38c6655991b438c418694178d251c34011bd93905a24a167b7c09216d810",
+      "Sources/Runtime/NativeExecution.swift": "5f0be6c190887568c68b29f4356f186eaf5df87a367ef7710246dcc9ed2d9004",
       "Sources/Runtime/NativeOperation.swift": "5cb68362895d1192a2e739914403dc34524d38f894027df8efacf19b637b5dd4",
+      "Sources/Runtime/main.swift": "3dd3b0c1bd40ce9213483dfa149fd1c1ef9f7952c88b37221d9147eba09b9c6d",
       "Sources/Shared/LocalMenuAttachment.swift": "e46a6aeefd75f14bfe19ecb5c784e77b19df315448c454b407fc7bdd59ab976e"
     }
   }

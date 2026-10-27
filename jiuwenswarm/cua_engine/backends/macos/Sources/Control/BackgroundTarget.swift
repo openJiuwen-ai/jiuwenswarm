@@ -12,6 +12,8 @@ struct BackgroundTarget {
     private let owner: NSRunningApplication?
     private let ownerIdentity: NativeProcessIdentity?
 
+    var capturedProcessIdentity: NativeProcessIdentity? { nativeIdentity }
+
     static var isExclusive: Bool { desktopMode == "exclusive" }
     var isForeground: Bool { NSWorkspace.shared.frontmostApplication?.processIdentifier == application.processIdentifier }
     var allowsMenuPopup: Bool { Self.isExclusive || isForeground }

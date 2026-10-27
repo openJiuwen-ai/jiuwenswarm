@@ -773,7 +773,7 @@ import ApplicationServices
                     let point = try unit.point(request.start!)
                     enabled = nil; foreground = unit.foregroundWindow(at: point)
                     input["geometryCurrent"] = "yes"
-                    let ready = unit.ready(at: point)
+                    let ready = unit.ready(at: point, kind: request.kind)
                     input["pointerRoute"] = ready ? "yes" : "no"
                     var pending = [("receiver", ready ? "yes" : "no")]
                     if BackgroundTarget.isExclusive { pending.append(("foreground", foreground ? "yes" : "no")) }
@@ -1150,8 +1150,9 @@ import ApplicationServices
                                 try op.requireForegroundPreparation(id, hostAllowed: ForegroundAssist.enabled)
                             }
                             if let captured {
-                                try await captured.prepare(foreground: foreground, atNative: captured.point(pointer.start!),
-                                    check: checkBoundary, onPreparation: receipt.recordPreparation)
+                                try await captured.prepare(foreground: foreground, atNative: captured.point(pointer.start!), kind: pointer.kind,
+                                    check: checkBoundary, onPreparation: receipt.recordPreparation,
+                                    onCleanupUnknown: receipt.recordCleanupUnknown)
                             } else if let element {
                                 try await element.prepare(foreground: foreground, check: checkBoundary,
                                     onPreparation: receipt.recordPreparation,
