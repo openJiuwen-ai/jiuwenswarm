@@ -78,22 +78,25 @@ BASELINE = {
     # B2.5 后（rebase 1372eda94 实测，含 B2 合入后的 extensions 状态）：
     # 四大包（agents/server/runtime/symphony）hard 闭包全部归零。
     # extensions 30 = B2 吸收后的框架件 + AgentOS 客户端 + 上游回流。
+    # gateway 自有只读 dotenv 副本后，根包 dotenv_early 不再从 gateway 可达；
+    # instance_manager 延迟闭包只经母仓 dotenv_early 的 bootstrap 写入到达，一并归零。
     "closure_hard": {
         "extensions": 30, "observability": 10,
-        "dotenv_early": 1, "llm_provider_compat_patch": 0,
+        "dotenv_early": 0, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
     "closure_lazy": {
         # 2026-10-19 rebase 8e0f173b4：上游新功能 lazy 扩散 +104（非解耦退化）
         "agents": 344, "server": 240, "extensions": 54, "runtime": 43,
-        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 6,
-        "dotenv_early": 1, "llm_provider_compat_patch": 0,
+        "symphony": 11, "observability": 11, "instance_manager": 0, "channels": 6,
+        "dotenv_early": 0, "llm_provider_compat_patch": 0,
     },
     # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
     "common_backref_modules": 0,
     "common_backref_imports": 0,
-    # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 23,
+    # gateway 直接 import 的外部（非 gateway/common）模块数。
+    # 本次去掉 dotenv_early，23 → 22。与实测的其余差额是既有燃尽，本次不重刷。
+    "gateway_direct_foreign": 22,
 }
 
 

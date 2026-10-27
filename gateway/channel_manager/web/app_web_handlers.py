@@ -62,7 +62,7 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     get_root_dir,
 )
-from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from gateway.dotenv_early import load_dotenv_runtime
 from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_TUI_WORK_MODE,

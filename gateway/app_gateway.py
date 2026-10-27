@@ -54,7 +54,7 @@ from jiuwenswarm.common.media_capability_config import (
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
 _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import load_dotenv_runtime, parse_dotenv_early
+from gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 
 parse_dotenv_early("jiuwenswarm-gateway")
 _mark_startup_import_phase("dotenv_parsed")
@@ -3856,7 +3856,7 @@ async def _run_with_shutdown_signals(
 
 
 def main() -> None:
-    from jiuwenswarm.dotenv_early import get_parsed_dotenv
+    from gateway.dotenv_early import get_parsed_dotenv
 
     parser = argparse.ArgumentParser(
         prog="jiuwenswarm-gateway",
