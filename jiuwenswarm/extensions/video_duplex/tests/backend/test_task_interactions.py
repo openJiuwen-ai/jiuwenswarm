@@ -263,7 +263,8 @@ async def test_reorder_receipt_replays_before_version_check(system):
 @pytest.mark.parametrize(
     "source", ["permission_interrupt", "confirm_interrupt", "evolution_interrupt"]
 )
-def test_voice_never_accepts_approval(source):
+def test_approval_cards_are_not_information_forms(source):
+    # Voice approvals go through the native approval answer path, never the information form path.
     with pytest.raises(ValueError):
         information_question(
             dict(
@@ -351,7 +352,7 @@ async def test_native_permission_answer_resumes_only_the_matching_task(tmp_path)
         await until(lambda: store.read(task["id"])["status"] == "waiting_user"
                     and store.read(task["id"])["output_closed"])
         answer = [{"question": "允许执行？", "custom_input": "", "selected_options": ["allow"]}]
-        with pytest.raises(ValueError, match="native user interface"):
+        with pytest.raises(ValueError, match="card options"):
             await service.answer("user", "voice", task["id"], "voice-answer", token(service, task), answers=answer)
         with pytest.raises(ValueError):
             await service.answer("other", "voice", task["id"], "wrong-owner", token(service, task),

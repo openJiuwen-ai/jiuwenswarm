@@ -31,6 +31,9 @@ export interface QwenOmniSessionOptions {
   outputRate: number;
   replyLanguage?: string;
   restoreInstructions?: string;
+  extraInstructions?: string;
+  /** The client creates replies itself (an approval card is open), so the provider must not. */
+  clientResponses?: boolean;
 }
 
 export interface QwenOmniMediaBatch {
@@ -50,7 +53,7 @@ export function createQwenOmniSessionUpdate(options: QwenOmniSessionOptions): Re
     session: {
       modalities: ['audio', 'text'],
       voice: options.voice || 'Tina',
-      instructions: [QWEN_SESSION_INSTRUCTIONS, speakLanguageInstruction(normalizeReplyLanguage(options.replyLanguage)), options.restoreInstructions].filter(Boolean).join('\n'),
+      instructions: [QWEN_SESSION_INSTRUCTIONS, speakLanguageInstruction(normalizeReplyLanguage(options.replyLanguage)), options.restoreInstructions, options.extraInstructions].filter(Boolean).join('\n'),
       audio: {
         input: { format: { type: 'pcm', sample_rate: options.inputRate } },
         output: { format: { type: 'pcm', sample_rate: options.outputRate } },
@@ -59,6 +62,7 @@ export function createQwenOmniSessionUpdate(options: QwenOmniSessionOptions): Re
         type: 'semantic_vad',
         threshold: 0.5,
         silence_duration_ms: 800,
+        create_response: !options.clientResponses,
       },
       enable_input_audio_transcription: true,
       tools: options.tools || [],

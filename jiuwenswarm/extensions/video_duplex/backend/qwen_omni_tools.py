@@ -57,7 +57,9 @@ class QwenOmniToolCall:
 
 def qwen_omni_tools(*, queue_manager: bool = False) -> list[dict[str, Any]]:
     """Return fresh Qwen-compatible tool definitions for each session."""
-    return ([queue_management_tool()] if queue_manager else task_management_tools()) + [
+    return ([queue_management_tool(), next(
+        tool for tool in task_management_tools() if tool["function"]["name"] == "jiuwen_task_answer"
+    )] if queue_manager else task_management_tools()) + [
         {
             "type": "function",
             "function": {
@@ -196,6 +198,8 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
                     raise ValueError(f"Invalid {key}")
                 if key == "queue_version" and item > 2**53 - 1:
                     raise ValueError("Invalid queue_version: exceeds JavaScript safe integer range")
+            elif name == "jiuwen_task_answer" and key == "job_id" and item == "":
+                continue  # A typed-chat approval card has no job; it is answered with job_id "".
             elif (
                 not isinstance(item, str)
                 or not item.strip()
@@ -295,10 +299,14 @@ def task_management_tools():
         (
             "jiuwen_task_answer",
             (
-                "Answer an observed pending Agent information question so the original task continues."
-                " Query exact job_id, interaction.id and questions first; pass interaction.id as "
-                "interaction_id. Clarify which task if ambiguous. Never use this for permission "
-                "approvals or create a new task for an answer. answers is an array of plain text "
+                "Answer an observed pending Agent information question or approval card so the original task "
+                "continues. Query exact job_id, interaction.id and questions first; pass interaction.id as "
+                "interaction_id. Clarify which task if ambiguous. Never create a new task for an answer, and "
+                "never use a new request (e.g. 打开微信) as an answer. Approval cards: choose the allow option "
+                "only when the user clearly says 同意/允许/可以/批准, the reject option when they clearly say "
+                "拒绝/不要/取消这个操作, the session option (会话内记住) only for 本会话保持同意/本会话同意/这个会话都允许; the permanent option (永久记住) only for an explicit 永久同意/永久允许/以后都允许; "
+                "if unclear or several cards are pending, ask first and do not submit. Say 已批准 only after "
+                "the receipt or a later query shows the task resumed. answers is an array of plain text "
                 "strings, one per observed question in the SAME order, e.g. [\"5000元\", \"2人\"]. "
                 "Use only explicit user answers; ask for missing answers instead of inventing them. "
                 "Accepted is not completed."
@@ -322,7 +330,8 @@ def task_management_tools():
         (
             "jiuwen_task_query",
             (
-                "Find Core invocations and their results in this conversation. Query before selecting an "
+                "Find Core invocations and their results in this conversation, plus the user's scheduled "
+                "tasks (定时任务) from all conversations in scheduled_jobs. Query before selecting an "
                 "ambiguous task; use exact returned job_id and revision for controls. "
                 "query is a literal substring of the task title or original task text, not a question or "
                 "a list of keywords. Prefer a known job_id. If no task matches, shorten query "

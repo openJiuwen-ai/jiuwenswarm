@@ -46,9 +46,21 @@ def select_model(entries: list[dict[str, Any]], requested: str) -> dict[str, Any
         if len(matches) != 1:
             raise ValueError("Select one configured JOYAI_ACTION_HELPER_MODEL")
         return matches[0]
-    if not usable:
-        raise ValueError("Configure a text model for the JoyAI action helper")
-    return usable[0]
+    if usable:
+        return usable[0]
+    from .joyai_provider import model_config
+    api_base, api_key, model_name = model_config()
+    if api_base and model_name:
+        return {
+            "model_id": "joyai_fallback",
+            "model_client_config": {
+                "api_base": api_base,
+                "api_key": api_key,
+                "model_name": model_name,
+                "client_provider": "OpenAI",
+            },
+        }
+    raise ValueError("Configure a text model for the JoyAI action helper")
 
 
 async def request_review(context: dict[str, Any]) -> str:

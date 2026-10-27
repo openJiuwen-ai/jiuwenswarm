@@ -273,6 +273,7 @@ def register_video_live_handler(
         search_session_id = str(params.get("search_session_id") or "").strip()
         question = str(params.get("question") or "").strip()
         tool_context = str(params.get("tool_context") or "").strip()
+        approval_context = str(params.get("approval_context") or "").strip()
         frame_time_range = str(params.get("frame_time_range") or "").strip()
         reply_language = joyai_provider.normalize_response_language(
             params.get("reply_language", settings.reply_language())
@@ -317,6 +318,18 @@ def register_video_live_handler(
                 error=(
                     "tool_context must not exceed "
                     f"{joyai_provider.MAX_TOOL_CONTEXT_CHARS} characters"
+                ),
+                code="BAD_REQUEST",
+            )
+            return
+        if len(approval_context) > joyai_provider.MAX_APPROVAL_CONTEXT_CHARS or (
+            approval_context and request_kind != "user"
+        ):
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=(
+                    "approval_context is allowed only for user requests, up to "
+                    f"{joyai_provider.MAX_APPROVAL_CONTEXT_CHARS} characters"
                 ),
                 code="BAD_REQUEST",
             )
@@ -368,14 +381,17 @@ def register_video_live_handler(
             "frame_chars": len(frame_data_url),
             "frame_time_range": frame_time_range,
             "tool_context_chars": len(tool_context),
+            "approval_context_chars": len(approval_context),
         }
         await asyncio.to_thread(_append_joyai_log, {**request_log, "stage": "requested"})
         try:
             model_instruction = instruction
             if request_kind == "user":
-                model_instruction = (
-                    joyai_provider.ground_user_instruction(instruction, tool_context, reply_language, restore_instructions=restore_instructions)
-                    if restore_instructions else joyai_provider.ground_user_instruction(instruction, tool_context, reply_language)
+                extra = {"restore_instructions": restore_instructions} if restore_instructions else {}
+                if approval_context:
+                    extra["approval_context"] = approval_context
+                model_instruction = joyai_provider.ground_user_instruction(
+                    instruction, tool_context, reply_language, **extra
                 )
             request_args = [frame_data_url, model_instruction, upstream_session_id]
             if frame_time_range:
@@ -470,9 +486,9 @@ def register_video_live_handler(
                     "jiuwen_task_query",
                     "jiuwen_task_modify",
                     "jiuwen_task_cancel",
+                    # Approval cards only; operate() refuses information forms.
+                    "jiuwen_task_answer",
                 }:
-                    if value.get("name") == "jiuwen_task_answer":
-                        raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
                     raise ValueError("Unsupported task operation")
                 owner, scope = await search_manager.scope(
                     ws, {"search_session_id": search_session_id}
@@ -514,7 +530,9 @@ def register_video_live_handler(
                     }
                     result = {**result, "delegation": call.task}
                     break
-                receipt = await search_manager.operate(owner, scope, call, user_instruction=question or instruction)
+                receipt = await search_manager.operate(
+                    owner, scope, call, ws=ws, approvals_only=True, user_instruction=question or instruction,
+                )
                 operation_count += 1
                 # Feed facts through the same provider conversation, including ids
                 # needed for query -> modify. A receipt cannot manufacture a task.

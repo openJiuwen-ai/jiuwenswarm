@@ -167,21 +167,28 @@ test('operation receipts route unfinished management through the exposed queue t
   assert.doesNotMatch(instructions, /read-only when applied=false/);
 });
 
-test('pending approval cards ask the user to click instead of answering by voice', () => {
-  // Voice must never approve cards, so it must not invite a spoken "允许" either.
+test('pending approval cards can be answered by voice under explicit-consent rules', () => {
+  // Voice may approve cards, but only on clear consent; unclear speech and new tasks never answer a card.
   const { session, sent } = createSession();
   session.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending',
     source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] });
   const text = sent.find(e => e.type === 'conversation.item.create').item.content[0].text;
   assert.match(text, /操作确认: cua_agent/);
-  assert.match(text, /click/);
-  assert.match(text, /Do not call jiuwen_task_answer/);
-  assert.doesNotMatch(text, /then call jiuwen_task_answer/);
+  assert.match(text, /answered by voice with jiuwen_task_answer/);
+  assert.match(text, /同意, 允许, 可以 or 批准, answer with the card allow_answer/);
+  assert.match(text, /拒绝, 不要 or 取消这个操作, answer with its reject_answer/);
+  assert.match(text, /session option .* only when the user says 本会话保持同意.*permanent option \(permanent_answer, e.g. 永久记住\) only when the user explicitly says 永久同意/);
+  assert.match(text, /unclear.*do not submit/);
+  assert.match(text, /several cards are pending, confirm which card/);
+  assert.match(text, /打开微信 is a new task.*Never use a new request as an answer to a card/);
+  assert.match(text, /Cards left by typed chat also appear in jiuwen_task_query/);
+  assert.match(text, /已批准 only after the answer receipt or a later query confirms the task resumed/);
+  assert.doesNotMatch(text, /click|Voice cannot/);
 });
 
 test('an open approval card stays in the session instructions until it closes', () => {
-  // A one-off notice is forgotten by the next turn, so a spoken "允许" was
-  // answered as consent (#8941). Every reply must see the open card.
+  // A one-off notice is forgotten by the next turn; every reply must see the open card
+  // and the voice approval rules.
   const { session, sent } = createSession();
   const card = { id: 'card-a', request_id: 'core-approval', state: 'pending',
     source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] };
@@ -189,7 +196,8 @@ test('an open approval card stays in the session instructions until it closes', 
   const updates = () => sent.filter(e => e.type === 'session.update');
   assert.equal(updates().length, 1);
   assert.match(updates()[0].session.instructions, /\[Pending approval cards\].*操作确认: cua_agent/);
-  assert.match(updates()[0].session.instructions, /Never say a pending card was allowed/);
+  assert.match(updates()[0].session.instructions, /answered by voice with jiuwen_task_answer/);
+  assert.doesNotMatch(updates()[0].session.instructions, /click|Voice cannot/);
 
   session.enqueueQuestion('cua', card); // A repeated progress event must not resend.
   assert.equal(updates().length, 1);
@@ -202,27 +210,80 @@ test('an open approval card stays in the session instructions until it closes', 
 const openCard = (session) => session.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending',
   source: 'confirm_interrupt', questions: [{ header: '操作确认: cua_agent', question: '打开计算器' }] });
 
-test('every reply to speech while a card is open reads the card status last', () => {
-  // The model hears audio, not the transcript ("允许" was transcribed as "人是"), and it
-  // answered a spoken "允许" with "你已经在屏幕上点击了允许" despite the instructions (#8941).
+test('while a card is open the client answers speech after the card status, without cancelling', () => {
+  // The model hears audio, not the transcript ("允许" was transcribed as "人是"), so the voice
+  // approval rules are restated after the user's audio. Cancelling the provider's own reply instead
+  // cut off jiuwen_task_answer mid-arguments, so the provider is told not to reply by itself.
   const { session, sent } = createSession();
   openCard(session);
+  const update = sent.filter(e => e.type === 'session.update').at(-1);
+  assert.equal(update.session.turn_detection.create_response, false);
   session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
   sent.length = 0;
 
   session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u1' });
-  session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
-  assert.deepEqual(sent.map(e => e.type), ['response.cancel'], 'the automatic reply is cancelled');
-
-  session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
-  assert.deepEqual(sent.slice(1).map(e => e.type), ['conversation.item.create', 'response.create']);
-  const status = sent[1].item.content[0].text;
+  // Qwen labels the spoken item role "assistant"; the reply waits for its words.
+  session.handleEvent({ type: 'conversation.item.created', item: { id: 'u1', role: 'assistant', content: [{ type: 'input_audio' }] } });
+  assert.deepEqual(sent.map(e => e.type), [], 'nothing is sent before the transcript exists');
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'u1', transcript: '允许。' });
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  const status = sent[0].item.content[0].text;
   assert.match(status, /操作确认: cua_agent/);
-  assert.match(status, /has NOT clicked/);
-  assert.match(status, /Never say the card was allowed/);
+  assert.match(status, /The user just said: "允许。"/);
+  assert.match(status, /call the jiuwen_task_answer tool with the card job_id and interaction_id/);
+  assert.match(status, /allow_answer.*reject_answer/);
+  assert.match(status, /unclear.*do not submit/);
+  assert.match(status, /打开微信.*never use it as a card answer/);
+  assert.doesNotMatch(status, /click|voice cannot/i);
 
-  session.handleEvent({ type: 'response.created', response: { id: 'replacement' } });
-  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 1, 'the re-requested reply plays');
+  // The notice's own item does not trigger another reply, and nothing is ever cancelled.
+  session.handleEvent({ type: 'conversation.item.created', item: { id: 'n1', role: 'user', content: [{ type: 'input_text' }] } });
+  session.handleEvent({ type: 'response.created', response: { id: 'reply' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'reply',
+    item: { id: 'f1', type: 'function_call', name: 'jiuwen_task_answer', call_id: 'c1' } });
+  assert.equal(sent.filter(e => e.type === 'response.create').length, 1);
+  assert.equal(sent.filter(e => e.type === 'response.cancel').length, 0);
+});
+
+test('a short spoken answer to the only card is submitted directly, and its receipt is spoken as a notice', () => {
+  // The realtime model often only talked about "允许" or read the call out as text, so the client submits it.
+  const { session, sent, functionCalls } = createSession();
+  session.enqueueQuestion('', { id: 'card-b', request_id: 'chat-approval', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ header: '操作确认: cua_agent', question: '打开计算器',
+      options: [{ label: '本次允许' }, { label: '会话内记住' }, { label: '永久记住' }, { label: '拒绝' }] }] });
+  session.handleEvent({ type: 'response.created', response: { id: 'notice' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'notice', status: 'completed' } });
+  sent.length = 0;
+
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u2' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'u2', transcript: '本会话保持同意。' });
+  assert.equal(functionCalls.length, 1);
+  assert.equal(functionCalls[0].name, 'jiuwen_task_answer');
+  assert.deepEqual(JSON.parse(functionCalls[0].arguments), { job_id: '', interaction_id: 'card-b', answers: ['会话内记住'] });
+  assert.deepEqual(sent.map(e => e.type), [], 'the model is not asked to answer again');
+
+  session.enqueueOperationResult(functionCalls[0].callId, { state: 'accepted', applied: true });
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.equal(sent[0].item.type, 'message');
+  assert.match(sent[0].item.content[0].text, /"会话内记住" was submitted.*"applied":true/);
+
+  // A new request is never taken as an answer: it goes to the model with the card status.
+  sent.length = 0;
+  session.handleEvent({ type: 'response.created', response: { id: 'r2' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'r2', status: 'completed' } });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'u3' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed', item_id: 'u3', transcript: '打开计算器。' });
+  assert.equal(functionCalls.length, 1);
+  assert.deepEqual(sent.map(e => e.type), ['conversation.item.create', 'response.create']);
+  assert.match(sent[0].item.content[0].text, /The user just said: "打开计算器。"/);
+});
+
+test('closing the last card lets the provider answer speech by itself again', () => {
+  const { session, sent } = createSession();
+  openCard(session);
+  session.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'answered' });
+  const update = sent.filter(e => e.type === 'session.update').at(-1);
+  assert.equal(update.session.turn_detection.create_response, true);
 });
 
 test('without an open card, and for the assistant notices, replies are left alone', () => {
@@ -245,7 +306,7 @@ test('a card that opens before the reply to just-finished speech redirects that 
   session.handleEvent({ type: 'response.created', response: { id: 'auto' } });
   assert.deepEqual(sent.map(e => e.type), ['response.cancel']);
   session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
-  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT clicked/);
+  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT answered/);
 });
 
 test('a card that opens while the reply to speech is playing cancels and redirects it', () => {
@@ -256,7 +317,7 @@ test('a card that opens while the reply to speech is playing cancels and redirec
   openCard(session);
   assert.ok(sent.some(e => e.type === 'response.cancel'), 'the playing reply is cancelled');
   session.handleEvent({ type: 'response.done', response: { id: 'auto', status: 'cancelled' } });
-  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT clicked/);
+  assert.match(sent.find(e => e.type === 'conversation.item.create').item.content[0].text, /has NOT answered/);
 });
 
 test('a card that opens while an assistant notice plays leaves the notice alone', () => {

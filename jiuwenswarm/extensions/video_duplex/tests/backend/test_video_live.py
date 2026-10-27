@@ -2001,7 +2001,7 @@ async def test_joyai_frame_handler_exposes_rate_limit_code(monkeypatch) -> None:
     async def fake_request(*args):
         del args
         raise joyai_provider.JoyAIRateLimitError(
-            'JoyAI 请求失败 (429): {"cause":"tokens limit for minute"}'
+            'JoyAI 服务商限流 (429，每分钟 token 额度已用完): {"cause":"tokens limit for minute"}'
         )
 
     monkeypatch.setattr(joyai_provider, "request_frame", fake_request)
@@ -3745,3 +3745,137 @@ async def test_joyai_operation_limit_allows_final_response_and_rejects_next_oper
     else:
         assert response["code"] == "TASK_REQUEST_REJECTED"
         assert "operation limit" in response["error"]
+
+
+# JoyAI answers approval cards by voice like Qwen: the card status is the last thing it reads.
+CARD_STATUS = (
+    '[Approval card status] [{"job_id":"","interaction_id":"typed-approval","questions":[{"allow_answer":"本次允许",'
+    '"session_answer":"会话内记住","permanent_answer":"永久记住","reject_answer":"拒绝"}]}] is still waiting'
+)
+PERMISSION_OPTIONS = [{"label": label, "value": value} for label, value in [
+    ("本次允许", "allow_once"), ("会话内记住", "session_allow"), ("永久记住", "always_allow"), ("拒绝", "reject")]]
+
+
+def test_joyai_card_status_is_the_last_thing_read_on_a_user_turn():
+    prompt = joyai_provider.ground_user_instruction("同意", "", "match", approval_context=CARD_STATUS)
+    assert prompt.index("【用户原话】同意") < prompt.index(CARD_STATUS)
+    assert prompt.rstrip().endswith("one answer per card question.")
+    assert '"name":"jiuwen_task_answer"' in prompt.split(CARD_STATUS)[1]
+    assert CARD_STATUS not in joyai_provider.ground_user_instruction("同意")
+
+
+@pytest.mark.parametrize("params", [
+    {"request_kind": "frame", "instruction": "", "approval_context": CARD_STATUS},
+    {"request_kind": "user", "instruction": "同意", "question": "同意",
+     "approval_context": "x" * (joyai_provider.MAX_APPROVAL_CONTEXT_CHARS + 1)},
+])
+async def test_joyai_card_status_only_on_bounded_user_turns(monkeypatch, params):
+    from unittest.mock import AsyncMock
+
+    channel = _video_channel()
+    provider = AsyncMock()
+    monkeypatch.setattr(joyai_provider, "request_frame", provider)
+    await channel.handlers["video.joyai.frame"](None, "bad", {
+        "frame_data_url": "data:image/jpeg;base64,ZmFrZQ==", "joyai_session_id": "j", **params}, None)
+    assert channel.responses[-1][1]["code"] == "BAD_REQUEST"
+    assert provider.await_count == 0
+
+
+def _scoped_channel(monkeypatch, card_live=True):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+
+    channel = _video_channel(SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(
+        ok=True, payload={"user_id": "test-user", "mode": "agent", "work_mode": "work"},
+    ))))
+
+    async def query(client, method, params, session, owner):
+        if params.get("session_id"):
+            return {"user_id": owner, "mode": "agent", "work_mode": "work"}
+        return {"pending": card_live}
+
+    monkeypatch.setattr(task_adapter, "task_agent_query", query)
+    monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
+    channel.dispatched = []
+
+    async def dispatch(ws, method, params):
+        channel.dispatched.append((method, params))
+        # Core resumes the answered turn.
+        channel.manager._on_session_event("chat.processing_status", params.get("session_id", ""), {"is_processing": True})
+
+    channel.dispatch_client_request = dispatch
+    return channel
+
+
+async def _joyai_turn(channel, monkeypatch, spoken, operation, scope="task-duplex:chat"):
+    from unittest.mock import AsyncMock
+
+    prompts = []
+
+    async def provider(frame, prompt, session_id, *rest):
+        prompts.append(prompt)
+        if len(prompts) == 1:
+            return _joyai_result("delegation", delegation=json.dumps(operation))
+        return _joyai_result("response", response="已提交")
+
+    monkeypatch.setattr(joyai_provider, "request_frame", AsyncMock(side_effect=provider))
+    await channel.handlers["video.joyai.frame"](object(), "turn", {
+        "frame_data_url": "", "instruction": spoken, "question": spoken, "request_kind": "user",
+        "search_session_id": scope, "joyai_session_id": "joyai", "approval_context": CARD_STATUS,
+    }, None)
+    return prompts
+
+
+@pytest.mark.parametrize("spoken, label", [("同意", "本次允许"), ("本会话保持同意", "会话内记住")])
+async def test_joyai_voice_answers_typed_chat_card_with_empty_job_id(monkeypatch, spoken, label):
+    channel = _scoped_channel(monkeypatch)
+    channel.manager._chat_cards["chat"] = {
+        "request_id": "typed-approval", "source": "permission_interrupt", "approval_schema": "",
+        "questions": [{"question": "允许执行 rm？", "header": "权限审批: bash", "options": PERMISSION_OPTIONS}],
+    }
+    prompts = await _joyai_turn(channel, monkeypatch, spoken, {"name": "jiuwen_task_answer", "arguments": {
+        "job_id": "", "interaction_id": "typed-approval", "answers": [label]}})
+    assert channel.responses[-1][1]["ok"], channel.responses[-1]
+    assert prompts[0].rstrip().endswith("one answer per card question.") and CARD_STATUS in prompts[0]
+    method, params = channel.dispatched[-1]
+    assert method == "chat.send" and params["request_id"] == "typed-approval"
+    assert params["answers"][0]["selected_options"] == [label]
+    assert '"state": "accepted"' in prompts[1]
+
+
+@pytest.mark.parametrize("spoken, label", [("同意", "本次允许"), ("本会话保持同意", "会话内记住")])
+async def test_joyai_voice_answers_managed_task_card(monkeypatch, spoken, label):
+    from unittest.mock import AsyncMock
+
+    channel = _scoped_channel(monkeypatch)
+    service = channel.manager.service
+    owner, scope = await channel.manager.scope(object(), {"search_session_id": "task-duplex:chat"})
+    job = service.submit(owner, scope, "cua", "打开计算器", {"independent": True, "resources": []})
+    service.store.update(job["id"], lambda t: t.update(status="waiting_user", interaction={
+        "id": "card-a", "request_id": "core-approval", "state": "pending", "source": "permission_interrupt",
+        "questions": [{"question": "打开计算器", "options": PERMISSION_OPTIONS}]}))
+    answer = AsyncMock(return_value={"task_id": job["id"], "state": "accepted", "applied": True})
+    monkeypatch.setattr(service, "answer", answer)
+    await _joyai_turn(channel, monkeypatch, spoken, {"name": "jiuwen_task_answer", "arguments": {
+        "job_id": job["id"], "interaction_id": "card-a", "answers": [label]}})
+    assert channel.responses[-1][1]["ok"], channel.responses[-1]
+    assert answer.await_args.args[4] == "card-a" and answer.await_args.kwargs["answers"] == [label]
+
+
+async def test_joyai_new_request_while_card_waits_is_a_new_task_not_an_answer(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    channel = _scoped_channel(monkeypatch)
+    channel.manager._chat_cards["chat"] = {
+        "request_id": "typed-approval", "source": "permission_interrupt",
+        "questions": [{"question": "允许执行 rm？", "options": PERMISSION_OPTIONS}],
+    }
+    start = AsyncMock(return_value={"id": "wechat", "status": "queued"})
+    monkeypatch.setattr(channel.manager, "start", start)
+    prompts = await _joyai_turn(channel, monkeypatch, "打开微信", {
+        "name": "jiuwen_delegate", "arguments": {"task": "打开微信", "title": "打开微信"}})
+    assert CARD_STATUS in prompts[0] and len(prompts) == 1
+    assert channel.responses[-1][1]["payload"]["search_job"] == {"id": "wechat", "status": "queued"}
+    assert start.await_args.kwargs["query"] == "打开微信"
+    assert not channel.dispatched, "the card was not answered"
+    assert "chat" in channel.manager._chat_cards

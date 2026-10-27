@@ -421,3 +421,76 @@ test('tool receipts wait for playback and do not leak into a restarted media ses
   await delivery;
   assert.deepEqual(speech, []);
 });
+
+const PERMISSION_OPTIONS = ['本次允许', '会话内记住', '永久记住', '拒绝'].map(label => ({ label }));
+
+test('JoyAI reads managed and typed-chat approval cards last on every user turn, with IDs and the four answers', async (t) => {
+  const requests = [];
+  let tick;
+  t.mock.method(globalThis, 'setInterval', (callback) => { tick = callback; return 123; });
+  t.mock.method(globalThis, 'clearInterval', () => {});
+  globalThis.joyaiTestRequest = async (method, params) => { requests.push(params); return { response: '', search_job: null }; };
+  t.after(() => { delete globalThis.joyaiTestRequest; });
+  let frame = '';
+  const provider = new JoyAIProvider({
+    getSearchSessionId: () => 'task-duplex:chat', getLatestFrameDataUrl: () => frame, getFrameCount: () => 0,
+    rememberSearchJob() {}, report() {}, commitAssistantAnswer() {},
+  });
+  provider.sessionId = 'cards';
+  provider.speakText = () => {};
+  provider.startFramePolling();
+
+  provider.enqueueQuestion('cua', { id: 'card-a', request_id: 'core-approval', state: 'pending', source: 'confirm_interrupt',
+    questions: [{ header: '操作确认: cua_agent', question: '打开计算器', options: PERMISSION_OPTIONS }] });
+  provider.enqueueQuestion('', { id: 'typed-approval', request_id: 'typed-approval', state: 'pending', source: 'permission_interrupt',
+    questions: [{ header: '权限审批: bash', question: '允许执行 rm？', options: PERMISSION_OPTIONS }] });
+  // Information forms stay on screen for JoyAI.
+  provider.enqueueQuestion('trip', { id: 'form', request_id: 'f', state: 'pending', source: 'ask_user_interrupt',
+    questions: [{ question: '预算是多少？' }] });
+
+  for (const spoken of ['同意', '本会话保持同意', '打开微信']) {
+    const pending = provider.submitUserInstruction(spoken);
+    tick();
+    await pending;
+  }
+  assert.equal(requests.length, 3);
+  for (const request of requests) {
+    const status = request.approval_context;
+    assert.match(status, /^\[Approval card status\]/);
+    const cards = JSON.parse(status.slice(status.indexOf('[', 1), status.indexOf(' is still waiting')));
+    assert.deepEqual(cards.map(c => [c.job_id, c.interaction_id]), [['cua', 'card-a'], ['', 'typed-approval']]);
+    for (const card of cards) {
+      assert.equal(card.questions[0].question, card.job_id ? '打开计算器' : '允许执行 rm？');
+      assert.deepEqual([card.questions[0].allow_answer, card.questions[0].session_answer,
+        card.questions[0].permanent_answer, card.questions[0].reject_answer], ['本次允许', '会话内记住', '永久记住', '拒绝']);
+    }
+    assert.match(status, /同意\/允许\/可以\/批准 answers with allow_answer/);
+    assert.match(status, /本会话保持同意\/本会话同意\/这个会话都允许 answers with session_answer/);
+    assert.match(status, /打开微信\), delegate it as a new task .*never use it as a card answer/);
+    assert.doesNotMatch(status, /预算/);
+  }
+
+  // A frame-only request carries no card status (the backend only accepts it on user turns).
+  frame = 'data:image/jpeg;base64,ZmFrZQ==';
+  tick();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(requests.at(-1).request_kind, 'frame');
+  assert.equal(requests.at(-1).approval_context, undefined);
+  frame = '';
+
+  // Typed card answered on screen, then the task finishes: the status is gone.
+  provider.enqueueQuestion('', { request_id: 'typed-approval', state: 'answered' });
+  let pending = provider.submitUserInstruction('还有卡吗');
+  tick();
+  await pending;
+  assert.doesNotMatch(requests.at(-1).approval_context, /typed-approval/);
+  provider.handleCompletedSearch({ job_id: 'cua' }, { status: 'completed', summary: 'x' });
+  pending = provider.submitUserInstruction('好了吗');
+  tick();
+  await pending;
+  assert.equal(requests.at(-1).approval_context, undefined);
+
+  provider.enqueueQuestion('cua2', { id: 'c', request_id: 'c', state: 'pending', source: 'permission_interrupt', questions: [] });
+  provider.stop();
+  assert.equal(provider.pendingApprovals.size, 0, 'stop clears cards');
+});

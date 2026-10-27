@@ -245,3 +245,5 @@ class Message:
     group_digital_avatar: bool = False
     enable_memory: bool | None = None
     enable_streaming: bool = True
+
+_ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
