@@ -886,6 +886,10 @@ function AppContent({
   const leaveDiagnosisView = useCallback(() => {
     selectChatSurfaceView('chat');
   }, [selectChatSurfaceView]);
+  const returnToChatAfterFill = useCallback(() => {
+    selectChatSurfaceView('chat');
+    setComposerFocusNonce((nonce) => nonce + 1);
+  }, [selectChatSurfaceView]);
   const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
   const composerHeldClosed = composerDocked && diagnosisComposerPolicy !== 'available';
@@ -4613,6 +4617,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           sessionId={sessionId}
                           onBack={leaveDiagnosisView}
                           onComposerPolicyChange={setDiagnosisComposerPolicy}
+                          onComposerFilled={returnToChatAfterFill}
                         />
                       </Suspense>
                     )}

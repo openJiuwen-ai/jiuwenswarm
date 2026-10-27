@@ -44,6 +44,8 @@ export interface DiagnosisSubpageProps {
   focusedFindingId: string | null;
   /** Emphasise a finding on the trajectory, or `null` to stop. */
   onFocusFinding: (findingId: string | null) => void;
+  /** Leave the diagnosis view once a suggestion has been written into the composer. */
+  onComposerFilled?: () => void;
 }
 
 export const DiagnosisSubpage = memo(function DiagnosisSubpage({
@@ -51,9 +53,14 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
   subjectLabels,
   focusedFindingId,
   onFocusFinding,
+  onComposerFilled,
 }: DiagnosisSubpageProps) {
   const { t } = useTranslation();
-  const { record, notice, summaries } = session;
+  const { record, notice, summaries, fillComposer } = session;
+  const fillAndReturn = useCallback((text: string) => {
+    fillComposer(text);
+    onComposerFilled?.();
+  }, [fillComposer, onComposerFilled]);
 
   return (
     <div className={css.root} data-testid="trajectory-diagnosis-subpage">
@@ -87,6 +94,7 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
             subjectLabels={subjectLabels}
             focusedFindingId={focusedFindingId}
             onFocusFinding={onFocusFinding}
+            onFill={fillAndReturn}
           />
         )}
       </div>
@@ -100,6 +108,7 @@ interface RecordCardsProps {
   subjectLabels: ReadonlyMap<string, string>;
   focusedFindingId: string | null;
   onFocusFinding: (findingId: string | null) => void;
+  onFill: (text: string) => void;
 }
 
 function Card({ title, action, testId, children }: {
@@ -119,7 +128,14 @@ function Card({ title, action, testId, children }: {
   );
 }
 
-function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocusFinding }: RecordCardsProps) {
+function RecordCards({
+  record,
+  session,
+  subjectLabels,
+  focusedFindingId,
+  onFocusFinding,
+  onFill,
+}: RecordCardsProps) {
   const { t } = useTranslation();
   const running = isRunning(record);
   const done = !running;
@@ -228,7 +244,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                 action={(
                   <FillButton
                     text={artifactText}
-                    onFill={session.fillComposer}
+                    onFill={onFill}
                     testId="trajectory-diagnosis-artifact-fix-fill"
                   />
                 )}
@@ -243,7 +259,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                 action={(
                   <FillButton
                     text={artifactText}
-                    onFill={session.fillComposer}
+                    onFill={onFill}
                     testId="trajectory-diagnosis-artifact-fix-fill"
                   />
                 )}
@@ -258,7 +274,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                 action={(
                   <FillButton
                     text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skillSuggestionText(judge)}`}
-                    onFill={session.fillComposer}
+                    onFill={onFill}
                     testId="trajectory-diagnosis-skill-fill"
                   />
                 )}
@@ -366,7 +382,7 @@ function LegacySuggestions({ record, session }: { record: DiagnosisRecord; sessi
           action={(
             <FillButton
               text={instruction}
-              onFill={session.fillComposer}
+              onFill={onFill}
               testId="trajectory-diagnosis-artifact-fix-fill"
             />
           )}
@@ -385,7 +401,7 @@ function LegacySuggestions({ record, session }: { record: DiagnosisRecord; sessi
           action={(
             <FillButton
               text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skill.message}`}
-              onFill={session.fillComposer}
+              onFill={onFill}
               testId="trajectory-diagnosis-skill-fill"
             />
           )}
