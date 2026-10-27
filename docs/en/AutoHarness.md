@@ -10,15 +10,6 @@ Auto Harness is an agent self-optimization solution built on openJiuwen Agent Co
 
 ## Features
 
-### Evaluation sampling
-
-New Harness optimization tasks pin `model_request_config.temperature` to `0.0`
-in `models/evaluation.yaml`. Baseline, target and full evaluations share this
-solver configuration, and its fingerprint includes the sampling setting.
-Existing tasks retain their saved configuration. Restart the service before
-creating new tasks to load this change. This reduces sampling variation without
-guaranteeing identical executions.
-
 ### 1.1 Background & Motivation
 
 Harness is the "body" of an Agent — the LLM provides model capability, but the Harness (prompts, tools, rails, skills, and orchestration logic) determines how the agent actually performs. If the LLM is the brain, the Harness is the torso and limbs that execute capabilities in practice.
