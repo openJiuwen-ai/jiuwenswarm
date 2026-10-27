@@ -220,7 +220,7 @@ async def test_input_does_not_answer_or_supersede_pending_interaction(setup_runt
         await collect(runtime.stream(request()))
     root = runtime._session_coordinator.snapshot_session("input-session").executions[0]
     assert root.state is SessionExecutionState.WAITING_FOR_CONTROL
-    assert root.waiting_control_id == "question-1"
+    assert root.waiting_control_ids == {"question-1"}
     assert not agent.delivered
 
 

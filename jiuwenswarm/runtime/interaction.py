@@ -4,16 +4,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.evolution import (
     is_interrupt_evolution_approval_answer_payload,
 )
+
+if TYPE_CHECKING:
+    from jiuwenswarm.runtime.events import RuntimeEvent
 
 
 _INTERRUPT_RESUME_SOURCES = frozenset(
@@ -25,6 +28,24 @@ _INTERRUPT_RESUME_SOURCES = frozenset(
     }
 )
 _WORK_MODES = frozenset({"work", "code"})
+
+# The id an answer names, per event that asks for one.
+_INTERACTION_ID_KEYS: dict[str, str] = {
+    "chat.ask_user_question": "request_id",
+    "harness.activate_interaction": "interaction_id",
+}
+
+
+def interaction_ids(event: RuntimeEvent) -> frozenset[str]:
+    """The interaction an event asks to be answered, if it asks one."""
+    key = _INTERACTION_ID_KEYS.get(event.event_type)
+    interaction_id = str((event.payload or {}).get(key) or "").strip() if key is not None else ""
+    return frozenset({interaction_id}) if interaction_id else frozenset()
+
+
+def asked_interaction_ids(events: Iterable[RuntimeEvent]) -> frozenset[str]:
+    """The interactions a run of events asks to be answered."""
+    return frozenset().union(*map(interaction_ids, events))
 
 
 class InteractionAnswerError(ValueError):
@@ -207,4 +228,4 @@ class InteractionAnswerInput:
         )
 
 
-__all__ = ["InteractionAnswerError", "InteractionAnswerInput"]
+__all__ = ["InteractionAnswerError", "InteractionAnswerInput", "asked_interaction_ids", "interaction_ids"]

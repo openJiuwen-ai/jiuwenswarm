@@ -491,24 +491,24 @@ class SessionMessageStore:
             ).fetchone()
         return self._row_to_record(row)
 
-    def waiting_for_resume(
+    def waiting_for_pause(
         self,
         target_session_id: str,
-        interrupt_request_id: str,
-        interrupt_source: str,
+        interaction_ids: Iterable[str],
     ) -> SessionMessageRecord | None:
-        """Return the exact waiting item addressed by an interrupt answer."""
+        """Return the waiting item whose question is one of a pause's interactions."""
 
+        ids = sorted(set(interaction_ids))
         self.ensure_schema()
         with self._session() as conn, conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT * FROM session_messages
                 WHERE target_session_id = ? AND status = 'waiting_user'
-                  AND interrupt_request_id = ? AND interrupt_source = ?
+                  AND interrupt_request_id IN ({", ".join("?" for _ in ids)})
                 ORDER BY sequence LIMIT 1
                 """,
-                (target_session_id, interrupt_request_id, interrupt_source),
+                (target_session_id, *ids),
             ).fetchone()
         return self._row_to_record(row)
 
@@ -695,8 +695,6 @@ class SessionMessageStore:
         self,
         message_id: str,
         *,
-        expected_interrupt_request_id: str,
-        expected_interrupt_source: str,
         interrupt_request_id: str,
         interrupt_source: str,
     ) -> SessionMessageRecord | None:
@@ -711,16 +709,8 @@ class SessionMessageStore:
                 SET updated_at = ?, interrupt_request_id = ?, interrupt_source = ?,
                     last_error_code = '', last_error = ''
                 WHERE message_id = ? AND status = 'waiting_user'
-                  AND interrupt_request_id = ? AND interrupt_source = ?
                 """,
-                (
-                    now,
-                    interrupt_request_id,
-                    interrupt_source,
-                    message_id,
-                    expected_interrupt_request_id,
-                    expected_interrupt_source,
-                ),
+                (now, interrupt_request_id, interrupt_source, message_id),
             )
             if cursor.rowcount != 1:
                 return None

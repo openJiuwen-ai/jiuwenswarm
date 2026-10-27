@@ -133,6 +133,7 @@ from jiuwenswarm.runtime.host_services import (
     restore_runtime_push_handler,
 )
 from jiuwenswarm.runtime.plan import PlanModeController
+from jiuwenswarm.runtime.session.model import AnswerInFlightError, NoControlTargetError
 from jiuwenswarm.runtime.request import (
     PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
 )
@@ -613,14 +614,15 @@ async def _stop_stream_keepalive(
     _consume_keepalive_task_result(keepalive_task, request_id)
 
 
+_UNDELIVERED_ANSWER_ERRORS: tuple[type[Exception], ...] = (NoControlTargetError,)
+
+
 @dataclass(slots=True)
 class _SessionMessageResumeState:
     """Stable mailbox identity while one user answer resumes a target turn."""
 
     message_id: str
     target_session_id: str
-    interrupt_request_id: str
-    interrupt_source: str
     waiting_user: bool = False
 
 
@@ -3951,16 +3953,7 @@ class AgentWebSocketServer:
 
             for event in events:
                 outcome_tracker.observe(event)
-                if event.event_type == "chat.ask_user_question":
-                    payload = event.payload if isinstance(event.payload, dict) else {}
-                    await self._persist_repeated_session_question(
-                        request,
-                        next_interrupt_request_id=str(
-                            payload.get("request_id") or ""
-                        ).strip(),
-                        next_interrupt_source=str(payload.get("source") or "").strip(),
-                        resume_state=resume_state,
-                    )
+                await self._persist_repeated_session_question(event, resume_state)
                 await self._send_runtime_event(
                     ws,
                     event,
@@ -3978,6 +3971,9 @@ class AgentWebSocketServer:
                 if resume_outcome == "unknown"
                 else ""
             )
+        except _UNDELIVERED_ANSWER_ERRORS as exc:
+            resume_state = await self._message_settled_by_refused_answer(request, resume_state, exc)
+            raise
         finally:
             try:
                 await self._finalize_session_message_resume(
@@ -4391,6 +4387,7 @@ class AgentWebSocketServer:
             await start_processing()
 
         outcome_tracker = _TurnOutcomeTracker()
+        waiting = False
         processing_finished = False
         runtime = self._execution_runtime()
         if supplemental_delivery:
@@ -4473,20 +4470,24 @@ class AgentWebSocketServer:
                     interrupt_request_id = str(payload.get("request_id") or "").strip()
                     interrupt_source = str(payload.get("source") or "").strip()
                     service = getattr(self, "_session_message_service", None)
-                    if not interrupt_request_id or not interrupt_source:
+                    if not interrupt_request_id:
                         outcome_tracker.fail(
                             "Runtime emitted an uncorrelated user question"
                         )
                     elif service is None:
                         outcome_tracker.fail("Session message service is unavailable")
-                    elif not await service.mark_waiting(
-                        record.message_id,
-                        interrupt_request_id=interrupt_request_id,
-                        interrupt_source=interrupt_source,
-                    ):
-                        outcome_tracker.fail(
-                            "Failed to persist user-question correlation"
+                    elif not waiting:
+                        # One question is enough: an answer to any question of
+                        # the pause finds the message (resumed_interactions).
+                        waiting = await service.mark_waiting(
+                            record.message_id,
+                            interrupt_request_id=interrupt_request_id,
+                            interrupt_source=interrupt_source,
                         )
+                        if not waiting:
+                            outcome_tracker.fail(
+                                "Failed to persist user-question correlation"
+                            )
                     if outcome_tracker.saw_error:
                         payload = {
                             "event_type": "chat.error",
@@ -4677,16 +4678,7 @@ class AgentWebSocketServer:
                     await _send_control_event(event)
                     continue
                 outcome_tracker.observe(event)
-                if event.event_type == "chat.ask_user_question":
-                    payload = event.payload if isinstance(event.payload, dict) else {}
-                    await self._persist_repeated_session_question(
-                        request,
-                        next_interrupt_request_id=str(
-                            payload.get("request_id") or ""
-                        ).strip(),
-                        next_interrupt_source=str(payload.get("source") or "").strip(),
-                        resume_state=resume_state,
-                    )
+                await self._persist_repeated_session_question(event, resume_state)
                 chunk_count += 1
                 # 通知 keepalive 有真实 chunk 发送，重置空闲计时。
                 keepalive.notify_activity(terminal=event.is_complete)
@@ -4722,6 +4714,9 @@ class AgentWebSocketServer:
                 if resume_outcome == "unknown"
                 else ""
             )
+        except _UNDELIVERED_ANSWER_ERRORS as exc:
+            resume_state = await self._message_settled_by_refused_answer(request, resume_state, exc)
+            raise
         finally:
             try:
                 # 尽早阻止新的 keepalive；Runtime 清理仍先完成，以尽快释放其资源。
@@ -4771,40 +4766,25 @@ class AgentWebSocketServer:
 
     async def _persist_repeated_session_question(
         self,
-        request: AgentRequest,
-        *,
-        next_interrupt_request_id: str,
-        next_interrupt_source: str,
-        resume_state: _SessionMessageResumeState | None = None,
-    ) -> bool | None:
-        """Persist a resumed mailbox turn's next question before it is pushed."""
-
-        if resume_state is None:
-            resume_state = await self._open_session_message_resume(request)
-        if resume_state is None:
-            return None
+        event: RuntimeEvent,
+        resume_state: _SessionMessageResumeState | None,
+    ) -> None:
+        if resume_state is None or event.event_type != "chat.ask_user_question":
+            return
         service = getattr(self, "_session_message_service", None)
         if service is None:
-            return None
-        next_request_id = str(next_interrupt_request_id or "").strip()
-        next_source = str(next_interrupt_source or "").strip()
-        if not next_request_id or not next_source:
+            return
+        next_request_id = str(event.payload.get("request_id") or "").strip()
+        if not next_request_id:
             raise RuntimeError("Runtime emitted an uncorrelated follow-up question")
-        persisted = await service.complete_waiting_after_resume(
-            resume_state.target_session_id,
-            interrupt_request_id=resume_state.interrupt_request_id,
-            interrupt_source=resume_state.interrupt_source,
-            waiting_user=True,
-            failed=False,
-            next_interrupt_request_id=next_request_id,
-            next_interrupt_source=next_source,
+        persisted = await service.rebind_waiting_question(
+            resume_state.message_id,
+            interrupt_request_id=next_request_id,
+            interrupt_source=str(event.payload.get("source") or "").strip(),
         )
         if not persisted:
             raise RuntimeError("Failed to persist follow-up question correlation")
-        resume_state.interrupt_request_id = next_request_id
-        resume_state.interrupt_source = next_source
         resume_state.waiting_user = True
-        return True
 
     # Public alias for ServerContext (G.CLS.11).
     persist_repeated_session_question = _persist_repeated_session_question
@@ -4824,14 +4804,10 @@ class AgentWebSocketServer:
         service = getattr(self, "_session_message_service", None)
         if service is None:
             return None
-        params = request.params if isinstance(request.params, dict) else {}
-        interrupt_request_id = str(params.get("request_id") or "").strip()
-        interrupt_source = str(params.get("source") or "").strip()
         target_session_id = request.session_id or "default"
-        record = await service.find_waiting_for_resume(
+        record = await service.find_waiting_for_pause(
             target_session_id,
-            interrupt_request_id,
-            interrupt_source,
+            self._execution_runtime().resumed_interactions(request),
         )
         if record is None:
             return None
@@ -4844,12 +4820,34 @@ class AgentWebSocketServer:
         return _SessionMessageResumeState(
             message_id=record.message_id,
             target_session_id=target_session_id,
-            interrupt_request_id=interrupt_request_id,
-            interrupt_source=interrupt_source,
         )
 
     # Public alias for ServerContext (G.CLS.11).
     open_session_message_resume = _open_session_message_resume
+
+    async def _message_settled_by_refused_answer(
+        self,
+        request: AgentRequest,
+        resume_state: _SessionMessageResumeState | None,
+        exc: Exception,
+    ) -> _SessionMessageResumeState | None:
+        """The mailbox item a refused answer settles itself, if no other delivery will.
+
+        A duplicate of an answer in flight, or an answer to a pause another
+        answer resumed and moved on to a follow-up question, leaves the item to
+        that delivery. An answer whose pause is gone, as after a restart,
+        settles the item it opened as ``unknown``.
+        """
+        if resume_state is None or isinstance(exc, AnswerInFlightError):
+            return None
+        service = getattr(self, "_session_message_service", None)
+        if service is None:
+            return None
+        record = await service.find_waiting_for_pause(
+            resume_state.target_session_id,
+            self._execution_runtime().resumed_interactions(request),
+        )
+        return resume_state if record is not None and record.message_id == resume_state.message_id else None
 
     async def _finalize_session_message_resume(
         self,
@@ -4916,65 +4914,6 @@ class AgentWebSocketServer:
 
     # Public alias for ServerContext (G.CLS.11).
     finalize_session_message_resume = _finalize_session_message_resume
-
-    async def _complete_waiting_session_message_after_external_turn(
-        self,
-        request: AgentRequest,
-        *,
-        waiting_user: bool,
-        waiting_correlation_persisted: bool,
-        failed: bool,
-        error: str,
-        next_interrupt_request_id: str,
-        next_interrupt_source: str,
-    ) -> None:
-        """Compatibility wrapper for resolving a resumed mailbox turn."""
-
-        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-            is_interrupt_resume_payload,
-        )
-
-        if not is_interrupt_resume_payload(request.params):
-            return
-        service = getattr(self, "_session_message_service", None)
-        if service is None:
-            return
-        if waiting_user and not waiting_correlation_persisted:
-            return
-        params = request.params if isinstance(request.params, dict) else {}
-        interrupt_request_id = (
-            next_interrupt_request_id
-            if waiting_correlation_persisted
-            else str(params.get("request_id") or "").strip()
-        )
-        interrupt_source = (
-            next_interrupt_source
-            if waiting_correlation_persisted
-            else str(params.get("source") or "").strip()
-        )
-        target_session_id = request.session_id or "default"
-        record = await service.find_waiting_for_resume(
-            target_session_id,
-            interrupt_request_id,
-            interrupt_source,
-        )
-        if record is None:
-            return
-        state = _SessionMessageResumeState(
-            message_id=record.message_id,
-            target_session_id=target_session_id,
-            interrupt_request_id=interrupt_request_id,
-            interrupt_source=interrupt_source,
-            waiting_user=waiting_user,
-        )
-        await self._finalize_session_message_resume(
-            request,
-            state,
-            outcome=(
-                "failed" if failed else "waiting_user" if waiting_user else "succeeded"
-            ),
-            error=error,
-        )
 
     def _execution_runtime(self) -> AgentRuntime:
         runtime = getattr(self, "_runtime", None)

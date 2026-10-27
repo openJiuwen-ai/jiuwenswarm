@@ -275,7 +275,7 @@ class WorkerDispatcher:
                     self._bridge.events.finish(record.dispatch_id)
                 continue
             ongoing = [item for item in executions if not item.state.terminal]
-            waiting = {item.waiting_control_id for item in ongoing if item.waiting_control_id}
+            waiting = {control_id for item in ongoing for control_id in item.waiting_control_ids}
             record.interactions = {key: value for key, value in record.interactions.items() if key in waiting}
             record.is_processing = any(self._execution_is_processing(item) for item in ongoing)
             if ongoing:
@@ -569,7 +569,10 @@ class WorkerDispatcher:
                           if item.request_id in allowed or item.root_request_id in allowed]
             snapshot["executions"] = json.loads(
                 json.dumps(
-                    executions, default=lambda value: value.value if isinstance(value, Enum) else str(value)
+                    executions, default=lambda value: (
+                        value.value if isinstance(value, Enum)
+                        else sorted(value) if isinstance(value, frozenset) else str(value)
+                    )
                 )
             )
             # A known execution owns activity, not its response handler:
@@ -594,8 +597,8 @@ class WorkerDispatcher:
                         generation=state.generation,
                     )
                 )
-            waiting = {item.waiting_control_id for item in state.executions
-                       if not item.state.terminal and item.waiting_control_id}
+            ongoing = [item for item in state.executions if not item.state.terminal]
+            waiting = {control_id for item in ongoing for control_id in item.waiting_control_ids}
             for record in self._bridge.events.records.values():
                 if record.scope != request_scope(request):
                     continue

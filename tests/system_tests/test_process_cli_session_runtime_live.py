@@ -277,7 +277,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             for event in first_events
             if event.event_type == "chat.ask_user_question"
             and (event.payload or {}).get("request_id")
-            == execution.waiting_control_id
+            in execution.waiting_control_ids
         )
 
         interaction_payload = interaction.payload or {}

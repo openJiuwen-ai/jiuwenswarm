@@ -59,16 +59,7 @@ async def handle_unary(ctx: RequestContext) -> None:
 
         for event in events:
             outcome_tracker.observe(event)
-            if event.event_type == "chat.ask_user_question":
-                payload = event.payload if isinstance(event.payload, dict) else {}
-                await services.persist_repeated_session_question(
-                    request,
-                    next_interrupt_request_id=str(
-                        payload.get("request_id") or ""
-                    ).strip(),
-                    next_interrupt_source=str(payload.get("source") or "").strip(),
-                    resume_state=resume_state,
-                )
+            await services.persist_repeated_session_question(event, resume_state)
             await services.send_runtime_event(
                 ctx.sink,
                 event,
@@ -162,16 +153,7 @@ async def handle_stream(ctx: RequestContext) -> None:
                 await _send_control_event(event)
                 continue
             outcome_tracker.observe(event)
-            if event.event_type == "chat.ask_user_question":
-                payload = event.payload if isinstance(event.payload, dict) else {}
-                await services.persist_repeated_session_question(
-                    request,
-                    next_interrupt_request_id=str(
-                        payload.get("request_id") or ""
-                    ).strip(),
-                    next_interrupt_source=str(payload.get("source") or "").strip(),
-                    resume_state=resume_state,
-                )
+            await services.persist_repeated_session_question(event, resume_state)
             chunk_count += 1
             # 通知 keepalive 有真实 chunk 发送，重置空闲计时。
             keepalive.notify_activity(terminal=event.is_complete)

@@ -241,11 +241,11 @@ class AgentServerServices:
             error=error,
         )
 
-    async def persist_repeated_session_question(self, request: Any, **kwargs: Any) -> Any:
+    async def persist_repeated_session_question(self, event: Any, resume_state: Any) -> None:
         """用户还要再答一次时，把下一题和上一题对上。"""
         if self._connection is None:
-            return None
-        return await self._connection.persist_repeated_session_question(request, **kwargs)
+            return
+        await self._connection.persist_repeated_session_question(event, resume_state)
 
     async def cleanup_client_disconnect_session_runtime(self, request: Any) -> bool:
         """对方断开后，清掉这条连接上还占着的会话运行状态。"""

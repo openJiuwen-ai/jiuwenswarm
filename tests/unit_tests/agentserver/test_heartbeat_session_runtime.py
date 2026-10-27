@@ -630,7 +630,7 @@ async def test_live_heartbeat_keeps_new_question_emitted_during_answer(
             if item.work_kind is SessionWorkKind.HEARTBEAT
         )
         assert heartbeat.state.value == "running"
-        assert heartbeat.waiting_control_id == "question-2"
+        assert heartbeat.waiting_control_ids == {"question-2"}
         assert not await chain.heartbeat.admission.try_begin_heartbeat(
             SESSION, "next-run"
         )
@@ -811,7 +811,7 @@ async def test_followup_question_is_not_retained_when_answer_fails(
             SESSION, "question-2"
         )
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert heartbeat.waiting_control_id == "question-1"
+        assert heartbeat.waiting_control_ids == {"question-1"}
 
         async def complete(request):
             yield chain.agent._chunk(
@@ -1342,7 +1342,7 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
         # The follow-up answer parked the Heartbeat in waiting_for_control, so
         # no RUNNING execution is left to own a further question.
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert heartbeat.waiting_control_id == "question-2"
+        assert heartbeat.waiting_control_ids == {"question-2"}
 
         with _service_logs() as logged:
             chain.agent.answered.set()
@@ -1357,7 +1357,7 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
             for item in _executions(chain)
             if item.work_kind is SessionWorkKind.HEARTBEAT
         )
-        assert parked.waiting_control_id == "question-2"
+        assert parked.waiting_control_ids == {"question-2"}
     finally:
         release_heartbeat.set()
         await _finish(chain)

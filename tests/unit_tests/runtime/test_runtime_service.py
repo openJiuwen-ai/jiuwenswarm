@@ -954,7 +954,7 @@ async def test_session_message_waits_until_target_control_is_resolved() -> None:
         "question",
         SessionWorkKind.CHAT_UNARY,
         lambda: asyncio.sleep(0, result="ask"),
-        suspension_key=lambda _value: "control-1",
+        interaction_ids=lambda _value: frozenset({"control-1"}),
     )
     delivered = asyncio.Event()
 
@@ -973,7 +973,7 @@ async def test_session_message_waits_until_target_control_is_resolved() -> None:
 
     await runtime._session_coordinator.deliver_control(
         "target",
-        "control-1",
+        ("control-1",),
         lambda: asyncio.sleep(0, result="answered"),
     )
     await asyncio.wait_for(delivered.wait(), timeout=1)

@@ -354,7 +354,7 @@ async def test_original_eof_before_old_ack_preserves_next_permission(harness, co
             after_ack = harness.coordinator.snapshot_session(SESSION_ID)
             parent = _execution(after_ack, "root-request")
             assert parent.state is SessionExecutionState.WAITING_FOR_CONTROL
-            assert parent.waiting_control_id == "permission_2"
+            assert parent.waiting_control_ids == {"permission_2"}
             events = await _collect(
                 answer_stream(
                     _answer("permission_2", source="permission_interrupt")
@@ -707,9 +707,9 @@ async def test_awaitable_stream_factory_and_waiting_terminal_semantics(harness) 
     events = await _collect(
         harness.coordinator.deliver_control_stream(
             SESSION_ID,
-            "question_1",
+            ("question_1",),
             operation,
-            suspension_key=lambda value: value,
+            interaction_ids=lambda value: frozenset({value}),
         )
     )
     assert events == ["question_2"]
@@ -720,7 +720,7 @@ async def test_awaitable_stream_factory_and_waiting_terminal_semantics(harness) 
     assert control.work_kind is SessionWorkKind.CONTROL_INPUT
     assert control.parent_execution_id == parent.execution_id
     assert control.state is SessionExecutionState.WAITING_FOR_CONTROL
-    assert control.waiting_control_id == "question_2"
+    assert control.waiting_control_ids == {"question_2"}
 
 
 @pytest.mark.asyncio

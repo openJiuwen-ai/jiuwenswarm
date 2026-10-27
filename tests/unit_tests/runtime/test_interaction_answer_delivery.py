@@ -218,3 +218,176 @@ async def test_a_new_user_turn_keeps_the_question_a_paused_goal_still_waits_on()
     assert admission.has_pending_interaction(session_id)
     await asyncio.wait_for(_streamed_answer(runtime, session_id), 5)  # the goal still waited for it
     assert not admission.has_pending_interaction(session_id)
+
+
+class _TwoQuestionAgent(FakeAgent):
+    """Pauses on two questions; a resume asks again what it left unanswered."""
+
+    def __init__(self) -> None:
+        self.open = ["q-1", "q-2"]
+        self.delivered: list[str] = []
+
+    def _questions(self, request: AgentRequest):
+        for question in self.open:
+            yield _chunk(request, "chat.ask_user_question", request_id=question, source="ask_user_interrupt")
+
+    async def process_message_stream(self, request: AgentRequest):
+        for chunk in self._questions(request):
+            yield chunk
+
+    async def deliver_control_input(self, request: AgentRequest):
+        answered = request.params["request_id"]
+        self.delivered.append(answered)
+        self.open.remove(answered)
+        for chunk in self._questions(request):
+            yield chunk
+        if not self.open:
+            yield _chunk(request, "chat.final", content="answered")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("order", [("q-1", "q-2"), ("q-2", "q-1")])
+async def test_an_answer_to_any_question_of_a_pause_resumes_it(order: tuple[str, str]) -> None:
+    session_id = f"two-questions-{'-'.join(order)}"
+    agent = _TwoQuestionAgent()
+    runtime, admission = _runtime(agent)
+    await _collect_events(runtime.stream(AgentRequest(
+        request_id="turn-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
+        is_stream=True, params={"query": "ask me", "mode": "agent", "work_mode": "work"},
+    ), trigger_hook=False))
+    assert admission.pending_interactions(session_id) == {"q-1", "q-2"}
+
+    for question in order:
+        await asyncio.wait_for(runtime.invoke(AgentRequest(
+            request_id=f"answer-{question}", channel_id="web", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND,
+            params={"query": "", "request_id": question, "source": "ask_user_interrupt", "answers": _ANSWERS,
+                    "mode": "agent", "work_mode": "work"},
+        ), trigger_hook=False), 5)
+
+    assert agent.delivered == list(order)
+    assert not admission.has_pending_interaction(session_id)
+
+
+def _answer(runtime: AgentRuntime, session_id: str, question: str, kind: str):
+    if kind == "streamed":
+        return _collect_events(runtime.stream_interaction_answer(InteractionAnswerInput(
+            request_id=f"answer-{question}", channel_id="web", session_id=session_id, interaction_id=question,
+            source="ask_user_interrupt", answers=_ANSWERS, mode="agent", work_mode="work",
+        ), trigger_hook=False))
+    request = AgentRequest(
+        request_id=f"answer-{question}", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
+        is_stream=kind == "chat",
+        params={"query": "", "request_id": question, "source": "ask_user_interrupt", "answers": _ANSWERS,
+                "mode": "agent", "work_mode": "work"},
+    )
+    if kind == "chat":
+        return _collect_events(runtime.stream(request, trigger_hook=False))
+    return runtime.invoke(request, trigger_hook=False)
+
+
+def _waiting_executions(runtime: AgentRuntime, session_id: str) -> list:
+    snapshot = runtime.get_session_snapshot(session_id)
+    return [execution for execution in snapshot.executions if not execution.state.terminal]
+
+
+class _StillStreamingAgent(_TwoQuestionAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.end_stream = asyncio.Event()
+
+    async def process_message_stream(self, request: AgentRequest):
+        for chunk in self._questions(request):
+            yield chunk
+        await self.end_stream.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["unary", "streamed", "chat"])
+async def test_an_answer_before_the_paused_stream_ends_leaves_nothing_waiting(kind: str) -> None:
+    session_id = f"open-stream-{kind}"
+    agent = _StillStreamingAgent()
+    runtime, admission = _runtime(agent)
+    turn = asyncio.create_task(_collect_events(runtime.stream(AgentRequest(
+        request_id="turn-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
+        is_stream=True, params={"query": "ask me", "mode": "agent", "work_mode": "work"},
+    ), trigger_hook=False)))
+    for _ in range(200):
+        if admission.pending_interactions(session_id) == {"q-1", "q-2"}:
+            break
+        await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_answer(runtime, session_id, "q-1", kind), 5)
+    agent.end_stream.set()
+    await asyncio.wait_for(turn, 5)
+    await asyncio.wait_for(_answer(runtime, session_id, "q-2", kind), 5)
+
+    assert agent.delivered == ["q-1", "q-2"]
+    assert not _waiting_executions(runtime, session_id)
+    assert not admission.has_pending_interaction(session_id)
+
+
+class _SlowAnswerAgent(_TwoQuestionAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.release = asyncio.Event()
+
+    async def deliver_control_input(self, request: AgentRequest):
+        await self.release.wait()
+        async for chunk in super().deliver_control_input(request):
+            yield chunk
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kinds",
+    ["unary-unary", "streamed-unary", "unary-streamed", "streamed-streamed", "chat-unary", "unary-chat", "chat-chat"],
+)
+async def test_two_answers_of_one_pause_both_reach_the_turn(kinds: str) -> None:
+    session_id = f"race-{kinds}"
+    first_kind, second_kind = kinds.split("-")
+    agent = _SlowAnswerAgent()
+    runtime, admission = _runtime(agent)
+    await _collect_events(runtime.stream(AgentRequest(
+        request_id="turn-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
+        is_stream=True, params={"query": "ask me", "mode": "agent", "work_mode": "work"},
+    ), trigger_hook=False))
+
+    first = asyncio.create_task(_answer(runtime, session_id, "q-1", first_kind))
+    await asyncio.sleep(0.05)
+    second = asyncio.create_task(_answer(runtime, session_id, "q-2", second_kind))
+    await asyncio.sleep(0.05)
+    agent.release.set()
+    await asyncio.wait_for(asyncio.gather(first, second), 5)
+
+    assert agent.delivered == ["q-1", "q-2"]
+    assert not _waiting_executions(runtime, session_id)
+    assert not admission.has_pending_interaction(session_id)
+
+
+class _NoReaskAgent(_TwoQuestionAgent):
+    """Pauses on two questions; answering one finishes the turn without asking the other again."""
+
+    async def deliver_control_input(self, request: AgentRequest):
+        self.delivered.append(request.params["request_id"])
+        yield _chunk(request, "chat.final", content="answered")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["unary", "streamed", "chat"])
+async def test_an_answer_releases_the_questions_its_pause_no_longer_waits_on(kind: str) -> None:
+    session_id = f"no-reask-{kind}"
+    agent = _NoReaskAgent()
+    runtime, admission = _runtime(agent)
+    await _collect_events(runtime.stream(AgentRequest(
+        request_id="turn-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
+        is_stream=True, params={"query": "ask me", "mode": "agent", "work_mode": "work"},
+    ), trigger_hook=False))
+    assert admission.pending_interactions(session_id) == {"q-1", "q-2"}
+
+    await asyncio.wait_for(_answer(runtime, session_id, "q-1", kind), 5)
+
+    assert agent.delivered == ["q-1"]
+    assert not _waiting_executions(runtime, session_id)
+    assert not admission.has_pending_interaction(session_id)
+    assert await _heartbeat_can_start(admission, session_id)
