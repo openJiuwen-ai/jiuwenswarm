@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import logging
 from typing import Any, Mapping
@@ -22,6 +23,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
     _IN_FLIGHT_PHASES,
     _query_matches_stopped_claim,
     EXECUTION_SCHEMA,
+    MODEL_RESEARCH_HANDOFF_ERRORS,
     bind_deepresearch_execution_context,
     reset_deepresearch_execution_context,
 )
@@ -276,9 +278,11 @@ class DeepResearchExecutionRail(DeepAgentRail):
     # interrupt and does not leak the internal envelope as a tool result.
     priority = 81
 
-    def __init__(self, *, model_provider):
+    def __init__(self, *, model_provider, materials_context_provider=None, mcp_context_provider=None):
         super().__init__()
         self._model_provider = model_provider
+        self._materials_context_provider = materials_context_provider
+        self._mcp_context_provider = mcp_context_provider
         self._agent_id = "jiuwenswarm"
         self.system_prompt_builder: Any = None
 
@@ -350,6 +354,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
         model = self._model_provider() if callable(self._model_provider) else None
         request_id = str((request_context or {}).get("request_id") or "").strip()
         requested_report_type = (request_context or {}).get("requested_report_type")
+        mcp_servers = self._mcp_context_provider() if callable(self._mcp_context_provider) else None
+        if inspect.isawaitable(mcp_servers):
+            mcp_servers = await mcp_servers
         token = bind_deepresearch_execution_context(
             tool_call_id=workflow_id,
             state=states.get(workflow_id),
@@ -360,6 +367,12 @@ class DeepResearchExecutionRail(DeepAgentRail):
             request_id=request_id,
             requested_report_type=requested_report_type,
             deepresearch_followup=deepresearch_followup,
+            materials_context=(
+                self._materials_context_provider() if callable(self._materials_context_provider) else None
+            ),
+            mcp_servers=mcp_servers,
+            mcp_context_provider=self._mcp_context_provider,
+            load_state=lambda: _load_states(ctx.session).get(workflow_id),
         )
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})
         tokens[tool_call_id] = token
@@ -371,6 +384,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
             payload = _result_payload(ctx.inputs.tool_result)
             if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:
                 return
+            if payload.get("kind") == "in_progress":
+                return  # A concurrent caller must not overwrite or finish the active workflow.
             tool_call_id = _tool_call_id(ctx)
             workflow_id = _workflow_id(ctx.session, tool_call_id)
             # tool_msg 必须挂历史原始 id（resume 时 ctx 携带的是 TIE
@@ -447,7 +462,17 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 )
                 return
 
-            states.pop(workflow_id, None)
+            fallback = payload.get("fallback")
+            model_handoff = (
+                payload.get("kind") == "error"
+                and payload.get("error_code") in MODEL_RESEARCH_HANDOFF_ERRORS
+                and isinstance(state, Mapping)
+                and state.get("model_research_fallback") is True
+                and isinstance(fallback, Mapping)
+                and fallback.get("mode") == "model_research"
+            )
+            if not (model_handoff or (isinstance(state, Mapping) and state.get("materials_prepared"))):
+                states.pop(workflow_id, None)
             _save_states(ctx.session, states)
             aliases = {
                 alias: target
@@ -455,6 +480,10 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 if target != workflow_id
             }
             _save_aliases(ctx.session, aliases)
+            if model_handoff:
+                # Leave the tool envelope in the normal Core tool-result path.
+                # The next main-model turn follows the Skill, using existing tools.
+                return
             content = payload.get("content")
 
             if payload.get("kind") == "completed":

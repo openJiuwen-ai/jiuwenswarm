@@ -37,6 +37,7 @@ const DELETABLE_ZONE_ROOTS = [
   'agent/jiuwenclaw_workspace/todo',
   'agent/jiuwenclaw_workspace/prompt_attachment',
   'agent/jiuwenclaw_workspace/received_files',
+  'agent/jiuwenclaw_workspace/uploads',
 ] as const;
 
 /** 打开「仅可删除」时预展开并拉取的路径（含中间祖先）。 */

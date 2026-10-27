@@ -67,32 +67,32 @@ async def test_block_stale_does_not_skip_plain_cron_recover(monkeypatch):
     assert recovered == [("cron_job_1", "req-plain")]
 
 
-def test_clear_cron_awaiting_when_interrupt_gone():
+def test_clear_hitl_awaiting_when_interrupt_gone():
     adapter = _bare_adapter()
     sid = "cron_done_1"
     adapter.mark_session_awaiting_tool_permission(sid)
     assert sid in adapter._sessions_awaiting_tool_permission
 
     adapter._read_session_interrupt_state = MagicMock(return_value=None)
-    adapter._clear_cron_awaiting_if_interrupt_gone(sid)
+    adapter._clear_hitl_awaiting_if_interrupt_gone(sid)
     assert sid not in adapter._sessions_awaiting_tool_permission
 
 
-def test_clear_cron_awaiting_keeps_pin_while_interrupt_live():
+def test_clear_hitl_awaiting_keeps_pin_while_interrupt_live():
     adapter = _bare_adapter()
     sid = "cron_live_1"
     adapter.mark_session_awaiting_tool_permission(sid)
     adapter._read_session_interrupt_state = MagicMock(return_value={"paused": True})
 
-    adapter._clear_cron_awaiting_if_interrupt_gone(sid)
+    adapter._clear_hitl_awaiting_if_interrupt_gone(sid)
     assert sid in adapter._sessions_awaiting_tool_permission
 
 
-def test_clear_cron_awaiting_ignores_non_cron_session():
+def test_clear_hitl_awaiting_clears_non_cron_session():
     adapter = _bare_adapter()
     sid = "web_session"
     adapter._sessions_awaiting_tool_permission.add(sid)
     adapter._read_session_interrupt_state = MagicMock(return_value=None)
 
-    adapter._clear_cron_awaiting_if_interrupt_gone(sid)
-    assert sid in adapter._sessions_awaiting_tool_permission
+    adapter._clear_hitl_awaiting_if_interrupt_gone(sid)
+    assert sid not in adapter._sessions_awaiting_tool_permission

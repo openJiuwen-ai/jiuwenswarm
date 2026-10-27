@@ -4105,17 +4105,21 @@ class SkillManager:
                 raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
             return body
 
-        artifact_bytes = _download_with_requests()
+        artifact_bytes = await asyncio.to_thread(_download_with_requests)
 
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_local_") as tmpdir:
             tmp_path = Path(tmpdir)
-            logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
-            self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
-            skill_dir = self._locate_skill_dir(tmp_path)
-            if skill_dir is None:
-                return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
-            logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
-            return self._import_local_from_path(skill_dir, force=force, origin=download_url)
+
+            def _extract_and_import() -> dict:
+                logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
+                self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
+                skill_dir = self._locate_skill_dir(tmp_path)
+                if skill_dir is None:
+                    return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
+                logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
+                return self._import_local_from_path(skill_dir, force=force, origin=download_url)
+
+            return await asyncio.to_thread(_extract_and_import)
 
     async def handle_skills_marketplace_add(self, params: dict) -> dict:
         """添加 marketplace 源.

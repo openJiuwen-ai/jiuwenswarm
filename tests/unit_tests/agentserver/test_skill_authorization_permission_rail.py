@@ -421,3 +421,39 @@ async def test_disabled_policy_does_not_apply_persisted_grant(active_skill_permi
     monkeypatch.setattr(type(rail).__mro__[1], '_get_permissions_snapshot', lambda self, context: disabled)
     rail._refresh_permissions_for_tool_call(ctx)
     assert (await rail._engine.check_permission('get_current_user', {})).permission.value == 'ask'
+
+
+@pytest.mark.asyncio
+async def test_subagent_tool_permission_card_leads_with_intent_headline(monkeypatch):
+    """Skill 窗口审批卡：意图标题置顶，声明/发起方/参数保留，options 不变。"""
+    from jiuwenswarm.agents.harness.common.rails import subagent_permission_rail as spr
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_emit(session, request, *, header, question, options):
+        captured.update(header=header, question=question, options=options)
+
+    monkeypatch.setattr(spr, "_parent_stream_session", lambda: object())
+    monkeypatch.setattr(spr, "emit_subagent_approval", _fake_emit)
+
+    request = SimpleNamespace(
+        payload={
+            "tool_name": "write_file",
+            "tool_args": {"call_goal": "生成周报", "path": "/ws/report.md"},
+            "skill_name": "weekly-report",
+            "reason": "file_guard",
+        },
+        agent_scope_id="child-sess",
+    )
+
+    await spr.build_tool_permission_approval_sender()(request)
+
+    assert captured["header"] == "权限审批: write_file"
+    assert captured["question"].startswith("**是否允许「写入 report.md」？**")
+    assert "模型说明（仅供参考）：生成周报" in captured["question"]
+    assert "**工具 `write_file` 需要授权才能执行**" in captured["question"]
+    assert (
+        "> 发起方：子 Agent `child-sess`（当前 Skill：`weekly-report`）"
+        in captured["question"]
+    )
+    assert [opt["label"] for opt in captured["options"]] == ["本次允许", "拒绝"]

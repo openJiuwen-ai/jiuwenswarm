@@ -432,3 +432,67 @@ async def test_deferred_tool_lookup_keeps_default_timeout_boundary():
         "error": "Tool lookup for 'missing_deferred' timed out after 0.01s",
         "tool_name": "missing_deferred",
     }
+
+@pytest.mark.parametrize('permission,allowed', [(None, False), ('ask', False), ('deny', False), ('allow', True)])
+def test_material_paths_require_explicit_read_permission(permission, allowed):
+    from openjiuwen.harness.security.models import PermissionLevel
+    adapter = SimpleNamespace(_current_request_route={'materials_context': {
+        'files': [{'path': '/uploaded/a.txt', 'name': 'a.txt'}], 'scope': 's', 'original_query': '参考附件'}},
+        _resolve_permission_config_for_agent=Mock(return_value={'enabled': True}),
+        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=Mock(
+            return_value=(PermissionLevel(permission) if permission else None, None)))))
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    assert context['files'][0]['read_allowed'] is allowed
+    assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
+
+
+@pytest.mark.asyncio
+async def test_disabled_permissions_prepare_current_request_material(tmp_path):
+    import json
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import prepare_materials
+
+    root = tmp_path.resolve()
+    attachment = root / 'material.txt'
+    attachment.write_text('fictional regression material: queue 42 to 17 seconds', encoding='utf-8')
+    resolve_config = Mock(return_value={'enabled': False})
+    adapter = SimpleNamespace(
+        _current_request_route={'session_id': 'material-session', 'materials_context': {
+            'files': [{'path': str(attachment), 'name': attachment.name}],
+            'scope': 'material-session', 'output_dir': str(root),
+            'original_query': '必须使用附件为核心材料，允许联网',
+        }},
+        _permission_rail=None,
+        _resolve_permission_config_for_agent=resolve_config,
+    )
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    reference = await prepare_materials(context, 'e7c43dd6-2d6e-4093-8c97-4d894fd0fef1')
+    payload = json.loads(Path(reference['path']).read_text())
+    assert payload['materials'][0]['content'] == attachment.read_text()
+    assert reference['results'][0]['status'] == 'ready'
+    resolve_config.assert_called_once_with(session_id='material-session')
+    assert 'read_allowed' not in adapter._current_request_route['materials_context']['files'][0]
+
+
+@pytest.mark.parametrize('config', [
+    {'enabled': True}, {}, {'enabled': None}, {'enabled': 'false'}, {'enabled': 0}, None, [],
+])
+def test_missing_material_permission_engine_stays_closed(config):
+    adapter = SimpleNamespace(
+        _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
+        _permission_rail=None,
+        _resolve_permission_config_for_agent=Mock(return_value=config),
+    )
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    assert context['files'][0]['read_allowed'] is False
+
+
+def test_material_permission_config_failure_stays_closed():
+    check = Mock(return_value=('allow', None))
+    adapter = SimpleNamespace(
+        _current_request_route={'materials_context': {'files': [{'path': '/uploaded/a.txt'}]}},
+        _permission_rail=SimpleNamespace(_engine=SimpleNamespace(check_tool_permission_directly=check)),
+        _resolve_permission_config_for_agent=Mock(side_effect=RuntimeError('configuration unavailable')),
+    )
+    context = interface_deep.JiuWenSwarmDeepAdapter._get_deepresearch_material_context(adapter)
+    assert context['files'][0]['read_allowed'] is False
+    check.assert_not_called()

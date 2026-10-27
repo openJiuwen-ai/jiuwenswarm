@@ -11,6 +11,9 @@ import './styles/foundation.css'
 import './styles/themes/default/light.css'
 import './index.css'
 import './features/a2ui/a2ui.css'
+// Material Symbols Outlined 字体 import 已移至 features/a2ui/rendererRegistry.tsx
+// （与 Icon 渲染的消费方同处归置，对齐 relay-claw 侧结构；当前前端 a2ui 为静态引入链，
+// 字体仍在主 bundle，未来若做 a2ui 懒加载可随 chunk 一起拆出）
 import { getApiPrefix, resolveApiUrl } from './utils/env';
 /**
 * 安装全局 fetch 拦截器：配置了 VITE_API_PREFIX 时，自动为指向同源的相对路径请求

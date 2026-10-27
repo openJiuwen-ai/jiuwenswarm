@@ -80,7 +80,9 @@ def _write_buffer_size(ws: Any) -> int | None:
         return None
     try:
         return int(getter())
-    except (TypeError, ValueError, OSError):
+    except (TypeError, ValueError, OSError, NotImplementedError):
+        # asyncio.WriteTransport 基类直接抛 NotImplementedError。云上适配
+        # 往往只有这个方法、没有真正的写缓冲；探测失败就当没有积压。
         return None
 
 

@@ -102,6 +102,8 @@ async def _invoke(
     upgrade_from_brief=False,
     deepresearch_followup=None,
     conversation_id="",
+    materials_context=None,
+    mcp_servers=None,
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
@@ -112,6 +114,8 @@ async def _invoke(
         save_state=lambda value: saved.append(dict(value)),
         requested_report_type=requested_report_type,
         deepresearch_followup=deepresearch_followup,
+        materials_context=materials_context,
+        mcp_servers=mcp_servers,
     )
     try:
         result = await de.deepresearch_execute._func(
@@ -3143,6 +3147,43 @@ def _seed_upgrade_record(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["upgrade_latest_brief", "refresh_latest_brief", "manual_upgrade"])
+async def test_fresh_followup_binds_current_mcp_sources_without_persisting_credentials(tmp_path, action):
+    report = tmp_path / "brief.html"
+    report.write_text("<h1>原报告</h1><p>已有研究结论</p>", encoding="utf-8")
+    source = {
+        "server_name": "search", "server_url": "https://example.org/mcp",
+        "transport_type": "streamable_http", "type": "search", "timeout": 30.0,
+        "headers": {"Authorization": "request-secret"},
+    }
+    _seed_upgrade_record(metadata=_UPGRADE_TEST_METADATA, report_path=str(report))
+    followup = None if action == "manual_upgrade" else {
+        "v": 1, "action": action, "source_report_id": "brief-conv-1",
+    }
+    try:
+        with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(
+            return_value=json.dumps({"status": "completed", "report_delivered": True})
+        )) as stream:
+            result, saved = await _invoke(
+                query="补充研究", report_type="professional", mcp_servers=[source],
+                materials_context={"scope": "followup-session"},
+                upgrade_from_brief=action == "manual_upgrade", deepresearch_followup=followup,
+            )
+        assert result["kind"] == "completed"
+        assert stream.await_args.kwargs["_mcp_servers"] == [source]
+        assert saved[-1]["mcp_server_names"] == ["search"]
+        assert "request-secret" not in repr(saved)
+        if action == "refresh_latest_brief":
+            assert stream.await_args.kwargs["report_type"] == "brief"
+            assert stream.await_args.kwargs["_brief_refresh_original_query"] == "原始研究查询"
+        else:
+            assert stream.await_args.kwargs["upgrade_from_brief"] is True
+            assert stream.await_args.kwargs["_upgrade_brief_metadata"] == _UPGRADE_TEST_METADATA
+    finally:
+        dt._BRIEF_UPGRADE_RECORDS.clear()
+
+
+@pytest.mark.asyncio
 async def test_refresh_binds_report_body_and_forces_new_brief(tmp_path):
     report = tmp_path / "original.html"
     report.write_text("<h1>原报告</h1><p>证据不足的结论</p>", encoding="utf-8")
@@ -3656,3 +3697,267 @@ async def test_completed_ignores_outline_sections_without_presented_card():
     assert result["kind"] == "completed"
     assert "报告概览" not in result["content"]
     assert "outline_sections" not in saved[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response", [{"status": "skipped", "answers": []},
+    {"status": "answered", "answers": [{"question_index": 0, "selected_options": [], "custom_input": "聚焦技术"}]}])
+async def test_material_snapshot_survives_clarification_and_outline(tmp_path, response):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
+    source = tmp_path / "research.txt"
+    source.write_text("青鹭项目的试验数据是73.42%。")
+    material_context = {"original_query": "参考附件研究青鹭项目", "files": [{"path": str(source), "name": source.name}],
+                        "scope": "session-A", "output_dir": str(tmp_path)}
+    interrupted = {"status": "interrupted", "node_id": "feedback_handler", "marker": {"questions": "研究范围？"}}
+    outline = {"status": "interrupted", "node_id": "outline_interaction", "marker": {"outline": "# 研究报告\n## 结论"}}
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(side_effect=[interrupted, outline,
+            {"status": "completed", "report_delivered": True}])) as stream:
+        first, _ = await _invoke(materials_context=material_context)
+        assert first["kind"] == "interaction"
+        reference = first["state"]["materials_reference"]
+        original_query = first["state"]["query"]
+        assert m.MATERIALS_POLICY in original_query
+        assert material_context["original_query"] in original_query
+        source.unlink()  # resumes must not re-read input
+        with patch.object(m, "prepare_materials", new=AsyncMock(side_effect=AssertionError("re-prepared"))):
+            second, _ = await _invoke(state=first["state"], user_input=response,
+                                      materials_context={**material_context, "original_query": "new https://bad.invalid"})
+            assert second["kind"] == "interaction"
+            third, _ = await _invoke(state=second["state"], user_input={"status": "skipped", "answers": []})
+        assert third["kind"] == "completed"
+        assert all(call.kwargs["_materials_reference"] == reference for call in stream.await_args_list)
+        assert third["state"]["query"] == original_query
+        replay, _ = await _invoke(state=third["state"], materials_context=material_context)
+        assert replay["kind"] == "completed"
+        assert stream.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_material_preparation_cancel_and_duplicate_start(tmp_path):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
+    entered = asyncio.Event()
+    async def pending(*args):
+        entered.set()
+        await asyncio.Event().wait()
+    context = {"original_query": "附件研究", "files": [], "scope": "A", "output_dir": str(tmp_path)}
+    with patch.object(m, "prepare_materials", new=pending), patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as stream:
+        first = asyncio.create_task(_invoke(materials_context=context))
+        await entered.wait()
+        duplicate, _ = await _invoke(materials_context=context)
+        assert duplicate["error_code"] == "execution_uncertain"
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_two_material_sessions_are_isolated(tmp_path):
+    async def run(scope):
+        path = tmp_path / (scope + ".txt")
+        path.write_text(scope)
+        context = {"original_query": "参考附件", "files": [{"path": str(path)}], "scope": scope, "output_dir": str(tmp_path)}
+        return await _invoke(materials_context=context)
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={"status": "completed", "report_delivered": True})):
+        (a, _), (b, _) = await asyncio.gather(run("A"), run("B"))
+    assert a["state"]["materials_reference"]["path"] != b["state"]["materials_reference"]["path"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_code", [
+    "runner_missing", "runtime_python_invalid", "runtime_python_missing", "search_config_missing",
+])
+async def test_unavailable_engine_returns_to_model_instead_of_force_finish(error_code):
+    """The actual execute -> Rail path must allow another model turn."""
+    session = _Session()
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=None, session=session)
+    await rail.before_tool_call(ctx)
+    try:
+        with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value=json.dumps({
+            "status": "error", "error_code": error_code, "error": "engine unavailable",
+        }))) as stream:
+            ctx.inputs.tool_result = await de.deepresearch_execute._func(
+                query="深入研究苹果的发展", file_name="苹果发展研究",
+            )
+        await rail.after_tool_call(ctx)
+    finally:
+        # after_tool_call must also release the bound execution context.
+        assert de._execution_context.get() is None
+    assert ctx.force_finish_requests == []
+    result = ctx.inputs.tool_result
+    assert result["kind"] == "error" and result["error_code"] == error_code
+    assert result["fallback"]["mode"] == "model_research"
+    assert result["fallback"]["restart_from"] == "明确问题与范围"
+    assert result["fallback"]["query"] == "深入研究苹果的发展"
+    assert result.get("report_delivered") is not True
+    assert "Markdown" in result["content"]
+    assert stream.await_args.kwargs["action"] == "start"
+    # Replaying the failed call returns the same handoff without starting again.
+    replay = _rail_ctx(result=None, session=session)
+    await rail.before_tool_call(replay)
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock()) as repeated:
+        replay.inputs.tool_result = await de.deepresearch_execute._func(query="q", file_name="r")
+    await rail.after_tool_call(replay)
+    repeated.assert_not_awaited()
+    assert replay.force_finish_requests == []
+    assert replay.inputs.tool_result["fallback"] == result["fallback"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error_code", [
+    "execution_uncertain", "terminal_marker_missing", "report_delivery_failed",
+    "materials_preparation_failed", "outcome_invalid", "child_config_invalid",
+])
+async def test_other_failures_remain_terminal_without_model_handoff(error_code):
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=None)
+    await rail.before_tool_call(ctx)
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value=json.dumps({
+        "status": "error", "error_code": error_code, "error": "failed",
+    }))):
+        ctx.inputs.tool_result = await de.deepresearch_execute._func(query="研究主题", file_name="r")
+    await rail.after_tool_call(ctx)
+    assert "fallback" not in ctx.inputs.tool_result
+    assert len(ctx.force_finish_requests) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['url', 'document', 'snapshot'])
+async def test_material_preparation_failure_hands_off_and_replays(tmp_path, failure):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
+
+    source = tmp_path / 'broken.docx'
+    source.write_bytes(b'not a valid docx archive')
+    original = ('必须使用 https://[bad/path 作为核心材料研究主题' if failure == 'url'
+                else '必须使用附件作为核心材料研究主题')
+    material_context = {'original_query': original, 'scope': 'material-handoff',
+                        'output_dir': str(tmp_path), 'files': [] if failure == 'url' else [
+                            {'path': str(source), 'name': source.name}]}
+    rail = DeepResearchExecutionRail(model_provider=lambda: None,
+                                     materials_context_provider=lambda: material_context)
+    session = _Session()
+    ctx = _rail_ctx(result=None, session=session)
+    await rail.before_tool_call(ctx)
+    with patch.object(de, '_call_deepresearch_stream_impl', new=AsyncMock()) as stream:
+        if failure == 'snapshot':
+            with patch.object(m, 'prepare_materials', new=AsyncMock(side_effect=OSError('/private/internal/path'))):
+                ctx.inputs.tool_result = await de.deepresearch_execute._func(query='model-rewritten query')
+        else:
+            ctx.inputs.tool_result = await de.deepresearch_execute._func(query='model-rewritten query')
+    await rail.after_tool_call(ctx)
+    result = ctx.inputs.tool_result
+    assert result['error_code'] == 'materials_preparation_failed'
+    assert result['fallback']['mode'] == 'model_research'
+    assert result['fallback']['query'] == original
+    assert '不得绕过' in result['content']
+    assert '/private/internal/path' not in str(result)
+    assert ctx.force_finish_requests == []
+    stream.assert_not_awaited()
+    replay = _rail_ctx(result=None, session=session)
+    await rail.before_tool_call(replay)
+    with patch.object(m, 'prepare_materials', new=AsyncMock()) as prepared:
+        replay.inputs.tool_result = await de.deepresearch_execute._func(query='new query')
+    await rail.after_tool_call(replay)
+    prepared.assert_not_awaited()
+    assert replay.force_finish_requests == []
+    assert replay.inputs.tool_result['fallback'] == result['fallback']
+
+
+@pytest.mark.asyncio
+async def test_offline_material_policy_does_not_handoff(tmp_path):
+    context = {'original_query': '只根据附件，禁止联网', 'files': [],
+               'scope': 'offline', 'output_dir': str(tmp_path)}
+    with patch.object(de, '_call_deepresearch_stream_impl', new=AsyncMock()) as stream:
+        result, _ = await _invoke(materials_context=context)
+    assert result['kind'] == 'error'
+    assert 'fallback' not in result
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('denial', ['file_permission', 'private_url', 'private_dns'])
+async def test_material_access_denial_does_not_handoff(tmp_path, monkeypatch, denial):
+    files = [{'path': str(tmp_path / 'protected.txt'), 'name': 'protected.txt', 'read_allowed': False}]
+    query = '必须使用附件为核心材料研究主题'
+    if denial != 'file_permission':
+        files = []
+        query = ('必须使用 http://127.0.0.1/source 为核心材料研究主题' if denial == 'private_url'
+                 else '必须使用 https://private.example.org/source 为核心材料研究主题')
+    if denial == 'private_dns':
+        async def private_dns(*args, **kwargs):
+            return [(2, 1, 6, '', ('10.0.0.1', 443))]
+        monkeypatch.setattr(asyncio.get_running_loop(), 'getaddrinfo', private_dns)
+    context = {'original_query': query, 'files': files, 'scope': 'denied', 'output_dir': str(tmp_path)}
+    with patch.object(de, '_call_deepresearch_stream_impl', new=AsyncMock()) as stream:
+        result, _ = await _invoke(materials_context=context)
+    assert 'fallback' not in result
+    assert '安全限制拒绝' in result['content']
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['document', 'snapshot'])
+async def test_optional_denial_with_core_parse_failure_does_not_handoff(tmp_path, monkeypatch, failure):
+    source = tmp_path / 'broken.docx'
+    source.write_bytes(b'not a valid docx archive')
+    if failure == 'snapshot':
+        from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
+        monkeypatch.setattr(m, 'extract_attachment', AsyncMock(return_value='readable content'))
+        create_snapshot = Mock(side_effect=OSError('disk full'))
+        monkeypatch.setattr(m.tempfile, 'NamedTemporaryFile', create_snapshot)
+    context = {'original_query': '必须使用 broken.docx 作为核心材料研究主题。另参考 http://127.0.0.1/source',
+               'files': [{'path': str(source), 'name': source.name}],
+               'scope': 'mixed-denied', 'output_dir': str(tmp_path)}
+    with patch.object(de, '_call_deepresearch_stream_impl', new=AsyncMock()) as stream:
+        result, _ = await _invoke(materials_context=context)
+    if failure == 'snapshot':
+        create_snapshot.assert_called_once()
+    assert result['kind'] == 'error'
+    assert result['error_code'] == 'materials_preparation_failed'
+    assert 'fallback' not in result
+    stream.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unavailable_engine_on_resume_does_not_start_second_research():
+    state = {"schema_version": 1, "phase": "wait_feedback", "revision": 1,
+             "query": "研究主题", "conversation_id": "existing"}
+    result, _ = await _resume_unavailable_engine(state)
+    assert "fallback" not in result
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=result)
+    await rail.after_tool_call(ctx)
+    assert len(ctx.force_finish_requests) == 1
+
+
+async def _resume_unavailable_engine(state):
+    with patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value=json.dumps({
+        "status": "error", "error_code": "runner_missing", "error": "runner missing",
+    }))) as stream:
+        result, saved = await _invoke(state=state, user_input={"status": "answered", "answers": [
+            {"question": "范围", "selected_options": ["全部"]},
+        ]})
+    assert stream.await_args.kwargs["action"] == "resume"
+    return result, saved
+
+
+@pytest.mark.asyncio
+async def test_stopped_material_research_resumes_with_original_query_and_snapshot():
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import MATERIALS_POLICY
+
+    original = "参考附件研究青鹭项目"
+    reference = {"path": "saved-materials.json", "sha256": "saved-digest"}
+    state = {"schema_version": 1, "phase": "new", "revision": 1,
+             "query": MATERIALS_POLICY + "\n" + original, "original_query": original,
+             "conversation_id": "stopped-materials", "materials_prepared": True,
+             "materials_reference": reference}
+    with patch.object(de, "_probe_resumable_checkpoint", return_value={"stopped": True, "node": "info_collector"}), \
+            patch.object(de, "_call_deepresearch_stream_impl", new=AsyncMock(return_value={
+                "status": "completed", "report_delivered": True})) as stream:
+        result, _ = await _invoke(state=state, query=original)
+    assert result["kind"] == "completed"
+    assert stream.await_args.kwargs["action"] == "resume"
+    assert stream.await_args.kwargs["node"] == "stopped"
+    assert stream.await_args.kwargs["conversation_id"] == "stopped-materials"
+    assert stream.await_args.kwargs["_materials_reference"] == reference
