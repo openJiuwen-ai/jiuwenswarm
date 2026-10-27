@@ -21,6 +21,7 @@ import {
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
 import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
 import {
+  LOGIN_MODEL_SOURCE,
   getEditableModels,
   getModelDisplayGroups,
 } from '../node_modules/.cache/settings-refactor/modules/models/modelListOperations.js';
@@ -490,6 +491,47 @@ test('display name validation is required, unique among display names, and exclu
       t,
     ).alias,
     /aliasConflict/,
+  );
+
+  // Hidden free/login models are not Settings-editable; their model_name must not
+  // block a custom display name that happens to match (#5808 review).
+  const runtimeGrantedModels = [
+    {
+      model_name: 'qwen3-max',
+      alias: '',
+      is_free: true,
+      api_base: 'https://free.example/v1',
+      api_key: '',
+      model_provider: 'OpenAI',
+    },
+    {
+      model_name: 'login-model',
+      alias: '',
+      source: LOGIN_MODEL_SOURCE,
+      api_base: 'https://login.example/v1',
+      api_key: '',
+      model_provider: 'OpenAI',
+    },
+  ];
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'qwen3-max', model_name: 'qwen3-max' },
+      runtimeGrantedModels,
+      undefined,
+      catalog,
+      t,
+    ).alias,
+    undefined,
+  );
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'login-model', model_name: 'custom-id' },
+      runtimeGrantedModels,
+      undefined,
+      catalog,
+      t,
+    ).alias,
+    undefined,
   );
 });
 

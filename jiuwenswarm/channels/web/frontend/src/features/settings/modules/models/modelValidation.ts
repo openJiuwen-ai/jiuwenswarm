@@ -1,6 +1,7 @@
 import type { ModelEntry, VendorPresetMap } from '../../../../types';
 import { parseContextWindowTokens } from './contextWindow';
 import { CUSTOM_VENDOR_SELECTION, OPENAI_ACCOUNT_SELECTION, findVendorPreset, type ModelDraft } from './modelAdapters';
+import { getEditableModels } from './modelListOperations';
 import { getModelDisplayName } from './modelPresentation';
 import { isReasoningLevelSupported, resolveModelReasoning } from './modelReasoning';
 
@@ -92,7 +93,10 @@ export function validateModelDraft(
   }
 
   const identity = normalizeEditingIdentity(editingSelf);
-  const others = models.filter((model) => model.is_agentos !== true && !isEditingSelf(model, identity));
+  // Only compare against editable catalog rows. Free/login runtime-granted models are
+  // hidden from Settings; colliding with their model_name would block users with no UI
+  // way to resolve the conflict (#5808 review).
+  const others = getEditableModels(models).filter((model) => !isEditingSelf(model, identity));
   // Display-name uniqueness matches what the UI shows (alias || model_name). Model ID
   // itself is not uniqueness-checked and may collide with another row's display name.
   if (
