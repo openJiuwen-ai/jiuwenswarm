@@ -298,6 +298,21 @@ async def handle_session_plan_status(ctx: RequestContext) -> None:
 
 async def handle_session_delete(ctx: RequestContext) -> None:
     """删除会话。和网页通道里的删除走同一套归档服务，避免掉进聊天。"""
+    await _handle_session_lifecycle_action(ctx, action="delete")
+
+
+async def handle_session_archive(ctx: RequestContext) -> None:
+    """归档会话（企业版 HTTP 与 WS lifecycle 共用 SessionArchiveService）。"""
+    await _handle_session_lifecycle_action(ctx, action="archive")
+
+
+async def handle_session_unarchive(ctx: RequestContext) -> None:
+    """取消归档。"""
+    await _handle_session_lifecycle_action(ctx, action="unarchive")
+
+
+async def handle_session_archived_list(ctx: RequestContext) -> None:
+    """归档会话列表。"""
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
 
@@ -305,12 +320,76 @@ async def handle_session_delete(ctx: RequestContext) -> None:
     params = request.params if isinstance(request.params, dict) else {}
     service = SessionArchiveService(ctx.services.execution_runtime())
     try:
-        ids = lc.parse_ids(params, delete=True)
+        payload = await asyncio.to_thread(service.list_sessions, params)
+        ok = True
+    except lc.LifecycleError as exc:
+        ok = False
+        payload = {"code": exc.code, "error": str(exc), **exc.details}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("session.archived.list failed")
+        ok = False
+        payload = {"code": "INTERNAL_ERROR", "error": str(exc)}
+    await ctx.sink.send_response(
+        AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
+        )
+    )
+
+
+async def handle_project_sessions_lifecycle(ctx: RequestContext) -> None:
+    """项目维度批量归档 / 删除已归档会话。"""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
+
+    request = ctx.request
+    method = request.req_method.value if request.req_method else ""
+    params = request.params if isinstance(request.params, dict) else {}
+    service = SessionArchiveService(ctx.services.execution_runtime())
+    action = method.rsplit(".", 1)[-1]
+    try:
+        payload = await service.project_batch(
+            params.get("project_id"), action, request.channel_id or ""
+        )
+        ok = True
+    except lc.LifecycleError as exc:
+        ok = False
+        payload = {"code": exc.code, "error": str(exc), **exc.details}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("%s failed", method)
+        ok = False
+        payload = {"code": "INTERNAL_ERROR", "error": str(exc)}
+    await ctx.sink.send_response(
+        AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=ok,
+            payload=payload,
+            metadata=request.metadata,
+        )
+    )
+
+
+async def _handle_session_lifecycle_action(
+    ctx: RequestContext, *, action: str
+) -> None:
+    """归档 / 取消归档 / 删除：与 WebSocket ``_handle_lifecycle_request`` 同契约。"""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
+
+    request = ctx.request
+    params = request.params if isinstance(request.params, dict) else {}
+    service = SessionArchiveService(ctx.services.execution_runtime())
+    try:
+        ids = lc.parse_ids(params, delete=action == "delete")
         results = []
         for sid in ids:
             try:
                 results.append(
-                    await service.session(sid, "delete", request.channel_id or "")
+                    await service.session(sid, action, request.channel_id or "")
                 )
             except lc.LifecycleError as exc:
                 results.append(
@@ -322,12 +401,17 @@ async def handle_session_delete(ctx: RequestContext) -> None:
                         **exc.details,
                     )
                 )
-        if "session_ids" not in params:
+        if action == "delete" and "session_ids" not in params:
             ok = bool(results[0]["ok"])
             if ok:
                 payload = {
                     "session_id": ids[0],
                     "project_id": results[0].get("project_id", ""),
+                    **{
+                        key: results[0][key]
+                        for key in ("accepted", "finalizing", "stop_pending")
+                        if key in results[0]
+                    },
                 }
             else:
                 payload = {
@@ -347,7 +431,7 @@ async def handle_session_delete(ctx: RequestContext) -> None:
         ok = False
         payload = {"code": exc.code, "error": str(exc), **exc.details}
     except Exception as exc:  # noqa: BLE001
-        logger.exception("session.delete failed")
+        logger.exception("session.%s failed", action)
         ok = False
         payload = {"code": "INTERNAL_ERROR", "error": str(exc)}
     await ctx.sink.send_response(

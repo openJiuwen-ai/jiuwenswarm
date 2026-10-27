@@ -40,6 +40,17 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("session.get_metadata", "GET", "/sessions/{session_id}"),
     ("session.rename", "PATCH", "/sessions/{session_id}"),
     ("session.delete", "DELETE", "/sessions/{session_id}"),
+    # 会话归档：与 Gateway mapped 北向路径对齐（勿用 /sessions/archived，
+    # 会与 /sessions/{session_id} 抢路由）。
+    ("session.archive", "POST", "/sessions/actions/archive"),
+    ("session.unarchive", "POST", "/sessions/actions/unarchive"),
+    ("session.archived.list", "GET", "/archived-sessions"),
+    ("project.sessions.archive", "POST", "/projects/{project_id}/sessions/actions/archive"),
+    (
+        "project.sessions.delete_archived",
+        "POST",
+        "/projects/{project_id}/sessions/actions/delete-archived",
+    ),
     # 同一条 PATCH /sessions/{id} 已经给重命名。置顶单独挂动作地址，
     # 避免两个方法抢同一个网址。
     ("session.pin", "POST", "/sessions/{session_id}/actions/pin"),
