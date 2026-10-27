@@ -318,7 +318,7 @@ function RecordCards({
                 <p className={css.hint}>{t('trajectory.diagnosis.ttseHint')}</p>
               </EvolutionCard>
             )}
-            <LegacySuggestions record={record} session={session} />
+            <LegacySuggestions record={record} onFill={onFill} />
             {artifactItems.length === 0 && artifactText === '' && skills.length === 0 && experience === null ? (
               <p className={css.hint}>{t('trajectory.diagnosis.noSuggestions')}</p>
             ) : null}
@@ -385,7 +385,10 @@ function EvolutionCard({ judge, action, children }: {
 }
 
 /** Suggestions of a record written before the switch (read-only fallback). */
-function LegacySuggestions({ record, session }: { record: DiagnosisRecord; session: DiagnosisSession }) {
+function LegacySuggestions({ record, onFill }: {
+  record: DiagnosisRecord;
+  onFill: (text: string) => void;
+}) {
   const { t } = useTranslation();
   const suggestions = record.suggestions;
   const hasNew = (record.reward_failure_causes ?? []).length > 0 || (record.evolution_judge ?? []).length > 0;
