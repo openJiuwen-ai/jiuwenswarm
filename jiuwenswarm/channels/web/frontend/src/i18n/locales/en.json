@@ -1260,7 +1260,8 @@
     },
     "composer": {
       "collapse": "Collapse composer",
-      "expand": "Expand composer"
+      "expand": "Expand composer",
+      "unavailable": "The composer is unavailable during diagnosis"
     },
     "layout": {
       "hideSessions": "Collapse sessions",

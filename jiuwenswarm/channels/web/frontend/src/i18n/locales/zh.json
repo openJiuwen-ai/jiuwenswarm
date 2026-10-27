@@ -1244,7 +1244,8 @@
     },
     "composer": {
       "collapse": "收起输入框",
-      "expand": "展开输入框"
+      "expand": "展开输入框",
+      "unavailable": "诊断时不能使用输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",
