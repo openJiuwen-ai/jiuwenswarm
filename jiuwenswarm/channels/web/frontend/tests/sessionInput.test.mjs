@@ -9,7 +9,8 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 import { A2UIProvider } from '@a2ui/react';
 
 const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
-let useWebSocket, useChatStore, useSessionStore, useGoalStore, webClient, TaskQueue, ChatTimelineList, buildTimelineItems, parseHistoryJsonFileToPreviewMessages, i18n;
+let parseHistoryJsonFileToPreviewMessages, i18n;
+let useWebSocket, useChatStore, useSessionStore, useGoalStore, webClient, TaskQueue, ChatTimelineList, buildTimelineItems;
 
 before(async () => {
   const outdir = join(frontendRoot, 'node_modules/.cache/session-input');
