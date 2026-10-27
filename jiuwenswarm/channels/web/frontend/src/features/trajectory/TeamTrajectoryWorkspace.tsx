@@ -37,6 +37,12 @@ export interface TeamTrajectoryWorkspaceProps {
   agentSelection?: {
     isIncluded: (subjectId: string) => boolean;
     onToggle: (subjectId: string) => void;
+    /** Select or clear every timed node on this agent's lane. */
+    onSelectAll: (subjectId: string) => void;
+    /** Whether this agent currently has any timed nodes to select. */
+    canSelectAll: (subjectId: string) => boolean;
+    /** Whether the pick already covers this agent's whole timed span. */
+    isSelectAllActive: (subjectId: string) => boolean;
     /** Checked agents that currently own a time window. */
     isHighlighted?: (subjectId: string) => boolean;
   };
@@ -48,12 +54,18 @@ function MemberToolbarControl({
   onClick,
   included,
   onToggleIncluded,
+  onSelectAll,
+  canSelectAll,
+  selectAllActive,
 }: {
   lane: TeamMemberLaneModel;
   expanded: boolean;
   onClick: () => void;
   included?: boolean;
   onToggleIncluded?: () => void;
+  onSelectAll?: () => void;
+  canSelectAll?: boolean;
+  selectAllActive?: boolean;
 }) {
   const { t } = useTranslation();
   const button = (
@@ -68,10 +80,20 @@ function MemberToolbarControl({
     >
       <span className={`${css.statusDot} ${css[`status_${lane.status}`]}`} aria-hidden="true" />
       <span className={css.memberName} title={lane.label}>{lane.label}</span>
-      <span className={css.chevron} aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+      <span
+        className={`${css.chevron} ${expanded ? css.chevronExpanded : ''}`}
+        aria-hidden="true"
+      >
+        {'>'}
+      </span>
     </button>
   );
-  if (onToggleIncluded === undefined) return button;
+  if (onToggleIncluded === undefined || onSelectAll === undefined) return button;
+  const selectAllEnabled = canSelectAll === true;
+  const allSelected = selectAllActive === true;
+  const selectAllLabel = allSelected
+    ? t('trajectory.analysis.selection.clearSelectAllAgent', { name: lane.label })
+    : t('trajectory.analysis.selection.selectAllAgent', { name: lane.label });
   return (
     <span className={css.memberCluster}>
       <input
@@ -84,6 +106,21 @@ function MemberToolbarControl({
         onChange={() => onToggleIncluded()}
       />
       {button}
+      <button
+        type="button"
+        className={`${css.selectAll} ${allSelected ? css.selectAllActive : ''}`}
+        disabled={!selectAllEnabled}
+        aria-pressed={allSelected}
+        aria-label={selectAllLabel}
+        title={selectAllLabel}
+        data-testid="trajectory-analysis-agent-select-all"
+        data-variant={lane.subjectId}
+        onClick={onSelectAll}
+      >
+        {allSelected
+          ? t('trajectory.analysis.selection.clearSelectAll')
+          : t('trajectory.analysis.selection.selectAll')}
+      </button>
     </span>
   );
 }
@@ -168,7 +205,9 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         onSearchQueryChange={() => {}}
         t={translate}
       />}
-      {toolbarTrailing}
+      {toolbarTrailing === undefined || toolbarTrailing === null
+        ? null
+        : <div className={css.axisHost}>{toolbarTrailing}</div>}
       <div
         ref={lanesRef}
         className={css.lanes}
@@ -210,6 +249,9 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
                       : {
                         included: agentSelection.isIncluded(lane.subjectId),
                         onToggleIncluded: () => agentSelection.onToggle(lane.subjectId),
+                        onSelectAll: () => agentSelection.onSelectAll(lane.subjectId),
+                        canSelectAll: agentSelection.canSelectAll(lane.subjectId),
+                        selectAllActive: agentSelection.isSelectAllActive(lane.subjectId),
                       })}
                   />
                 ),

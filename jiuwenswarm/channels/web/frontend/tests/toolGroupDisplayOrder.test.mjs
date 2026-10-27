@@ -9,7 +9,12 @@ const { renderToStaticMarkup } = await import('react-dom/server');
 const { createInstance } = await import('i18next');
 const { I18nextProvider } = await import('react-i18next');
 await build({
-  entryPoints: ['src/components/ChatPanel/ToolGroupDisplay.tsx'],
+  stdin: {
+    contents: `export { ToolGroupDisplay } from './src/components/ChatPanel/ToolGroupDisplay';
+      export { TimelineRowStateProvider } from './src/components/ChatPanel/timelineRowState';`,
+    resolveDir: process.cwd(),
+    loader: 'tsx',
+  },
   bundle: true,
   packages: 'external',
   platform: 'node',
@@ -31,7 +36,7 @@ await build({
   ],
 });
 
-const { ToolGroupDisplay } = await import(
+const { ToolGroupDisplay, TimelineRowStateProvider } = await import(
   '../node_modules/.cache/tool-group-display/ToolGroupDisplay.mjs'
 );
 
@@ -106,4 +111,54 @@ test('renders the Beam search tree before the flowchart tool result', async () =
   assert.ok(toolTreeIndex < flowchartIndex);
   assert.match(html, />流程图</);
   assert.doesNotMatch(html, /专家团/);
+});
+
+async function renderExpandedResult({ name = 'ask_user', args, result, success = true, pending = false }) {
+  const execution = {
+    toolCallId: 'redaction-test',
+    toolCall: { id: 'redaction-test', name, arguments: args },
+    result: { toolName: name, result, success, pending },
+    status: pending ? 'pending' : success ? 'completed' : 'error',
+  };
+  const before = JSON.stringify(execution);
+  const i18n = createInstance();
+  await i18n.init({ lng: 'en', resources: {}, initImmediate: false });
+  const html = renderToStaticMarkup(createElement(I18nextProvider, { i18n },
+    createElement(TimelineRowStateProvider, {
+      prefix: 'test', values: new Map([['test/tool-open-keys', { 'redaction-test': true }]]),
+    }, createElement(ToolGroupDisplay, { executions: [execution], showAvatar: false }))));
+  assert.equal(JSON.stringify(execution), before, 'display must not mutate execution data');
+  assert.match(html, /chat-panel-tool-execution-details-result/);
+  return html;
+}
+
+for (const args of [
+  { query: '请输入连接器令牌' },
+  { query: 'Credentials', questions: [{ question: 'Enter API KEY' }] },
+  { query: 'Choose', questions: [{ question: '更新密码方式', options: [{ label: '自己登录' }] }] },
+]) {
+  test(`sensitive ask_user result is not exposed in expanded details: ${JSON.stringify(args)}`, async () => {
+    const html = await renderExpandedResult({ args, result: "{'answer': 'INVALID_TEST_SECRET_4470'}" });
+    assert.doesNotMatch(html, /INVALID_TEST_SECRET_4470/);
+    assert.match(html, /chatUi.toolResult.answersInSummary/);
+  });
+}
+
+for (const scenario of [
+  { args: { query: '选择颜色' }, result: '蓝色' },
+  { args: { query: '选择颜色', questions: [{ question: '颜色' }] }, result: '蓝色' },
+  { name: 'bash', args: { query: 'token' }, result: 'unchanged command output' },
+  { args: { query: 'password' }, result: 'Tool unavailable', success: false },
+  { args: { query: 'password' }, result: 'Waiting for input', pending: true },
+]) {
+  test(`unrelated tool results and diagnostics remain visible: ${scenario.result}`, async () => {
+    const html = await renderExpandedResult(scenario);
+    assert.ok(html.includes(scenario.result));
+    assert.doesNotMatch(html, /chatUi.toolResult.answersInSummary/);
+  });
+}
+
+test('answer text resembling a failure must not bypass display masking', async () => {
+  const html = await renderExpandedResult({ args: { query: 'API key' }, result: 'success=False TEST_SECRET' });
+  assert.doesNotMatch(html, /TEST_SECRET/);
 });

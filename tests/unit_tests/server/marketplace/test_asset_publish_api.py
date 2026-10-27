@@ -179,7 +179,7 @@ async def test_auth_required_safe_errors_and_missing_local_resource(api):
     server, _, _ = api
     with pytest.raises(PublishAPIError, match="AUTH_REQUIRED"):
         await server.call(
-            "describe", {"kind": "skill", "local_id": "demo"}, gateway_user="u"
+            "prepare", {"kind": "skill", "local_id": "demo"}, gateway_user="u"
         )
     with pytest.raises(PublishAPIError, match="RESOURCE_NOT_FOUND"):
         await server.call(
@@ -306,6 +306,7 @@ async def test_agent_group_describe_uses_local_group_manifest(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("logged_in", [False, True])
 @pytest.mark.parametrize(
     "kind,package_name,manifest_name,display_name",
     [
@@ -314,7 +315,7 @@ async def test_agent_group_describe_uses_local_group_manifest(tmp_path):
     ],
 )
 async def test_agent_describe_uses_resolved_package_name_for_publish_identity(
-    tmp_path, kind, package_name, manifest_name, display_name
+    tmp_path, kind, package_name, manifest_name, display_name, logged_in
 ):
     root = tmp_path / package_name
     root.mkdir()
@@ -340,7 +341,7 @@ async def test_agent_describe_uses_resolved_package_name_for_publish_identity(
     try:
         result = await instance.call(
             "describe",
-            params(kind=kind, local_id="b80afb7afff147bd801ed5f788fa767c"),
+            {**(params() if logged_in else {}), "kind": kind, "local_id": "b80afb7afff147bd801ed5f788fa767c"},
             gateway_user="browser-user",
         )
         assert result["defaults"]["asset_name"] == package_name
@@ -407,3 +408,19 @@ async def test_local_status_checks_asset_reference(api):
             {"kind": "skill", "local_id": "missing"},
             gateway_user="browser-user",
         )
+
+
+@pytest.mark.asyncio
+async def test_logged_out_describe_reads_local_defaults_without_account_records(api):
+    server, _, _ = api
+    server.service.records = lambda *args: pytest.fail("Unauthenticated describe accessed account records")
+    for auth in (None, {"access_token": None, "oauth_provider": "gitcode"}):
+        result = await server.call("describe", {"kind": "skill", "local_id": "demo", "auth": auth}, gateway_user="u")
+        assert result["defaults"]["asset_name"] == "demo"
+        assert result["defaults"]["description"] == "Demo skill"
+        assert result["records"] == []
+    for method in ("prepare", "commit", "status", "records"):
+        with pytest.raises(PublishAPIError, match="AUTH_REQUIRED"):
+            await server.call(method, {"kind": "skill", "local_id": "demo"}, gateway_user="u")
+    with pytest.raises(PublishAPIError, match="RESOURCE_NOT_FOUND"):
+        await server.call("describe", {"kind": "skill", "local_id": "../secret"}, gateway_user="u")

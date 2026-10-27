@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { toast } from "../../../channels/web/frontend/src/components/ui/Toast/toastStore";
+import { useChatStore } from "../../../channels/web/frontend/src/stores/chatStore";
+import type { AskUserQuestionPayload } from "../../../channels/web/frontend/src/types/websocket";
 
 import type { VideoLivePanelHandle } from "./VideoLivePanel";
 import { isTaskDuplexScreenSharingEnabled } from "../../../channels/web/frontend/src/features/taskFullDuplex/mediaPreferences";
@@ -12,6 +14,9 @@ interface TaskFullDuplexRuntimeSnapshot {
   sessionId: string | null;
   error: string;
   microphoneMuted: boolean;
+  // An approval card is open in this conversation: the mic stays off until it
+  // is clicked, whatever microphoneMuted (the user's own choice) says.
+  cardHold: boolean;
   speakerMuted: boolean;
   screenSharing: boolean;
 }
@@ -25,6 +30,7 @@ let snapshot: TaskFullDuplexRuntimeSnapshot = {
   sessionId: null,
   error: "",
   microphoneMuted: false,
+  cardHold: false,
   speakerMuted: false,
   screenSharing: false,
 };
@@ -83,11 +89,14 @@ export function setTaskFullDuplexRuntimeState(
           state,
           sessionId: null,
           microphoneMuted: false,
+          cardHold: false,
           speakerMuted: false,
           screenSharing: false,
         }
       : { state },
   );
+  // A new or renewed media session starts unmuted; re-apply an open card's hold.
+  if (state === "active") syncCardHold(true);
 }
 
 export function setTaskFullDuplexRuntimeError(error: string): void {
@@ -138,6 +147,7 @@ export function stopTaskFullDuplex(): void {
     sessionId: null,
     error: "",
     microphoneMuted: false,
+    cardHold: false,
     speakerMuted: false,
     screenSharing: false,
   });
@@ -155,11 +165,38 @@ export function exitTaskFullDuplex(): void {
 }
 
 export function toggleTaskDuplexMicrophone(): void {
-  if (!controller || snapshot.state !== "active") return;
+  if (!controller || snapshot.state !== "active" || snapshot.cardHold) return;
   const muted = !snapshot.microphoneMuted;
   controller?.setMicrophoneMuted(muted);
   publish({ microphoneMuted: muted });
 }
+
+const INFORMATION_SOURCES = new Set(["", "ask_user", "ask_user_interrupt"]);
+
+// Default-deny: voice may answer plain information forms; every other card
+// (permission, confirm, cua delegation, plan, evolution or any new source)
+// is approved only by a click, so voice must not hear consent at all.
+function requiresClick(question: AskUserQuestionPayload): boolean {
+  return (
+    !INFORMATION_SOURCES.has(question.source || "") ||
+    Boolean(question.approvalSchema || question.evolutionMeta || question.planApprovalKind || question.swarmflowMeta)
+  );
+}
+
+// Reads the cards shown on screen, the same state that locks the text composer,
+// so the hold survives model session renewals, replays and either voice provider.
+function syncCardHold(reapply = false): void {
+  const sessionId = snapshot.sessionId;
+  const hold =
+    snapshot.state !== "idle" &&
+    Boolean(sessionId) &&
+    (useChatStore.getState().runtimes[sessionId as string]?.pendingQuestions ?? []).some(requiresClick);
+  if (hold === snapshot.cardHold && !(reapply && hold)) return;
+  if (hold !== snapshot.cardHold) publish({ cardHold: hold });
+  controller?.setMicrophoneMuted(snapshot.microphoneMuted || hold);
+}
+
+useChatStore.subscribe(() => syncCardHold());
 
 export function toggleTaskDuplexSpeaker(): void {
   if (!controller || snapshot.state !== "active") return;

@@ -1055,6 +1055,23 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_cua_agent_enabled_in_config(value: bool | None) -> None:
+    """Persist an explicit desktop preference, or null to follow the release default."""
+    if value is not None and not isinstance(value, bool):
+        raise ValueError("cua_agent.enabled must be true, false or null")
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        current = data
+        for key in ("react", "subagents", "cua_agent"):
+            if not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_enable_free_models_in_config(value: bool) -> None:
     """原子更新 models.enable_free_models（历史兼容；前端已不再暴露此开关）。"""
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
@@ -1088,11 +1105,19 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
 
 
 def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
-    """Update the trajectory diagnosis feature switch and persist config.yaml."""
+    """Update the trajectory diagnosis feature switch and persist config.yaml.
+
+    The standalone trajectory UI switch and chat/trajectory tabs were removed;
+    the diagnosis switch drives the diagnosis entry and the data-plane
+    ``enabled`` flag so recording stays aligned with the single user-facing
+    control.
+    """
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "trajectory_ui" not in data or data["trajectory_ui"] is None:
         data["trajectory_ui"] = {}
-    data["trajectory_ui"]["diagnosis_enabled"] = bool(enabled)
+    flag = bool(enabled)
+    data["trajectory_ui"]["diagnosis_enabled"] = flag
+    data["trajectory_ui"]["enabled"] = flag
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -3472,11 +3497,12 @@ def migrate_config_from_template(
         if not user_data:
             return False
 
-        # Write the program version with any changes to the merged config.
-        from jiuwenswarm.common._build_config import VERSION
+        # This diagnostic label does not control whether template migration runs.
+        from jiuwenswarm.common.version import get_runtime_version_label
 
-        if user_data.get("config_version") != VERSION:
-            user_data["config_version"] = VERSION
+        version_label = get_runtime_version_label()
+        if user_data.get("config_version") != version_label:
+            user_data["config_version"] = version_label
             changes += 1
 
         # Only write if there are actual changes

@@ -409,7 +409,15 @@ class ToolRetrievalToolkit:
         self._tool_by_name = {tool.name: tool for tool in tools}
 
     def _build_catalogue(self) -> ToolCatalogueSnapshot:
-        """Freeze the static table against the live registry."""
+        """Freeze the static table against the live registry.
+
+        A category line is a routing signal: it pays for itself only when
+        there is a membership to route to. Categories with exactly one live
+        member collapse — the category line is dropped and the member falls
+        through to the flat ``[tool]`` block (name + short description,
+        get_schema directly), saving a list round trip that would reveal a
+        single name the prompt could have stated outright.
+        """
 
         self._live_records()
         live = self._tool_by_name
@@ -418,7 +426,7 @@ class ToolRetrievalToolkit:
                 tools=tuple(name for name in category.tools if name in live)
             )
             for category in _TOOL_CATEGORIES
-            if any(name in live for name in category.tools)
+            if sum(1 for name in category.tools if name in live) >= 2
         )
         flat_entries = tuple(
             _FlatToolEntry(name, tool.description or "")
@@ -558,6 +566,7 @@ class ToolRetrievalToolkit:
         # first name).
         kwargs.pop("call_goal", None)
         kwargs.pop("cursor", None)
+        had_retired_query = "query" in kwargs
         kwargs.pop("query", None)
         legacy_tools = kwargs.pop("tools", None)
         operation = str(kwargs.get("operation") or "").strip().lower()
@@ -580,6 +589,19 @@ class ToolRetrievalToolkit:
             # retired from the card; an empty operation (direct callers only
             # — the card requires it) degrades to a plain listing too.
             category = str(kwargs.get("category") or "").strip()
+            if not category and not keyword:
+                # Bare list (and a stale keyword-era snapshot whose ``query``
+                # was dropped) teaches the valid call shapes; a bare legacy
+                # "search" degrades to the root category listing instead.
+                if operation == "list" or had_retired_query:
+                    raise ValueError(
+                        'list needs "category" or "keyword": pick a category '
+                        "from the catalogue in your system prompt, or pass "
+                        'keyword for a global search. e.g. '
+                        '{"operation":"list","category":"cron"} or '
+                        '{"operation":"list","keyword":"图片"}'
+                    )
+                return self._render_root_listing()
             return self._render_listing(category, keyword=keyword)
 
         raise ValueError(
@@ -611,6 +633,44 @@ class ToolRetrievalToolkit:
             # list here so the advertised category stays navigable.
             return self._render_connector_listing(connector_server, keyword=keyword)
         return self._render_category_listing(category, keyword=keyword)
+
+    def _render_root_listing(self) -> str:
+        """Root category listing for retired bare ``search`` spellings.
+
+        Mirrors the prompt directory's collapse semantics — multi-member
+        categories render ``[category]`` lines, single-member ones fold
+        into ``[tool]`` lines — plus the MCP connector virtual branches
+        (connecters never fold: the server description carries its own
+        routing signal). Bare ``list`` never gets here: the catalogue
+        already sits in the system prompt, so re-dumping it would only
+        waste a call.
+        """
+
+        lines = [
+            "## Tool categories",
+            "完整目录见 system prompt；本列表仅为旧拼写降级渲染。",
+            "",
+        ]
+        for category in self._live_categories():
+            description = " ".join((category.description or "").split())
+            if len(category.tools) >= 2:
+                lines.append(f"- [category] {category.path}: {description}")
+                continue
+            name = category.tools[0]
+            tool = self._tool_by_name.get(name)
+            tool_description = (tool.description if tool else "") or ""
+            lines.append(
+                f"- [tool] {name}: "
+                f"{_compact_schema_description(tool_description)}"
+            )
+        for server, group in self.mcp_connector_groups().items():
+            description = str(
+                group.get("description_zh")
+                or group.get("description_en")
+                or ""
+            ).strip() or f"Tools from MCP connector {server}."
+            lines.append(f"- [category] mcp_{server}: {description}")
+        return "\n".join(lines)
 
     def _rank_tools_by_query(
         self, names: tuple[str, ...] | list[str], keyword: str

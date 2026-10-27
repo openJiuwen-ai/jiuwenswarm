@@ -122,6 +122,7 @@ from jiuwenswarm.agents.harness.common.tools import (
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.tool_ownership import (
     mark_stateless,
     register_tool,
@@ -2752,12 +2753,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
             # cua_agent (desktop automation via screenshots + real input) — 按配置启用
             cua_agent_cfg = subagents_cfg.get("cua_agent")
-            if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
+            cua_agent_cfg = cua_agent_cfg if isinstance(cua_agent_cfg, dict) else {}
+            if is_cua_agent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
                 logger.warning(
                     "[JiuwenSwarmCodeAdapter] cua_agent skipped: the model rejects image input "
                     "and cua_agent sees the screen only through screenshots"
                 )
-            elif self._is_subagent_enabled(cua_agent_cfg):
+            elif is_cua_agent_enabled(cua_agent_cfg):
                 cua_spec = build_cua_agent_config(
                     model,
                     card=build_cua_agent_card(resolved_language),

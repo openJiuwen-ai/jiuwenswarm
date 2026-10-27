@@ -11,6 +11,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+    current_content_language,
+    join_sentences,
+    list_separator,
+    node_task,
+    phrase,
+    sentence,
+    strip_phrase,
+)
+
 
 ROLE_CHARACTER = "character_identity"
 ROLE_SCENE = "scene_source"
@@ -42,6 +52,100 @@ MATCH_REFERENCE_MEDIUM = "match_reference_image"
 MATCH_REFERENCE_LOOK = (
     "same rendering, line, shading, and palette as the attached reference image(s)"
 )
+
+_REF_PHRASES: dict[str, dict[str, str]] = {
+    "en": {
+        "shot_header": "Shot {index}, timeline {timeline}, duration {duration} seconds.",
+        "visual_style": "Visual style: {look}.",
+        "medium_match": (
+            "Medium: match the rendering, line, shading, and palette of the "
+            "attached reference image(s); do not switch to another medium."
+        ),
+        "medium": "Medium: {medium}.",
+        "lighting": "Lighting stays {lighting}.",
+        "crowd": "Crowd stays {crowd}.",
+        "continues": "This shot continues from the previous end: {end}.",
+        "previous_done": "The previous action is finished and must not repeat: {prev}.",
+        "action_camera": "Action: {action}. Camera: {camera}.",
+        "default_camera": "medium / eye-level",
+        "i2v": "Animate this image. The attached image is the first frame.",
+        "contract_product": "Image 1 is the referenced subject and stays unchanged. Motion happens around it.",
+        "contract_scene": "The place is the last reference image. Keep its layout and stage the action inside it.",
+        "contract_character": (
+            "Image 1 is the person. The place is the last reference image. "
+            "The pose may change. Face and wardrobe stay."
+        ),
+        "contract_default": "Image 1 is the leading reference. Later references follow in slot order.",
+        "image_is": "Image {index} is {who}{extra}.",
+        "names_join": " and ",
+        "who_product": "the product",
+        "who_scene": "the place",
+        "who_motion": "the animate-image subject",
+        "who_character": "the person",
+        "who_reference": "the reference",
+        "place_last": "The place is the last reference image when a scene is attached.",
+        "approved_style": "the approved style",
+        "match_look": MATCH_REFERENCE_LOOK,
+        "the_person": "the person",
+        "still_medium_change": (
+            "The attached image is the subject. Keep the same subject and layout. "
+            "Render a new image in this medium: {medium}."
+        ),
+        "still_character": (
+            "Image 1 is {name}. Same face, body, and wardrobe. "
+            "Plain studio backdrop. Do not invent a different person. "
+            "Visual style: {medium}."
+        ),
+        "sheet_single": "Create character specs for {name}.",
+        "sheet_backdrop": "Plain studio backdrop. Do not invent a different person.",
+        "sheet_style": "Visual style: {medium}.",
+        "sheet_combined": (
+            "Create character specs showing {label} as distinct people side by side. "
+            "Keep each face and wardrobe recognisable. Plain studio backdrop. "
+            "Visual style: {medium}."
+        ),
+        "supporting_cast": "the supporting cast",
+    },
+    "zh": {
+        "shot_header": "第{index}镜，时间轴 {timeline}，时长 {duration} 秒。",
+        "visual_style": "画面风格：{look}。",
+        "medium_match": "媒介：与所附参考图的渲染、线条、明暗和配色保持一致，全片沿用同一种媒介。",
+        "medium": "媒介：{medium}。",
+        "lighting": "光线保持{lighting}。",
+        "crowd": "人群保持{crowd}。",
+        "continues": "本镜头承接上一镜的结尾：{end}。",
+        "previous_done": "上一镜的动作已经完成，本镜不再重复：{prev}。",
+        "action_camera": "动作：{action}。镜头：{camera}。",
+        "default_camera": "中景平视",
+        "i2v": "让这张图片动起来，所附图片就是首帧。",
+        "contract_product": "Image 1 是参考主体，保持原样，动作围绕它展开。",
+        "contract_scene": "场景是最后一张参考图。保持其布局，在其中演出动作。",
+        "contract_character": "Image 1 是人物。场景是最后一张参考图。姿势可以变化，面部和服装保持不变。",
+        "contract_default": "Image 1 是主要参考，其余参考图按顺序排列。",
+        "image_is": "Image {index} 是{who}{extra}。",
+        "names_join": "和",
+        "who_product": "产品",
+        "who_scene": "场景",
+        "who_motion": "要动起来的主体",
+        "who_character": "人物",
+        "who_reference": "参考图",
+        "place_last": "附有场景时，场景是最后一张参考图。",
+        "approved_style": "已确定的画风",
+        "match_look": "与所附参考图相同的渲染、线条、明暗和配色",
+        "the_person": "该人物",
+        "still_medium_change": "所附图片就是主体。保持同一主体与构图，用以下媒介重新绘制：{medium}。",
+        "still_character": "Image 1 是{name}。面部、身形和服装保持一致。纯色摄影棚背景，保持为同一个人。画面风格：{medium}。",
+        "sheet_single": "为{name}绘制角色设定图。",
+        "sheet_backdrop": "纯色摄影棚背景，保持为同一个人。",
+        "sheet_style": "画面风格：{medium}。",
+        "sheet_combined": "绘制角色设定图，将{label}作为不同的人并排展示。每个人的面部和服装清晰可辨。纯色摄影棚背景。画面风格：{medium}。",
+        "supporting_cast": "配角们",
+    },
+}
+# Markers that reference_prompt_issues accepts in either content language.
+_CONTINUES_MARKERS = ("continues from", "承接上一镜")
+_MOTION_SOURCE_MARKERS = ("first frame", "animate this image", "首帧")
+_REFERENCE_ORDER_MARKERS = ("image 1", "last reference", "最后一张参考图")
 
 _SUBJECT_ROLE = {
     "character": ROLE_CHARACTER,
@@ -219,20 +323,20 @@ def video_generation_overrides(
 
 def still_task_prompt(cfg: dict[str, Any]) -> str:
     """Image prompt for a reference image. The medium and the person come from config."""
+    lang = current_content_language()
     task = str(cfg.get("reference_image_task") or "").strip()
     style = cfg.get("style_lock") if isinstance(cfg.get("style_lock"), dict) else {}
-    medium = str(style.get("medium") or style.get("look") or "").strip()
+    medium = strip_phrase(style.get("medium") or style.get("look")) or phrase(_REF_PHRASES, lang, "approved_style")
     if task == "medium_change":
-        return (
-            "The attached image is the subject. Keep the same subject and layout. "
-            f"Render a new image in this medium: {medium or 'the approved style'}."
-        )
-    name = str(cfg.get("character_name") or "the person").strip()
-    return (
-        f"Image 1 is {name}. Same face, body, and wardrobe. "
-        "Plain studio backdrop. Do not invent a different person. "
-        f"Visual style: {medium or 'the approved style'}."
-    )
+        return phrase(_REF_PHRASES, lang, "still_medium_change", medium=medium)
+    name = str(cfg.get("character_name") or "").strip() or phrase(_REF_PHRASES, lang, "the_person")
+    return phrase(_REF_PHRASES, lang, "still_character", name=name, medium=medium)
+
+
+def _shown_look(cfg: dict[str, Any], lang: str) -> str:
+    style = cfg.get("style_lock") if isinstance(cfg.get("style_lock"), dict) else {}
+    look = strip_phrase(style.get("look"))
+    return phrase(_REF_PHRASES, lang, "match_look") if look == MATCH_REFERENCE_LOOK else look
 
 
 def reference_prompt_issues(prompt: str, cfg: dict[str, Any] | None) -> list[str]:
@@ -244,8 +348,7 @@ def reference_prompt_issues(prompt: str, cfg: dict[str, Any] | None) -> list[str
     action = str(cfg.get("clip_action") or "").strip()
     if action and action not in text:
         reasons.append("missing_action")
-    style = cfg.get("style_lock") if isinstance(cfg.get("style_lock"), dict) else {}
-    look = str(style.get("look") or "").strip()
+    look = _shown_look(cfg, current_content_language())
     if look and look not in text:
         reasons.append("missing_style")
     lighting = str(cfg.get("lighting") or "").strip()
@@ -260,89 +363,70 @@ def reference_prompt_issues(prompt: str, cfg: dict[str, Any] | None) -> list[str
         index = 1
     if index > 1:
         end = str(cfg.get("previous_end_state") or "").strip()
-        if "continues from" not in text.lower():
+        if not any(marker in text.lower() for marker in _CONTINUES_MARKERS):
             reasons.append("missing_continuation")
         if end and end not in text:
             reasons.append("missing_previous_end")
         prev = str(cfg.get("previous_action") or "").strip()
-        if prev and f"Action: {prev}" in text:
+        if prev and (f"Action: {prev}" in text or f"动作：{prev}" in text):
             reasons.append("repeats_previous_action")
     mode = str(cfg.get("reference_call_mode") or "")
-    if mode == "i2v" and "first frame" not in text.lower() and "animate this image" not in text.lower():
+    if mode == "i2v" and not any(marker in text.lower() for marker in _MOTION_SOURCE_MARKERS):
         reasons.append("missing_motion_source")
-    if mode == "r2v" and "image 1" not in text.lower() and "last reference" not in text.lower():
+    if mode == "r2v" and not any(marker in text.lower() for marker in _REFERENCE_ORDER_MARKERS):
         reasons.append("missing_reference_order")
     return reasons
 
 
 def compose_reference_clip_prompt(cfg: dict[str, Any] | None) -> str:
     cfg = cfg if isinstance(cfg, dict) else {}
+    lang = current_content_language()
     style = cfg.get("style_lock") if isinstance(cfg.get("style_lock"), dict) else {}
-    look = str(style.get("look") or "").strip()
+    look = _shown_look(cfg, lang)
     medium = str(style.get("medium") or "").strip()
     try:
         index = int(cfg.get("clip_index") or 1)
     except (TypeError, ValueError):
         index = 1
-    action = str(cfg.get("clip_action") or "").strip()
-    camera = str(cfg.get("camera") or "medium / eye-level").strip()
+    action = strip_phrase(cfg.get("clip_action"))
+    camera = strip_phrase(cfg.get("camera")) or phrase(_REF_PHRASES, lang, "default_camera")
     timeline = str(cfg.get("timeline") or "").strip()
     duration = cfg.get("duration_sec")
-    lighting = str(cfg.get("lighting") or "").strip()
-    crowd = str(cfg.get("crowd") or "").strip()
+    lighting = strip_phrase(cfg.get("lighting"))
+    crowd = strip_phrase(cfg.get("crowd"))
     lines = [
-        f"Shot {index}, timeline {timeline}, duration {duration} seconds.",
-        f"Visual style: {look}.",
+        phrase(_REF_PHRASES, lang, "shot_header", index=index, timeline=timeline, duration=duration),
+        phrase(_REF_PHRASES, lang, "visual_style", look=look),
     ]
     if medium == MATCH_REFERENCE_MEDIUM:
-        lines.append(
-            "Medium: match the rendering, line, shading, and palette of the "
-            "attached reference image(s); do not switch to another medium."
-        )
+        lines.append(phrase(_REF_PHRASES, lang, "medium_match"))
     elif medium:
-        lines.append(f"Medium: {medium}.")
+        lines.append(phrase(_REF_PHRASES, lang, "medium", medium=strip_phrase(medium)))
     if lighting:
-        lines.append(f"Lighting stays {lighting}.")
+        lines.append(phrase(_REF_PHRASES, lang, "lighting", lighting=lighting))
     if crowd:
-        lines.append(f"Crowd stays {crowd}.")
+        lines.append(phrase(_REF_PHRASES, lang, "crowd", crowd=crowd))
     if index > 1:
-        end = str(cfg.get("previous_end_state") or "").strip()
-        prev = str(cfg.get("previous_action") or "").strip()
-        lines.append(f"This shot continues from the previous end: {end}.")
+        end = strip_phrase(cfg.get("previous_end_state"))
+        prev = strip_phrase(cfg.get("previous_action"))
+        lines.append(phrase(_REF_PHRASES, lang, "continues", end=end))
         if prev:
-            lines.append(f"The previous action is finished and must not repeat: {prev}.")
-    lines.append(f"Action: {action}. Camera: {camera}.")
+            lines.append(phrase(_REF_PHRASES, lang, "previous_done", prev=prev))
+    lines.append(phrase(_REF_PHRASES, lang, "action_camera", action=action, camera=camera))
     mode = str(cfg.get("reference_call_mode") or "")
     contract = str(cfg.get("reference_prompt_contract") or "")
+    labels = _image_n_labels(cfg)
     if mode == "i2v":
-        lines.append("Animate this image. The attached image is the first frame.")
-        labels = _image_n_labels(cfg)
+        lines.append(phrase(_REF_PHRASES, lang, "i2v"))
         if labels:
-            lines.append(" ".join(labels))
+            lines.append(join_sentences(labels, lang))
+    elif labels:
+        lines.append(join_sentences(labels, lang))
+    elif contract in {"product", "scene", "character"}:
+        lines.append(phrase(_REF_PHRASES, lang, f"contract_{contract}"))
     else:
-        labels = _image_n_labels(cfg)
-        if labels:
-            lines.append(" ".join(labels))
-        elif contract == "product":
-            lines.append(
-                "Image 1 is the referenced subject and stays unchanged. "
-                "Motion happens around it."
-            )
-        elif contract == "scene":
-            lines.append(
-                "The place is the last reference image. Keep its layout and "
-                "stage the action inside it."
-            )
-        elif contract == "character":
-            lines.append(
-                "Image 1 is the person. The place is the last reference image. "
-                "The pose may change. Face and wardrobe stay."
-            )
-        else:
-            lines.append(
-                "Image 1 is the leading reference. Later references follow in slot order."
-            )
-    return " ".join(line for line in lines if line.strip())
+        lines.append(phrase(_REF_PHRASES, lang, "contract_default"))
+    return join_sentences([line for line in lines if line.strip()], lang)
 
 
 def build_reference_led_video_graph(
@@ -766,7 +850,7 @@ def build_reference_led_video_graph(
                 "delegate": "agent",
                 "kind": "agent",
                 "skill_id": "compose",
-                "director_task": "Concatenate the clips in shot order.",
+                "director_task": node_task("compose"),
             },
             "layout": {"x": 1200, "y": 40, "width": 240, "height": 140},
         }
@@ -1110,15 +1194,16 @@ def _companion_scenes(
 
 
 def _companion_sheet_prompt(character: dict[str, Any], style: dict[str, Any]) -> str:
-    name = str(character.get("name") or "the person").strip()
+    lang = current_content_language()
+    name = str(character.get("name") or "").strip() or phrase(_REF_PHRASES, lang, "the_person")
     desc = str(character.get("description") or "").strip()
-    medium = str(style.get("medium") or style.get("look") or "the approved style").strip()
-    bits = [f"Create character specs for {name}."]
+    medium = strip_phrase(style.get("medium") or style.get("look")) or phrase(_REF_PHRASES, lang, "approved_style")
+    bits = [phrase(_REF_PHRASES, lang, "sheet_single", name=name)]
     if desc:
-        bits.append(desc if desc.endswith(".") else f"{desc}.")
-    bits.append("Plain studio backdrop. Do not invent a different person.")
-    bits.append(f"Visual style: {medium}.")
-    return " ".join(bits)
+        bits.append(sentence(desc, lang))
+    bits.append(phrase(_REF_PHRASES, lang, "sheet_backdrop"))
+    bits.append(phrase(_REF_PHRASES, lang, "sheet_style", medium=medium))
+    return join_sentences(bits, lang)
 
 
 def _combined_companion_sheet_prompt(
@@ -1130,13 +1215,10 @@ def _combined_companion_sheet_prompt(
         if isinstance(ch, dict)
     ]
     names = [n for n in names if n]
-    label = ", ".join(names) if names else "the supporting cast"
-    medium = str(style.get("medium") or style.get("look") or "the approved style").strip()
-    return (
-        f"Create character specs showing {label} as distinct people side by side. "
-        "Keep each face and wardrobe recognisable. Plain studio backdrop. "
-        f"Visual style: {medium}."
-    )
+    lang = current_content_language()
+    label = list_separator(lang).join(names) if names else phrase(_REF_PHRASES, lang, "supporting_cast")
+    medium = strip_phrase(style.get("medium") or style.get("look")) or phrase(_REF_PHRASES, lang, "approved_style")
+    return phrase(_REF_PHRASES, lang, "sheet_combined", label=label, medium=medium)
 
 
 def _partition_companions_for_cap(
@@ -1165,6 +1247,13 @@ def _image_n_labels(cfg: dict[str, Any]) -> list[str]:
     plan = cfg.get("reference_image_plan")
     if not isinstance(plan, list) or not plan:
         return []
+    lang = current_content_language()
+    role_word = {
+        ROLE_PRODUCT: "who_product",
+        ROLE_SCENE: "who_scene",
+        ROLE_MOTION: "who_motion",
+        ROLE_CHARACTER: "who_character",
+    }
     labels: list[str] = []
     for index, entry in enumerate(plan, start=1):
         if not isinstance(entry, dict):
@@ -1174,25 +1263,17 @@ def _image_n_labels(cfg: dict[str, Any]) -> list[str]:
         names = entry.get("names") if isinstance(entry.get("names"), list) else []
         name_bits = [str(n).strip() for n in names if str(n).strip()]
         if name_bits:
-            who = " and ".join(name_bits)
-        elif role == ROLE_PRODUCT:
-            who = "the product"
-        elif role == ROLE_SCENE:
-            who = "the place"
-        elif role == ROLE_MOTION:
-            who = "the animate-image subject"
-        elif role == ROLE_CHARACTER:
-            who = "the person"
+            who = phrase(_REF_PHRASES, lang, "names_join").join(name_bits)
         else:
-            who = "the reference"
+            who = phrase(_REF_PHRASES, lang, role_word.get(role, "who_reference"))
         extra = f" ({node_id})" if node_id else ""
-        labels.append(f"Image {index} is {who}{extra}.")
+        labels.append(phrase(_REF_PHRASES, lang, "image_is", index=index, who=who, extra=extra))
     if labels and any(
         str(e.get("role") or "") == ROLE_SCENE
         for e in plan
         if isinstance(e, dict)
     ):
-        labels.append("The place is the last reference image when a scene is attached.")
+        labels.append(phrase(_REF_PHRASES, lang, "place_last"))
     return labels
 
 

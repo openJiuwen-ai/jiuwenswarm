@@ -13,6 +13,7 @@ import {
   type Connection,
   type Edge,
   type EdgeChange,
+  type IsValidConnection,
   type Node,
   type OnConnect,
   type OnEdgesChange,
@@ -24,6 +25,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } fro
 import type { DesignerExecutionGraph, DesignerGraphNode } from '../executionGraphTypes';
 import { resolvedNodeCanvasSize, toReactFlowGraph, type DesignerReactFlowEdge, type DesignerReactFlowNode } from '../designerGraphAdapter';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { isDesignerConnectionAllowed } from '../designerConnectionRules';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
 import { designerEdgeTypes } from './edges/DesignerEdge';
@@ -288,12 +290,33 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
     [edges, persistReactFlowLayout],
   );
 
+  // Refuse unsupported wires while the user is still dragging (issue #5382).
+  const isValidConnection: IsValidConnection = useCallback(
+    (connection: Connection | Edge) => {
+      if (canvasLocked || editingLocked) return false;
+      const source = connection.source;
+      const target = connection.target;
+      if (!source || !target || source === target) return false;
+      const typeById = new Map(
+        graphRef.current.nodes.map((node) => [String(node.id), String(node.type ?? '')]),
+      );
+      return isDesignerConnectionAllowed(typeById.get(source), typeById.get(target));
+    },
+    [canvasLocked, editingLocked],
+  );
+
   const onConnect: OnConnect = useCallback(
     (connection: Connection) => {
       if (canvasLocked || editingLocked) return;
       if (!connection.source || !connection.target) return;
       const source = connection.source;
       const target = connection.target;
+      if (source === target) return;
+      // Same rule as `isValidConnection`: never persist an unsupported wire.
+      const typeById = new Map(
+        graphRef.current.nodes.map((node) => [String(node.id), String(node.type ?? '')]),
+      );
+      if (!isDesignerConnectionAllowed(typeById.get(source), typeById.get(target))) return;
       if (edges.some((edge) => edge.source === source && edge.target === target)) {
         return;
       }
@@ -401,6 +424,7 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={onConnect}
+        isValidConnection={isValidConnection}
         onNodeDragStop={onNodeDragStop}
         onNodesDelete={onNodesDelete}
         onBeforeDelete={onBeforeDelete}

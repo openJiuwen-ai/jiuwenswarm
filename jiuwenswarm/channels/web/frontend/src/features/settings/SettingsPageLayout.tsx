@@ -6,7 +6,7 @@ import { SettingItemRenderer, SettingsConfirmDialog, SettingsSection } from './c
 import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefinition } from './registry/types';
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
 import { useSettingsServices } from './services/SettingsServicesProvider';
-import { SettingsSourceProvider } from './services/SettingsSourceProvider';
+import { SettingsSourceProvider, SettingsSourceVisibility } from './services/SettingsSourceProvider';
 import type { SettingsModuleTarget } from './settingsNavigation';
 import './SettingsPage.css';
 
@@ -214,16 +214,17 @@ export function SettingsPageLayout({
             <SettingsSourceProvider source={active.module.source}>
               <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
                 {active.visible.sections.map(({ section, items }) => (
-                  <SettingsSection
-                    key={section.id}
-                    title={section.titleKey ? t(section.titleKey) : undefined}
-                    description={section.descriptionKey ? t(section.descriptionKey) : undefined}
-                    separatedRows={section.separatedRows === true}
-                  >
-                    {items.map(({ item, access }) => (
-                      <SettingsItem key={item.id} item={item} access={access} />
-                    ))}
-                  </SettingsSection>
+                  <SettingsSourceVisibility key={section.id} when={section.visibleWhen}>
+                    <SettingsSection
+                      title={section.titleKey ? t(section.titleKey) : undefined}
+                      description={section.descriptionKey ? t(section.descriptionKey) : undefined}
+                      separatedRows={section.separatedRows === true}
+                    >
+                      {items.map(({ item, access }) => (
+                        <SettingsItem key={item.id} item={item} access={access} />
+                      ))}
+                    </SettingsSection>
+                  </SettingsSourceVisibility>
                 ))}
               </div>
             </SettingsSourceProvider>

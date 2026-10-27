@@ -323,7 +323,10 @@ async def test_create_job_rejects_unresolved_project_in_single_user(monkeypatch)
 
 @pytest.mark.asyncio
 async def test_create_job_without_marker_allows_default_project_and_no_fields() -> None:
-    """无项目字段的请求（系统路径，如 proactive 自动注册）与默认项目 ID 不需要 marker。"""
+    """无项目字段的请求（系统路径，如 proactive 自动注册）与默认项目 ID 不需要 marker。
+
+    无项目字段时按 work 模式落到 ``default``（#5713：不再产生空 project_id）。
+    """
     cc = _make_controller()
     job = await cc.create_job(
         {
@@ -334,7 +337,7 @@ async def test_create_job_without_marker_allows_default_project_and_no_fields() 
             "id": PROACTIVE_JOB_ID,
         }
     )
-    assert job["project_id"] == ""
+    assert job["project_id"] == "default"
     assert job["work_mode"] == "work"
 
     job_default = await cc.create_job(

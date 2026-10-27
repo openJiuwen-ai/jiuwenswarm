@@ -23,7 +23,7 @@ from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE, ModelInfo
 from jiuwenswarm.diagnosis.service import DiagnosisService
 from jiuwenswarm.diagnosis.store import DiagnosisStore
-from jiuwenswarm.gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
+from jiuwenswarm.gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes
 from jiuwenswarm.gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
 from jiuwenswarm.server.diagnosis.host import DiagnosisHost
 from tests.unit_tests.diagnosis.diagnosis_fixtures import (
@@ -156,17 +156,18 @@ async def test_run_poll_trigger_ttse_and_delete(client: httpx.AsyncClient) -> No
 
     finished = await _wait_completed(client, record["diagnosis_id"])
     assert finished["status"] == "completed"
-    assert finished["root_causes"]
-    assert "ttse" not in finished["suggestions"]
+    assert finished["trajectory_summary"]
+    assert finished["reward_failure_causes"]
+    assert [item["category"] for item in finished["evolution_judge"]] == ["skill", "experience"]
 
     listing = (await client.get(_BASE)).json()
     assert [item["diagnosis_id"] for item in listing["items"]] == [record["diagnosis_id"]]
     assert listing["items"][0]["status"] == "completed"
 
-    cause_id = next(item["id"] for item in finished["root_causes"] if item["category"].startswith("ttse_"))
-    triggered = await client.post(f"{_BASE}/{record['diagnosis_id']}/ttse", json={"root_cause_ids": [cause_id]})
+    judge_id = next(item["id"] for item in finished["evolution_judge"] if item["category"] == "experience")
+    triggered = await client.post(f"{_BASE}/{record['diagnosis_id']}/ttse", json={"evolution_judge_id": judge_id})
     assert triggered.status_code == 200
-    assert triggered.json()["results"][cause_id]["result"] == "triggered"
+    assert triggered.json()["results"][judge_id]["result"] == "triggered"
 
     deleted = await client.delete(f"{_BASE}/{record['diagnosis_id']}")
     assert deleted.status_code == 204
@@ -188,7 +189,7 @@ async def test_validation_errors_use_the_contract_body(client: httpx.AsyncClient
         },
     )
     too_long = await client.post(_BASE, json={**_FULL, "user_note": "x" * 2001})
-    no_causes = await client.post(f"{_BASE}/dg_0123456789abcdef/ttse", json={"root_cause_ids": []})
+    no_causes = await client.post(f"{_BASE}/dg_0123456789abcdef/ttse", json={"evolution_judge_id": ""})
 
     for response in (not_json, bad_scope, bad_time, too_long, no_causes):
         assert response.status_code == 400
@@ -272,10 +273,10 @@ async def test_ttse_before_completion_of_for_code_mode_answers_409(tmp_path: Pat
         finished = await _wait_completed(http, record["diagnosis_id"])
         response = await http.post(
             f"{_BASE}/{record['diagnosis_id']}/ttse",
-            json={"root_cause_ids": ["tt-1"]},
+            json={"evolution_judge_id": "evo-2"},
         )
 
-    assert not [item for item in finished["root_causes"] if item["category"].startswith("ttse_")]
+    assert finished["evolution_judge"] == []
     assert (response.status_code, response.json()["code"]) == (409, "TTSE_NOT_SUPPORTED")
 
 
@@ -296,7 +297,7 @@ async def test_proxy_forwards_method_session_and_body() -> None:
         await http.get(f"{_BASE}/dg_1")
         await http.post(f"{_BASE}/dg_1/cancel")
         deleted = await http.delete(f"{_BASE}/dg_1")
-        await http.post(f"{_BASE}/dg_1/ttse", json={"root_cause_ids": ["a"]})
+        await http.post(f"{_BASE}/dg_1/ttse", json={"evolution_judge_id": "a"})
 
     assert deleted.status_code == 204
     assert calls == [
@@ -305,7 +306,7 @@ async def test_proxy_forwards_method_session_and_body() -> None:
         (ReqMethod.DIAGNOSIS_GET, SESSION_ID, {"diagnosis_id": "dg_1"}),
         (ReqMethod.DIAGNOSIS_CANCEL, SESSION_ID, {"diagnosis_id": "dg_1"}),
         (ReqMethod.DIAGNOSIS_DELETE, SESSION_ID, {"diagnosis_id": "dg_1"}),
-        (ReqMethod.DIAGNOSIS_TTSE_TRIGGER, SESSION_ID, {"diagnosis_id": "dg_1", "request": {"root_cause_ids": ["a"]}}),
+        (ReqMethod.DIAGNOSIS_TTSE_TRIGGER, SESSION_ID, {"diagnosis_id": "dg_1", "request": {"evolution_judge_id": "a"}}),
     ]
 
 

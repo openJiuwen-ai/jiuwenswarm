@@ -100,7 +100,9 @@ cancellation cannot stop a later turn.
 Approval cards (permission approvals, cua desktop confirmations and similar) must be
 clicked on screen (Allow or Reject); voice cannot approve or reject them. While a task
 waits on one, the assistant explains what the card is for and asks you to click it,
-without claiming it was allowed.
+without claiming it was allowed. While the card is open, voice stops listening and the
+microphone button is disabled, the same way the text input is locked; once you click the
+card, the microphone returns to the state you had chosen.
 Voice tasks retain their own per-round result subscription even when the Design page
 already has a subscription. Canvas, node, run and assistant activity updates use the
 saved Design session's Web channel, so the page does not need a refresh.

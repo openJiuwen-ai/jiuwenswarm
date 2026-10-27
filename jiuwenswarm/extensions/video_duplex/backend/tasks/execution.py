@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import logging
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
 
 from jiuwenswarm.server.runtime.agent_adapter.managed_subagent_control import (
@@ -96,6 +97,12 @@ async def bind_task_execution(request, adapter, inputs):
             and not isinstance(inputs.get("query"), InteractiveInput)
             and getattr(adapter.task_execution_binding[0], "active_round", None) is not None):
         raise RuntimeError("当前会话仍有任务或文字回复在执行，请完成后再发起全双工工具任务。")
+    # Cards are click-only (#5487). Runtime refuses while a live turn waits on a
+    # card; this covers a card restored from disk, which would take the task as its answer.
+    loop_session = getattr(adapter.task_execution_binding[0], "loop_session", None)
+    if (not isinstance(inputs.get("query"), InteractiveInput) and loop_session is not None
+            and getattr(loop_session.get_state(INTERRUPTION_KEY), "interrupted_tools", None)):
+        raise RuntimeError("当前对话有待处理的确认卡片，请先在界面上点击处理，再发起全双工工具任务。")
     if adapter.task_execution_binding[1] is None:
         await adapter.install_voice_task_rail()
     harness, rail = adapter.task_execution_binding

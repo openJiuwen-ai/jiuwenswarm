@@ -5938,13 +5938,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=dict(params) if isinstance(params, dict) else {},
             metadata=route_metadata,
         )
+        authorize_completion = req_method in {
+            ReqMethod.A4P_AUTHORIZATION_COMPLETE,
+            ReqMethod.A4P_AUTHORIZATION_REJECT,
+        }
+        if authorize_completion:
+            # 刷新后经新连接完成/拒绝授权：把该恢复 turn 的输出改绑到当前连接，
+            # 其迟到事件（旧 ws 已注销）据此改投，而不是被当孤儿丢弃。
+            channel.record_a4p_rebound(session_id, route_metadata["ws_id"])
         try:
             resp = await ac.send_request(env)
         except Exception as exc:
+            if authorize_completion:
+                channel.clear_a4p_rebound(session_id)
             logger.exception("[a4p] forward to agent failed: %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
             return
         if not resp.ok:
+            if authorize_completion:
+                channel.clear_a4p_rebound(session_id)
             payload = resp.payload if isinstance(resp.payload, dict) else {}
             await channel.send_response(
                 ws,

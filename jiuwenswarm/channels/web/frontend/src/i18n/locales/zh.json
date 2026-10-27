@@ -745,13 +745,14 @@
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
+      "computerControl": "电脑操控",
       "taskAsr": "语音转写",
       "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
-      "trajectoryUi": "轨迹界面",
+      "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "调度模式",
@@ -925,13 +926,13 @@
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
-      "trajectory_ui_enabled": {
-        "title": "启用轨迹界面",
-        "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
+      "cua_agent_enabled": {
+        "title": "启用电脑操控",
+        "description": "允许智能体通过桌面子代理查看和操作本机应用窗口，需要支持图片输入的模型和相应系统权限。"
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
-        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据，无需同时启用轨迹界面；仅能诊断开启之后产生的记录。"
+        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
       },
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
@@ -995,7 +996,7 @@
       },
       "multi_model_collaboration_enabled": {
         "title": "多模型协同",
-        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
+        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。建议使用能力更强的模型作为参考模型，为聚合模型（组内默认模型）提供建议。"
       },
       "moa_jev_enabled": {
         "title": "JEV 决策",
@@ -1051,18 +1052,22 @@
       "diagnose": "诊断轨迹",
       "selection": {
         "fullScope": "全部轨迹",
-        "notePlaceholder": "请输入用户反馈（可选）",
+        "selectAll": "全选",
+        "clearSelectAll": "取消全选",
+        "selectAllAgent": "选中 {{name}} 的全部轨迹",
+        "clearSelectAllAgent": "取消选中 {{name}} 的全部轨迹",
+        "notePlaceholder": "对已选轨迹补充问题描述（可选）。例：答非所问；工具失败后未重试；未产出预期文件",
         "cancel": "取消",
         "start": "开始执行",
         "starting": "启动中…",
-        "summary": "已选择 {{count}} 个 Agent，{{nodes}} 个节点",
+        "summary": "已选择 {{count}} 个 Agent · {{nodes}} 个节点",
         "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
         "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
         "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
         "noData": "当前没有可诊断的轨迹"
       },
-      "summary": "{{traces}} 条轨迹 · {{spans}} 个 OTel Span",
+      "summary": "{{agents}}个Agent · {{nodes}} 个节点",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -1090,7 +1095,7 @@
     },
     "diagnosis": {
       "entry": "轨迹分析",
-      "noteLabel": "补充说明（可选）",
+      "noteLabel": "用户反馈：描述已选轨迹中的问题（可选）",
       "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
       "cancel": "取消诊断",
       "selectionHint": "在时间轴或任一泳道上拖选一段时间，并勾选要诊断的成员。",
@@ -1173,22 +1178,36 @@
         "weak": "未达标"
       },
       "signalSource": {
-        "keyword_tool": "工具输出命中",
-        "keyword_user": "用户消息命中",
-        "reward": "Reward 评分"
+        "keyword_tool": "工具输出",
+        "keyword_user": "用户消息",
+        "reward": "Reward",
+        "user": "用户补充"
+      },
+      "signalSourceLabel": "信号来源：{{source}}",
+      "attributionLabel": "归因：{{kind}}",
+      "attributionKind": {
+        "artifact": "产物",
+        "skill": "技能",
+        "experience": "经验"
       },
       "signalScore": "得分 {{score}}",
-      "signalSurfacedAt": "问题露出于 {{nodes}}",
+      "signalSurfacedAt": "问题定位到 {{nodes}}",
       "causeAt": "位于 {{nodes}}",
       "evidence": "依据",
-      "findingsIssuesOnly": "{{issues}} 处问题",
-      "findingsIssuesAndExperience": "{{issues}} 处问题，另有 {{experience}} 条经验判定",
-      "findingsExperienceOnly": "{{experience}} 条经验判定",
+      "dimension": "评分维度",
       "requestCount": "模型请求 {{count}} 次",
-      "objectSteps": "步骤",
-      "objectStepsCount": "{{count}} 个轨迹步骤",
+      "objectSteps": "范围",
+      "objectStepsCount": "{{count}} 个 OTel Span",
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
+      "objectSummary": "轨迹摘要",
+      "findingCauses": "{{count}} 条产物归因",
+      "findingSkill": "{{count}} 条技能归因",
+      "findingExperience": "{{count}} 条经验归因",
+      "findingJoin": "、",
+      "findingWithEvolution": "{{causes}}，另有 {{evolution}}",
+      "findingLegacyCauses": "{{count}} 处旧版归因",
+      "relatedSignals": "相关归因信号",
       "suggestionsUnfinished": "诊断未完成，没有建议",
       "process": "诊断过程",
       "processSteps": "{{count}} 步",
@@ -1499,6 +1518,7 @@
       "chooseSource": "选择共享的内容",
       "muteMic": "关闭麦克风",
       "unmuteMic": "开启麦克风",
+      "cardHold": "请先点击上方确认卡片，语音已暂停收音",
       "muteSpeaker": "静音模型回应",
       "unmuteSpeaker": "开启模型声音",
       "stopSharing": "停止屏幕共享",
@@ -1623,6 +1643,8 @@
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
     "teamSelect": {
+      "unavailable": "不可用",
+      "unavailableHint": "该专家团已不可用，请重新安装专家团后继续；历史记录仍可查看。",
       "tooltip": "切换当前查看的 Team",
       "loadingLabel": "加载 Team…",
       "fallbackLabel": "选择 Team"
@@ -1691,6 +1713,8 @@
       "completed": "已完成",
       "failed": "失败"
     },
+    "moaReferenceRunning": "正在运行参考模型…",
+    "moaVerifying": "正在评估任务执行进展…",
     "contextCompressionCommandRunning": "正在压缩上下文",
     "teamPause": "暂停",
     "teamPauseHint": "团队暂停后，直接发送下一条消息即可继续",
@@ -1817,7 +1841,9 @@
     "approvalInputPlaceholder": "填写修改意见后点击「下一步」；留空点击「跳过」"
   },
   "persistSession": {
-    "textRequired": "请在 /persist 后输入任务内容"
+    "textRequired": "请在 /persist 后输入任务内容",
+    "toolbarTag": "永续会话",
+    "closeTag": "隐藏永续会话标记"
   },
   "crossSession": {
     "messageBadge": "来自会话：{{title}}"
@@ -3627,6 +3653,7 @@
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",
       "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
+      "uploadSkillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
       "newVersion": "该专家有新版本，可更新",
       "teamUnavailable": "专家团管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
@@ -3951,6 +3978,7 @@
       }
     },
     "toolResult": {
+      "answersInSummary": "请查看问题澄清卡片中的回答，敏感输入已隐藏。",
       "success": "完成",
       "failed": "失败",
       "timeout": "执行超时",
@@ -4196,6 +4224,7 @@
     "pipRestart": "立即重启",
     "restoreDefaults": "恢复默认更新源",
     "currentVersion": "当前版本",
+    "builtOn": "构建于",
     "latestVersion": "最新版本",
     "state": "更新状态",
     "publishedAt": "发布时间",
@@ -4727,7 +4756,8 @@
       "invalidType": "仅支持 .zip / .tar 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
-      "missingReadme": "插件包缺少 README.md 文件"
+      "missingReadme": "插件包缺少 README.md 文件",
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
     },
     "common": {
       "back": "返回",

@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useRef,
   useCallback,
@@ -20,7 +20,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, Infinity as InfinityIcon, ListChecks, Loader2, Lock, Mic, Pencil, Plus, Settings, Square, SquarePlay, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -149,6 +149,7 @@ import { TeamSelector } from './TeamSelector';
 import { resolveOrganizationTeamIdentity } from '../../features/teamOrganization/teamIdentity';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import { resolveTeamDispatchMode, useTeamScheduledDispatchEnabled } from '../../features/teamDispatch/featureConfig';
@@ -897,6 +898,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const attachmentMenuOpenedByLongPressRef = useRef(false);
   const isComposingRef = useRef(false);
   const { t, i18n } = useTranslation();
+  const organizationEnabled = useTeamOrganizationUiEnabled();
+  const organizationTeamUnavailable = useTeamSelectorStore((s) => {
+    if (!organizationEnabled || !activeSessionId) return false;
+    const runtime = s.runtimes[activeSessionId];
+    return runtime?.teams.find((team) => team.team_id === runtime.selectedTeamId)?.available === false;
+  });
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );
@@ -915,6 +922,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const designLandingSubmitting = isDesignLanding && isProcessing;
   const composerDisabled =
     agentGroupUnavailable ||
+    organizationTeamUnavailable ||
     isCompactRunning ||
     (hasPendingQuestion && !hasRunningAgent) ||
     designLandingSubmitting;
@@ -1082,14 +1090,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     setAgentPickerQuery('');
     setPickerTab('agent');
   }, [attachMenuOpen]);
-  const isPaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isPaused ?? false);
+  const conversationIsPaused = useChatStore((s) => s.runtimes[conversationId]?.isPaused ?? false);
+  const organizationIsProcessing = useOrganizationProcessing(activeSessionId);
+  const isPaused = conversationIsPaused;
+  const ownerOrganizationIsProcessing = conversationId === activeSessionId && organizationIsProcessing;
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
   const selectedSkills = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.selectedSkills ?? []);
   const teamMembers = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamMembers ?? [],
+    (s) => s.runtimes[conversationId]?.teamMembers ?? [],
   ) as InputAreaTeamMember[];
   const currentSession = useSessionStore((s) => s.currentSession);
   const activeSession = useSessionStore((s) => {
@@ -1185,6 +1196,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const teamDispatchToggleDisabled = swarmflowToggleDisabled;
   const canUsePlanMenu = supportsPlanMode(mode);
   const planTagVisible = canUsePlanMenu && planActive;
+  // 永续会话标记：只对真实会话展示（/persist 创建或后端会话列表带 persist_session 的会话），
+  // 欢迎页在 session.create 之前没有可展示的持久化状态。
+  const persistSessionActive = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.persistSession ?? false,
+  );
+  const persistTagVisible = Boolean(
+    activeSessionId && activeSessionId !== NEW_CONVERSATION_ID && persistSessionActive,
+  );
 
   const mentionableMembers = useMemo(() => {
     return teamMembers
@@ -2371,6 +2390,24 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return text.replace(/\u200B/g, '');
   }, []);
 
+  const composerConversationRef = useRef(conversationId);
+  useEffect(() => {
+    if (composerConversationRef.current === conversationId) return;
+    composerConversationRef.current = conversationId;
+    setComposerSuggestion(null);
+    // Member IDs are scoped to a Team, even when two Teams use the same ID.
+    // Preserve the draft but remove the old Team's member addressing tokens.
+    const editor = inputRef.current;
+    if (!editor) return;
+    const tokens = editor.querySelectorAll<HTMLElement>(
+      '[data-composer-token="member"]:not([data-composer-item-kind="asset"])',
+    );
+    if (!tokens.length) return;
+    tokens.forEach((token) => token.remove());
+    const sid = useChatStore.getState().activeSessionId;
+    if (sid) useChatStore.getState().setInputValue(sid, extractPlainText());
+  }, [conversationId, extractPlainText]);
+
   /** 从 contenteditable 提取富文本（chip 转成 {{skill:名称}} 标记，保留位置用于气泡交织渲染） */
   const extractRichContent = useCallback((): string => {
     const el = inputRef.current;
@@ -2635,8 +2672,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // preparing a follow-up. A pending approval keeps Stop available and blocks Send.
   const hasDraft = hasTextDraft || attachments.length > 0 || isListening || isTranscribing;
   const isImageInterruptBlocked = isInterruptible && !isTeamMode && !isAgentMode && readyMediaItems.length > 0;
-  const showStop =
-    !designLandingSubmitting && isProcessing && !isPaused && (!hasDraft || hasPendingQuestion);
+  const hasRunningWork = (isProcessing && !isPaused) || ownerOrganizationIsProcessing;
+  const showStop = !designLandingSubmitting && hasRunningWork && (!hasDraft || hasPendingQuestion);
   const hasReadyMedia = readyMediaItems.length > 0;
   const canSubmit =
     showStop ||
@@ -2896,7 +2933,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       chip.className = `chat-input-chip-inline chat-input-chip-inline--${kind}`;
       chip.setAttribute('contenteditable', 'false');
       chip.dataset.composerToken = kind;
+      chip.dataset.composerItemKind = slashItemKind ?? kind;
       chip.dataset.value = value;
+      chip.setAttribute('data-testid', 'chat-panel-composer-token');
+      chip.dataset.variant = value;
 
       const prefix = document.createElement('span');
       prefix.className = 'chat-input-chip-inline__prefix';
@@ -3920,7 +3960,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               onBlur={saveSelection}
               onPaste={handlePaste}
               data-placeholder={
-                agentGroupUnavailable
+                organizationTeamUnavailable
+                  ? t('chat.teamSelect.unavailableHint')
+                  : agentGroupUnavailable
                   ? t('chat.placeholderAgentGroupDeleted')
                   : isCompactRunning
                   ? t('chat.placeholderCompacting')
@@ -3931,7 +3973,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       : designLandingSubmitting
                         ? t('chat.placeholder')
                         : isTeamMode
-                          ? isInterruptible && !isPaused
+                          ? (isInterruptible || ownerOrganizationIsProcessing) && !isPaused
                             ? t('chat.placeholderTeamModeProcessing')
                             : t('chat.placeholderTeamMode')
                         : isAutoHarnessMode
@@ -4960,6 +5002,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                         </button>
                       );
                     })()}
+                  </div>
+                )}
+
+                {persistTagVisible && (
+                  // 永续会话标记：persist_session 是 session.create 的一次性参数，会话存续期间
+                  // 后端没有关闭入口。会话还没有任何消息时展示 ×、点击仅本地隐藏（切走再切回
+                  // 会随会话记录回灌回来），hover 沿用 agent-tag「图标换 ×」的交换交互；一旦
+                  // 发过消息（hasHistory）直接不渲染 ×，并加 --static 修饰让图标 hover 常显，
+                  // 避免悬停时图标消失又没有 × 补位、标签视觉上缺一块。
+                  <div
+                    className={hasHistory ? 'chat-agent-tag chat-agent-tag--static' : 'chat-agent-tag'}
+                    data-testid="chat-panel-persist-tag"
+                  >
+                    <span className="chat-agent-tag__avatar chat-agent-tag__avatar--plain" aria-hidden="true">
+                      <InfinityIcon size={16} aria-hidden="true" />
+                    </span>
+                    <span className="chat-agent-tag__label" data-testid="chat-panel-persist-tag-label">
+                      {t('persistSession.toolbarTag')}
+                    </span>
+                    {!hasHistory && (
+                      <button
+                        type="button"
+                        className="chat-agent-tag__close"
+                        data-testid="chat-panel-persist-tag-close"
+                        aria-label={t('persistSession.closeTag')}
+                        title={t('persistSession.closeTag')}
+                        onClick={() => {
+                          if (!activeSessionId) return;
+                          useSessionStore.getState().setPersistSession(activeSessionId, false);
+                        }}
+                      >
+                        <WorkIcon name="close" />
+                      </button>
+                    )}
                   </div>
                 )}
 

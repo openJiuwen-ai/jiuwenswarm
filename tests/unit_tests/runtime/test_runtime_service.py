@@ -4224,3 +4224,96 @@ async def test_stop_session_for_archive_cancels_requests_without_waiting_for_cac
             *[task for task in (request_task, other_task) if task is not None],
             return_exceptions=True,
         )
+
+
+def _session_waiting_on_card() -> SimpleNamespace:
+    waiting = SimpleNamespace(state=SessionExecutionState.WAITING_FOR_CONTROL)
+    return SimpleNamespace(
+        _session_coordinator=SimpleNamespace(
+            snapshot_session=lambda _sid: SimpleNamespace(executions=(waiting,))
+        )
+    )
+
+
+async def test_voice_task_is_refused_before_admission_and_the_card_stays_clickable() -> None:
+    """#5487: admitting a voice turn cancels the execution that waits on a card,
+    so the card could no longer be clicked. The refusal must happen before
+    admission and be a terminal chat.error, so the voice task fails instead of
+    becoming unknown and holding the voice queue."""
+    seen: list[str] = []
+
+    class CardAgent(FakeAgent):
+        async def process_message_stream(self, request: AgentRequest):
+            seen.append(request.request_id)
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "call_cua",
+                    "source": "confirm_interrupt",
+                    "questions": [],
+                },
+            )
+
+        async def deliver_control_input(self, request: AgentRequest):
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "chat.final", "content": "approved"},
+                is_complete=True,
+            )
+
+    class CardManager(FakeAgentManager):
+        def get_agent_for_session_nowait(self, channel_id: str, session_id: str) -> object:
+            return self.agent
+
+    manager = CardManager()
+    manager.agent = CardAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    runtime._trigger_before_chat_request_hook = AsyncMock()
+    session_id = "voice-card-session"
+    params = {"mode": "agent", "work_mode": "work"}
+    typed = AgentRequest(
+        request_id="typed", channel_id="web", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True, params={**params, "query": "open notepad"},
+    )
+    await _collect_events(runtime.stream(typed, trigger_hook=False))
+
+    voice = AgentRequest(
+        request_id="task-voice", channel_id="video_tool", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True, params={**params, "query": "append a line"},
+    )
+    events = await _collect_events(runtime.stream(voice, trigger_hook=False))
+
+    assert [(event.event_type, event.ok, event.is_complete) for event in events] == [
+        ("chat.error", False, True)
+    ]
+    assert seen == ["typed"]
+    snapshot = runtime._session_coordinator.snapshot_session(session_id)
+    assert snapshot is not None
+    assert [item.state.value for item in snapshot.executions] == ["waiting_for_control"]
+
+    click = AgentRequest(
+        request_id="click", channel_id="web", session_id=session_id,
+        req_method=ReqMethod.CHAT_SEND, is_stream=True,
+        params={
+            **params, "query": "", "request_id": "call_cua", "source": "confirm_interrupt",
+            "answers": [{"question": "", "selected_options": ["allow_once"]}],
+        },
+    )
+    clicked = await asyncio.wait_for(_collect_events(runtime.stream(click, trigger_hook=False)), timeout=0.5)
+    assert [event.event_type for event in clicked] == ["chat.final"]
+
+
+def test_typed_input_still_supersedes_a_waiting_card() -> None:
+    request = AgentRequest(
+        request_id="r1", channel_id="web", session_id="chat-1",
+        req_method=ReqMethod.CHAT_SEND, params={"mode": "agent.code.normal"},
+    )
+
+    assert AgentRuntime._voice_task_card_refusal(_session_waiting_on_card(), request) == []

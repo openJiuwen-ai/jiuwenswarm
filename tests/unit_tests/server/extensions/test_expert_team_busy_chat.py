@@ -327,5 +327,10 @@ async def test_followup_reply_uses_original_stream_and_keeps_history_attribution
     assert records[0]["extra"]["request_id"] == "original"
     assert launcher._history_writers == {}
     payloads = [call.args[0]["payload"] for call in transport.send_push.call_args_list]
-    assert [payload["event_type"] for payload in payloads] == ["chat.delta", "chat.final", "org.turn_completed"]
+    assert [payload["event_type"] for payload in payloads] == [
+        "chat.processing_status", "chat.delta", "chat.final", "org.turn_completed", "chat.processing_status",
+    ]
+    assert payloads[0]["is_processing"] is True
+    assert payloads[-1]["is_processing"] is False
+    assert all(payload["source"] == "org_expert_direct" for payload in payloads)
     assert all(payload["team_id"] == "expert" and payload["request_id"] == "original" for payload in payloads)

@@ -30,7 +30,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import terminal_internal_route
 from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import classify_permission_result
 from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import PolicyEvaluation
-from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import SessionDenyStore
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import classify_tool
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import build_tool_decision_facts
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
@@ -173,18 +172,15 @@ async def test_unverified_observations_stay_manual(tmp_path, installed, monkeypa
 
 
 @pytest.mark.parametrize(("name", "args"), CASES)
-@pytest.mark.parametrize("gate", ["deny", "session_deny", "fail_closed", "explicit_human"])
+@pytest.mark.parametrize("gate", ["deny", "fail_closed", "explicit_human"])
 @pytest.mark.asyncio
 async def test_observation_preserves_earlier_gates(tmp_path, installed, name, args, gate):
     env = await installed(name, args)
-    denies = SessionDenyStore()
-    if gate == "session_deny":
-        denies.record_denial(session_id="session-a", tool_name=name, tool_args=args, reason="user_rejected")
     auto, _, reviewer, base = _rail(tmp_path, PolicyEvaluation(
         level="deny" if gate == "deny" else "allow", reason="configured",
         source="fail_closed" if gate == "fail_closed" else "engine",
         manual_approval_required=gate == "explicit_human",
-    ), session_denies=denies)
+    ))
     auto.init(env.owner)
     if gate == "explicit_human":
         assert await auto.before_tool_call(env.ctx) is None

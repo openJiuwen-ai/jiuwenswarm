@@ -84,7 +84,6 @@ await build({
             'TaskAsrSetting',
             'TaskFullDuplexSetting',
             'TrajectoryDiagnosisSetting',
-            'TrajectoryUiSetting',
           ]
             .map((name) => `export const ${name} = () => null;`)
             .join('\n'),
@@ -253,6 +252,7 @@ test('collaboration and other experimental sections retain their order', () => {
     'proactive-recommendation',
     'multi-model-collaboration',
     'tool-optimize',
+    'computer-control',
   ]);
 });
 

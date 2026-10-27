@@ -42,6 +42,8 @@ class FakeWebChannel:
         self.connect_handler = None
         self.disconnect_handler = None
         self.routing_keys: list[RoutingKey] = []
+        self.rebounds: list[tuple[str | None, str]] = []
+        self.cleared: list[str | None] = []
 
     def register_method(self, name, handler):
         self.methods[name] = handler
@@ -65,6 +67,12 @@ class FakeWebChannel:
 
     async def routing_keys_for_ws(self, ws):
         return list(self.routing_keys)
+
+    def record_a4p_rebound(self, session_id, ws_id):
+        self.rebounds.append((session_id, ws_id))
+
+    def clear_a4p_rebound(self, session_id):
+        self.cleared.append(session_id)
 
 
 @pytest.mark.asyncio
@@ -107,6 +115,11 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
         "app_id": "app-1",
         "agent_ref": {"mode": "team", "id": "research"},
     }
+    if method == "a4p.authorization.complete":
+        # 完成授权时把恢复 turn 的输出改绑到当前连接（当前 ws_id 覆盖授权方冻结的旧 ws）。
+        assert channel.rebounds == [("session-1", "ws-1")]
+    else:
+        assert channel.rebounds == []
 
 
 @pytest.mark.asyncio
@@ -1688,52 +1701,49 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
+async def test_trajectory_diagnosis_switch_round_trips_through_config_rpc(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
     monkeypatch.setattr(
         app_web_handlers,
         "get_config_raw",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         app_web_handlers,
         "get_config",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     # config.set 路径实现已下沉 config_set_handlers，config.get 仍读 gateway 侧，双patch
     monkeypatch.setattr(
         config_set_handlers,
         "get_config_raw",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         config_set_handlers,
         "get_config",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         config_set_handlers,
-        "update_trajectory_ui_in_config",
+        "update_trajectory_diagnosis_in_config",
         lambda enabled: persisted.append(enabled),
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     await channel.methods["config.get"](object(), "req-trajectory-get", {}, "session")
-    assert channel.responses[-1]["payload"]["trajectory_ui_enabled"] == "false"
+    assert channel.responses[-1]["payload"]["trajectory_ui_diagnosis_enabled"] == "false"
 
     await channel.methods["config.set"](
         object(),
         "req-trajectory-set",
-        {"trajectory_ui_enabled": "true"},
+        {"trajectory_ui_diagnosis_enabled": "true"},
         "session",
     )
     assert persisted == [True]
-    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
-    change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_enabled"])
-    assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
-    # Diagnosis switches the trajectory data plane on too, so it needs the same
-    # runtime sync as the trajectory view switch.
+    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_diagnosis_enabled"]
+    # Diagnosis owns the data plane and chat/trajectory tabs.
     diagnosis_change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
     assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
 

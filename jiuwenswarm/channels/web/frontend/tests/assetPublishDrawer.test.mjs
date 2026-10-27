@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -13,6 +12,7 @@ Object.assign(globalThis, {
   CustomEvent: dom.window.CustomEvent,
   IS_REACT_ACT_ENVIRONMENT: true,
 });
+const { createRoot } = await import('react-dom/client');
 await i18next
   .use(initReactI18next)
   .init({ lng: 'en', showSupportNotice: false, resources: { en: { translation: {} } } });
@@ -419,6 +419,224 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   assert.equal(find('asset-publish-result'), null);
   assert.ok(find('asset-publish-form'));
   await act(async () => find('asset-publish-close').click());
+});
+test('logged-out publishing loads local names for all five kinds and preserves edits after login', async () => {
+  for (const kind of ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp']) {
+    sessionStorage.removeItem('marketplace_oauth_access_token');
+    let resolveDescription;
+    assetPublishApi.describe = () => new Promise((resolve) => {
+      resolveDescription = resolve;
+    });
+    await act(async () => openAssetPublish({ kind, local_id: '1022' }));
+    await tick();
+    try {
+      assert.equal(find('asset-publish-display-name').closest('fieldset').disabled, true);
+      assert.equal(typeof resolveDescription, 'function');
+      await act(async () => resolveDescription({
+        ...description,
+        defaults: { ...defaults, display_name: '中文资产', description: '本地介绍' },
+      }));
+      assert.equal(find('asset-publish-display-name').value, '中文资产');
+      assert.equal(find('asset-publish-description').value, '本地介绍');
+      assert.equal(find('asset-publish-prepare').disabled, true);
+      const input = find('asset-publish-display-name');
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, '用户修改名称');
+        input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        input.dispatchEvent(new dom.window.FocusEvent('focusout', { bubbles: true }));
+      });
+      assetPublishApi.describe = async () => description;
+      await act(async () => {
+        sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+        window.dispatchEvent(new dom.window.Event('storage'));
+      });
+      await tick();
+      assert.equal(find('asset-publish-display-name').value, '用户修改名称');
+    } finally {
+      await act(async () => find('asset-publish-close').click());
+    }
+  }
+});
+test('signing out clears the stored Hub authorization and returns to the sign-in state', async (t) => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'sign-out-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');
+  sessionStorage.setItem(
+    'marketplace_oauth_user',
+    JSON.stringify({ id: 'user-1', name: 'Alice', login: 'alice', avatar_url: '', is_market_moderation_admin: false }),
+  );
+  assetPublishApi.describe = async () => description;
+  const originalConfirm = dom.window.confirm;
+  t.after(() => {
+    dom.window.confirm = originalConfirm;
+  });
+  dom.window.confirm = () => true;
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'sign-out-demo' }));
+  await tick();
+
+  assert.ok(find('asset-publish-account-card'));
+  await act(async () => find('asset-publish-sign-out').click());
+  await tick();
+
+  assert.equal(sessionStorage.getItem('marketplace_oauth_access_token'), null);
+  assert.equal(sessionStorage.getItem('marketplace_oauth_provider'), null);
+  assert.equal(sessionStorage.getItem('marketplace_oauth_user'), null);
+  assert.equal(find('asset-publish-account-card'), null);
+  assert.ok(find('asset-publish-login'));
+
+  await act(async () => find('asset-publish-close').click());
+});
+test('signing out from the review panel returns to the editable form', async (t) => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'review-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => draft;
+  const originalConfirm = dom.window.confirm;
+  t.after(() => {
+    dom.window.confirm = originalConfirm;
+  });
+  dom.window.confirm = () => true;
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'review-sign-out' }));
+  await tick();
+
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  assert.ok(find('asset-publish-review'));
+
+  await act(async () => find('asset-publish-sign-out').click());
+  await tick();
+
+  // The review panel must not survive without a draft behind it.
+  assert.equal(find('asset-publish-review'), null);
+  assert.ok(find('asset-publish-form'));
+  assert.ok(find('asset-publish-login'));
+
+  await act(async () => find('asset-publish-close').click());
+  sessionStorage.removeItem('marketplace_oauth_access_token');
+  sessionStorage.removeItem('marketplace_oauth_provider');
+});
+test('signing out cancels an authorization that is still starting', async (t) => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'pending-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');
+  assetPublishApi.describe = async () => description;
+  const originalConfirm = dom.window.confirm;
+  const originalFetch = globalThis.fetch;
+  const originalOpen = dom.window.open;
+  const calls = [];
+  let releaseStart;
+  let tabClosed = false;
+  const tab = {
+    location: { href: '' },
+    opener: null,
+    closed: false,
+    close() {
+      tabClosed = true;
+    },
+  };
+  t.after(() => {
+    dom.window.confirm = originalConfirm;
+    globalThis.fetch = originalFetch;
+    dom.window.open = originalOpen;
+  });
+  dom.window.confirm = () => true;
+  dom.window.open = () => tab;
+  const response = (payload) => ({ ok: true, text: async () => JSON.stringify(payload) });
+  globalThis.fetch = (url) => {
+    const target = String(url);
+    calls.push(target);
+    if (target.includes('/hub/start')) {
+      return new Promise((resolve) => {
+        releaseStart = () =>
+          resolve(response({ authorize_url: 'https://hub.test/auth', flow: 'flow-1', claim: 'claim-1' }));
+      });
+    }
+    // A late poll result: storing it would silently undo the sign-out.
+    return Promise.resolve(response({ status: 'complete', access_token: 'late-token', provider: 'gitcode' }));
+  };
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'pending-sign-out' }));
+  await tick();
+
+  await act(async () => find('asset-publish-switch-account').click());
+  await act(async () => find('asset-publish-provider').click());
+  await tick();
+  assert.deepEqual(calls, ['/marketplace-oauth/hub/start']);
+
+  await act(async () => find('asset-publish-sign-out').click());
+  await act(async () => releaseStart());
+  // Wait out one polling interval so a surviving poll would actually run and store the token.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+  });
+  await tick();
+
+  assert.equal(tabClosed, true);
+  assert.deepEqual(calls, ['/marketplace-oauth/hub/start']);
+  assert.equal(sessionStorage.getItem('marketplace_oauth_access_token'), null);
+  assert.ok(find('asset-publish-login'));
+
+  await act(async () => find('asset-publish-close').click());
+});
+test('sign-out stays disabled while a submission result is unconfirmed', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'uncertain-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => draft;
+  assetPublishApi.commit = async () => {
+    throw Object.assign(new Error('Timed out'), { code: 'REQUEST_TIMEOUT' });
+  };
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () => openAssetPublish({ kind: 'plugin', local_id: 'sign-out-uncertain' }));
+  await tick();
+
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  assert.equal(find('asset-publish-sign-out').disabled, false);
+
+  await act(async () => find('asset-publish-commit').click());
+  await tick();
+
+  // The local record is the only place to check an unconfirmed submission; signing out would drop it.
+  assert.equal(find('asset-publish-sign-out').disabled, true);
+
+  await act(async () => find('asset-publish-close').click());
+  sessionStorage.removeItem('marketplace_oauth_access_token');
+  sessionStorage.removeItem('marketplace_oauth_provider');
+});
+test('cancelling sign-out keeps the stored Hub authorization and its records', async (t) => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'keep-token');
+  sessionStorage.setItem('marketplace_oauth_provider', 'github');
+  let describeCalls = 0;
+  assetPublishApi.describe = async () => {
+    describeCalls++;
+    return description;
+  };
+  const originalConfirm = dom.window.confirm;
+  t.after(() => {
+    dom.window.confirm = originalConfirm;
+  });
+  dom.window.confirm = () => false;
+  await act(async () => root.render(React.createElement(AssetPublishHost)));
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'keep-demo' }));
+  await tick();
+  const callsBefore = describeCalls;
+
+  await act(async () => find('asset-publish-sign-out').click());
+  await tick();
+
+  assert.equal(sessionStorage.getItem('marketplace_oauth_access_token'), 'keep-token');
+  assert.ok(find('asset-publish-account-card'));
+  assert.equal(describeCalls, callsBefore);
+
+  await act(async () => find('asset-publish-close').click());
+  sessionStorage.removeItem('marketplace_oauth_access_token');
+  sessionStorage.removeItem('marketplace_oauth_provider');
 });
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
   assetPublishApi.describe = async () => description;

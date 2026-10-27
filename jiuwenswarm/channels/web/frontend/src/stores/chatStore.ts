@@ -22,6 +22,8 @@ import {
   FileDownloadItem,
   ContextCompressionRuntime,
   ContextCompressionSummary,
+  MoaOperation,
+  MoaStatusPayload,
   MediaItem,
 } from '../types';
 import { useTodoStore } from './todoStore';
@@ -182,7 +184,10 @@ export interface ReasoningSegment {
 
 export interface ChatRuntime {
   messages: Message[];
+  /** Aggregate busy state; foreground and organization lifecycles update their own flags. */
   isProcessing: boolean;
+  foregroundIsProcessing: boolean;
+  organizationIsProcessing: boolean;
   activeExecutionId: string | null;
   executionError: string | null;
   /** The Team session's bound AgentGroup was deleted or uninstalled. */
@@ -215,6 +220,8 @@ export interface ChatRuntime {
   orphanResults: Map<string, ToolResult>;
   contextCompressionRuntime?: ContextCompressionRuntime;
   contextCompressionSummary?: ContextCompressionSummary;
+  moaOperations: Record<string, MoaOperation>;
+  moaStatusClosed: boolean;
   toolMetrics: {
     toolCallDedupDropped: number;
     toolResultDedupDropped: number;
@@ -249,6 +256,8 @@ function createEmptyRuntime(): ChatRuntime {
   return {
     messages: [],
     isProcessing: false,
+    foregroundIsProcessing: false,
+    organizationIsProcessing: false,
     activeExecutionId: null,
     executionError: null,
     agentGroupUnavailable: false,
@@ -275,6 +284,8 @@ function createEmptyRuntime(): ChatRuntime {
     orphanResults: new Map(),
     contextCompressionRuntime: undefined,
     contextCompressionSummary: undefined,
+    moaOperations: {},
+    moaStatusClosed: true,
     toolMetrics: {
       toolCallDedupDropped: 0,
       toolResultDedupDropped: 0,
@@ -377,6 +388,7 @@ interface ChatState {
   setExecutionError: (sessionId: string, error: string | null) => void;
   setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
   setProcessing: (sessionId: string, status: boolean) => void;
+  setOrganizationProcessing: (sessionId: string, status: boolean) => void;
   setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
   setLoadingHistory: (sessionId: string, status: boolean) => void;
@@ -457,6 +469,8 @@ interface ChatState {
     runtime?: ContextCompressionRuntime,
     summary?: ContextCompressionSummary
   ) => void;
+  updateMoaStatus: (sessionId: string, payload: MoaStatusPayload) => void;
+  clearMoaStatus: (sessionId: string) => void;
 }
 
 export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get) => ({
@@ -616,6 +630,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             orphanResults: new Map(),
             contextCompressionRuntime: undefined,
             contextCompressionSummary: undefined,
+            ...(!runtime.isProcessing ? { moaOperations: {} } : {}),
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1003,7 +1018,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, executionError: error },
+          [sessionId]: { ...runtime, executionError: error, ...(error ? { moaOperations: {}, moaStatusClosed: true } : {}) },
         },
       };
     });
@@ -1014,7 +1029,17 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime || runtime.activeExecutionId === executionId) return state;
       return {
-        runtimes: { ...state.runtimes, [sessionId]: { ...runtime, activeExecutionId: executionId } },
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            activeExecutionId: executionId,
+            moaStatusClosed: !executionId,
+            moaOperations: Object.fromEntries(
+              Object.entries(runtime.moaOperations).filter(([, operation]) => operation.executionId === executionId),
+            ),
+          },
+        },
       };
     });
   },
@@ -1037,13 +1062,14 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       // 新一轮开始（false→true）：把「思考中」耗时锚点归到轮次起点。
-      const turnStart = status && !runtime.isProcessing;
+      const turnStart = status && !runtime.foregroundIsProcessing;
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            isProcessing: status,
+            foregroundIsProcessing: status,
+            isProcessing: status || runtime.organizationIsProcessing,
             ...(!status ? {
               activeExecutionId: null,
               reasoningInputBoundaryPending: false,
@@ -1051,14 +1077,31 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             executionError: status ? null : runtime.executionError,
             ...(status ? { error: null } : {}),
             ...(turnStart ? { thinkingAnchorAt: Date.now() } : {}),
+            ...(!status || turnStart ? { moaOperations: {}, moaStatusClosed: !status } : {}),
           },
         },
       };
     });
     // 整轮空闲：把忙碌时暂存的目标用户气泡正式入列（空 final 主路径之外的兜底）
-    if (!status) {
+    if (!get().runtimes[sessionId]?.isProcessing) {
       get().flushPendingGoalObjectiveBubble(sessionId);
     }
+  },
+
+  setOrganizationProcessing: (sessionId, status) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const isProcessing = status || runtime.foregroundIsProcessing;
+      if (runtime.organizationIsProcessing === status && runtime.isProcessing === isProcessing) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, organizationIsProcessing: status, isProcessing },
+        },
+      };
+    });
+    if (!get().runtimes[sessionId]?.isProcessing) get().flushPendingGoalObjectiveBubble(sessionId);
   },
 
   setSessionError: (sessionId, error) => {
@@ -1153,7 +1196,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, isPaused: paused, pausedTask: task ?? null },
+          [sessionId]: {
+            ...runtime,
+            isPaused: paused,
+            pausedTask: task ?? null,
+            ...(paused ? { moaOperations: {}, moaStatusClosed: true } : {}),
+          },
         },
       };
     });
@@ -1306,7 +1354,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             [sessionId]: {
               ...runtime,
               switchingMode: true,
-              isProcessing: false,
+              foregroundIsProcessing: false,
+              isProcessing: runtime.organizationIsProcessing,
               isPaused: false,
               pausedTask: null,
               interruptResult: null,
@@ -1717,6 +1766,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               interruptResult: null,
               pendingQuestions: [],
               pendingA4PAuthorization: null,
+              moaOperations: {},
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1736,6 +1786,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             interruptResult: null,
             pendingQuestions: [],
             pendingA4PAuthorization: null,
+            moaOperations: {},
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1807,6 +1858,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             orphanResults: new Map(),
             contextCompressionRuntime: undefined,
             contextCompressionSummary: undefined,
+            moaOperations: {},
+            moaStatusClosed: true,
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -2328,6 +2381,48 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ),
           },
         },
+      };
+    });
+  },
+
+  updateMoaStatus: (sessionId, payload) => {
+    const operationId = typeof payload.operation_id === 'string' ? payload.operation_id.trim() : '';
+    const phase = payload.phase;
+    const status = payload.status;
+    const executionId = typeof payload.execution_id === 'string' ? payload.execution_id : undefined;
+    if (!operationId || (phase !== 'reference' && phase !== 'verification')) return;
+    if (!['started', 'completed', 'failed', 'cancelled'].includes(status)) return;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime?.isProcessing || runtime.isPaused || runtime.moaStatusClosed) return state;
+      if (runtime.activeExecutionId && executionId !== runtime.activeExecutionId) return state;
+      const current = Object.prototype.hasOwnProperty.call(runtime.moaOperations, operationId)
+        ? runtime.moaOperations[operationId]
+        : undefined;
+      // Keep terminal operations until the turn ends so duplicate starts cannot revive a finished hint.
+      if (current && (current.status !== 'started' || current.status === status)) return state;
+      if (current?.executionId && executionId && current.executionId !== executionId) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            moaOperations: {
+              ...runtime.moaOperations,
+              [operationId]: { phase, status, executionId },
+            },
+          },
+        },
+      };
+    });
+  },
+
+  clearMoaStatus: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || (runtime.moaStatusClosed && Object.keys(runtime.moaOperations).length === 0)) return state;
+      return {
+        runtimes: { ...state.runtimes, [sessionId]: { ...runtime, moaOperations: {}, moaStatusClosed: true } },
       };
     });
   },

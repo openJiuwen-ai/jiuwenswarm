@@ -11,7 +11,6 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
-    NODE_ROLE_BRIEF,
     NODE_ROLE_CHARACTER,
     NODE_ROLE_CLIP,
     NODE_ROLE_SCENE,
@@ -27,8 +26,6 @@ from jiuwenswarm.common.schema.designer_graph import (
 from jiuwenswarm.server.runtime.designer.handlers.common import (
     canvas_output_dir,
     node_output_image_paths,
-    role_output_image_path,
-    role_output_text,
 )
 from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
     StoryboardShot,
@@ -475,56 +472,6 @@ def _looks_like_contaminated_prompt(text: str) -> bool:
     return any(n in raw for n in needles)
 
 
-def _format_shot_block(shot: StoryboardShot, clip_index: int) -> str:
-    lines = [
-        f"Shot {clip_index} ONLY (do not film other shots)",
-        f"- Timeline: {shot.get('timeline') or ''}",
-        f"- Camera: {shot.get('camera') or ''}",
-        f"- Camera move: {shot.get('move') or ''}",
-        f"- On screen: {shot.get('on_screen') or ''}",
-        f"- Character action: {shot.get('character_action') or ''}",
-    ]
-    return "\n".join(lines)
-
-
-def _clip_prompt_lead(
-    clip_index: int,
-    duration: int,
-    *,
-    has_character: bool,
-    has_scene: bool,
-    focus_names: str = "",
-    continuity: bool = False,
-    first_of_setting: bool = False,
-) -> str:
-    attached: list[str] = []
-    if has_character:
-        attached.append("on-screen character character specs as character1, character2, …")
-    if has_scene:
-        attached.append("scene specs last, as the room")
-    extras = (
-        " Explicit visual inputs are attached, in order: " + ", ".join(attached) + "."
-        if attached
-        else ""
-    )
-    focus = f" Feature only: {focus_names}." if focus_names else ""
-    continue_bit = (
-        "CONTINUATION: same room, same faces, same wardrobe. This window's action continues the story. "
-        if continuity or not first_of_setting
-        else "Opening of this setting: place the on-screen people into the empty room. "
-    )
-    return (
-        f"Create shot {clip_index} as a {duration}-second video that plays THIS "
-        "storyboard shot only. "
-        f"{extras}{focus} "
-        f"{continue_bit}"
-        "character1/character2 are the character specs (face and wardrobe). "
-        "The last image is the scene specs. "
-        "Match the film STYLE LOCK. One instance per person. "
-        "No subtitles, no cutaways.\n\n"
-    )
-
-
 def build_clip_prompt(
     graph: DesignerExecutionGraph,
     node: DesignerGraphNode,
@@ -556,33 +503,6 @@ def build_clip_prompt(
             node["config"] = cfg
     except Exception:  # noqa: BLE001
         pass
-    duration = video_duration_seconds(ctx, node)
-    focus_names = ""
-    cfg_names = [str(x).strip() for x in (cfg.get("cast_names") or []) if str(x).strip()]
-    if cfg_names:
-        focus_names = ", ".join(cfg_names)
-    first_of_setting = bool(cfg.get("first_of_setting"))
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.wan_reference_binding import (
-            clip_is_first_of_setting,
-        )
-
-        first_of_setting = clip_is_first_of_setting(cfg, graph if isinstance(graph, dict) else {})
-    except Exception:  # noqa: BLE001
-        pass
-    if ctx is not None:
-        preferred = [str(x) for x in (cfg.get("character_node_ids") or []) if str(x).strip()]
-        has_character = bool(preferred) or role_output_image_path(ctx, NODE_ROLE_CHARACTER) is not None
-        has_scene = (
-            bool(str(cfg.get("scene_node_id") or "").strip())
-            or role_output_image_path(ctx, NODE_ROLE_SCENE) is not None
-        )
-    else:
-        has_character = False
-        has_scene = bool(str(cfg.get("scene_node_id") or "").strip())
-    continuity = bool(
-        str(cfg.get("continuity_clip_node_id") or "").strip()
-    )
     sb_action = _storyboard_narrative_action(shot if isinstance(shot, dict) else None)
     action = str(sb_action or cfg.get("clip_action") or "").strip()
     if not action:
@@ -601,94 +521,13 @@ def build_clip_prompt(
     camera = str(
         (shot or {}).get("camera") or cfg.get("camera") or ""
     ).strip()
-    speech_line = str(
-        cfg.get("speech_line")
-        or (shot or {}).get("speech")
-        or ""
-    ).strip()
-    story_lines: list[str] = [
-        f"STORYBOARD SHOT (authoritative plot for shot {clip_index} — play this window only, "
-        f"do not restage the full user prompt or other shots): "
-        f"{action or 'this shot row only'}."
-    ]
-    if camera:
-        story_lines.append(f"Camera for shot {clip_index}: {camera}")
-    if speech_line:
-        story_lines.append(f"Speech for shot {clip_index}: {speech_line}")
-    parts: list[str] = [
-        "\n".join(story_lines),
-        _clip_prompt_lead(
-            clip_index,
-            duration,
-            has_character=has_character,
-            has_scene=has_scene,
-            focus_names=focus_names,
-            continuity=continuity,
-            first_of_setting=first_of_setting,
-        )
-    ]
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.wan_reference_binding import (
-            build_wan_reference_binding,
-        )
-
-        binding = build_wan_reference_binding(cfg=cfg, graph=graph if isinstance(graph, dict) else {})
-        if binding:
-            parts.append(binding)
-        extras = connected_clip_extra_images(ctx, node if isinstance(node, dict) else None)
-        if extras:
-            named = "; ".join(f'"{label}" ({path.name})' for label, path in extras)
-            parts.append(
-                "USER IMAGES wired to this clip sit after the character sheets and before the scene specs: "
-                f"{named}. Put each subject's appearance from those images into this shot. Do not omit them."
-            )
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
-            characters_from_graph,
-            compact_wan_story_clause,
-        )
-
-        story_bit = compact_wan_story_clause(
-            cfg,
-            characters=characters_from_graph(graph if isinstance(graph, dict) else {}),
-        )
-        if story_bit and "ALREADY_DONE" not in "\n".join(parts) and "SEAT HOLDS" not in "\n".join(parts):
-            parts.append(story_bit)
-    except Exception:  # noqa: BLE001
-        pass
-    # One-line style from Brief only (not the full brief — that homogenizes all clips).
-    if ctx is not None:
-        brief = role_output_text(ctx, NODE_ROLE_BRIEF)
-        if brief:
-            for line in brief.splitlines():
-                if "visual style" in line.lower() or line.lower().startswith("**visual"):
-                    parts.append(line.strip())
-                    break
-    if action:
-        parts.append(f"Primary action for shot {clip_index}: {action}")
-    if camera:
-        parts.append(f"Camera for shot {clip_index}: {camera}")
-    identity = cfg.get("identity_refs") if isinstance(cfg.get("identity_refs"), dict) else {}
-    setting_id = str(cfg.get("setting_id") or (shot or {}).get("setting_id") or "").strip()
-    if setting_id:
-        parts.append(f"Setting lock for this clip only: {setting_id}.")
-    bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else None
-    if not bible and isinstance(identity.get("scene_specs"), dict):
-        bible = identity["scene_specs"]
-    if bible:
-        parts.append(
-            "SCENE SPECS (architecture/objects/light — keep; only animate this shot): "
-            f"scene={bible.get('scene_name') or bible.get('place')}; lighting={bible.get('lighting')}; "
-            f"objects={', '.join(str(x) for x in (bible.get('objects') or [])[:6])}; "
-            f"crowd={bible.get('crowd')}."
-        )
-    view_key = str(cfg.get("view_key") or "").strip()
-    if view_key:
-        parts.append(f"Active view_key: {view_key}")
-    costume_lock = str(identity.get("costume_lock") or cfg.get("costume_lock") or "").strip()
-    if not costume_lock:
+    generate_cfg = cfg.get("generate")
+    override = str(generate_cfg.get("prompt") or "").strip() if isinstance(generate_cfg, dict) else ""
+    if override and not sb_action and not action:
+        extracted = _extract_action_from_generate_prompt(override)
+        if extracted:
+            action = extracted
+    if not str(cfg.get("costume_lock") or "").strip():
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
                 ensure_cfg_clothing_lock,
@@ -698,169 +537,9 @@ def build_clip_prompt(
                 ((graph.get("metadata") or {}).get("script_analysis") or {}).get("characters")
                 or []
             )
-            costume_lock = ensure_cfg_clothing_lock(cfg, characters=analysis_chars)
+            ensure_cfg_clothing_lock(cfg, characters=analysis_chars)
         except Exception:  # noqa: BLE001
-            costume_lock = ""
-    if costume_lock:
-        from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
-            clothing_lock_clause,
-        )
-
-        cloth = clothing_lock_clause(costume_lock, for_clip=True)
-        parts.append(cloth if cloth else f"Costume / identity lock (do not redesign): {costume_lock}")
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.clip_staging_lock import (
-            ensure_cfg_staging_locks,
-            staging_locks_from_cfg,
-        )
-
-        analysis_chars = list(
-            ((graph.get("metadata") or {}).get("script_analysis") or {}).get("characters")
-            or []
-        )
-        shot_row = shot if isinstance(shot, dict) else None
-        # Staging must use the preferred narrative (storyboard), not stale cfg.clip_action.
-        staging_cfg = dict(cfg)
-        if action:
-            staging_cfg["clip_action"] = action
-        staging = ensure_cfg_staging_locks(
-            staging_cfg, shot=shot_row, characters=analysis_chars
-        ) or staging_locks_from_cfg(staging_cfg, for_clip=True)
-        if staging and not any("STAGING LOCK" in p for p in parts):
-            parts.append(staging)
-    except Exception:  # noqa: BLE001
-        pass
-    char_nodes = [
-        str(x)
-        for x in (identity.get("character_node_ids") or cfg.get("character_node_ids") or [])
-        if str(x).strip()
-    ]
-    cast_actions = cfg.get("cast_actions") if isinstance(cfg.get("cast_actions"), dict) else {}
-    if cast_actions:
-        who = "; ".join(f"{cid}: {cast_actions[cid]}" for cid in cast_actions if cast_actions.get(cid))
-        if who:
-            parts.append(f"WHO DOES WHAT (on-screen only): {who}")
-    on_screen = [str(x) for x in (cfg.get("on_screen") or []) if str(x).strip()]
-    offscreen = [str(x) for x in (cfg.get("offscreen") or []) if str(x).strip()]
-    if on_screen or offscreen:
-        parts.append(
-            f"ON-SCREEN: {on_screen or 'see cast_actions'}; OFFSCREEN (do not draw): {offscreen or 'none'}."
-        )
-    if char_nodes:
-        parts.append(
-            f"Use character reference sheets from nodes: {', '.join(char_nodes)}. "
-            "Match faces and wardrobe exactly. One instance per person — no clones. "
-            "Place them into the scene-card geography for this shot."
-        )
-    lock = cfg.get("continuity_lock") if isinstance(cfg.get("continuity_lock"), dict) else None
-    if not lock and action:
-        from jiuwenswarm.server.runtime.designer.continuity import infer_continuity_lock
-
-        lock = infer_continuity_lock(action)
-    if lock:
-        from jiuwenswarm.server.runtime.designer.continuity import continuity_prompt_clause
-
-        clause = continuity_prompt_clause(lock)
-        if clause:
-            parts.append(clause.strip())
-    # THIS shot only — never dump the full storyboard (homogenizes / mixes scenes).
-    if shot is not None:
-        parts.append(_format_shot_block(shot, clip_index))
-    else:
-        parts.append(
-            f"Storyboard shot for shot {clip_index} only "
-            f"(action={action or 'see clip spec'}; camera={camera or 'match clip spec'})."
-        )
-    generate_cfg = cfg.get("generate")
-    override = str(generate_cfg.get("prompt") or "").strip() if isinstance(generate_cfg, dict) else ""
-    # When live storyboard already provided the shot, skip stale generate.prompt narratives.
-    if override and not sb_action:
-        extracted = _extract_action_from_generate_prompt(override)
-        if extracted and extracted.casefold() not in (action or "").casefold():
-            if not action:
-                action = extracted
-                parts.append(f"Primary action for shot {clip_index}: {action}")
-            elif not _looks_like_contaminated_prompt(override):
-                parts.append(f"Director shot brief: {extracted[:400]}")
-        elif (
-            not extracted
-            and not _looks_like_contaminated_prompt(override)
-            and override.casefold() not in (action or "").casefold()
-        ):
-            parts.append(f"Director shot brief: {override[:400]}")
-    occupancy = cfg.get("occupancy") if isinstance(cfg.get("occupancy"), dict) else {}
-    if occupancy:
-        parts.append(
-            f"OCCUPANCY: people in frame={occupancy.get('must_appear')}; "
-            f"featured={occupancy.get('featured')}."
-        )
-    joined = "\n".join(parts)
-    if "CONTINUITY STATE" not in joined:
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
-                characters_from_graph,
-                compact_wan_story_clause,
-            )
-
-            story_bit = compact_wan_story_clause(
-                cfg,
-                characters=characters_from_graph(graph if isinstance(graph, dict) else {}),
-            )
-            if story_bit and "CONTINUITY STATE" not in joined:
-                parts.append(story_bit)
-        except Exception:  # noqa: BLE001
-            pass
-    from jiuwenswarm.server.runtime.designer.user_references import (
-        graph_user_references,
-        prompt_slot_roster,
-        user_reference_video_path,
-        user_reference_audio_path,
-    )
-
-    roster = prompt_slot_roster(graph_user_references(graph))
-    if roster:
-        parts.append(
-            "User reference slots (original files are visual/audio authority). "
-            "Video and audio are generic references — not the first frame or clip image:\n"
-            f"{roster}"
-        )
-    if user_reference_video_path(graph) is not None:
-        parts.append(
-            "Attached video 1 is a motion/style reference only. "
-            "Do not treat it as this shot's first frame."
-        )
-    if user_reference_audio_path(graph) is not None:
-        parts.append(
-            "Attached audio 1 is a soundtrack/voice reference only; "
-            "do not invent a conflicting score."
-        )
-    # Locked speech / language / BGM (Director storyboard + Director).
-    from jiuwenswarm.server.runtime.designer.audio_locks import (
-        audio_lock_prompt_block,
-        resolve_audio_intent_flags,
-    )
-
-    meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
-    flags = resolve_audio_intent_flags(meta, cfg if isinstance(cfg, dict) else {})
-    # After scrub: do not re-inject cleared duplicate speech.
-    speech_line_now = str(cfg.get("speech_line") or flags.get("speech_line") or "").strip()
-    by_char_now = cfg.get("speech_by_character") if isinstance(cfg.get("speech_by_character"), dict) else {}
-    if not by_char_now:
-        by_char_now = flags.get("speech_by_character") or {}
-    include_speech = bool(speech_line_now or by_char_now) and not bool(
-        cfg.get("speech_continuation_only") and not speech_line_now and not by_char_now
-    )
-    block = audio_lock_prompt_block(
-        language_lock=str(flags.get("language_lock") or ""),
-        speech_by_character=by_char_now if include_speech else {},
-        speech_line=speech_line_now if include_speech else "",
-        bgm_lock=flags.get("bgm_lock") or {},
-        include_speech=include_speech,
-        include_music=bool(flags.get("include_music")),
-        clip_embedded=bool(flags.get("clip_embedded")),
-    )
-    if block and "LANGUAGE LOCK" not in "\n".join(parts) and "SPEECH LOCK" not in "\n".join(parts):
-        parts.append(block)
+            logger.debug("ensure_cfg_clothing_lock failed in build_clip_prompt", exc_info=True)
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
         director_approve_video_prompt,
     )

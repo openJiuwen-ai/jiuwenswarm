@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test, { before } from 'node:test';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { build } from 'esbuild';
@@ -199,6 +200,159 @@ function addOriginalUser(c, content = 'original question') {
     content,
     timestamp: new Date(Date.now() - 1_000).toISOString(),
   }));
+}
+
+test('MoA control resume wire frames display while the original execution remains active', async (context) => {
+  const c = await mount(context);
+  const frames = JSON.parse(readFileSync(new URL('./fixtures/moaControlResume.json', import.meta.url), 'utf8'));
+  try {
+    const messages = c.runtime().messages;
+    const receive = (frame) => c.receive(frame.event, { ...frame.payload, session_id: c.sid });
+    // Gateway suppresses processing=false while a resumed request is already registered.
+    assert.equal(c.runtime().activeExecutionId, 'execution-A');
+    receive(frames[0]);
+    assert.equal(c.runtime().moaOperations['resume-reference'].status, 'started');
+    assert.equal(c.runtime().activeExecutionId, 'execution-A');
+    receive(frames[1]);
+    assert.equal(c.runtime().moaOperations['resume-reference'].status, 'completed');
+    assert.equal(c.runtime().messages, messages);
+    assert.equal(c.runtime().isProcessing, true);
+    c.receive('chat.processing_status', { is_processing: true, execution_id: 'execution-B' });
+    receive(frames[0]);
+    assert.deepEqual(c.runtime().moaOperations, {});
+    assert.equal(c.runtime().activeExecutionId, 'execution-B');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('MoA status events stay transient, isolate executions and clear after terminal events', async (context) => {
+  const c = await mount(context);
+  try {
+    const originalMessages = c.runtime().messages;
+    const status = (operation_id, phase, state = 'started', extra = {}) => c.receive('chat.moa_status', {
+      operation_id, phase, status: state, execution_id: 'execution-A', ...extra,
+    });
+    status('reference-a', 'reference');
+    status('reference-b', 'reference');
+    status('verification-a', 'verification');
+    assert.deepEqual(Object.values(c.runtime().moaOperations).map((operation) => operation.phase), [
+      'reference', 'reference', 'verification',
+    ]);
+    assert.equal(c.runtime().messages, originalMessages, 'status events must not add chat history');
+    status('old-verifier', 'verification', 'started', { execution_id: 'old-execution' });
+    assert.equal(c.runtime().moaOperations['old-verifier'], undefined);
+    assert.equal(c.runtime().activeExecutionId, 'execution-A');
+    status('verification-a', 'verification', 'completed');
+    status('verification-a', 'verification');
+    assert.equal(c.runtime().moaOperations['verification-a'].status, 'completed', 'duplicate starts stay closed');
+    status('reference-a', 'reference', 'completed');
+    assert.equal(c.runtime().moaOperations['reference-b'].status, 'started');
+    c.receive('execution.error', { execution_id: 'execution-A', error: 'failed' });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    status('verification-b', 'verification');
+    assert.deepEqual(c.runtime().moaOperations, {}, 'late starts cannot revive a failed execution');
+    c.receive('chat.processing_status', { is_processing: false });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    status('late-verifier', 'verification');
+    assert.deepEqual(c.runtime().moaOperations, {}, 'late starts must not revive a finished turn');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('MoA terminal-first events stay closed and only a new execution reopens cleared hints', async (context) => {
+  const c = await mount(context);
+  try {
+    const before = c.runtime();
+    const emit = (status, extra = {}) => c.receive('chat.moa_status', {
+      operation_id: 'reordered', phase: 'verification', execution_id: 'execution-A', status, ...extra,
+    });
+    emit('completed');
+    emit('started');
+    assert.equal(c.runtime().moaOperations.reordered.status, 'completed');
+    emit('started', { operation_id: 'unbound', execution_id: undefined });
+    assert.equal(c.runtime().moaOperations.unbound, undefined);
+    c.store.clearMoaStatus(c.sid);
+    emit('started', { operation_id: 'late' });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    assert.equal(c.runtime().messages, before.messages);
+    assert.equal(c.runtime().isProcessing, before.isProcessing);
+    assert.equal(c.runtime().activeExecutionId, before.activeExecutionId);
+    c.receive('chat.processing_status', { is_processing: true, execution_id: 'execution-B' });
+    emit('started', { operation_id: 'new', execution_id: 'execution-B' });
+    assert.equal(c.runtime().moaOperations.new.status, 'started');
+    emit('started', { operation_id: 'old' });
+    assert.equal(c.runtime().moaOperations.old, undefined);
+    c.receive('chat.processing_status', { is_processing: false });
+    act(() => c.store.setProcessing(c.sid, true));
+    emit('started', { operation_id: 'before-identity' });
+    emit('started', { operation_id: 'current', execution_id: 'execution-C' });
+    c.receive('chat.processing_status', { is_processing: true, execution_id: 'execution-C' });
+    assert.equal(c.runtime().moaOperations['before-identity'], undefined);
+    assert.equal(c.runtime().moaOperations.current.status, 'started');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('MoA status is routed to its session and disappears on disconnect', async (context) => {
+  const c = await mount(context);
+  const otherSessionId = 'moa-background-session';
+  try {
+    c.store.ensureRuntime(otherSessionId);
+    c.store.setProcessing(otherSessionId, true);
+    c.store.setActiveExecutionId(otherSessionId, 'background-execution');
+    c.receive('chat.moa_status', {
+      session_id: otherSessionId,
+      execution_id: 'background-execution',
+      operation_id: 'background-reference', phase: 'reference', status: 'started',
+    });
+    assert.deepEqual(c.runtime().moaOperations, {});
+    assert.equal(c.store.getRuntime(otherSessionId).moaOperations['background-reference'].status, 'started');
+    await act(async () => webClient.disconnect());
+    assert.deepEqual(c.store.getRuntime(otherSessionId).moaOperations, {});
+  } finally {
+    c.store.removeRuntime(otherSessionId);
+    await c.dispose();
+  }
+});
+
+for (const event of ['chat.final', 'chat.interrupt_result']) {
+  test(`MoA hints stay cleared after ${event}`, async (context) => {
+    const c = await mount(context);
+    try {
+      const status = {
+        operation_id: 'reference', phase: 'reference', status: 'started', execution_id: 'execution-A',
+      };
+      c.receive('chat.moa_status', status);
+      assert.equal(c.runtime().moaOperations.reference.status, 'started');
+      c.receive(event, event === 'chat.final'
+        ? { execution_id: 'execution-A', content: '' }
+        : { execution_id: 'execution-A', intent: 'cancel', success: true, has_active_task: false });
+      c.receive('chat.moa_status', status);
+      assert.deepEqual(c.runtime().moaOperations, {});
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+for (const intent of ['supplement', 'resume']) {
+  test(`MoA hints remain available after an active ${intent}`, async (context) => {
+    const c = await mount(context);
+    try {
+      const status = { phase: 'reference', status: 'started', execution_id: 'execution-A' };
+      c.receive('chat.moa_status', { ...status, operation_id: 'reference' });
+      c.receive('chat.interrupt_result', { execution_id: 'execution-A', intent, success: true, has_active_task: true });
+      assert.equal(c.runtime().moaOperations.reference.status, 'started');
+      c.receive('chat.moa_status', { ...status, operation_id: 'next-verifier', phase: 'verification' });
+      assert.equal(c.runtime().moaOperations['next-verifier'].status, 'started');
+      assert.equal(c.runtime().isProcessing, true);
+    } finally {
+      await c.dispose();
+    }
+  });
 }
 
 function assertNodeBefore(earlier, later, message) {

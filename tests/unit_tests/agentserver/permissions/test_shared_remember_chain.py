@@ -11,8 +11,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.foundation.llm import ToolCall
+from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPT_AUTO_CONFIRM_KEY
 
@@ -72,12 +75,15 @@ def build(policy, root, sid, smart):
     )
 
 
-async def approve(rail, ctx, permanent, before_answer=None, remember=True):
+async def approve(
+    rail, ctx, permanent, before_answer=None, remember=True, *,
+    approved=True, queue=None, request_id="same-turn",
+):
     """Use the existing queue reservation/claim and default Core confirmation."""
-    queue = RootPermissionQueue()
+    queue = RootPermissionQueue() if queue is None else queue
     queue_rail = RootPermissionQueueRail(queue)
     token = bind_root_permission_request(
-        root_session_id=ctx.session.get_session_id(), request_id="same-turn",
+        root_session_id=ctx.session.get_session_id(), request_id=request_id,
         enabled=True, queue=queue,
     )
     try:
@@ -99,13 +105,14 @@ async def approve(rail, ctx, permanent, before_answer=None, remember=True):
         if before_answer:
             before_answer()
         answer = InteractiveInput()
-        payload = {"approved": True, "auto_confirm": remember}
+        payload = {"approved": approved, "auto_confirm": remember if approved else False}
         if permanent is not None:
             payload["persist_allow"] = permanent
         answer.update(card.key.invocation_id, payload)
         reserved = queue.reserve_answer(ctx.session.get_session_id(), answer)
         resumed = context(
             ctx.session.get_session_id(), ctx.inputs.tool_name, ctx.inputs.tool_args,
+            call_id=ctx.inputs.tool_call.id,
         )
         resumed.session = ctx.session
         resumed.agent = ctx.agent
@@ -113,6 +120,7 @@ async def approve(rail, ctx, permanent, before_answer=None, remember=True):
         await queue_rail.before_tool_call(resumed)
         await rail.before_tool_call(resumed)
         await RootPermissionCompletionRail(queue).before_tool_call(resumed)
+        assert queue.get(card.key) is None
         return resumed
     finally:
         reset_root_permission_request(token)
@@ -273,6 +281,75 @@ async def test_allow_once_uses_same_core_chain_without_writing_rules(storage, tm
     assert resumed.session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) in (None, {})
     with pytest.raises(AbortError):
         await rail.before_tool_call(context("session-a", "unknown_lookup", {}, "next"))
+
+
+@pytest.mark.parametrize("smart", [False, True])
+@pytest.mark.parametrize("existing_rules", [False, True])
+async def test_reject_and_allow_once_apply_only_to_current_call(storage, tmp_path, smart, existing_rules):
+    policy, global_path = storage
+    policy["mode"] = "auto" if smart else "manual"
+    policy["defaults"] = {"*": "ask"}
+    policy["tools"] = {"unknown_lookup": "ask"}
+    config.dump_yaml_round_trip(global_path, {"permissions": policy})
+    paths = [global_path, layers.user_permissions_path(), layers.session_permissions_path("session-a")]
+    if existing_rules:
+        for path in paths[1:]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            config.dump_yaml_round_trip(path, {"deny_tools": ["unrelated_tool"]})
+    original = {path: path.read_bytes() if path.exists() else None for path in paths}
+    rail = build(policy, tmp_path, "session-a", smart)
+    queue, executed = RootPermissionQueue(), []
+    manager = AbilityManager(owner_id="reject-once")
+    agent = SimpleNamespace(
+        ability_manager=manager, agent_callback_manager=AgentCallbackManager("reject-once"),
+    )
+    tool = LocalFunction(
+        card=ToolCard(
+            id="reject-once-target", name="unknown_lookup", description="Approval probe",
+            input_params={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        ),
+        func=lambda query: executed.append(query) or "executed-once",
+    )
+    manager.add_ability(tool.card, tool)
+    first = context("session-a", "unknown_lookup", {"query": "same"}, "rejected-call")
+    first.agent = agent
+    try:
+        for approved, call_id in ((False, "rejected-call"), (True, "allowed-call")):
+            call = context("session-a", "unknown_lookup", {"query": "same"}, call_id)
+            call.agent, call.session = agent, first.session
+            resumed = await approve(
+                rail, call, None, remember=False, approved=approved,
+                queue=queue, request_id=f"request-{call_id}",
+            )
+            results = await manager.execute(resumed, resumed.inputs.tool_call, first.session)
+            assert executed == (["same"] if approved else [])
+            if approved:
+                assert results[0][0] == "executed-once"
+            assert not queue.has_live(root_session_id="session-a")
+            assert first.session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) in (None, {})
+            assert {path: path.read_bytes() if path.exists() else None for path in paths} == original
+        third = context("session-a", "unknown_lookup", {"query": "same"}, "third-call")
+        third.agent, third.session = agent, first.session
+        token = bind_root_permission_request(
+            root_session_id="session-a", request_id="request-third-call", enabled=True, queue=queue,
+        )
+        try:
+            queue_rail = RootPermissionQueueRail(queue)
+            await queue_rail.before_tool_call(third)
+            with pytest.raises(AbortError) as raised:
+                await rail.before_tool_call(third)
+            third.exception = raised.value
+            await queue_rail.after_tool_call(third)
+            card = queue.pending_for_call(
+                root_session_id="session-a", execution_session_id="session-a", tool_call_id="third-call",
+            )
+            assert card is not None and card.key.request_id == "request-third-call"
+            assert executed == ["same"]
+            assert {path: path.read_bytes() if path.exists() else None for path in paths} == original
+        finally:
+            reset_root_permission_request(token)
+    finally:
+        manager.remove("unknown_lookup")
 
 
 @pytest.mark.parametrize("permanent", [False, True])

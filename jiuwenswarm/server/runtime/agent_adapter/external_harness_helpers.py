@@ -338,6 +338,19 @@ def _merge_host_external_cli_config(
     if provider_name == "codex":
         merged.setdefault("bypass_approvals_and_sandbox", True)
         merged.setdefault("system_prompt_mode", "replace")
+        turn_idle_timeout_s = 300.0
+        raw_idle = entry.get("codex_turn_idle_timeout_s")
+        if raw_idle is not None:
+            try:
+                parsed_idle = float(raw_idle)
+                if parsed_idle > 0:
+                    turn_idle_timeout_s = parsed_idle
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid codex_turn_idle_timeout_s=%r in external_cli_agents; using 300s",
+                    raw_idle,
+                )
+        merged.setdefault("turn_idle_timeout_s", turn_idle_timeout_s)
     elif provider_name == "claudecode":
         from openjiuwen.harness_providers.claudecode.config import (
             DEFAULT_CLAUDE_MAX_BUFFER_SIZE,

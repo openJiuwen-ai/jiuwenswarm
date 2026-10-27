@@ -890,7 +890,7 @@ def ensure_config_migrated_from_template(
 
     AgentOS 配置由部署模板管理，跳过包内默认模板的结构同步。
     每次启动检查模板新增项；迁移成功后由 migrate_config_from_template
-    把 config_version 写回程序版本。版本号相同也不能证明模板内容未变化。
+    把 config_version 写回应用版本与打包日期。版本号相同也不能证明模板内容未变化。
 
     合并只补齐模板新增项，不会删除用户 config.yaml 中
     模板里没有的配置项（模板是示例文档而非 schema，其中本就包含留给
@@ -903,7 +903,7 @@ def ensure_config_migrated_from_template(
         return False
 
     from jiuwenswarm.common.config import migrate_config_from_template
-    from jiuwenswarm.common._build_config import VERSION
+    from jiuwenswarm.common.version import get_runtime_version_label
 
     root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
     config_path = root / "config" / "config.yaml"
@@ -923,7 +923,7 @@ def ensure_config_migrated_from_template(
     if not migrated:
         return False
 
-    logger.info(f"已同步配置模板: {config_path} (config_version = {VERSION})")
+    logger.info(f"已同步配置模板: {config_path} (config_version = {get_runtime_version_label()})")
     return True
 
 

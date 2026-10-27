@@ -56,6 +56,7 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.kv_cache_affinity_config import (
     build_kv_cache_affinity_config,
     get_kv_cache_control_model_client_config,
@@ -136,7 +137,6 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     # registrar.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -194,7 +194,6 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     # rail; declaring SKILL_TOOLKIT here too would double-register them.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -846,17 +845,25 @@ def build_member_capability_specs(
     Returns:
         A ``(rails_specs, tool_specs)`` tuple of openjiuwen specs.
     """
+    if role == "leader" and (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        availability = RailSpec(type=registry.ORGANIZATION_AVAILABILITY)
+    else:
+        availability = None
     if _is_code_mode(mode):
-        return _build_code_capability_specs(
+        rails, tools = _build_code_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
-    if _is_design_mode(mode):
-        return _build_design_capability_specs(
+    elif _is_design_mode(mode):
+        rails, tools = _build_design_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
-    return _build_team_capability_specs(
-        config, mode, role, enable_permissions=enable_permissions
-    )
+    else:
+        rails, tools = _build_team_capability_specs(
+            config, mode, role, enable_permissions=enable_permissions
+        )
+    if availability is not None:
+        rails.append(availability)
+    return rails, tools
 
 
 def _is_subagent_enabled(sub_cfg: Any) -> bool:
@@ -993,9 +1000,9 @@ def build_member_subagent_specs(
         )
 
     # cua_agent drives the host desktop, which is not a code-profile concern,
-    # so it is offered in every mode when the operator opts in explicitly.
-    if isinstance(subagents_cfg, dict) and _is_subagent_enabled(
-        subagents_cfg.get("cua_agent")
+    # so every mode uses the same release default and explicit user preference.
+    if is_cua_agent_enabled(
+        subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
     ):
         specs.append(
             _code_subagent_spec("cua_agent", registry.SWARM_CUA_AGENT, react, language)

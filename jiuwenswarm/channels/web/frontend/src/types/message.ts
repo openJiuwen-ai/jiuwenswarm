@@ -86,6 +86,21 @@ export interface ContextCompressionSummary {
   summaries: string[];
 }
 
+export type MoaPhase = 'reference' | 'verification';
+
+export interface MoaStatusPayload extends Record<string, unknown> {
+  operation_id: string;
+  phase: MoaPhase;
+  status: 'started' | 'completed' | 'failed' | 'cancelled';
+  execution_id?: string;
+}
+
+export interface MoaOperation {
+  phase: MoaPhase;
+  status: MoaStatusPayload['status'];
+  executionId?: string;
+}
+
 export interface TeamMemberContextCompressionState {
   runtime?: ContextCompressionRuntime;
   summary?: ContextCompressionSummary;

@@ -1134,6 +1134,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   assert.deepEqual(
     findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')).sort(),
     [
+      'cua_agent_enabled',
       'moa_jev_enabled',
       'multi_model_collaboration_enabled',
       'symphony_evolution_enabled',
@@ -1150,6 +1151,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
+    'cua_agent_enabled',
     'external_cli_agent_claude_cli_path',
     'external_cli_agent_claude_enabled',
     'external_cli_agent_claude_use_builtin',
@@ -1172,7 +1174,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'team_scheduled_dispatch_enabled',
     'team_task_verification_enabled',
     'trajectory_ui_diagnosis_enabled',
-    'trajectory_ui_enabled',
   ]);
 
   const channelCatalogFile = parseTsx('src/features/settings/modules/channels/channelCatalog.ts');

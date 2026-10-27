@@ -498,6 +498,50 @@ test('welcome Tab and unknown slash Enter do not send input; /plan still execute
   });
 });
 
+test('persist session tag shows for real persist sessions; close hides it locally', async () => {
+  await mount({}, async ({ render, sessionId }) => {
+    await render();
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    await act(async () => useSessionStore.getState().setPersistSession(sessionId, true));
+    assert.notEqual(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    assert.equal(
+      document.querySelector('[data-testid="chat-panel-persist-tag-label"]').textContent,
+      i18n.t('persistSession.toolbarTag'),
+    );
+    await click(document.querySelector('[data-testid="chat-panel-persist-tag-close"]'));
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).persistSession, false);
+  });
+});
+
+test('persist session tag never renders on the welcome page even when armed', async () => {
+  await mount({ sessionId: 'new' }, async ({ render }) => {
+    await render();
+    await act(async () => useSessionStore.getState().setPersistSession('new', true));
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag"]'), null);
+  });
+});
+
+test('persist session tag drops its close button once the session has messages', async () => {
+  await mount({}, async ({ render, sessionId }) => {
+    await render();
+    await act(async () => useSessionStore.getState().setPersistSession(sessionId, true));
+    await act(async () =>
+      useChatStore.getState().addMessage(sessionId, {
+        id: 'persist-history-1',
+        role: 'user',
+        content: 'first task',
+        timestamp: '2026-10-26T10:00:00.000Z',
+      }),
+    );
+    const tag = document.querySelector('[data-testid="chat-panel-persist-tag"]');
+    assert.notEqual(tag, null);
+    assert.equal(document.querySelector('[data-testid="chat-panel-persist-tag-close"]'), null);
+    assert.equal(tag.className.includes('chat-agent-tag--static'), true);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).persistSession, true);
+  });
+});
+
 test('real session still forks and prevents overlapping compact requests', async () => {
   await mount({}, async ({ props, render, sessionId }) => {
     const forked = [];
@@ -842,5 +886,40 @@ test('work landing still offers stop and a follow-up queue while processing', as
     assert.equal(byId('chat-panel-input-send').dataset.variant, 'stop');
     assert.equal(editor.getAttribute('data-placeholder'), i18n.t('chat.placeholderProcessingQueue'));
     assert.equal(editor.getAttribute('contenteditable'), 'true');
+  });
+});
+
+
+test('paused Owner retains its pause state while organization work exposes stop independently', async () => {
+  const { startExpertRequest, finishExpertRequest } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
+  );
+  await mount({ mode: 'team' }, async ({ sessionId, props, render }) => {
+    const actions = [];
+    props.onCancel = () => actions.push('cancel');
+    props.onInterrupt = (text) => actions.push(text);
+    props.isProcessing = true;
+    try {
+      await act(async () => {
+        useChatStore.getState().setPaused(sessionId, true);
+        setTeamOrganizationUiEnabled(true);
+        startExpertRequest(`${sessionId}::expert`, 'background', 'org_expert_background');
+      });
+      await render();
+      assert.equal(useChatStore.getState().getRuntime(sessionId).isPaused, true);
+      assert.equal(byId('chat-panel-input-send').getAttribute('data-variant'), 'stop');
+      assert.equal(byId('chat-panel-input').getAttribute('data-placeholder'), i18n.t('chat.placeholderTeamMode'));
+      await click(byId('chat-panel-input-send'));
+      assert.deepEqual(actions, ['cancel']);
+      assert.equal(useChatStore.getState().getRuntime(sessionId).isPaused, true);
+      await act(async () => finishExpertRequest(`${sessionId}::expert`, 'background'));
+      await render();
+      assert.equal(byId('chat-panel-input-send').getAttribute('data-variant'), 'send');
+    } finally {
+      await act(async () => {
+        finishExpertRequest(`${sessionId}::expert`, 'background');
+        setTeamOrganizationUiEnabled(false);
+      });
+    }
   });
 });
