@@ -1,6 +1,6 @@
 # JiuwenSwarm 内置事件开发模板
 
-本文面向 WebClient、Gateway 和 AgentServer 开发者。目录以当前实现为准，新增示例文件另行标注；管理、事件和 WebUI 类型使用真实接口，业务处理用带注释的伪代码表示。本文只指导 swarm 内置事件开发。最近修订：2026-10-25。
+本文面向 WebClient、Gateway 和 AgentServer 开发者。目录以当前实现为准，新增示例文件另行标注；管理、事件和 WebUI 类型使用真实接口，业务处理用带注释的伪代码表示。本文只指导 swarm 内置事件开发。最近修订：2026-10-27。
 
 ## 1. 先看整体流程
 
@@ -100,7 +100,7 @@ sequenceDiagram
     B-->>P: 本次事件结果
 ```
 
-`next_handler` 推进当前链；`trigger` 或动词 Ops 能力发起新的事件链。事件返回后，入口不要再次执行已经由 CORE 完成的动作。
+`next_handler` 推进当前链；`trigger` 发起新的事件链。`ops.<能力集>.<方法>()` 调用 Build 时登记的异步函数，只有该函数内部调用 `trigger`，才会再触发事件。事件返回后，入口不要再次执行已经由 CORE 完成的动作。
 
 匹配结果在进入执行链前已经固定，Handler 替换 `event_input` 后不会重新匹配；多次调用 `next_handler` 会重复执行下游处理。普通 Handler 故障是否跳过、哪些异常继续传播，遵循 core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)；业务入口负责处理向外传播的错误和取消。EventBus 不自动重试，也不撤销已发生的操作。
 
@@ -113,6 +113,7 @@ sequenceDiagram
 | 要确认什么 | 需要找到的位置 |
 | --- | --- |
 | 谁发起业务 | 原有页面、渠道消息入口或本地业务方法，以及实际调用方 |
+| 跨进程怎样到达 | 请求使用的网络方法，以及 Gateway 转发和 AgentServer 适配器的实际登记入口 |
 | 事件在哪执行 | 该入口所在进程、AgentServer 适配器或本地触发方法、已装配的 Bus |
 | 原动作由谁执行 | CORE 内部的默认实现，或事件返回“继续”后由原流程执行；两者选清楚 |
 | 结果怎样生效 | 消费事件输出的调用方、当前实例读取的状态，以及用户最后看到或使用的结果 |
@@ -206,7 +207,7 @@ async def initialize_builtin(
 
 ## 3. WebClient 开发模板：界面交互
 
-本章的 `ui.custom` 是新事件占位名。以下声明按文件拆分；已有 WebUI 模型与接口直接复用，注释处补充业务实现。
+WebClient 交互可以来自扩展槽位，也可以来自内置页面。本章以槽位事件 `ui.custom` 为例，按文件说明声明与登记；独立内置交互按相同分工定义自己的业务模型，请求接入见第 3.7 节。
 
 ### 3.1 文件与事件契约
 
@@ -216,8 +217,8 @@ async def initialize_builtin(
 | `webui/core_handlers/custom_core.py` | 新增示例：依赖 WebUI 运行时的 CORE 工厂 |
 | `event_handlers/webui_handler.py` | BUILTIN Handler、Handler 登记 |
 | `handler_ops/ui.py` | 需要从其它 Handler 主动触发时，在已有 ui 能力中增加方法 |
-| `webui/constants.py` | 将新事件加入 `WebUIEvent` 和 `UPSTREAM_EVENTS` |
-| `webui/adapter.py` 与前端 | 请求校验、事件转换、交互上报和结果返回 |
+| `webui/constants.py` | 将槽位交互事件加入 `WebUIEvent` 和 `UPSTREAM_EVENTS` |
+| `webui/adapter.py` 与前端 | 槽位交互的请求校验、事件转换与上报；独立请求的适配器及两端登记见第 3.7.2 节 |
 
 ### 3.2 定义事件名、输入和输出
 
@@ -329,7 +330,9 @@ def register(bus: ExtensionEventBus) -> None:
 
 ### 3.5 定义 Ops 能力和 Build Handler
 
-前端上报无需新增 Ops。若还需要从其它 Handler 触发此事件，可在现有 ui Build Handler 中增加 `dispatch`；下面同时保留已有 `render`，避免创建第二个 ui namespace。
+Ops 向 Handler 提供可主动调用的能力，按业务需要新增或复用。先确定能力集、具体方法和输入输出，再由 Build Handler 将对应的异步函数加入 Builder。运行时，CORE 或其它 Handler 调用该方法并使用返回值；方法可以直接执行业务，也可以按需要触发另一条事件链。
+
+下面以从其它 Handler 触发 `ui.custom` 为例，在现有 ui Build Handler 中增加 `dispatch`，同时保留已有 `render`。仅从前端上报此事件时，沿用请求适配器即可。
 
 ```python
 # handler_ops/ui.py：在已有工厂中补充能力，不另建一套 ui Build Handler。
@@ -407,7 +410,11 @@ def register_handlers(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 
 ### 3.7 接通触发入口与结果返回
 
-这一链路沿用 WebUI 桥接方式：前端采集交互，WebClient 和 Gateway 转发，AgentServer 适配器转换为进程内事件；更新画面时再通过下行帧返回浏览器。不要在 WebClient 或 Gateway 中获取 Bus 或执行 Python Handler。
+前端交互经 WebClient 和 Gateway 到达 AgentServer，由适配器触发事件并返回结果。根据交互来源选择下面的接入方式：扩展槽位使用已有 `webui.dispatch`，独立内置交互使用所属业务的请求方法。Python Handler 都在 AgentServer 内执行。
+
+#### 3.7.1 复用扩展槽位的交互请求
+
+这条路径使用已有槽位、贡献项和活跃实例，保留完整的 target 校验。前端采集交互，WebClient 和 Gateway 转发，AgentServer 适配器转换为进程内事件；需要更新槽位画面时再通过渲染推送返回浏览器。
 
 ```mermaid
 sequenceDiagram
@@ -446,11 +453,11 @@ export async function reportUiEvent(
 ): Promise<void> {
   // 在交互采集点准备本事件的 payload，使用当前视图的完整 target。
   await dispatchWebUIAction('ui.custom', target, payload);
-  // 现有 bridge 返回 void；如需展示 accepted/status，应扩充它的回执处理。
+  // 现有 bridge 返回 void 并在内部捕获请求错误；需要交互回执时扩充其返回与错误处理。
 }
 ```
 
-WebClient、Gateway 继续转发 `webui.dispatch`；核对 Gateway 的 [webui_handlers.py](../../../gateway/channel_manager/web/webui_handlers.py) 已覆盖新事件。真正把请求变成事件的是 AgentServer 的 `WebUIDispatchAdapter`（设计材料中的 `WebUIEventAdapter`）。
+WebClient、Gateway 通过 [webui_handlers.py](../../../gateway/channel_manager/web/webui_handlers.py) 转发已有网络方法 `webui.dispatch`，新事件名放在请求参数中。新增这类事件时，更新上行白名单并复用现有转发，AgentServer 的 `WebUIDispatchAdapter` 负责将请求转换为事件。
 
 ```python
 # webui/adapter.py：已有适配器的方法骨架；下面的转换函数需按业务补齐。
@@ -490,9 +497,59 @@ class WebUIDispatchAdapter(GatewayAdapter):
 
 该适配器已由 AgentServer 注册表接入，复用已有实例。需要更新画面时，Handler 使用 `ops.ui.render(UiRenderInput(...))`，渲染结果是 `UiRenderOutput`；交互回执与渲染推送分别处理。
 
+#### 3.7.2 新增不依赖槽位的内置请求
+
+独立内置交互按业务定义网络方法、事件输入输出和请求适配器。适配器校验参数、身份与会话后，使用已装配的 Bus 触发事件；原有 `webui.dispatch` 继续负责扩展槽位的 target 和实例校验。
+
+下图以“CORE 调用 Ops，并将结果返回内置按钮”为例，说明请求到结果显示的完整顺序：
+
+```mermaid
+sequenceDiagram
+    participant FE as 内置按钮 / WebClient
+    participant GW as Gateway WebChannel
+    participant AD as AgentServer 业务适配器
+    participant B as AgentServer EventBus
+    participant C as 事件 CORE
+    participant O as 已登记的 Ops 异步函数
+    FE->>GW: 新网络方法和业务参数
+    GW->>GW: 查找已登记的方法处理器
+    GW->>AD: 转发 E2A 请求
+    AD->>B: 校验后 trigger(Event, SessionContext)
+    B->>C: 进入事件处理链，未短路时到达 CORE
+    C->>O: await ops.能力集.方法(...)
+    O-->>C: 实际业务返回值
+    C-->>B: 包含该返回值的事件输出
+    B-->>AD: 事件输出
+    AD-->>GW: AgentResponse，关联原 request_id
+    GW-->>FE: 原请求的响应
+    FE->>FE: 校验响应，显示实际返回值
+```
+
+开发时按下表接入各层。网络方法负责找到适配器，事件类型负责选择事件链，Ops 方法提供 Handler 调用的能力，三者分别声明和登记。表中的公共入口已存在，新业务的方法和适配器按需求补充。
+
+| 接入位置 | 开发内容 | 当前代码入口 |
+| --- | --- | --- |
+| 前端交互 | 绑定点击处理函数，调用网络方法并等待返回值 | [webClient.ts](../../../channels/web/frontend/src/services/webClient.ts) 的 `webClient.request(...)` |
+| 请求约定 | 增加 `ReqMethod`，确定请求、响应字段和超时约定 | [message.py](../../../common/schema/message.py) |
+| Gateway 转发 | 通过 `channel.register_method(...)` 登记转发处理函数，并接入启动流程 | [webui_handlers.py](../../../gateway/channel_manager/web/webui_handlers.py) 的 `_WEBUI_METHODS`、`register_webui_handlers`；[app_web_handlers.py](../../../gateway/channel_manager/web/app_web_handlers.py) 的 `_register_web_handlers` |
+| AgentServer 适配器 | 通过 `GatewayAdapter.methods` 声明方法，将实例登记到 `AdapterRegistry` | [gateway_adapter/base.py](../../../server/runtime/gateway_adapter/base.py)、[agent_ws_server.py](../../../server/agent_ws_server.py) |
+| 事件和 Ops | 适配器触发已登记事件，CORE 按业务需要调用已构建的 Ops 方法 | `bootstrap.py`、`event_types/`、`handler_ops/`，登记顺序见第 2.2 节 |
+| 响应与显示 | 将事件输出转成关联原请求的 `AgentResponse`，经 Gateway 回传并更新页面 | 业务适配器、`proxy_unary_request(...)` 和交互所在组件 |
+
+WebUI 相关方法可沿用 `_WEBUI_METHODS` 的转发登记；其它业务可在所属模块提供登记函数，接入同一启动流程。AgentServer 在初始化及停机后准备再次启动时都会创建 `AdapterRegistry`，新增适配器随这些注册表一起装配。
+
+返回值沿图中路径逐层传递：Ops 方法返回业务数据，CORE 放入事件输出，适配器转换为响应，前端通过 `webClient.request(...)` 取得并校验数据，再更新页面状态；失败时显示对应错误。普通内置组件可直接显示响应，无需经过聊天流程或模型调用。
+
 ### 3.8 完成后检查
 
-单元测试覆盖前端类型和白名单、类型唯一登记、匹配、继续与短路、非法输入、失效目标、Ops Build、请求回执与渲染失败。最后通过真实 WebClient/Gateway 链路验证，不能仅凭推送入口返回成功认定页面已显示。
+按本次接入方式完成以下验证：
+
+- **事件处理：** 覆盖类型唯一登记、匹配、继续与短路、非法输入、Ops Build 和返回值。
+- **请求登记：** 从生产启动入口完成登记，将前端格式的请求交给 WebChannel，经 Gateway 转发、AgentServer 注册表分发和事件链取得结果，并覆盖相关注册表重建路径。隔离网络传输时，保留本次新增的两侧登记与分发。
+- **结果返回：** 由 Ops 提供结果时，验证方法返回值的变化能传递到调用方；覆盖失败、超时和会话切换后的结果归属。前端取消等待与后端操作取消分别按接口约定验证。
+- **交互约束：** 槽位交互覆盖白名单、失效目标和渲染失败；独立请求验证无扩展包、槽位和活跃实例时也能使用，并保留原有槽位交互的校验。
+
+最后通过真实 WebClient/Gateway 链路验证请求、返回值和页面显示，未完成真实联调时据实记录。
 
 涉及页面改动时，复用相邻区域的布局、组件和样式 token。在浏览器检查普通与窄窗口、较长文案、中英文及相关加载和错误状态：按钮、文字和状态提示不重叠，不挤出容器，也不遮挡原有交互。构建和接口测试通过不能代替这项检查；未能启动页面时明确记录未完成视觉验证。
 
@@ -687,6 +744,8 @@ def register_handlers(bus: ExtensionEventBus, webui: WebUIRuntime) -> None:
 
 Gateway 原业务入口留在 Gateway，事件链在 AgentServer 执行，两者通过 WebSocket 上的 E2A 请求连接。E2A 是两进程间的请求协议；请求到达 AgentServer 后，由专用适配器转换为 `Event`。当前没有通用渠道事件代理，下面的适配器与业务接入都是待实现骨架。
 
+渠道消息由 Gateway 现有 client 直接发起 E2A 请求，浏览器请求则先经过 WebChannel 的方法分发。前者接入原渠道入口和 AgentServer 适配器，后者还需按第 3.7.2 节接入 WebChannel 方法登记。
+
 以“转发前判断是否继续”的事件为例，Gateway 必须先等待事件结果，再决定是否进入原聊天流程：
 
 ```mermaid
@@ -752,7 +811,7 @@ def register_channel_adapter(
     registry: AdapterRegistry, bus: ExtensionEventBus, method: ReqMethod,
 ) -> None:
     registry.register(ChannelEventAdapter(bus, method))
-    # 同时接入 AgentServer 当前的适配器装配入口；不能只定义此函数而无人调用。
+    # 将本函数接入 AgentServer 初始化及再次启动时的适配器装配入口。
     # Web 网络入口可参考 proxy_unary_request；Gateway 自身收到的渠道消息用现有 client 发 E2A。
     # 新方法需要先补充 ReqMethod 及两端协议，不虚构一个当前不存在的枚举值。
 ```
@@ -803,7 +862,7 @@ async def before_original_forward(
 
 ### 4.8 完成后检查
 
-单元测试覆盖类型唯一登记、匹配、继续与短路、目标拒绝、Ops Build、超时和执行结果。从真实 Gateway 消息入口验证：命中短路时回复一次且没有聊天或模型任务，未命中只沿原路径转发一次；失败、取消、附件、已有命令和不同会话的行为保留。测试中可隔离 WebSocket 传输，但要保留 Gateway 结果消费与 AgentServer 适配器、事件链，并分别验证运行边界；同进程直接获取 Bus 的测试不能证明跨进程接通。最后完成实际跨进程联调，未执行时明确记录。
+单元测试覆盖类型唯一登记、匹配、继续与短路、目标拒绝、Ops Build、超时和执行结果；涉及下行渠道动作时，覆盖 Gateway 接收、执行及结果回报。从真实 Gateway 消息入口验证：命中短路时回复一次且没有聊天或模型任务，未命中只沿原路径转发一次；失败、取消、附件、已有命令和不同会话的行为保留。测试中可隔离 WebSocket 传输，但要保留生产登记入口、Gateway 结果消费与 AgentServer 适配器、事件链，并分别验证运行边界；同进程直接获取 Bus 的测试不能证明跨进程接通。最后完成实际跨进程联调，未执行时明确记录。
 
 ## 5. AgentServer 开发模板：本地业务事件
 
@@ -1029,9 +1088,9 @@ async def existing_business_entry(
 | 事件契约 | 事件名至少两段、用点分隔，每段匹配 `[a-z][a-z0-9_]*`；输入输出和失败结果已明确，新模型采用 `frozen=True, slots=True` 的 dataclass |
 | 文件与登记 | 三类文件职责明确，全部接入宿主回调，迁移前后没有重复登记 |
 | 事件处理 | 一个事件只有一个 CORE；匹配函数同步返回 bool、不执行业务；继续、短路和输出符合约定 |
-| Ops | Build Handler 在唯一一次 Build 前登记，构建时不执行业务；namespace 与方法名合法，同一 namespace 只创建一次 |
+| Ops | Build Handler 在唯一一次 Build 前登记，构建时不执行业务；namespace 与方法名合法，同一 namespace 只创建一次；交付时指出完整方法名、实现函数、Build Handler 和调用位置 |
 | 异常与验证 | 测试覆盖成功、非法输入、未命中、继续、短路及异常；入口按业务要求处理异常和取消，不假定事件失败会自动回滚 |
-| 跨进程入口 | WebClient / Gateway 的方法、适配器和结果回传都已接通 |
+| 跨进程入口 | 按实际路径接通网络方法、Gateway 转发、AgentServer 适配器及结果回传；相关登记进入生产启动及注册表重建流程，见第 3.7、4.7 节 |
 | 本地业务 | 在真实扩展点触发并使用结果，后台任务由所属业务管理 |
 | 最终生效 | 原入口经过事件链，当前实例的读取状态和实际行为符合预期；只有底层写入不算完成 |
 | 页面布局 | 涉及 UI 时，真实页面的按钮、文字和状态提示在普通与窄窗口不重叠；未验证项据实记录 |
@@ -1046,6 +1105,7 @@ async def existing_business_entry(
 | `EVENTS_MATCH_INVALID` | 匹配函数是否抛错，或返回了非 bool 值 |
 | `EVENTS_OPS_INVALID` | 是否重复创建 namespace、重复添加方法，或调用未知能力 |
 | `EVENTS_NEXT_INVALID` | 是否跨调用保存 next、跨任务使用 next，或改变了 event_type |
+| `METHOD_NOT_FOUND` / `unknown method: 网络方法名` | 先查 Gateway 是否执行 `channel.register_method(...)`，再查 AgentServer 的适配器是否进入实际注册表；`ReqMethod` 和事件类型登记不能代替网络路由登记 |
 | Gateway 中取不到 Bus | 是否误在 Gateway 读取 AgentServer 单例；应检查 WebSocket 请求与适配器接入 |
 | 事件返回成功但业务没变化 | 原入口是否真的调用事件，结果是否被消费，最终使用者是否读取了另一层状态 |
 
