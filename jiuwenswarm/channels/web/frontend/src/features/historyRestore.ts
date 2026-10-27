@@ -3,6 +3,7 @@ import type { OutputOrder } from '../types/message';
 import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution, AskUserQuestionPayload, Question, UserAnswer } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
+import { describeChatError } from './free-models/chatError';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
@@ -1190,11 +1191,8 @@ function parseSessionHistoryTimelineEntry(
   }
 
   if (eventType === 'chat.error') {
-    // 后端仅 interface.py 一处把 chat.error 落盘（content=str(data)，error_type 在顶层，
-    // code 未落盘——见 interface.py:4040 的 extra 只带 error_type）。历史恢复时转成
-    // role=system 消息，与实时 useWebSocket.ts chat.error 分支对齐（实时 content=
-    // t('network.errorPrefix', {message})，历史层无 i18n，直接用错误原文）。
-    // code 缺失无法走 describeChatError 翻译生命周期错误，仅展示原文。
+    // Use the same stable-code guidance as live delivery. Older records without
+    // a known code keep their original diagnostic text.
     const errContent =
       (typeof record.content === 'string' && record.content) ||
       (typeof payload.content === 'string' && payload.content) ||
@@ -1204,12 +1202,17 @@ function parseSessionHistoryTimelineEntry(
     }
     const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-error-${sessionId}-${at}`;
+    const errorMsg = describeChatError(
+      { code: record.code ?? payload.code, upstream: record.upstream ?? payload.upstream },
+      errContent,
+      (key) => i18n.t(key),
+    );
     return {
       kind: 'message',
       message: {
         id: restoredId,
         role: 'system',
-        content: errContent,
+        content: errorMsg,
         timestamp: at,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
       },

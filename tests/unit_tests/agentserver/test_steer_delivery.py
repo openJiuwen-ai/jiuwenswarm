@@ -46,7 +46,7 @@ async def test_reconcile_uses_two_compact_messages_resolved_model_and_no_tools()
     assert result.usage_records == [usage]
     messages = model.invoke.await_args.args[0]
     assert [message.role for message in messages] == ["system", "user"]
-    assert model.invoke.await_args.kwargs == {"tools": None}
+    assert model.invoke.await_args.kwargs == {"tools": None, "timeout": 120.0}
     payload = json.loads(messages[1].content)
     assert payload["delivery_data"] == {
         "input_request_ids": ["input-1"], "original_request_id": "original", "original_request": "What is 99*99?",
@@ -154,6 +154,55 @@ async def test_timeout_is_bounded_without_format_retry(monkeypatch):
     with pytest.raises(SessionInputDeliveryError) as captured:
         await reconcile_steer_delivery(model, _plan(), "PROOF-ABC")
     assert captured.value.usage_records == [] and model.invoke.await_count == 1
+    assert captured.value.reason == "timeout"
+    assert "timed out after 0.01 seconds" in str(captured.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("configured, expected", [
+    (1800, 120.0), (45, 45.0), (None, 120.0), (0, 120.0),
+    (-1, 120.0), (float("inf"), 120.0), (float("nan"), 120.0), (True, 120.0),
+])
+async def test_reconciliation_uses_resolved_model_timeout_with_a_finite_cap(configured, expected):
+    config = {"timeout": configured}
+    model = SimpleNamespace(model_client_config=config, invoke=AsyncMock(return_value=_response()))
+    result = await reconcile_steer_delivery(model, _plan(), "PROOF-ABC")
+    assert result.content == "9801; image text: PROOF-ABC"
+    assert model.invoke.await_args.kwargs == {"tools": None, "timeout": expected}
+    assert config["timeout"] is configured
+
+
+@pytest.mark.asyncio
+async def test_a_valid_slow_reply_is_not_cancelled_by_an_unrelated_thirty_second_deadline(monkeypatch):
+    # Scale seconds to milliseconds: a 40-second provider response is inside
+    # its configured 60-second deadline and the 120-second formatting cap.
+    monkeypatch.setattr(steer_delivery, "_RECONCILIATION_TIMEOUT_SECONDS", 0.12)
+
+    async def delayed(*args, **kwargs):
+        await asyncio.sleep(0.04)
+        return _response(usage={"total_tokens": 90})
+
+    config = SimpleNamespace(timeout=0.06)
+    model = SimpleNamespace(model_client_config=config, invoke=AsyncMock(side_effect=delayed))
+    result = await reconcile_steer_delivery(model, _plan(), "PROOF-ABC")
+    assert result.content == "9801; image text: PROOF-ABC"
+    assert result.usage_records == [{"total_tokens": 90}]
+    assert model.invoke.await_count == 1 and model.invoke.await_args.kwargs["timeout"] == 0.06
+    assert config.timeout == 0.06
+
+
+@pytest.mark.asyncio
+async def test_timeout_after_format_retry_keeps_prior_and_reported_timeout_usage():
+    timeout = TimeoutError()
+    timeout.usage_metadata = {"total_tokens": 4}
+    model = SimpleNamespace(invoke=AsyncMock(side_effect=[
+        _response(content="bad JSON", usage={"total_tokens": 9}), timeout,
+    ]))
+    with pytest.raises(SessionInputDeliveryError) as captured:
+        await reconcile_steer_delivery(model, _plan(), "PROOF-ABC")
+    assert captured.value.reason == "timeout"
+    assert captured.value.usage_records == [{"total_tokens": 9}, {"total_tokens": 4}]
+    assert model.invoke.await_count == 2
 
 
 @pytest.mark.asyncio

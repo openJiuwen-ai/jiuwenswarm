@@ -1355,6 +1355,15 @@ for (const language of ['zh', 'en']) {
       assert.ok(document.querySelector('[data-testid="chat-panel-system-message-bubble"]')?.textContent.includes(i18n.t('chat.steerDeliveryFailed')));
       assert.ok(!document.body.textContent.includes(draft));
       assert.ok(!document.body.textContent.includes('private reconciliation diagnostics'));
+      const restored = parseHistoryJsonFileToPreviewMessages([{
+        id: 'req_mvqat7h5_81:assistant', role: 'assistant', event_type: 'chat.error',
+        request_id: 'req_mvqat7h5_81', timestamp: 1793082219.4158866,
+        content: 'Supplemental delivery reconciliation failed.',
+        code: 'SESSION_INPUT_DELIVERY_FAILED', error_type: 'SessionInputDeliveryError',
+      }], c.sid);
+      assert.equal(restored.length, 1);
+      assert.equal(restored[0].content, i18n.t('chat.steerDeliveryFailed'));
+      assert.ok(systemMessages[0].content.includes(restored[0].content), 'history and live errors use the same localized guidance');
       assert.equal(c.runtime().messages.filter((message) => message.role === 'assistant').length, 0);
       c.receive('chat.processing_status', { request_id: 'original', is_processing: false });
       await c.flush();

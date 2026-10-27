@@ -4,6 +4,7 @@
 
 import asyncio
 import json
+import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -11,7 +12,7 @@ from typing import Any
 from openjiuwen.core.foundation.llm.schema.message import SystemMessage, UserMessage
 
 
-_RECONCILIATION_TIMEOUT_SECONDS = 30.0
+_RECONCILIATION_TIMEOUT_SECONDS = 120.0
 _MAX_FORMAT_RETRIES = 1
 _SYSTEM_PROMPT = """你是当前执行的最终交付整理器，不是执行任务的 Agent。
 只使用给定的原请求、已经生成的原答案、按顺序到达的人类补充和最新业务草稿，整理一条最终可见回复。
@@ -42,13 +43,26 @@ class SessionInputDeliveryError(RuntimeError):
 
     code = "SESSION_INPUT_DELIVERY_FAILED"
 
-    def __init__(self, message: str, *, usage_records: Sequence[Any] = ()):
+    def __init__(self, message: str, *, usage_records: Sequence[Any] = (), reason: str | None = None):
         super().__init__(message)
         self.usage_records = list(usage_records)
+        self.reason = reason
 
 
 def _field(value: Any, key: str, default: Any = None) -> Any:
     return value.get(key, default) if isinstance(value, Mapping) else getattr(value, key, default)
+
+
+def _reconciliation_timeout(model: Any) -> float:
+    """Honor a shorter resolved-model timeout without imposing the old 30s cut-off."""
+    client_config = getattr(model, "model_client_config", None)
+    configured = _field(client_config, "timeout")
+    if (
+        isinstance(configured, (int, float)) and not isinstance(configured, bool)
+        and math.isfinite(configured) and configured > 0
+    ):
+        return min(float(configured), _RECONCILIATION_TIMEOUT_SECONDS)
+    return _RECONCILIATION_TIMEOUT_SECONDS
 
 
 def _delivery_data(plan: Any, draft_answer: str) -> dict[str, Any]:
@@ -147,6 +161,7 @@ async def reconcile_steer_delivery(model: Any, plan: Any, draft_answer: str) -> 
     except ValueError as exc:
         raise SessionInputDeliveryError("Invalid supplemental delivery plan.") from exc
     feedback = None
+    timeout = _reconciliation_timeout(model)
     for attempt in range(_MAX_FORMAT_RETRIES + 1):
         payload = {"delivery_data": data}
         if feedback is not None:
@@ -154,14 +169,22 @@ async def reconcile_steer_delivery(model: Any, plan: Any, draft_answer: str) -> 
         messages = [SystemMessage(content=_SYSTEM_PROMPT), UserMessage(content=json.dumps(payload, ensure_ascii=False))]
         try:
             response = await asyncio.wait_for(
-                model.invoke(messages, tools=None), timeout=_RECONCILIATION_TIMEOUT_SECONDS,
+                model.invoke(messages, tools=None, timeout=timeout), timeout=timeout,
             )
+        except TimeoutError as exc:
+            usage = getattr(exc, "usage_metadata", None)
+            if usage is not None:
+                usage_records.append(usage)
+            raise SessionInputDeliveryError(
+                f"Supplemental delivery reconciliation timed out after {timeout:g} seconds.",
+                usage_records=usage_records, reason="timeout",
+            ) from exc
         except Exception as exc:
             usage = getattr(exc, "usage_metadata", None)
             if usage is not None:
                 usage_records.append(usage)
             raise SessionInputDeliveryError(
-                "Supplemental delivery reconciliation failed.", usage_records=usage_records,
+                "Supplemental delivery reconciliation failed.", usage_records=usage_records, reason="model_call_failed",
             ) from exc
         usage = getattr(response, "usage_metadata", None)
         if usage is not None:
