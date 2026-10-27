@@ -33,8 +33,10 @@ export function organizationOwnerStopTarget(sessionId: string): string | null {
   const runtime = useTeamSelectorStore.getState().runtimes[sessionId];
   const owner = runtime?.teams.find((team) => team.is_owner);
   const ownerId = owner?.team_id || ownerTeamId(sessionId);
-  return ownerId && isOrganizationProcessing(sessionId) &&
-    (!runtime?.selectedTeamId || runtime.selectedTeamId === ownerId) ? ownerId : null;
+  const hasOrganization = Boolean(owner?.organization_id) || isOrganizationProcessing(sessionId);
+  const isProcessing = Boolean(useChatStore.getState().getRuntime(sessionId)?.isProcessing);
+  if (!ownerId || !hasOrganization || !isProcessing) return null;
+  return !runtime?.selectedTeamId || runtime.selectedTeamId === ownerId ? ownerId : null;
 }
 
 export function useOrganizationConversationKey(sessionId: string | null): string {

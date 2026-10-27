@@ -292,6 +292,30 @@ class RuntimePromptRail(DeepAgentRail):
             logger.debug("Failed to read configured model names: %s", exc)
             return []
 
+    @staticmethod
+    def _agent_model_name(ctx: AgentCallbackContext) -> str:
+        """Read this callback's live model instead of the shared session model."""
+        agent = ctx.agent
+        config = getattr(agent, "config", None)
+        model = getattr(config, "model", None)
+        get_llm = getattr(agent, "get_llm", None)
+        if callable(get_llm):
+            try:
+                model = get_llm()
+            except Exception as exc:
+                logger.debug("Failed to read the current agent model: %s", exc)
+        # Model calls run on the inner ReActAgent; before_invoke can run on
+        # the outer DeepAgent, whose config holds the same Model directly.
+        for request_config in (
+            getattr(model, "model_config", None),
+            getattr(config, "model_config_obj", None),
+            config,
+        ):
+            name = getattr(request_config, "model_name", None)
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        return ""
+
     def _resolve_current_mode(
         self,
         ctx: AgentCallbackContext,
@@ -693,7 +717,8 @@ class RuntimePromptRail(DeepAgentRail):
             available_models = configured_models
         fallback_model = configured_models[0] if configured_models else ""
         model = str(
-            runtime_state.get("model")
+            self._agent_model_name(ctx)
+            or runtime_state.get("model")
             or self._model_name
             or fallback_model
             or "unknown"

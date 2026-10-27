@@ -863,6 +863,12 @@ def build_member_capability_specs(
         )
     if availability is not None:
         rails.append(availability)
+    if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        rails.append(RailSpec(type=registry.ORGANIZATION_MODEL))
+        if role == "leader":
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_MODEL_TOOLS))
+            rails.append(RailSpec(type=registry.ORGANIZATION_OWNER_INBOX))
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_OWNER_INBOX_TOOLS))
     return rails, tools
 
 

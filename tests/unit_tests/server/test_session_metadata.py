@@ -3297,3 +3297,23 @@ class TestGetAllSessionsMetadataLifecycleVisibility:
         sessions, total = get_all_sessions_metadata()
         assert total == 1
         assert [item["session_id"] for item in sessions] == ["live"]
+
+
+def test_owner_stop_persists_without_changing_session_activity_or_other_metadata(sessions_dir):
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+    from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+    sm.update_session_metadata(
+        session_id="owner-stop", mode="team", team_name="owner", title="original", sync_write=True,
+    )
+    original = sm.get_session_metadata("owner-stop")
+    set_owner_stopped("owner-stop", True)
+    assert sm.get_session_metadata("owner-stop", cache_bust=True)["organization_owner_stopped"] is True
+    assert owner_is_stopped("owner-stop", "owner")
+    assert not owner_is_stopped("owner-stop", "child")
+    stored = sm.get_session_metadata("owner-stop")
+    assert stored["last_message_at"] == original["last_message_at"]
+    assert stored["title"] == "original"
+    set_owner_stopped("owner-stop", False)
+    assert not owner_is_stopped("owner-stop", "owner")
+

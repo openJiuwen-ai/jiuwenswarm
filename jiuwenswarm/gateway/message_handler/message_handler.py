@@ -4618,9 +4618,11 @@ class MessageHandler(ABC):
                     continue
 
                 if msg.req_method == ReqMethod.CHAT_CANCEL:
-                    if self._is_targeted_expert_cancel(msg):
-                        # The AgentServer validates membership and cancels only
-                        # this expert. Never enter the session-wide cancel path.
+                    params = msg.params if isinstance(msg.params, dict) else {}
+                    organization_stop = params.get("organization_owner_stop") is True
+                    organization_stop = organization_stop or params.get("organization_stop") is True
+                    if organization_stop or self._is_targeted_expert_cancel(msg):
+                        # Preserve Team routing and return the actual AgentServer result.
                         agent_msg = await self._prepare_agent_dispatch_message(msg)
                         await self._process_non_stream_request(msg, self.message_to_e2a(agent_msg))
                         continue
