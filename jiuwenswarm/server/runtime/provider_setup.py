@@ -17,7 +17,7 @@ server 家族的进程形态中：
   装配（P0 回归：worker 启动即 ExternalProviderUnregistered，AGENT_READY
   永不到达），``worker.runtime_backend.preload_runtime_backend`` 入口调用。
 
-与 gateway 进程的过渡装配（``gateway/server_store_bridge``，拆仓时删除）
+（gateway 侧的过渡桥已退役删除，gateway 进程现注册 WS 远端实现）
 不同，本模块是 server 侧的常驻服务装配。
 """
 

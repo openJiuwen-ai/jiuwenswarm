@@ -25,4 +25,8 @@ async def complete_oauth_flow_async(query: dict[str, Any]) -> bool:
     such as the web callback handler use this entry directly instead of a
     threadpool hop around the sync path.
     """
-    return await provider("mcp_registry").complete_oauth_callback_async(query)
+    completed = await provider("mcp_registry").complete_oauth_callback_async(query)
+    if not completed:
+        # handler 不检查返回值：不抛会把失败渲染成"授权成功"
+        raise McpOAuthError("授权回调未完成，请重试连接")
+    return True

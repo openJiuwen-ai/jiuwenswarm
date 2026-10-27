@@ -1638,6 +1638,29 @@ def preserve_agent_group_display_identity(
         _refresh_written_cache(session_id, written, options)
 
 
+async def get_session_metadata_async(
+    session_id: str,
+    cache_bust: bool = False,
+    *,
+    enable_writeback: bool = True,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Async twin of :func:`get_session_metadata`（``to_thread`` 包装）。
+
+    统一异步入口：gateway 侧 WS 远端实现（``gateway/routing/
+    session_metadata_remote``）同签名互换；``user_id`` 仅供远端路由使用，
+    本地实现接受即忽略。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(
+        get_session_metadata,
+        session_id,
+        cache_bust,
+        enable_writeback=enable_writeback,
+    )
+
+
 def get_session_metadata(
     session_id: str,
     cache_bust: bool = False,

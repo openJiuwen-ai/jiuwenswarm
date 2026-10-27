@@ -70,19 +70,6 @@ KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 # gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）已消除。
 # browser_config 已下沉 jiuwenswarm.common.browser_config，不再占用本白名单。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
-    # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
-    # gateway 独立成仓时整体删除并由 WS 远端实现替代（session_metadata
-    # 域已就绪 gateway/routing/session_metadata_remote.py）。
-    # （runtime.cron.factory 一条已随 M0-a 的 router_client 改向消除）
-    "gateway.server_store_bridge": {
-        "jiuwenswarm.server.runtime.mcp.state_store",
-        "jiuwenswarm.server.runtime.mcp.registry",
-        "jiuwenswarm.server.runtime.mcp.credential",
-        "jiuwenswarm.server.runtime.a2ui.integration",
-        "jiuwenswarm.server.runtime.team_binding_store",
-        "jiuwenswarm.server.runtime.team_entity_store",
-        "jiuwenswarm.server.runtime.session.session_metadata",
-    },
 }
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
 BASELINE = {
