@@ -110,5 +110,16 @@
   },
   "modified_upstream_sha256": {
     "Sources/Control/NativePointerUnit.swift": "c4a93deacd6fe54fdb255c853c6c875db8c86eefeba07d12b01f2f8dbdfa3ada"
+  },
+  "behavior_port": {
+    "commit": "bc7448445cc31751e4eae90b08f3df7802086fd5",
+    "scope": "Retained-element scroll exposure, attached choice-list popup routing, and unavailable-route reasons only. Adapted to the existing v5 executor; excludes the pipeline refactor and desktop App reference changes.",
+    "files": {
+      "Sources/Control/NativeElementPointerUnit.swift": "e4608ffc0f6d9d64ccddf8c3486197092a09c0eacdf29256297cfd3ae50e502c",
+      "Sources/Control/NativeElementViewport.swift": "ebf3e70056da6bd6532933b78e9dd00adfea8a409ba7e407d3d693dfd5ffc5bf",
+      "Sources/Runtime/NativeExecution.swift": "e3041ff6ce83d463bf99ddb9ff22174bc002ceb584beb432907b3d6df726005c",
+      "Sources/Runtime/NativeOperation.swift": "5cb68362895d1192a2e739914403dc34524d38f894027df8efacf19b637b5dd4",
+      "Sources/Shared/LocalMenuAttachment.swift": "e46a6aeefd75f14bfe19ecb5c784e77b19df315448c454b407fc7bdd59ab976e"
+    }
   }
 }

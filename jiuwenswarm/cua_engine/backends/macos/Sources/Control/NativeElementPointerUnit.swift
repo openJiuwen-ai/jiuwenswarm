@@ -3,13 +3,14 @@ import ApplicationServices
 
 /// Addressed pointer input on one retained native geometry object. A click
 /// uses its control; a scroll uses Python's selected scroll area and hit member.
-/// This unit neither finds an ancestor/member nor invokes a semantic AX action.
+/// Scroll preparation exposes this same object; it never selects a replacement.
 @MainActor struct NativeElementPointerUnit {
     let application: NSRunningApplication
     let window: AXUIElement
     let element: AXUIElement
     var member: AXUIElement? = nil
     var kind: NativePointerIntent.Kind = .click
+    var logicalWindow: AXUIElement? = nil
 
     struct Geometry {
         let mapping: WindowGeometry.WindowMapping
@@ -23,20 +24,27 @@ import ApplicationServices
         }
     }
 
-    private func sample() throws -> (geometry: Geometry, hit: AXUIElement) {
-        try RequestDiagnostics.checkCancellation()
-        if AXAccess.read(element, kAXEnabledAttribute).value as? Bool == false {
-            throw DriverError("the selected pointer element is disabled", code: .inputUnavailable)
+    func viewport() throws -> NativeElementViewport {
+        if let logicalWindow, !CFEqual(logicalWindow, window) {
+            guard let current = WindowGeometry.owningWindow(element, pid: application.processIdentifier, in: window),
+                  CFEqual(current, window) else {
+                throw DriverError("the original popup element changed its physical window", code: .staleTarget)
+            }
         }
         let mapping = try NativeWindowUnit(application: application, window: window).mapping()
-        guard let frame = WindowGeometry.hint(element)?.frame,
-              frame.minX.isFinite, frame.minY.isFinite, frame.width.isFinite, frame.height.isFinite,
-              frame.width > 0, frame.height > 0 else {
-            throw DriverError("the selected element has no usable pointer geometry", code: .inputUnavailable)
-        }
-        let visible = frame.intersection(mapping.frame)
+        return try NativeElementViewport.sample(element: element, window: window, mapping: mapping)
+    }
+
+    func exposure() throws -> NativeElementViewport.Exposure? { try viewport().exposure }
+
+    private func sample() throws -> (geometry: Geometry, hit: AXUIElement) {
+        try RequestDiagnostics.checkCancellation()
+        let mapping = try NativeWindowUnit(application: application, window: window).mapping()
+        let viewport = try viewport()
+        let frame = viewport.frame
+        let visible = kind == .click ? viewport.clipped : frame.intersection(mapping.frame)
         guard !visible.isNull, visible.width > 0, visible.height > 0 else {
-            throw DriverError("the selected element is outside its window", code: .inputUnavailable)
+            throw DriverError("the selected element is outside its window or known scrolling bounds", code: .inputUnavailable)
         }
         let value = Geometry(mapping: mapping, frame: frame, visible: visible)
         var hit: AXUIElement?
@@ -70,23 +78,32 @@ import ApplicationServices
         return !CFEqual(owner, window)
     }
 
-    func conditions() throws -> (readiness: NativeReadiness, foreground: Bool, geometry: Bool, route: Bool, hit: AXUIElement?) {
+    func conditions() throws -> (readiness: NativeReadiness, foreground: Bool, geometry: Bool, route: Bool, hit: AXUIElement?, reason: String?) {
         let sampled: (geometry: Geometry, hit: AXUIElement)
-        do { sampled = try sample() }
+        do {
+            if kind == .click, let exposure = try exposure() {
+                let pointer = NativePointerUnit(application: application, window: exposure.mapping)
+                return (NativeReadiness([("receiver", "no")]), pointer.foregroundWindow(at: exposure.point),
+                        true, false, nil, "The original element needs to be scrolled into view.")
+            }
+            sampled = try sample()
+        }
         catch let error as DriverError where error.code == .inputUnavailable || error.code == .modeUnsupported {
-            return (NativeReadiness([("geometry", "unknown")]), false, false, false, nil)
+            return (NativeReadiness([("geometry", "unknown")]), false, false, false, nil, error.description)
         }
         guard CFEqual(sampled.hit, member ?? element) else {
             if coveredByAnotherWindow(sampled.hit) {
-                return (NativeReadiness([("receiver", "no")]), false, true, false, sampled.hit)
+                return (NativeReadiness([("receiver", "no")]), false, true, false, sampled.hit,
+                        "Another window covers the element's native hit target.")
             }
-            return (NativeReadiness([("geometry", "unknown")]), false, false, false, sampled.hit)
+            return (NativeReadiness([("geometry", "unknown")]), false, false, false, sampled.hit,
+                    "The element's center is not confirmed as this native hit target.")
         }
         let pointer = NativePointerUnit(application: application, window: sampled.geometry.mapping)
         let foreground = pointer.foregroundWindow(at: sampled.geometry.point), route = pointer.ready(at: sampled.geometry.point)
         var required = [("receiver", route ? "yes" : "no")]
         if BackgroundTarget.isExclusive { required.append(("foreground", foreground ? "yes" : "no")) }
-        return (NativeReadiness(required), foreground, true, route, sampled.hit)
+        return (NativeReadiness(required), foreground, true, route, sampled.hit, nil)
     }
 
     private func validate(_ selected: Geometry, check: () throws -> Void) throws {
@@ -97,8 +114,17 @@ import ApplicationServices
     }
 
     func prepare(foreground: Bool, check: @escaping @MainActor () throws -> Void,
-                 onPreparation: @escaping (String) -> Void) async throws {
+                 onPreparation: @escaping @MainActor (String) -> Void,
+                 onContentPreparation: @escaping @MainActor () throws -> Void,
+                 onCleanupUnknown: @escaping @MainActor () -> Void) async throws {
         try check()
+        if kind == .click, let exposure = try exposure() {
+            let pointer = NativePointerUnit(application: application, window: exposure.mapping)
+            try await pointer.prepare(foreground: foreground, atNative: exposure.point,
+                check: check, onPreparation: onPreparation)
+            try await expose(check: check, onPreparation: onPreparation,
+                onContentPreparation: onContentPreparation, onCleanupUnknown: onCleanupUnknown)
+        }
         let sampled = try sample()
         let selected = sampled.geometry
         if !CFEqual(sampled.hit, member ?? element) {
@@ -128,6 +154,52 @@ import ApplicationServices
         // geometry. Only an actual gesture freezes its own native coordinates.
         try check()
         _ = try geometry()
+    }
+
+    /// Preparation has its own bounded wheel loop, using the same input route
+    /// and live target checks as the requested click. It never clicks a proxy.
+    private func expose(check: @escaping @MainActor () throws -> Void,
+                        onPreparation: @escaping @MainActor (String) -> Void,
+                        onContentPreparation: @escaping @MainActor () throws -> Void,
+                        onCleanupUnknown: @escaping @MainActor () -> Void) async throws {
+        let deadline = min(RequestDiagnostics.deadline ?? .infinity, ProcessInfo.processInfo.systemUptime + 3)
+        var steps = 0
+        while let exposure = try exposure() {
+            try check()
+            guard steps < 8, ProcessInfo.processInfo.systemUptime < deadline else {
+                throw DriverError("the original element could not be scrolled into view within the click budget", code: .inputUnavailable)
+            }
+            let pointer = NativePointerUnit(application: application, window: exposure.mapping)
+            let request = try NativePointerIntent(unit: "pointer_sequence", kind: "scroll",
+                parameters: ["direction": exposure.direction, "pages": exposure.pages], foreground: false, element: true)
+            var entered = false
+            try await pointer.deliver(request, from: exposure.point, to: nil, viewport: exposure.viewport.size,
+                check: check, onDispatch: {
+                    if !entered {
+                        try onContentPreparation()
+                        entered = true
+                        onPreparation("scroll original element into view")
+                    }
+                }, onPosted: {}, onCleanupUnknown: onCleanupUnknown)
+            let waitUntil = min(deadline, ProcessInfo.processInfo.systemUptime + 0.4)
+            var frame = exposure.frame, changedAt = ProcessInfo.processInfo.systemUptime
+            var settled = false
+            repeat {
+                try check()
+                let sampled = try viewport(), now = ProcessInfo.processInfo.systemUptime
+                if sampled.frame != frame { frame = sampled.frame; changedAt = now }
+                let progressed = sampled.exposure.map {
+                    !CFEqual($0.region, exposure.region) || $0.distance < exposure.distance - 0.5
+                } ?? true
+                settled = progressed && now - changedAt >= 0.06
+                if settled { break }
+                try await Task.sleep(for: .milliseconds(20))
+            } while ProcessInfo.processInfo.systemUptime < waitUntil
+            guard settled else {
+                throw DriverError("the original element's scroll region did not settle after moving toward the target", code: .inputUnavailable)
+            }
+            steps += 1
+        }
     }
 
     func deliver(_ request: NativePointerIntent, check: @escaping @MainActor () throws -> Void,
