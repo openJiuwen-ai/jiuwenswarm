@@ -125,8 +125,16 @@ def _append_late_span(database_path: Path, *, session_id: str = "session-1") -> 
         store.close()
 
 
+async def _throwing_metadata_loader(_session_id: str) -> dict[str, str]:
+    raise RuntimeError("secret metadata path")
+
+
+async def _simple_session_loader(_session_id: str) -> dict[str, str]:
+    return {"session_id": "session-1"}
+
+
 def _metadata_loader(mode: str = "agent.work.normal"):
-    def _load(session_id: str) -> dict[str, str]:
+    async def _load(session_id: str) -> dict[str, str]:
         if session_id in {"session-1", "session-2"}:
             return {"session_id": session_id, "mode": mode, "team_name": ""}
         return {}
@@ -916,7 +924,7 @@ def _retired_single_agent_store(database_path: Path) -> None:
         store.close()
 
 
-def _single_agent_metadata_loader(session_id: str) -> dict[str, str]:
+async def _single_agent_metadata_loader(session_id: str) -> dict[str, str]:
     if session_id == SINGLE_SESSION_ID:
         return {"session_id": session_id, "mode": "agent.work.normal", "team_name": ""}
     return {}
@@ -1055,7 +1063,7 @@ async def test_http_accepts_team_sessions_with_team_name(tmp_path: Path) -> None
     database_path = tmp_path / "trajectory.sqlite3"
     _seed(database_path)
 
-    def _team_metadata(session_id: str) -> dict[str, str]:
+    async def _team_metadata(session_id: str) -> dict[str, str]:
         if session_id in {"session-1", "session-2"}:
             return {
                 "session_id": session_id,
@@ -1142,7 +1150,7 @@ async def test_http_fails_closed_for_unknown_or_missing_session_mode(
     )
     missing = TrajectoryHttpService(
         _settings(database_path),
-        metadata_loader=lambda _session_id: {"session_id": "session-1"},
+        metadata_loader=_simple_session_loader,
     )
 
     unknown_response = await unknown.list_subjects("session-1", after_revision=0)
@@ -1519,9 +1527,7 @@ async def test_http_internal_failures_return_stable_generic_messages(tmp_path: P
     )
     metadata_service = TrajectoryHttpService(
         _settings(tmp_path / "trajectory.sqlite3"),
-        metadata_loader=lambda _session_id: (_ for _ in ()).throw(
-            RuntimeError("secret metadata path")
-        ),
+        metadata_loader=_throwing_metadata_loader,
     )
 
     query_response = await query_service.list_subjects(

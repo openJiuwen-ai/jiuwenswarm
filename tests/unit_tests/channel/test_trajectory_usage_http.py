@@ -9,6 +9,13 @@ from pathlib import Path
 
 import pytest
 
+async def _usage_metadata_loader(_session_id: str) -> dict[str, str]:
+    return {
+        "mode": "agent.work.normal",
+        "team_name": "",
+    }
+
+
 from gateway.channel_manager.web.trajectory_http import TrajectoryHttpService
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
 
@@ -38,10 +45,7 @@ async def test_http_exposes_session_scoped_request_usage(tmp_path: Path) -> None
     service = TrajectoryHttpService(
         settings,
         reader=_UsageReader(),
-        metadata_loader=lambda _session_id: {
-            "mode": "agent.work.normal",
-            "team_name": "",
-        },
+        metadata_loader=_usage_metadata_loader,
     )
 
     response = await service.get_session_usage("session-1")

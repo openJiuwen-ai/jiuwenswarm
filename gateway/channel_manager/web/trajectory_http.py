@@ -67,7 +67,7 @@ _MAX_SEQUENCE_REQUEST = 200
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
 _MAX_CURSOR_LENGTH = 512
 
-SessionMetadataLoader = Callable[[str], Mapping[str, Any]]
+SessionMetadataLoader = Callable[[str], Awaitable[Mapping[str, Any]]]
 
 
 class TrajectoryHttpService:
@@ -134,7 +134,7 @@ class TrajectoryHttpService:
     ) -> Response:
         """List the execution subjects that own a chain in one session."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         if after_revision < 0:
@@ -181,7 +181,7 @@ class TrajectoryHttpService:
             entry, or a JSON error response.
         """
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         spool = tempfile.SpooledTemporaryFile(max_size=_ARCHIVE_SPOOL_MAX_BYTES)
@@ -219,7 +219,7 @@ class TrajectoryHttpService:
     async def get_session_usage(self, session_id: str) -> Response:
         """Return session-complete request usage partitioned by execution subject."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         try:
@@ -247,7 +247,7 @@ class TrajectoryHttpService:
     async def get_checkpoints(self, session_id: str) -> Response:
         """Return what retention left for one session's removed turns, with its content."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         try:
@@ -286,7 +286,7 @@ class TrajectoryHttpService:
     ) -> Response:
         """Build one page of an execution subject's chain, in commit order."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         normalized_subject_id = str(subject_id or "").strip()
@@ -376,7 +376,7 @@ class TrajectoryHttpService:
         the answer to finish before it can show anything.
         """
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         if since_frame_seq < 0:
@@ -429,7 +429,7 @@ class TrajectoryHttpService:
         second device, an entry expired from the browser's cache.
         """
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         requested = [str(value or "").strip() for value in seq_hashes]
@@ -472,7 +472,7 @@ class TrajectoryHttpService:
     ) -> Response:
         """Return the exact stored OTLP bytes for one session-owned span."""
         settings = self.settings
-        error = self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, settings)
         if error is not None:
             return error
         normalized_trace_id = str(trace_id or "").strip().lower()
@@ -510,7 +510,7 @@ class TrajectoryHttpService:
             },
         )
 
-    def _validate_access(
+    async def _validate_access(
         self,
         session_id: str,
         settings: TrajectoryStoreSettings,
@@ -525,7 +525,7 @@ class TrajectoryHttpService:
         if normalized_session_id != session_id or not is_valid_session_id(normalized_session_id):
             return _error_response("invalid session_id", "BAD_REQUEST", 400)
         try:
-            metadata = self._metadata_loader(normalized_session_id)
+            metadata = await self._metadata_loader(normalized_session_id)
         except Exception:
             logger.exception(
                 "Trajectory session metadata lookup failed: session_id=%s",
@@ -783,10 +783,10 @@ def attach_trajectory_routes(
     return service
 
 
-def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
+async def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
     from jiuwenswarm.common.external_providers import provider
 
-    return provider("session_metadata").get_session_metadata(
+    return await provider("session_metadata").get_session_metadata_async(
         session_id,
         cache_bust=True,
         enable_writeback=False,
@@ -967,9 +967,9 @@ def validate_http_origin(request: Request) -> Response | None:
     return _validate_http_origin(request)
 
 
-def load_session_metadata(session_id: str) -> Mapping[str, Any]:
+async def load_session_metadata(session_id: str) -> Mapping[str, Any]:
     """Load persisted session metadata without writing back."""
-    return _load_session_metadata(session_id)
+    return await _load_session_metadata(session_id)
 
 
 __all__ = [
