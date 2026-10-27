@@ -9506,7 +9506,8 @@ class AgentWebSocketServer:
             payload=resp_payload,
         )
 
-    def _command_mcp_internal_state(self, request: AgentRequest) -> AgentResponse:
+    @staticmethod
+    def _command_mcp_internal_state(request: AgentRequest) -> AgentResponse:
         """Gateway 内部状态访问：command.mcp 的受限 action 族。
 
         为 gateway 侧远端 provider（拆仓后 ``server_store_bridge`` 的替代）
