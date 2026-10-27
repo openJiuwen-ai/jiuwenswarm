@@ -322,7 +322,7 @@ test('artifactSuggestion joins cause suggestions, or uses the experimental whole
     ],
     artifact_improvement: 'legacy block',
   };
-  assert.equal(artifactSuggestion(record, false), 'first\n\nsecond');
+  assert.equal(artifactSuggestion(record, false), '1. first\n2. second');
   assert.equal(artifactSuggestion(record, true), 'legacy block');
 });
 
@@ -354,15 +354,17 @@ test('artifactSuggestionItems keeps cause order and the full attribution fields'
   });
   assert.deepEqual(items.map(item => item.id), ['rfc-1', 'rfc-2']);
   assert.equal(items[0].text, '先修 A\n\n再修 B');
+  assert.deepEqual(items[0].parts, ['先修 A', '再修 B']);
   assert.equal(items[0].dimension, '正确性');
   assert.equal(items[0].summary, '问题一');
   assert.equal(items[0].signal.id, 'diag-1');
   assert.equal(items[1].text, '问题二'); // defensive: an empty suggestion shows the summary
 });
 
-test('skillSuggestionText keeps the whole md_string block', () => {
+test('skillSuggestionText keeps one block and numbers several entries', () => {
   assert.equal(skillSuggestionText({ suggestion: ['# a\n\n- b'] }), '# a\n\n- b');
   assert.equal(skillSuggestionText({ suggestion: [] }), '');
+  assert.equal(skillSuggestionText({ suggestion: ['先改提示词', '再加自检'] }), '1. 先改提示词\n\n2. 再加自检');
 });
 
 test('the node label joins distinct node ids with an arrow', () => {

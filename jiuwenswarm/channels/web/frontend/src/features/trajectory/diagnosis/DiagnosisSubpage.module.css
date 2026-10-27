@@ -340,6 +340,26 @@
   white-space: nowrap;
 }
 
+.suggestionScroll {
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.suggestionLines {
+  margin: 0;
+  padding: 0 0 0 1.25rem;
+  list-style: decimal;
+}
+
+.suggestionLines > li + li {
+  margin-top: 0.5rem;
+}
+
+.suggestionLines > li::marker {
+  color: var(--suggest-accent);
+  font-weight: 600;
+}
+
 .actionButton:hover:not(:disabled) {
   filter: brightness(1.1);
 }
@@ -717,15 +737,6 @@
   flex-direction: column;
   gap: 0.25rem;
   margin-top: 0.25rem;
-}
-
-.artifactItems {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 .tag {

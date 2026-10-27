@@ -1245,6 +1245,7 @@
       "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
       "ttseReady": "Experience available",
       "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "artifactFillPrefix": "Optimize according to the following suggestions:",
       "ttseResult": {
         "triggered": "Triggered",
         "failed": "Trigger failed"
