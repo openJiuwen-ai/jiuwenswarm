@@ -783,6 +783,7 @@
       "loadError": "无法读取全双工模型配置",
       "saveError": "无法保存全双工模型配置",
       "notConfigured": "尚未配置全双工模型",
+      "requiredFields": "带 * 的项目为必填项，填写完整后才能保存。已保存的 API 密钥无需重新输入。",
       "dialogTitle": "配置全双工模型",
       "providerLabel": "模型通道",
       "joyaiModelLabel": "JoyAI 模型",

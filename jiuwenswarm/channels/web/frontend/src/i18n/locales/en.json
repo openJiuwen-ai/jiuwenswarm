@@ -790,6 +790,7 @@
       "loadError": "Unable to load full-duplex model settings",
       "saveError": "Unable to save full-duplex model settings",
       "notConfigured": "Full-duplex model is not configured",
+      "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again.",
       "dialogTitle": "Configure full-duplex model",
       "providerLabel": "Model channel",
       "joyaiModelLabel": "JoyAI model",

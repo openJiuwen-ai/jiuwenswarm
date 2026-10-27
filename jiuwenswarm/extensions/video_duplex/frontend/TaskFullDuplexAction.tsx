@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent } from 'react';
 import {
-  Camera,
-  Monitor,
   LoaderCircle,
   Mic,
   MicOff,
@@ -12,8 +10,6 @@ import {
   X,
 } from 'lucide-react';
 import { createPortal } from 'react-dom';
-import { FormDialog } from '../../../channels/web/frontend/src/components/form';
-import { isTaskDuplexScreenSharingEnabled } from '../../../channels/web/frontend/src/features/taskFullDuplex/mediaPreferences';
 import { useTranslation } from 'react-i18next';
 
 import type { ApplicationPluginTaskInputActionProps } from '../../../channels/web/frontend/src/applicationPlugins/types';
@@ -52,9 +48,6 @@ export function TaskFullDuplexAction({
   labels,
   hasTextDraft = false,
 }: ApplicationPluginTaskInputActionProps) {
-  const { t } = useTranslation();
-  const [shareDialog, setShareDialog] = useState(false);
-  const [shareSource, setShareSource] = useState<'screen' | 'camera'>('screen');
   const enabled = useTaskFullDuplexEnabled();
   const { state: runtimeState, sessionId: runtimeSessionId, error } = useTaskFullDuplexRuntime();
   const state = runtimeSessionId === sessionId ? runtimeState : 'idle';
@@ -86,10 +79,9 @@ export function TaskFullDuplexAction({
   }, [sessionId]);
 
   const beginSession = useCallback(
-    async (visualSource?: 'screen' | 'camera') => {
-      setShareDialog(false);
+    async () => {
       const readySessionId = await ensureSession('');
-      if (readySessionId) await startTaskFullDuplex(readySessionId, visualSource);
+      if (readySessionId) await startTaskFullDuplex(readySessionId);
     },
     [ensureSession],
   );
@@ -97,10 +89,6 @@ export function TaskFullDuplexAction({
   const handleClick = useCallback(async () => {
     if (state !== 'idle') {
       exitTaskFullDuplex();
-      return;
-    }
-    if (isTaskDuplexScreenSharingEnabled()) {
-      setShareDialog(true);
       return;
     }
     await beginSession();
@@ -111,39 +99,6 @@ export function TaskFullDuplexAction({
 
   return (
     <>
-      {shareDialog ? (
-        <FormDialog
-          open
-          title={t('chat.duplexControls.chooseSource')}
-          description={t('chat.duplexControls.chooseSourceDescription')}
-          confirmLabel={t('common.confirm')}
-          cancelLabel={t('common.cancel')}
-          onConfirm={() => void beginSession(shareSource)}
-          onCancel={() => setShareDialog(false)}
-          testIdPrefix="chat-panel-duplex-share-dialog"
-        >
-          <div
-            className="task-full-duplex-sources"
-            role="radiogroup"
-            aria-label={t('chat.duplexControls.chooseSource')}
-          >
-            {(['screen', 'camera'] as const).map((source) => (
-              <button
-                key={source}
-                type="button"
-                role="radio"
-                aria-checked={shareSource === source}
-                onClick={() => setShareSource(source)}
-                data-testid="chat-panel-duplex-source"
-                data-variant={source}
-              >
-                {source === 'screen' ? <Monitor aria-hidden /> : <Camera aria-hidden />}
-                {t(source === 'screen' ? 'chat.duplexControls.screenOrWindow' : 'videoLive.sources.camera')}
-              </button>
-            ))}
-          </div>
-        </FormDialog>
-      ) : null}
       {showAction && !hasTextDraft ? (
         <button
           type="button"

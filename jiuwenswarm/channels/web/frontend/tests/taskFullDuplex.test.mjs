@@ -88,7 +88,7 @@ test('task Full-duplex creates a real session before starting and persists its t
   assert.match(types, /ensureSession: \(initialTitle\?: string\) => Promise<string \| null>/);
   assert.match(app, /ensureApplicationPluginSession/);
   assert.match(action, /await ensureSession\(/);
-  assert.match(action, /startTaskFullDuplex\(readySessionId, visualSource\)/);
+  assert.match(action, /startTaskFullDuplex\(readySessionId\)/);
   assert.match(runtime, /video\.conversation\.append/);
   assert.match(runtime, /historyQueues/);
   assert.match(backend, /"video\.conversation\.append": _append_conversation/);

@@ -208,34 +208,6 @@
   cursor: pointer;
 }
 
-.task-full-duplex-sources {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.task-full-duplex-sources button {
-  display: flex;
-  flex: 1 1 180px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 16px;
-  min-height: 120px;
-  padding: 16px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  color: var(--color-text-primary);
-  background: var(--color-surface-card);
-  font: inherit;
-  cursor: pointer;
-}
-
-.task-full-duplex-sources button[aria-checked='true'] {
-  border-color: var(--color-text-link);
-  background: var(--color-icon-btn-hover-surface);
-}
-
 .task-full-duplex-sharing > span:not(.task-full-duplex-sharing__dot) {
   min-width: 0;
   overflow-wrap: anywhere;

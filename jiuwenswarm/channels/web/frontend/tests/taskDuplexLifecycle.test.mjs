@@ -16,6 +16,7 @@ await build({
     contents: `export { TaskFullDuplexAction } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexAction.tsx`)};
       export { TaskFullDuplexRuntime, flushConversationHistory } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
       export { JoyAIProvider } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/joyaiProvider.ts`)};
+      export { reportedRuntimeState } from ${JSON.stringify(`${pluginRoot}/VideoLivePanel/runtimeState.ts`)};
       export { ApplicationConversationRuntimes } from './src/applicationPlugins/ApplicationConversationRuntimes.tsx';
       export { useSessionAssetsStore } from './src/features/sessionAssets/sessionAssets.ts';
       export { useChatStore } from './src/stores/chatStore.ts';
@@ -42,7 +43,7 @@ await build({
       name: 'task-runtime-ports',
       setup(builder) {
         builder.onResolve(
-          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|components\/form|ApplicationPluginOutlet)$/ },
+          { filter: /(?:services\/webClient|taskProgressStore|taskFullDuplex\/featureFlag|\/VideoLivePanel|ApplicationPluginOutlet)$/ },
           ({ path }) => ({ path, namespace: 'ports' }),
         );
         builder.onLoad({ filter: /.*/, namespace: 'ports' }, ({ path }) => ({
@@ -51,23 +52,15 @@ await build({
           contents: path.endsWith('ApplicationPluginOutlet')
             ? `import { TaskFullDuplexRuntime } from ${JSON.stringify(`${pluginRoot}/TaskFullDuplexRuntime.tsx`)};
                export const ApplicationPluginTaskRuntimes = TaskFullDuplexRuntime;`
-            : path.endsWith('components/form')
-            ? `export function FormDialog(props) {
-                return <div data-testid={props.testIdPrefix}>{props.children}
-                  <button data-testid={props.testIdPrefix + '-confirm'} onClick={props.onConfirm}>Confirm</button>
-                  <button data-testid={props.testIdPrefix + '-cancel'} onClick={props.onCancel}>Cancel</button>
-                </div>;
-              }`
             : path.endsWith('/VideoLivePanel')
             ? `
           import { forwardRef, useImperativeHandle } from 'react';
           export const VideoLivePanel = forwardRef(function Panel(props, ref) {
             globalThis.__duplexHarness.panelProps = props;
             useImperativeHandle(ref, () => ({
-              async startScreenDuplex(id, shareScreen, visualSource) {
+              async startScreenDuplex(id, shareScreen) {
                 if (globalThis.__duplexHarness.startError) throw new Error(globalThis.__duplexHarness.startError);
                 globalThis.__duplexHarness.sharingRequests.push(shareScreen);
-                globalThis.__duplexHarness.visualSources.push(visualSource);
                 globalThis.__duplexHarness.starts.push(id);
                 props.onRuntimeState('active');
                 props.onScreenSharingChange(shareScreen);
@@ -108,6 +101,7 @@ const {
   startTaskFullDuplex,
   stopTaskFullDuplex,
   JoyAIProvider,
+  reportedRuntimeState,
   toggleTaskDuplexMicrophone,
   toggleTaskDuplexSpeaker,
   stopTaskDuplexScreenSharing,
@@ -150,7 +144,6 @@ beforeEach(async () => {
     stops: 0,
     starts: [],
     sharingRequests: [],
-    visualSources: [],
     mic: [],
     speaker: [],
     mediaResults: [],
@@ -750,6 +743,13 @@ test('screen sharing is opt-in on start and stopping sharing leaves voice contro
   assert.deepEqual(harness.speaker, [true]);
 });
 
+test('screen selection does not report idle before voice starts', () => {
+  assert.equal(reportedRuntimeState(false, false, false), null);
+  assert.equal(reportedRuntimeState(false, true, false), 'starting');
+  assert.equal(reportedRuntimeState(true, false, true), 'active');
+  assert.equal(reportedRuntimeState(true, false, false), 'idle');
+});
+
 
 test('typing keeps the native send button alongside the active orb and accessible exit controls', async () => {
   await act(async () => root.render(null));
@@ -850,24 +850,20 @@ test('a failed start does not leave its error on the button in another conversat
   harness.startError = '';
 });
 
-test('canceling the share chooser starts no media session', async () => {
+test('screen sharing starts directly without a camera source chooser', async () => {
   window.localStorage.setItem('jiuwen.taskFullDuplex.screenSharing', 'true');
   await mountAction();
   await act(async () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]').click());
-  assert.ok(document.querySelector('[data-testid="chat-panel-duplex-share-dialog"]'));
-  assert.equal(harness.starts.length, 0);
-  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-share-dialog-cancel"]').click());
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-share-dialog"]'), null);
-  assert.equal(harness.starts.length, 0);
+  assert.deepEqual(harness.sharingRequests, [true]);
+  assert.equal(harness.starts.length, 1);
+  assert.equal(document.querySelector('[data-testid="chat-panel-input-full-duplex"]').getAttribute('aria-pressed'), 'true');
 });
 
-test('camera selection reaches media controller and closing sharing retains voice', async () => {
+test('closing screen sharing retains voice', async () => {
   window.localStorage.setItem('jiuwen.taskFullDuplex.screenSharing', 'true');
   await mountAction();
   await act(async () => document.querySelector('[data-testid="chat-panel-input-full-duplex"]').click());
-  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-source"][data-variant="camera"]').click());
-  await act(async () => document.querySelector('[data-testid="chat-panel-duplex-share-dialog-confirm"]').click());
-  assert.deepEqual(harness.visualSources, ['camera']);
   assert.ok(document.querySelector('[data-testid="chat-panel-duplex-sharing-indicator"]'));
   await act(async () => document.querySelector('[data-testid="chat-panel-duplex-close-sharing"]').click());
   assert.equal(document.querySelector('[data-testid="chat-panel-duplex-sharing-indicator"]'), null);

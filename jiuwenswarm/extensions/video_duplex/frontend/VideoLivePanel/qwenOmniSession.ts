@@ -198,7 +198,6 @@ export class RealtimeDuplexSession {
   private silentToolResponses = new Set<string>();
   private messageOutputItems = new Map<string, Set<string>>();
   private finishedOutputResponses = new Set<string>();
-  private toolCandidateResponses = new Set<string>();
   private activeUserTurnId: string | null = null;
   private turnSequence = 0;
   private qwenMedia = new QwenOmniMediaSequencer();
@@ -385,7 +384,6 @@ export class RealtimeDuplexSession {
     this.silentToolResponses.clear();
     this.messageOutputItems.clear();
     this.finishedOutputResponses.clear();
-    this.toolCandidateResponses.clear();
     this.qwenMedia.reset();
     this.playbackGeneration += 1;
     this.playbackOperation = Promise.resolve();
@@ -882,37 +880,36 @@ export class RealtimeDuplexSession {
       });
     }
     // A message item may precede a function call in the same response.
-    // Hold action-turn output until response.done so a preliminary promise is not spoken twice.
+    // Keep message text and audio together even when the response also calls a tool.
     if (type === 'response.output_item.added') {
       const item = event.item as Record<string, unknown> | undefined;
-      if (item?.type === 'function_call') this.silenceToolResponse(outputResponseId);
-      else if (item?.type === 'message' && !this.silentToolResponses.has(outputResponseId) &&
+      if (item?.type === 'function_call') this.suppressUnclassifiedToolOutput(outputResponseId);
+      else if (item?.type === 'message' &&
         !this.finishedOutputResponses.has(outputResponseId) && !this.interruptedResponseIds.has(outputResponseId)) {
+        this.silentToolResponses.delete(outputResponseId);
         const items = this.messageOutputItems.get(outputResponseId) || new Set<string>();
         items.add(String(item.id || ''));
         this.messageOutputItems.set(outputResponseId, items);
-        if (!this.toolCandidateResponses.has(outputResponseId)) {
-          const held = this.heldOutput.get(outputResponseId);
-          if (held) {
-            this.streamMessageText(outputResponseId, held);
-            const pending = held.audio;
-            held.audio = [];
-            for (const chunk of pending) {
-              if (this.isMessageOutput(chunk.event, outputResponseId)) this.enqueueAudioDelta(chunk.event, chunk.encoded, outputResponseId || null);
-              else held.audio.push(chunk);
-            }
+        const held = this.heldOutput.get(outputResponseId);
+        if (held) {
+          this.streamMessageText(outputResponseId, held);
+          const pending = held.audio;
+          held.audio = [];
+          for (const chunk of pending) {
+            if (this.isMessageOutput(chunk.event, outputResponseId)) this.enqueueAudioDelta(chunk.event, chunk.encoded, outputResponseId || null);
+            else held.audio.push(chunk);
           }
         }
       }
     }
     if (type === 'response.function_call_arguments.done') {
-      this.silenceToolResponse(outputResponseId);
+      this.suppressUnclassifiedToolOutput(outputResponseId);
     }
     if (this.holdResponseOutput(type, event, outputResponseId)) return;
     if (type === 'response.done') {
       const output = response?.output;
       if (Array.isArray(output) && output.some(item => item?.type === 'function_call')) {
-        this.silenceToolResponse(outputResponseId);
+        this.suppressUnclassifiedToolOutput(outputResponseId);
       }
       this.releaseResponseOutput(outputResponseId, String(response?.status || 'completed'));
     }
@@ -965,10 +962,6 @@ export class RealtimeDuplexSession {
       this.awaitingProviderResponse = false;
       this.responseId = eventResponseId || this.newTurnId('response');
       this.responseInputs.set(this.responseId, this.latestInputId);
-      const inputText = this.inputTexts.get(this.latestInputId) || '';
-      if (/(打开|关闭|启动|创建|设置|设定|删除|移除|取消|停止|修改|调整|排序|调到|排到|查询|查找|搜索|帮我|请帮|生成|发送|下载|上传|提醒|闹钟|任务|文件|桌面|计算|安装|更新|先.+再|\b(?:open|launch|create|set|delete|cancel|modify|reorder|find|search|send|download|upload|remind)\b)/i.test(inputText)) {
-        this.toolCandidateResponses.add(this.responseId);
-      }
       if (this.responseInputs.size > 64) this.responseInputs.delete(this.responseInputs.keys().next().value!);
       if (this.pendingToolResponseJobId) {
         this.responseToolJobIds.set(this.responseId, this.pendingToolResponseJobId);
@@ -1024,7 +1017,7 @@ export class RealtimeDuplexSession {
         this.emitDiagnostic('qwen_response_finished', { response_id: eventResponseId, reason: String(response?.status || '') });
         this.reissueCardTurn();
       }
-      if (affectsActive && (type === 'response.done' || !this.toolCandidateResponses.has(outputResponseId)))
+      if (affectsActive)
         this.enqueuePlaybackDrain(eventResponseId || this.responseId);
       if (type === 'response.done' && affectsActive) this.dispatchQueuedToolResult();
     } else if (type === 'input_audio_buffer.speech_started' || type === 'input_audio_buffer.speech_stopped') {
@@ -1161,7 +1154,7 @@ export class RealtimeDuplexSession {
   private holdResponseOutput(type: string, event: Record<string, unknown>, responseId: string): boolean {
     if (!/^response\.(?:text\.(?:delta|done)|(?:output_)?audio(?:_transcript)?\.(?:delta|done))$/.test(type)) return false;
     if (this.silentToolResponses.has(responseId) || this.finishedOutputResponses.has(responseId) || this.interruptedResponseIds.has(responseId)) return true;
-    if (!this.toolCandidateResponses.has(responseId) && /^response\.(?:output_)?audio\.(?:delta|done)$/.test(type) && this.isMessageOutput(event, responseId)) {
+    if (/^response\.(?:output_)?audio\.(?:delta|done)$/.test(type) && this.isMessageOutput(event, responseId)) {
       if (type.endsWith('.done')) return false;
       const encoded = String(event.delta || event.audio || '');
       if (encoded) this.enqueueAudioDelta(event, encoded, responseId || null);
@@ -1185,7 +1178,7 @@ export class RealtimeDuplexSession {
     }
     if (type.startsWith('response.text.')) output.textItemId = String(event.item_id || '');
     else if (type.includes('audio_transcript')) output.transcriptItemId = String(event.item_id || '');
-    if (!this.toolCandidateResponses.has(responseId)) this.streamMessageText(responseId, output);
+    this.streamMessageText(responseId, output);
     return true;
   }
 
@@ -1211,26 +1204,23 @@ export class RealtimeDuplexSession {
     return itemId ? items.has(itemId) || items.has('') : items.size > 0;
   }
 
-  private silenceToolResponse(responseId: string): void {
-    this.closeStreamedText(responseId);
-    this.messageOutputItems.delete(responseId);
-    this.silentToolResponses.add(responseId);
-    this.heldOutput.delete(responseId);
-    // Some providers open a second response for the call while the first
-    // acknowledgement is still unfinished. Both belong to the same input.
+  private suppressUnclassifiedToolOutput(responseId: string): void {
+    if (!this.messageOutputItems.has(responseId)) {
+      this.silentToolResponses.add(responseId);
+      this.heldOutput.delete(responseId);
+    }
+    // A separate tool response must also preserve an earlier message's audio.
     const inputId = this.responseInputs.get(responseId);
     if (!inputId) return;
     for (const heldId of this.heldOutput.keys()) {
       if (this.responseInputs.get(heldId) !== inputId) continue;
-      this.closeStreamedText(heldId);
-      this.messageOutputItems.delete(heldId);
+      if (this.messageOutputItems.has(heldId)) continue;
       this.silentToolResponses.add(heldId);
       this.heldOutput.delete(heldId);
     }
   }
 
   private releaseResponseOutput(responseId: string, status: string): void {
-    this.toolCandidateResponses.delete(responseId);
     this.messageOutputItems.delete(responseId);
     if (this.finishedOutputResponses.has(responseId)) return;
     const output = this.heldOutput.get(responseId);

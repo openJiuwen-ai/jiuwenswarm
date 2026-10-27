@@ -5,6 +5,9 @@ The blue controller stays available when you switch chats or open Settings. Voic
 Core Agent results remain attached to the chat where you started the session. Starting
 Full-duplex in another chat replaces the previous media session. Use Exit to stop it.
 
+With screen sharing enabled, starting Full-duplex opens the system screen or window picker directly.
+This entry point supports screen sharing only.
+
 Drag the blue ball with a mouse or touch to move the controller. It stays within the
 window. The sharing indicator and Close button move with it. Close stops video sharing
 while voice continues. Microphone mute and speaker mute remain separate controls.
@@ -48,11 +51,12 @@ Qwen receives this background during session initialization; JoyAI receives it o
 user turns, with refreshed task status. Restoration does not repeat historical requests
 or task acceptances. As a temporary latency policy, both text and audio stream once
 `response.output_item.added` identifies a `message`
-item. A `function_call` item suppresses subsequent output; execution still waits for
-complete, validated arguments and acknowledgement follows the actual acceptance receipt.
-If a message is followed by a tool call, text already shown and speech already played
-cannot be retracted. Text updates share one stream and finalize once; tool calls,
-interruption, failure and stopping media also close any visible partial text.
+item. A `function_call` item suppresses only output not yet identified as a message;
+message text and audio continue in the same response or another response for the same input.
+Execution still waits for complete, validated arguments. Both the initial message and
+the acknowledgement based on the actual acceptance receipt may be spoken.
+Text updates share one stream and finalize once; interruption, failure and stopping
+media also close any visible partial text.
 When item types are missing, text and audio retain the response-completion buffering fallback.
 
 Qwen may close a connection with `response_idle_timeout` after 300 seconds without a
@@ -259,9 +263,9 @@ from a complete current utterance and asks the model to retry. Short follow-up a
 can still use prior context. If only the title diverges, the board shows the original
 request. Interruption waits for a response ID before sending cancellation.
 Qwen may emit text and audio before a tool item within the same response. The response
-start has no tool-call flag. The client holds action-turn output until the response ends,
-discarding an early promise when a tool call appears and speaking only its receipt.
-Direct answers can still stream.
+start has no tool-call flag. The client no longer holds messages based on action keywords
+or discards their audio after a tool call. Initial replies and tool receipts may both stream.
+This change releases model-generated audio; it does not synthesize speech for text-only output.
 
 Stopping execution differs from undoing its effects. A completed execution does not
 prevent a user-requested follow-up on its results. Tool-receipt responses may send
