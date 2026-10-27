@@ -5,10 +5,10 @@
 - 计划范围：`jiuwenswarm/extensions_v2/` 负责的 V2 扩展机制——扩展包的装配、声明校验、加载生效与生命周期管理，平台事件（含 WebUI 渲染事件）的定义与触发，扩展UI界面项的发现、挂载与交互，以及 AgentServer 与 Gateway、Web 前端之间的上下行交接。
 - 范围之外：agent-core 的 Events 与 Extension 公共机制实现；旧 `jiuwenswarm/extensions/` 机制的改造；Gateway 渠道能力与旧机制迁移；工具、会话与模型服务自身的业务实现。
 - 所属模块：`jiuwenswarm/jiuwenswarm/extensions_v2/`。协作方为 AgentServer 运行时（`jiuwenswarm/server/`）、Gateway WebChannel（`jiuwenswarm/gateway/`）与 Web 前端（`jiuwenswarm/channels/web/frontend/`）。
-- 交付分类：既有本地包装载与 WebUI 工作共 8 项，保留历史台账；后端管理接入 4 项，追加 Server 会话工作区 Ops 1 项。Gateway 渠道能力与旧机制迁移不在本轮。
+- 交付分类：既有本地包装载与 WebUI 工作共 8 项，保留历史台账；后端管理接入 4 项，追加 Server 会话工作区、主模型和 Git 仓库查询 3 项。Gateway 渠道能力与旧机制迁移不在本轮。
 - 既有安排：EXTV2-01～08 和 M1～M3 保留原范围与进度。本轮补充 EXTV2-09～12 四项后端接入，并在 EXTV2-09 追加 Web `/extension` 命令；不新增管理页面或业务内置事件任务。
 - 本轮边界：复用 Core 已有的 Registry、热重载与失败候选清理；不增加已发布版本回退，不修改 Events 内部实现，不实现自动在途计数及旧代模块回收。
-- 更新日期：2026-10-26。
+- 更新日期：2026-10-27。
 - 设计依据：[设计概览](extensions-v2-overview.md)、[详细架构](extensions-v2-architecture.md)、agent-core [扩展包加载规约](../../../../../agent-core/openjiuwen/core/extension/docs/specs/S_01_package-loading.md)、agent-core [Events 公共契约](../../../../../agent-core/openjiuwen/core/events/docs/specs/S_01_events-contract.md)。
 - 关键口径与待确认项：见第 1.2、1.3 节；未确认前，受影响的工作项不标注完成。
 - 术语与全局约束：见第 1.1 节。
@@ -262,6 +262,23 @@
 - **前端与联合交付：** 本特性不增加前端入口；Worker 内扩展包可以独立验证，不据此完成 M1～M3。
 - **特性文档：** [F_13](../features/F_13_session-workspace-ops.md)，对应 Server 开发计划 PR-01。
 
+### EXTV2-14 会话主模型查询
+
+- **目标与范围：** 提供只读 `ops.session.model()`，优先返回宿主绑定的运行模型快照，缺失时读取当前会话保存的稳定选择；不创建、切换或调用模型。
+- **责任与契约：** [S_04](../specs/S_04_session-model-ops.md)；事实来源及验证见 [F_14](../features/F_14_session-model-ops.md)。
+- **开工硬前置：** 已有装配与共享 Ops Builder；不依赖项目 Git 查询。
+- **验收标准与独立验证：** F_14 的运行快照、保存选择、缺失、白名单、隔离与示例验证；`test_session_model_ops.py` 和原生 Adapter 回归。
+- **前端与联合交付：** 无新增前端入口，不据此完成 M1～M3。对应 Server PR-02。
+
+### EXTV2-15 会话 Git 仓库查询
+
+- **目标与范围：** 提供只读 `ops.session.repo()`，由可信 cwd 查询最近 Git 工作树根、当前分支、完整 HEAD 与 detached 状态，支持 linked worktree；不执行 Git 写入。
+- **责任与契约：** [S_05](../specs/S_05_session-repo-ops.md)；Ops 登记沿用 session Builder，Git 业务读取位于 `server/runtime/session/session_repo.py`。
+- **开工硬前置：** EXTV2-13 的可信 cwd 与共享 session Ops 接线；不以 EXTV2-14 的模型资料为前提。
+- **验收标准：** [F_15 第 5 节](../features/F_15_session-repo-ops.md#5-验证设计与执行记录) 的真实子目录、worktree、detached / unborn、缺失、错误、超时、并发隔离、用户包装载与原生入口验证。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_repo_ops.py`；示例 `examples/session_repo_info/`。
+- **前端与联合交付：** 不新增查询 Event、业务 CORE 或前端入口；不据此完成 M1～M3。对应 Server PR-03。
+
 ## 3. 特性依赖关系与并行开发
 
 下图覆盖第 2 节全部特性。矩形为特性，六边形为交付节点，分组为工作线；实线表示开工硬前置，虚线表示联合验收参与。
@@ -295,6 +312,9 @@ flowchart TB
     A1 --> B1
     A1 --> S13["EXTV2-13 会话工作区 Ops"]
     B1 --> S13
+    A1 --> S14["EXTV2-14 会话主模型 Ops"]
+    B1 --> S14
+    S13 --> S15["EXTV2-15 会话 Git 仓库 Ops"]
     A4 --> B3
     B3 --> C1
 
@@ -363,6 +383,7 @@ flowchart LR
 | EXTV2-12 停机撤销与上下文释放 | 完成 | 李志远 | — | 6 项逆依赖、BUSY、失败保留和清理重试测试通过 | 2026-10-23 |
 | EXTV2-13 会话工作区查询 | 完成 | 刘瑜 | [!71](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/71) | V2 115 项、原生用量 3 项、无项目工作区 62 项测试通过；独立进程用户包调用链验证通过，见 F_13 | 2026-10-26 |
 | EXTV2-14 会话主模型查询 | 完成 | 刘瑜 | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) | 扩展与用量 140 项、模型兼容 116 项测试通过；独立进程 ZIP 安装、用户 Handler 调用及卸载验证通过，见 F_14 / S_04 | 2026-10-26 |
+| EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | — | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05 | 2026-10-27 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 
