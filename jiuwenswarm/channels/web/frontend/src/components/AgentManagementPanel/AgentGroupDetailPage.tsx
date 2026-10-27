@@ -94,9 +94,6 @@ export function AgentGroupDetailPage({
                   ...(loadingSummary.installed ? [t('agentManagement.states.installed')] : []),
                 ]}
               />
-              <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
-                <p>{loadingSummary.description || t('agentManagement.unknownDescription')}</p>
-              </DetailSection>
             </>
           ) : null}
           <div
