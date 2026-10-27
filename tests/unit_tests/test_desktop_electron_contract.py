@@ -30,7 +30,7 @@ VITE_ENV_DTS = (
 )
 FRONTEND_SRC = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src"
 INSTANCE_CONFIG_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "config.py"
-INSTANCE_LOCK_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "lock.py"
+GATEWAY_LOCK_PY = REPO_ROOT / "gateway" / "gateway_lock.py"
 STARTUP_DIAGNOSTICS_PY = REPO_ROOT / "jiuwenswarm" / "common" / "startup_diagnostics.py"
 EXE_ENTRY_PY = REPO_ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
 BUILD_RUNTIMES_PSM1 = REPO_ROOT / "scripts" / "build-runtimes.psm1"
@@ -425,7 +425,7 @@ def test_gateway_preflight_wait_matches() -> None:
 
 
 def test_gateway_lock_filename_matches() -> None:
-    python_name = _py_assignment_value(INSTANCE_LOCK_PY, "GATEWAY_LOCK_FILENAME")
+    python_name = _py_assignment_value(GATEWAY_LOCK_PY, "GATEWAY_LOCK_FILENAME")
     assert _js_const(_read(MAIN_CJS), "GATEWAY_LOCK_FILENAME").strip("'\"") == python_name
 
 

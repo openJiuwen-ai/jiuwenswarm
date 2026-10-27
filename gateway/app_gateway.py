@@ -3925,7 +3925,7 @@ def main() -> None:
     # Per-workspace singleton lock: prevents a second Gateway process from
     # serving the same workspace (two CronSchedulerService instances over one
     # cron_jobs.json => duplicate cron executions).
-    from jiuwenswarm.instance_manager.lock import GatewayLock
+    from gateway.gateway_lock import GatewayLock
 
     gateway_lock = GatewayLock(get_user_workspace_dir())
     if not gateway_lock.acquire():
