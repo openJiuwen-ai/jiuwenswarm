@@ -11,7 +11,7 @@
 | 依赖项 | 版本要求 | 说明 |
 |--------|----------|------|
 | 操作系统 | Windows 10/11, macOS 10.15+, Linux | 支持主流操作系统 |
-| Python | `≥3.11, <3.14` | 推荐使用 Python 3.11 |
+| Python | `≥3.11` | 推荐使用 Python 3.11 |
 | Node.js | 18.x 或更高版本 | 用于前端界面 |
 | Git | 最新版本 | 用于源码安装 |
 
@@ -139,7 +139,7 @@ cd jiuwenswarm
 ### `uv`方式安装
 - 使用`uv`新建虚拟环境
   ```bash
-  # 使用uv新建虚拟环境（支持 3.11、3.12、3.13 任一版本）
+  # 使用uv新建虚拟环境（支持 3.11–3.14 任一版本）
   uv venv --python=3.11
   # 或 uv venv --python=3.12
   # 或 uv venv --python=3.13
@@ -183,7 +183,7 @@ cd jiuwenswarm
 ### `conda`方式安装
 - 使用`conda`新建虚拟环境
   ```bash
-  # 使用Anaconda新建虚拟环境（支持 3.11、3.12、3.13 任一版本）
+  # 使用Anaconda新建虚拟环境（支持 3.11–3.14 任一版本）
   conda create -n JiuwenSwarm python=3.11
   # 或 conda create -n JiuwenSwarm python=3.12
   # 或 conda create -n JiuwenSwarm python=3.13

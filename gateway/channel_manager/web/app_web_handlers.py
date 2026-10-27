@@ -2049,30 +2049,6 @@ async def _pre_persist_large_media(
     return params
 
 
-def session_left_project_follow_up(channel: Any, topic_service: Any = None):
-    """What a conversation takes with it when it leaves a project: deleted from either client,
-    or moved to another project from the TUI.
-
-    The project's open pages re-read their sources.
-    """
-    async def session_left_project(project_id: str, session_id: str) -> None:
-        if not project_id:
-            return
-        if (project_id not in {"default", "default_code"} and topic_service is not None
-                and topic_service.configuration_status()["enabled"]):
-            from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-                scope_for_project,
-            )
-
-            context_scope = scope_for_project(project_id)
-            await channel.broadcast_event("topic_starters.ready", {"context_scope": context_scope, "state": "ready"})
-            topic_service.schedule_successor(
-                context_scope=context_scope, project_id=project_id, visit_id=f"session-left-project:{session_id}",
-            )
-
-    return session_left_project
-
-
 def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     """注册 Web 前端需要的 method 与 on_connect。
     on_config_saved: 可选，config.set 写回后调用的回调；
@@ -2091,21 +2067,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     cron_controller = bind.cron_controller
     heartbeat_controller = bind.heartbeat_controller
     updater_service = bind.updater_service
-    topic_starter_service = bind.topic_starter_service
-    topic_history_store = bind.topic_history_store
-    topic_prepare_service = bind.topic_prepare_service
-    topic_service = bind.topic_service
-    topic_outcome_queue = bind.topic_outcome_queue
-
-    if topic_service is not None:
-        def notify_topic_pool_prepared(context_scope: str, state: str, pool_written: bool) -> None:
-            spawn_background_task(
-                channel.broadcast_event("topic_starters.ready", {
-                    "context_scope": context_scope, "state": state, "pool_written": pool_written,
-                }),
-                name="broadcast_topic_starters_ready",
-            )
-        topic_service.on_prepared = notify_topic_pool_prepared
 
     from jiuwenswarm.common.schema.message import EventType, Message
 
@@ -2215,8 +2176,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send(ack_msg)
 
     channel.on_connect(_on_connect)
-
-    session_deleted = session_left_project_follow_up(channel, topic_service)
 
     async def _on_disconnect(ws, _session_ids):
         mh = _resolve(message_handler)
@@ -5056,703 +5015,77 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
-    def _get_topic_starter_service():
-        nonlocal topic_starter_service
-        if topic_starter_service is None:
-            from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
-                build_default_topic_starter_service,
-            )
+    async def _forward_recommendation(ws, req_id, params, session_id, user_id=None, *, action: str):
+        """Send a recommendation panel call to AgentServer and return its payload."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
-            topic_starter_service = build_default_topic_starter_service()
-        return topic_starter_service
-
-    def _get_topic_history_store():
-        nonlocal topic_history_store
-        if topic_history_store is None:
-            from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
-                TopicStarterStore,
-            )
-            from jiuwenswarm.common.utils import get_agent_workspace_dir
-
-            topic_history_store = TopicStarterStore(
-                get_agent_workspace_dir() / "recommendation.db"
-            )
-        return topic_history_store
-
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        load_recommendation_controls,
-        recommendation_model_config,
-        recommendation_model_options,
-        save_recommendation_controls,
-        save_recommendation_model,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
-        background_configuration_status,
-    )
-    legacy_recommendation_tasks: set[asyncio.Task] = set()
-
-    async def _prompt_suggestion_event(ws, req_id, params, session_id):
-        """The page's outcome for the in-conversation suggestion above its composer."""
-        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
-            record_page_outcome,
-        )
-
-        if not load_recommendation_controls()["enabled"]:
-            await channel.send_response(ws, req_id, ok=True, payload={"recorded": False, "reason": "disabled"})
-            return
-        if isinstance(params, dict) and params.get("event_type") == "input_changed":
+        if (
+            action == "prompt_suggestion_event"
+            and isinstance(params, dict)
+            and params.get("event_type") == "input_changed"
+        ):
             target_session = params.get("session_id")
             if not isinstance(target_session, str) or not target_session.strip():
-                await channel.send_response(ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST")
-                return
-            client = _resolve(agent_client)
-            if client is None:
-                await channel.send_response(ws, req_id, ok=False, error="AgentServer is unavailable", code="NOT_READY")
-                return
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
-
-            response = await client.send_request(e2a_from_agent_fields(
-                request_id=req_id, channel_id="web", session_id=target_session.strip(),
-                req_method=ReqMethod.PROMPT_SUGGESTION_CANCEL, is_stream=False,
-            ))
-            await channel.send_response(ws, req_id, ok=response.ok, payload=response.payload)
-            return
-        recorded = record_page_outcome(_get_topic_history_store(), params) if isinstance(params, dict) else None
-        if recorded is None:
-            await channel.send_response(ws, req_id, ok=False, error="unknown suggestion or outcome", code="BAD_REQUEST")
-            return
-        await channel.send_response(ws, req_id, ok=True, payload={"recorded": recorded})
-
-    async def _topic_starters_status(ws, req_id, params, session_id):
-        payload = (topic_service.configuration_status()
-                   if topic_service is not None
-                   else background_configuration_status(recommendation_model_config()))
-        # The chat models the topic model is chosen from; this connection's login models are listed greyed.
-        models = await asyncio.to_thread(recommendation_model_options, getattr(ws, "_jiuwen_auth_session", "") or None)
-        payload = {**payload, **models, "enabled": load_recommendation_controls()["enabled"]}
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _topic_starters_select_model(ws, req_id, params, session_id):
-        """Keep the chosen topic model (its ID only) and put it in force at once."""
-        model = params.get("model") if isinstance(params, dict) else None
-        if not isinstance(model, str) or not save_recommendation_model(model):
-            await channel.send_response(ws, req_id, ok=False, error="model cannot prepare topics", code="BAD_REQUEST")
-            return
-        if topic_service is not None:
-            await topic_service.reload_config()
-        await _topic_starters_status(ws, req_id, {}, session_id)
-
-    async def _topic_starters_profile(ws, req_id, params, session_id):
-        from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-            inspect_recommendation_profile,
-        )
-        payload = inspect_recommendation_profile(_get_topic_history_store(), now=time.time())
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _topic_starters_restore_direction(ws, req_id, params, session_id):
-        from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-            inspect_recommendation_profile,
-            restore_dismissed_direction,
-        )
-        direction_id = params.get("direction_id") if isinstance(params, dict) else None
-        store = _get_topic_history_store()
-        if not isinstance(direction_id, str) or not restore_dismissed_direction(store, direction_id, now=time.time()):
-            await channel.send_response(ws, req_id, ok=False, error="no such permanent direction", code="BAD_REQUEST")
-            return
-        await channel.send_response(ws, req_id, ok=True, payload=inspect_recommendation_profile(store, now=time.time()))
-
-    async def _topic_starters_control(ws, req_id, params, session_id):
-        if (
-            not isinstance(params, dict)
-            or params.get("action") not in {"enable", "disable", "delete"}
-            or not isinstance(params.get("include_history", False), bool)
-        ):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="invalid recommendation control",
-                code="BAD_REQUEST",
-            )
-            return
-        action = params["action"]
-        # The switch is the user's decision, so this entry point records it; the service below
-        # only puts it in force. Deleting the data turns the switch off with it.
-        from jiuwenswarm.agents.harness.common.recommendation.switches import (
-            save_recommendation_switches,
-        )
-        save_recommendation_switches(topic_enabled=action == "enable", now=time.time())
-        if action != "enable":
-            tasks = tuple(legacy_recommendation_tasks)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if action != "enable" and topic_prepare_service is not None:
-            await topic_prepare_service.shutdown()
-        include_history = params.get("include_history", False)
-        if topic_service is not None:
-            if action == "delete":
-                await topic_service.delete_data()
-            else:
-                await topic_service.set_enabled(
-                    action == "enable", include_history=include_history
+                await channel.send_response(
+                    ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST",
                 )
-        else:
-            save_recommendation_controls(
-                enabled=action == "enable",
-                include_history=include_history,
-                deleted=action == "delete",
-                now=time.time(),
-            )
-            if action == "delete":
-                _get_topic_history_store().delete_recommendation_data()
-        await _topic_starters_status(ws, req_id, {}, session_id)
-        await channel.broadcast_event("topic_starters.control_changed", {"enabled": action == "enable"})
-
-    async def _topic_starters_get(ws, req_id, params, session_id):
-        received_at = time.time()
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        requested_session_id = str(
-            params.get("session_id") or session_id or ""
-        ).strip()
-        if not requested_session_id:
-            await channel.send_response(
-                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST"
-            )
-            return
-        from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
-            POLICY_ID as PREPARE_POLICY_ID,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            GLOBAL_NEW_CHAT_SCOPE,
-            project_id_for_scope,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            POLICY_ID as TOPIC_POLICY_ID,
+                return
+        body = dict(params) if isinstance(params, dict) else {}
+        if action == "control":
+            # The panel verb (enable/disable/delete) shares the name ``action``.
+            # Keep it before the RPC action overwrites that field.
+            body["control_action"] = body.get("action")
+        auth_session = getattr(ws, "_jiuwen_auth_session", "") or ""
+        if auth_session:
+            body["auth_session"] = auth_session
+        body["action"] = action
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=body,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.RECOMMENDATION,
+            label="recommendation",
         )
 
-        policy_id = str(params.get("policy_id") or "").strip()
-        if policy_id in {"", "topic-starter-mvp-v4"}:
-            task = asyncio.current_task()
-            legacy_recommendation_tasks.add(task)
-            try:
-                from jiuwenswarm.agents.harness.common.recommendation import (
-                    topic_history,
-                )
-                from jiuwenswarm.server.runtime.opencode_zen import (
-                    get_zen_free_model_entries,
-                )
-
-                config = get_config()
-                payload = await topic_history.run_history_topic_get(
-                    params,
-                    store=_get_topic_history_store(),
-                    received_at=received_at,
-                    config_entries=get_default_models(config),
-                    zen_entries=get_zen_free_model_entries(),
-                    context_engine_config=(
-                        (config.get("react", {}) or {}).get(
-                            "context_engine_config", {}
-                        )
-                        or {}
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[TopicHistory] get failed: %s", exc)
-                payload = {
-                    "available": False,
-                    "reason": "topic_starter_unavailable",
-                }
-            finally:
-                legacy_recommendation_tasks.discard(task)
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-            return
-        if policy_id not in {
-            PREPARE_POLICY_ID,
-            TOPIC_POLICY_ID,
-        }:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="unsupported policy_id",
-                code="BAD_REQUEST",
-            )
-            return
-        context_scope = str(params.get("context_scope") or "")
-        project_id = params.get("project_id")
-        if policy_id == PREPARE_POLICY_ID:
-            _failed = (
-                (
-                    "context_scope" in params
-                    and context_scope != GLOBAL_NEW_CHAT_SCOPE
-                ) or ("project_id" in params and project_id is not None)
-            )
-            if _failed:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="prepare lane only supports global_new_chat without project_id",
-                    code="BAD_REQUEST",
-                )
-                return
-            try:
-                if topic_prepare_service is None:
-                    payload = {
-                        "available": False,
-                        "reason": "prepare_service_unavailable",
-                        "session_id": requested_session_id,
-                        "policy_id": PREPARE_POLICY_ID,
-                    }
-                else:
-                    payload = dict(
-                        topic_prepare_service.serve(requested_session_id)
-                    )
-                payload.update(
-                    {
-                        "session_id": requested_session_id,
-                        "policy_id": PREPARE_POLICY_ID,
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[TopicPrepare] pool read failed: %s", exc)
-                payload = {
-                    "available": False,
-                    "reason": "topic_starter_unavailable",
-                    "session_id": requested_session_id,
-                    "policy_id": PREPARE_POLICY_ID,
-                }
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-            return
-        try:
-            if project_id_for_scope(context_scope) != project_id:
-                raise ValueError("project mismatch")
-        except ValueError:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="invalid context_scope or project_id",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            if topic_service is None:
-                payload = {
-                    "available": False,
-                    "reason": "topic_service_unavailable",
-                    "session_id": requested_session_id,
-                    "policy_id": TOPIC_POLICY_ID,
-                    "context_scope": context_scope,
-                    "project_id": project_id,
-                }
-            else:
-                if topic_service.ark_config is None:
-                    # A model fixed on disk after this process started (a hand-edited
-                    # config.yaml fires no save event) still counts on the next read.
-                    try:
-                        await topic_service.reload_config()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("[Topic] config reload on read failed: %s", exc)
-                # The homepage read is the switch the page actually sees. A save that
-                # did not reach this process still has to change the cards on this read.
-                from jiuwenswarm.agents.harness.common.recommendation.switches import (
-                    is_topic_recommendation_enabled,
-                )
-                wanted = is_topic_recommendation_enabled()
-                if bool(topic_service.configuration_status()["enabled"]) != wanted:
-                    await topic_service.set_enabled(wanted, persist=False)
-                if params.get("manual_retry") is True:
-                    topic_service.retry(context_scope=context_scope,
-                        project_id=project_id, visit_id=requested_session_id)
-                payload = topic_service.serve(
-                    requested_session_id,
-                    context_scope=context_scope,
-                    project_id=project_id,
-                    **({"slate_id": params["slate_id"]} if params.get("slate_id") else {}),
-                )
-                if context_scope == GLOBAL_NEW_CHAT_SCOPE:
-                    topic_service.schedule_news_check(requested_session_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Topic] pool read failed: %s", exc)
-            payload = {
-                "available": False,
-                "reason": "topic_starter_unavailable",
-                "session_id": requested_session_id,
-                "policy_id": TOPIC_POLICY_ID,
-                "context_scope": context_scope,
-                "project_id": project_id,
-            }
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _topic_starters_foreground(ws, req_id, params, session_id):
-        """A blank global new page came back to the foreground: run the news check."""
-        scheduled = False
-        _condition = (
-            load_recommendation_controls()["enabled"]
-            and topic_service is not None
-            and isinstance(params, dict)
-            and params.get("context_scope") == "global_new_chat"
-        )
-        if (
-            _condition
-        ):
-            visit_id = str(params.get("visit_id") or session_id or "").strip() or "foreground"
-            scheduled = topic_service.schedule_news_check(visit_id) is not None
-        await channel.send_response(ws, req_id, ok=True, payload={"scheduled": scheduled})
-
-    async def _topic_starters_event(ws, req_id, params, session_id):
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        event = dict(params)
-        event["session_id"] = str(event.get("session_id") or session_id or "").strip()
-        if (
-            not event["session_id"]
-            or not str(event.get("slate_id") or "").strip()
-            or not str(event.get("event_type") or "").strip()
-        ):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="session_id, slate_id and event_type are required",
-                code="BAD_REQUEST",
-            )
-            return
-        policy_id = str(event.get("policy_id") or "").strip()
-        selection_mode = str(event.get("selection_mode") or "").strip()
-        from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
-            POLICY_ID as PREPARE_POLICY_ID,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            GLOBAL_NEW_CHAT_SCOPE,
-            project_id_for_scope,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            POLICY_ID as TOPIC_POLICY_ID,
+    async def _prompt_suggestion_event(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="prompt_suggestion_event",
         )
 
-        if policy_id in {"topic-starter-mvp-v3", "topic-starter-mvp-v4"}:
-            if (
-                "profile_version" not in event
-                or selection_mode
-                not in {
-                    "static_fallback",
-                    "personalized_dynamic",
-                    "generic_dynamic",
-                }
-            ):
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="profile_version, policy_id and selection_mode are required",
-                    code="BAD_REQUEST",
-                )
-                return
-            event["policy_id"] = policy_id
-            event["selection_mode"] = selection_mode
-            event.setdefault("propensity", None)
-            event.setdefault("propensity_reason", "not_estimated")
-            event.setdefault("created_at", time.time())
-            try:
-                recorded = _get_topic_starter_service().record_event(event)
-                await channel.send_response(
-                    ws, req_id, ok=True, payload={"recorded": bool(recorded)}
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[TopicStarter] event failed: %s", exc)
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="failed to record event",
-                    code="INTERNAL_ERROR",
-                )
-            return
-        if policy_id not in {
-            PREPARE_POLICY_ID,
-            TOPIC_POLICY_ID,
-        }:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="unsupported policy_id",
-                code="BAD_REQUEST",
-            )
-            return
-        if policy_id == PREPARE_POLICY_ID:
-            if selection_mode not in {
-                "personalized_dynamic",
-                "mixed_dynamic",
-                "generic_dynamic",
-            }:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="selection_mode is required",
-                    code="BAD_REQUEST",
-                )
-                return
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="payload must be object",
-                    code="BAD_REQUEST",
-                )
-                return
-            context_scope = str(payload.get("context_scope") or "")
-            project_id = payload.get("project_id")
-            _failed2 = (
-                (
-                    "context_scope" in payload
-                    and context_scope != GLOBAL_NEW_CHAT_SCOPE
-                ) or ("project_id" in payload and project_id is not None)
-            )
-            if _failed2:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="prepare lane only supports global_new_chat without project_id",
-                    code="BAD_REQUEST",
-                )
-                return
-            manifest_id = str(payload.get("manifest_id") or "").strip()
-            generation_batch_id = str(
-                payload.get("generation_batch_id") or ""
-            ).strip()
-            if not manifest_id or not generation_batch_id:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="manifest_id and generation_batch_id are required",
-                    code="BAD_REQUEST",
-                )
-                return
+    async def _topic_starters_status(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="status")
 
-            recorded = False
-            event_type = str(event.get("event_type") or "").strip()
-            store = getattr(topic_prepare_service, "store", None)
-            if store is not None:
-                from jiuwenswarm.agents.harness.common.recommendation.topic_feedback import (
-                    record_v5_exposure,
-                    record_v5_interaction,
-                    record_v5_slate_event,
-                )
+    async def _topic_starters_select_model(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="select_model",
+        )
 
-                if event_type == "dynamic_exposure":
-                    raw_topics = payload.get("topics")
-                    cards = None
-                    if isinstance(raw_topics, list) and all(
-                        isinstance(item, dict) for item in raw_topics
-                    ):
-                        cards = [
-                            {
-                                "card_revision_id": str(
-                                    item.get("card_revision_id") or ""
-                                ).strip()
-                            }
-                            for item in raw_topics
-                        ]
-                    recorded = record_v5_exposure(
-                        store,
-                        session_id=event["session_id"],
-                        slate_id=str(event["slate_id"]),
-                        served={
-                            "manifest_id": manifest_id,
-                            "generation_batch_id": generation_batch_id,
-                            "cards": cards,
-                        },
-                        created_at=time.time(),
-                    )
-                elif event_type in {"topic_click", "not_interested"}:
-                    card_revision_id = str(
-                        payload.get("card_revision_id") or ""
-                    ).strip()
-                    if card_revision_id and card_revision_id == str(
-                        event.get("topic_id") or ""
-                    ).strip():
-                        recorded = record_v5_interaction(
-                            store,
-                            event_type=event_type,
-                            session_id=event["session_id"],
-                            slate_id=str(event["slate_id"]),
-                            manifest_id=manifest_id,
-                            card_revision_id=card_revision_id,
-                            generation_batch_id=generation_batch_id,
-                            request_id=str(req_id),
-                            created_at=time.time(),
-                        )
-                        if recorded and event_type == "not_interested":
-                            topic_prepare_service.schedule_successor()
-                elif event_type in {
-                    "post_exposure_direct",
-                    "page_left",
-                    "session_bound",
-                }:
-                    recorded = record_v5_slate_event(
-                        store,
-                        event_type=event_type,
-                        session_id=event["session_id"],
-                        slate_id=str(event["slate_id"]),
-                        manifest_id=manifest_id,
-                        generation_batch_id=generation_batch_id,
-                        created_at=time.time(),
-                    )
-            await channel.send_response(
-                ws, req_id, ok=True, payload={"recorded": bool(recorded)}
-            )
-            return
-        if policy_id == TOPIC_POLICY_ID:
-            if selection_mode not in {
-                "personalized_dynamic",
-                "mixed_dynamic",
-                "generic_dynamic",
-            }:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="selection_mode is required",
-                    code="BAD_REQUEST",
-                )
-                return
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="payload must be object",
-                    code="BAD_REQUEST",
-                )
-                return
-            context_scope = str(payload.get("context_scope") or "")
-            project_id = payload.get("project_id")
-            try:
-                if project_id_for_scope(context_scope) != project_id:
-                    raise ValueError("project mismatch")
-            except ValueError:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="invalid context_scope or project_id",
-                    code="BAD_REQUEST",
-                )
-                return
-            manifest_id = str(payload.get("manifest_id") or "").strip()
-            generation_batch_id = str(
-                payload.get("generation_batch_id") or ""
-            ).strip()
-            if not manifest_id or not generation_batch_id:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="manifest_id and generation_batch_id are required",
-                    code="BAD_REQUEST",
-                )
-                return
-            recorded = False
-            event_type = str(event.get("event_type") or "").strip()
-            _item_items = (
-                (
-                    topic_service,
-                    topic_outcome_queue,
-                )
-            )
-            if event_type == "dynamic_exposure" and topic_service is not None:
-                recorded = topic_service.record_exposure(
-                    {
-                        "session_id": event["session_id"],
-                        "slate_id": str(event["slate_id"]),
-                        "manifest_id": manifest_id,
-                        "generation_batch_id": generation_batch_id,
-                        "context_scope": context_scope,
-                        "project_id": project_id,
-                        "exposure_slice_id": str(
-                            payload.get("exposure_slice_id") or ""
-                        ),
-                        "topics": payload.get("topics"),
-                    },
-                    created_at=time.time(),
-                )
-            elif event_type in {
-                "topic_click", "not_interested", "interest_paused", "not_interested_undone", "interest_pause_undone",
-            } and all(
-                item is not None
-                for item in _item_items
-            ):
-                await channel.send_response(
-                    ws, req_id, ok=True,
-                    payload=topic_service.record_interaction(
-                        event,
-                        outcome_queue=topic_outcome_queue,
-                        created_at=time.time(),
-                    ),
-                )
-                return
-            elif event_type in {
-                "post_exposure_direct",
-                "page_left",
-            } and topic_service is not None:
-                from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
-                    record_terminal_slate_outcome,
-                )
+    async def _topic_starters_profile(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="profile")
 
-                recorded = record_terminal_slate_outcome(
-                    topic_service.store,
-                    event_type=event_type,
-                    manifest_id=manifest_id,
-                    generation_batch_id=generation_batch_id,
-                    exposure_id=str(event["slate_id"]),
-                    context_scope=context_scope,
-                    project_id=project_id,
-                    created_at=time.time(),
-                )
-            elif event_type == "session_bound" and topic_service is not None:
-                card_revision_id = str(
-                    payload.get("card_revision_id") or ""
-                ).strip()
-                if card_revision_id and card_revision_id == str(
-                    event.get("topic_id") or ""
-                ).strip():
-                    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
-                        record_terminal_session_start,
-                    )
+    async def _topic_starters_restore_direction(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="restore_direction",
+        )
 
-                    recorded = record_terminal_session_start(
-                        topic_service.store,
-                        manifest_id=manifest_id,
-                        generation_batch_id=generation_batch_id,
-                        exposure_id=str(event["slate_id"]),
-                        card_revision_id=card_revision_id,
-                        context_scope=context_scope,
-                        project_id=project_id,
-                        started_session_id=str(event["session_id"]),
-                        created_at=time.time(),
-                    )
-            await channel.send_response(
-                ws, req_id, ok=True, payload={"recorded": bool(recorded)}
-            )
-            return
+    async def _topic_starters_control(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="control")
+
+    async def _topic_starters_get(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="get")
+
+    async def _topic_starters_foreground(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="foreground",
+        )
+
+    async def _topic_starters_event(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="event")
 
     channel.register_method("external_cli.detect", _external_cli_detect)
     channel.register_method("external_cli.codex_install_status", _external_cli_codex_install_status)
@@ -5937,8 +5270,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     from gateway.channel_manager.web.lifecycle_handlers import (
         register_lifecycle_handlers,
     )
-    register_lifecycle_handlers(channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller),
-                                on_session_deleted=session_deleted)
+    register_lifecycle_handlers(
+        channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller),
+    )
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)
 
     # Git RPC handlers (设计文档 §4.1.11-§4.1.15)

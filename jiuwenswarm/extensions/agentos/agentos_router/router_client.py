@@ -101,7 +101,7 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     bind_southbound_trace_id,
 )
 from jiuwenswarm.extensions.agentos.auth.ssh_key_issuer import SshKeyIssuer
-from gateway import ChannelManager
+from gateway.channel_manager.channel_manager import ChannelManager
 from gateway.channel_manager.base import ChannelType
 from gateway.routing.agent_client import WebSocketAgentServerClient
 

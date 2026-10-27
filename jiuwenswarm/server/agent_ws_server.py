@@ -1257,6 +1257,8 @@ class AgentWebSocketServer:
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
         self._diagnosis_host: Any = None
+        # Topic recommendation host (lazy, see _recommendation_host_instance)
+        self._recommendation_host: Any = None
         # Optional production Provider injection point.  The concrete class is
         # supplied by the composition root once it is available.
         self._rsi_harness_provider: Any = None
@@ -1663,6 +1665,7 @@ class AgentWebSocketServer:
         else:
             self._server = None
         self._runtime_services_started = True
+        await self._start_recommendation_host()
         self._runtime_push_handler = self.send_push
         self._previous_runtime_push_handler = install_runtime_push_handler(
             self._runtime_push_handler
@@ -2115,6 +2118,7 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        await self._stop_recommendation_host()
         preparation = getattr(self, "_preparation_registry", None)
         if preparation is not None:
             await preparation.close()
@@ -2754,7 +2758,7 @@ class AgentWebSocketServer:
             unguarded_methods = {
                 "session.list", "project.list", "project.info", "project.get_sessions",
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
-                "session.stop", "voice.task.checkpoint.ack",
+                "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
             }
             if guarded_method not in unguarded_methods:
                 try:
@@ -2807,6 +2811,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_INPUT_INTENT:
                 await self._handle_session_input_intent(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.RECOMMENDATION:
+                await self._handle_recommendation(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.PROMPT_SUGGESTION_CANCEL:
                 from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
@@ -5090,6 +5097,11 @@ class AgentWebSocketServer:
                         metadata=request.metadata,
                     )
                 else:
+                    previous_project_id = str(
+                        (get_session_metadata(
+                            sid, cache_bust=True, enable_writeback=False,
+                        ) or {}).get("project_id") or ""
+                    )
                     updated = rebind_session_project(
                         session_id=sid,
                         project_id=project.project_id,
@@ -5105,6 +5117,25 @@ class AgentWebSocketServer:
                             metadata=request.metadata,
                         )
                     else:
+                        from jiuwenswarm.server.runtime.recommendation_host import (
+                            active_recommendation_host,
+                        )
+
+                        try:
+                            host = active_recommendation_host()
+                            if (
+                                host is not None
+                                and previous_project_id
+                                and previous_project_id != project.project_id
+                            ):
+                                await host.session_left_project(previous_project_id, sid)
+                        except Exception:  # noqa: BLE001 - rebind already persisted
+                            logger.warning(
+                                "[AgentWebSocketServer] session rebind recommendation "
+                                "hook failed: session_id=%s",
+                                sid,
+                                exc_info=True,
+                            )
                         resp = AgentResponse(
                             request_id=request.request_id,
                             channel_id=request.channel_id,
@@ -12594,6 +12625,99 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
+    def _recommendation_active_request_ids(self) -> frozenset[str]:
+        runtime = self._execution_runtime()
+        pending = getattr(runtime, "_pending_chat_requests", None) or {}
+        return frozenset(
+            request_id
+            for bucket in pending.values()
+            for request_id in bucket
+        )
+
+    def _recommendation_host_instance(self) -> Any:
+        from jiuwenswarm.server.runtime.recommendation_host import RecommendationHost
+
+        host = getattr(self, "_recommendation_host", None)
+        if host is None:
+            host = RecommendationHost()
+            host.bind_active_requests(self._recommendation_active_request_ids)
+            host.bind_push(self._push_recommendation_event)
+            self._recommendation_host = host
+        return host
+
+    async def _start_recommendation_host(self) -> None:
+        from jiuwenswarm.server.runtime.recommendation_host import (
+            activate_recommendation_host,
+        )
+
+        try:
+            host = self._recommendation_host_instance()
+            activate_recommendation_host(host)
+            await host.start()
+        except Exception:  # noqa: BLE001 - recommendation must not block server start
+            logger.warning(
+                "[AgentWebSocketServer] recommendation host failed to start",
+                exc_info=True,
+            )
+
+    async def _stop_recommendation_host(self) -> None:
+        from jiuwenswarm.server.runtime.recommendation_host import (
+            deactivate_recommendation_host,
+        )
+
+        host = getattr(self, "_recommendation_host", None)
+        if host is None:
+            return
+        deactivate_recommendation_host(host)
+        self._recommendation_host = None
+        try:
+            await host.shutdown()
+        except Exception:  # noqa: BLE001 - recommendation must not block server stop
+            logger.warning(
+                "[AgentWebSocketServer] recommendation host failed to stop",
+                exc_info=True,
+            )
+
+    async def _push_recommendation_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        body = dict(payload)
+        body["event_type"] = event_type
+        await self.send_push({
+            "channel_id": "",
+            "session_id": "",
+            "payload": body,
+        })
+
+    async def _handle_recommendation(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        params = dict(request.params) if isinstance(request.params, dict) else {}
+        action = str(params.get("action") or "")
+        result = await self._recommendation_host_instance().handle(
+            action=action,
+            params=params,
+            session_id=str(request.session_id or ""),
+            request_id=str(request.request_id or ""),
+        )
+        if result.ok:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=dict(result.payload or {}),
+                metadata=request.metadata,
+            )
+        else:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": result.error or "recommendation failed", "code": result.code or "BAD_REQUEST"},
+                metadata=request.metadata,
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+        for event_type, event_payload in result.events:
+            await self._push_recommendation_event(event_type, event_payload)
 
     async def send_push(self, msg) -> bool:
         """AgentServer 主动向 Gateway 推送消息。

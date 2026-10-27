@@ -2029,6 +2029,7 @@ class JiuWenSwarmDeepAdapter:
         self._skill_retrieval_settings: Any | None = None
         self._restored_skill_retrieval_profile: dict[str, Any] | None = None
         self._tool_retrieval_tools_registered: bool = False
+        self._tool_retrieval_prompt_rail: Any = None
         self._tool_retrieval_tools: list[Any] = []
         self._tool_retrieval_toolkit: Any | None = None
         # Localized manifest descriptions of installed MCP packages; read
@@ -3804,6 +3805,33 @@ class JiuWenSwarmDeepAdapter:
                     remove_lock=False,
                     remove_runtime_state=False,
                 )
+                existing = None
+            _tool_retrieval_flip_pending = (
+                existing is not None
+                and not is_external_harness
+                and not busy
+                and callable(
+                    getattr(
+                        existing,
+                        "_tool_retrieval_enable_flip_pending",
+                        None,
+                    )
+                )
+                and existing._tool_retrieval_enable_flip_pending()  # pylint: disable=protected-access
+            )
+            if _tool_retrieval_flip_pending:
+                # 优化开关与本会话冻结的披露画像已不一致（开↔关任一方向）：中途
+                # 状态手术无法在两套披露系统（我们的目录层 vs 引擎 bundled
+                # ProgressiveToolRail）之间保证干净交接，像上方 MoA 切换一样重建
+                # 会话 adapter——重建后整个会话只属于开关当前指向的一套系统，
+                # 重建路径会重读 config 并从磁盘恢复会话上下文。
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] rebuilding session adapter for tool "
+                    "retrieval enable: session_id=%s",
+                    sid,
+                )
+                await existing.cleanup()
+                self._drop_session_adapter_cache_entry(sid, remove_lock=False)
                 existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
@@ -6675,14 +6703,11 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
-    def _register_tool_retrieval_prompt_rail(self) -> None:
-        """Register our ToolRetrievalPromptRail in place of the dropped rail."""
+    def _build_tool_retrieval_prompt_rail(self) -> Any:
+        """Build our ToolRetrievalPromptRail against the cached config."""
 
         if not is_tool_retrieval_enabled(self._config_base_cache):
-            return
-        instance = getattr(self, "_instance", None)
-        if instance is None:
-            return
+            return None
         try:
             from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
                 ToolRetrievalPromptRail,
@@ -6693,23 +6718,42 @@ class JiuWenSwarmDeepAdapter:
                 toolkit = self._get_or_create_tool_retrieval_toolkit(
                     self._tool_cards or []
                 )
-            rail = ToolRetrievalPromptRail(
+            return ToolRetrievalPromptRail(
                 toolkit=toolkit,
                 config_base=self._config_base_cache,
             )
-            pending = getattr(instance, "_pending_rails", None)
-            if not isinstance(pending, list):
-                pending = []
-                setattr(instance, "_pending_rails", pending)
-            pending.append(rail)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail queued"
-            )
         except Exception:
             logger.warning(
-                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail queue failed",
+                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail build failed",
                 exc_info=True,
             )
+            return None
+
+    def _register_tool_retrieval_prompt_rail(self) -> Any:
+        """Queue our ToolRetrievalPromptRail for lazy init (create path).
+
+        Returns the queued rail, or None when the switch is off or the build
+        failed — callers that must not leave the session without any
+        disclosure (the spec-reload reconcile) treat None as "keep the
+        bundled ProgressiveToolRail".
+        """
+
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return None
+        rail = self._build_tool_retrieval_prompt_rail()
+        if rail is None:
+            return None
+        self._tool_retrieval_prompt_rail = rail
+        pending = getattr(instance, "_pending_rails", None)
+        if not isinstance(pending, list):
+            pending = []
+            setattr(instance, "_pending_rails", pending)
+        pending.append(rail)
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail queued"
+        )
+        return rail
 
     def _create_tool_retrieval_tools(self, cards: Any = None) -> list[Any]:
         """Create the session-local deferred-tool directory tool."""
@@ -6827,6 +6871,27 @@ class JiuWenSwarmDeepAdapter:
             config_base
         )
 
+    def _tool_retrieval_enable_flip_pending(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return True when the optimize switch no longer matches this session.
+
+        The tool-retrieval session profile is frozen at instance build, and
+        the switch decides which disclosure system owns the session: on =
+        our catalogue layer, off = openjiuwen's bundled ProgressiveToolRail.
+        Mid-session state surgery (unmount/remount, instance vs by-name tool
+        cleanup) cannot guarantee a clean handover between the two — the
+        session-acquire path rebuilds the adapter whenever the frozen profile
+        disagrees with the live switch, in either direction, so every message
+        runs under exactly one system.
+        """
+
+        frozen = self._tool_retrieval_session_enabled
+        if frozen is None:
+            return False
+        return frozen != is_tool_retrieval_enabled(config_base or get_config())
+
     def _sync_tool_retrieval_tools_for_runtime(
         self,
         config_base: dict[str, Any] | None = None,
@@ -6844,7 +6909,88 @@ class JiuWenSwarmDeepAdapter:
         self._tool_retrieval_tools_registered = registered
         if not enabled:
             self._tool_retrieval_toolkit = None
-            self._drop_tool_names_from_runtime(_TOOL_RETRIEVAL_TOOL_NAMES)
+            # No by-name cleanup here: ``_sync_tool_group`` removes this
+            # layer's own instances (instance-based) and the rail unmount
+            # owns the tool_call envelope. A name-based drop would also kill
+            # the bundled ProgressiveToolRail's freshly re-registered
+            # ``tool_search`` on the very reload that turns this layer off —
+            # leaving the model with no top-level tool_search at all (the
+            # off-transition deadlock).
+
+    async def _sync_tool_retrieval_prompt_rail_for_runtime(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Keep the catalogue rail mounted exactly while the switches pass.
+
+        Off: unmount — the meta tools are already dropped by
+        ``_sync_tool_retrieval_tools_for_runtime``, but the prompt rail itself
+        keeps injecting the catalogue + get_schema rules, leaving the model
+        probing schemas while openjiuwen's bundled disclosure takes over.
+        On again (a frozen-on session cycled off→on): remount live. Sessions
+        frozen off at build keep going through the rebuild path instead.
+
+        The cached handle only records which rail instance is ours (queued or
+        mounted); membership on the instance is the truth. A handle whose rail
+        left the instance without us (external strip, full reconfigure) is
+        stale: heal by remounting instead of trusting the attribute, or the
+        session silently loses the catalogue layer for its whole life.
+        """
+
+        if self._instance is None:
+            return
+        enabled = self._tool_retrieval_tools_enabled_for_runtime(config_base)
+        rail = getattr(self, "_tool_retrieval_prompt_rail", None)
+        mounted = False
+        if rail is not None:
+            from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
+                ToolRetrievalPromptRail,
+            )
+
+            existing_rails = self._instance.find_rails_by_type(
+                (ToolRetrievalPromptRail,)
+            )
+            mounted = any(existing is rail for existing in existing_rails)
+        if not enabled:
+            if rail is None:
+                return
+            # The rail may still be queued-only (create path queues, a reload
+            # can sync before ensure_initialized consumes it): drop the
+            # queued copy too, or it mounts later with the layer off.
+            remove_pending = getattr(self._instance, "remove_pending_rail", None)
+            if callable(remove_pending):
+                remove_pending(rail)
+            if mounted:
+                try:
+                    await self._instance.unregister_rail(rail)
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail unmount failed: %s",
+                        exc,
+                    )
+                    return
+            self._tool_retrieval_prompt_rail = None
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail unmounted: optimize off"
+            )
+            return
+        if mounted:
+            return
+        new_rail = self._build_tool_retrieval_prompt_rail()
+        if new_rail is None:
+            return
+        try:
+            await self._instance.register_rail(new_rail)
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail remount failed: %s",
+                exc,
+            )
+            return
+        self._tool_retrieval_prompt_rail = new_rail
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] ToolRetrievalPromptRail remounted: optimize on"
+        )
 
     async def _sync_skill_retrieval_prompt_rail_for_runtime(
         self,
@@ -12651,6 +12797,7 @@ class JiuWenSwarmDeepAdapter:
         self._sync_skill_retrieval_tools_for_runtime(config_base)
         await self._sync_skill_retrieval_prompt_rail_for_runtime(config_base)
         self._sync_tool_retrieval_tools_for_runtime(config_base)
+        await self._sync_tool_retrieval_prompt_rail_for_runtime(config_base)
 
         if not self._filesystem_rail_enabled_for_profile() and self._filesystem_rail is not None:
             try:

@@ -799,7 +799,8 @@
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "multiModelCollaboration": "多模型协同"
+      "multiModelCollaboration": "多模型协同",
+      "toolOptimize": "工具检索优化"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -978,6 +979,10 @@
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
         "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
+      },
+      "progressive_tool_optimize": {
+        "title": "启用工具检索优化",
+        "description": "开启后模型通过 tool_search 分类目录按需检索工具。"
       },
       "team_scheduled_dispatch_enabled": {
         "title": "启用调度模式",

@@ -1,15 +1,15 @@
 """Prompt boundary for progressive ``tool_search`` deferred-tool disclosure.
 
 Mirrors the skill-side ``SkillRetrievalPromptRail`` disclosure model: the
-system prompt shows only the tool category tree (static in-code categories
-plus MCP connector virtual branches), NOT a flat dump of every deferred
-tool's name+description. The full inventory is discovered on demand through
-``tool_search``.
+system prompt shows only the tool category catalogue (static in-code
+categories plus MCP connector virtual branches), NOT a flat dump of every
+deferred tool's name+description. The full inventory is discovered on
+demand through ``tool_search``.
 
 Three responsibilities each turn:
 1. Inject the disclosure section (categories with their descriptions) into
    the system prompt, built from ``ToolRetrievalToolkit.frozen_catalogue`` —
-   the static category tree frozen against the live deferred registry.
+   the static category table frozen against the live deferred registry.
 2. Keep the frozen catalogue honest: tools registered/removed after the
    freeze are reported as delta/snapshot attachments, mirroring openjiuwen
    ``ProgressiveToolRail._sync_deferred_tool_attachment``.
@@ -50,6 +50,11 @@ logger = logging.getLogger(__name__)
 
 _TOOL_SEARCH_TOOL_NAME = "tool_search"
 _MAX_ENTRY_DESC_CHARS = 120
+# Baseline advertised-array slots for the disclosure meta tools: both ride
+# right after the task_tool anchor, in call order (search before execution).
+_TOOL_CALL_TOOL_NAME = "tool_call"
+_BASELINE_META_ORDER = (_TOOL_SEARCH_TOOL_NAME, _TOOL_CALL_TOOL_NAME)
+_BASELINE_META_ANCHOR = "task_tool"
 
 # Deferred-catalogue drift detection (mirrors openjiuwen ProgressiveToolRail's
 # attachment-sync state/metadata contract, namespaced to this rail).
@@ -74,12 +79,12 @@ _DISCLOSURE_INTRO_CN = (
     "可直接调用。\n"
     "2. 用户点名了具体工具、技术或执行方式（如“用 PowerShell”“用终端”）时，以用户"
     "点名为准：即使 direct 工具（如 bash）技术上也能完成，也必须使用对应的 deferred "
-    "工具；目录中没有时向用户说明，不得用 direct 工具擅自替代。\n"
-    "3. 目录每行已标注类型，按标注导航：`[category]` 行是分支，要看其下工具名单，调用 "
+    "工具；目录中没有时，向用户说明后选用最接近的 direct 工具完成。\n"
+    "3. 目录每行已标注类型，按标注导航：`[category]` 行是分类，要看其下工具名单，调用 "
     "`tool_search`（operation=list，category=该行名称）；`[tool]` 行已直列工具名与简述，"
-    "直接调用 `tool_search`（operation=get_schema，tool=名称），不要 list。分支名就在行"
+    "直接调用 `tool_search`（operation=get_schema，tool=名称），不要 list。分类名就在行"
     "上，永远不要 list 根分类。"
-    "不能猜测 deferred 工具名称，也不要将就使用不合适的工具。list 只返回名称与简短"
+    "不能猜测 deferred 工具名称。list 只返回名称与简短"
     "描述，不含 schema。\n"
     "4. 确定工具后，用 get_schema（tool=准确工具名）获取该工具的 "
     "{name, description, schema}，schema 即执行参数结构。\n"
@@ -87,6 +92,8 @@ _DISCLOSURE_INTRO_CN = (
     "把符合 schema 的参数放入 `args`。不要直接调用 deferred 工具名称。\n"
     "6. `tool_search` 只用于发现工具，永不执行工具；不要用 `bash` 或其他 direct 工具"
     "替代或执行搜索到的工具。\n"
+    "7. 同一用户意图不要重复调用相同或相近的检索；若返回结果不适用，不要猜测工具"
+    "名，必要时调用 `ask_user`，否则说明当前没有合适工具。\n"
     "\n"
     "下方目录为 session 初始快照；会话中的新增、修改、删除以「deferred 工具目录更新」"
     "附件通知，新增工具的名称同样直列，直接 get_schema。"
@@ -105,15 +112,15 @@ _DISCLOSURE_INTRO_EN = (
     "(e.g. \"use PowerShell\", \"use the terminal\"), that naming takes "
     "precedence: even if a direct tool (such as bash) could technically do it, "
     "you must use the matching deferred tool; if the catalogue has no match, "
-    "tell the user instead of silently substituting a direct tool.\n"
+    "say so and use the closest direct tool for the job.\n"
     "3. Every catalogue line carries a type mark — navigate by it: a "
-    "`[category]` line is a branch; to see its tool names, call `tool_search` "
-    "(operation=list, category=<that line's name>). A `[tool]` line already "
-    "lists the tool's name and short description — go straight to "
-    "`tool_search` (operation=get_schema, tool=<name>), do not list. The "
-    "branch name is right on the line, so "
-    "never list the root. Do not guess deferred tool names and do not settle "
-    "for an ill-fitting tool. list returns names and short descriptions only, "
+    "`[category]` line is a category; to see its tool names, call "
+    "`tool_search` (operation=list, category=<that line's name>). A `[tool]` "
+    "line already lists the tool's name and short description — go straight "
+    "to `tool_search` (operation=get_schema, tool=<name>), do not list. The "
+    "category name is right on the line, so "
+    "never list the root. Do not guess deferred tool names. list returns names "
+    "and short descriptions only, "
     "no schema.\n"
     "4. Once you know the tool, fetch its {name, description, schema} record "
     "with get_schema (tool=<one exact name>); `schema` is the execution args "
@@ -123,6 +130,9 @@ _DISCLOSURE_INTRO_EN = (
     "arguments in `args`. Do not call deferred tool names directly.\n"
     "6. `tool_search` only discovers tools, it never executes them; do not use "
     "`bash` or another direct tool to substitute for or execute a discovered tool.\n"
+    "7. Do not repeat the same or a similar search or enumerate categories one "
+    "by one; if the results do not fit, call `ask_user` when necessary, "
+    "otherwise state that no suitable tool is available.\n"
     "\n"
     "The catalogue below is the session's initial snapshot; mid-session "
     "additions, changes, and removals arrive as \"Deferred-tool directory "
@@ -341,12 +351,20 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             raise target_result
         target_success = getattr(target_result, "success", None)
         if target_success is False:
+            raw_error = str(
+                getattr(target_result, "error", None)
+                or getattr(target_message, "content", None)
+                or target_result
+            )
             return ToolOutput(
                 success=False,
-                error=str(
-                    getattr(target_result, "error", None)
-                    or getattr(target_message, "content", None)
-                    or target_result
+                error=(
+                    f"{raw_error} — deferred call to '{target_name}' failed; "
+                    "if the args did not match, re-fetch the exact schema "
+                    f"with tool_search (operation=get_schema, "
+                    f"tool='{target_name}') and resend: args must mirror "
+                    "that schema's parameters object, with object-typed "
+                    "fields as JSON object literals, never JSON strings."
                 ),
             )
         return ToolOutput(
@@ -430,7 +448,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
         """Render the progressive disclosure section: categories + names.
 
         Mirrors ``SkillRetrievalPromptRail._build_candidate_appendix``: only
-        the category tree is shown, never a full flat dump. Each category
+        the category catalogue is shown, never a full flat dump. Each category
         line carries only its description — tool names are discovered
         through tool_search. MCP connector tools get one virtual branch line
         per connector; tools no category line routes to (static-table misses)
@@ -577,7 +595,7 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             tool for tool in tools
             if str(getattr(tool, "name", "") or "") in direct_names
         ]
-        inputs.tools = filtered
+        inputs.tools = self._restore_baseline_meta_slot(filtered)
 
     @staticmethod
     def _get_direct_tool_names(agent: Any) -> Set[str]:
@@ -596,6 +614,40 @@ class ToolRetrievalPromptRail(DeepAgentRail):
             if name and exposure == ToolExposure.DIRECT:
                 names.add(name)
         return names
+
+    @staticmethod
+    def _restore_baseline_meta_slot(tools: list[Any]) -> list[Any]:
+        """Reslot tool_search/tool_call to their baseline advertised positions.
+
+        Registration order parks tool_search among the early shared tools and
+        tool_call near the tail; the advertised array must still read like the
+        bundled baseline (…, task_tool, tool_search, tool_call, todo_*), so a
+        reslot after filtering puts both metas right after the task_tool
+        anchor — or, with no anchor, at the tail in call order. A list with
+        no metas passes through as the same object; duplicate meta names keep
+        the first registration only.
+        """
+
+        meta_objects: dict[str, Any] = {}
+        rest: list[Any] = []
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "")
+            if name in _BASELINE_META_ORDER:
+                meta_objects.setdefault(name, tool)
+                continue
+            rest.append(tool)
+        if not meta_objects:
+            return tools
+        metas = [
+            meta_objects[name]
+            for name in _BASELINE_META_ORDER
+            if name in meta_objects
+        ]
+        for index, tool in enumerate(rest):
+            if str(getattr(tool, "name", "") or "") == _BASELINE_META_ANCHOR:
+                cut = index + 1
+                return rest[:cut] + metas + rest[cut:]
+        return rest + metas
 
     # ─── deferred-catalogue drift sync (mirrors ProgressiveToolRail) ─────
 

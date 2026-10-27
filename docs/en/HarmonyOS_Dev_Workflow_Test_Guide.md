@@ -34,7 +34,7 @@ Do not uninstall a working `devecocli` installation from a daily development mac
 ### 3.1 Base Environment
 
 - macOS or Windows.
-- Python 3.11, 3.12, or 3.13.
+- Python 3.11, 3.12, 3.13, or 3.14.
 - `uv`.
 - Node.js 18 or later.
 - `npm`.

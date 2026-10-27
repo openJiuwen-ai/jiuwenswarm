@@ -7,7 +7,7 @@ This document is intended for developers of the JiuwenSwarm project, covering ho
 | Dependency | Version Requirement | Description |
 |------------|---------------------|-------------|
 | Operating System | Windows 10/11, macOS 10.15+, Linux | Mainstream OS supported |
-| Python | ≥3.11, <3.14 | Python 3.11 recommended |
+| Python | ≥3.11 | Python 3.11 recommended |
 | Git | Latest | For cloning the repository |
 | Node.js | ≥18.x | For frontend interface |
 | Bun | Latest | For building TUI frontend packages |
@@ -35,7 +35,7 @@ powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | ie
 
 ### Create a Virtual Environment
 
-Use `uv` to create a new virtual environment (supports Python 3.11, 3.12, or 3.13):
+Use `uv` to create a new virtual environment (supports Python 3.11, 3.12, 3.13, or 3.14):
 
 ```bash
 uv venv --python=3.11

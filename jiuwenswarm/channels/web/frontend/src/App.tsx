@@ -2573,6 +2573,11 @@ function AppContent({
     // 开始历史会话加载
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
+      requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
+        session_id: sessionId,
+        cursor,
+        limit: 50,
+      }),
       onReady: (messages, cursorMeta) => {
         historyRestoreFromPanelHintRef.current = false;
         // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的

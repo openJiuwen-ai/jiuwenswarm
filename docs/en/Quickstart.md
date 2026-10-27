@@ -11,7 +11,7 @@ Before installing JiuwenSwarm, ensure your system meets the following requiremen
 | Dependency | Version | Description |
 |------------|---------|-------------|
 | Operating System | Windows 10/11, macOS 10.15+, Linux | Supports mainstream operating systems |
-| Python | `≥3.11, <3.14` | Python 3.11 recommended |
+| Python | `≥3.11` | Python 3.11 recommended |
 | Node.js | 18.x or higher | For frontend interface |
 | Git | Latest | For source code installation |
 
@@ -139,7 +139,7 @@ cd jiuwenswarm
 ### Install via `uv`
 - Create a new virtual environment using `uv`
   ```bash
-  # Create virtual environment with uv (supports any of Python 3.11, 3.12, 3.13)
+  # Create virtual environment with uv (supports any of Python 3.11, 3.12, 3.13, 3.14)
   uv venv --python=3.11
   # or uv venv --python=3.12
   # or uv venv --python=3.13
@@ -183,7 +183,7 @@ cd jiuwenswarm
 ### Install via `conda`
 - Create a new virtual environment using `conda`
   ```bash
-  # Create virtual environment with Anaconda (supports any of Python 3.11, 3.12, 3.13)
+  # Create virtual environment with Anaconda (supports any of Python 3.11, 3.12, 3.13, 3.14)
   conda create -n JiuwenSwarm python=3.11
   # or conda create -n JiuwenSwarm python=3.12
   # or conda create -n JiuwenSwarm python=3.13

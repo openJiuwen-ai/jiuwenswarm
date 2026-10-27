@@ -214,7 +214,7 @@ test_path_caching()                       # 测试路径缓存
 - 手动触发
 
 **测试矩阵**：
-- Python: 3.11, 3.12, 3.13
+- Python: 3.11, 3.12, 3.13, 3.14
 - OS: Ubuntu Latest
 
 **步骤**：
@@ -277,7 +277,7 @@ git push
 python -m pytest tests/ -v
 
 # 2. 检查 Python 版本
-python --version  # 应该是 3.11, 3.12, 或 3.13
+python --version  # 应该是 3.11, 3.12, 3.13, 或 3.14
 
 # 3. 检查依赖
 pip list | grep pytest

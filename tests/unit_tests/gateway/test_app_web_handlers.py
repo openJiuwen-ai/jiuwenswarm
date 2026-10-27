@@ -1801,6 +1801,40 @@ async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    raw_config = {"progressive_tool_enabled": True, "progressive_tool_optimize": False}
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    # config.set 路径实现已下沉 config_set_handlers，config.get 仍读 gateway 侧，双patch
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
+    monkeypatch.setattr(
+        config_set_handlers,
+        "update_progressive_tool_optimize_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client())
+    )
+
+    await channel.methods["config.get"](object(), "req-tool-optimize-get", {}, "session")
+    assert channel.responses[-1]["payload"]["progressive_tool_optimize"] == "false"
+
+    await channel.methods["config.set"](
+        object(),
+        "req-tool-optimize-set",
+        {"progressive_tool_optimize": "true"},
+        "session",
+    )
+    assert persisted == [True]
+    assert channel.responses[-1]["payload"]["updated"] == ["progressive_tool_optimize"]
+    change_set = config_set_handlers.ConfigChangeSet({}, ["progressive_tool_optimize"])
+    assert change_set.reload_scopes == {"agent_runtime"}
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("raw_config", "expected"),
     [

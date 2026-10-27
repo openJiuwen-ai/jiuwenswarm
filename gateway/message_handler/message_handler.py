@@ -35,7 +35,12 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.config import get_evolution_auto_save_enabled
 from gateway.routing.session_map import SessionMap
-from jiuwenswarm.server.runtime.session.session_history import SESSION_REQUEST_COMPLETED_EVENT
+from jiuwenswarm.common.schema.message import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    SESSION_REQUEST_COMPLETED_EVENT,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+)
 from gateway.routing.agent_request_timeout import (
     send_agent_request_with_timeout,
 )
@@ -334,6 +339,7 @@ class MessageHandler(ABC):
         self.on_chat_completed: Callable[[str, str], None] | None = None
         # (session_id, request_id, payload) of a next-input suggestion AgentServer generated.
         self.on_prompt_suggestion: Callable[[str, str, dict[str, Any]], Awaitable[None]] | None = None
+        self.on_recommendation_event: Callable[[str, dict[str, Any]], Awaitable[None]] | None = None
         # Chat requests that ended here before AgentServer answered: request_id -> session_id.
         self._awaiting_host_completion: dict[str, str] = {}
         self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
@@ -3309,7 +3315,6 @@ class MessageHandler(ABC):
             session_id = self._stream_sessions.get(rid)
 
         from jiuwenswarm.extensions.video_duplex.backend.tasks.bridge import EVENT, handle_checkpoint_push
-        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import READY_EVENT
 
         if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "models.updated":
             await self._broadcast_models_updated()
@@ -3346,7 +3351,19 @@ class MessageHandler(ABC):
             if pending_session_id is not None:
                 self._call_chat_completed(pending_session_id, rid)
             return
-        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == READY_EVENT:
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") in {
+            TOPIC_STARTERS_READY_EVENT,
+            TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+        }:
+            if self.on_recommendation_event is not None:
+                body = {
+                    key: value
+                    for key, value in chunk.payload.items()
+                    if key != "event_type"
+                }
+                await self.on_recommendation_event(str(chunk.payload.get("event_type")), body)
+            return
+        if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == PROMPT_SUGGESTION_READY_EVENT:
             if session_id and self.on_prompt_suggestion is not None:
                 await self.on_prompt_suggestion(session_id, rid, dict(chunk.payload))
             return
