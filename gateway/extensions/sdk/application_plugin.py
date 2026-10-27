@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from jiuwenswarm.extensions.sdk.base import BaseExtension
-
+from gateway.extensions.sdk.base import BaseExtension
 
 WebSocketEndpoint = Callable[[Any], Awaitable[None]]
 

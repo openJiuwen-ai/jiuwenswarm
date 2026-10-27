@@ -2,7 +2,7 @@
 
 from abc import abstractmethod
 
-from jiuwenswarm.extensions.sdk.base import BaseExtension
+from gateway.extensions.sdk.base import BaseExtension
 from jiuwenswarm.common.client.third_agent import ThirdAgent
 
 

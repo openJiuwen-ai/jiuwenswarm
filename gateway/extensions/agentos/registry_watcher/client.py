@@ -12,9 +12,9 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
+from gateway.extensions.agentos.registry_watcher import registry_prefix
+from gateway.extensions.agentos.registry_watcher.decode import decode_record
 from jiuwenswarm.common.etcd.client import EtcdJsonClient, prefix_range_end
-from jiuwenswarm.extensions.agentos.registry_watcher import registry_prefix
-from jiuwenswarm.extensions.agentos.registry_watcher.decode import decode_record
 
 logger = logging.getLogger(__name__)
 

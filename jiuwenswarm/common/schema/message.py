@@ -9,7 +9,7 @@ from typing import Any, Literal
 
 from openjiuwen_protocol.message import ReqMethod
 
-from jiuwenswarm.common.mode_matrix import deprecate_mode
+from gateway.common.mode_matrix import deprecate_mode
 
 # Wire names shared by gateway and AgentServer. Gateway matches these strings
 # and does not import the agents or server modules that produce them.

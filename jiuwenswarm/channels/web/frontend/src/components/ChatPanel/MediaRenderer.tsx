@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { MediaItem } from '../../types';
 import { FileIcon, getFileExtensionLabel } from '../FileIcon';
-import { normalizePath } from '../../features/sessionAssets/sessionAssets';
+import { displayFileName, normalizePath } from '../../features/sessionAssets/sessionAssets';
 import { stripUploadDocumentBlocks } from '../../utils/documentMessage';
 
 export { stripUploadDocumentBlocks };
@@ -27,6 +27,14 @@ function isCardItem(item: MediaItem): boolean {
   return item.type !== 'audio' && item.type !== 'video';
 }
 
+/** 卡片展示名字永远带扩展名：displayName 存在时是去掉扩展名的引用名（和素材列表同一套
+ *  定义，见 sessionAssets.displayFileName），这里把真实文件名的扩展名拼回去；没有
+ *  displayName 时文件名本身已经带扩展名，原样返回即可。 */
+function fileCardDisplayName(item: MediaItem, filename: string): string {
+  if (!item.displayName) return filename;
+  return displayFileName({ name: item.displayName, path: filename });
+}
+
 function mediaSrc(item: MediaItem): string | undefined {
   const mimeType = item.mimeType || item.mime_type || 'application/octet-stream';
   const base64Data = item.base64Data || item.base64_data;
@@ -43,9 +51,10 @@ function mediaSrc(item: MediaItem): string | undefined {
 
 function FileCard({ item }: { item: MediaItem }) {
   const filename = item.filename || 'file';
-  // 素材改过名的话（比如上传后在卡片上重命名过），这里显示新名字；扩展名标签、图标类型、
-  // 下载文件名仍然按真实文件名走，重命名只影响这一处展示文字。
-  const displayLabel = item.displayName || filename;
+  // 素材改过名的话（比如上传后在卡片上重命名过），这里显示新名字；图标类型、下载文件名
+  // 仍然按真实文件名走，重命名只影响这一处展示文字。displayName 本身不带扩展名（素材引用
+  // 名的定义就是去掉扩展名），所以这里要把扩展名拼回去，两种情况下展示的都是完整文件名。
+  const displayLabel = fileCardDisplayName(item, filename);
   const extLabel = getFileExtensionLabel(filename);
   const src = mediaSrc(item);
   const showThumb = isImageItem(item) && Boolean(src);
@@ -128,7 +137,7 @@ function OverflowMenu({ items }: { items: MediaItem[] }) {
         <div className="chat-msg-file-more__menu" data-testid="chat-panel-msg-file-more-menu" role="menu">
           {items.map((item, index) => {
             const filename = item.filename || 'file';
-            const displayLabel = item.displayName || filename;
+            const displayLabel = fileCardDisplayName(item, filename);
             const src = mediaSrc(item);
             const showThumb = isImageItem(item) && Boolean(src);
             const content = (

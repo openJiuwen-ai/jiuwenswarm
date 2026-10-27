@@ -50,7 +50,7 @@ from openjiuwen.core.foundation.llm import (
     get_reasoning_capability_catalog,
 )
 
-from jiuwenswarm.common.volcengine_endpoints import (
+from gateway.common.volcengine_endpoints import (
     ARK_ANTHROPIC_BASE,
     ARK_API_BASE,
     ARK_CODING_ANTHROPIC_BASE,

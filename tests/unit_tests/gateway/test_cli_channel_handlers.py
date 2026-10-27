@@ -5,8 +5,8 @@ import asyncio
 import pytest
 
 from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
-from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from openjiuwen_protocol.message import ReqMethod
 from jiuwenswarm.common.config_panel import tui_models_handlers
 from gateway.channel_manager.tui import tui_connect as tui_connect_module
 from gateway.channel_manager.tui.tui_connect import (

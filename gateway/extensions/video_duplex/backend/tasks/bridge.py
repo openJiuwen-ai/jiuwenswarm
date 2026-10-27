@@ -5,8 +5,8 @@ import logging
 import uuid
 import weakref
 
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import ReqMethod
 
 _endpoints = weakref.WeakValueDictionary()
 EVENT = "voice.task.command"

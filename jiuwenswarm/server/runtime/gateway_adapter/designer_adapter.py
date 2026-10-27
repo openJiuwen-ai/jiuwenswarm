@@ -31,7 +31,7 @@ from jiuwenswarm.common.schema.designer_graph import (
 )
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     DESIGN_WORK_MODE,
     is_default_project_id,

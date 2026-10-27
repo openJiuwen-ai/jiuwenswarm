@@ -137,5 +137,16 @@ export const experimentalModule: SettingsModuleDefinition = {
         },
       ],
     },
+    {
+      id: 'design-mode',
+      titleKey: 'settingsPanel.experimental.designMode',
+      items: [
+        {
+          id: 'comfyui-workflow-enabled',
+          component: 'switch',
+          key: 'comfyui_workflow_enabled',
+        },
+      ],
+    },
   ],
 };

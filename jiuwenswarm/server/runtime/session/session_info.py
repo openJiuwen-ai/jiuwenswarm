@@ -13,7 +13,7 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 
 
 def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:

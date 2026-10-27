@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateFailed,
     AgentCreatingTimeout,
@@ -11,7 +11,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     normalize_agent_key_fields,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.extension import AgentOSRouter, register_extensions
-from jiuwenswarm.extensions.agentos.agentos_router.models import (
+from gateway.extensions.agentos.agentos_router.models import (
     AgentInfo,
     AgentStatus,
     ImageInfo,

@@ -63,7 +63,7 @@ from jiuwenswarm.common.utils import (
     get_root_dir,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
@@ -1454,8 +1454,8 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
     """写回 config.yaml 后清除 agent 侧配置缓存，使下次读取时得到最新文件内容。"""
     try:
         if agent_client is not None:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
+            from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+            from openjiuwen_protocol.message import ReqMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
@@ -1479,8 +1479,8 @@ async def _restart_agent_browser_runtime(
     if agent_client is None:
         return
 
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+    from openjiuwen_protocol.message import ReqMethod
 
     env = e2a_from_agent_fields(
         request_id=f"browser-restart-{uuid.uuid4().hex[:8]}",
@@ -1808,7 +1808,7 @@ async def _upload_document_item_via_http(
     返回带 ``_persisted`` 标记的落盘记录，AgentServer 侧直接透传、不重复解码。
     上传失败返回 ``None``（调用方保留原 base64 项）。
     """
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         is_forbidden_document,
         safe_session_dirname,
         safe_upload_filename,
@@ -1866,7 +1866,7 @@ async def _pre_persist_large_documents(
     否则走 media_items 通道的大文档不会被 HTTP 预上传，原 base64 随 E2A 转发
     可能超内部 WS 帧限制。
     """
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         strip_data_uri_prefix as _strip_data_uri_prefix,
     )
     from gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
@@ -1943,7 +1943,7 @@ async def _upload_media_item_via_http(
     （``agent/sessions/<safe_session_id>/uploads/<safe_filename>``，同名去重）。
     上传失败返回 ``None``（调用方保留原 base64 项，由下游链路处理）。
     """
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         ensure_image_upload_filename,
         image_suffix_for_mime,
         safe_session_dirname,
@@ -2000,7 +2000,7 @@ async def _pre_persist_large_media(
         return params
     import json as _json
 
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         strip_data_uri_prefix as _strip_data_uri_prefix,
     )
     from gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
@@ -2068,7 +2068,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     heartbeat_controller = bind.heartbeat_controller
     updater_service = bind.updater_service
 
-    from jiuwenswarm.common.schema.message import EventType, Message
+    from openjiuwen_protocol.message import EventType, Message
 
     def _resolve(ref, key="value"):
         """若为 ref 字典则取 key（无则返回 None），否则返回自身。"""
@@ -2091,10 +2091,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         async def _sync() -> None:
             try:
-                from jiuwenswarm.common.e2a.gateway_normalize import (
+                from openjiuwen_protocol.e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from jiuwenswarm.common.schema.message import ReqMethod
+                from openjiuwen_protocol.message import ReqMethod
 
                 real_client = _resolve(agent_client)
                 if real_client is None:
@@ -2284,11 +2284,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _vendors_list(ws, req_id, params, session_id):
         """返回按 plan 分组的厂商预设列表(供前端 Tab+厂商卡片渲染)。
 
-        纯数据,读 ``jiuwenswarm.common.model_vendor_registry``,无副作用。
+        纯数据,读 ``gateway.common.model_vendor_registry``,无副作用。
         """
         del params, session_id
         try:
-            from jiuwenswarm.common.model_vendor_registry import to_frontend_payload
+            from gateway.common.model_vendor_registry import to_frontend_payload
             await channel.send_response(
                 ws, req_id, ok=True,
                 payload={"vendors": to_frontend_payload()},
@@ -2313,7 +2313,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         api_key = str(params.get("api_key") or "").strip()
         modality = str(params.get("modality") or "").strip()
         try:
-            from jiuwenswarm.common.model_vendor_registry import (
+            from gateway.common.model_vendor_registry import (
                 PlanKind,
                 get_preset,
             )
@@ -2399,7 +2399,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         ws, req_id, ok=False, error="unsupported model modality", code="BAD_REQUEST",
                     )
                     return
-                from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
+                from gateway.common.volcengine_endpoints import normalize_ark_api_base
 
                 try:
                     api_base = normalize_ark_api_base(str(params.get("api_base") or preset.api_base))
@@ -2710,7 +2710,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter 处理），
         AgentServer 输出与迁移前 Web fallback 投影（to_session_info）完全一致。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -2739,7 +2739,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         持久化 metadata：由 AgentServer 返回权威执行快照，Gateway 透传，
         避免 Gateway 重启后用空的本地 busy 缓存覆盖仍在执行的 Worker 状态。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2755,7 +2755,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2776,7 +2776,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         转发 AgentServer ``SESSION_PLAN_STATUS``：单 agent 读 live
         ``plan_mode``，集群 / 读不到 agent 状态时回退 metadata.mode。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2813,7 +2813,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST",
             )
             return
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         # 统一薄代理 E2A 转发（envelope.user_id 承载认证身份，
@@ -2842,7 +2842,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         下重命名必须落在用户 AgentServer 的会话目录（方案 §10.3 契约）。
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -2868,7 +2868,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
         SESSION_PIN，AgentServer 注入目录 session_metadata）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -2900,7 +2900,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         仅统计该项目的非置顶**普通**会话(``cron_id`` 为空)。置顶会话与 cron 会话
         不计入任何项目统计。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2917,7 +2917,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_get_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目下的非置顶普通会话列表（目标 AgentServer 执行）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2934,7 +2934,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_get_cron_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目 cron 会话（目标 AgentServer 执行）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2956,7 +2956,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         injected user directory. Gateway only schedules deployment-side warm
         key reconciliation after a successful mutation.
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         async def after_create(ok, payload):
@@ -2986,7 +2986,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         默认项目禁止重命名(``FORBIDDEN``)。``name`` 与已有项目(含隐藏)重复时返回 ``CONFLICT``。
         ``name`` 含文件系统非法字符 / 为保留设备名时返回 ``BAD_REQUEST``。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3007,7 +3007,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         默认项目禁止置顶(``FORBIDDEN``)。新置顶项目 ``pin_order`` 默认 0,
         重编号后置于置顶区顶部(与 ``session.pin`` 行为一致)。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3043,7 +3043,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_remove(ws, req_id, params, session_id, user_id=None):
         """Forward project soft-deletion; stop its cron jobs, clean Git watchers."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import fetch_agent_unary
 
         project_id = str((params or {}).get("project_id") or "").strip()
@@ -3126,7 +3126,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_restore(ws, req_id, params, session_id, user_id=None):
         """Forward project restoration to the target AgentServer."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         project_id = str((params or {}).get("project_id") or "").strip()
@@ -3158,7 +3158,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         统计口径同 ``project.list``:仅统计该项目的非置顶普通会话(``cron_id`` 为空)。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3179,7 +3179,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         置顶会话已从项目分组中剥离,通过本接口独立获取。``project_dir`` 仍指向
         原归属项目。不接受任何参数。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3216,7 +3216,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 project_id, exc,
             )
 
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.message import ReqMethod
 
     def _make_git_proxy_handler(
         req_method, label, *, doc, mark_dirty=False, mark_dirty_on_failure=False
@@ -3337,7 +3337,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _path_get(ws, req_id, params, session_id, user_id=None):
         """读 browser.chrome_path 并返回给前端（会解析环境变量）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3376,7 +3376,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
         )
 
@@ -3409,7 +3409,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if params.get(decision_key) is not None:
                 set_params[decision_key] = params[decision_key]
 
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             fetch_agent_unary,
             is_legacy_shared_directory_client,
@@ -3481,7 +3481,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             else True
         )
 
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
             browser_decision_updates,
         )
@@ -3529,7 +3529,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（WorkspaceFileAdapter
         PATH_SELECT_DIRECTORY，注入 workspace 内解析/校验，越界返回 BAD_REQUEST）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3582,7 +3582,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（WorkspaceFileAdapter
         PATH_SELECT_FILES，注入 workspace 内枚举，返回与桌面端同形元数据）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3720,7 +3720,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         MEDIA_PERSIST，base64 小文件由注入目录落盘；大文件在 Gateway 侧解码后
         走受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         real_client = _resolve(agent_client)
@@ -3746,7 +3746,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _media_discard(ws, req_id, params, session_id, user_id=None):
         """删除尚未发送的会话 uploads 副本（E2A 转发，路径边界在 AgentServer）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3764,7 +3764,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _document_persist(ws, req_id, params, session_id, user_id=None):
         """文档附件落盘（E2A 转发；base64 小文档由 AgentServer 注入目录落盘，
         大文档在 Gateway 侧解码后经受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         real_client = _resolve(agent_client)
@@ -3790,7 +3790,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _document_formats(ws, req_id, params, session_id, user_id=None):
         """返回文档上传黑名单格式（E2A 转发 AgentServer）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3849,7 +3849,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):
         """Return the selected AgentServer user's preferred language."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3878,7 +3878,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _locale_set_conf(ws, req_id, params, session_id, user_id=None):
         """Update preferred language in the selected AgentServer directory."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -4748,7 +4748,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 try:
                     from jiuwenswarm.common.external_providers import provider
 
-                    meta = provider("session_metadata").get_session_metadata(
+                    meta = await provider("session_metadata").get_session_metadata_async(
                         session_id, cache_bust=True
                     )
                     if isinstance(meta, dict):
@@ -5184,7 +5184,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # models.list 经目标 AgentServer 执行时无法看到 Gateway 连接，登录送的
             # 免费模型合并需要会话 id（AgentOS 既有缺口，A4g 统一后对 legacy 同样关键）。
             if isinstance(params, dict):
-                from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+                from openjiuwen_protocol.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 
                 forwarded = dict(params)
                 forwarded.pop(E2A_AUTH_SESSION_PARAM_KEY, None)
@@ -5207,7 +5207,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         channel.register_method(method_name, _handler)
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _ConfigReq
+    from openjiuwen_protocol.message import ReqMethod as _ConfigReq
 
     async def _config_moa_status(ws, req_id, params, session_id, user_id=None):
         await _proxy_config_request(
@@ -5296,7 +5296,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _hooks_list(ws, req_id, params, session_id, user_id=None):
         # 单用户共享目录：本地读取 config.yaml（hooks 属用户态配置，共享目录等价；
         # AgentServer 未启动/断连时保持可用）。AgentOS：经 E2A 在目标注入目录执行。
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -5341,7 +5341,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         落到注入目录；避免前端直连要求 token 的 /file-api/upload 得到
         ``missing_token``（issue #5325）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -5760,7 +5760,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _permissions_owner_scopes_get(ws, req_id, params, session_id, user_id=None):
         from gateway.routing.e2a_proxy import proxy_unary_request
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params={}, session_id=session_id, user_id=user_id,
@@ -5772,7 +5772,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         from gateway.routing.e2a_proxy import proxy_unary_request
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
@@ -5784,7 +5784,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_permissions_to_agent(ws, req_id, params, session_id, user_id=None, *, req_method):
         """Forward permissions requests; Gateway never falls back to local state."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(req_method, ReqMethod):
@@ -5802,7 +5802,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="permissions",
         )
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _PermReq
+    from openjiuwen_protocol.message import ReqMethod as _PermReq
 
     def _register_perm(method_name: str, rm: Any) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
@@ -5824,8 +5824,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
         """Forward an A4P User Authorizer RPC over the session's logical Web route."""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
@@ -5908,7 +5908,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload=resp.payload if isinstance(resp.payload, dict) else {},
         )
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _A4PReq
+    from openjiuwen_protocol.message import ReqMethod as _A4PReq
 
     def _register_a4p(method_name: str, req_method: Any) -> None:
         async def _handler(ws, req_id, params, session_id):
@@ -5926,7 +5926,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
 
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -5951,7 +5951,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -5980,7 +5980,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         ``e2a_proxy`` 的 legacy fallback 在 Gateway 进程内执行同一业务；远程/
         AgentOS client 返回可重试错误，不读部署侧目录。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(req_method, ReqMethod):
@@ -6005,7 +6005,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="harness",
         )
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _HarnessReq
+    from openjiuwen_protocol.message import ReqMethod as _HarnessReq
 
     def _register_harness(method_name: str, rm: Any) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
@@ -6046,7 +6046,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _harness_import_handler(ws, req_id, params, session_id, user_id=None):
         """Import harness archives without exceeding the internal WS frame limit."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.agent_http_bridge import (
             E2A_PAYLOAD_MAX_BYTES,
             upload_file_bytes_via_e2a,
@@ -6098,7 +6098,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.import", _harness_import_handler)
 
     async def _harness_export_handler(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws,
                                   req_id=req_id, params=params if isinstance(params, dict) else {},

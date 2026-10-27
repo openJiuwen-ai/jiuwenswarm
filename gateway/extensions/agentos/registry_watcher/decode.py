@@ -11,7 +11,7 @@ import json
 import logging
 from typing import Any
 
-from jiuwenswarm.extensions.agentos.registry_watcher import (
+from gateway.extensions.agentos.registry_watcher import (
     WEB_SVC_PORT_ROW,
     in_default_port_range,
 )

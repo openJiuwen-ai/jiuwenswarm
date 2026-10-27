@@ -5,8 +5,8 @@ import json
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message
-from jiuwenswarm.common.session_message import (
+from openjiuwen_protocol.message import EventType, Message
+from gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
 )

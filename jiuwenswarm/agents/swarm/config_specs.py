@@ -69,7 +69,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_TEAM_CODE_NORMAL,
     NEW_TEAM_CODE_PLAN,
     NEW_TEAM_DESIGN,

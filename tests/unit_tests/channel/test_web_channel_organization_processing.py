@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message
+from openjiuwen_protocol.message import EventType, Message
 from gateway.channel_manager.base import RobotMessageRouter
 from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 

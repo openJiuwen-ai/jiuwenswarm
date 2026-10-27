@@ -8,7 +8,7 @@ import logging
 from typing import Any
 
 from jiuwenswarm.common.cron_session import cron_session_matches_job
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,

@@ -251,6 +251,8 @@ test('collaboration is the last experimental section and other sections retain t
     'team-scheduled-dispatch',
     'proactive-recommendation',
     'multi-model-collaboration',
+    'tool-optimize',
+    'design-mode',
   ]);
 });
 

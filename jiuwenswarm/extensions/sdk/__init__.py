@@ -1,61 +1,26 @@
-"""Extension SDK exports; transport-specific contracts are lazy imports."""
+"""兼容入口：扩展 SDK 契约的唯一实现位于 ``gateway.extensions.sdk``。
+
+第三方扩展仍可按 ``from jiuwenswarm.extensions.sdk import BaseExtension`` 导入，
+本模块只做惰性转发，不再保留第二份类定义（避免 BaseExtension / CryptoUtility
+等基类出现两套类身份）。
+"""
 
 from __future__ import annotations
 
 from importlib import import_module
 from typing import Any
 
-_APPLICATION_PLUGIN_MODULE = "jiuwenswarm.extensions.sdk.application_plugin"
+_GATEWAY_SDK = import_module("gateway.extensions.sdk")
 
-_EXPORTS = {
-    "AgentServerClientExtension": (
-        "jiuwenswarm.extensions.sdk.agent_server_client",
-        "AgentServerClientExtension",
-    ),
-    "ApplicationPluginExtension": (
-        _APPLICATION_PLUGIN_MODULE,
-        "ApplicationPluginExtension",
-    ),
-    "ApplicationPluginServices": (
-        _APPLICATION_PLUGIN_MODULE,
-        "ApplicationPluginServices",
-    ),
-    "FrontendContribution": (
-        _APPLICATION_PLUGIN_MODULE,
-        "FrontendContribution",
-    ),
-    "ManifestApplicationPlugin": (
-        _APPLICATION_PLUGIN_MODULE,
-        "ManifestApplicationPlugin",
-    ),
-    "WebSocketRouteContribution": (
-        _APPLICATION_PLUGIN_MODULE,
-        "WebSocketRouteContribution",
-    ),
-    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
-    "CryptoUtility": (
-        "jiuwenswarm.extensions.sdk.crypto_utility",
-        "CryptoUtility",
-    ),
-    "ThirdAgentExtension": (
-        "jiuwenswarm.extensions.sdk.third_agent",
-        "ThirdAgentExtension",
-    ),
-}
+__all__ = list(_GATEWAY_SDK.__all__)
 
 
 def __getattr__(name: str) -> Any:
-    target = _EXPORTS.get(name)
-    if target is None:
-        raise AttributeError(name)
-    module_name, attribute = target
-    value = getattr(import_module(module_name), attribute)
-    globals()[name] = value
-    return value
+    try:
+        return getattr(_GATEWAY_SDK, name)
+    except AttributeError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_EXPORTS))
-
-
-__all__ = list(_EXPORTS)
+    return sorted(set(globals()) | set(_GATEWAY_SDK.__all__))

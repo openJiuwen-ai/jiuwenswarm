@@ -10,7 +10,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
+from gateway.common.mode_matrix import supports_single_agent_permission_profile
 from jiuwenswarm.common.permission_mode import (
     AUTO_PERMISSION_MODE,
     MANUAL_PERMISSION_MODE,  # noqa: F401

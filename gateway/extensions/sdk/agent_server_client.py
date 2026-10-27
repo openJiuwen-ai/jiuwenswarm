@@ -1,7 +1,7 @@
 from abc import abstractmethod
 
+from gateway.extensions.sdk.base import BaseExtension
 from jiuwenswarm.common.client.agent_client import AgentServerClient
-from jiuwenswarm.extensions.sdk.base import BaseExtension
 
 
 class AgentServerClientExtension(BaseExtension):

@@ -14,7 +14,7 @@ from typing import Any
 
 from PIL import Image, UnidentifiedImageError
 
-from jiuwenswarm.common.attachment_safety import image_suffix_for_mime, safe_session_dirname, safe_upload_filename
+from gateway.common.attachment_safety import image_suffix_for_mime, safe_session_dirname, safe_upload_filename
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.runtime.session_input import validate_steer_image_references
 

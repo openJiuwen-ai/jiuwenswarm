@@ -78,6 +78,7 @@ export const useSessionAssetsStore = create<SessionAssetsState>((set) => {
 
 export {
   assetKindFromMime,
+  displayFileName,
   findReferencedAssets,
   normalizePath,
   resolveAssetDisplayNames,

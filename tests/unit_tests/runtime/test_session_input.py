@@ -153,7 +153,7 @@ async def test_new_input_bypasses_busy_lane_without_answer_or_second_agent(setup
 async def test_protected_cross_session_input_never_uses_active_or_idle_delivery(
     setup_runtime, protected_mode, busy,
 ):
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
     from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
     runtime, agent, manager = setup_runtime

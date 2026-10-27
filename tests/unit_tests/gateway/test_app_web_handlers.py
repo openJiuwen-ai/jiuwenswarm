@@ -18,7 +18,7 @@ from tests.unit_tests.gateway.config_routing_harness import (
 )
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.registry import ExtensionRegistry
 from gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.common.config_panel.config_set_handlers import (
     flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
@@ -1517,7 +1517,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     reload_calls: list[tuple[set[str], dict, dict]] = []
 
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        "gateway.extensions.registry.ExtensionRegistry.get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
     for key in keys:
@@ -4704,8 +4704,8 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
 
 
 def _a4p_config_request(method, params, channel="web", session="session"):
-    from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.e2a.agent_models import AgentRequest
+    from openjiuwen_protocol.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
                         req_method=ReqMethod(method), params=params)
 

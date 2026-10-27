@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
-from jiuwenswarm.common.attachment_safety import is_forbidden_document, safe_upload_filename
+from gateway.common.attachment_safety import is_forbidden_document, safe_upload_filename
 
 _AGENT_FILE_PATH_ROOT = "/home/agentos"
 

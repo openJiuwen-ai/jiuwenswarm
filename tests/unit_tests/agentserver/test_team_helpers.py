@@ -2213,7 +2213,7 @@ async def _run_team_followup_stream(
 
 @pytest.mark.anyio
 async def test_team_followup_session_message_uses_mailbox_admission(monkeypatch):
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     calls = await _run_team_followup_stream(
         monkeypatch,
@@ -2232,7 +2232,7 @@ async def test_team_followup_session_message_uses_mailbox_admission(monkeypatch)
 async def test_team_followup_session_message_steer_uses_interactive_admission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     calls = await _run_team_followup_stream(
         monkeypatch,

@@ -25,7 +25,7 @@ from openjiuwen.extensions.observability.content_addressing import (
     rebuild_value,
 )
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     SINGLE_AGENT_CANONICAL_MODES,
     TEAM_CANONICAL_MODES,
 )

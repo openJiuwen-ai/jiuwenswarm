@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import inspect
 import json
+import logging
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+
+from gateway.channel_manager.base import (
+    BaseChannel,
+    ChannelMetadata,
+    RobotMessageRouter,
+)
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 

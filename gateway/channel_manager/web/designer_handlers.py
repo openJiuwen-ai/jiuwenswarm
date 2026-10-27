@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 from gateway.routing.e2a_proxy import proxy_unary_request
 
 _DESIGNER_METHODS: tuple[tuple[ReqMethod, float | None], ...] = (

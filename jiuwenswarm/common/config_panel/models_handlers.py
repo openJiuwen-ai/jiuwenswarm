@@ -439,7 +439,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
         vendor_key = str(item.get("vendor_key") or "").strip() or None
         plan = str(item.get("plan") or "").strip() or None
         if plan:
-            from jiuwenswarm.common.model_vendor_registry import PlanKind
+            from gateway.common.model_vendor_registry import PlanKind
 
             try:
                 plan = PlanKind(plan).value
@@ -487,7 +487,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             "origin_index": origin_index,
             # vendor_key is an opaque hint
             # selector; not validated (the selector only ever emits keys
-            # present in jiuwenswarm.common.model_vendor_registry). It is
+            # present in gateway.common.model_vendor_registry). It is
             # persisted so the UI can match a configured entry back to its
             # preset for icon display / re-selection. Not required.
             "vendor_key": vendor_key,

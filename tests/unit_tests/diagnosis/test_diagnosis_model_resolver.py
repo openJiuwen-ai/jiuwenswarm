@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedRoute
+from gateway.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedRoute
 from jiuwenswarm.diagnosis.model_resolver import _sanitize_resolved_selection
 
 
@@ -92,7 +92,7 @@ def test_sanitize_group_routes_overrides_and_request_config() -> None:
 
 
 def test_resolve_diagnosis_model_applies_sanitization(monkeypatch: pytest.MonkeyPatch) -> None:
-    from jiuwenswarm.common.model_selection import ModelSelection
+    from gateway.common.model_selection import ModelSelection
     from jiuwenswarm.diagnosis.model_resolver import resolve_diagnosis_model
 
     class _FakeResolver:

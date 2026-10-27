@@ -9,9 +9,9 @@ import pytest
 
 from jiuwenswarm.common.auth import login_credentials as lc
 from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from openjiuwen_protocol.e2a.agent_models import AgentRequest
+from openjiuwen_protocol.message import ReqMethod
 from gateway.message_handler.message_handler import MessageHandler
 
 REF = "abe633f3a47a2758174eabe9160daf36"

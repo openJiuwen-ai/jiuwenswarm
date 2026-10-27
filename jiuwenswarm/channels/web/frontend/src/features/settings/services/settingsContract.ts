@@ -153,6 +153,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('progressive_tool_optimize', 'experimental', 'boolean', 'progressive_tool_optimize'),
   yamlField('trajectory_ui_diagnosis_enabled', 'experimental', 'boolean', 'trajectory_ui.diagnosis_enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
+  yamlField('comfyui_workflow_enabled', 'experimental', 'boolean', 'experimental.comfyui_workflow_enabled'),
   yamlField('team_scheduled_dispatch_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.dispatch_mode'),
   yamlField(
     'team_task_verification_enabled',

@@ -142,9 +142,19 @@ def is_forbidden_document(*, filename: str | None = None, suffix: str | None = N
 
 
 def safe_session_dirname(session_id: str | None) -> str:
-    """Return the directory name for a session's upload folder."""
+    """Return the directory name for a session's upload folder.
+
+    目录名与文件名用同一套点目录口径（见 ``_sanitize_name``）：``.`` 与 ``..`` 过
+    白名单后仍是自身，作为目录名会跳出 sessions 树（``<sessions>/<id>/uploads`` 变成
+    ``<agent_root>/uploads``）。Windows 还会静默丢弃名字末尾的点与空格，``"..."``
+    因此等价于 ``".."``，所以先按平台真实语义剥尾再判。
+    """
     text = str(session_id or "default").strip() or "default"
-    return _UNSAFE_SESSION_CHARS.sub("_", text)[:_MAX_SESSION_ID_CHARS]
+    name = _UNSAFE_SESSION_CHARS.sub("_", text)[:_MAX_SESSION_ID_CHARS]
+    name = name.rstrip(". ").strip()
+    if not name or name in {".", ".."}:
+        return "default"
+    return name
 
 
 def strip_data_uri_prefix(raw_base64: str) -> str:

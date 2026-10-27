@@ -9,8 +9,8 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Mapping
 
-from jiuwenswarm.extensions.agentos.config_updater.client import ConfigUpdaterClient
-from jiuwenswarm.extensions.agentos.config_updater.merge import (
+from gateway.extensions.agentos.config_updater.client import ConfigUpdaterClient
+from gateway.extensions.agentos.config_updater.merge import (
     filter_managed_section,
     merge_section,
     normalize_section,

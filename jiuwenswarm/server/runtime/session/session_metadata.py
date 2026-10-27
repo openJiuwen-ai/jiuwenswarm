@@ -17,7 +17,7 @@ from typing import Any
 from datetime import datetime, timezone
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_CODE_NORMAL,
     NEW_AGENT_WORK_NORMAL,
     deprecate_mode,
@@ -235,7 +235,7 @@ def _build_project_lookup() -> tuple[
 
 def _repair_session_project_dir(metadata: dict[str, Any]) -> None:
     """Keep an explicitly bound session's directory consistent with its project ID."""
-    from jiuwenswarm.common.work_mode import is_default_project_id
+    from gateway.common.work_mode import is_default_project_id
     from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
 
     project_id = str(metadata.get("project_id") or "").strip()

@@ -4,8 +4,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from gateway.extensions.registry import ExtensionRegistry
 from gateway.message_handler.message_handler import MessageHandler
 
 

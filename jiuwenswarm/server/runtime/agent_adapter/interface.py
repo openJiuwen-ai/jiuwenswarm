@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.session_message import (
+from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
@@ -89,7 +89,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_team_mode as is_team_runtime_mode,

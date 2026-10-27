@@ -293,7 +293,7 @@ async def test_original_and_supplemental_quoted_inputs_have_separate_fixed_budge
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_origin", ["original", "supplement"])
 async def test_agent_message_body_stays_in_tool_history_instead_of_system_instructions(agent_origin):
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     guard, ctx = _guard_and_context()
     marker = {"message_id": "agent-message", "source_session_id": "source-session", "hop_count": 1}
@@ -359,7 +359,7 @@ async def test_completed_delivery_snapshot_is_full_scoped_and_consumed_once(monk
 @pytest.mark.asyncio
 @pytest.mark.parametrize("excluded", ["goal", "agent-original", "agent-only", "no-old-reply", "whitespace-reply"])
 async def test_reconciliation_gate_excludes_nonhuman_or_unhidden_work(excluded):
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     guard, ctx = _guard_and_context()
     marker = {"message_id": "agent-message", "source_session_id": "source"}

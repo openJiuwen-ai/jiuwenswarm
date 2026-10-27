@@ -21,8 +21,8 @@ from openjiuwen.core.foundation.llm.schema.message import (
 from openjiuwen.harness.schema.interaction import InputDispatchMode
 from openjiuwen.harness.prompts import PromptSection
 
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY, SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import SystemPromptPriority
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY, SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.runtime.session.model import SessionExecutionState
 from jiuwenswarm.runtime.session_input import (

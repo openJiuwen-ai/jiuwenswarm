@@ -20,12 +20,12 @@ from urllib.parse import SplitResult, urlsplit
 from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_single_agent_mode,
     is_team_mode,
 )
-from jiuwenswarm.common.security.ws_origin import (
+from gateway.common.security.ws_origin import (
     get_allowed_origin_hosts,
     is_allowed_browser_origin,
     is_origin_check_enabled,
@@ -35,7 +35,7 @@ from jiuwenswarm.observability.config import (
     load_trajectory_store_settings,
 )
 from jiuwenswarm.observability.store import AsyncTrajectoryReader
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from gateway.common.protocol_ids import is_valid_session_id
 
 if TYPE_CHECKING:
     from gateway.channel_manager.web.web_connect import WebChannel

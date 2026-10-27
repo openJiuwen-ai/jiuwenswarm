@@ -7,7 +7,7 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
-from jiuwenswarm.extensions.agentos.registry_watcher.client import RegistryWatcherClient
+from gateway.extensions.agentos.registry_watcher.client import RegistryWatcherClient
 
 logger = logging.getLogger(__name__)
 

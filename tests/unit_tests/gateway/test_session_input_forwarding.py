@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import Message, ReqMethod
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.message import Message, ReqMethod
 from gateway.message_handler.message_handler import MessageHandler
 
 

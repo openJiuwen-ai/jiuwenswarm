@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.mode_matrix import DEPRECATION_MAP, deprecate_mode
+from gateway.common.mode_matrix import DEPRECATION_MAP, deprecate_mode
 from jiuwenswarm.common.schema.message import Mode
 from gateway.message_handler.command_parser.slash_command import (
     ModeSubcommand,

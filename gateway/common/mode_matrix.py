@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
-from jiuwenswarm.common.work_mode import EXECUTION_WORK_MODES
+from gateway.common.work_mode import EXECUTION_WORK_MODES
 
 logger = logging.getLogger(__name__)
 

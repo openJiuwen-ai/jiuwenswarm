@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
+from gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.common.schema.agent import AgentRequest
 
 logger = logging.getLogger(__name__)

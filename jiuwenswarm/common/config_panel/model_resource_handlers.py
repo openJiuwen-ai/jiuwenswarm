@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.config import (
     delete_model_resource,
     upsert_model_group_resource,
@@ -13,7 +14,6 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
 )
-from jiuwenswarm.common.model_selection import ModelSelection
 
 RESOURCE_OPERATIONS = {
     "models.get": "models.get",
