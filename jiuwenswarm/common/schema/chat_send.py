@@ -146,6 +146,9 @@ class ChatSendParams(TypedDict, total=False):
     request_id: NotRequired[str]
     """请求 ID（interrupt resume / 问答回复场景关联）。"""
 
+    interrupt_id: NotRequired[str]
+    """所答中断的 id，取自 ``chat.ask_user_question`` 事件的同名字段；升级前挂起的会话没有。"""
+
     source: NotRequired[str]
     """来源标识；回答中断时取 ``gateway.common.interrupt_resume.INTERRUPT_RESUME_SOURCES`` 之一。"""
 

@@ -115,6 +115,7 @@ class InteractionAnswerInput:
     interaction_id: str
     answers: tuple[Mapping[str, Any], ...]
     source: str = ""
+    interrupt_id: str = ""
     approval_schema: str = ""
     evolution_meta: Mapping[str, Any] | None = None
     mode: str = ""
@@ -141,6 +142,7 @@ class InteractionAnswerInput:
         )
         object.__setattr__(self, "answers", validate_answer_items(self.answers))
         object.__setattr__(self, "source", _optional_text("source", self.source))
+        object.__setattr__(self, "interrupt_id", _optional_text("interrupt_id", self.interrupt_id))
         object.__setattr__(
             self,
             "approval_schema",
@@ -195,6 +197,7 @@ class InteractionAnswerInput:
             "query": "" if self.resumes_interrupted_turn else None,
         }
         optional = {
+            "interrupt_id": self.interrupt_id,
             "mode": self.mode,
             "work_mode": self.work_mode,
             "project_dir": self.project_dir,
