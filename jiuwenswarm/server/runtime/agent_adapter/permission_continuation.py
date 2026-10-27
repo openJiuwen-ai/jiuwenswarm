@@ -9,7 +9,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY, match_answers, pending_interrupts
 
 from jiuwenswarm.agents.harness.common.rails.permissions.root_ask_user import (
     ASK_USER_TOOL_NAME, ask_user_continuation, prepare_ask_user_resume,
@@ -346,17 +346,14 @@ def validate_manual_resume(loop_session: Any, query: InteractiveInput) -> None:
     """Retain the SDK's manual batch/subset contract during Smart activation."""
     state = loop_session.get_state(INTERRUPTION_KEY)
     interrupted = getattr(state, "interrupted_tools", None)
-    if not isinstance(interrupted, Mapping) or not query.user_inputs:
+    if not isinstance(interrupted, Mapping) or not (query.user_inputs or query.interrupt_answers):
         raise RootPermissionQueueError("interaction_resume_state_missing")
-    pending_ids = set()
     for entry in interrupted.values():
-        requests = getattr(entry, "interrupt_requests", None)
-        if not isinstance(requests, Mapping):
+        if not isinstance(getattr(entry, "interrupt_requests", None), Mapping):
             raise RootPermissionQueueError("interaction_resume_state_invalid")
-        pending_ids.update(requests)
-    # Manual SDK batches may answer a nonempty subset. Do not
-    # impose Smart's single-card or structured-ask contract.
-    if not set(query.user_inputs).issubset(pending_ids):
+    # Manual SDK batches may answer a nonempty subset, by tool call id or by
+    # interrupt id. Do not impose Smart's single-card or structured-ask contract.
+    if match_answers(query, pending_interrupts(state)).unmatched:
         raise RootPermissionQueueError("interaction_resume_identity_mismatch")
 
 
@@ -369,12 +366,11 @@ def prepare_nonpermission_resume(
 ) -> dict[str, Any]:
     if loop_session is None or getattr(query, "raw_inputs", None) is not None:
         raise RootPermissionQueueError("interaction_resume_state_missing")
-    submitted = getattr(query, "user_inputs", None)
     state = loop_session.get_state(INTERRUPTION_KEY)
     interrupted = getattr(state, "interrupted_tools", None)
-    if not isinstance(submitted, Mapping) or not isinstance(interrupted, Mapping):
+    if not isinstance(interrupted, Mapping):
         raise RootPermissionQueueError("interaction_resume_state_missing")
-    expected: list[tuple[str, str, dict[str, Any]]] = []
+    expected: list[tuple[str, str, dict[str, Any], str]] = []
     for entry in interrupted.values():
         requests = getattr(entry, "interrupt_requests", None)
         if not isinstance(requests, Mapping):
@@ -391,11 +387,13 @@ def prepare_nonpermission_resume(
                     str(inner_id or "").strip(),
                     str(getattr(tool_call, "name", "") or "").strip(),
                     dict(metadata),
+                    interrupt_request.interrupt_id,
                 )
             )
-    if len(expected) != 1 or set(submitted) != {expected[0][0]}:
+    matched = match_answers(query, pending_interrupts(state))
+    if len(expected) != 1 or list(matched.answers) != [expected[0][3]] or matched.unmatched:
         raise RootPermissionQueueError("interaction_resume_identity_mismatch")
-    tool_call_id, tool_name, metadata = expected[0]
+    tool_call_id, tool_name, metadata, interrupt_id = expected[0]
     marker = RootNonPermissionResume(
         root_session_id=root_session_id,
         tool_call_id=tool_call_id,
@@ -411,7 +409,7 @@ def prepare_nonpermission_resume(
             raise RootPermissionQueueError("interaction_resume_ask_state_invalid")
         prepared_ask = prepare_ask_user_resume(
             continuation=continuation,
-            user_input=query,
+            answer=matched.answers[interrupt_id],
         )
         if prepared_ask is None:
             raise RootPermissionQueueError("interaction_resume_ask_answer_invalid")
