@@ -68,8 +68,8 @@ class SessionMetadataRemoteProvider:
     优雅降级而非报错），其迁移随拆仓批次单独处理。
     """
 
+    @staticmethod
     def get_session_metadata(
-        self,
         session_id: str,
         cache_bust: bool = False,
         *,
@@ -84,8 +84,8 @@ class SessionMetadataRemoteProvider:
         )
         return {}
 
+    @staticmethod
     async def get_session_metadata_async(
-        self,
         session_id: str,
         cache_bust: bool = False,
         *,
