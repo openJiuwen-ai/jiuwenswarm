@@ -10,7 +10,7 @@ import type {
   DesignerGraphNode,
   DesignerNodeState,
 } from './executionGraphTypes';
-import { readMediaConfig } from './mediaNodeConfig';
+import { isUploadedMediaNode, readMediaConfig } from './mediaNodeConfig';
 
 export type DesignerPreviewKind = 'video' | 'image' | 'audio' | 'text' | 'file' | 'placeholder';
 
