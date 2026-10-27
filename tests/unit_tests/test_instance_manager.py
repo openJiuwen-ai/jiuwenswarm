@@ -1859,6 +1859,108 @@ class TestGatewayLock:
                 )
         finally:
             lock.release()
+
+    @staticmethod
+    def test_find_holder_tolerates_malformed_pid(tmp_path):
+        """A malformed pid in the holder file must degrade to None, not raise.
+
+        Regression for the review finding: ``int("abc")`` raises ValueError
+        (and non-scalar pids TypeError), which the old
+        ``except (json.JSONDecodeError, IOError)`` did not catch — a
+        hand-edited or partially written holder file would crash the desktop
+        preflight. Mirrors Electron's ``Number(data.pid) || 0`` tolerance.
+        """
+        from gateway.gateway_lock import GatewayLock
+
+        lock_path = tmp_path / ".gateway.lock"
+        for bad_pid in ("abc", "12.5", [1], {"x": 1}):
+            lock_path.write_text(
+                json.dumps(
+                    {
+                        "pid": bad_pid,
+                        "started_at": time.time(),
+                        "workspace": str(tmp_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assert GatewayLock.find_holder(tmp_path) is None, bad_pid
+
+    @staticmethod
+    def test_acquire_tolerates_malformed_pid_while_locked(tmp_path):
+        """acquire must not raise when a held lock carries a malformed pid.
+
+        The foreign OS lock is genuinely held while the metadata says
+        pid="abc": the AlreadyLocked branch must treat it as an unknown
+        holder and time out instead of propagating ValueError.
+        """
+        from gateway.gateway_lock import GatewayLock
+
+        ctx = multiprocessing.get_context("spawn")
+        result_queue = ctx.Queue()
+        release_event = ctx.Event()
+        holder = ctx.Process(
+            target=_hold_gateway_lock,
+            args=(str(tmp_path), result_queue, release_event, 5.0),
+        )
+        holder.start()
+        try:
+            assert result_queue.get(timeout=10.0) is True
+
+            # Corrupt the metadata while the OS lock stays held by the child.
+            (tmp_path / ".gateway.lock").write_text(
+                json.dumps(
+                    {
+                        "pid": "abc",
+                        "started_at": time.time(),
+                        "workspace": str(tmp_path),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            lock = GatewayLock(tmp_path)
+            assert lock.acquire(timeout=0.6) is False
+        finally:
+            release_event.set()
+            holder.join(timeout=10.0)
+            if holder.is_alive():
+                holder.terminate()
+                holder.join(timeout=5.0)
+
+    @staticmethod
+    def test_lock_module_does_not_import_instance_manager():
+        """Importing gateway.gateway_lock must not load jiuwenswarm.instance_manager.
+
+        Owning GatewayLock inside the gateway package exists precisely so
+        Gateway startup skips the instance_manager package init; this guards
+        against an import silently creeping back into the lock module (or its
+        dependency chain) and reintroducing the startup coupling.
+        """
+        import subprocess
+        import sys
+
+        repo_root = Path(__file__).resolve().parents[2]
+        code = (
+            "import sys; import gateway.gateway_lock; "
+            "sys.exit(0 if 'jiuwenswarm.instance_manager' not in sys.modules "
+            "else 1)"
+        )
+        env = dict(os.environ)
+        env["PYTHONPATH"] = str(repo_root) + os.pathsep + env.get("PYTHONPATH", "")
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=env,
+            cwd=str(repo_root),
+        )
+        assert result.returncode == 0, (
+            "gateway.gateway_lock must not load jiuwenswarm.instance_manager: "
+            f"{result.stderr.strip()}"
+        )
+
+
 class TestIssue2788SafeStop:
     """Regression coverage for ownership-validated setsid cleanup."""
 

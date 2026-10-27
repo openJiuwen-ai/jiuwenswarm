@@ -63,6 +63,18 @@ def _is_process_alive(pid: int) -> bool:
         return False
 
 
+def _holder_pid(data: Any) -> int:
+    """Best-effort holder pid; malformed metadata yields 0 (lock looks free).
+
+    Mirrors Electron's ``Number(data.pid) || 0``: a hand-edited or partially
+    written holder file must degrade to "no holder" instead of raising.
+    """
+    try:
+        return int(data.get("pid", 0) or 0) if isinstance(data, dict) else 0
+    except (ValueError, TypeError):
+        return 0
+
+
 class GatewayLock:
     """Per-workspace singleton lock for the Gateway process.
 
@@ -109,7 +121,6 @@ class GatewayLock:
         self.lock_path = workspace / GATEWAY_LOCK_FILENAME
         self._os_lock_path = workspace / (GATEWAY_LOCK_FILENAME + ".lock")
         self._lock: Optional[portalocker.Lock] = None
-        self._acquired = False
 
     def acquire(self, timeout: float = GATEWAY_LOCK_ACQUIRE_TIMEOUT) -> bool:
         """Acquire exclusive lock for this workspace.
@@ -136,10 +147,10 @@ class GatewayLock:
                 flags=portalocker.LOCK_EX | portalocker.LOCK_NB,
             )
             try:
-                fh = lock.acquire()
+                lock.acquire()
             except portalocker.exceptions.AlreadyLocked:
                 holder = self._read_holder()
-                pid = int(holder.get("pid", 0) or 0) if holder else 0
+                pid = _holder_pid(holder)
                 if pid == os.getpid():
                     # Self-owned: an os.execv restart reuses the same PID while
                     # the previous image's lock may still be held. We already
@@ -148,7 +159,6 @@ class GatewayLock:
                         "Gateway lock already held by this process, path=%s",
                         self.lock_path,
                     )
-                    self._acquired = True
                     return True
                 if time.monotonic() >= deadline:
                     logger.error(
@@ -176,7 +186,6 @@ class GatewayLock:
             # object alive for the entire Gateway lifetime. The metadata file
             # (.gateway.lock) is never OS-locked, so it stays readable.
             try:
-                fh.seek(0)  # touch/keep companion file content sane
                 self.lock_path.write_text(
                     json.dumps(
                         {
@@ -196,7 +205,6 @@ class GatewayLock:
                 continue
 
             self._lock = lock
-            self._acquired = True
             logger.info(
                 "Gateway lock acquired, pid=%d, path=%s",
                 os.getpid(),
@@ -206,33 +214,29 @@ class GatewayLock:
 
     def release(self) -> None:
         """Release the lock if we own it."""
+        if self._lock is None:
+            return
+        # Clear the holder marker so preflight checks see a free lock,
+        # then drop the OS lock (files are kept, never unlinked).
         try:
-            if self._lock is not None:
-                # Clear the holder marker so preflight checks see a free lock,
-                # then drop the OS lock (files are kept, never unlinked).
-                try:
-                    self.lock_path.write_text(
-                        json.dumps(
-                            {
-                                "pid": 0,
-                                "started_at": 0,
-                                "workspace": str(self.lock_path.parent),
-                            },
-                            indent=2,
-                        ),
-                        encoding="utf-8",
-                    )
-                except Exception as exc:  # noqa: BLE001 - cleanup must not raise
-                    logger.debug(
-                        "Gateway lock marker clear error (ignored): %s", exc
-                    )
-                try:
-                    self._lock.release()
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("Gateway lock release error (ignored): %s", exc)
-                self._lock = None
-        finally:
-            self._acquired = False
+            self.lock_path.write_text(
+                json.dumps(
+                    {
+                        "pid": 0,
+                        "started_at": 0,
+                        "workspace": str(self.lock_path.parent),
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001 - cleanup must not raise
+            logger.debug("Gateway lock marker clear error (ignored): %s", exc)
+        try:
+            self._lock.release()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Gateway lock release error (ignored): %s", exc)
+        self._lock = None
 
     @staticmethod
     def find_holder(workspace: Path) -> Optional[Dict[str, Any]]:
@@ -253,7 +257,7 @@ class GatewayLock:
             return None
         try:
             data = json.loads(lock_path.read_text(encoding="utf-8"))
-            pid = int(data.get("pid", 0) or 0) if isinstance(data, dict) else 0
+            pid = _holder_pid(data)
             if pid <= 0 or not _is_process_alive(pid):
                 return None
             # PID is alive, but the OS lock may have been released after a
