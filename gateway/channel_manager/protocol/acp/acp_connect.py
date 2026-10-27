@@ -11,12 +11,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early
-
-parse_dotenv_early("jiuwenswarm-acp-channel")
-
-# --- Now safe to import jiuwenswarm modules ---
 from openjiuwen_protocol.e2a.acp.protocol import (
     build_acp_initialize_result,
     build_acp_prompt_result,
@@ -47,6 +41,12 @@ from openjiuwen_protocol.e2a.models import (
 )
 from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
 
+# --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from jiuwenswarm.dotenv_early import parse_dotenv_early
+
+parse_dotenv_early("jiuwenswarm-acp-channel")
+
+# --- Now safe to import jiuwenswarm modules ---
 from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget

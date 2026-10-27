@@ -38,6 +38,8 @@ _STARTUP_IMPORT_PHASES: list[tuple[str, float]] = [("entry", _PROCESS_START_T0)]
 def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from gateway.common.ws_diagnostics import (
@@ -69,18 +71,13 @@ if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
     prepare_runtime_workspace(cleanup_stale_descs=False)
 _mark_startup_import_phase("runtime_workspace_ready")
 
-from openjiuwen.core.common.logging import (
-    LogManager,  # pylint: disable=wrong-import-order
-)
+from openjiuwen.core.common.logging import LogManager  # pylint: disable=wrong-import-order
 
 from gateway.channel_manager.base import BaseWebChannel
 
 _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 
 # --- Now safe to import jiuwenswarm modules ---
-from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import Message, Mode, ReqMethod
-
 from gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
 from gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
