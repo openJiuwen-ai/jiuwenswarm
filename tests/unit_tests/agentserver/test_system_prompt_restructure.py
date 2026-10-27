@@ -221,6 +221,58 @@ async def test_response_prompt_rail_splits_input_and_output_rules():
 
 
 @pytest.mark.asyncio
+async def test_response_prompt_rail_omits_send_file_for_xiaoyi(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"channels": {"xiaoyi": {"send_file_allowed": True}}},
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+    assert "生成并投递文件" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_fails_closed_without_config(monkeypatch):
+    def unavailable_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        unavailable_config,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+
+
+@pytest.mark.asyncio
 async def test_symphony_orchestration_rail_respects_config_snapshot():
     enabled_builder = SystemPromptBuilder(language="cn")
     enabled_agent = _FakeAgent(enabled_builder)
