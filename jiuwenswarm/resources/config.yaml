@@ -24,6 +24,12 @@ sandbox:
   url: http://127.0.0.1:8321
   type: jiuwenbox
   policy_file: windows-policy.yaml
+  # 空闲 reaper 周期(秒):稳态沙箱数 ≈ 创建速率 × TTL,须与 Box 内存容量匹配
+  # (≈14.4MB/个)。两个键必须留在模板里——_deep_merge 会剔除 override 独有键,
+  # 缺席即 update_conf 写入的值永远到不了运行时(issue#5718)。部署时由
+  # update_conf 按 JIUWENBOX_IDLE_TTL_SECONDS/CHECK_INTERVAL_SECONDS 覆写。
+  idle_ttl_seconds: 180
+  idle_check_interval: 60
 
 a2ui:
   enabled: false
@@ -36,7 +42,7 @@ symphony:
   enabled: false
   paths:
     skills_root: ""
-    score_dir: ""
+    graph_dir: ""
 
   fingerprint:
     scan:
@@ -265,7 +271,7 @@ memory:
   # ------------------------------------------------------------
   # 用户画像（用户级记忆概览，OfficeAceUserProfileRail 自动注入 prompt）
   # ------------------------------------------------------------
-  # 独立于 engine/external：不要求 memory.engine=external 即可生效。
+  # 要求 memory.engine=external/both 且 external.provider=officeace_cloud。
   # endpoint/api_key 任一为空 → rail 不挂载（零残留，对话照常）。
   # user_id 复用上层 memory.external.user_id（${MEMORY_USER_ID:-__default__}），
   # 不在此段单独配置。
@@ -668,6 +674,7 @@ react:
       - read_memory                 # 间接调用（尤其中小模型），长期记忆功能形同虚设
       - write_memory
       - edit_memory
+      - external_memory_search
     enable_for_models:             # 模型白名单（空=全部启用）
       - glm
     subagents:                      # 子 agent 延迟加载配置
@@ -1763,17 +1770,18 @@ modes:
 # 演进）。行为定义（rail 白名单 / react 覆盖）硬编码在 JiuwenSwarmFlashAdapter
 # 类常量，不在此配置。enabled 控制「是否对普通 agent 对话注入 flash」；
 # skill_selection 仅配置 Flash 内可选的已安装技能检索模块。
-# 触发点在 mode 解析层（resolve_agent_request_mode）：置 true 时，所有归一到
-# agent 的对话请求被改写为 flash mode（无需前端发 mode=flash，配置即触发）；
-# code / team 路径不受影响。置 false（默认）时维持原 agent 行为。
+# 触发点在 mode 解析层：独立部署的普通单 Agent 请求可按此配置选择 Flash。
+# OfficeClaw/PC 前台仍按显式 mode 选择；Code、Team、显式 Plan 与已有会话绑定
+# 保持原规则。置 false（默认）时，普通单 Agent 默认走原 agent 实现。
 #   enabled: false（默认）— 普通对话走 DeepAdapter（全量 rail + task loop）。
 #   enabled: true        — 普通对话注入 flash，走 FlashAdapter facade。
 flash:
-  enabled: false
+  # 沙箱启动时注入；缺省关闭，配置加载后为布尔值。
+  enabled: ${JIUWENSWARM_FLASH_ENABLED:-false}
   # 必须在模板声明：启动清理及配置合并会删除模板中不存在的字段。
   # 模块可独立删除；这些默认值不启用功能，也不影响其他 Agent mode。
   skill_selection:
-    enabled: false
+    enabled: ${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}
     catalog_check_interval_s: 5.0
     candidate_k: 5
     text_max_chars: 2000

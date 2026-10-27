@@ -575,10 +575,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
         token = set_session_id(sid)
         try:
             await db.initialize()
-            # Ensure the per-session dynamic task table is mapped (checkfirst);
-            # historical sessions already have the table from the live run.
-            await db.create_cur_session_tables()
-
+            # DAO model factories map historical tables without bind-time DDL.
             team_info = await db.team.get_team(tname)
             leader_name = (
                 str(getattr(team_info, "leader_member_name", "") or "").strip()
@@ -608,7 +605,11 @@ class TeamMonitorHandler(BaseMonitorHandler):
                         "team_name": t.team_name,
                         **_task_text_field("title", t.title),
                         **_task_text_field("content", t.content),
-                        "status": t.status,
+                        "status": (
+                            "in_progress"
+                            if t.status in {"claimed", "started", "plan_approved"}
+                            else t.status
+                        ),
                         "assignee": t.assignee,
                         "updated_at": t.updated_at,
                     }
@@ -636,8 +637,8 @@ class TeamMonitorHandler(BaseMonitorHandler):
         """monitor 不在时直查 ``team.db`` 取任务依赖边（team.tasks.dependencies RPC 用）。
 
         镜像 ``get_team_snapshot_from_db`` 的 contextvar 模式：绑定 ``session_id`` 上下文
-        后直查 per-session 动态表 ``team_task_dependency_<hash>``。``create_cur_session_tables``
-        已映射 dep 表（agent-core engine.py:753/759），故历史会话的依赖行可读到。
+        后通过 DAO 的 session model 直查已有动态表 ``team_task_dependency_<hash>``，
+        不触发绑定阶段的建表操作。
 
         Args:
             session_id: 会话 id，用于解析动态 task_dependency 表后缀。
@@ -667,9 +668,6 @@ class TeamMonitorHandler(BaseMonitorHandler):
         token = set_session_id(sid)
         try:
             await db.initialize()
-            # Ensure the per-session dynamic dependency table is mapped (checkfirst);
-            # create_cur_session_tables maps dep_model (agent-core engine.py:753/759).
-            await db.create_cur_session_tables()
             edges = await db.task.get_team_dependencies(tname) or []
             return [
                 {

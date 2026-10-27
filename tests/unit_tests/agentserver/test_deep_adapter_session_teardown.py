@@ -16,6 +16,10 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     """Create a bare adapter with internal state set via setattr."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     state.setdefault("_sessions_awaiting_tool_permission", set())
+    # Skill allow-list stamp bookkeeping (mirrors __init__; __new__ skips it).
+    state.setdefault("_skill_enabled_version", 0)
+    state.setdefault("_session_skill_versions", {})
+    state.setdefault("_session_skill_refresh_failures", {})
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
@@ -153,6 +157,8 @@ async def test_cleanup_session_adapter_removes_idle_child_adapter() -> None:
         _session_adapter_last_used={"sess_exit": 1.0},
         _session_adapter_versions={"sess_exit": 1},
         _session_adapter_reload_failures={"sess_exit": (1, 1.0)},
+        _session_skill_versions={"sess_exit": 1},
+        _session_skill_refresh_failures={"sess_exit": (1, 1.0)},
     )
 
     removed = await getattr(parent, "cleanup_session_adapter")("sess_exit")
@@ -164,6 +170,8 @@ async def test_cleanup_session_adapter_removes_idle_child_adapter() -> None:
     assert getattr(parent, "_session_adapter_last_used") == {}
     assert getattr(parent, "_session_adapter_versions") == {}
     assert getattr(parent, "_session_adapter_reload_failures") == {}
+    assert getattr(parent, "_session_skill_versions") == {}
+    assert getattr(parent, "_session_skill_refresh_failures") == {}
 
 
 @pytest.mark.asyncio

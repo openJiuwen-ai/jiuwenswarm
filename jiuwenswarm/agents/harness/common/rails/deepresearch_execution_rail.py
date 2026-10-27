@@ -184,6 +184,21 @@ def _workflow_id(session: Any, tool_call_id: str) -> str:
     return _load_aliases(session).get(tool_call_id, tool_call_id)
 
 
+def _history_tool_call_id(tool_call_id: str, workflow_id: str) -> str:
+    """tool_msg 应挂的历史 tool_call_id：须与 assistant 消息 tool_calls
+    的原始 id 对齐，否则被 StreamEventRail 孤儿清理删除。
+
+    resume 执行时 ctx.inputs.tool_call 是 TIE 克隆件，id 已被改写为
+    interaction_id（{workflow_id}_interaction_N），须映射回原始 id。
+    bridge 场景（模型换新 id 重试被桥接旧 state）例外：本次调用 id
+    本身就是历史 id，原样保留——故按 interaction 后缀模式判断，而非
+    "是否在 aliases 中"（bridge 的 alias 不带该后缀）。
+    """
+    if workflow_id and tool_call_id.startswith(f"{workflow_id}_interaction_"):
+        return workflow_id
+    return tool_call_id
+
+
 # 修复点3.2：error 相位入桥候选。取消转译的 stopped 写入（phase=new）
 # 被同 revision 的 error 覆盖写吞掉时，旧 state 实际存有可恢复停止快照，
 # error 候选仍可桥回复用。cancelled 是用户显式放弃的死终态，不入候选。
@@ -476,6 +491,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 return
             tool_call_id = _tool_call_id(ctx)
             workflow_id = _workflow_id(ctx.session, tool_call_id)
+            # tool_msg 必须挂历史原始 id（resume 时 ctx 携带的是 TIE
+            # 克隆件的 interaction_id），否则被孤儿清理删除
+            history_id = _history_tool_call_id(tool_call_id, workflow_id)
             state = payload.get("state")
             states = _load_states(ctx.session)
             if isinstance(state, Mapping):
@@ -513,7 +531,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 # 调用 id，与 assistant 消息中的 tool_calls 对齐。
                 ctx.inputs.tool_msg = ToolMessage(
                     content=DEEPRESEARCH_INTERACTION_PLACEHOLDER,
-                    tool_call_id=tool_call_id,
+                    tool_call_id=history_id,
                 )
                 return
 
@@ -543,7 +561,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
                         "主题，同样会自动认领）。恢复将从停止处继续，已完成"
                         "阶段不会重跑。"
                     ),
-                    tool_call_id=tool_call_id,
+                    tool_call_id=history_id,
                 )
                 return
 
@@ -589,7 +607,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
                         if isinstance(content, str) and content.strip()
                         else "DeepResearch 任务已完成，报告已交付。"
                     ),
-                    tool_call_id=tool_call_id,
+                    tool_call_id=history_id,
                 )
 
             if isinstance(content, str) and content.strip():

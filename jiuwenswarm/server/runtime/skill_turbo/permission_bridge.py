@@ -134,8 +134,9 @@ def build_interaction_output_from_abort(
     ``InteractionOutput(id=tcid, value=tool_call_request)`` 并放入
     ``OutputSchema(type="__interaction__", payload=interaction_payload)``。
 
-    供 SkillTurbo executor（中断侧主动写流）和 DeepAdapter（``_emit_skill_turbo_hitl_chunks``
-    二次中断兜底）共用，保持构造逻辑一致。
+    Path A 删除后暂无生产调用方（发卡单路 owner 已收口为 harness
+    ``__interaction__`` 转换，[[S_06]] N8）；保留构造实现待未来消费方，
+    长期无消费者可随下次死代码清理删除。
 
     Args:
         exc: ``AbortError``（其 cause 链含 ``ToolInterruptException``）。

@@ -186,6 +186,10 @@ RULES: list[tuple[str, str, str | None, int, str | None, int]] = [
     ("diff.hard", r"(?i)\b(complex|complicated|advanced|复杂|架构)\b", None, 0, "hard", 2),
 ]
 
+# 长度信号阈值，单位同 ``estimate_tokens`` 的返回值（≈ token 数：CJK 字算 1，其余 1/4）。
+# 这两个数原按 ``TiktokenCounter`` 的真实 token 数标定；CJK 加权估算对中文 ≈ 真实 token 数
+# （cl100k 对常见汉字基本 1 字 1 token），故沿用不改。仅英文/代码类文本会被高估约 1.6×
+# （词长 > 4 字符时 len//4 偏大），即英文 prompt 会更早进 medium/hard —— 产品以中文为主，可接受。
 LENGTH_SIGNAL: dict[str, int] = {
     "easy_threshold": 20,
     "medium_threshold": 80,
@@ -329,14 +333,22 @@ def _tfidf_classify(prompt_text: str) -> tuple[str, float]:
     return max(scores, key=scores.get), max(scores.values())
 
 
-def _count_tokens(prompt_text: str) -> int:
-    """token 数（TiktokenCounter 不可用时按 4 字符 / token 粗估）。"""
-    try:
-        from openjiuwen.core.context_engine import TiktokenCounter
+def estimate_tokens(text: str) -> int:
+    """粗估文本 token 数：CJK 字算 1，其余算 1/4（零依赖、不联网）。
 
-        return int(TiktokenCounter().count(prompt_text))
-    except Exception:
-        return max(1, len(prompt_text) // 4)
+    原先走 ``TiktokenCounter``（openjiuwen 内核），但它**在构造函数里**急切调用
+    ``tiktoken.get_encoding()``：缓存未命中时会同步联网下载 BPE 词表（默认缓存目录
+    ``%TEMP%/data-gym-cache`` 不随包分发，``requests.get`` 也未设超时），冷缓存 + 无外网时
+    会阻塞调用线程。分类器只用这个数做长度信号（见 ``LENGTH_SIGNAL`` 阈值），近似即可。
+
+    而不带 CJK 权重、直接按 4 字符 / token 估会**低估中文约 4 倍**：实测「估算 / tiktoken 真值」
+    对中文 query 只有 0.21，即要 320 字才判 hard。故 CJK 单字计 1 —— 实测中文比值回到
+    0.82–0.94、中英混 1.10，同时英文/代码段仍保留 4 字 / token 的语义。
+    """
+    if not text:
+        return 0
+    cjk = sum(len(seq) for seq in _CJK_PAT.findall(text))
+    return max(1, cjk + (len(text) - cjk) // 4)
 
 
 def _lookup_score(category: str, difficulty: str, score_table: dict, default_score: dict) -> int:
@@ -378,7 +390,7 @@ async def classify(prompt_text: str) -> tuple[int, str, str]:
         if diff is not None:
             difficulty_scores[diff] = difficulty_scores.get(diff, 0) + diff_score
 
-    token_count = _count_tokens(prompt_text)
+    token_count = estimate_tokens(prompt_text)
     easy_threshold = LENGTH_SIGNAL.get("easy_threshold", 20)
     medium_threshold = LENGTH_SIGNAL.get("medium_threshold", 80)
     if token_count > medium_threshold:

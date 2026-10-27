@@ -267,21 +267,6 @@ def _refresh_common_logger(log_config_mod: Any, log_manager_cls: Any) -> None:
     common_logger.reconfigure(log_config_mod.log_config.get_common_config())
 
 
-def _patch_llm_provider_aliases(model_mod: Any) -> None:
-    """Restore provider aliases that existed in the vendored openjiuwen copy."""
-    registry = getattr(model_mod, "_CLIENT_TYPE_REGISTRY", None)
-    if not isinstance(registry, dict):
-        return
-
-    openai_client = registry.get("OpenAI")
-    if openai_client is None:
-        return
-
-    registry.setdefault("OpenRouter", openai_client)
-    registry.setdefault("openrouter", openai_client)
-    registry.setdefault("openai", openai_client)
-
-
 def _tool_param_score(params: Any) -> int:
     """Heuristic score for tool parameter richness (higher is better)."""
     if params is None:
@@ -415,7 +400,6 @@ def apply_openjiuwen_monkeypatch() -> None:
         default_impl_mod = importlib.import_module("openjiuwen.core.common.logging.default.default_impl")
         log_config_mod = importlib.import_module("openjiuwen.core.common.logging.default.log_config")
         manager_mod = importlib.import_module("openjiuwen.core.common.logging.manager")
-        model_mod = importlib.import_module("openjiuwen.core.foundation.llm.model")
         ability_manager_mod = importlib.import_module("openjiuwen.core.single_agent.ability_manager")
         base_model_client_mod = importlib.import_module(
             "openjiuwen.core.foundation.llm.model_clients.base_model_client"
@@ -427,7 +411,6 @@ def apply_openjiuwen_monkeypatch() -> None:
     _patch_log_config(log_config_mod)
     _patch_default_logger(default_impl_mod)
     _refresh_common_logger(log_config_mod, manager_mod.LogManager)
-    _patch_llm_provider_aliases(model_mod)
     _patch_ability_manager(ability_manager_mod)
     _patch_base_model_client(base_model_client_mod)
     _PATCH_APPLIED = True

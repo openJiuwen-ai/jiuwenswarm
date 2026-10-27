@@ -94,6 +94,46 @@ export interface GitTurnDiffList {
   total: number;
 }
 
+export type GitTurnChangeAction = 'discard' | 'redo';
+
+export interface GitDiscardTurnChangesResult {
+  session_id: string;
+  turn_index: number;
+  change_set_id: string | null;
+  restored_files: string[];
+  deleted_files: string[];
+  errors: unknown[];
+  file_ops_truncated: boolean;
+  global_file_ops_truncated: false;
+  partial: boolean;
+}
+
+export interface GitRedoTurnChangesResult {
+  session_id: string;
+  turn_index: number;
+  change_set_id: string | null;
+  redone_files: string[];
+  deleted_files: string[];
+  errors: unknown[];
+  partial: boolean;
+}
+
+export interface GitCommitResult {
+  committed: true;
+  commit_hash: string | null;
+  amended: boolean;
+  status: GitRepoStatus;
+}
+
+export interface GitPushResult {
+  pushed: true;
+  remote: string;
+  branch: string | null;
+  deleted: boolean;
+  upstream_set: boolean;
+  status: GitRepoStatus;
+}
+
 export type CodeReviewTarget =
   | {
       source: 'last_turn';

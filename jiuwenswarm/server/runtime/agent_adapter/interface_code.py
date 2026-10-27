@@ -58,6 +58,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _deep_agent_kv_cache_affinity_config,
     _optional_enable_subagent_runtime,
     _resolve_instance_config_base,
+    build_progressive_tool_rail_from_config,
     parse_int,
 )
 from jiuwenswarm.agents.harness.code.prompt.code_prompt_builder import (
@@ -74,6 +75,7 @@ from jiuwenswarm.agents.harness.common.rails import (
     StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
+from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import ProgressiveToolRail
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
     get_office_ace_user_profile_config,
 )
@@ -281,6 +283,24 @@ whether to begin — the user has already read and approved it. This turn's outp
 should be the work itself and its results. Use ask_user only if execution is
 genuinely blocked.
 </system-reminder>"""
+
+
+# Code prompts refer to these tools directly. Keep their schemas available
+# without requiring discovery, including after the shared config reload path.
+_CODE_EAGER_TOOLS = (
+    "lsp",
+    "coding_memory_read",
+    "coding_memory_write",
+    "coding_memory_edit",
+    "switch_mode",
+    "enter_plan_mode",
+    "exit_plan_mode",
+)
+
+
+def _normalize_code_sub_mode(sub_mode: str | None) -> str:
+    """Keep creation and reload profile checks identical, including defaults."""
+    return str(sub_mode or "normal").strip().lower() or "normal"
 
 
 # 名字 → 构建方法映射（rail/tool 名字与类方法名对照）
@@ -539,7 +559,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # coding_memory/.
         self._session_instance_config = dict(config or {}) if isinstance(config, dict) else None
         self._session_instance_mode = mode
-        self._session_instance_sub_mode = sub_mode
+        # Skill/plugin installs rebuild through the facade with sub_mode=None.
+        # Preserve the profile and pass it to this build as well as new sessions.
+        if sub_mode is not None:
+            self._session_instance_sub_mode = sub_mode
+        sub_mode = self._session_instance_sub_mode
 
         await self.set_checkpoint()
 
@@ -748,7 +772,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
         ]
 
-        normalized_sub_mode = str(sub_mode or "normal").strip().lower() or "normal"
+        normalized_sub_mode = _normalize_code_sub_mode(sub_mode)
         # The CodeAdapter may be rebuilt through JiuWenSwarm.create_instance(),
         # whose compatibility default is mode="agent" even when this adapter
         # already owns a Code session.  Sub-mode is the reliable profile key:
@@ -813,6 +837,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 rail_name,
             )
 
+        # Filter single-agent MCP schemas from the first turn. Team members
+        # need their collaboration/workspace tools directly visible; their
+        # tool policy belongs to the team assembly path.
+        if normalized_sub_mode in {"normal", "plan"}:
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_progressive_tool_rail",
+                    self._build_progressive_tool_rail,
+                    {"config": config, "sub_mode": normalized_sub_mode},
+                )
+            )
+
         # Keep the unified react.disabled_tools policy consistent with agent
         # mode. Its low priority makes it run after fixed and dynamic rails
         # have registered their tools.
@@ -825,6 +861,35 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
 
         return self._instantiate_rails(rail_infos, config_base)
+
+    def _build_progressive_tool_rail(
+        self, config: dict[str, Any], *, sub_mode: str | None = None
+    ) -> ProgressiveToolRail | None:
+        """Share lazy-loading policy while preserving code's direct tools."""
+        # Creation passes its profile explicitly; reload uses the saved one.
+        # Returning None also retires a rail mounted by an older version.
+        normalized_sub_mode = _normalize_code_sub_mode(
+            sub_mode if sub_mode is not None else self._session_instance_sub_mode
+        )
+        if normalized_sub_mode not in {"normal", "plan"}:
+            return None
+        # Reuse the common policy factory; emit only the code adapter mount log.
+        rail = build_progressive_tool_rail_from_config(
+            config,
+            language=self._resolve_runtime_language(),
+            agent_id=self._tool_owner_id(),
+            agent_card_id=self._tool_owner_id(),
+            deepresearch_context_provider=self._get_deepresearch_tool_context,
+            active_skill_provider=self._get_progressive_active_skill,
+        )
+        if rail is not None:
+            rail.eager_tools = list(dict.fromkeys([*rail.eager_tools, *_CODE_EAGER_TOOLS]))
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] ProgressiveToolRail mounted mode=%s sub_mode=%s",
+                "progressive" if rail.enabled else "skill-gate-only",
+                normalized_sub_mode,
+            )
+        return rail
 
     # ─── Code 专属 Rail 构建 ────────────────
 
@@ -1359,6 +1424,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         CodeAgentRail 和 PlanApprovalInterruptRail 不在其中。覆盖此方法确保 config reload
         时这些 rail 被正确重新初始化。
         """
+        if (
+            _normalize_code_sub_mode(self._session_instance_sub_mode) not in {"normal", "plan"}
+            and "tool_lazy_load" not in config
+        ):
+            # Partial reloads normally preserve this rail. Code team profiles
+            # must still retire historical mis-mounts, without mutating config.
+            config = {**config, "tool_lazy_load": {}}
         rails_list, rails_to_unregister = super()._get_current_agent_rails(
             config, config_base
         )
@@ -1708,6 +1780,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         force_english_runtime_prompt: bool = True,
     ) -> None:
         """Apply the code runtime profile to a team member DeepAgent."""
+        self._session_instance_mode = "code"
+        self._session_instance_sub_mode = "team"
         if skill_manager is not None and hasattr(self, "set_skill_manager"):
             self.set_skill_manager(skill_manager)
 
@@ -1794,7 +1868,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         setattr(agent, "_jiuwenswarm_adapter_mode", "code")
         setattr(agent, "_jiuwenswarm_code_project_dir", self._project_dir or self._workspace_dir)
         setattr(agent, "_jiuwenswarm_project_dir", self._project_dir or self._workspace_dir)
-        setattr(agent, "_jiuwenswarm_code_team_member", True)
 
         logger.info(
             "[JiuwenSwarmCodeAdapter] configured team member as code profile: "

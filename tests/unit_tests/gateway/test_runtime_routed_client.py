@@ -143,6 +143,13 @@ async def test_reverse_rpc_over_real_http_sse(monkeypatch, stream):
                 received.append(params["jsonrpc_id"])
                 assert output.complete_jsonrpc_response(params["jsonrpc_id"], params["response"])
                 return {"ok": True, "data": {}}, 200
+            # reverse_rpc_ready 在 push 流断开-重连的空窗内瞬态为 False
+            # （SSE EOF → 注销 → 重连 → 注册）。瞬时断言会把该罕见窗口放大成
+            # CI 并行负载下的 flaky；改为有界等待，仅当持续未注册才判定违反契约。
+            for _ in range(100):
+                if registry.reverse_rpc_ready():
+                    break
+                await asyncio.sleep(0.01)
             assert registry.reverse_rpc_ready(), "chat must not race subscriber registration"
             result = await GatewayA2AOutboundToolBackend().call(
                 A2A_TOOL_FIND_AGENTS,

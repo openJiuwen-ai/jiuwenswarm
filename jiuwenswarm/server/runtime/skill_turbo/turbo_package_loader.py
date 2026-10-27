@@ -230,6 +230,24 @@ def discover_external_turbo_skills(
             if not codes_root.is_dir():
                 continue
             meta = load_skill_meta(skill_dir.name, turbo_dir)
+            # enable_turbo 开关：true / 缺省 = 允许该技能走 turbo 加速（向后
+            # 兼容，pptx-craft / xlsx-craft 等未声明字段的技能保持启用）；
+            # 显式 false = 跳过该技能——既不出现在 skill_acceleration_exec 的
+            # 描述清单（skill_turbo_tools._collect_skill_entries 源二），也不
+            # 注册进 environment 的 skills 路由池（planner 无匹配 →
+            # SkillTurboNotHandled → interface 层降级为标准流程）。
+            # 开关翻转即刻生效（无需重启）：发现阶段每次重扫（meta.json 每次
+            # 重读），技能从 discovered 消失/出现即改变 _external_scan_cache
+            # 的 mtime 快照 key 集合（必 miss 走全量重扫）；仅工具描述清单
+            # 受 _entries_cache 60s TTL 滞后。
+            if meta.get("enable_turbo") is False:
+                logger.info(
+                    "[TurboPackageLoader] skip turbo-disabled skill "
+                    "(enable_turbo=false): %s (%s)",
+                    skill_dir.name,
+                    turbo_dir,
+                )
+                continue
             for name_dir in sorted(codes_root.iterdir()):
                 if not name_dir.is_dir():
                     continue

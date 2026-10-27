@@ -1310,10 +1310,26 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     }
 
 
-def test_web_does_not_expose_symphony_evolution_rpc_methods():
-    assert "symphony.evolution_status" not in app_web_handlers._FORWARD_REQ_METHODS
-    assert "symphony.evolution_record_outcome" not in app_web_handlers._FORWARD_REQ_METHODS
-    assert "symphony.evolution_rebuild" not in app_web_handlers._FORWARD_REQ_METHODS
+def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
+    skill_graph_methods = {
+        "skills.graph.build",
+        "skills.graph.status",
+        "skills.graph.get",
+        "skills.graph.cancel",
+    }
+    assert skill_graph_methods.issubset(app_web_handlers._FORWARD_REQ_METHODS)
+
+    legacy_symphony_methods = {
+        "symphony.build_score",
+        "symphony.pause_build",
+        "symphony.score_status",
+        "symphony.graph",
+        "symphony.plan",
+        "symphony.evolution_status",
+        "symphony.evolution_record_outcome",
+        "symphony.evolution_rebuild",
+    }
+    assert legacy_symphony_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
 
 
 def test_web_forwards_only_canonical_personal_context_rpc_methods():

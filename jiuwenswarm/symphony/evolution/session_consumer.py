@@ -19,7 +19,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 from jiuwenswarm.symphony.config import load_symphony_config
 from jiuwenswarm.symphony.evolution.models import normalize_edges, skill_id
 from jiuwenswarm.symphony.evolution.service import record_plan_outcome
-from jiuwenswarm.symphony.score_storage import resolve_score_artifact_dir
+from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
 
 LOGGER = logging.getLogger(__name__)
 
@@ -32,9 +32,9 @@ _MAX_SKIPPED_TURNS = 3
 _HISTORY_READY_RETRIES = 20
 _HISTORY_READY_INTERVAL_SECONDS = 0.05
 _SYMPHONY_TOOL_NAMES = {
-    "symphony_compose_score",
-    "symphony_read_score",
-    "symphony_refresh_score",
+    "symphony_compose_graph",
+    "symphony_read_graph",
+    "symphony_refresh_graph",
 }
 _CONTINUATION_RE = re.compile(
     r"(?:"
@@ -62,8 +62,8 @@ _EXECUTOR = ThreadPoolExecutor(
 )
 
 
-def session_feedback_state_path(score_dir: str | Path) -> Path:
-    return Path(score_dir) / "evolution" / SESSION_FEEDBACK_STATE_FILE
+def session_feedback_state_path(graph_dir: str | Path) -> Path:
+    return Path(graph_dir) / "evolution" / SESSION_FEEDBACK_STATE_FILE
 
 
 def schedule_session_evolution_consume(
@@ -80,12 +80,12 @@ def schedule_session_evolution_consume(
         config = load_symphony_config()
         if not config.enabled or not config.evolution.enabled:
             return False
-        score_dir = resolve_score_artifact_dir(config.paths.score_dir)
+        graph_dir = resolve_graph_artifact_dir(config.paths.graph_dir)
     except Exception as exc:  # noqa: BLE001
         LOGGER.debug("Symphony session feedback is unavailable: %s", exc)
         return False
 
-    schedule_key = (str(score_dir), clean_session_id, clean_request_id)
+    schedule_key = (str(graph_dir), clean_session_id, clean_request_id)
     with _SCHEDULE_LOCK:
         if schedule_key in _SCHEDULED:
             return False
@@ -95,7 +95,7 @@ def schedule_session_evolution_consume(
         _consume_after_history_ready,
         clean_session_id,
         clean_request_id,
-        score_dir,
+        graph_dir,
     )
     future.add_done_callback(lambda current: _on_consume_done(schedule_key, current))
     return True
@@ -104,14 +104,14 @@ def schedule_session_evolution_consume(
 def _consume_after_history_ready(
     session_id: str,
     request_id: str,
-    score_dir: Path,
+    graph_dir: Path,
 ) -> dict[str, Any]:
     history_path = get_read_history_path(session_id)
     history_limit = _wait_for_request_history(session_id, request_id, history_path)
     return consume_session_history(
         session_id,
         completed_request_id=request_id,
-        score_dir=score_dir,
+        graph_dir=graph_dir,
         history_limit_bytes=history_limit,
     )
 
@@ -139,7 +139,7 @@ def consume_session_history(
     session_id: str,
     *,
     completed_request_id: str = "",
-    score_dir: str | Path | None = None,
+    graph_dir: str | Path | None = None,
     history_limit_bytes: int | None = None,
 ) -> dict[str, Any]:
     """Incrementally consume one session and emit at most one outcome per plan."""
@@ -147,7 +147,7 @@ def consume_session_history(
     clean_session_id = str(session_id or "").strip()
     if not clean_session_id:
         return {"success": False, "detail": "session_id is required"}
-    if score_dir is None:
+    if graph_dir is None:
         config = load_symphony_config()
         if not config.enabled or not config.evolution.enabled:
             return {
@@ -156,12 +156,12 @@ def consume_session_history(
                 "recorded": False,
                 "source": SESSION_FEEDBACK_SOURCE,
             }
-        score_dir = resolve_score_artifact_dir(config.paths.score_dir)
-    resolved_score_dir = Path(score_dir).resolve()
+        graph_dir = resolve_graph_artifact_dir(config.paths.graph_dir)
+    resolved_graph_dir = Path(graph_dir).resolve()
     history_path = get_read_history_path(clean_session_id)
 
     with _STATE_LOCK:
-        state = _read_state(resolved_score_dir)
+        state = _read_state(resolved_graph_dir)
         sessions = state.setdefault("sessions", {})
         session_state = dict(sessions.get(clean_session_id) or {})
         try:
@@ -175,7 +175,7 @@ def consume_session_history(
                 records,
                 session_id=clean_session_id,
                 session_state=session_state,
-                score_dir=resolved_score_dir,
+                graph_dir=resolved_graph_dir,
             )
             session_state.update(cursor)
             session_state["updated_at"] = _utc_now()
@@ -184,11 +184,11 @@ def consume_session_history(
             state["last_error"] = ""
             state["updated_at"] = _utc_now()
             _prune_sessions(sessions)
-            _write_state(resolved_score_dir, state)
+            _write_state(resolved_graph_dir, state)
         except Exception as exc:  # noqa: BLE001
             state["last_error"] = str(exc)[:1000]
             state["updated_at"] = _utc_now()
-            _write_state(resolved_score_dir, state)
+            _write_state(resolved_graph_dir, state)
             LOGGER.exception(
                 "Failed to consume Symphony session feedback: session_id=%s request_id=%s",
                 clean_session_id,
@@ -212,23 +212,23 @@ def consume_session_history(
     }
 
 
-def session_feedback_status(score_dir: str | Path) -> dict[str, Any]:
+def session_feedback_status(graph_dir: str | Path) -> dict[str, Any]:
     """Return frontend-safe observability for the session feedback worker."""
 
-    resolved_score_dir = Path(score_dir).resolve()
+    resolved_graph_dir = Path(graph_dir).resolve()
     with _STATE_LOCK:
-        state = _read_state(resolved_score_dir)
+        state = _read_state(resolved_graph_dir)
     sessions = state.get("sessions") if isinstance(state.get("sessions"), dict) else {}
     stats = state.get("stats") if isinstance(state.get("stats"), dict) else {}
     with _SCHEDULE_LOCK:
         pending_jobs = sum(
-            1 for item in _SCHEDULED if item[0] == str(resolved_score_dir)
+            1 for item in _SCHEDULED if item[0] == str(resolved_graph_dir)
         )
     return {
         "available": True,
         "source": SESSION_FEEDBACK_SOURCE,
         "mode": "incremental_async",
-        "state_path": str(session_feedback_state_path(resolved_score_dir)),
+        "state_path": str(session_feedback_state_path(resolved_graph_dir)),
         "tracked_session_count": len(sessions),
         "pending_plan_count": sum(
             1
@@ -251,7 +251,7 @@ def _consume_records(
     *,
     session_id: str,
     session_state: dict[str, Any],
-    score_dir: Path,
+    graph_dir: Path,
 ) -> list[dict[str, Any]]:
     pending = (
         dict(session_state.get("pending_plan") or {})
@@ -260,7 +260,7 @@ def _consume_records(
     )
     results: list[dict[str, Any]] = []
     for request_id, request_records in _group_by_request(records):
-        markers = _plan_markers(request_records, score_dir=score_dir)
+        markers = _plan_markers(request_records, graph_dir=graph_dir)
 
         if markers:
             # A new plan supersedes an older plan that the user never executed.
@@ -271,7 +271,7 @@ def _consume_records(
                 request_records,
                 session_id=session_id,
                 request_id=request_id,
-                score_dir=score_dir,
+                graph_dir=graph_dir,
                 same_turn=False,
             )
             if result is not None:
@@ -292,7 +292,7 @@ def _consume_records(
                 trailing_records,
                 session_id=session_id,
                 request_id=request_id,
-                score_dir=score_dir,
+                graph_dir=graph_dir,
                 same_turn=True,
             )
             if result is not None:
@@ -312,7 +312,7 @@ def _consume_execution_turn(
     *,
     session_id: str,
     request_id: str,
-    score_dir: Path,
+    graph_dir: Path,
     same_turn: bool,
 ) -> dict[str, Any] | None:
     correlation = _execution_correlation(pending, records, same_turn=same_turn)
@@ -339,7 +339,7 @@ def _consume_execution_turn(
     failed_edges = selected_edges[-1:] if outcome == "failure" else []
     evidence_id = f"session:{session_id}:{pending['plan_id']}:{request_id}"
     event = record_plan_outcome(
-        score_dir,
+        graph_dir,
         plan_id=str(pending["plan_id"]),
         query=str(pending.get("query") or ""),
         outcome=outcome,
@@ -379,13 +379,13 @@ def _consume_execution_turn(
 def _plan_markers(
     records: list[dict[str, Any]],
     *,
-    score_dir: Path,
+    graph_dir: Path,
 ) -> list[tuple[int, dict[str, Any]]]:
     output: list[tuple[int, dict[str, Any]]] = []
     for index, record in enumerate(records):
         if record.get("event_type") != "chat.tool_result":
             continue
-        if str(record.get("tool_name") or "") != "symphony_compose_score":
+        if str(record.get("tool_name") or "") != "symphony_compose_graph":
             continue
         raw_output = record.get("raw_output")
         if not isinstance(raw_output, dict):
@@ -396,7 +396,7 @@ def _plan_markers(
         if not isinstance(plan, dict) or str(plan.get("status") or "").lower() != "ready":
             continue
         plan_id = str(raw_output.get("plan_id") or "").strip()
-        if not plan_id or not _score_dir_matches(raw_output.get("score_dir"), score_dir):
+        if not plan_id or not _graph_dir_matches(raw_output.get("graph_dir"), graph_dir):
             continue
         selected_skill_ids = []
         for step in plan.get("steps") or []:
@@ -807,8 +807,8 @@ def _read_new_jsonl_records(
     }
 
 
-def _read_state(score_dir: Path) -> dict[str, Any]:
-    path = session_feedback_state_path(score_dir)
+def _read_state(graph_dir: Path) -> dict[str, Any]:
+    path = session_feedback_state_path(graph_dir)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
@@ -822,8 +822,8 @@ def _read_state(score_dir: Path) -> dict[str, Any]:
     return payload
 
 
-def _write_state(score_dir: Path, state: dict[str, Any]) -> None:
-    path = session_feedback_state_path(score_dir)
+def _write_state(graph_dir: Path, state: dict[str, Any]) -> None:
+    path = session_feedback_state_path(graph_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = path.with_suffix(".json.tmp")
     tmp_path.write_text(
@@ -859,7 +859,7 @@ def _update_state_stats(
 def _is_symphony_plan_result(record: dict[str, Any]) -> bool:
     if record.get("event_type") != "chat.tool_result":
         return False
-    if record.get("tool_name") != "symphony_compose_score":
+    if record.get("tool_name") != "symphony_compose_graph":
         return False
     raw_output = record.get("raw_output")
     if not isinstance(raw_output, dict):
@@ -881,12 +881,12 @@ def _prune_sessions(sessions: dict[str, Any]) -> None:
     sessions.update(ordered[:_MAX_TRACKED_SESSIONS])
 
 
-def _score_dir_matches(value: Any, score_dir: Path) -> bool:
+def _graph_dir_matches(value: Any, graph_dir: Path) -> bool:
     text = str(value or "").strip()
     if not text:
         return True
     try:
-        return Path(text).resolve() == score_dir.resolve()
+        return Path(text).resolve() == graph_dir.resolve()
     except OSError:
         return False
 

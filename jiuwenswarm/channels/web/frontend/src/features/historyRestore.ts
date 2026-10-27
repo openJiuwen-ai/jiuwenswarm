@@ -4,6 +4,7 @@ import { normalizeFinalContent } from '../utils/finalContent';
 import i18n from '../i18n';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
+import { extractAutomation } from '../utils/heartbeatAutomation';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
 import { normalizeAskUserQuestionPayload } from './askUserQuestion';
@@ -410,6 +411,14 @@ function parseHistoryTimelineEntry(
     const isGoalObjectiveMessage =
       isTruthyHistoryFlag(record.is_goal_objective_message) ||
       isTruthyHistoryFlag(record.isGoalObjectiveMessage);
+    const rawSkills = record.skills;
+    const skills = Array.isArray(rawSkills)
+      ? rawSkills.filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+      : undefined;
+    // §9：Heartbeat 自动轮的 user/assistant 消息后端会带 metadata.automation 落盘，
+    // 历史恢复时读回同一个标记，保证刷新/切会话/后端重启后仍能识别 Heartbeat 轮。
+    // 与实时链路（useWebSocket.ts）共用同一个 extractAutomation。
+    const userAutomation = extractAutomation(record) ?? extractAutomation(buildEventPayloadForRecord(record));
     return {
       kind: 'message',
       message: {
@@ -419,6 +428,8 @@ function parseHistoryTimelineEntry(
         timestamp: at,
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
+        ...(skills && skills.length > 0 ? { skills } : {}),
+        ...(userAutomation ? { automation: userAutomation } : {}),
       },
     };
   }
@@ -567,6 +578,11 @@ function parseHistoryTimelineEntry(
         ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
         ...(isProactiveRecommendation && histProactiveType
           ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
+          : {}),
+        // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
+        // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
+        ...((extractAutomation(payload) ?? extractAutomation(record))
+          ? { automation: (extractAutomation(payload) ?? extractAutomation(record))! }
           : {}),
       },
     };

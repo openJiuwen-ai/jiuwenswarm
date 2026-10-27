@@ -32,7 +32,7 @@
 |---|---|
 | 三条注册路径顺序 / 外部覆盖内置 / 两条扫描缓存 / planner 路由 / meta.json 字段规范 | [[S_02]] |
 | validator 三 profile 规则全集 / 沙箱 namespace / 相对导入静态检查 | [[S_03]] |
-| PlanNode 节点契约 / 12 回调 / run 模板方法 / LLM 调用契约 | [[S_04]] |
+| PlanNode 节点契约 / 11 回调 / run 模板方法 / LLM 调用契约 | [[S_04]] |
 | HITL 状态机（tcid 机制、save_resume_ctx 四元组、恢复分流） | [[S_06]] |
 | 降级链路全景（PlanCodeLoadError 之后的 4 层降级决策） | [[S_07]] |
 | 事件流协议（工具事件的 rail 补发） | [[S_08]] |
@@ -411,7 +411,7 @@ for name, kwargs in tool_attempts:
 | [[S_01]] | 执行管线的 P3（Environment 装配）与 P6（plan 加载）消费本 spec 的注册与门面；`_load_plan_namespace` 是 resume 自愈的唯一调用点。 |
 | [[S_02]] | 本 spec 的 P2/P3 只描述发现函数内部与包注册机制；三条注册路径顺序、外部覆盖内置、扫描缓存、planner 路由、meta.json 字段规范归 S_02。find_skill_root_file 的规范归 S_02、实现被本 spec 的发现协议消费。 |
 | [[S_03]] | validator 白名单消费本 spec 的门面稳定名与 `dynamic_package_prefix`；相对导入安全性依赖本 spec 的受控 `__path__`（N4——物理隔离，非静态检查）。 |
-| [[S_04]] | 门面 re-export 的 4 个契约类的节点侧语义（契约 11 条、12 回调、模板方法）归 S_04；tool_utils 是节点工具调用面（call_tool）下游的结果消费契约。 |
+| [[S_04]] | 门面 re-export 的 4 个契约类的节点侧语义（契约 11 条、11 回调、模板方法）归 S_04；tool_utils 是节点工具调用面（call_tool）下游的结果消费契约。 |
 | [[S_06]] | plan_code 随 resume_ctx 持久化的写入侧（save_resume_ctx 四元组）与恢复分流归 S_06；本 spec 只负责恢复前的动态包自愈。 |
 | [[S_07]] | 本 spec 的碰撞拒绝 / 自愈未命中 / PlanCodeLoadError 都汇入 S_07 的降级链路（用户视角"无匹配 skill"或加速降级标准流）。 |
 | [[S_08]] | run_bash / call_tool_with_retry 触发的工具事件（chat.tool_call / tool_update）由 rail 层补发，协议归 S_08。 |

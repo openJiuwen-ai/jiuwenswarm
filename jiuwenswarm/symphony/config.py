@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import functools
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
+logger = logging.getLogger(__name__)
+
+_legacy_score_dir_warned = False
 
 DEFAULT_FINGERPRINT_EXTRACTION_WORKERS = 1
 DEFAULT_FINGERPRINT_EXTRACTION_BATCH_SIZE = 1
@@ -38,7 +42,7 @@ DEFAULT_ORCHESTRATION_MIN_EDGE_CONFIDENCE = 0.5
 @dataclass(frozen=True)
 class SymphonyPathsConfig:
     skills_root: Path
-    score_dir: Path
+    graph_dir: Path
 
 
 @dataclass(frozen=True)
@@ -122,6 +126,7 @@ def default_symphony_config() -> SymphonyConfig:
 def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     data = raw if isinstance(raw, dict) else {}
     paths = data.get("paths") if isinstance(data.get("paths"), dict) else {}
+    _warn_legacy_score_dir(paths)
     fingerprint = (
         data.get("fingerprint") if isinstance(data.get("fingerprint"), dict) else {}
     )
@@ -151,9 +156,9 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
                 paths.get("skills_root"),
                 get_agent_workspace_dir() / "skills",
             ),
-            score_dir=_resolve_path(
-                paths.get("score_dir"),
-                get_agent_workspace_dir() / "symphony" / "score",
+            graph_dir=_resolve_path(
+                paths.get("graph_dir"),
+                get_agent_workspace_dir() / "symphony" / "graph",
             ),
         ),
         fingerprint=SymphonyFingerprintConfig(
@@ -239,6 +244,21 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
                 DEFAULT_ORCHESTRATION_MIN_EDGE_CONFIDENCE,
             ),
         ),
+    )
+
+
+def _warn_legacy_score_dir(paths: dict[str, Any]) -> None:
+    # load_symphony_config 每轮聊天都会重跑，旧键迁移告警进程内只发一次。
+    global _legacy_score_dir_warned
+    if _legacy_score_dir_warned:
+        return
+    if not str(paths.get("score_dir") or "").strip():
+        return
+    _legacy_score_dir_warned = True
+    logger.warning(
+        "配置项 symphony.paths.score_dir 已更名为 symphony.paths.graph_dir，"
+        "旧键将被忽略；如需沿用既有构建产物与演进数据，"
+        "请将 symphony.paths.graph_dir 指向原 score 目录。"
     )
 
 

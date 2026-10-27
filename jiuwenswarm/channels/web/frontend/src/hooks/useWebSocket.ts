@@ -51,7 +51,7 @@ import {
   normalizeSubagentActivityEvent,
   normalizeSubagentStatusEvent,
 } from '../features/subagent/subagentNormalizer';
-import { isPlanWireMode, resolvePlanWireMode } from '../features/planMode/wireMode';
+import { isPlanWireMode, resolvePlanWireMode, stripPlanSuffix } from '../features/planMode/wireMode';
 import { normalizeTaskEvent } from '../stores/teamTaskNormalize';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import {
@@ -89,6 +89,10 @@ import {
   shouldCollapseTurnFinal,
   parseTimestampToMs,
   timestampMsToIso,
+  extractAutomation,
+  heartbeatUserMessageId,
+  heartbeatAssistantMessageId,
+  heartbeatErrorMessageId,
 } from '../utils';
 import {
   findOverlappingFileExecutionEvent,
@@ -457,14 +461,37 @@ function resolveInterruptResumeMode(sessionId: string): AgentMode {
 }
 
 /**
+ * 取该会话的 work_mode（`work` / `code`）。
+ *
+ * 与 `getSessionWorkContext` 同一套取值顺序：session → selectedProject →
+ * workspaceStore。这里单独抽出，是因为 team + plan 时 `resolvePlanWireMode`
+ * 要据此区分 `team.plan.normal` / `team.plan.code`，而那个函数不读 store。
+ */
+function getSessionWorkMode(sessionId: string): string | undefined {
+  const sessionStore = useSessionStore.getState();
+  const workspaceStore = useWorkspaceStore.getState();
+  const session =
+    sessionStore.currentSession?.session_id === sessionId
+      ? sessionStore.currentSession
+      : sessionStore.sessions.find((item) => item.session_id === sessionId);
+  const selectedProject = workspaceStore.selectedProject;
+  return session?.work_mode || selectedProject?.work_mode || workspaceStore.workMode;
+}
+
+/**
  * 组合出本次请求要发送的 mode。
  *
  * UI 的 `AgentMode` 只有 agent / team / auto_harness；Plan 是独立开关。所有出站
  * 请求（普通消息、队列重发、interrupt resume）都必须走这里，否则 Plan 状态会被
- * `normalizeAgentMode` 抹平，后端就收不到 `agent.plan`。
+ * `normalizeAgentMode` 抹平，后端就收不到 `agent.plan`。team + plan 时还要带上
+ * work_mode，以便 `resolvePlanWireMode` 路由到 `team.plan.normal` / `team.plan.code`。
  */
 function resolveOutgoingMode(sessionId: string, baseMode: AgentMode | string | undefined): string {
-  return resolvePlanWireMode(baseMode, usePlanStore.getState().isActive(sessionId));
+  return resolvePlanWireMode(
+    baseMode,
+    usePlanStore.getState().isActive(sessionId),
+    getSessionWorkMode(sessionId)
+  );
 }
 
 /**
@@ -555,6 +582,22 @@ function getShutdownMemberFromToolResult(toolResult: ToolResult): string | undef
   }
   return parseShutdownMemberName(toolResult.result) || parseShutdownMemberName(toolResult.summary);
 }
+
+/** 交接文档 §2.4：这些 Heartbeat 管理 Tool 成功执行后要刷新已打开面板的任务列表；
+ * heartbeat_list_jobs/heartbeat_get_job/heartbeat_preview_job 是只读 Tool，不在其列。 */
+const HEARTBEAT_MUTATION_TOOL_NAMES = new Set([
+  'heartbeat_create_job',
+  'heartbeat_update_job',
+  'heartbeat_delete_job',
+  'heartbeat_toggle_job',
+  'heartbeat_run_now',
+  'heartbeat_cancel_run',
+]);
+
+/** 评审 N-5：心跳终态收口的 run_id 去重缓存上限。Set 只增不清会随心跳轮数缓慢增长；
+ * 超限裁掉一半最旧的——被裁掉的只可能是极老 run 的迟到重复终态事件，普通轮终态兜底
+ * 同款收口动作（setProcessing(false)/排空队列）在 idle 下幂等，重新执行不会引入新状态。 */
+const HEARTBEAT_CLOSE_RUN_ID_CACHE_LIMIT = 128;
 
 // The task card's title/content are now sourced solely from the backend
 // `team.task` events (which carry the DB task_id + body) and the `team.snapshot`
@@ -748,8 +791,13 @@ interface PendingContextCompressionStart {
 
 function normalizeAgentMode(rawMode: unknown): AgentMode {
   if (typeof rawMode !== 'string') return 'agent';
-  const normalized = rawMode.trim().toLowerCase();
-  if (normalized === 'team') return 'team';
+  // 后端 session.mode 可能带 `.plan` 后缀（`agent.plan` / `team.plan.normal` /
+  // `team.plan.code`），先剥掉后缀再归一化，否则 `team.plan.*` 会落进下面的
+  // 兜底分支被误判成单 agent。
+  const normalized = stripPlanSuffix(rawMode.trim().toLowerCase());
+  if (normalized === 'team' || normalized === 'team.code' || normalized === 'code.team') {
+    return 'team';
+  }
   if (normalized === 'auto_harness') return 'auto_harness';
   return 'agent';
 }
@@ -1887,6 +1935,35 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     }
   }, []);
 
+  /**
+   * Heartbeat 自动轮的会话级收口：chat.final/execution.error/chat.error 三个终态事件里
+   * 都可能触发一次，但同一个 run_id 只能真正收口一次——否则一次意外的"第二次终态事件"
+   * 会把刚被 drainTaskQueueIfIdle 重新拉起的 isProcessing 又关掉，导致第二条排队消息在
+   * 第一条还没收尾时就被并发发出去。收口动作本身沿用普通轮 chat.final 兜底同款的三个
+   * 前置条件（历史加载中/Team 模式/Goal 续跑中都不动这个状态），不能只搬动作不搬护栏。
+   */
+  const heartbeatSessionCloseHandledRunIdsRef = useRef<Set<string>>(new Set());
+  const closeHeartbeatSessionState = useCallback((sessionId: string, runId: string) => {
+    if (heartbeatSessionCloseHandledRunIdsRef.current.has(runId)) return;
+    // 评审 N-5：超上限时保留一半最新 run_id（Set 按插入序迭代），防止长期驻留的标签页
+    // 随心跳轮数缓慢泄漏。裁剪窗口远大于同一 run 三个终态事件的到达间隔，正常去重不受影响。
+    if (heartbeatSessionCloseHandledRunIdsRef.current.size >= HEARTBEAT_CLOSE_RUN_ID_CACHE_LIMIT) {
+      heartbeatSessionCloseHandledRunIdsRef.current = new Set(
+        Array.from(heartbeatSessionCloseHandledRunIdsRef.current)
+          .slice(-Math.floor(HEARTBEAT_CLOSE_RUN_ID_CACHE_LIMIT / 2)),
+      );
+    }
+    heartbeatSessionCloseHandledRunIdsRef.current.add(runId);
+    if (useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) return;
+    const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+    if (currentMode === 'team') return;
+    const goalStillActive = useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
+    if (goalStillActive) return;
+    useChatStore.getState().setProcessing(sessionId, false);
+    useChatStore.getState().setThinking(sessionId, false);
+    drainTaskQueueIfIdle(sessionId);
+  }, [drainTaskQueueIfIdle]);
+
   // 统一中断接口 - pause/cancel/supplement/resume
   const interrupt = useCallback(
     async (
@@ -2612,6 +2689,29 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return;
         }
 
+        // §8 步骤2：Heartbeat 自动轮的 delta 只追加到相同 run_id 的 assistant 消息
+        // （id=heartbeat-assistant-<run_id>），不走全局 currentStreamId，不复用上一条
+        // 普通回答——否则会覆盖用户刚发的普通提问的回答。
+        const hbAutomation = extractAutomation(payload);
+        if (hbAutomation && content) {
+          const assistantMsgId = heartbeatAssistantMessageId(hbAutomation.run_id);
+          const chatStore = useChatStore.getState();
+          const existing = chatStore.getRuntime(sessionId)?.messages.find((m) => m.id === assistantMsgId);
+          if (existing) {
+            chatStore.updateMessage(sessionId, assistantMsgId, { content: (existing.content || '') + content });
+          } else {
+            chatStore.addMessage(sessionId, {
+              id: assistantMsgId,
+              role: 'assistant',
+              content,
+              timestamp: new Date().toISOString(),
+              isStreaming: true,
+              automation: hbAutomation,
+            });
+          }
+          return;
+        }
+
         let currentStreamId = useChatStore.getState().getRuntime(sessionId)?.currentStreamId;
         clearThinkingForVisibleOutput(sessionId);
         if (content.trim()) {
@@ -2645,6 +2745,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.reasoning', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+
+        // §8 步骤2（评审回归补齐）：心跳轮的 reasoning 不进会话级 reasoningSegments、
+        // 也不做 processing 恢复。思考块没有按 run_id 的独立 sink，追加进会话段会把心跳
+        // 思考并进普通轮未闭合的思考块（与 delta 覆盖普通回答同一类错归属）；且终态收口
+        // 按 run_id 去重后没有第二次收口机会，迟到 reasoning 把 processing 翻回 true 会
+        // 把输入区转圈挂死。心跳轮的思考刷新后由历史回放（reasoningReplay）恢复。
+        if (extractAutomation(payload)) return;
 
         // 只在明确属于当前活跃请求时恢复 processing，避免 evolution 后置 reasoning
         // 把已完成会话重新拉回处理中。
@@ -2792,6 +2899,43 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
           return;
         }
+
+        // §8 步骤3：Heartbeat 自动轮的 final 只完成相同 run_id 的 assistant 消息，
+        // 不进全局 currentStreamId 收尾、不触发 Goal 续跑判断——Heartbeat 不复用普通轮的
+        // 整段收尾逻辑。execution.error 已在独立处理器里按 run_id 生成可见错误并立即结束
+        // processing（§10），不在此等待。session 级 processing/thinking 收口 + 排空队列
+        // 现在统一走 closeHeartbeatSessionState（按 run_id 去重，避免多个终态事件重复收口
+        // 造成并发发送），见该函数定义处注释。
+        const hbFinalAutomation = extractAutomation(payload);
+        if (hbFinalAutomation) {
+          const assistantMsgId = heartbeatAssistantMessageId(hbFinalAutomation.run_id);
+          const chatStore = useChatStore.getState();
+          const existing = chatStore.getRuntime(sessionId)?.messages.find((m) => m.id === assistantMsgId);
+          if (existing) {
+            // 已有 delta 起的消息：用 final 的归一化内容覆盖（后端 final 是这一轮的完整正文），
+            // 关闭 streaming。content 为空时保留已有 delta 内容，只关 streaming。
+            const patch: Partial<Message> = { isStreaming: false };
+            if (content.trim()) patch.content = content;
+            chatStore.updateMessage(sessionId, assistantMsgId, patch);
+          } else if (content.trim()) {
+            // delta 全丢帧，仅有 final：补建一条已完成的消息
+            chatStore.addMessage(sessionId, {
+              id: assistantMsgId,
+              role: 'assistant',
+              content,
+              timestamp: new Date().toISOString(),
+              isStreaming: false,
+              automation: hbFinalAutomation,
+            });
+          }
+          // §2.2 兜底：chat.final 是这一轮的收尾标志之一，正常应该由紧随其后的
+          // chat.processing_status(false) 关闭 session 级 isProcessing/isThinking；
+          // 这里是它丢帧时的兜底，避免输入区转圈/停止按钮卡死。只关这个 session 的
+          // 状态，不碰任何消息内容，不会影响另一条普通聊天或另一条 Heartbeat run。
+          closeHeartbeatSessionState(sessionId, hbFinalAutomation.run_id);
+          return;
+        }
+
         const teamLeaderMessageToFinalize =
           currentMode === 'team' && content
             ? findActiveTeamLeaderMessage(sessionId)
@@ -3337,6 +3481,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (pauseHoldActiveRef.current) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
+        // §8 步骤2（评审回归补齐）：心跳轮的 tool_call 不进会话级 toolExecutions 时间线、
+        // 不做 processing 恢复、不收尾 currentStreamId/team-leader 气泡——否则会掐断用户
+        // 正在流式的气泡；且终态收口按 run_id 去重后没有第二次收口机会，迟到工具事件把
+        // processing 翻回 true 会把输入区转圈挂死。心跳轮的工具活动刷新后由历史回放
+        // （toolReplay）按时间戳重建，live 阶段对主会话视图零侵入。
+        if (extractAutomation(payload)) return;
         // 页面刷新后，如果收到活跃事件但 isProcessing=false，自动恢复执行状态
         if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && !useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) {
           useChatStore.getState().setProcessing(sessionId, true);
@@ -3417,6 +3567,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // do NOT match the regex, so a failed shutdown will NOT remove the
         // member from the frontend panel.
         const shutdownMemberId = getShutdownMemberFromToolResult(toolResult);
+        // §2.4：聊天中用 Heartbeat 管理 Tool 改动任务后，若面板已打开需要立即刷新，不能要求
+        // 用户手动刷新页面。只对写操作、且 Tool 执行成功时触发；只读 Tool（list/get/preview）
+        // 和失败结果不触发。必须放在下面 Team 隐藏成员分支的 return 之前，保证单 Agent 和
+        // Team 场景都能命中（Team 模式下隐藏队友的 Tool result 会在下面提前 return）。
+        if (toolResult.success && HEARTBEAT_MUTATION_TOOL_NAMES.has(toolResult.toolName)) {
+          window.dispatchEvent(new CustomEvent('heartbeat-list-refresh', { detail: { sessionId } }));
+        }
+        // §8 步骤2（评审回归补齐）：心跳轮的 tool_result 不进会话级 toolExecutions 时间线
+        // （理由同 tool_call 分支）。但上面的面板刷新必须保留——心跳轮用管理类 Tool 改动的
+        // 正是 Heartbeat 任务本身，改完后面板同样要立即刷新。
+        if (extractAutomation(payload)) return;
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
           const memberId =
             getTeamPayloadMemberName(payload) ||
@@ -3498,6 +3659,38 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const goal = payload.goal;
         if (goal !== undefined) {
           applyGoalSnapshot(payload);
+        }
+        // §10：Heartbeat 运行遇到 execution.error 时，后端把本轮结算为 last_run_status=failed，
+        // 前端应立即结束该 run 的 processing 展示并生成可见错误消息，不要等可能为空的 chat.final。
+        // §8 步骤4：错误消息按 run_id 去重（id=heartbeat-error-<run_id>），同一 run 不重复生成。
+        const hbErrorAutomation = extractAutomation(payload);
+        if (hbErrorAutomation) {
+          const sessionId = resolveEventSessionId(payload);
+          if (!sessionId) return;
+          const chatStore = useChatStore.getState();
+          const errorMsg =
+            typeof payload.error === 'string' && payload.error.trim()
+              ? payload.error
+              : t('network.unknownError');
+          const errorId = heartbeatErrorMessageId(hbErrorAutomation.run_id);
+          // 同一 run 已有错误消息则不重复添加（去重）
+          const existingError = chatStore.getRuntime(sessionId)?.messages.find((m) => m.id === errorId);
+          if (!existingError) {
+            chatStore.addMessage(sessionId, {
+              id: errorId,
+              role: 'system',
+              content: t('network.errorPrefix', { message: errorMsg }),
+              timestamp: new Date().toISOString(),
+              automation: hbErrorAutomation,
+            });
+          }
+          // 关掉该 run 的 assistant 消息 streaming（若有），避免光标永久闪烁
+          const assistantMsgId = heartbeatAssistantMessageId(hbErrorAutomation.run_id);
+          chatStore.updateMessage(sessionId, assistantMsgId, { isStreaming: false });
+          // §2.2/§10 兜底：execution.error 已经确定这一 run 失败，不等可能不会再来的
+          // chat.final/chat.processing_status(false)，立即关闭 session 级 processing 展示
+          // （统一走 closeHeartbeatSessionState，按 run_id 去重）。
+          closeHeartbeatSessionState(sessionId, hbErrorAutomation.run_id);
         }
       }),
       webClient.on('context.usage', ({ payload }) => {
@@ -3593,6 +3786,32 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         ) {
           return;
         }
+
+        // §8 步骤1：Heartbeat 自动触发开始时（processing_status=true 带 metadata.automation），
+        // 用 payload.content upsert 本轮 user 消息（id=heartbeat-user-<run_id>）。
+        // 不走全局 currentStreamId，避免覆盖上一条普通回答。
+        const hbAutomation = extractAutomation(payload);
+        if (hbAutomation && isProcessingNow) {
+          const userMsgId = heartbeatUserMessageId(hbAutomation.run_id);
+          const prompt = typeof payload.content === 'string' ? payload.content : '';
+          const existing = useChatStore.getState().getRuntime(sessionId)?.messages.find((m) => m.id === userMsgId);
+          if (existing) {
+            // 同一 run 重复帧：只在内容非空且发生变化时更新，避免空 content 的重复/延迟帧
+            // 覆盖掉已经正确显示的提示词（§2.1：空 content 不能覆盖此前已经显示的非空提示词）。
+            if (prompt && existing.content !== prompt) {
+              useChatStore.getState().updateMessage(sessionId, userMsgId, { content: prompt });
+            }
+          } else {
+            useChatStore.getState().addMessage(sessionId, {
+              id: userMsgId,
+              role: 'user',
+              content: prompt,
+              timestamp: new Date().toISOString(),
+              automation: hbAutomation,
+            });
+          }
+        }
+
         // 后端确认 processing=true 时清除本地发送标记——新任务已由后端接管
         if (isProcessingNow) {
           localSendPendingRef.current.delete(sessionId);
@@ -3681,6 +3900,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
           // EOF 不是后端任务完成确认，只复用展示收尾，不触发队列发送。
           if (errorEof) return;
+
+          // §8 步骤5：Heartbeat 自动轮结束时，把对应 assistant 消息的 streaming 关掉
+          // （chat.delta 可能因丢帧未收到 final；这里兜底收尾），并静默刷新 Heartbeat
+          // list/get 以同步 run_state。不依赖全局 currentStreamId——Heartbeat 轮不走它。
+          if (hbAutomation) {
+            const assistantMsgId = heartbeatAssistantMessageId(hbAutomation.run_id);
+            useChatStore.getState().updateMessage(sessionId, assistantMsgId, { isStreaming: false });
+            // 静默刷新心跳列表，拉取本轮 run_state（last_run_status/skipped_count 等）
+            window.dispatchEvent(new CustomEvent('heartbeat-list-refresh', { detail: { sessionId } }));
+          }
 
           // 检查是否有等待的任务队列
           const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -3830,6 +4059,28 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
         if (errorMsg.includes('invalid page_idx or session history not found')) {
           useChatStore.getState().setLoadingHistory(sessionId, false);
+          return;
+        }
+        // §8 步骤4：Heartbeat 轮的 chat.error 按 run_id 去重（id=heartbeat-error-<run_id>），
+        // 并关掉该 run 的 assistant streaming，避免光标永久闪烁。
+        const hbChatErrorAutomation = extractAutomation(payload);
+        if (hbChatErrorAutomation) {
+          const chatStore = useChatStore.getState();
+          const errorId = heartbeatErrorMessageId(hbChatErrorAutomation.run_id);
+          const existing = chatStore.getRuntime(sessionId)?.messages.find((m) => m.id === errorId);
+          if (!existing) {
+            chatStore.addMessage(sessionId, {
+              id: errorId,
+              role: 'system',
+              content: t('network.errorPrefix', { message: errorMsg }),
+              timestamp: new Date().toISOString(),
+              automation: hbChatErrorAutomation,
+            });
+          }
+          chatStore.updateMessage(sessionId, heartbeatAssistantMessageId(hbChatErrorAutomation.run_id), { isStreaming: false });
+          // §2.2 兜底：setThinking 已经在上面统一关过，这里补 setProcessing + 排空队列
+          // （统一走 closeHeartbeatSessionState，按 run_id 去重）。
+          closeHeartbeatSessionState(sessionId, hbChatErrorAutomation.run_id);
           return;
         }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);

@@ -5,7 +5,7 @@
 Core TaskTool calls ``apply_subagent_thinking`` after ``create_subagent``.
 When this host hook is registered, semantic ``thinking``
 (default|off|on|low|medium|high) is adapted to vendor kwargs and attached via
-:class:`ThinkingInjectRail`. ``default`` is no-op except GLM-5.3 family
+:class:`ThinkingInjectRail`. ``default`` is no-op except GLM-5.3 / Kimi K3
 (auto-inject product default depth).
 """
 
@@ -24,7 +24,7 @@ def _on_subagent_thinking(subagent: Any, *, thinking: str, model: Any = None) ->
     """Attach ThinkingInjectRail when vendor-mapped kwargs are available."""
     profile = adapt_thinking(thinking, model=model)
     if not getattr(profile, "injected", False):
-        # default (non-GLM-5.3) / unsupported / invalid → leave as-is
+        # default (non-auto-depth) / unsupported / invalid → leave as-is
         if getattr(profile, "degraded", False):
             logger.info(
                 "[Thinking] skip inject degraded reason=%s thinking=%r model=%r",

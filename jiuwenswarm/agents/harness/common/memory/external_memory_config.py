@@ -94,12 +94,32 @@ def is_external_memory_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
     return bool(get_external_memory_config(config).get("provider"))
 
 
-def _is_cloud_deployment() -> bool:
+def is_cloud_deployment() -> bool:
     """True iff ``OFFICE_ACE_DEPLOYMENT=cloud``（OfficeAce 云服务）。
 
     未设置或其他值视为 PC 端（向后兼容）。
+
+    ``OFFICE_ACE_DEPLOYMENT`` 属于 BUSINESS_MIRROR_KEYS，bare 值在
+    ``ingest_bare_business_into_tip`` 后被从 ``os.environ`` 搬到 per-agent
+    tip 并 pop。读取优先级如下（先命中先返回，逐级兜底）：
+
+    1. ``effective_tip`` — per-agent 活跃 tip（ingest 后的正主）；
+    2. ``get_process_baseline`` — 进程级基线（ingest 时 ``setdefault``
+       落盘，tip 未 hydrate 的早期阶段可见）；
+    3. ``os.environ`` — bare 尚未被 ingest 的冷启动阶段兜底。
+
+    三级都缺时按 ``"pc"`` 处理（向后兼容）。
     """
-    return os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc").strip().lower() == "cloud"
+    try:
+        from jiuwenswarm.common.local_env_config import effective_tip, get_process_baseline
+        tip_val = str(effective_tip().get("OFFICE_ACE_DEPLOYMENT") or "")
+        base_val = str(get_process_baseline().get("OFFICE_ACE_DEPLOYMENT") or "")
+    except Exception:
+        logger.warning("[is_cloud_deployment]: effective_tip or get_process_baseline failed", exc_info=True)
+        tip_val = ""
+        base_val = ""
+    val = tip_val or base_val or os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc")
+    return val.strip().lower() == "cloud"
 
 
 def get_office_ace_user_profile_config(
@@ -137,7 +157,7 @@ def get_office_ace_user_profile_config(
     user_id = str(ext.get("user_id") or "").strip() or _DEFAULT_USER
 
     # 云端：凭证回落到 AgentArts Memory（与对话上报同源）
-    if _is_cloud_deployment():
+    if is_cloud_deployment():
         if not endpoint:
             endpoint = os.environ.get("AGENTARTS_MEMORY_BASE_URL", "").strip()
         if not api_key:
@@ -146,7 +166,7 @@ def get_office_ace_user_profile_config(
     # space_id：cloud 端 internal 接口 path 需要（/v1/core/internal/spaces/{space_id}/...），
     # pc 端 appapi 接口不需要。优先取 office_ace_user_profile 段，cloud 回落 AGENTARTS_MEMORY_SPACE_ID。
     space_id = str(up.get("space_id") or "").strip()
-    if _is_cloud_deployment() and not space_id:
+    if is_cloud_deployment() and not space_id:
         space_id = os.environ.get("AGENTARTS_MEMORY_SPACE_ID", "").strip()
 
     # 启用条件：external memory 开启 + provider=officeace_cloud + 凭证齐全。

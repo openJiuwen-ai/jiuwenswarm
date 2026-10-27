@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolMessage, UserMessage
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
@@ -23,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails import (
 from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
     DEEPRESEARCH_EXECUTION_ALIAS_KEY,
     DEEPRESEARCH_EXECUTION_STATE_KEY,
+    DEEPRESEARCH_INTERACTION_PLACEHOLDER,
     DeepResearchExecutionRail,
 )
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
@@ -2183,6 +2184,106 @@ async def test_execution_rail_force_finishes_terminal_result_without_next_llm():
         {"output": "研究报告已生成并交付。", "result_type": "answer"}
     ]
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
+    # 完成态回写：tool_msg 为完成摘要短文案（非原始 payload JSON）
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.tool_call_id == "call-1"
+    assert ctx.inputs.tool_msg.content == "研究报告已生成并交付。"
+
+
+@pytest.mark.asyncio
+async def test_execution_rail_writes_back_completion_summary_to_llm_history():
+    """完成态回写：completed 的 tool_msg 改写为完成摘要短文案。
+
+    旁路自恢复（答复交互卡后的 interrupt continuation）不重入 LLM 主循环，
+    本次执行的 tool_msg 是完成态进入 LLM 历史并随快照落盘的唯一通道；
+    不改写时历史中该 tool_call_id 下最后一条 tool 消息停留在暂停占位
+    文案，后续轮模型误判任务未完成（实测事故：任务已完成，模型答
+    "还在第一阶段暂停等待用户答复"）。tool_call_id 必须用原始调用 id
+    （与 assistant 消息中的 tool_calls 对齐）；内部 state/token usage
+    不泄露；tool_result 保持原 dict 供 StreamEventRail 推送前端
+    chat.tool_result 帧，与 tool_msg 解耦。
+    """
+    state = {
+        "schema_version": 1,
+        "phase": "completed",
+        "query": "深度研究AI芯片行业",
+        "conversation_id": "conversation-1",
+        "revision": 6,
+    }
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "completed",
+        "content": "✅ **深度研究已完成！**\n\nai_chip_report已成功生成并交付。",
+        "state": state,
+        "workflow_llm_token_usage": {
+            "input_tokens": 795008,
+            "output_tokens": 38569,
+        },
+    }
+    session = _Session()
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=result, session=session)
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.tool_call_id == "call-1"
+    assert ctx.inputs.tool_msg.content == result["content"]
+    # 内部 state / token usage 不泄露进 LLM 历史
+    assert "conversation-1" not in ctx.inputs.tool_msg.content
+    assert "schema_version" not in ctx.inputs.tool_msg.content
+    assert "revision" not in ctx.inputs.tool_msg.content
+    assert "795008" not in ctx.inputs.tool_msg.content
+    # tool_result 保持原始 dict（前端交付通道，与 tool_msg 解耦）
+    assert ctx.inputs.tool_result is result
+    # 完成态照常清理 states/aliases 并 force finish
+    assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
+    assert ctx.force_finish_requests == [
+        {"output": result["content"], "result_type": "answer"}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_execution_rail_completed_without_content_uses_fallback_notice():
+    """content 缺失时回写兜底文案，完成态仍对后续轮模型可见。"""
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "completed",
+        "state": {"schema_version": 1, "phase": "completed", "revision": 5},
+    }
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=result)
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.content == "DeepResearch 任务已完成，报告已交付。"
+    # content 为空时维持现状：不 force finish
+    assert ctx.force_finish_requests == []
+
+
+@pytest.mark.asyncio
+async def test_execution_rail_does_not_write_back_completion_for_cancelled():
+    """取消路径不回写完成态（kind=cancelled 不触发 completed 改写），
+    避免把取消/停止的续跑终态伪装成完成。"""
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "cancelled",
+        "content": "DeepResearch 任务已取消。",
+        "state": {"schema_version": 1, "phase": "cancelled", "revision": 3},
+    }
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=result)
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert ctx.inputs.tool_msg is None
+    assert ctx.force_finish_requests == [
+        {"output": "DeepResearch 任务已取消。", "result_type": "answer"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -2234,6 +2335,229 @@ async def test_execution_rail_rewrites_stopped_result_to_block_auto_restart():
     assert ctx.force_finish_requests == []
     # 停止快照 state 保留，供下一次调用认领直通续跑
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY]["call-1"] == state
+
+
+def _resumed_session() -> _Session:
+    """暂停后恢复现场：aliases 已含 interaction 克隆件 id → 原始 id 映射。"""
+    session = _Session()
+    session.update_state({
+        DEEPRESEARCH_EXECUTION_ALIAS_KEY: {"call-1_interaction_1": "call-1"}
+    })
+    return session
+
+
+@pytest.mark.asyncio
+async def test_execution_rail_completed_after_resume_uses_original_tool_call_id():
+    """resume 完成态回写的 tool_msg 必须挂原始 tool_call_id（事故回归）。
+
+    handle_resume 深拷贝 TIE 克隆件恢复执行，ctx.inputs.tool_call.id 是
+    interaction 克隆件 id（{workflow_id}_interaction_N）；若 tool_msg 沿用该
+    id，与 assistant 消息 tool_calls 的原始 id 不匹配，追问轮被
+    StreamEventRail 孤儿清理删除（orphan_removed），历史停留在暂停占位
+    ——实测事故：任务已完成，模型答"还在第一阶段暂停等待用户答复"。
+    """
+    session = _resumed_session()
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "completed",
+        "content": "✅ **深度研究已完成！**\n\nai_chip_report已成功生成并交付。",
+        "state": {
+            "schema_version": 1,
+            "phase": "completed",
+            "query": "深度研究AI芯片行业",
+            "conversation_id": "conversation-1",
+            "revision": 6,
+        },
+    }
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=result,
+        session=session,
+        tool_call_id="call-1_interaction_1",
+    )
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.tool_call_id == "call-1"
+    assert ctx.inputs.tool_msg.content == result["content"]
+    # 完成态照常清理 states/aliases（按 workflow_id 收敛）
+    assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
+    assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {}
+
+
+@pytest.mark.asyncio
+async def test_execution_rail_stopped_after_resume_uses_original_tool_call_id():
+    """resume 后停止的 tool_msg 同样挂原始 id（与 completed 同构修复）。"""
+    session = _resumed_session()
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "stopped",
+        "state": {
+            "schema_version": 1,
+            "phase": "new",
+            "query": "深度研究AI芯片行业",
+            "conversation_id": "conversation-1",
+            "revision": 2,
+        },
+    }
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(
+        result=result,
+        session=session,
+        tool_call_id="call-1_interaction_1",
+    )
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.tool_call_id == "call-1"
+    assert "已被用户停止" in ctx.inputs.tool_msg.content
+
+
+@pytest.mark.asyncio
+async def test_execution_rail_bridge_call_keeps_own_tool_call_id():
+    """bridge 场景例外：本次调用 id 本身就是历史 id，不得换成旧 workflow id。
+
+    模型换新 tool_call_id 重试被桥接旧 state 时，aliases 里有新 id → 旧
+    workflow_id 的映射，但历史 assistant tool_calls 挂的是本次新 id——
+    id 修正须按 interaction 后缀模式判断，而非"是否在 aliases 中"。
+    """
+    session = _Session()
+    session.update_state({
+        DEEPRESEARCH_EXECUTION_ALIAS_KEY: {"call-new": "call-old"},
+        DEEPRESEARCH_EXECUTION_STATE_KEY: {
+            "call-old": {
+                "schema_version": 1,
+                "phase": "starting",
+                "query": "q",
+                "file_name": "r",
+                "conversation_id": "conversation-1",
+                "revision": 0,
+            }
+        },
+    })
+    result = {
+        "schema_version": de.EXECUTION_SCHEMA,
+        "kind": "completed",
+        "content": "研究报告已生成并交付。",
+        "state": {"schema_version": 1, "phase": "completed", "revision": 1},
+    }
+    rail = DeepResearchExecutionRail(model_provider=lambda: None)
+    ctx = _rail_ctx(result=result, session=session, tool_call_id="call-new")
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert isinstance(ctx.inputs.tool_msg, ToolMessage)
+    assert ctx.inputs.tool_msg.tool_call_id == "call-new"
+    # states/aliases 仍按 workflow_id（call-old）清理
+    assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
+    assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {}
+
+
+class _ModelContext:
+    def __init__(self, messages):
+        self.messages = list(messages)
+
+    def get_messages(self):
+        return list(self.messages)
+
+    def pop_messages(self, size):
+        popped = self.messages[:size]
+        self.messages = self.messages[size:]
+        return popped
+
+    async def add_messages(self, message):
+        self.messages.append(message)
+
+
+def _deepresearch_history_ctx(tool_messages, tool_call_id="call_00c9"):
+    rail_ctx = SimpleNamespace(
+        context=_ModelContext([
+            UserMessage(content="深度研究AI芯片行业"),
+            AssistantMessage(
+                content="",
+                tool_calls=[{
+                    "type": "function",
+                    "id": tool_call_id,
+                    "function": {
+                        "name": "deepresearch_execute",
+                        "arguments": "{\"query\":\"深度研究AI芯片行业\"}",
+                    },
+                }],
+            ),
+            *tool_messages,
+        ]),
+        inputs=SimpleNamespace(tools=[]),
+        session=None,
+        extra={},
+    )
+    return rail_ctx
+
+
+@pytest.mark.asyncio
+async def test_fix_incomplete_tool_context_replaces_deepresearch_placeholder_with_completion():
+    """占位注册白名单后，"占位 + completed 同 id"收敛为占位被真实结果替换。
+
+    事故链（修复前）：deepresearch 占位文案不在白名单 → 占位被当普通
+    消息保留，completed 同 id 第二条被 duplicate 规则删除 → 历史停留在
+    "等待答复" → 模型误判任务未完成。注册后：占位被识别为 placeholder，
+    real_tool_messages_by_id 命中 completed → 原位替换、后续重复删除。
+    """
+    tool_call_id = "call_00c9"
+    rail = JiuSwarmStreamEventRail()
+    ctx = _deepresearch_history_ctx([
+        ToolMessage(
+            content=DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+            tool_call_id=tool_call_id,
+        ),
+        ToolMessage(
+            content="✅ **深度研究已完成！**\n\nai_chip_report已成功生成并交付。",
+            tool_call_id=tool_call_id,
+        ),
+    ])
+
+    await rail._fix_incomplete_tool_context(ctx)
+
+    tool_msgs = [m for m in ctx.context.get_messages() if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].tool_call_id == tool_call_id
+    assert "已完成" in tool_msgs[0].content
+    assert "等待用户答复" not in tool_msgs[0].content
+
+
+@pytest.mark.asyncio
+async def test_fix_incomplete_tool_context_keeps_deepresearch_placeholder_while_pending():
+    """暂停期间（无真实结果）：占位原样保留，模型能看到"等待用户答复"。"""
+    tool_call_id = "call_00c9"
+    rail = JiuSwarmStreamEventRail()
+    ctx = _deepresearch_history_ctx([
+        ToolMessage(
+            content=DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+            tool_call_id=tool_call_id,
+        ),
+    ])
+
+    await rail._fix_incomplete_tool_context(ctx)
+
+    tool_msgs = [m for m in ctx.context.get_messages() if isinstance(m, ToolMessage)]
+    assert len(tool_msgs) == 1
+    assert tool_msgs[0].content == DEEPRESEARCH_INTERACTION_PLACEHOLDER
+
+
+def test_deepresearch_placeholder_registered_in_interrupt_templates():
+    """占位文案白名单识别：仅 deepresearch_execute 名下命中。"""
+    rail = JiuSwarmStreamEventRail()
+    assert rail._is_legacy_tool_interrupt_placeholder_text(
+        DEEPRESEARCH_INTERACTION_PLACEHOLDER, "deepresearch_execute"
+    )
+    # 其他工具名下不识别（防止文案碰撞扩散到无关工具）
+    assert not rail._is_legacy_tool_interrupt_placeholder_text(
+        DEEPRESEARCH_INTERACTION_PLACEHOLDER, "other_tool"
+    )
 
 
 @pytest.mark.asyncio
@@ -2335,6 +2659,12 @@ async def test_same_outer_tool_call_survives_multiple_native_interrupts():
 
     assert second.force_finish_requests[0]["result_type"] == "answer"
     assert "✅ **深度研究已完成！**" in second.force_finish_requests[0]["output"]
+    # 事故回归：resume 完成态 tool_msg 必须挂原始调用 id（本次 ctx 携带
+    # 的是 TIE 克隆件 interaction id），否则追问轮被孤儿清理删除，历史
+    # 停留在暂停占位，模型误判任务未完成
+    assert isinstance(second.inputs.tool_msg, ToolMessage)
+    assert second.inputs.tool_msg.tool_call_id == "call-1"
+    assert "已完成" in second.inputs.tool_msg.content
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
     assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {}
 

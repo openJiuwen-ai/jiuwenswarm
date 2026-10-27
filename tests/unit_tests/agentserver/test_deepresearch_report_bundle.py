@@ -46,6 +46,40 @@ def _chart(resource_id: str, payload: bytes = b"png-bytes") -> dict:
     }
 
 
+@pytest.mark.parametrize("chart_count", [32, 104, 512])
+def test_build_report_bundle_preserves_large_chart_sets(tmp_path, chart_count):
+    charts = [_chart(f"chart-{index}") for index in range(chart_count)]
+    bundle = build_report_bundle(
+        _payload(
+            response_content="\n".join(
+                f"(#insertChart:{chart['chart_id']})" for chart in charts
+            ),
+            chart_messages=charts,
+        ),
+        tmp_path / "report-v1",
+    )
+
+    assert len(bundle.chart_manifest) == chart_count
+    snapshot = json.loads(serialize_final_result_snapshot(bundle.final_result_snapshot))
+    assert len(snapshot["chart_messages"]) == chart_count
+    for message in snapshot["chart_messages"]:
+        path = tmp_path / message["artifact_path"]
+        assert path.read_bytes() == b"png-bytes"
+        assert message["artifact_path"] in bundle.markdown_text
+        assert "base64" not in message
+    assert "(#insertChart:" not in bundle.markdown_text
+
+
+def test_build_report_bundle_rejects_more_than_512_charts_before_writing(tmp_path):
+    with pytest.raises(ValueError, match="chart_messages exceeds the message count limit"):
+        build_report_bundle(
+            _payload(chart_messages=[_chart(f"chart-{index}") for index in range(513)]),
+            tmp_path / "report-v1",
+        )
+
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize(
     "occupied_kind",
     ["directory", "directory_symlink", "file_symlink", "file_hardlink"],

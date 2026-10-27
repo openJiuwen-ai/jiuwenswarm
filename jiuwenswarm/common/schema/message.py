@@ -165,11 +165,12 @@ class ReqMethod(Enum):
     SKILLS_ENTERPRISE_SOURCE_PROVIDERS = "skills.enterprise.source.providers"
     SKILLS_ENTERPRISE_SOURCE_SEARCH = "skills.enterprise.source.search"
 
-    SYMPHONY_BUILD_SCORE = "symphony.build_score"
-    SYMPHONY_PAUSE_BUILD = "symphony.pause_build"
-    SYMPHONY_SCORE_STATUS = "symphony.score_status"
-    SYMPHONY_GRAPH = "symphony.graph"
-    SYMPHONY_PLAN = "symphony.plan"
+    # Skill Graph Web panel transport. The implementation is provided by
+    # agent-core Symphony, while the public transport remains skill-domain API.
+    SKILLS_GRAPH_BUILD = "skills.graph.build"
+    SKILLS_GRAPH_STATUS = "skills.graph.status"
+    SKILLS_GRAPH_GET = "skills.graph.get"
+    SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
 
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (

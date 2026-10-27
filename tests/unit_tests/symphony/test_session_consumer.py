@@ -29,7 +29,7 @@ def _plan_records(plan_id="plan-1"):
             "role": "assistant",
             "request_id": "req-plan",
             "event_type": "chat.tool_result",
-            "tool_name": "symphony_compose_score",
+            "tool_name": "symphony_compose_graph",
             "success": True,
             "raw_output": {
                 "success": True,
@@ -157,7 +157,7 @@ def test_wait_for_request_history_observes_late_terminal_record(
 
 def test_session_consumer_records_cross_turn_success(monkeypatch, tmp_path):
     session_root = tmp_path / "sessions"
-    score_dir = tmp_path / "score"
+    graph_dir = tmp_path / "graph"
     records = _plan_records() + _success_records()
     _write_history(session_root, "session-1", records)
     monkeypatch.setattr(
@@ -168,22 +168,22 @@ def test_session_consumer_records_cross_turn_success(monkeypatch, tmp_path):
     result = consume_session_history(
         "session-1",
         completed_request_id="req-run",
-        score_dir=score_dir,
+        graph_dir=graph_dir,
     )
 
     assert result["success"] is True
     assert result["outcomes"][0]["outcome"] == "success"
     assert result["outcomes"][0]["correlation"] == "planned_skill_observed"
-    events = read_events(score_dir)
+    events = read_events(graph_dir)
     assert len(events) == 1
     assert events[0]["source"] == "session_history"
     assert events[0]["session_id"] == "session-1"
     assert events[0]["request_id"] == "req-run"
-    overlay = read_overlay(score_dir)
+    overlay = read_overlay(graph_dir)
     edge = overlay["edges"]["ocr-invoice->verify-invoice:can_feed"]
     assert edge["success_count"] == 1
     assert edge["runtime_weight"] == 1.05
-    feedback = session_feedback_status(score_dir)
+    feedback = session_feedback_status(graph_dir)
     assert feedback["plans_observed"] == 1
     assert feedback["outcomes_recorded"] == 1
     assert feedback["last_result"]["plan_id"] == "plan-1"
@@ -191,7 +191,7 @@ def test_session_consumer_records_cross_turn_success(monkeypatch, tmp_path):
 
 def test_session_consumer_maps_package_ids_from_skill_frontmatter(monkeypatch, tmp_path):
     session_root = tmp_path / "sessions"
-    score_dir = tmp_path / "score"
+    graph_dir = tmp_path / "graph"
     run_records = _success_records()
     run_records[1]["tool_call"]["arguments"] = json.dumps(
         {"skill_name": "ocr-invoice-1.1.0"}
@@ -222,15 +222,15 @@ def test_session_consumer_maps_package_ids_from_skill_frontmatter(monkeypatch, t
     result = consume_session_history(
         "session-package-ids",
         completed_request_id="req-run",
-        score_dir=score_dir,
+        graph_dir=graph_dir,
     )
 
     assert result["outcomes"][0]["outcome"] == "success"
-    event = read_events(score_dir)[0]
+    event = read_events(graph_dir)[0]
     assert event["selected_skill_ids"] == ["ocr-invoice", "verify-invoice"]
     assert event["selected_edges"][0]["source_id"] == "ocr-invoice"
     assert event["selected_edges"][0]["target_id"] == "verify-invoice"
-    overlay = read_overlay(score_dir)
+    overlay = read_overlay(graph_dir)
     assert overlay["edges"]["ocr-invoice->verify-invoice:can_feed"][
         "success_count"
     ] == 1
@@ -238,7 +238,7 @@ def test_session_consumer_maps_package_ids_from_skill_frontmatter(monkeypatch, t
 
 def test_session_consumer_does_not_treat_plan_display_as_success(monkeypatch, tmp_path):
     session_root = tmp_path / "sessions"
-    score_dir = tmp_path / "score"
+    graph_dir = tmp_path / "graph"
     _write_history(session_root, "session-plan-only", _plan_records())
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_history.get_agent_sessions_dir",
@@ -248,12 +248,12 @@ def test_session_consumer_does_not_treat_plan_display_as_success(monkeypatch, tm
     result = consume_session_history(
         "session-plan-only",
         completed_request_id="req-plan",
-        score_dir=score_dir,
+        graph_dir=graph_dir,
     )
 
     assert result["outcomes"] == []
-    assert read_events(score_dir) == []
-    feedback = session_feedback_status(score_dir)
+    assert read_events(graph_dir) == []
+    feedback = session_feedback_status(graph_dir)
     assert feedback["pending_plan_count"] == 1
 
 
@@ -262,7 +262,7 @@ def test_session_consumer_does_not_trust_confirmation_without_execution(
     tmp_path,
 ):
     session_root = tmp_path / "sessions"
-    score_dir = tmp_path / "score"
+    graph_dir = tmp_path / "graph"
     records = _plan_records() + [
         {
             "role": "user",
@@ -285,17 +285,17 @@ def test_session_consumer_does_not_trust_confirmation_without_execution(
     result = consume_session_history(
         "session-no-execution",
         completed_request_id="req-run",
-        score_dir=score_dir,
+        graph_dir=graph_dir,
     )
 
     assert result["outcomes"] == []
-    assert read_events(score_dir) == []
-    assert session_feedback_status(score_dir)["pending_plan_count"] == 1
+    assert read_events(graph_dir) == []
+    assert session_feedback_status(graph_dir)["pending_plan_count"] == 1
 
 
 def test_session_consumer_records_tool_failure_and_is_idempotent(monkeypatch, tmp_path):
     session_root = tmp_path / "sessions"
-    score_dir = tmp_path / "score"
+    graph_dir = tmp_path / "graph"
     failure_records = [
         {
             "role": "user",
@@ -345,28 +345,28 @@ def test_session_consumer_records_tool_failure_and_is_idempotent(monkeypatch, tm
     first = consume_session_history(
         "session-failure",
         completed_request_id="req-run",
-        score_dir=score_dir,
+        graph_dir=graph_dir,
     )
     second = consume_session_history(
         "session-failure",
         completed_request_id="req-run",
-        score_dir=score_dir,
+        graph_dir=graph_dir,
     )
 
     assert first["outcomes"][0]["outcome"] == "failure"
     assert second["outcomes"] == []
-    assert len(read_events(score_dir)) == 1
-    overlay = read_overlay(score_dir)
+    assert len(read_events(graph_dir)) == 1
+    overlay = read_overlay(graph_dir)
     edge = overlay["edges"]["ocr-invoice->verify-invoice:can_feed"]
     assert edge["failure_count"] == 1
     assert edge["runtime_weight"] == 0.95
-    status = evolution_status(score_dir)
+    status = evolution_status(graph_dir)
     assert status["session_feedback"]["outcomes_recorded"] == 1
 
 
 def test_session_consumer_does_not_learn_unobserved_plan_edges(monkeypatch, tmp_path):
     session_root = tmp_path / "sessions"
-    score_dir = tmp_path / "score"
+    graph_dir = tmp_path / "graph"
     records = _plan_records() + [
         {
             "role": "user",
@@ -398,9 +398,9 @@ def test_session_consumer_does_not_learn_unobserved_plan_edges(monkeypatch, tmp_
     result = consume_session_history(
         "session-partial",
         completed_request_id="req-run",
-        score_dir=score_dir,
+        graph_dir=graph_dir,
     )
 
     assert result["outcomes"] == []
-    assert read_events(score_dir) == []
-    assert session_feedback_status(score_dir)["pending_plan_count"] == 1
+    assert read_events(graph_dir) == []
+    assert session_feedback_status(graph_dir)["pending_plan_count"] == 1

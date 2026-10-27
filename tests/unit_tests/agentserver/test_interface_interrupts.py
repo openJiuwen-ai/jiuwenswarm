@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+import asyncio
+from unittest.mock import AsyncMock
+
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
@@ -58,6 +61,7 @@ def _build_team_interrupt_request(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("runtime_result", [True, False])
 @pytest.mark.parametrize(
     ("intent", "expected_message"),
     [
@@ -69,9 +73,10 @@ async def test_team_interrupt_pause_like_intents_use_team_manager(
     monkeypatch: pytest.MonkeyPatch,
     intent: str,
     expected_message: str,
+    runtime_result: bool,
 ) -> None:
     claw = _InterruptHarness()
-    fake_manager = _FakeTeamManager(pause_result=True)
+    fake_manager = _FakeTeamManager(pause_result=runtime_result, cancel_result=runtime_result)
     cancelled: list[tuple[str, str, float | None]] = []
 
     def _unexpected_adapter():
@@ -93,13 +98,16 @@ async def test_team_interrupt_pause_like_intents_use_team_manager(
 
     response = await claw.process_interrupt_for_test(_build_team_interrupt_request(intent))
 
+    if not runtime_result:
+        expected_message = "当前没有可暂停的团队任务" if intent == "pause" else "当前没有可取消的团队任务"
     assert response.payload == {
         "event_type": "chat.interrupt_result",
         "intent": intent,
-        "success": True,
+        "success": runtime_result,
         "message": expected_message,
     }
-    assert cancelled == [("team-session-1", f"interrupt(intent={intent}): ", 5.0)]
+    expected_cancel = [("team-session-1", f"interrupt(intent={intent}): ", 5.0)]
+    assert cancelled == (expected_cancel if runtime_result or intent == "cancel" else [])
     if intent == "pause":
         assert fake_manager.pause_calls == [("team-session-1", f"interrupt(intent={intent}): ")]
         assert fake_manager.cancel_calls == []
@@ -142,6 +150,31 @@ async def test_team_interrupt_resume_is_ack_only(monkeypatch: pytest.MonkeyPatch
     assert cancelled == []
     assert fake_manager.pause_calls == []
     assert fake_manager.cancel_calls == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stop_error", [TimeoutError, RuntimeError, asyncio.CancelledError])
+async def test_team_cancel_failure_preserves_session_task(monkeypatch, stop_error):
+    claw = _InterruptHarness()
+    manager = _FakeTeamManager()
+    monkeypatch.setattr(manager, "cancel_session_runtime", AsyncMock(side_effect=stop_error))
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager", lambda channel_id: manager,
+    )
+    cancel_task = AsyncMock()
+    monkeypatch.setattr(claw.session_manager_for_test, "cancel_session_task", cancel_task)
+    request = _build_team_interrupt_request("cancel")
+    if stop_error is asyncio.CancelledError:
+        with pytest.raises(asyncio.CancelledError):
+            await claw.process_interrupt_for_test(request)
+    else:
+        response = await claw.process_interrupt_for_test(request)
+        assert response.ok is True
+        assert response.payload == {
+            "event_type": "chat.interrupt_result", "intent": "cancel", "success": False,
+            "message": "团队停止未完成，请稍后重试",
+        }
+    cancel_task.assert_not_awaited()
 
 
 @pytest.mark.asyncio

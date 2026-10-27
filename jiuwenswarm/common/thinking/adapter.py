@@ -18,9 +18,9 @@ from jiuwenswarm.common.thinking.vendor_map import (
 )
 from jiuwenswarm.common.utils import logger
 
-# Temporary auto-inject style: only GLM-5.3 family maps ``default`` → product depth.
-# Broader default-depth layering is deferred; do not expand this set casually.
-_AUTO_DEFAULT_DEPTH_STYLES = frozenset({"glm53_reasoning_effort"})
+# Auto-inject ``default`` → product depth for always-on models whose vendor
+# default is max / too heavy. Do not expand casually (GLM-5 / DeepSeek stay no-op).
+_AUTO_DEFAULT_DEPTH_STYLES = frozenset({"glm53_reasoning_effort", "effort_only"})
 
 
 def _resolve_model_name(model: Any) -> str:
@@ -46,7 +46,7 @@ def _resolve_model_name(model: Any) -> str:
 def resolve_effective_depth(thinking: str | None) -> tuple[str, bool]:
     """Normalize thinking; leave ``default`` as ``default``.
 
-    Auto-inject call sites (GLM-5.3) map ``default`` →
+    Auto-inject call sites (GLM-5.3 / Kimi K3) map ``default`` →
     :data:`DEFAULT_THINKING_DEPTH` inside :func:`adapt_thinking`.
 
     Returns:
@@ -67,10 +67,10 @@ def adapt_thinking(
     """Build a frozen ThinkingProfile for one call / subagent lifetime.
 
     ``default`` / empty is a no-op for most models (leave vendor config as-is).
-    Temporary exception: GLM-5.3 family (``glm53_reasoning_effort``, including
-    names like ``glm-5.3-test``) auto-injects :data:`DEFAULT_THINKING_DEPTH`
-    (currently ``low``). Explicit ``off|on|low|medium|high`` still inject for
-    all allowlisted styles.
+    Exception: styles in :data:`_AUTO_DEFAULT_DEPTH_STYLES` (GLM-5.3 family and
+    Kimi K3 ``effort_only``, including names like ``kimi-k3-test-1009``)
+    auto-inject :data:`DEFAULT_THINKING_DEPTH` (currently ``low``). Explicit
+    ``off|on|low|medium|high`` still inject for all allowlisted styles.
 
     Never raises: unsupported / invalid → empty kwargs + degraded flag.
     Nested kwargs are deep-copied before freeze so later inject mutations
