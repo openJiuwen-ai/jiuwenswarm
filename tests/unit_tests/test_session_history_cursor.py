@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import zlib
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,22 @@ def _write_jsonl(path: Path, records: list[dict]) -> None:
 
 def _all_records(record: dict) -> bool:
     return True
+
+
+def _read_all_cursor_records(session_id: str, *, limit: int) -> list[dict]:
+    restored: list[dict] = []
+    cursor = None
+    while True:
+        page = session_history.read_history_cursor_page(
+            session_id,
+            cursor=cursor,
+            limit=limit,
+            is_restorable=_all_records,
+        )
+        restored.extend(page["messages"])
+        cursor = page["next_cursor"]
+        if not page["has_more"]:
+            return restored
 
 
 def test_cursor_reads_snapshot_newest_first_without_rescanning_file(tmp_path, monkeypatch):
@@ -57,6 +75,332 @@ def test_cursor_reads_snapshot_newest_first_without_rescanning_file(tmp_path, mo
     )
     batch_count = (len(records) + 16) // 17
     assert total_scanned <= file_size + batch_count * (max_record_bytes + 4096)
+
+
+def test_cursor_dedups_cumulative_final_across_pages(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_final_chain"
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "id": "round:assistant",
+                "request_id": "round",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "draft",
+            },
+            {"id": "f1:user", "request_id": "round", "role": "user", "content": "f1"},
+            {
+                "id": "round:assistant",
+                "request_id": "round",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "draft complete",
+            },
+            {"id": "f2:user", "request_id": "round", "role": "user", "content": "f2"},
+        ],
+    )
+
+    restored = _read_all_cursor_records(session_id, limit=2)
+
+    assert [record["id"] for record in restored] == [
+        "f2:user",
+        "round:assistant",
+        "f1:user",
+    ]
+    assert restored[1]["content"] == "draft complete"
+
+
+def test_cursor_keeps_independent_final_segments_across_pages(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_final_segments"
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "id": "round:assistant",
+                "request_id": "round",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "first segment",
+            },
+            {"id": "f1:user", "request_id": "round", "role": "user", "content": "f1"},
+            {
+                "id": "round:assistant",
+                "request_id": "round",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "second segment",
+            },
+        ],
+    )
+
+    restored = _read_all_cursor_records(session_id, limit=2)
+
+    assert [record.get("content") for record in restored] == [
+        "second segment",
+        "f1",
+        "first segment",
+    ]
+
+
+def test_cursor_merges_aborted_final_across_pages(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_aborted"
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(
+        path,
+        [
+            {
+                "id": "round:assistant",
+                "request_id": "round",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "answer",
+            },
+            {"id": "f1:user", "request_id": "round", "role": "user", "content": "f1"},
+            {
+                "id": "round:assistant",
+                "request_id": "round",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "",
+                "aborted": True,
+                "reasoning_content": "stopped",
+            },
+        ],
+    )
+
+    restored = _read_all_cursor_records(session_id, limit=1)
+    answer = next(record for record in restored if record["id"] == "round:assistant")
+
+    assert answer["content"] == "answer"
+    assert answer["aborted"] is True
+    assert answer["reasoning_content"] == "stopped"
+    assert all(record.get("content") != "" for record in restored)
+
+
+def test_cursor_preserves_standalone_aborted_marker(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_standalone_aborted"
+    marker = {
+        "id": "round:assistant",
+        "request_id": "round",
+        "role": "assistant",
+        "event_type": "chat.final",
+        "content": "",
+        "aborted": True,
+    }
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(path, [marker])
+
+    restored = _read_all_cursor_records(session_id, limit=50)
+
+    assert restored == [marker]
+
+
+def test_cursor_drops_resumed_empty_aborted_final(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_resumed_empty_abort"
+    records = [
+        {
+            "id": "round:assistant",
+            "request_id": "round",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "",
+            "aborted": True,
+        },
+        {
+            "id": "round:assistant",
+            "request_id": "round",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "answer after resume",
+        },
+    ]
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(path, records)
+
+    restored = _read_all_cursor_records(session_id, limit=1)
+
+    assert restored == [records[1]]
+
+
+def test_cursor_preserves_standalone_aborted_marker_order(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_aborted_order"
+    records = [
+        {
+            "id": "r1:assistant",
+            "request_id": "r1",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "old answer",
+        },
+        {
+            "id": "r2:assistant",
+            "request_id": "r2",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "",
+            "aborted": True,
+            "timestamp": 2,
+        },
+    ]
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(path, records)
+
+    restored = _read_all_cursor_records(session_id, limit=50)
+
+    assert restored == list(reversed(records))
+
+
+def test_cursor_orders_multiple_standalone_aborted_markers(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "cursor_multiple_aborted_order"
+    records = [
+        {"id": "r0:user", "request_id": "r0", "role": "user", "content": "r0"},
+        {
+            "id": "a:assistant",
+            "request_id": "a",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "",
+            "aborted": True,
+        },
+        {"id": "r1:user", "request_id": "r1", "role": "user", "content": "r1"},
+        {
+            "id": "b:assistant",
+            "request_id": "b",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "",
+            "aborted": True,
+        },
+        {"id": "r2:user", "request_id": "r2", "role": "user", "content": "r2"},
+    ]
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(path, records)
+
+    restored = _read_all_cursor_records(session_id, limit=50)
+
+    assert restored == list(reversed(records))
+
+
+def test_cursor_boundary_inserts_completed_pending_markers_in_reverse_order():
+    marker_a = {
+        "id": "a:assistant",
+        "request_id": "a",
+        "event_type": "chat.final",
+        "content": "",
+        "aborted": True,
+    }
+    marker_b = {
+        "id": "b:assistant",
+        "request_id": "b",
+        "event_type": "chat.final",
+        "content": "",
+        "aborted": True,
+    }
+    records = ["r0", "r1", "r2", "r3", "r4"]
+    states = {
+        "a:assistant": {
+            "request": "a",
+            "pending": marker_a,
+            "pending_position": 2,
+        },
+        "b:assistant": {
+            "request": "b",
+            "pending": marker_b,
+            "pending_position": 4,
+        },
+        "boundary:assistant": {
+            "request": "boundary",
+            "pending": None,
+            "pending_position": None,
+        },
+    }
+
+    carried = session_history._cursor_state_for_boundary(
+        records,
+        states,
+        "boundary",
+        "boundary",
+    )
+
+    assert records == ["r0", "r1", marker_a, "r2", "r3", marker_b, "r4"]
+    assert list(carried) == ["boundary:assistant"]
+
+
+def test_cursor_rejects_decompression_bomb(monkeypatch):
+    monkeypatch.setattr(
+        session_history,
+        "_HISTORY_CURSOR_MAX_PAYLOAD_BYTES",
+        128,
+    )
+    compressed = zlib.compress(b'{"v":1,"padding":"' + b"x" * 4096 + b'"}')
+    cursor = base64.urlsafe_b64encode(compressed).decode("ascii").rstrip("=")
+
+    with pytest.raises(session_history.InvalidHistoryCursor, match="size limit"):
+        session_history._decode_history_cursor(cursor)
+
+
+@pytest.mark.parametrize("limit", [1, 2, 3])
+def test_cursor_matches_legacy_dedup_semantics(tmp_path, monkeypatch, limit):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = f"cursor_semantics_{limit}"
+    records = [
+        {"id": "u1:user", "request_id": "round", "role": "user", "content": "u1"},
+        {
+            "id": "round:assistant",
+            "request_id": "round",
+            "role": "assistant",
+            "event_type": "chat.tool_call",
+            "content": "",
+            "tool_call": {"tool_call_id": "tool-1"},
+        },
+        {
+            "id": "round:assistant",
+            "request_id": "round",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "draft",
+        },
+        {"id": "u2:user", "request_id": "round", "role": "user", "content": "u2"},
+        {
+            "id": "round:assistant",
+            "request_id": "round",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "draft complete",
+        },
+        {
+            "id": "round:assistant",
+            "request_id": "round",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "independent segment",
+        },
+        {
+            "id": "round:assistant",
+            "request_id": "round",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "content": "",
+            "aborted": True,
+        },
+    ]
+    path = tmp_path / session_id / "history.jsonl"
+    _write_jsonl(path, records)
+
+    restored = _read_all_cursor_records(session_id, limit=limit)
+    expected = list(reversed(session_history._dedup_records_last_wins(records)))
+
+    assert restored == expected
 
 
 def test_cursor_initial_page_on_over_1000_records_stays_bounded(tmp_path, monkeypatch):

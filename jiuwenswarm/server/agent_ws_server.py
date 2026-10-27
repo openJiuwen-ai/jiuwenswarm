@@ -6371,8 +6371,7 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 payload={
-                    "event_type": "history.message",
-                    "status": "error",
+                    "event_type": "chat.error",
                     "error": str(exc),
                     "code": error_code,
                     "session_id": str(session_id or ""),

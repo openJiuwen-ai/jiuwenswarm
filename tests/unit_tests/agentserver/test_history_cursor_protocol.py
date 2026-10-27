@@ -107,6 +107,8 @@ async def test_cursor_history_rejects_invalid_limit(server, stream):
     payload = parse_payload(ws.sent[0], stream)
     assert payload["code"] == "INVALID_HISTORY_CURSOR"
     assert "between 1 and 50" in payload["error"]
+    if stream:
+        assert payload["event_type"] == "chat.error"
 
 
 @pytest.mark.asyncio
@@ -124,6 +126,8 @@ async def test_cursor_history_reports_snapshot_change(server, monkeypatch, strea
     payload = parse_payload(ws.sent[0], stream)
     assert payload["code"] == "HISTORY_SNAPSHOT_CHANGED"
     assert "snapshot changed" in payload["error"]
+    if stream:
+        assert payload["event_type"] == "chat.error"
 
 
 def test_cursor_history_empty_session_returns_metadata(tmp_path, monkeypatch):
