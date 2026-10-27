@@ -82,6 +82,9 @@ _CORE_STAGE_TO_ZHOU = {
     "attribution": "attribute",
 }
 
+#: Task-parse outcomes that still describe the trajectory. A model failure is not one of them.
+_SUMMARY_ONLY_PARSE_CODES = frozenset({"TASK_INCOMPLETE", "MULTIPLE_UNRELATED_TASKS"})
+
 _EXPERIENCE_SCORE = {"success": 1.0, "partial": 0.5, "fail": 0.0}
 
 _TEXTS: dict[str, dict[str, str]] = {
@@ -755,9 +758,11 @@ class AttributionCoreEngine:
 
         Raises:
             EngineError: ``EMPTY_SCOPE`` when the selection contains no complete
-                step. A task-parse failure still returns a trajectory summary
-                and does not fail the diagnosis. A run without any signal is
-                not an error: it ends completed with the attribute stage skipped.
+                step. ``TASK_INCOMPLETE`` and ``MULTIPLE_UNRELATED_TASKS``
+                still return a trajectory summary and do not fail the
+                diagnosis. ``MODEL_CALL_FAILED`` and ``MODEL_OUTPUT_INVALID``
+                return a result error. A run without any signal is not an
+                error: it ends completed with the attribute stage skipped.
         """
         text = _TEXTS[inputs.locale]
         queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
@@ -821,11 +826,19 @@ class AttributionCoreEngine:
         try:
             task_parse = await self._stage_task_parse(context)
         except EngineError as exc:
-            # A valid range must still produce a summary even when the task
-            # cannot be parsed. The parse stage stays open and finishes
-            # completed with the reason; the summary's model requests stay on
-            # that stage. The later stages are skipped at once so they do not
-            # sit there waiting, and the diagnosis has no record-level error.
+            if exc.code not in _SUMMARY_ONLY_PARSE_CODES:
+                # A model outage or an unusable reply is a real failure. Keep
+                # it on the result so it is not presented as "no task parsed".
+                logger.warning("[diagnosis] task parse failed: %s", exc.code)
+                queue.put_nowait(
+                    EngineEvent("task_parse", "stage_finished", status="failed", summary=exc.message),
+                )
+                return EngineResult(error=DiagnosisError(code=exc.code, message=exc.message))
+            # A valid range must still produce a summary when the selection has
+            # no single task. The parse stage stays open and finishes completed
+            # with the reason; the summary's model requests stay on that stage.
+            # The later stages are skipped at once so they do not sit waiting,
+            # and this path has no record-level error.
             logger.warning("[diagnosis] task parse failed; summary only: %s", exc.code)
             queue.put_nowait(
                 EngineEvent("task_parse", "output_delta", text_delta=text["summary_generating"]),

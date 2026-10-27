@@ -278,13 +278,11 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
     expected_summary = {
         "TASK_INCOMPLETE": "选中范围不包含完整任务，无法提取任务描述",
         "MULTIPLE_UNRELATED_TASKS": "选中范围包含多个互不相关的任务，无法归因",
-        "MODEL_OUTPUT_INVALID": "任务解析输出无法解析：boom",
     }
 
     for error_type, code in (
         ("incomplete_task", "TASK_INCOMPLETE"),
         ("multiple_unrelated_tasks", "MULTIPLE_UNRELATED_TASKS"),
-        ("invalid_response", "MODEL_OUTPUT_INVALID"),
     ):
 
         async def fail(*_args: Any, **_kwargs: Any) -> TaskParseResult:
@@ -327,15 +325,37 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
             if event.kind == "stage_finished" and event.status == "skipped"
         )
 
+    async def invalid(*_args: Any, **_kwargs: Any) -> TaskParseResult:
+        raise TaskParseError("invalid_response", "boom")
+
+    events.clear()
+    monkeypatch.setattr(module, "run_task_parse", invalid)
+    result = await engine.run(inputs, emit)
+    assert result.error is not None and result.error.code == "MODEL_OUTPUT_INVALID"
+    assert result.error.message == "任务解析输出无法解析：boom"
+    assert result.trajectory_summary == ""
+    failed = next(
+        event for event in events
+        if event.stage_id == "task_parse" and event.kind == "stage_finished"
+    )
+    assert failed.status == "failed" and failed.summary == result.error.message
+    assert not any(event.status == "skipped" for event in events)
+
     async def crash(*_args: Any, **_kwargs: Any) -> TaskParseResult:
         raise RuntimeError("network down")
 
     events.clear()
     monkeypatch.setattr(module, "run_task_parse", crash)
     result = await engine.run(inputs, emit)
-    assert result.error is None
-    assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
-    assert {event.stage_id for event in events if event.status == "skipped"} == {"diagnose", "attribute"}
+    assert result.error is not None and result.error.code == "MODEL_CALL_FAILED"
+    assert result.error.message == "任务解析模型调用失败：network down"
+    assert result.trajectory_summary == ""
+    failed = next(
+        event for event in events
+        if event.stage_id == "task_parse" and event.kind == "stage_finished"
+    )
+    assert failed.status == "failed" and failed.summary == result.error.message
+    assert not any(event.status == "skipped" for event in events)
 
 
 @pytest.mark.asyncio
