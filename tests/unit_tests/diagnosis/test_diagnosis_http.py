@@ -85,7 +85,7 @@ def _fetch_via(host: DiagnosisHost) -> Any:
         response = await host.handle(request)
         payload = dict(response.payload or {})
         if not response.ok:
-            forwarded = {"error": str(payload.get("error")), "code": str(payload.get("code"))}
+            forwarded: dict[str, Any] = {"error": str(payload.get("error")), "code": str(payload.get("code"))}
             reported_status = payload.get("status")
             if isinstance(reported_status, int) and not isinstance(reported_status, bool):
                 forwarded["status"] = reported_status
