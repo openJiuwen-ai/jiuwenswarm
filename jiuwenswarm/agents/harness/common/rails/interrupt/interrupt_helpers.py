@@ -558,6 +558,10 @@ class PermissionRailBuildOptions:
     resolve_workspace_dir: Any | None = None
     persist_target_agent_id_provider: Any | None = None
     rail_factory: Callable[..., Any] | None = None
+    # Identity dims for resolve_permission_key (enterprise triad; personal unused).
+    group_id: str | None = None
+    bot_id: str | None = None
+    user_id: str | None = None
 
 
 def build_permission_rail(
@@ -655,15 +659,18 @@ def build_permission_rail(
         tool_names, llm is not None, model_name,
     )
     try:
+        # Filled after the rail is constructed so persist (1B) can call update_config.
+        rail_box: dict[str, Any] = {}
+
         def _persist_allow_rule(permissions: dict[str, Any]) -> bool:
-            """Persist merged `permissions` config back to config.yaml.
+            """Persist merged `permissions` then refresh the rail (1B).
 
             openjiuwen PermissionInterruptRail calls this when user selects "always allow".
 
             Mutate only approval_overrides / file_guard / external_directory on the
             persist target body (yaml ``agents[id]`` when hit, else global). Do not
             replace the entire on-disk section — that would recreate deleted tools
-            or drop the ``agents`` table.
+            or drop the ``agents`` table.  On success call ``rail.update_config``.
             """
             try:
                 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
@@ -691,6 +698,13 @@ def build_permission_rail(
                     persist_target_agent_id=persist_target,
                     source="persist_allow_rule",
                 )
+                rail = rail_box.get("rail")
+                if rail is not None:
+                    rail.update_config(permissions)
+                else:
+                    logger.warning(
+                        "[InterruptHelpers] persist ok but rail missing; manager not refreshed"
+                    )
                 return True
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
@@ -870,6 +884,7 @@ def build_permission_rail(
                     inp.tool_args,
                     channel_id=str(getattr(perm_ctx, "channel_id", "") or ""),
                     session_id=None,
+                    permission_key=inp.permission_key,
                 )
                 if level == "allow":
                     return ("approve",)
@@ -880,7 +895,13 @@ def build_permission_rail(
             if not principal_user_id or not channel_id:
                 return None
 
-            perm_cfg = get_effective_permissions_config()
+            # owner_scopes 读已发布 key，不现场拉 yaml。
+            from agent_shield.tool_permission import get_permission_manager
+
+            try:
+                perm_cfg = dict(get_permission_manager().get_config(inp.permission_key))
+            except KeyError:
+                return None
             owner_scopes = perm_cfg.get("owner_scopes") if isinstance(perm_cfg, dict) else None
             if not isinstance(owner_scopes, dict) or not owner_scopes:
                 return None
@@ -905,8 +926,8 @@ def build_permission_rail(
             # （start_interaction 时 create_task），不会继承请求 Task 上的
             # PERMISSIONS_AGENT_BASE；若这里再走 get_effective_permissions_config()
             # 会回落 yaml（常为 enabled:false）并覆盖模板配置。
-            # 返回 None → 使用 _static_config（请求开头 _update_permission_rail
-            # 与 persist 的 update_config 会刷新它）。
+            # 返回 None → rail 保持已发布的 _static_config（请求开头
+            # _update_permission_rail 与 persist 的 update_config 会刷新它）。
             if config_source == "agent_template":
                 return None
             return get_effective_permissions_config()
@@ -956,6 +977,15 @@ def build_permission_rail(
                 exc_info=True,
             )
 
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_key import (
+            resolve_permission_key,
+        )
+
+        permission_key = resolve_permission_key(
+            group_id=opts.group_id,
+            bot_id=opts.bot_id,
+            user_id=opts.user_id,
+        )
         rail_factory = opts.rail_factory or rail_cls
         permission_rail = rail_factory(
             config=permission_config,
@@ -963,10 +993,14 @@ def build_permission_rail(
             llm=llm,
             model_name=model_name,
             host=host,
+            permission_key=permission_key,
         )
+        rail_box["rail"] = permission_rail
         logger.info(
-            "[InterruptHelpers] PermissionInterruptRail created successfully with tool_names=%s",
-            tool_names
+            "[InterruptHelpers] PermissionInterruptRail created successfully "
+            "with tool_names=%s key=%s",
+            tool_names,
+            permission_key,
         )
     except Exception as exc:
         logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)

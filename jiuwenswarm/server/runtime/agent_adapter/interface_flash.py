@@ -456,28 +456,22 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """Use the Flash profile's merged cron card for lifecycle checks."""
         return frozenset({"cron_flash"})
 
-    def _build_permission_rail_for_agent(self, config=None, llm=None, model_name=None):
-        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-            PermissionRailBuildOptions,
-            build_permission_rail,
-        )
+    def _permission_rail_factory(self):
+        """Same build path as Deep; only the rail class differs (projection)."""
         from jiuwenswarm.agents.harness.flash.permissions.flash_permission_rail import (
             FlashPermissionRail,
         )
 
-        rail = build_permission_rail(
-            config=config or {},
-            options=PermissionRailBuildOptions(
-                llm=llm if llm is not None else self._model,
-                model_name=model_name,
-                permission_config=self._agent_permissions_body,
-                resolve_workspace_dir=self._permission_workspace_dir,
-                persist_target_agent_id_provider=self._permissions_persist_target,
-                rail_factory=FlashPermissionRail.create,
-            ),
+        return FlashPermissionRail.create
+
+    def _build_permission_rail_for_agent(self, config=None, llm=None, model_name=None):
+        rail = super()._build_permission_rail_for_agent(
+            config=config, llm=llm, model_name=model_name
         )
         if rail is None and self._resolve_permission_config_for_agent().get("enabled", False):
-            raise RuntimeError("Flash permission rail could not be built while permissions are enabled")
+            raise RuntimeError(
+                "Flash permission rail could not be built while permissions are enabled"
+            )
         return rail
 
     def _update_permission_rail(self, config_base, *, session_id=None):

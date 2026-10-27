@@ -595,7 +595,9 @@ async def test_created_subagent_uses_parent_session_files_without_inherited_main
     policy = {"enabled": True, "skill_authorization": {"enabled": True}}
     permission = SkillAuthorizationPermissionRail(config=policy)
     main_gate = SkillAuthorizationRail(
-        engine=permission._engine, config_provider=lambda: policy, grant_store=store,
+        permission_key=permission.permission_key,
+        config_provider=lambda: policy,
+        grant_store=store,
     )
     main_gate.set_sessions_root(store.sessions_root())
     parent = create_deep_agent(

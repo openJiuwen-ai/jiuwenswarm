@@ -6,9 +6,8 @@ dev-stable 适配说明（相对 0708
 ``jiuwenclaw...deep_agent/rails/subagent_permission_rail.py``）：
 
 - 基类为 agent-core ``openjiuwen.harness.rails.interrupt.confirm_rail.ConfirmInterruptRail``；
-- agent-core ``PermissionEngine.check_permission`` 无 session/overlay 钩子，
-  ACTIVE Grant 的 overlay 由本 rail 手工合成（``compose_skill_permissions`` +
-  ``get_effective_permissions_config`` + 会话 overlay）后以临时引擎裁决；
+- ACTIVE Grant 的 overlay 由本 rail 手工合成后经
+  ``get_permission_manager().check_permission(..., config=)`` 一次性裁决；
 - agent-core ``PermissionResult`` 无 ``risk`` 字段：审批卡不再展示风险等级；
 - ``EXCLUDED_TOOLS_SPAWN``（见 ``leader_exclusive_tools``）由装配期
   ``excluded_spawn_tools`` 在 GP inject 的 ``tools=`` 参数剔除；本 rail
@@ -38,7 +37,7 @@ from openjiuwen.harness.rails.skills.skill_lifecycle_events import (
     is_skill_complete,
     parse_tool_call_arguments,
 )
-from openjiuwen.harness.security.core import PermissionEngine
+from agent_shield.tool_permission import get_permission_manager
 from openjiuwen.harness.security.models import PermissionLevel
 from openjiuwen.harness.security.skill_authorization import (
     compose_skill_permissions,
@@ -65,7 +64,6 @@ from jiuwenswarm.agents.harness.common.rails.leader_exclusive_tools import (
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     get_effective_permissions_config,
-    merge_session_permissions_overlay,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
@@ -176,9 +174,8 @@ def _tighten_permission_level(
 class SubagentPermissionRail(ConfirmInterruptRail):
     """Apply normal tool permission semantics during a subagent Skill window.
 
-    ``engine`` 由调用方构造注入，仅作裁决模板（复用其 workspace_root /
-    trusted_dirs）；实际裁决使用手工合成 overlay 后的临时引擎，agent-core
-    引擎本身不感知 Skill Grant。
+    有 ACTIVE Skill overlay 时一次性 ``check_permission(..., config=)``；
+    否则走父 Agent 已发布的 ``permission_key``（不造临时配置）。
     """
 
     priority: int = 90
@@ -187,7 +184,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         self,
         *,
         agent_scope_id: str,
-        engine: PermissionEngine | Any | None = None,
+        permission_key: str | None = None,
         grant_store: SkillGrantStore | None = None,
         approval_registry: SubagentApprovalRegistry | None = None,
         approval_sender: ApprovalSender | None = None,
@@ -199,7 +196,13 @@ class SubagentPermissionRail(ConfirmInterruptRail):
     ) -> None:
         super().__init__(tool_names=[])
         self._agent_scope_id = (agent_scope_id or "").strip()
-        self._engine = engine
+        from openjiuwen.harness.security.permission_key import DEFAULT_KEY
+
+        self._permission_key = (
+            permission_key.strip()
+            if isinstance(permission_key, str) and permission_key.strip()
+            else DEFAULT_KEY
+        )
         self._grant_store = grant_store or get_skill_grant_store()
         self._approval_registry = approval_registry or get_subagent_approval_registry()
         self._approval_sender = (
@@ -216,8 +219,6 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         self._config_provider = config_provider or get_effective_permissions_config
         self._approval_session_id = (session_id or "").strip()
         self._sessions_root: Path | None = None
-        if workspace_root is None and engine is not None:
-            workspace_root = getattr(engine, "_workspace_root", None)
         self._workspace_root = Path(workspace_root) if workspace_root else None
         self._rejected_call_fingerprints: set[str] = set()
 
@@ -243,29 +244,28 @@ class SubagentPermissionRail(ConfirmInterruptRail):
             )
             return False
 
-    def _adjudicate_config(self, session_id: str, agent_scope_id: str) -> dict[str, Any]:
-        """手工合成裁决配置：生效配置（全局 + 会话 overlay）+ 当前 ACTIVE Grant overlay。"""
+    def _ensure_published_config(self) -> dict[str, Any]:
+        """已发布 permissions；key 未登记时按空配置补登记（不回落 yaml）。"""
+        manager = get_permission_manager()
         try:
-            base = self._config_provider()
-        except Exception:  # noqa: BLE001 — 配置读取失败按空配置（全 ASK）处理
+            return dict(manager.get_config(self._permission_key))
+        except KeyError:
             logger.warning(
-                "[skill_authorization] subagent.permission.config_read_failed",
-                exc_info=True,
+                "[skill_authorization] subagent.permission.register_empty_key key=%s",
+                self._permission_key,
             )
-            base = {}
-        base = base if isinstance(base, dict) else {}
-        try:
-            base = merge_session_permissions_overlay(base, session_id=session_id)
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "[skill_authorization] subagent.permission.session_overlay_failed",
-                exc_info=True,
-            )
+            manager.update_config({}, self._permission_key)
+            return dict(manager.get_config(self._permission_key))
+
+    def _skill_overlay_config(
+        self, session_id: str, agent_scope_id: str
+    ) -> dict[str, Any] | None:
+        """ACTIVE grant overlay 时返回合成配置；否则 None（调用方走已发布 key）。"""
         grant = self._grant_store.get_active(session_id, agent_scope_id)
         overlay = grant.overlay_snapshot if grant is not None else None
-        if overlay:
-            return compose_skill_permissions(base, overlay)
-        return base
+        if not overlay:
+            return None
+        return compose_skill_permissions(self._ensure_published_config(), overlay)
 
     @staticmethod
     def _approved(answer: Any) -> bool:
@@ -368,22 +368,28 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         ):
             return
 
-        # dev-stable：agent-core 引擎无 Skill overlay 钩子，手工合成后以临时引擎裁决。
-        effective_config = self._adjudicate_config(session_id, agent_scope_id)
-        adjudication_engine = PermissionEngine(
-            config=effective_config,
-            workspace_root=self._workspace_root,
-        )
-        result = await adjudication_engine.check_permission(
-            TOOL_NAME_ALIASES.get(tool_name, tool_name),
-            tool_args,
-        )
+        # Real one-off config only when Skill overlay exists; else published key.
+        overlay_cfg = self._skill_overlay_config(session_id, agent_scope_id)
+        normalized = TOOL_NAME_ALIASES.get(tool_name, tool_name)
+        if overlay_cfg is not None:
+            result = await get_permission_manager().check_permission(
+                normalized,
+                tool_args,
+                config=overlay_cfg,
+            )
+        else:
+            self._ensure_published_config()
+            result = await get_permission_manager().check_permission(
+                normalized,
+                tool_args,
+                self._permission_key,
+            )
 
         # 与主 Agent 一致：owner_scopes 只能在引擎（含 Skill overlay）之后收紧。
         try:
             perm_ctx = TOOL_PERMISSION_CONTEXT.get()
             if perm_ctx is not None and perm_ctx.principal_user_id:
-                config = self._config_provider()
+                config = self._ensure_published_config()
                 owner_scopes = config.get("owner_scopes", {}) if isinstance(config, dict) else {}
                 cid = perm_ctx.channel_id.strip()
                 uid = perm_ctx.principal_user_id.strip()
