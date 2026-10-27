@@ -22,7 +22,7 @@ def enable_deepresearch() -> bool:
 
 
 def get_deepresearch_tools() -> list[Any]:
-    """Return model-facing tools; keep the low-level stream internal."""
+    """Return exactly the supported formal tools without probing the SDK."""
     if not enable_deepresearch():
         return []
     from .rewrite_tools import (
@@ -33,6 +33,7 @@ def get_deepresearch_tools() -> list[Any]:
 
     return [
         deepresearch_execute,
+        deepresearch_stream,
         deepresearch_prepare_rewrite,
         deepresearch_commit_rewrite,
         deepresearch_generate_rewrite_html,
