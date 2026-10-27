@@ -27,7 +27,7 @@ def _decision(decision: str, execution_id: str = "exec_1", notice: str | None = 
     )
 
 
-def _manager(route: RequestRouteSnapshot | None, sent: list[dict[str, object]]):
+def _manager(route: RequestRouteSnapshot | None, sent: list[dict[str, object]], request_kind: str = "direct_message"):
     async def sender(job: dict[str, object]) -> None:
         sent.append(job)
 
@@ -38,7 +38,10 @@ def _manager(route: RequestRouteSnapshot | None, sent: list[dict[str, object]]):
     manager._delivery_service = None
     manager._sessions = SimpleNamespace(
         get_request=lambda namespace_id, request_id: SimpleNamespace(
-            record=SimpleNamespace(route_snapshot=route)
+            record=SimpleNamespace(
+                route_snapshot=route,
+                request_input=SimpleNamespace(kind=request_kind),
+            )
         )
     )
     return manager
@@ -63,6 +66,19 @@ async def test_a_reply_decision_sends_one_notice_on_the_request_channel(decision
     assert sent[0]["source_message_id"] == "om_1"
     assert sent[0]["text"] == _NOTICE
     assert sent[0]["idempotency_key"] == "thinking:exec_1"
+
+
+async def test_dingtalk_group_waiting_notice_keeps_the_group_conversation_type():
+    sent: list[dict[str, object]] = []
+    route = RequestRouteSnapshot(
+        channel="dingtalk", target_id="cid_group", app_id="app_dingtalk", source_message_id="msg_1",
+    )
+    manager = _manager(route, sent, request_kind="group_message")
+
+    manager._observe_event(_decision("respond"))
+    await asyncio.wait_for(_until(lambda: sent), timeout=2)
+
+    assert sent[0]["is_direct_message"] is False
 
 
 @pytest.mark.parametrize("decision", ["ignore", "respond"])

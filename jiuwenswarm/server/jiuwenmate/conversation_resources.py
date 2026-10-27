@@ -27,7 +27,7 @@ class ConversationResources:
         if session.conversation.kind != "group":
             return
         route = request.route_snapshot
-        if route is None or route.channel != "feishu" or not route.app_id:
+        if route is None or route.channel not in {"feishu", "dingtalk"} or not route.app_id:
             raise ValueError("confirmed group delivery has no platform route")
         group = self._archive.groups.get(request.namespace_id, session.conversation.key)
         if group.platform_chat_id != route.target_id:

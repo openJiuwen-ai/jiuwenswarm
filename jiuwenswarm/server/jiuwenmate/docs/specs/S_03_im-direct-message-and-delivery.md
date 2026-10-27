@@ -1,4 +1,4 @@
-# IM 单聊绑定与结果投递规约
+# IM 消息绑定与结果投递规约
 
 ## 元信息
 
@@ -10,11 +10,11 @@
 | 最近一次修订日期 | 2026-10-26 |
 | 关联 feature | [F_21_02 钉钉单聊](../features/F_21_02_dingtalk-direct-message.md)、[F_02_02 配置与连接](../features/F_02_02_colleague-connections.md)、[F_08](../features/F_08_feishu-group-fanout.md)、[F_09](../features/F_09_web-and-feishu-result-delivery.md) |
 
-本规约维护 Swarm 宿主的钉钉单聊接线契约，不改变 PA 执行协议。同事、连接与运行 Agent 的关系及飞书、钉钉共用的连接检查见 [S_04](S_04_colleague-connections.md)。状态：已实现，提交在个人仓，待与 [F_02_02](../features/F_02_02_colleague-connections.md) 一同合入上游；源码与替身验证通过不等于平台联调通过，证据见 F_21_02。
+本规约维护 Swarm 宿主的钉钉单聊、群聊接线契约，不改变 PA 执行协议。同事、连接与运行 Agent 的关系及飞书、钉钉共用的连接检查见 [S_04](S_04_colleague-connections.md)。群聊回复模式复用 [F_23](../features/F_23_group-reply-mode.md)。源码与替身验证通过不等于平台联调通过，证据见 F_21_02。
 
 ## 1. 范围、术语与适用条件
 
-适用于企业内部应用机器人的钉钉单聊文本及文本结果投递。群聊、附件、文件与媒体发送、用户授权 CLI、第三方企业应用不在范围内。
+适用于企业内部应用机器人的钉钉单聊和群聊文本及文本结果投递。附件、文件与媒体发送、用户授权 CLI、第三方企业应用不在范围内。
 
 - **应用**：`channels.dingtalk.apps[]` 中的一项，以 `client_id` 标识。
 - **JM 应用**：配置了 `persistent_agent_id` 的应用；其余为普通应用。
@@ -36,20 +36,20 @@
 | 对象 | 规则 |
 | --- | --- |
 | 接收应用 | 来自收到事件的通道实例的 client_id，不由消息内容决定 |
-| Session 键 | `im_direct`，channel `dingtalk`，key 为 JSON `[client_id, conversationId]` |
+| Session 键 | 单聊为 `im_direct`，channel `dingtalk`，key 为 JSON `[client_id, conversationId]`；群聊使用 `group_chats` 中按 namespace、平台和 `conversationId` 解析的群身份 |
 | `source_ref` | `dingtalk:message:` + JSON `[client_id, msgId]`；msgId 为业务消息 ID，不用 Stream 推送 ID |
-| 发送目标 | 受理时的 senderStaffId；不回退加密 senderId |
+| 发送目标 | 单聊为受理时的 `senderStaffId`；群聊为受理时的 `conversationId`；不回退加密 senderId |
 | 路由快照 | `channel=dingtalk`、`app_id`、`target_id`、`source_message_id` 均必填，受理后不随配置变化 |
 
 ## 3. 不变量
 
 1. **入站接管：** JM 应用的全部入站由 JM 认领；拒绝、失败或不支持都不进入普通 Agent，也不下载附件、不写 `last_*`。
-2. **身份完整：** 只受理带 msgId、conversationId、senderStaffId 与非空文本的单聊；事件带 robotCode 时须与配置（缺省为 client_id）一致；`senderCorpId` 与 `chatbotCorpId` 都存在时必须相同；`allow_from` 非空时按 staffId 检查。
+2. **身份完整：** 只受理带 msgId、conversationId、senderStaffId 与非空文本的单聊或群聊；事件带 robotCode 时须与配置（缺省为 client_id）一致；`senderCorpId` 与 `chatbotCorpId` 都存在时必须相同；`allow_from` 非空时按 staffId 检查。
 3. **连接不复用：** 每个钉钉应用由同事专属的运行 Agent 服务。入站只受理 YAML 绑定到、且登记为本钉钉应用连接的 Agent，其余一律拒绝（S_04 不变量 2）；飞书入站执行同一检查。
 4. **普通应用唯一：** 最多一个普通应用；第二个普通应用的保存被拒绝。
 5. **默认应用：** 唯一的普通应用是默认应用；没有普通应用时只保留已标记为默认的应用，不按位置提升 JM 应用。默认应用路由键为 `default`，其余为 client_id。找不到默认应用时，不带应用身份的钉钉消息被丢弃，不回退到任一实例。
 6. **cron 身份：** 默认应用换成另一 client_id 或不再存在时，`last_*` 从配置文件删除；密钥轮换保留。
-7. **精确投递：** 钉钉结果与等待提示只经 client_id 等于路由 `app_id` 的通道发送（默认应用的路由键为 `default` 不影响匹配）；飞书结果按原规则匹配且不选钉钉通道。
+7. **精确投递：** 钉钉结果与等待提示只经 client_id 等于路由 `app_id` 的通道发送（默认应用的路由键为 `default` 不影响匹配）；单聊走私聊发送接口，群聊走群消息发送接口并投递到冻结的群 `target_id`；飞书结果按原规则匹配且不选钉钉通道。
 8. **投递安全：** 只有被 final/paused 引用并持久化的候选输出进入账本；unknown 不自动重发；投递失败不重跑 Agent；`delivered` 只表示平台接受发送。
 
 ## 4. 接口契约
@@ -61,6 +61,7 @@
 - 保存语义（`set_conf` 与 `bind_agent` 共用）：在配置写锁内以文件中的 `channels.dingtalk` 为基础合并、校验并写回，再用写回结果重启钉钉通道；重启串行执行，每次在旧实例停止后读取最新配置，停止旧实例不按 channel_id 注销，因此重叠的重启不会让已保存的应用缺少通道；并发保存不会互相覆盖，普通渠道写入文件的 `last_*` 不会被内存中的旧值覆盖。`bind_agent` 取得运行 Agent 在读取配置之前完成。
 - `jiuwenmate.dingtalk.inbound`：Gateway 到 AgentServer 的内部 E2A 方法，不对 Web 公开。入站的处置结果仅用于日志。连接相关的内部方法见 S_04。
 - 投递推送：载荷携带 `channel`、`app_id`、`chat_id`、`is_direct_message`；缺少 `channel` 的旧推送按飞书处理。ACK 信封渠道与推送一致。
+- 已确认的群聊文本回复写入该平台群的公开记录，平台回执作为消息 ID，源消息作为 `reply_to`；飞书与钉钉均支持重启后只重试归档、不重发消息。
 
 `send_persistent_result` 的钉钉结果分类：
 

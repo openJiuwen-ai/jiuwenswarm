@@ -105,14 +105,17 @@ export function ChannelListSection({
                   data-state={configured ? 'configured' : 'unconfigured'}
                 >
                   <div className="settings-channels-panel__channel-copy">
-                    <span
-                      className="settings-channels-panel__channel-label"
-                      data-testid="settings-channels-panel-channel-label"
-                      data-variant={channel.channel_id}
-                      title={channel.channel_id === 'xiaoyi' ? t('channels.availability.xiaoyi') : undefined}
-                    >
-                      {label}
-                    </span>
+                    <div className="settings-channels-panel__channel-heading">
+                      {!configured ? <ChannelLogo channelId={channel.channel_id} label={label} variant="channel" /> : null}
+                      <span
+                        className="settings-channels-panel__channel-label"
+                        data-testid="settings-channels-panel-channel-label"
+                        data-variant={channel.channel_id}
+                        title={channel.channel_id === 'xiaoyi' ? t('channels.availability.xiaoyi') : undefined}
+                      >
+                        {label}
+                      </span>
+                    </div>
                     <div className="settings-channels-panel__channel-details">
                       <span
                         className="settings-channels-panel__channel-description"

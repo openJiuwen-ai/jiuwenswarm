@@ -296,6 +296,19 @@ def create_default_persistent_group_fanout(
     )
     if verify_membership is not None:
         async def verify(access, group):
+            if getattr(group, "platform", "") == "dingtalk":
+                from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
+
+                bindings = configured_dingtalk_bindings()
+                if access.status == "active" and any(
+                    (item.namespace_id, item.agent_id, item.app_id)
+                    == (access.namespace_id, access.agent_id, access.app_id)
+                    for item in bindings
+                ):
+                    # A group callback itself is DingTalk's available proof that this bound Bot
+                    # currently receives messages in the group; there is no membership-read API here.
+                    return "active"
+                return "unknown"
             if getattr(group, "platform", "") == "welink":
                 from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_binding
 

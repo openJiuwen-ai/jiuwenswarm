@@ -47,9 +47,9 @@ def _channel():
     return channel
 
 
-async def _send(channel, **changes):
+async def _send(channel, *, chat_id="staff-test", **changes):
     return await channel.send_persistent_result(
-        chat_id="staff-test", text="test result", source_message_id="message-test", idempotency_key="delivery-test",
+        chat_id=chat_id, text="test result", source_message_id="message-test", idempotency_key="delivery-test",
         **changes,
     )
 
@@ -257,13 +257,57 @@ def test_event_preserves_business_identity_and_excludes_temporary_webhook():
     assert DingTalkInboundEvent.from_payload(payload) == event
 
 
+def test_event_accepts_a_mentioned_group_message_and_preserves_group_identity():
+    callback = _callback(
+        conversationType="2", isInAtList=True, chatbotUserId="bot-test",
+        atUsers=[{"dingtalkId": "bot-test"}], conversationTitle="Test group",
+    )
+    event = DingTalkInboundEvent.from_callback(callback, app_id="trusted-app", agent_id="agent-dingtalk")
+
+    assert event.conversation_type == "2"
+    assert event.receiver_bot_mentioned is True
+    assert event.conversation_id == "conversation-test"
+    assert event.mention_ids == ("bot-test",)
+    payload = event.to_payload()
+    assert payload["conversation_type"] == "2" and payload["receiver_bot_mentioned"] is True
+    assert "sessionWebhook" not in payload and "chatbotUserId" not in payload
+    assert DingTalkInboundEvent.from_payload(payload) == event
+
+
+def test_group_broadcast_is_not_treated_as_an_explicit_bot_mention():
+    callback = _callback(
+        conversationType="2", isInAtList=True, chatbotUserId="bot-test",
+        atUsers=[{"dingtalkId": "all"}],
+    )
+
+    event = DingTalkInboundEvent.from_callback(callback, app_id="trusted-app", agent_id="agent-dingtalk")
+
+    assert event.mention_ids == ("all",)
+    assert event.receiver_bot_mentioned is False
+
+
 @pytest.mark.parametrize("changes", [
     {"senderStaffId": None}, {"conversationId": ""}, {"msgId": None},
-    {"conversationType": None}, {"conversationType": "2"}, {"msgtype": "file"}, {"text": {}},
+    {"conversationType": None}, {"conversationType": "3"}, {"msgtype": "file"}, {"text": {}},
 ])
 def test_event_never_guesses_missing_identity_or_unsupported_input(changes):
     with pytest.raises(ValueError):
         DingTalkInboundEvent.from_callback(_callback(**changes), app_id="app-test", agent_id="agent-dingtalk")
+
+
+@pytest.mark.asyncio
+async def test_persistent_group_result_uses_the_group_send_api():
+    channel = _channel()
+    channel._http.post = AsyncMock(return_value=httpx.Response(200, json={"processQueryKey": "group-handle"}))
+
+    result = await _send(channel, chat_id="conversation-test", is_direct_message=False)
+
+    assert result == {"outcome": "delivered", "external_message_id": "group-handle"}
+    url, kwargs = channel._http.post.await_args.args[0], channel._http.post.await_args.kwargs
+    assert url == "https://api.example.invalid/v1.0/robot/groupMessages/send"
+    assert kwargs["json"]["openConversationId"] == "conversation-test"
+    assert kwargs["json"]["robotCode"] == "robot-test"
+    assert json.loads(kwargs["json"]["msgParam"])["text"] == "test result"
 
 
 @pytest.mark.asyncio
@@ -360,13 +404,22 @@ async def test_claimed_input_precedes_media_download_and_never_falls_back():
     channel.set_persistent_inbound_callback(callback)
     handler = DingTalkHandler(channel)
     await handler.process(SimpleNamespace(data=_callback(msgtype="file")))
-    await handler.process(SimpleNamespace(data=_callback(conversationType="2")))
     channel.handle_file_message.assert_not_awaited()
     channel.handle_incoming_message.assert_not_awaited()
     callback.assert_not_awaited()
+    await handler.process(SimpleNamespace(data=_callback(
+        conversationType="2", isInAtList=True, chatbotUserId="bot-test",
+        atUsers=[{"dingtalkId": "bot-test"}],
+    )))
+    await asyncio.gather(*tuple(channel._background_tasks))
+    group_event = callback.await_args.args[0]
+    assert group_event.conversation_type == "2" and group_event.receiver_bot_mentioned is True
+    assert channel.handle_file_message.await_count == 0
+    assert channel.handle_incoming_message.await_count == 0
     await handler.process(SimpleNamespace(data=_callback()))
     await asyncio.gather(*channel._background_tasks)
-    event = callback.await_args.args[0]
+    assert callback.await_count == 2
+    event = callback.await_args_list[-1].args[0]
     assert event.expected_agent_id == "agent-dingtalk" and event.receiving_app_id == "app-test"
     channel.handle_incoming_message.assert_not_awaited()
 
