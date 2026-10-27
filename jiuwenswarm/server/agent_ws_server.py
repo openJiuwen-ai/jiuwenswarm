@@ -3106,7 +3106,9 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
-                if self._is_targeted_expert_cancel_request(request):
+                params = request.params if isinstance(request.params, dict) else {}
+                owner_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
+                if owner_stop or self._is_targeted_expert_cancel_request(request):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -3431,15 +3433,30 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("organization_stop") is True:
+        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
             resp = await self._cancel_organization(request)
         elif self._is_targeted_expert_cancel_request(request):
             resp = await self._cancel_targeted_expert(request)
         else:
-            resp = await self._execution_runtime().cancel_request(
-                request,
-                allow_create=allow_create,
-            )
+            from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+            resume_owner = params.get("intent") in {"resume", "supplement"} and owner_is_stopped(request.session_id)
+            if resume_owner:
+                from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                owner_id = str((get_session_metadata(request.session_id) or {}).get("team_name") or "")
+                store = owner_inbox()
+                if await asyncio.to_thread(store.enabled_at, request.session_id, owner_id) is None:
+                    await asyncio.to_thread(store.enable, request.session_id, owner_id, 0.0)
+                set_owner_stopped(request.session_id, False)
+            try:
+                resp = await self._execution_runtime().cancel_request(request, allow_create=allow_create)
+            except (Exception, asyncio.CancelledError):
+                if resume_owner:
+                    set_owner_stopped(request.session_id, True)
+                raise
+            if resume_owner and (not resp.ok or (resp.payload or {}).get("success") is False):
+                set_owner_stopped(request.session_id, True)
 
         if send_response:
             wire = encode_agent_response_for_wire(
@@ -5554,6 +5571,16 @@ class AgentWebSocketServer:
 
         existing_team_name = str(metadata.get("team_name") or "").strip()
         if existing_team_name:
+            has_input = any(params.get(key) for key in ("content", "query", "media_items", "files", "attachments"))
+            if has_input and not params.get("attach_only") and not self._is_targeted_expert_chat(request):
+                if metadata.get("organization_owner_stopped") is True:
+                    from jiuwenswarm.server.runtime.organization_execution import set_owner_stopped
+                    from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                    store = owner_inbox()
+                    if await asyncio.to_thread(store.enabled_at, session_id, existing_team_name) is None:
+                        await asyncio.to_thread(store.enable, session_id, existing_team_name, 0.0)
+                    set_owner_stopped(session_id, False)
             params.setdefault("team_name", existing_team_name)
             template_id = str(metadata.get("team_template_id") or "").strip()
             if template_id:
@@ -6764,7 +6791,7 @@ class AgentWebSocketServer:
             await runtime.stop_team(team_name=team_id, session_id=session_id)
 
     async def _cancel_organization(self, request: AgentRequest) -> AgentResponse:
-        """The Owner's stop action also stops its invited and Summary Teams."""
+        """Stop the Owner alone or, for legacy callers, its entire organization."""
         from dataclasses import replace
 
         from openjiuwen.core.runner.runner import GLOBAL_RUNNER
@@ -6794,12 +6821,25 @@ class AgentWebSocketServer:
         can_cancel_organization = organization_enabled() and is_team_request
         has_owner_binding = is_owner_target and bool(organization_id)
         intent = str(params.get("intent") or "cancel")
+        owner_only = params.get("organization_owner_stop") is True
         success = can_cancel_organization and has_owner_binding and intent == "cancel"
         cancelled = []
+        owner_was_stopped = False
+        inbox_was_enabled = None
         if success:
+            if owner_only:
+                from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+                owner_was_stopped = owner_is_stopped(session_id)
+                from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                store = owner_inbox()
+                inbox_was_enabled = await asyncio.to_thread(store.enabled_at, session_id, owner_id)
+                await asyncio.to_thread(store.enable, session_id, owner_id)
+                set_owner_stopped(session_id, True)
             runtime = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
             team_ids = {owner_id}
-            if runtime is not None:
+            if runtime is not None and not owner_only:
                 for entry in await runtime.pool.teams_for_session(session_id):
                     backend = getattr(entry.agent, "team_backend", None)
                     org_id = getattr(getattr(backend, "org_task_manager", None), "organization_id", None)
@@ -6807,7 +6847,8 @@ class AgentWebSocketServer:
                         team_ids.add(entry.team_name)
             async with stopping_teams(session_id, team_ids) as cancelled:
                 owner_params = {
-                    key: value for key, value in params.items() if key not in {"target_team_id", "organization_stop"}
+                    key: value for key, value in params.items()
+                    if key not in {"target_team_id", "organization_stop", "organization_owner_stop"}
                 }
                 owner_params["intent"] = "cancel"
                 owner_request = replace(request, params=owner_params)
@@ -6822,13 +6863,25 @@ class AgentWebSocketServer:
                     logger.warning("[AgentWebSocketServer] organization Owner cancellation failed: %s", exc)
                 finally:
                     for team_id in team_ids:
-                        await self._stop_organization_team(session_id, team_id)
+                        try:
+                            await self._stop_organization_team(session_id, team_id)
+                        except Exception as exc:
+                            if not owner_only:
+                                raise
+                            success = False
+                            recovery_error = str(exc) or "Owner runtime could not be stopped"
+                            logger.warning("[AgentWebSocketServer] organization Owner stop failed: %s", exc)
+            if owner_only and not success:
+                set_owner_stopped(session_id, owner_was_stopped)
+                if inbox_was_enabled is None:
+                    await asyncio.to_thread(store.disable, session_id, owner_id)
         return AgentResponse(
             request_id=request.request_id, channel_id=request.channel_id, ok=success,
             payload={
                 "event_type": "chat.interrupt_result", "session_id": session_id,
-                "team_id": owner_id, "source": "org_stop", "intent": "cancel",
+                "team_id": owner_id, "source": "org_owner_stop" if owner_only else "org_stop", "intent": "cancel",
                 "success": success, "has_active_task": False, "cancelled_requests": cancelled,
+                **({"organization_owner_stopped": True} if owner_only and success else {}),
                 **(
                     {"error": recovery_error or "organization stop requires its Owner in Team mode"}
                     if not success else {}
@@ -7531,10 +7584,20 @@ class AgentWebSocketServer:
             from jiuwenswarm.server.runtime.organization_packages import (
                 team_package_availability,
             )
+            from jiuwenswarm.server.runtime.organization_team_models import load_team_model
 
             for entry in entries.values():
                 if entry.get("organization_id") or entry.get("source") == "database":
                     entry.update(team_package_availability(entry["team_id"], entry.get("agent_group_name") or ""))
+                if not entry.get("organization_id") or entry.get("is_owner"):
+                    continue
+                try:
+                    selection = load_team_model(entry["team_id"], session_id)
+                    if selection is not None:
+                        entry["execution_model_name"] = selection.model_name
+                        entry["execution_model_selection"] = selection.selection.model_dump(exclude_none=True)
+                except (ValueError, OSError):
+                    logger.warning("Cannot read expert Team model for %s", entry["team_id"], exc_info=True)
         return list(entries.values())
 
     async def _load_persisted_organization(
@@ -7618,6 +7681,9 @@ class AgentWebSocketServer:
                 "session_id": session_id, "teams": teams, "default_team_id": default_team_id,
                 "expert_requests": self._expert_request_snapshot(session_id),
                 "organization_requests": self._organization_request_snapshot(session_id),
+                "organization_owner_stopped": (get_session_metadata(session_id) or {}).get(
+                    "organization_owner_stopped", False,
+                ),
             },
         )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)

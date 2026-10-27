@@ -1141,6 +1141,7 @@ def update_session_metadata(
     session_runtime_binding: dict[str, Any] | None = None,
     session_harness_checkpoint: dict[str, Any] | None = None,
     group_members: list[dict[str, Any]] | None = None,
+    organization_owner_stopped: bool | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1335,8 +1336,11 @@ def update_session_metadata(
 
     if group_members is not None:
         metadata["group_members"] = copy.deepcopy(group_members)
+    if organization_owner_stopped is not None:
+        metadata["organization_owner_stopped"] = organization_owner_stopped
 
     explicit_fields = (
+        ("organization_owner_stopped", organization_owner_stopped),
         ("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order),
         ("moa_enabled", moa_enabled), ("session_harness_checkpoint", session_harness_checkpoint),
         ("group_members", group_members),

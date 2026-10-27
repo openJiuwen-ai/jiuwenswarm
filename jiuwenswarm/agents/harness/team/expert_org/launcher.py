@@ -243,12 +243,9 @@ class JiuwenExpertTeamLauncher:
     ) -> bool:
         """Run an org background turn and relay expert output to its Web session."""
         from jiuwenswarm.server.runtime.organization_execution import (
-            OrganizationTurn, is_stopping, register_turn, unregister_turn,
+            OrganizationTurn, is_stopping, owner_is_stopped, register_turn, unregister_turn,
         )
 
-        if is_stopping(session_id, team_id):
-            return False
-        runtime = self._get_runtime()
         relay_source = str(inputs.get("_org_relay_source") or "") if isinstance(inputs, dict) else ""
         is_root_relay = relay_source in {"org_root_background", "org_root_delivery"}
         turn_inputs = dict(inputs) if isinstance(inputs, dict) else inputs
@@ -256,6 +253,27 @@ class JiuwenExpertTeamLauncher:
             turn_inputs.pop("_org_relay_source", None)
         if is_root_relay:
             source = relay_source
+        if source in {"org_root_background", "org_root_delivery"}:
+            from jiuwenswarm.server.runtime.organization_owner_results import queue_owner_notification
+
+            if is_stopping(session_id, team_id) and not owner_is_stopped(session_id, team_id):
+                return False
+            receipt = await queue_owner_notification(session_id, team_id, source, inputs)
+            if owner_is_stopped(session_id, team_id):
+                return True
+            if receipt is not None:
+                if receipt["acknowledged_at"] is not None:
+                    return True
+                if not isinstance(turn_inputs, dict):
+                    turn_inputs = {}
+                turn_inputs["query"] = (
+                    "Continue the current user's organization task using the ordered Owner result inbox. "
+                    "Process each received result and explicitly acknowledge it after handling. "
+                    "Do not repeat already completed task actions."
+                )
+        if is_stopping(session_id, team_id):
+            return False
+        runtime = self._get_runtime()
         entry = await runtime.pool.get(team_id)
         if entry is None or entry.current_session_id != session_id:
             logger.warning(
@@ -372,6 +390,7 @@ class JiuwenExpertTeamLauncher:
             else None
         )
         leader_text_parts: list[str] = []
+        leader_final_parts: list[str] = []
         saw_leader_final = False
         registered = False
         try:
@@ -404,6 +423,11 @@ class JiuwenExpertTeamLauncher:
                 )
                 return False
             ran_turn = True
+            if source in {"org_root_background", "org_root_delivery"} and owner_is_stopped(session_id, team_id):
+                from jiuwenswarm.server.runtime.organization_owner_results import queue_owner_notification
+
+                await queue_owner_notification(session_id, team_id, source, inputs)
+                return True
             if team_package_availability(team_id, group_name).get("available") is False:
                 await runtime.stop_team(team_name=team_id, session_id=session_id)
                 return False
@@ -453,6 +477,8 @@ class JiuwenExpertTeamLauncher:
                                 leader_text_parts.append(content)
                             elif event_type == "chat.final":
                                 saw_leader_final = True
+                                if isinstance(content, str):
+                                    leader_final_parts.append(content)
             finally:
                 close = getattr(stream, "aclose", None)
                 if callable(close):
@@ -474,8 +500,19 @@ class JiuwenExpertTeamLauncher:
                     source=source,
                 )
                 frame_sequence += 1
-            # A Leader can emit a final segment before its last tool call.
-            # End the Team turn explicitly without ending the shared Session.
+            # Commit results before acknowledging this turn to the scheduler.
+            from jiuwenswarm.server.runtime.organization_owner_results import capture_child_completion
+
+            try:
+                await capture_child_completion(
+                    session_id, team_id, getattr(agent, "team_backend", None),
+                    "\n".join(leader_final_parts) if leader_final_parts else "".join(leader_text_parts),
+                    round_id,
+                )
+            except Exception:
+                logger.warning("[ExpertTeamLauncher] result capture failed team=%s session=%s",
+                               team_id, session_id, exc_info=True)
+            # A final segment can precede a last tool call; end the Team turn explicitly.
             await self.push_expert_payload(
                 {"event_type": "org.turn_completed", "team_id": team_id},
                 team_id=team_id,
@@ -515,6 +552,15 @@ class JiuwenExpertTeamLauncher:
         finally:
             try:
                 try:
+                    if source in {"org_root_background", "org_root_delivery"} and registered:
+                        if owner_is_stopped(session_id, team_id):
+                            from jiuwenswarm.server.runtime.organization_owner_results import queue_owner_notification
+
+                            try:
+                                await queue_owner_notification(session_id, team_id, source, inputs)
+                            except Exception:
+                                logger.warning("[ExpertTeamLauncher] cleanup notification failed team=%s session=%s",
+                                               team_id, session_id, exc_info=True)
                     await self._flush_expert_history(session_id, team_id, round_id)
                 finally:
                     if ran_turn and activation is not None:
