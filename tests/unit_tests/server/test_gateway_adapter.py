@@ -1519,7 +1519,7 @@ def test_saving_decision_fields_keeps_the_rest_of_the_jev_settings(tmp_path, mon
 def test_jev_provider_defaults_match_openjiuwen() -> None:
     """jiuwenswarm writes these on a provider switch; they must equal what openjiuwen would pick."""
     decision = pytest.importorskip("openjiuwen.harness.tools.browser_move.decision")
-    from jiuwenswarm.agents.harness.common.browser_config import JEV_PROVIDER_DEFAULTS
+    from jiuwenswarm.common.browser_config import JEV_PROVIDER_DEFAULTS
 
     for provider, defaults in JEV_PROVIDER_DEFAULTS.items():
         if provider == "custom":

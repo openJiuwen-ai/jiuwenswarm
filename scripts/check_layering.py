@@ -61,14 +61,9 @@ KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
 
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
-# gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）；
-# agents.browser_config 为上游 PR #8083（Jev 集成，2026-10-13）引入，待其
-# 开发稳定后下沉 common（届时缩减此白名单）。
+# gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）已消除。
+# browser_config 已下沉 jiuwenswarm.common.browser_config，不再占用本白名单。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
-    # pickers 两条已随 M0-b 迁入 gateway/ 消除；browser_config 待 #8083 稳定后下沉
-    "gateway.channel_manager.web.app_web_handlers": {
-        "jiuwenswarm.agents.harness.common.browser_config",
-    },
     # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
     # gateway 独立成仓时整体删除并由 A-API HTTP 实现替代。
     # （runtime.cron.factory 一条已随 M0-a 的 router_client 改向消除）

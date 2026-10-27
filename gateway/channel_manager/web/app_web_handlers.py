@@ -3376,7 +3376,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
         )
 
@@ -3481,7 +3481,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             else True
         )
 
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
             browser_decision_updates,
         )

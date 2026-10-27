@@ -2718,7 +2718,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                 )
-                from jiuwenswarm.agents.harness.common.browser_config import (
+                from jiuwenswarm.common.browser_config import (
                     apply_browser_decision_config,
                 )
 

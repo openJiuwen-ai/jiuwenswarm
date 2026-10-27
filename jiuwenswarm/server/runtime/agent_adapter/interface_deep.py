@@ -4856,7 +4856,7 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> str:
         """Resolve managed-browser binary from saved browser config."""
-        from jiuwenswarm.agents.harness.common.browser_config import resolve_chrome_path
+        from jiuwenswarm.common.browser_config import resolve_chrome_path
 
         if config_base is None:
             config_base = get_config()
@@ -5267,7 +5267,7 @@ class JiuWenSwarmDeepAdapter:
                     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                 ),
             )
-            from jiuwenswarm.agents.harness.common.browser_config import (
+            from jiuwenswarm.common.browser_config import (
                 apply_browser_decision_config,
             )
 
