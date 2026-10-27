@@ -175,7 +175,10 @@ async def test_dns_private_and_rebinding_rejected(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('proxy', [None, 'http://trusted-proxy.example:8080'])
-async def test_domain_fake_ip_uses_existing_network_route(monkeypatch, proxy):
+@pytest.mark.parametrize('address', [
+    '93.184.216.34', '198.18.0.0', '198.18.255.255', '198.19.0.0', '198.19.255.255',
+])
+async def test_domain_resolution_requires_public_addresses(monkeypatch, proxy, address):
     import aiohttp
     import ssl
     from jiuwenswarm.agents.harness.common.tools import web_fetch_tools
@@ -183,7 +186,7 @@ async def test_domain_fake_ip_uses_existing_network_route(monkeypatch, proxy):
     monkeypatch.setattr(web_fetch_tools, '_get_free_search_proxy_url', lambda: proxy or '')
 
     async def fake_dns(*args, **kwargs):
-        return [(2, 1, 6, '', ('198.18.2.84', 443))]
+        return [(2, 1, 6, '', (address, 443))]
 
     monkeypatch.setattr(asyncio.get_running_loop(), 'getaddrinfo', fake_dns)
 
@@ -203,7 +206,7 @@ async def test_domain_fake_ip_uses_existing_network_route(monkeypatch, proxy):
 
         async def __aenter__(self):
             records = await self.resolver.resolve('docs.python.org', 443)
-            assert records[0]['host'] == '198.18.2.84'
+            assert records[0]['host'] == address
             return self
 
         async def __aexit__(self, *args):
@@ -225,6 +228,10 @@ async def test_domain_fake_ip_uses_existing_network_route(monkeypatch, proxy):
             return Response(self.connector._resolver)
 
     monkeypatch.setattr(aiohttp, 'ClientSession', Client)
+    if address != '93.184.216.34':
+        with pytest.raises(m.MaterialsPolicyError, match='网页地址不是公开网络地址'):
+            await m.fetch_url('https://docs.python.org/3/library/asyncio-queue.html')
+        return
     text, title, metadata = await m.fetch_url('https://docs.python.org/3/library/asyncio-queue.html')
     assert 'backpressure' in text and title == 'Queues'
     assert metadata['original_url'] == metadata['final_url']
