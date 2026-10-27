@@ -307,6 +307,20 @@ class ChannelManager(ABC):
     ) -> dict[str, Any]:
         """Send a colleague's final text as the configured assistant, never as the reading account."""
         reconcile = _payload.get("operation") == "reconcile"
+        validate = _payload.get("operation") == "validate_handoff"
+        if validate:
+            targets = _payload.get("mention_targets")
+            valid = False
+            if isinstance(chat_id, str) and chat_id and isinstance(targets, list) and len(targets) == 1 and isinstance(targets[0], dict):
+                target_id = targets[0].get("agent_id")
+                channels = [channel for key, channel in self._channels.items()
+                            if key.channel_id == "welink" and getattr(channel.config, "agent_id", "") == target_id]
+                if len(channels) == 1:
+                    try:
+                        valid = bool(await asyncio.to_thread(channels[0]._allowed_assistants, chat_id, force_refresh=True))
+                    except Exception:
+                        valid = None
+            return {"outcome": "unknown", "handoff_target_valid": valid}
         if isinstance(file, dict):
             return {"outcome": "failed", "error_code": "WELINK_FILE_UNSUPPORTED"}
         required = (app_id, chat_id, idempotency_key) if reconcile else (app_id, chat_id, text, idempotency_key)
@@ -317,6 +331,14 @@ class ChannelManager(ABC):
             for key, channel in self._channels.items()
             if key.channel_id == "welink" and key.app_id == app_id and callable(getattr(channel, "send_group_text", None))
         ]
+        if not matches and reconcile:
+            # Legacy account-key rows may only inspect an existing receipt; never send via an alias.
+            for key, channel in self._channels.items():
+                if key.channel_id != "welink" or getattr(channel.config, "account", "").casefold() != app_id.casefold():
+                    continue
+                journal = getattr(channel, "_delivery_journal", None)
+                if callable(journal) and await asyncio.to_thread(journal().get, idempotency_key) is not None:
+                    matches.append(channel)
         if not matches:
             return {"outcome": "unknown" if reconcile else "pending", "error_code": "WELINK_ACCOUNT_NOT_CONNECTED"}
         if len(matches) != 1:
@@ -330,6 +352,7 @@ class ChannelManager(ABC):
                 text=text,
                 idempotency_key=idempotency_key,
                 source_message_id=source_message_id if isinstance(source_message_id, str) else "",
+                mention_targets=_payload.get("mention_targets") or [],
             )
         except Exception:
             logger.warning("[ChannelManager] WeLink send outcome unknown: account=%s", app_id)

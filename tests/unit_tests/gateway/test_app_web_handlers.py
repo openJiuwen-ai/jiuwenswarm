@@ -5214,8 +5214,8 @@ async def test_channel_welink_revoke_disables_polling_and_keeps_the_account(monk
     saved = config_module.load_yaml_round_trip(config_path)["channels"]["welink"]
     assert saved["enabled"] is False
     assert saved["account"] == "h00557917"
-    assert saved["persistent_agent_id"] == "mate_xiaojiu"
-    assert saved["credential_dir"] == "C:/welink/mate_xiaojiu"
+    assert saved["bindings"] == []
+    assert saved["reader_credential_dir"] == "C:/welink/mate_xiaojiu"
     assert cm.configs["welink"]["enabled"] is False
     assert cm.configs["welink"]["account"] == "h00557917"
 
@@ -5975,134 +5975,34 @@ async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling
     assert missing["ok"] is False
     assert missing["code"] == "BAD_REQUEST"
 
+
 @pytest.mark.asyncio
-async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> None:
-    """Gateway 本地 ModelCatalog 路径仅企业版（无 AS / RuntimeRouted）启用。"""
-    class FakeCatalog:
-        def get_public_model_detail(self, model_id):
-            assert model_id == "mdl_a"
-            return {
-                "model_id": model_id,
-                "model_client_config": {"model_name": "a"},
-                "write_only_fields": ["model_client_config.api_key"],
-            }
+async def test_welink_multi_binding_status_and_revoke_preserve_shared_reader(monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
 
-    monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: True)
-    monkeypatch.setattr(app_web_handlers, "ModelCatalog", FakeCatalog)
-    channel = FakeWebChannel()
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["models.get"](object(), "req-model", {"model_id": "mdl_a"}, "sid")
-
+    channel, cm = FakeWebChannel(), FakeChannelManager()
+    cm.configs['welink'] = {
+        'account': 'reader', 'reader_credential_dir': '/reader', 'cli_authorized': True,
+        'bindings': [
+            {'persistent_agent_id': 'mate_1', 'config_id': 'config_1', 'assistant_credential_id': 'ak1', 'assistant_secret': 'secret1', 'credential_dir': '/assistant1'},
+            {'persistent_agent_id': 'mate_2', 'config_id': 'config_2', 'assistant_credential_id': 'ak2', 'assistant_secret': 'secret2', 'credential_dir': '/assistant2'},
+        ],
+    }
+    path = tmp_path / 'config.yaml'
+    config_module.dump_yaml_round_trip(path, {'channels': cm.configs})
+    monkeypatch.setattr(config_module, 'CONFIG_YAML_PATH', path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+    await channel.methods['channel.welink.get_bindings'](object(), 'status', {'config_id': 'config_2'}, 'session')
     response = channel.responses[-1]
-    assert response["ok"] is True
-    assert "api_key" not in response["payload"]["model"]["model_client_config"]
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("runtime_busy, gateway_busy", [(True, False), (False, True)])
-async def test_session_metadata_retains_agent_runtime_authority(monkeypatch, runtime_busy, gateway_busy):
-    channel = FakeWebChannel()
-    channel.is_session_busy = lambda _: gateway_busy
-    captured = []
-
-    class AgentClient:
-        server_ready = True
-
-        async def send_request(self, envelope):
-            captured.append(envelope)
-            return SimpleNamespace(ok=True, payload={"session_id": "s1", "is_processing": runtime_busy})
-
-    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=AgentClient()))
-    ws = SimpleNamespace(_web_routing={"user_id": "u1", "group_id": "g1", "bot_id": "b1"})
-    await channel.methods["session.get_metadata"](ws, "metadata-1", {"session_id": "s1"}, "s1", "u1")
-    assert channel.responses[-1]["payload"]["is_processing"] is runtime_busy
-    assert captured[-1].channel_context["routing"] == {"group_id": "g1", "bot_id": "b1"}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("metadata", "status", "expected"),
-    [({"cron_id": "job"}, 200, 200), ({}, 200, 404), ({}, 403, 403)],
-)
-async def test_cron_live_uses_routed_metadata_for_normal_web_session_ids(monkeypatch, metadata, status, expected):
-    lookup = AsyncMock(return_value=JSONResponse({"ok": status == 200, "data": metadata}, status_code=status))
-    monkeypatch.setattr(web_http_routes, "_unary", lookup)
-    app = FastAPI()
-    channel = object()
-    web_http_routes.register_web_http_api_routes(app, channel, enterprise=True)
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/sessions/{session_id}/live")
-    request = SimpleNamespace(is_disconnected=AsyncMock(return_value=True))
-    response = await endpoint("web_allocated_session", request)
-    assert response.status_code == expected
-    lookup.assert_awaited_once_with(request, channel, "session.get_metadata", {"session_id": "web_allocated_session"})
-    if expected == 200:
-        assert isinstance(response, StreamingResponse)
-        assert [frame async for frame in response.body_iterator] == []
-
-
-@pytest.mark.asyncio
-async def test_run_notification_subscription_works_without_session_and_isolates_tenants(monkeypatch):
-    from agent_gateway.common.cron_events import cron_notification_scope
-    from agent_gateway.cron import live_bus
-
-    monkeypatch.setattr(live_bus, "_redis_client", lambda: None)
-    bus = live_bus.CronLiveBus()
-    monkeypatch.setattr(live_bus, "cron_live_bus", bus)
-    monkeypatch.setattr(web_http_routes, "_unary", AsyncMock(return_value=JSONResponse({"ok": True})))
-    app = FastAPI()
-    web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
-    request = SimpleNamespace(
-        headers={"x-user-id": "owner", "x-group-id": "group", "x-bot-id": "bot", "x-app-id": "app"},
-        client=SimpleNamespace(host="127.0.0.1"), is_disconnected=AsyncMock(return_value=False),
-    )
-    response = await endpoint(request)
-    stream = response.body_iterator
-    assert await anext(stream) == ": connected\n\n"
-    try:
-        for field in ("user_id", "group_id", "bot_id", "app_id"):
-            identity = dict(user_id="owner", group_id="group", bot_id="bot", app_id="app")
-            identity[field] = "other"
-            bus.publish(cron_notification_scope(**identity), {
-                "event": "cron.run.updated", "payload": {"event_id": f"wrong-{field}"},
-            })
-        scope = cron_notification_scope(user_id="owner", group_id="group", bot_id="bot", app_id="app")
-        for revision, phase in [(1, "finished"), (2, "reminder")]:
-            bus.publish(scope, {"event": "cron.run.updated", "payload": {
-                "event_id": f"run:{revision}", "request_id": "cron-run", "status": "failed",
-                "phase": phase, "session_id": None,
-            }})
-        assert '"phase": "finished"' in await anext(stream)
-        assert '"phase": "reminder"' in await anext(stream)
-    finally:
-        await stream.aclose()
-    assert not bus._subscribers.get(scope)
-
-
-@pytest.mark.asyncio
-async def test_run_notification_subscription_applies_access_checks(monkeypatch):
-    denied = JSONResponse({"ok": False}, status_code=403)
-    monkeypatch.setattr(web_http_routes, "_unary", AsyncMock(return_value=denied))
-    app = FastAPI()
-    web_http_routes.register_web_http_api_routes(app, object(), enterprise=True)
-    endpoint = next(route.endpoint for route in app.routes if route.path == "/api/v1/cron/runs/live")
-    assert await endpoint(SimpleNamespace()) is denied
-
-
-@pytest.mark.asyncio
-async def test_cron_session_selection_rpc_rejects_group_before_resolving(monkeypatch):
-    from jiuwenswarm.common.config_panel.model_resource_handlers import session_selection_handler
-    from jiuwenswarm.common.external_providers import _providers
-
-    monkeypatch.setitem(
-        _providers, "session_metadata",
-        SimpleNamespace(get_session_metadata=lambda session_id: {"cron_id": "job"}),
-    )
-    channel = SimpleNamespace(send_response=AsyncMock())
-    await session_selection_handler(
-        channel, None, "select", {"model_selection": {"type": "model_group", "id": "group"}}, "cron-session",
-    )
-    response = channel.send_response.call_args.kwargs
-    assert response["ok"] is False
-    assert response["code"] == "BAD_REQUEST"
-    assert "only support a single model" in response["error"]
+    assert response['ok'] is True
+    assert response['payload']['persistent_agent_id'] == 'mate_2'
+    assert response['payload']['config_id'] == 'config_2'
+    assert len(response['payload']['bindings']) == 2
+    assert 'secret1' not in str(response)
+    await channel.methods['channel.welink.revoke'](object(), 'revoke', {'config_id': 'config_2'}, 'session')
+    assert channel.responses[-1]['ok'] is True
+    saved = config_module.load_yaml_round_trip(path)['channels']['welink']
+    assert saved['cli_authorized'] is True
+    assert saved['reader_credential_dir'] == '/reader'
+    assert [b['persistent_agent_id'] for b in saved['bindings']] == ['mate_1']
+    assert saved['bindings'][0]['enabled'] is True

@@ -756,6 +756,9 @@ class PersistentGroupFanout:
         target still enters through the same group Request path, keyed by the
         platform message id so a later callback does not start a second one.
         """
+        if job.get("channel") == "welink":
+            await self.continue_welink_handoff(job, mentions, external_message_id)
+            return
         if job.get("is_direct_message") is True or len(mentions) != 1:
             return
         if not isinstance(external_message_id, str) or not external_message_id.strip():
@@ -800,6 +803,45 @@ class PersistentGroupFanout:
             allow_existing_message=True,
         )
         await self.handle(event)
+
+    async def continue_welink_handoff(
+        self,
+        job: Mapping[str, object],
+        mentions: Sequence[Mapping[str, Any]],
+        external_message_id: str | None,
+    ) -> None:
+        """Accept a confirmed public reply after Gateway has checked current membership."""
+        from jiuwenswarm.server.jiuwenmate.welink_inbound import (
+            WelinkInboundEvent, accept_welink_message, configured_welink_bindings,
+        )
+
+        if job.get("is_direct_message") is True or len(mentions) != 1 or not _present(external_message_id):
+            return
+        target_id = mentions[0].get("agent_id")
+        namespace_id = job.get("namespace_id")
+        bindings = [binding for binding in configured_welink_bindings()
+                    if binding.agent_id == target_id and binding.namespace_id == namespace_id]
+        if len(bindings) != 1:
+            logger.info("[JiuwenMate] WeLink handoff binding unavailable: target=%s", target_id)
+            return
+        binding = bindings[0]
+        colleague = await asyncio.to_thread(self._service.get_colleague, namespace_id, job.get("agent_id"))
+        event = WelinkInboundEvent(
+            account=binding.account,
+            assistant_credential_id=binding.assistant_credential_id,
+            expected_agent_id=binding.agent_id,
+            message_id=external_message_id.strip(),
+            chat_id=str(job.get("target_id") or ""),
+            sender_id=str(job.get("agent_id") or ""),
+            sender_name=colleague.name,
+            sender_kind="agent",
+            text=str(job.get("text") or ""),
+            received_at=self._clock(),
+            mentioned=True,
+        )
+        disposition = await accept_welink_message(self, event)
+        if disposition == InboundDisposition.RETRYABLE:
+            raise RuntimeError("WeLink handoff acceptance pending")
 
     async def _call(self, callback: Callable[..., Any], *args: Any) -> Any:
         result = await asyncio.to_thread(callback, *args)

@@ -132,7 +132,7 @@ class GroupChatRepository(SQLiteStore):
         return self._group(row)
 
     def observe_access(self, namespace_id: str, agent_id: str, group_id: str, app_id: str,
-                       *, observed_at: datetime, source_ref: str) -> None:
+                       *, observed_at: datetime, source_ref: str, visible_from: datetime | None = None) -> None:
         """Observe a current binding; only binding-retired grants can reopen, never a departed Bot."""
         self.get(namespace_id, group_id)
         for value in (agent_id, app_id, source_ref):
@@ -146,7 +146,7 @@ class GroupChatRepository(SQLiteStore):
                 "revision=agent_group_access.revision+1 WHERE agent_group_access.status='unknown' "
                 "AND agent_group_access.source_ref LIKE 'binding:%' "
                 "AND excluded.verified_at>=agent_group_access.verified_at",
-                (namespace_id, agent_id, group_id, app_id, stamp, stamp, source_ref),
+                (namespace_id, agent_id, group_id, app_id, utc_time(visible_from or observed_at).isoformat(), stamp, source_ref),
             )
 
     def update_membership(self, namespace_id: str, agent_id: str, group_id: str, app_id: str,

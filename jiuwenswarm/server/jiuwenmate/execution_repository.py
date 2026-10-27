@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -185,6 +185,10 @@ class ExecutionRepository(SQLiteStore):
                 conn.execute("ALTER TABLE result_deliveries ADD COLUMN file_key TEXT")
             if "notice_text" not in columns:
                 conn.execute("ALTER TABLE result_deliveries ADD COLUMN notice_text TEXT")
+            if "job_json" not in columns:
+                conn.execute("ALTER TABLE result_deliveries ADD COLUMN job_json TEXT")
+            if "handoff_done" not in columns:
+                conn.execute("ALTER TABLE result_deliveries ADD COLUMN handoff_done INTEGER NOT NULL DEFAULT 0")
         self._session_id = session_ids or _uuid_ids("sess_")
         self._request_id = request_ids or _uuid_ids("req_")
         self._execution_id = execution_ids or _uuid_ids("exe_")
@@ -849,6 +853,8 @@ class ExecutionRepository(SQLiteStore):
                             (now.isoformat(), namespace_id, row["delivery_id"]),
                         )
                         continue
+                if row["job_json"]:
+                    job.update(json.loads(row["job_json"]))
                 jobs.append(job)
         return jobs
 
@@ -869,10 +875,49 @@ class ExecutionRepository(SQLiteStore):
             route = record.route_snapshot
             if route is None or route.channel != "welink":
                 continue
+            if row["job_json"]:
+                job = json.loads(row["job_json"])
+                job["operation"] = "reconcile"
+                jobs.append(job)
+                continue
             jobs.append({"delivery_id": row["delivery_id"], "channel": "welink", "operation": "reconcile",
                          "app_id": route.app_id, "target_id": route.target_id,
                          "idempotency_key": row["idempotency_key"]})
         return jobs
+
+    def save_result_delivery_job(self, namespace_id: str, job: Mapping[str, object]) -> None:
+        """Save the resolved public payload before any platform side effect."""
+        with self._transaction() as conn:
+            conn.execute(
+                "UPDATE result_deliveries SET job_json=?, handoff_done=? "
+                "WHERE namespace_id=? AND delivery_id=? AND status='sending'",
+                (json.dumps(dict(job), ensure_ascii=False), int(not job.get("mention_targets")),
+                 namespace_id, job["delivery_id"]),
+            )
+
+    def pending_welink_handoffs(
+        self, namespace_id: str, *, after: str = "", limit: int = 20,
+    ) -> list[dict[str, object]]:
+        """Delivered work remains recoverable until the target request is accepted."""
+        with self._transaction() as conn:
+            rows = conn.execute(
+                "SELECT job_json, external_message_id FROM result_deliveries WHERE namespace_id=? "
+                "AND channel='welink' AND status='delivered' AND handoff_done=0 AND job_json IS NOT NULL "
+                "AND delivery_id>? ORDER BY delivery_id LIMIT ?",
+                (namespace_id, after, limit),
+            ).fetchall()
+        jobs = []
+        for row in rows:
+            job = json.loads(row["job_json"])
+            if job.get("mention_targets"):
+                job["external_message_id"] = row["external_message_id"]
+                jobs.append(job)
+        return jobs
+
+    def mark_welink_handoff_done(self, namespace_id: str, delivery_id: str) -> None:
+        with self._transaction() as conn:
+            conn.execute("UPDATE result_deliveries SET handoff_done=1 WHERE namespace_id=? AND delivery_id=? "
+                         "AND status='delivered'", (namespace_id, delivery_id))
 
     def update_result_delivery(
         self,

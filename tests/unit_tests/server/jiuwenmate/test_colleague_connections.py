@@ -634,6 +634,11 @@ class _ColleagueGateway:
         return next(response for response in self.channel.responses if response["id"] == request_id)
 
     async def bind(self, platform, config_id, app_id="app-test"):
+        if platform == "welink":
+            return await self.call("channel.welink.assistant_credential_save", {
+                "config_id": config_id, "account": app_id,
+                "assistant_credential_id": f"test-credential-{config_id}", "assistant_secret": "fake",
+            })
         credentials = (
             {"client_id": app_id, "client_secret": "fake"}
             if platform == "dingtalk" else {"app_id": app_id, "app_secret": "fake"}
@@ -644,7 +649,11 @@ class _ColleagueGateway:
         return await self.call("jiuwenmate.colleague.delete", {"agent_id": config_id, "mode": mode})
 
     def apps(self, platform):
-        return self.config_module.load_yaml_round_trip(self.path)["channels"][platform]["apps"]
+        section = self.config_module.load_yaml_round_trip(self.path)["channels"].get(platform, {})
+        if platform == "welink":
+            from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import normalize_welink_section
+            return normalize_welink_section(section)["bindings"]
+        return section["apps"]
 
     def assert_bindings_live(self):
         service = self.host._service()
@@ -853,7 +862,7 @@ async def test_gateway_does_not_block_another_colleague(colleague_gateway, platf
     binding = asyncio.create_task(gateway.bind(platform, gateway.config_id))
     try:
         await asyncio.wait_for(entered.wait(), timeout=2)
-        other = await asyncio.wait_for(gateway.bind(platform, gateway.other_id, "app-other"), timeout=2)
+        other = await asyncio.wait_for(gateway.bind(platform, gateway.other_id, "app-test" if platform == "welink" else "app-other"), timeout=2)
         assert other["ok"] and not binding.done()
         resume.set()
         assert (await asyncio.wait_for(binding, timeout=2))["ok"]
@@ -865,3 +874,623 @@ async def test_gateway_does_not_block_another_colleague(colleague_gateway, platf
     finally:
         resume.set()
         await asyncio.gather(binding, return_exceptions=True)
+
+
+@pytest.mark.parametrize("app_id", ["app-test", "app-new"])
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk", "welink"])
+@pytest.mark.asyncio
+async def test_gateway_binding_after_a_timed_out_deletion_never_names_a_removed_agent(
+    colleague_gateway, platform, app_id,
+):
+    gateway = colleague_gateway
+    assert (await gateway.bind(platform, gateway.config_id))["ok"]
+    adapter, service = gateway.host.adapter, gateway.host.adapter._colleagues()
+    purge = adapter._purge_agent
+    purging, resume = asyncio.Event(), asyncio.Event()
+
+    async def paused(*args, **kwargs):
+        purging.set()
+        await resume.wait()
+        await purge(*args, **kwargs)
+
+    adapter._purge_agent = paused
+    attach, entered = service.attach_connection, threading.Event()
+
+    def watched(*args):
+        entered.set()
+        return attach(*args)
+
+    service.attach_connection = watched
+    background = []
+
+    async def stop_waiting_for_removal(envelope):
+        if envelope.method == ReqMethod.JIUWENMATE_COLLEAGUE_REMOVE.value:
+            # AgentServer keeps purging after Gateway has given up on the answer.
+            background.append(asyncio.create_task(gateway.forward(envelope)))
+            await purging.wait()
+            raise asyncio.TimeoutError()
+        return await gateway.forward(envelope)
+
+    gateway.client.send_request = stop_waiting_for_removal
+    binding = None
+    try:
+        deleted = await asyncio.wait_for(gateway.delete(gateway.config_id), timeout=5)
+        assert not deleted["ok"] and deleted["code"] == "SERVICE_UNAVAILABLE"
+        binding = asyncio.create_task(gateway.bind(platform, gateway.config_id, "app-test" if platform == "welink" else app_id))
+        # Bounded only so that an unguarded attach shows up; the guarded one cannot enter here.
+        assert not await asyncio.to_thread(entered.wait, 0.2)
+        resume.set()
+        await asyncio.wait_for(asyncio.gather(*background), timeout=5)
+        bound = await asyncio.wait_for(binding, timeout=5)
+        assert not bound["ok"] and bound["code"] == "NOT_FOUND"
+        gateway.assert_removed(gateway.config_id, "purge")
+        assert all(app.get("app_id", app.get("client_id")) != app_id for app in gateway.apps(platform))
+    finally:
+        resume.set()
+        await asyncio.gather(*background, *(task for task in (binding,) if task is not None), return_exceptions=True)
+
+
+@pytest.mark.parametrize("first", ["cli", "assistant"])
+@pytest.mark.asyncio
+async def test_welink_authorization_steps_share_one_isolated_runtime(colleague_gateway, tmp_path, monkeypatch, first):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+    from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for
+
+    gateway = colleague_gateway
+    pending = tmp_path / "pending-login"
+    pending.mkdir()
+    (pending / "auth.json").write_text('{"synthetic":true}')
+    session = welink_login.WelinkLoginSession(
+        session_id="login-test", agent_id=gateway.config_id, account="", resolved_account="account-a",
+        credential_dir=pending, status="success", cli_path="welink-cli",
+    )
+    monkeypatch.setattr(welink_login.LOGIN_MANAGER, "get", lambda key: session)
+    monkeypatch.setattr(welink_login.LOGIN_MANAGER, "refresh", lambda *args: session.snapshot())
+
+    async def step(kind):
+        if kind == "cli":
+            return await gateway.call("channel.welink.login_status", {"session_id": session.session_id})
+        return await gateway.bind("welink", gateway.config_id, "account-a")
+
+    assert (await step(first))["ok"]
+    partial = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+    agent_id = partial["bindings"][0]["persistent_agent_id"]
+    assert agent_id != gateway.config_id and partial["enabled"] is False
+    assert (await step("assistant" if first == "cli" else "cli"))["ok"]
+    stored = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+    assert stored["bindings"][0]["persistent_agent_id"] == agent_id and stored["enabled"] is True
+    assert stored["bindings"][0]["credential_dir"] == str(credential_dir_for(agent_id))
+    assert stored["reader_credential_dir"] == str(credential_dir_for("shared-reader"))
+    assert (credential_dir_for("shared-reader") / "auth.json").read_text() == '{"synthetic":true}'
+    # F_02_02-V-26 the login's own directory is gone, so purge leaves no credentials behind.
+    assert not pending.exists()
+    if first == "cli":
+        # An overlapping poll that passed the saved check before the first save finished.
+        session.saved = False
+        assert (await step("cli"))["ok"]
+        again = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+        assert again["reader_credential_dir"] == stored["reader_credential_dir"] and again["enabled"] is True
+        assert (credential_dir_for("shared-reader") / "auth.json").exists()
+    service = gateway.host._service()
+    connection = service.connection_of("local", agent_id)
+    assert (connection.channel, connection.connection_key, connection.config_id) == (
+        "welink", f"account-a:{gateway.config_id}", gateway.config_id,
+    )
+    assert service.workspaces.path("local", agent_id) != service.workspaces.path("local", gateway.config_id)
+    monkeypatch.setattr(gateway.config_module, "get_config", lambda: gateway.config_module.load_yaml_round_trip(gateway.path))
+    listed = await gateway.host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=gateway.config_id)
+    connections = listed.payload["colleague"]["connections"]
+    assert [(item["channel"], item["agent_id"]) for item in connections] == [
+        ("web", gateway.config_id), ("welink", agent_id),
+    ]
+    assert (await gateway.delete(gateway.config_id))["ok"]
+    gateway.assert_removed(gateway.config_id, "purge")
+
+
+# F_02_02-V-23 the two WeLink steps may spell one account differently
+
+
+@pytest.mark.parametrize("first", ["cli", "assistant"])
+@pytest.mark.asyncio
+async def test_welink_steps_spelling_one_account_differently_share_one_runtime(
+    colleague_gateway, tmp_path, monkeypatch, first,
+):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+
+    gateway = colleague_gateway
+    pending = tmp_path / "pending-login"
+    pending.mkdir()
+    (pending / "auth.json").write_text('{"synthetic":true}')
+    # The scan reports one spelling; the user typed the same account in another case.
+    session = welink_login.WelinkLoginSession(
+        session_id="login-test", agent_id=gateway.config_id, account="", resolved_account="Account-A",
+        credential_dir=pending, status="success", cli_path="welink-cli",
+    )
+    monkeypatch.setattr(welink_login.LOGIN_MANAGER, "get", lambda key: session)
+    monkeypatch.setattr(welink_login.LOGIN_MANAGER, "refresh", lambda *args: session.snapshot())
+
+    async def step(kind):
+        if kind == "cli":
+            return await gateway.call("channel.welink.login_status", {"session_id": session.session_id})
+        return await gateway.bind("welink", gateway.config_id, " account-a ")
+
+    assert (await step(first))["ok"]
+    assert (await step("assistant" if first == "cli" else "cli"))["ok"]
+    stored = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+    assert len(gateway.agents[gateway.config_id]) == 1
+    assert stored["enabled"] is True and stored["bindings"][0]["persistent_agent_id"] in gateway.agents[gateway.config_id]
+    connection = gateway.host._service().connection_of("local", stored["bindings"][0]["persistent_agent_id"])
+    assert (connection.channel, connection.connection_key) == ("welink", f"account-a:{gateway.config_id}")
+    monkeypatch.setattr(gateway.config_module, "get_config", lambda: gateway.config_module.load_yaml_round_trip(gateway.path))
+    listed = await gateway.host.call(ReqMethod.JIUWENMATE_COLLEAGUE_GET, agent_id=gateway.config_id)
+    assert [item["channel"] for item in listed.payload["colleague"]["connections"]] == ["web", "welink"]
+
+
+@pytest.mark.asyncio
+async def test_welink_switching_account_or_colleague_never_reuses_an_agent(colleague_gateway):
+    gateway = colleague_gateway
+    first = await gateway.bind("welink", gateway.config_id, "account-a")
+    same = await gateway.bind("welink", gateway.config_id, "account-a")
+    second = await gateway.bind("welink", gateway.config_id, "account-b")
+    moved = await gateway.bind("welink", gateway.other_id, "account-a")
+    first_id = first["payload"]["persistent_agent_id"]
+    assert same["payload"]["persistent_agent_id"] == first_id
+    assert second["ok"] is False and second["code"] == "BAD_REQUEST"
+    assert moved["ok"] is True
+    assert moved["payload"]["persistent_agent_id"] != first_id
+    assert gateway.host._service().connection_of("local", first_id).config_id == gateway.config_id
+
+
+@pytest.mark.parametrize("mode", ["unbind", "purge"])
+@pytest.mark.asyncio
+async def test_welink_scan_completed_after_deletion_cannot_restore_a_binding(colleague_gateway, monkeypatch, mode):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_assistant_login
+
+    gateway = colleague_gateway
+    session = SimpleNamespace(agent_id=gateway.config_id, account="account-late", saved=False,
+                              status="success", error="", credentials=lambda: ("test-id", "fake"))
+    session.snapshot = lambda: {"status": session.status, "error": session.error}
+    monkeypatch.setattr(welink_assistant_login.ASSISTANT_LOGIN_MANAGER, "get", lambda key: session)
+    monkeypatch.setattr(welink_assistant_login.ASSISTANT_LOGIN_MANAGER, "refresh", lambda *args: session.snapshot())
+    assert (await gateway.delete(gateway.config_id, mode))["ok"]
+    response = await gateway.call("channel.welink.assistant_login_status", {"session_id": "late"})
+    assert response["ok"] and response["payload"]["status"] == "failed"
+    assert not session.saved and gateway.apps("welink") == []
+    gateway.assert_removed(gateway.config_id, mode)
+
+
+@pytest.mark.parametrize("registered_channel,registered_account", [(None, None), ("feishu", "account-a"), ("welink", "account-b")])
+@pytest.mark.asyncio
+async def test_welink_rejects_missing_or_wrong_connection_before_reading_data(monkeypatch, registered_channel, registered_account):
+    from datetime import datetime, timezone
+    from jiuwenswarm.server.jiuwenmate import welink_inbound
+
+    connection = None if registered_channel is None else SimpleNamespace(channel=registered_channel, connection_key=registered_account)
+    service = SimpleNamespace(connection_of=lambda *args: connection)
+    binding = welink_inbound.WelinkBinding(account="account-a", agent_id="agent-a")
+    monkeypatch.setattr(welink_inbound, "welink_binding_for_agent", lambda agent: binding)
+    event = welink_inbound.WelinkInboundEvent(
+        account="account-a", expected_agent_id="agent-a", message_id="message-a", chat_id="group-a",
+        sender_id="human-a", sender_name="Human", text="synthetic task", received_at=datetime.now(timezone.utc),
+    )
+    assert await welink_inbound.accept_welink_message(SimpleNamespace(_service=service), event) == InboundDisposition.REJECTED
+
+
+@pytest.mark.asyncio
+async def test_welink_cli_login_stages_credentials_outside_runtime_workspaces(colleague_gateway, monkeypatch):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+    from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for
+
+    captured = {}
+
+    def start(**fields):
+        captured.update(fields)
+        return SimpleNamespace(snapshot=lambda: {"session_id": "staged", "status": "pending"})
+
+    monkeypatch.setattr(welink_login.LOGIN_MANAGER, "start", start)
+    gateway = colleague_gateway
+    response = await gateway.call("channel.welink.login_start", {"config_id": gateway.config_id})
+    assert response["ok"]
+    assert captured["agent_id"] == gateway.config_id
+    assert captured["credential_dir"].parent == credential_dir_for(gateway.config_id).parent
+    assert captured["credential_dir"].name.startswith("pending-")
+    assert captured["credential_dir"] != credential_dir_for(gateway.config_id)
+
+
+# F_02_02-V-21 each completed CLI login keeps its own credentials while saving
+
+
+@pytest.mark.asyncio
+async def test_welink_pending_login_reuses_its_session_but_a_completed_login_does_not(colleague_gateway, monkeypatch):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+
+    gateway = colleague_gateway
+    manager = welink_login.WelinkLoginManager()
+    spawned = []
+    monkeypatch.setattr(manager, "_logout_other_account", lambda *args: None)
+
+    def spawn(session, cli_path, env_name):
+        spawned.append(session)
+        session.credential_dir.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(manager, "_spawn", spawn)
+    monkeypatch.setattr(welink_login, "LOGIN_MANAGER", manager)
+    params = {"config_id": gateway.config_id, "account": "account-a"}
+    first = await gateway.call("channel.welink.login_start", params)
+    repeated = await gateway.call("channel.welink.login_start", params)
+    assert first["payload"]["session_id"] == repeated["payload"]["session_id"]
+    assert len(spawned) == 1
+    spawned[0].status = "success"
+    assert not spawned[0].saved
+    restarted = await gateway.call("channel.welink.login_start", params)
+    assert restarted["payload"]["session_id"] != first["payload"]["session_id"]
+    assert len(spawned) == 2
+    assert spawned[0].credential_dir != spawned[1].credential_dir
+    assert len(list(spawned[0].credential_dir.parent.iterdir())) == 2
+
+
+@pytest.mark.asyncio
+async def test_welink_completed_login_does_not_copy_another_accounts_credentials(colleague_gateway, monkeypatch):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+
+    gateway = colleague_gateway
+    manager = welink_login.WelinkLoginManager()
+    spawned = []
+    monkeypatch.setattr(manager, "_logout_other_account", lambda *args: None)
+
+    def spawn(session, cli_path, env_name):
+        account = "account-a" if not spawned else "account-b"
+        spawned.append(session)
+        session.credential_dir.mkdir(parents=True, exist_ok=True)
+        (session.credential_dir / "auth.json").write_text(json.dumps({"synthetic_account": account}))
+        session.resolved_account = account
+        session.status = "success"
+
+    monkeypatch.setattr(manager, "_spawn", spawn)
+    monkeypatch.setattr(welink_login, "LOGIN_MANAGER", manager)
+    first = await gateway.call("channel.welink.login_start", {"config_id": gateway.config_id})
+    assert first["ok"]
+    entered, resume = asyncio.Event(), asyncio.Event()
+    paused = False
+
+    async def pause_attach(envelope):
+        nonlocal paused
+        response = await gateway.forward(envelope)
+        if envelope.method == ReqMethod.JIUWENMATE_CONNECTION_ATTACH.value and not paused:
+            paused = True
+            entered.set()
+            await resume.wait()
+        return response
+
+    gateway.client.send_request = pause_attach
+    saving = asyncio.create_task(gateway.call("channel.welink.login_status", {
+        "session_id": first["payload"]["session_id"],
+    }))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        second = await gateway.call("channel.welink.login_start", {"config_id": gateway.config_id})
+        assert second["ok"] and len(spawned) == 2
+        assert spawned[0].session_id != spawned[1].session_id
+        resume.set()
+        assert (await asyncio.wait_for(saving, 3))["payload"]["status"] == "success"
+        assert (await gateway.bind("welink", gateway.config_id, "account-a"))["ok"]
+        stored = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+        assert stored["enabled"] is True
+        credential = json.loads((Path(stored["reader_credential_dir"]) / "auth.json").read_text())
+        assert credential["synthetic_account"] == stored["account"] == "account-a"
+    finally:
+        resume.set()
+        await asyncio.gather(saving, return_exceptions=True)
+
+
+# F_02_02-V-29 authorization retries reload even when Gateway remembers the failed snapshot
+
+
+@pytest.mark.parametrize("operation", ["save", "revoke"])
+@pytest.mark.asyncio
+async def test_welink_authorization_retry_reapplies_a_failed_configuration(colleague_gateway, operation):
+    from unittest.mock import MagicMock
+    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+
+    initial = colleague_gateway
+    bound = await initial.bind("welink", initial.config_id, "account-a")
+    assert bound["ok"]
+    ready = dict(initial.manager.get_conf("welink"))
+    ready.update(enabled=True, cli_authorized=True, reader_credential_dir="synthetic-cli-dir")
+    initial.config_module.update_config(lambda data: {
+        **data, "channels": {**data["channels"], "welink": ready},
+    })
+    attempts = []
+    seen = dict(ready)
+
+    async def reload(config):
+        nonlocal seen
+        current = dict(config["welink"])
+        forced = manager.pop_channel_restart_pending()
+        changed = current != seen
+        seen = current
+        if not changed and "welink" not in forced:
+            return
+        attempts.append(current)
+        if len(attempts) == 1:
+            raise RuntimeError("injected reload failure")
+
+    manager = ChannelManager(MagicMock(), config={**initial.manager.configs, "welink": ready}, on_config_updated=reload)
+    gateway = _ColleagueGateway(initial.host, initial.channel, manager, initial.path, initial.config_module)
+    gateway.request_number = initial.request_number
+    if operation == "save":
+        method = "channel.welink.assistant_credential_save"
+        params = {"config_id": initial.config_id, "account": "account-a",
+                  "assistant_credential_id": "updated-credential", "assistant_secret": "fake"}
+    else:
+        method = "channel.welink.revoke"
+        params = {"persistent_agent_id": ready["bindings"][0]["persistent_agent_id"]}
+    assert not (await gateway.call(method, params))["ok"]
+    assert (await gateway.call(method, params))["ok"]
+    assert len(attempts) == 2
+    assert manager.get_conf("welink") == gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+
+
+@pytest.mark.asyncio
+async def test_welink_login_does_not_report_saved_when_pending_cleanup_fails(colleague_gateway, monkeypatch, tmp_path):
+    import shutil
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_login
+
+    gateway = colleague_gateway
+    pending = tmp_path / "pending-cleanup-failure"
+    pending.mkdir()
+    (pending / "auth.json").write_text('{"synthetic":true}')
+    session = SimpleNamespace(agent_id=gateway.config_id, account="account-a", resolved_account="account-a",
+                              credential_dir=pending, cli_path="welink-cli", env_name="pro",
+                              saved=False, status="success", error="")
+    session.snapshot = lambda: {"status": session.status, "error": session.error}
+    monkeypatch.setattr(welink_login.LOGIN_MANAGER, "get", lambda key: session)
+    monkeypatch.setattr(welink_login.LOGIN_MANAGER, "refresh", lambda *args: session.snapshot())
+    remove = shutil.rmtree
+
+    def fail_cleanup(path, *args, **kwargs):
+        if Path(path) == pending:
+            if kwargs.get("ignore_errors"):
+                return
+            raise OSError("injected pending cleanup failure")
+        return remove(path, *args, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(shutil, "rmtree", fail_cleanup)
+        response = await gateway.call("channel.welink.login_status", {"session_id": "cleanup-failure"})
+    assert response["payload"]["status"] == "failed"
+    assert not session.saved
+    assert gateway.apps("welink") == []
+
+
+# F_02_02-V-22 deletion follows persisted bindings even after a real reload rollback
+
+
+@pytest.mark.parametrize("mode", ["unbind", "purge"])
+@pytest.mark.parametrize("failed_reloads", [1, 2])
+@pytest.mark.asyncio
+async def test_welink_delete_clears_persisted_binding_after_reload_rollback(colleague_gateway, mode, failed_reloads):
+    from unittest.mock import MagicMock
+    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+
+    initial = colleague_gateway
+    reloads = []
+
+    async def reload(config):
+        forced = manager.pop_channel_restart_pending()
+        current = dict(config["welink"])
+        # Gateway remembers the requested configuration before it starts/stops channels.
+        changed = not reloads or current != reloads[-1]
+        if not changed and "welink" not in forced:
+            return
+        reloads.append(current)
+        if len(reloads) <= failed_reloads:
+            raise RuntimeError("injected reload failure")
+
+    manager = ChannelManager(MagicMock(), config=initial.manager.configs, on_config_updated=reload)
+    gateway = _ColleagueGateway(initial.host, initial.channel, manager, initial.path, initial.config_module)
+    assert not (await gateway.bind("welink", initial.config_id, "account-a"))["ok"]
+    saved = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+    agent_id = saved["bindings"][0]["persistent_agent_id"]
+    assert manager.get_conf("welink") == {}
+    deleted = await gateway.delete(initial.config_id, mode)
+    if failed_reloads == 2:
+        assert not deleted["ok"]
+        service = gateway.host._service()
+        assert service.get_config("local", initial.config_id).enabled
+        assert service.connection_of("local", agent_id) is not None
+        assert manager.get_conf("welink") == {}
+        deleted = await gateway.delete(initial.config_id, mode)
+    assert deleted["ok"]
+    remaining = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+    assert remaining == manager.get_conf("welink")
+    assert remaining["bindings"] == [] and remaining["enabled"] is False
+    assert remaining["account"] == saved["account"]
+    assert len(reloads) == failed_reloads + 1
+    gateway.assert_removed(initial.config_id, mode)
+
+
+@pytest.mark.asyncio
+async def test_welink_delete_does_not_clear_another_configs_persisted_binding(colleague_gateway):
+    from unittest.mock import MagicMock
+    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+
+    initial = colleague_gateway
+    reloads = []
+
+    async def reload(config):
+        reloads.append(dict(config["welink"]))
+        if len(reloads) == 2:
+            raise RuntimeError("injected reload failure")
+
+    manager = ChannelManager(MagicMock(), config=initial.manager.configs, on_config_updated=reload)
+    gateway = _ColleagueGateway(initial.host, initial.channel, manager, initial.path, initial.config_module)
+    assert (await gateway.bind("welink", initial.config_id, "account-a"))["ok"]
+    stale = manager.get_conf("welink")
+    assert not (await gateway.bind("welink", initial.other_id, "account-a"))["ok"]
+    stored = dict(gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"])
+    assert len(stored["bindings"]) == 2
+    assert len(stale["bindings"]) == 1
+    assert manager.get_conf("welink") == stale
+    assert (await gateway.delete(initial.config_id))["ok"]
+    remaining = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+    assert len(remaining["bindings"]) == 1
+    assert remaining["bindings"][0] == stored["bindings"][1]
+    assert manager.get_conf("welink") == remaining
+    connection = gateway.host._service().connection_of("local", remaining["bindings"][0]["persistent_agent_id"])
+    assert connection.config_id == initial.other_id
+    gateway.assert_removed(initial.config_id, "purge")
+
+
+# F_02_02-V-25 deleting a colleague whose WeLink slot moved on leaves the current binding running
+
+
+@pytest.mark.asyncio
+async def test_welink_delete_leaves_another_colleagues_slot_running(colleague_gateway):
+    from unittest.mock import MagicMock
+    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+
+    initial = colleague_gateway
+    reloads = []
+    failing = False
+
+    async def reload(config):
+        reloads.append(dict(config.get("welink") or {}))
+        if failing:
+            raise RuntimeError("the other colleague's WeLink cannot start")
+
+    manager = ChannelManager(MagicMock(), config=initial.manager.configs, on_config_updated=reload)
+    gateway = _ColleagueGateway(initial.host, initial.channel, manager, initial.path, initial.config_module)
+    assert (await gateway.bind("welink", initial.config_id, "account-a"))["ok"]
+    assert (await gateway.bind("welink", initial.other_id, "account-a"))["ok"]
+    stored = dict(gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"])
+    before = len(reloads)
+    assert (await gateway.delete(initial.config_id))["ok"]
+    assert len(reloads) == before + 1
+    remaining = gateway.config_module.load_yaml_round_trip(gateway.path)["channels"]["welink"]
+    assert remaining["bindings"] == [stored["bindings"][1]]
+    assert manager.get_conf("welink") == remaining
+    gateway.assert_removed(initial.config_id, "purge")
+
+
+@pytest.mark.parametrize("account", ["account-a", "Account-A"])
+@pytest.mark.asyncio
+async def test_welink_inbound_stores_its_request_under_the_connection_agent(colleague_gateway, monkeypatch, account):
+    from datetime import datetime, timezone
+    from jiuwenswarm.server.jiuwenmate import welink_inbound
+    from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
+    from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
+
+    gateway = colleague_gateway
+    bound = await gateway.bind("welink", gateway.config_id, "account-a")
+    agent_id = bound["payload"]["persistent_agent_id"]
+    # The registered key and the saved account may differ in case.
+    binding = welink_inbound.WelinkBinding(account=account, agent_id=agent_id, config_id=gateway.config_id, assistant_credential_id="ak-a")
+    monkeypatch.setattr(welink_inbound, "welink_binding_for_agent", lambda agent: binding)
+    manager = await gateway.host.adapter._runtime()
+    fanout = SimpleNamespace(
+        _service=gateway.host._service(), _sessions=ExecutionRepository(gateway.host.db),
+        _groups=GroupChatRepository(gateway.host.db), _agent_manager=manager,
+        _clock=lambda: datetime.now(timezone.utc),
+    )
+    event = welink_inbound.WelinkInboundEvent(
+        account=account, expected_agent_id=agent_id, assistant_credential_id="ak-a", message_id="message-isolated", chat_id="group-a",
+        sender_id="human-a", sender_name="Human", text="synthetic task", received_at=datetime.now(timezone.utc),
+    )
+    assert await welink_inbound.accept_welink_message(fanout, event) == InboundDisposition.HANDLED
+    assert await welink_inbound.accept_welink_message(fanout, event) == InboundDisposition.HANDLED
+    with sqlite3.connect(gateway.host.db) as conn:
+        rows = conn.execute("SELECT record_json FROM requests").fetchall()
+    assert len(rows) == 1
+    records = [json.loads(row[0]) for row in rows]
+    assert all(item["agent_id"] == agent_id and item["agent_id"] != gateway.config_id for item in records)
+    assert records[0]["route_snapshot"]["channel"] == "welink"
+    assert records[0]["route_snapshot"]["app_id"] == "ak-a"
+
+
+@pytest.mark.asyncio
+async def test_welink_two_colleagues_share_reader_and_reject_duplicate_ak_before_attach(colleague_gateway):
+    gateway = colleague_gateway
+    async def save(config_id, credential):
+        return await gateway.call('channel.welink.assistant_credential_save', {
+            'config_id': config_id, 'account': 'same-reader',
+            'assistant_credential_id': credential, 'assistant_secret': 'fake-secret',
+            'assistant_account': 'member-' + credential,
+        })
+
+    first = await save(gateway.config_id, 'ak1')
+    second = await save(gateway.other_id, 'ak2')
+    assert first['ok'] and second['ok']
+    current = gateway.config_module.load_yaml_round_trip(gateway.path)['channels']['welink']
+    assert len(current['bindings']) == 2
+    assert {item['assistant_credential_id'] for item in current['bindings']} == {'ak1', 'ak2'}
+    before_calls = len(gateway.calls)
+    rejected = await save(gateway.other_id, 'ak1')
+    assert rejected['ok'] is False
+    assert rejected['code'] == 'BAD_REQUEST'
+    assert len(gateway.calls) == before_calls
+    assert gateway.config_module.load_yaml_round_trip(gateway.path)['channels']['welink'] == current
+    updated = await save(gateway.config_id, 'ak1')
+    assert updated['ok'] is True
+    assert 'fake-secret' not in str(updated)
+
+
+@pytest.mark.asyncio
+async def test_welink_legacy_authorization_update_preserves_its_runtime(colleague_gateway):
+    gateway = colleague_gateway
+    attached = await gateway.host.adapter.attach_connection({
+        'config_id': gateway.config_id, 'channel': 'welink', 'connection_key': 'reader',
+    })
+    legacy = dict(account='reader', persistent_agent_id=attached['agent_id'],
+                  assistant_credential_id='legacy-ak', assistant_secret='old-secret',
+                  credential_dir='/legacy', cli_authorized=True, enabled=True)
+    gateway.config_module.update_config(lambda data: {**data, 'channels': {**data['channels'], 'welink': legacy}})
+    gateway.manager.configs['welink'] = legacy
+    saved = await gateway.call('channel.welink.assistant_credential_save', {
+        'config_id': gateway.config_id, 'account': 'reader',
+        'assistant_credential_id': 'legacy-ak', 'assistant_secret': 'new-secret',
+    })
+    assert saved['ok'] is True
+    assert saved['payload']['persistent_agent_id'] == attached['agent_id']
+    section = gateway.config_module.load_yaml_round_trip(gateway.path)['channels']['welink']
+    assert len(section['bindings']) == 1
+    assert section['bindings'][0]['credential_dir'] == '/legacy'
+
+
+@pytest.mark.asyncio
+async def test_purging_legacy_welink_colleague_preserves_shared_reader_credentials(colleague_gateway):
+    from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for
+
+    gateway = colleague_gateway
+    bound = await gateway.bind('welink', gateway.config_id, 'reader')
+    agent_id = bound['payload']['persistent_agent_id']
+    directory = credential_dir_for(agent_id)
+    directory.mkdir(parents=True)
+    (directory / 'auth.json').write_text('{"synthetic":true}')
+    gateway.config_module.update_config(lambda data: {
+        **data, 'channels': {**data['channels'], 'welink': {
+            **data['channels']['welink'], 'reader_credential_dir': str(directory), 'cli_authorized': True,
+        }},
+    })
+    removed = await gateway.delete(gateway.config_id)
+    assert removed['ok'] is True
+    assert (directory / 'auth.json').read_text() == '{"synthetic":true}'
+    assert gateway.host._service().connection_of('local', agent_id) is None
+
+
+@pytest.mark.asyncio
+async def test_welink_qr_completion_saves_optional_member_account(colleague_gateway, monkeypatch):
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink import welink_assistant_login
+
+    gateway = colleague_gateway
+    session = SimpleNamespace(agent_id=gateway.config_id, account='reader', saved=False,
+                              status='success', error='', credentials=lambda: ('qr-ak', 'qr-secret'))
+    session.snapshot = lambda: {'status': session.status, 'error': session.error}
+    monkeypatch.setattr(welink_assistant_login.ASSISTANT_LOGIN_MANAGER, 'get', lambda key: session)
+    monkeypatch.setattr(welink_assistant_login.ASSISTANT_LOGIN_MANAGER, 'refresh', lambda *args: session.snapshot())
+    result = await gateway.call('channel.welink.assistant_login_status', {
+        'session_id': 'qr', 'assistant_account': 'dig-reader-assistant',
+    })
+    assert result['ok'] is True
+    stored = gateway.config_module.load_yaml_round_trip(gateway.path)['channels']['welink']
+    assert stored['bindings'][0]['assistant_account'] == 'dig-reader-assistant'

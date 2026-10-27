@@ -23,7 +23,7 @@ def test_guidance_uses_only_the_dynamic_group_roster():
     assert "agent-b" in guidance
     assert "[[agent:agent-b]]" in guidance
     assert "交接标记" in guidance
-    assert "飞书群的公开消息" in guidance
+    assert "当前群的公开消息" in guidance
     assert "后台" in guidance
     assert "各自回复" in guidance
     assert "由你判断" in guidance
