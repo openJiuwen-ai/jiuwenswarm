@@ -2289,13 +2289,17 @@ class AgentRuntime:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
                 if (
-                    request.params.get("source") in {"ask_user_interrupt", "confirm_interrupt"}
+                    request.params.get("source") in {
+                        "ask_user_interrupt", "confirm_interrupt", "permission_interrupt",
+                    }
                     and self._session_coordinator.control_target_work_kind(
                         request.session_id or "default", self._control_request_id(request)
                     ) is not SessionWorkKind.HEARTBEAT
                 ):
                     async with aclosing(self._stream_with_runtime_context(
-                        self._stream_question_answer(request)
+                        self._stream_question_answer(
+                            request, on_control_event=on_control_event,
+                        )
                     )) as events:
                         async for event in events:
                             yield event
@@ -2817,8 +2821,10 @@ class AgentRuntime:
     async def _stream_question_answer(
         self,
         request: AgentRequest,
+        *,
+        on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> AsyncIterator[RuntimeEvent]:
-        """Stream a compatibility question or confirmation under control admission.
+        """Stream question, confirmation or permission replies under control admission.
 
         The unary control API deliberately collects a complete turn. WebSocket
         chat.send answers must instead expose each event while the turn runs.
@@ -2840,7 +2846,10 @@ class AgentRuntime:
             )
             async with aclosing(stream):
                 async for event in stream:
-                    yield event
+                    if on_control_event is not None and self._is_permission_control_ack(request, event):
+                        await on_control_event(event)
+                    else:
+                        yield event
         except BaseException:
             if self._session_coordinator.has_control_target(session_id, request_id):
                 await self._mark_pending_interaction_id(session_id, request_id)
@@ -2982,7 +2991,6 @@ class AgentRuntime:
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
-        cleared.extend(await self._clear_answered_interactions(request))
         events: list[RuntimeEvent] = []
         response_stream = deliver(request)
         try:
@@ -2995,16 +3003,7 @@ class AgentRuntime:
                     default_agent_ref=request.agent_ref,
                 )
                 self._bind_moa_control_execution(event, moa_execution_id)
-                matching_ack = False
-                if forward_permission_ack and on_control_event is not None:
-                    matching_ack = (
-                        event.event_type == "runtime.accepted"
-                        and event.request_id == request.request_id
-                        and event.session_id == request.session_id
-                        and event.payload.get("request_id") == request.request_id
-                        and event.payload.get("session_id", event.session_id) == request.session_id
-                    )
-                if matching_ack:
+                if on_control_event is not None and self._is_permission_control_ack(request, event):
                     await on_control_event(event)
                 else:
                     events.append(event)
@@ -3027,43 +3026,13 @@ class AgentRuntime:
         # actual handoff acknowledgement can settle the submitted answer.
         return (
             params.get("source") == "permission_interrupt"
-            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 512
+            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 128
             and event.event_type == "runtime.accepted"
             and event.request_id == request.request_id
             and event.session_id == request.session_id
             and event.payload.get("request_id") == request.request_id
             and event.payload.get("session_id", event.session_id) == request.session_id
         )
-
-    def _borrow_paused_agent(
-        self, session_id: str, control_ids: tuple[str, ...], managers: Iterable[AgentManager]
-    ) -> Any:
-        agent = self._session_coordinator.control_target_agent(session_id, control_ids)
-        if agent is None:
-            return None
-        for manager in managers:
-            borrowed = manager.borrow_agent_nowait(agent)
-            if borrowed is not None:
-                return borrowed
-        return None
-
-    def _control_agent(self, request: AgentRequest, manager: AgentManager) -> Any:
-        """Borrow the agent the paused execution ran on, though its Session was evicted from it since."""
-        session_id = request.session_id or "default"
-        agent = self._borrow_paused_agent(session_id, self._control_ids(request), (manager,))
-        if agent is None:
-            raise RuntimeError(f"session has no active agent: {session_id}")
-        return agent
-
-    async def _released_after(
-        self, request: AgentRequest, stream: AsyncIterator[RuntimeEvent]
-    ) -> AsyncIterator[RuntimeEvent]:
-        """Relay a delivered answer, then release the questions of its pause nobody waits on any more."""
-        paused = self.resumed_interactions(request)
-        async with aclosing(stream):
-            async for event in stream:
-                yield event
-        await self._release_unawaited_interactions(request.session_id or "default", paused)
 
     async def _stream_control_started(
         self,
