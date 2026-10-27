@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, UserMessage
 from openjiuwen.core.session import InteractiveInput
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs, ModelCallInputs
 from openjiuwen.harness.prompts import SystemPromptBuilder
@@ -146,7 +146,7 @@ async def test_response_capture_does_not_race_boundary_publication(fails):
     if fails:
         ctx.context.add_messages.assert_not_awaited()
         assert entry.undelivered_response_text == ""
-        assert entry.undelivered_response_full_text == "" and guard.take_completed_delivery() is None
+        assert entry.undelivered_response_full_text == ""
     else:
         assert _note(ctx)[1]["quoted_prior_output"][0]["text"] == "99 * 99 = 9801"
 
@@ -319,125 +319,91 @@ async def test_agent_message_body_stays_in_tool_history_instead_of_system_instru
     assert tool_messages[1].role == "tool" and body in tool_messages[1].content
 
 
-async def _human_delivery(guard, ctx, *, original="Calculate 99 * 99", reply="99 * 99 = 9801"):
-    ctx.inputs = SimpleNamespace(parts=[original], source="query")
-    await guard.on_user_message(ctx)
-    entry = QueuedSessionInput("Read this image", "human-steer")
-    await guard.publish_input_received(entry)
-    await _capture(guard, ctx, reply)
-    await _consume(guard, ctx, [entry])
-    return entry
+
+class MessageContext:
+    def __init__(self, messages):
+        self.messages = list(messages)
+        self.replacements = 0
+
+    def get_messages(self):
+        return list(self.messages)
+
+    def set_messages(self, messages):
+        self.messages = list(messages)
+        self.replacements += 1
+
+    async def add_messages(self, messages):
+        self.messages.extend(messages if isinstance(messages, list) else [messages])
 
 
 @pytest.mark.asyncio
-async def test_completed_delivery_snapshot_is_full_scoped_and_consumed_once(monkeypatch):
-    monkeypatch.setattr(session_input, "_MAX_UNDELIVERED_RESPONSE_CHARS", 100)
-    monkeypatch.setattr(session_input, "_MAX_DELIVERY_INPUT_CHARS", 100)
+@pytest.mark.parametrize("long_reply", [False, True])
+async def test_native_steer_keeps_hidden_result_as_unfinished_reference(long_reply):
     guard, ctx = _guard_and_context()
-    original = "original request " * 50
-    full_reply = "complete visible answer " * 1000
-    entry = await _human_delivery(guard, ctx, original=original, reply=full_reply)
-    phase = ctx.session.write_stream.await_args.args[0]
-    assert phase.payload["delivery_reconciliation_pending"] is True
-    assert _note(ctx)[1]["quoted_prior_output"] == [{"text": full_reply[:100], "truncated": True}]
-    assert len(_note(ctx)[1]["original_request"]["text"]) == 100
-    await _capture(guard, ctx, "Only the image draft")
-    ctx.inputs = InvokeInputs(query=original, result={"result_type": "answer", "output": "Only the image draft"})
+    original = UserMessage(content="Calculate 99 * 99")
+    unrelated = AssistantMessage(content="Unrelated earlier answer")
+    ctx.context = MessageContext([unrelated, original])
+    ctx.inputs = SimpleNamespace(parts=[original.content], source="query")
+    await guard.on_user_message(ctx)
+    entries = [QueuedSessionInput("Read the image too", str(i)) for i in range(2)]
+    for entry in entries:
+        await guard.publish_input_received(entry)
+    answer = "99 * 99 = 9801" + (" long existing result" * 1000 if long_reply else "")
+    response = AssistantMessage(content=answer, reasoning_content="private reasoning")
+    ctx.inputs = ModelCallInputs(response=response)
+    await guard.after_model_call(ctx)
+    ctx.context.messages.append(response)
+    await _consume(guard, ctx, entries)
+    assert ctx.context.replacements == 1
+    assert ctx.context.messages[:2] == [unrelated, original]
+    reference = ctx.context.messages[-1]
+    assert reference.role == "user"
+    assert reference.metadata["_openjiuwen_message_source_kind"] == "session_input_undelivered"
+    assert reference.metadata["_openjiuwen_message_origin"] == "harness_internal"
+    data = json.loads(reference.content.split("<undelivered-reply>\n", 1)[1].split("\n</undelivered-reply>", 1)[0])
+    assert data == {"original_request_id": "original-query", "original_request": original.content, "reply": answer}
+    assert "private reasoning" not in reference.content
+    assert _note(ctx)[1]["original_request"]["text"] == original.content
+    assert not any(message.role == "assistant" and message.content == answer for message in ctx.context.messages)
+    # A replayed callback cannot replace unrelated history or add another reference.
+    await _consume(guard, ctx, entries)
+    assert ctx.context.replacements == 1
+    ctx.inputs = InvokeInputs(query=original.content, result={"result_type": "answer", "output": "9801 and image answer"})
     await guard.after_invoke(ctx)
     assert guard.owner.system_prompt_builder.get_section("session_input_delivery") is None
-    assert entry.undelivered_response_full_text == ""
-    plan = guard.take_completed_delivery()
-    assert plan.original_request_id == "original-query" and plan.input_request_ids == ("human-steer",)
-    assert plan.original_request == original and plan.original_reply == full_reply
-    assert plan.supplemental_requests == ({"request_id": "human-steer", "text": "Read this image"},)
-    assert plan.latest_draft == "Only the image draft" and plan.run_kind == "user"
-    assert plan.context is ctx.context and plan.session is ctx.session
-    assert "private reasoning" not in plan.original_reply and "do-not-repeat" not in plan.original_reply
-    assert guard.take_completed_delivery() is None
+    assert all(entry.undelivered_response_full_text == "" for entry in entries)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("excluded", ["goal", "agent-original", "agent-only", "no-old-reply", "whitespace-reply"])
-async def test_reconciliation_gate_excludes_nonhuman_or_unhidden_work(excluded):
+@pytest.mark.parametrize("excluded", ["goal", "agent-original", "agent-input", "tool-call", "wrong-tail", "failed", "other-round"])
+async def test_native_reference_never_rewrites_other_authority_or_tool_pairs(excluded):
     from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     guard, ctx = _guard_and_context()
-    marker = {"message_id": "agent-message", "source_session_id": "source"}
     if excluded == "goal":
         guard.owner.active_round.run_kind = "goal"
-    elif excluded == "agent-original":
-        ctx.extra["run_context"] = {"extra": {SESSION_MESSAGE_INTERNAL_KEY: marker}}
-    ctx.inputs = SimpleNamespace(parts=["Original request"], source="query")
+    if excluded == "agent-original":
+        ctx.extra["run_context"] = {"extra": {SESSION_MESSAGE_INTERNAL_KEY: {"message_id": "agent-id"}}}
+    ctx.inputs = SimpleNamespace(parts=["Original"], source="query")
     await guard.on_user_message(ctx)
     ctx.extra.pop("run_context", None)
-    entry = QueuedSessionInput("Supplement", "excluded-steer")
-    if excluded == "agent-only":
-        entry.cross_session = marker
+    entry = QueuedSessionInput("Supplement", "input")
+    if excluded == "agent-input":
+        entry.cross_session = {"message_id": "agent-id", "source_session_id": "other"}
     await guard.publish_input_received(entry)
-    if excluded != "no-old-reply":
-        await _capture(guard, ctx, " \n " if excluded == "whitespace-reply" else "99 * 99 = 9801")
-    await _consume(guard, ctx, [entry])
-    assert ctx.session.write_stream.await_args.args[0].payload["delivery_reconciliation_pending"] is False
-    ctx.inputs = InvokeInputs(query="Original request", result={"result_type": "answer", "output": "Draft"})
-    await guard.after_invoke(ctx)
-    assert guard.take_completed_delivery() is None
-
-
-@pytest.mark.asyncio
-async def test_later_agent_input_does_not_drop_an_already_pending_human_delivery():
-    guard, ctx = _guard_and_context()
-    await _human_delivery(guard, ctx)
-    agent_entry = QueuedSessionInput("Agent cannot cancel the human task", "agent-steer")
-    agent_entry.cross_session = {"message_id": "agent-message", "source_session_id": "source"}
-    await guard.publish_input_received(agent_entry)
-    await _consume(guard, ctx, [agent_entry])
-    assert ctx.session.write_stream.await_args.args[0].payload["delivery_reconciliation_pending"] is True
-    ctx.inputs = InvokeInputs(query="original", result={"result_type": "answer", "output": "Image result"})
-    await guard.after_invoke(ctx)
-    plan = guard.take_completed_delivery()
-    assert plan.input_request_ids == ("human-steer",)
-    assert plan.supplemental_requests == ({"request_id": "human-steer", "text": "Read this image"},)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("terminal", ["error", "cancelled", "exception", "new-query", "uninit"])
-async def test_nonanswer_or_new_work_discards_completed_delivery(terminal):
-    guard, ctx = _guard_and_context()
-    await _human_delivery(guard, ctx)
-    if terminal in ("new-query", "uninit"):
-        ctx.inputs = InvokeInputs(query="original", result={"result_type": "answer", "output": "Image draft"})
-        await guard.after_invoke(ctx)
-        if terminal == "new-query":
-            ctx.inputs = SimpleNamespace(parts=["New work"], source="query")
-            await guard.on_user_message(ctx)
-        else:
-            guard.uninit(guard.owner)
-    else:
-        ctx.inputs = InvokeInputs(query="original", result={
-            "result_type": "answer" if terminal == "exception" else terminal, "output": "Draft",
-        })
-        if terminal == "exception":
-            ctx.exception = RuntimeError("terminal failure")
-        await guard.after_invoke(ctx)
-    assert guard.take_completed_delivery() is None
-    assert guard.owner.system_prompt_builder.get_section("session_input_delivery") is None
-
-
-@pytest.mark.asyncio
-async def test_interrupted_delivery_completes_after_resume_with_actual_latest_reply():
-    guard, ctx = _guard_and_context()
-    await _human_delivery(guard, ctx)
-    ctx.inputs = InvokeInputs(query="original", result={"result_type": "interrupt"})
-    await guard.after_invoke(ctx)
-    assert guard.take_completed_delivery() is None
-    guard.owner.active_round = SimpleNamespace(run_kind="user", work=SimpleNamespace(request_id="resume-id"))
-    ctx.inputs = InvokeInputs(query=InteractiveInput())
-    await guard.before_invoke(ctx)
-    ctx.inputs = ModelCallInputs(react_iteration=3)
-    await guard.before_model_call(ctx)
-    await _capture(guard, ctx, "Actual resumed image answer")
-    ctx.inputs = InvokeInputs(query="original", result={"result_type": "answer", "output": ""})
-    await guard.after_invoke(ctx)
-    plan = guard.take_completed_delivery()
-    assert plan.original_request_id == "original-query"
-    assert plan.latest_draft == "Actual resumed image answer" and plan.original_reply == "99 * 99 = 9801"
+    response = AssistantMessage(content="Existing result", tool_calls=[ToolCall(
+        id="write", type="function", name="write_file", arguments="{}",
+    )] if excluded == "tool-call" else None)
+    ctx.inputs = ModelCallInputs(response=response)
+    await guard.after_model_call(ctx)
+    original_messages = [UserMessage(content="Original"), response]
+    if excluded == "wrong-tail":
+        original_messages.append(UserMessage(content="An unrelated later input"))
+    ctx.context = MessageContext(original_messages)
+    if excluded == "failed":
+        entry.boundary_error = RuntimeError("Not delivered")
+    if excluded == "other-round":
+        entry.delivery_round = object()
+    guard._retain_undelivered_reply(ctx, [entry])
+    assert ctx.context.replacements == 0
+    assert ctx.context.messages == original_messages

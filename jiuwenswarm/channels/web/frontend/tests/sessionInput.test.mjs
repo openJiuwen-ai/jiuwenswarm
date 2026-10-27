@@ -1345,25 +1345,20 @@ test('consecutive supplemented phases carry the unseen answer only into the fina
   }
 });
 
-test('a supplemented reconciliation phase hides its business draft until the reconciled answer is visible once', async (context) => {
+test('the native supplemented answer streams immediately and finishes without a reconciliation phase', async (context) => {
   const c = await mount(context);
   try {
     const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
-    emit('chat.output_phase', 'reconcile-old', { applied_input_ids: [] });
-    const inputId = await supplement('reconcile-old', 'Read the complete image text', steerImages[0]);
-    emit('chat.final', 'reconcile-old', { content: '99 * 99 = 9801', output_suppressed: true });
-    emit('chat.output_phase', 'reconcile-pending', {
-      applied_input_ids: [inputId], delivery_reconciliation_pending: true,
-    });
-    const draft = 'The image text is PROOF-RECONCILE.';
-    emit('chat.delta', 'reconcile-pending', { content: draft, output_suppressed: true });
-    emit('chat.final', 'reconcile-pending', { content: draft, output_suppressed: true });
+    emit('chat.output_phase', 'native-old', { applied_input_ids: [] });
+    const inputId = await supplement('native-old', 'Read the complete image text', steerImages[0]);
+    emit('chat.final', 'native-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.output_phase', 'native-current', { applied_input_ids: [inputId] });
+    const answer = '99 * 99 = 9801. The image text is PROOF-NATIVE.';
+    emit('chat.delta', 'native-current', { content: answer });
     await c.tick(16);
-    assert.equal(c.runtime().isProcessing, true, 'a hidden business final cannot complete the turn');
-    assert.equal(c.runtime().messages.filter((message) => message.role === 'assistant').length, 0);
-    assert.ok(!document.body.textContent.includes('PROOF-RECONCILE'));
-    const answer = '99 * 99 = 9801. The image text is PROOF-RECONCILE.';
-    emit('chat.final', 'reconcile-pending', { content: answer, delivery_reconciled: true });
+    assert.equal(c.runtime().isProcessing, true);
+    assert.ok(document.body.textContent.includes('PROOF-NATIVE'), 'native output is visible before its final');
+    emit('chat.final', 'native-current', { content: answer });
     await assertVisibleAnswer(answer, 1);
     assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 1);
   } finally {
@@ -1372,7 +1367,7 @@ test('a supplemented reconciliation phase hides its business draft until the rec
 });
 
 for (const language of ['zh', 'en']) {
-  test(`delivery reconciliation failure shows ${language} guidance while hiding the draft until terminal state`, async (context) => {
+  test(`historical reconciliation failure retains ${language} guidance during replay`, async (context) => {
     const c = await mount(context);
     const previousLanguage = i18n.language;
     try {
