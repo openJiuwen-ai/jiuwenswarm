@@ -14,7 +14,7 @@ await build({
   bundle: true, packages: 'external', platform: 'node', format: 'esm',
   outfile: 'node_modules/.cache/agent-avatar/identity-regression.mjs',
   loader: { '.svg': 'dataurl', '.png': 'dataurl' },
-  define: { 'import.meta.env': '{}' },
+  define: { 'import.meta.env.DEV': 'false' },
 });
 const { AgentAvatar, useAgentCatalogStore } = await import(
   '../node_modules/.cache/agent-avatar/identity-regression.mjs'
