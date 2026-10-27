@@ -324,6 +324,14 @@ class _QueueStatusSink:
         self._text = text
         self._stage_override: dict[str, str] = {}
 
+    def redirect_stage(self, source: str, target: str) -> None:
+        """Send later LLM status lines reported for ``source`` to ``target``."""
+        self._stage_override[source] = target
+
+    def clear_stage_redirect(self, source: str) -> None:
+        """Stop redirecting LLM status lines reported for ``source``."""
+        self._stage_override.pop(source, None)
+
     def report(self, event: Any) -> None:
         raw_stage = str(getattr(event, "stage", "") or "")
         stage_id = self._stage_override.get(raw_stage) or _CORE_STAGE_TO_ZHOU.get(raw_stage)
@@ -824,11 +832,11 @@ class AttributionCoreEngine:
             )
             _skip_stage(queue, "diagnose", text["stage_diagnose"], text["summary_only_skipped"])
             _skip_stage(queue, "attribute", text["stage_attribute"], text["summary_only_skipped"])
-            context.sink._stage_override["attribution"] = "task_parse"
+            context.sink.redirect_stage("attribution", "task_parse")
             try:
                 summary = await self._summary_only(context)
             finally:
-                context.sink._stage_override.pop("attribution", None)
+                context.sink.clear_stage_redirect("attribution")
             queue.put_nowait(
                 EngineEvent("task_parse", "stage_finished", status="completed", summary=exc.message),
             )
