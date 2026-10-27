@@ -341,9 +341,9 @@
       "groupReplyMode": "群聊回复模式",
       "groupReplyModes": {
         "passive": "被动",
-        "passiveHint": "仅在飞书群聊中被 @ 时回复。",
+        "passiveHint": "仅在群聊中被 @ 时回复。",
         "adaptive": "自适应",
-        "adaptiveHint": "被 @ 时回复，其他群消息根据身份职责自主判断是否参与。"
+        "adaptiveHint": "被 @ 时回复；飞书等可接收未 @ 消息的平台，会按身份职责判断是否参与。钉钉群里只有 @ 到机器人的消息会触发回复。"
       },
       "permissions": {
         "title": "员工权限",

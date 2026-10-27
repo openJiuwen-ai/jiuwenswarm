@@ -650,6 +650,7 @@ async def test_agent_server_dispatches_feishu_request_without_entering_personal_
 async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(monkeypatch):
     AgentWebSocketServer = _agent_websocket_server_type()
     import jiuwenswarm.server.jiuwenmate.feishu_group_fanout as module
+    import jiuwenswarm.server.jiuwenmate.dingtalk_inbound as dingtalk_inbound
 
     import jiuwenswarm.server.jiuwenmate.welink_inbound as welink_inbound
 
@@ -660,6 +661,7 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
     manager.aclose = AsyncMock()
     factory = MagicMock(return_value=(fanout, manager))
     monkeypatch.setattr(module, "configured_feishu_bindings", lambda: ())
+    monkeypatch.setattr(dingtalk_inbound, "configured_dingtalk_bindings", lambda: ())
     monkeypatch.setattr(welink_inbound, "configured_welink_binding", lambda: None)
     monkeypatch.setattr(module, "create_default_persistent_group_fanout", factory)
 
@@ -691,6 +693,7 @@ async def test_agent_server_starts_jm_runtime_only_for_bound_apps_and_closes_it(
 async def test_agent_server_recovers_a_left_welink_request(monkeypatch):
     AgentWebSocketServer = _agent_websocket_server_type()
     import jiuwenswarm.server.jiuwenmate.feishu_group_fanout as module
+    import jiuwenswarm.server.jiuwenmate.dingtalk_inbound as dingtalk_inbound
     import jiuwenswarm.server.jiuwenmate.welink_inbound as welink_inbound
 
     fanout = object()
@@ -699,6 +702,7 @@ async def test_agent_server_recovers_a_left_welink_request(monkeypatch):
     manager.recover = AsyncMock()
     manager.aclose = AsyncMock()
     monkeypatch.setattr(module, "configured_feishu_bindings", lambda: ())
+    monkeypatch.setattr(dingtalk_inbound, "configured_dingtalk_bindings", lambda: ())
     monkeypatch.setattr(
         welink_inbound,
         "configured_welink_binding",

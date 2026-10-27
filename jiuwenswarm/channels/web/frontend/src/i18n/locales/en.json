@@ -341,9 +341,9 @@
       "groupReplyMode": "Group reply mode",
       "groupReplyModes": {
         "passive": "Passive",
-        "passiveHint": "Reply only when mentioned in a Feishu group.",
+        "passiveHint": "Reply only when the bot is mentioned in a group.",
         "adaptive": "Adaptive",
-        "adaptiveHint": "Reply when mentioned, and assess other group messages based on the agent's role and responsibilities."
+        "adaptiveHint": "Reply when mentioned. On platforms that deliver unmentioned group messages, assess them by role. DingTalk only delivers group messages that mention the bot."
       },
       "permissions": {
         "title": "Employee permissions",

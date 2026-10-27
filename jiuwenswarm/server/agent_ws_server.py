@@ -2289,18 +2289,21 @@ class AgentWebSocketServer:
             return
         waiter = asyncio.get_running_loop().create_future()
         waiters[idempotency_key] = waiter
+        payload: dict[str, object] = {
+            "event_type": "jiuwenmate.thinking_notice",
+            "channel": channel,
+            "app_id": job.get("app_id"),
+            "chat_id": job.get("chat_id"),
+            "source_message_id": job.get("source_message_id"),
+            "idempotency_key": idempotency_key,
+            "text": job.get("text"),
+        }
+        if "is_direct_message" in job:
+            payload["is_direct_message"] = job["is_direct_message"]
         push = {
             "request_id": f"jm23_{idempotency_key}",
             "channel_id": channel,
-            "payload": {
-                "event_type": "jiuwenmate.thinking_notice",
-                "channel": channel,
-                "app_id": job.get("app_id"),
-                "chat_id": job.get("chat_id"),
-                "source_message_id": job.get("source_message_id"),
-                "idempotency_key": idempotency_key,
-                "text": job.get("text"),
-            },
+            "payload": payload,
         }
         from jiuwenswarm.server.jiuwenmate.delivery_service import GATEWAY_ACK_TIMEOUT
 

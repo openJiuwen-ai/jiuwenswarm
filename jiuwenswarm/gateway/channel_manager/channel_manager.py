@@ -208,6 +208,8 @@ class ChannelManager(ABC):
                 "idempotency_key": idempotency_key,
                 **file_args,
             }
+            if channel_id == "dingtalk":
+                send_kwargs["is_direct_message"] = payload.get("is_direct_message", True)
             if mention_targets:
                 send_kwargs["mention_targets"] = mention_targets
             return await matches[0].send_persistent_result(**send_kwargs)
@@ -260,12 +262,15 @@ class ChannelManager(ABC):
         persistent = getattr(channel, "send_persistent_result", None)
         if callable(persistent):
             try:
-                result = await persistent(
-                    chat_id=chat_id,
-                    text=text,
-                    source_message_id=source_message_id,
-                    idempotency_key=idempotency_key,
-                )
+                send_kwargs = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "source_message_id": source_message_id,
+                    "idempotency_key": idempotency_key,
+                }
+                if channel_id == "dingtalk":
+                    send_kwargs["is_direct_message"] = payload.get("is_direct_message", True)
+                result = await persistent(**send_kwargs)
             except Exception as exc:
                 logger.warning(
                     "[ChannelManager] thinking notice outcome unknown: channel=%s error_type=%s",

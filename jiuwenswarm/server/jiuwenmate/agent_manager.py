@@ -815,14 +815,17 @@ class AgentManager:
         sender = self._thinking_notice_sender
         if not isinstance(notice, str) or route is None or route.channel == "web" or sender is None:
             return
-        await sender({
+        job: dict[str, object] = {
             "channel": route.channel,
             "app_id": route.app_id,
             "chat_id": route.target_id,
             "source_message_id": route.source_message_id,
             "text": notice,
             "idempotency_key": f"thinking:{event.execution_id}",
-        })
+        }
+        if route.channel == "dingtalk":
+            job["is_direct_message"] = state.record.request_input.kind == "direct_message"
+        await sender(job)
 
     def _result(
         self, state: RequestState

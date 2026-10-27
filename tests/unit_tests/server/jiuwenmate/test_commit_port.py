@@ -585,7 +585,8 @@ async def test_delivery_service_strips_handoff_tokens_from_private_messages(host
     assert "mention_targets" not in sent[0]
 
 
-async def test_group_confirmed_reply_archive_retries_without_resending(host, tmp_path):
+@pytest.mark.parametrize("platform", ["feishu", "dingtalk"])
+async def test_group_confirmed_reply_archive_retries_without_resending(host, tmp_path, platform):
     from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
     from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
     from jiuwenswarm.server.jiuwenmate.group_chat_repository import GroupChatRepository
@@ -593,10 +594,10 @@ async def test_group_confirmed_reply_archive_retries_without_resending(host, tmp
 
     repository, _, port = host
     groups = GroupChatRepository(repository.db_path)
-    group = groups.resolve(NS, "feishu", "oc_group", now=NOW)
+    group = groups.resolve(NS, platform, "oc_group", now=NOW)
     session = repository.resolve_session(NS, AGENT, ConversationRef.group(group.group_chat_id), now=NOW)
-    route = RequestRouteSnapshot(channel="feishu", app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
-    state, _ = repository.accept_request(session, snapshot=SNAPSHOT, source_ref="feishu:message:om_1", access=ACCESS,
+    route = RequestRouteSnapshot(channel=platform, app_id="cli_bound", target_id="oc_group", source_message_id="om_1")
+    state, _ = repository.accept_request(session, snapshot=SNAPSHOT, source_ref=f"{platform}:message:om_1", access=ACCESS,
         request_input=core.RequestInput(kind="group_message", text="hello", reply_target="oc_group",
             source=core.GroupMessage(message_id="om_1", sender_id="alice", sender_name="Alice", sender_kind="human",
                                      received_at=NOW, text="hello")), received_at=NOW, route_snapshot=route)

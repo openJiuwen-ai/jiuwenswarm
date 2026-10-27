@@ -336,7 +336,7 @@ class DingTalkChannel(BaseChannel):
     async def send_persistent_result(
         self, *, chat_id: str, text: str | None, source_message_id: str | None,
         idempotency_key: str, file_path: str | None = None, file_key: str | None = None,
-        mention_targets: list[dict[str, str]] | None = None,
+        mention_targets: list[dict[str, str]] | None = None, is_direct_message: bool = True,
     ) -> dict[str, Any]:
         """Return a real robot receipt; the local key is not a platform idempotency token."""
         if file_path or file_key or mention_targets:
@@ -350,11 +350,18 @@ class DingTalkChannel(BaseChannel):
             return {"outcome": "failed", "error_code": token_error}
         if not token:
             return {"outcome": "pending", "error_code": token_error or "DINGTALK_TOKEN_UNAVAILABLE"}
-        data = self._build_private_message_payload(chat_id, text)
+        if not isinstance(is_direct_message, bool):
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+        conversation_type = "1" if is_direct_message else "2"
+        data = (
+            self._build_private_message_payload(chat_id, text)
+            if is_direct_message else self._build_group_message_payload(text, chat_id)
+        )
         data["robotCode"] = self.config.robot_code or self.config.client_id
         try:
             response = await self._http.post(
-                self._get_send_api_url("1"), json=data, headers={"x-acs-dingtalk-access-token": token},
+                self._get_send_api_url(conversation_type), json=data,
+                headers={"x-acs-dingtalk-access-token": token},
             )
         except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
             return {"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"}

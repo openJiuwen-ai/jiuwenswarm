@@ -77,6 +77,7 @@ async def host(tmp_path, monkeypatch):
     repository = ExecutionRepository(tmp_path / "agents.sqlite3")
     workspaces = WorkspaceStore(tmp_path / "workspaces")
     service = FakeService(FakeCore(), workspaces)
+    service.read_settings = lambda namespace_id, agent_id: SimpleNamespace(group_reply_mode="adaptive")
     connections = {"agent-dingtalk": _connection("agent-dingtalk", "dingtalk", "app-dingtalk")}
     service.connection_of = lambda namespace_id, agent_id: connections.get(agent_id)
     contexts, sent = [], []
@@ -113,6 +114,10 @@ async def host(tmp_path, monkeypatch):
 
     manager = AgentManager(service, repository, WindowBackendStore(tmp_path / "agents.sqlite3"),
         BudgetRepository(tmp_path / "agents.sqlite3"), execute=execute, delivery_service=deliveries, clock=lambda: NOW)
+    async def verify_group_membership(access, group):
+        return "active" if group.platform == "dingtalk" and access.status == "active" else "unknown"
+
+    manager.verify_group_membership = verify_group_membership
     inbound = DingTalkInboundHandler(service=service, sessions=repository, agent_manager=manager, config_loader=lambda: config)
     await manager.start()
     yield SimpleNamespace(config=config, repository=repository, service=service, manager=manager, inbound=inbound,
@@ -130,6 +135,18 @@ def _requests(host, app_id="app-dingtalk"):
 
 def _delivered(host):
     rows = _requests(host)
+    deliveries = host.repository.result_deliveries("local", rows[0].record.request_id) if rows else []
+    return bool(deliveries) and deliveries[0]["status"] == "delivered"
+
+
+def _group_requests(host, conversation_id="conversation-test"):
+    group = host.manager.group_chats.resolve("local", "dingtalk", conversation_id, now=NOW)
+    session = host.repository.find_session("local", "agent-dingtalk", ConversationRef.group(group.group_chat_id))
+    return host.repository.session_requests("local", session.session_id) if session else []
+
+
+def _group_delivered(host):
+    rows = _group_requests(host)
     deliveries = host.repository.result_deliveries("local", rows[0].record.request_id) if rows else []
     return bool(deliveries) and deliveries[0]["status"] == "delivered"
 
@@ -154,6 +171,122 @@ async def test_redelivery_reuses_one_request_execution_and_outbox_send(host):
     scope = await host.contexts[0].ports.workspace_access.resolve_read_scope(host.contexts[0].execution)
     assert scope.workspace_root == host.workspaces.path("local", "agent-dingtalk")
     assert not foreign.is_relative_to(scope.workspace_root)
+
+
+@pytest.mark.asyncio
+async def test_mentioned_group_message_runs_bound_agent_and_replies_to_that_group(host):
+    callback = {
+        "conversationType": "2", "conversationId": "conversation-test", "conversationTitle": "Test group",
+        "msgtype": "text", "msgId": "group-message-test", "senderStaffId": "staff-test",
+        "senderNick": "Test sender", "robotCode": "robot-test", "senderCorpId": "corp-test",
+        "chatbotCorpId": "corp-test", "isInAtList": True, "chatbotUserId": "bot-test",
+        "atUsers": [{"dingtalkId": "bot-test"}], "text": {"content": "please help"},
+    }
+    event = DingTalkInboundEvent.from_callback(callback, app_id="app-dingtalk", agent_id="agent-dingtalk")
+
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+
+    rows = _group_requests(host)
+    assert len(rows) == 1
+    record = rows[0].record
+    assert record.request_input.kind == "group_message"
+    assert record.request_input.source.mention_ids == ("bot-test", "agent-dingtalk")
+    assert record.request_input.reply_target == "conversation-test"
+    assert record.route_snapshot.channel == "dingtalk" and record.route_snapshot.app_id == "app-dingtalk"
+    assert record.route_snapshot.target_id == "conversation-test"
+    assert len(host.sent) == 1
+    assert host.sent[0]["openConversationId"] == "conversation-test"
+
+
+@pytest.mark.asyncio
+async def test_dingtalk_group_waiting_notice_uses_the_group_send_api(host):
+    result = await host.gateway.deliver_thinking_notice({
+        "channel": "dingtalk",
+        "app_id": "app-dingtalk",
+        "chat_id": "conversation-test",
+        "is_direct_message": False,
+        "source_message_id": "group-message-test",
+        "text": "I am working on it.",
+        "idempotency_key": "thinking:group-test",
+    })
+
+    assert result["outcome"] == "delivered"
+    assert host.sent[-1]["openConversationId"] == "conversation-test"
+
+
+@pytest.mark.asyncio
+async def test_group_redelivery_reuses_the_archived_message_without_a_second_execution(host):
+    event = replace(_event(
+        conversation_type="2",
+        receiver_bot_mentioned=True,
+        mention_ids=("bot-test",),
+    ), message_id="group-redelivery")
+
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+
+    rows = _group_requests(host)
+    assert len(rows) == len(host.contexts) == len(host.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_unmentioned_adaptive_group_message_runs_the_bound_agent(host):
+    event = replace(_event(
+        conversation_type="2",
+        receiver_bot_mentioned=False,
+        mention_ids=(),
+    ), message_id="adaptive-group-message")
+
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+    await settle(lambda: _group_delivered(host))
+
+    rows = _group_requests(host)
+    assert len(rows) == 1
+    assert rows[0].record.request_input.kind == "group_message"
+    assert rows[0].record.request_input.source.mention_ids == ()
+    assert rows[0].record.route_snapshot.target_id == "conversation-test"
+
+
+@pytest.mark.asyncio
+async def test_passive_group_message_is_archived_without_creating_a_request(host):
+    host.service.read_settings = lambda namespace_id, agent_id: SimpleNamespace(group_reply_mode="passive")
+    event = replace(_event(
+        conversation_type="2",
+        receiver_bot_mentioned=False,
+        mention_ids=(),
+    ), message_id="passive-group-message")
+
+    assert await host.inbound.handle(event) is InboundDisposition.HANDLED
+
+    group = host.manager.group_chats.resolve("local", "dingtalk", "conversation-test", now=NOW)
+    archived = host.manager.group_archive.current_messages("local", group.group_chat_id, (event.message_id,))
+    assert archived[0].text == "test task"
+    assert not _group_requests(host)
+
+
+@pytest.mark.asyncio
+async def test_default_runtime_accepts_an_active_bound_dingtalk_group_observation(tmp_path, monkeypatch):
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import create_default_persistent_group_fanout
+
+    config = {"channels": {"dingtalk": {"apps": [dict(DINGTALK_APP)]}}}
+    monkeypatch.setattr(config_module, "get_config", lambda: config)
+    _fanout, manager = create_default_persistent_group_fanout(
+        tmp_path / "jiuwenmate", verify_membership=AsyncMock(),
+    )
+    try:
+        group = manager.group_chats.resolve("local", "dingtalk", "conversation-test", now=NOW)
+        manager.group_chats.observe_access(
+            "local", "agent-dingtalk", group.group_chat_id, "app-dingtalk", observed_at=NOW,
+            source_ref="dingtalk:message:group-message",
+        )
+        access = manager.group_chats.access_for("local", "agent-dingtalk", group.group_chat_id)
+
+        assert await manager.verify_group_membership(access, group) == "active"
+    finally:
+        await manager.aclose()
 
 
 @pytest.mark.asyncio
