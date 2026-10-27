@@ -168,7 +168,7 @@ def test_persist_merged_allow_rule_snapshot_appends_after_existing_overrides(
         "pattern": '{"scope":"exact","subject":{"command":"rm b.txt"}}',
         "action": "allow",
     }
-    assert pp.persist_merged_allow_rule_snapshot({}, approval_grant=first) is True
-    assert pp.persist_merged_allow_rule_snapshot({}, approval_grant=second) is True
+    assert pp.persist_merged_allow_rule_snapshot({}, approval_grants=[first]) is True
+    assert pp.persist_merged_allow_rule_snapshot({}, approval_grants=[second]) is True
     stored = _load_yaml_round_trip(config_yaml)["permissions"]["approval_overrides"]
     assert [item["id"] for item in stored] == ["operation_first", "operation_second"]

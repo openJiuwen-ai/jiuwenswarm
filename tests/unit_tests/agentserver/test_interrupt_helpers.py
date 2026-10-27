@@ -555,6 +555,25 @@ def test_build_permission_rail_wires_session_persist_hook():
     assert rail._host.get_permissions_snapshot is not None
 
 
+def test_permission_host_forwards_one_batch_for_each_lifetime(monkeypatch):
+    from unittest.mock import Mock
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_persist
+
+    session = Mock(return_value=True)
+    permanent = Mock(return_value=True)
+    monkeypatch.setattr(permissions_persist, "persist_session_allow_rule", session)
+    monkeypatch.setattr(permissions_persist, "persist_merged_allow_rule_snapshot", permanent)
+    rail = build_permission_rail({"permissions": {"enabled": True}})
+    grants = [{"id": "first"}, {"id": "second"}]
+    snapshot = {"approval_overrides": [*grants, {"id": "unrelated"}]}
+    assert rail._host.persist_session_allow_rule(
+        snapshot, session_id="batch-session", approval_grants=grants,
+    )
+    assert rail._host.persist_allow_rule(snapshot, approval_grants=grants)
+    session.assert_called_once_with(snapshot, session_id="batch-session", approval_grants=grants)
+    permanent.assert_called_once_with(snapshot, approval_grants=grants)
+
+
 def test_build_multi_questions_ignores_string_options():
     """Regression for #2331: options='a,b' must not become character options + Other."""
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (

@@ -75,8 +75,8 @@ async def test_session_and_permanent_grants_reload_without_promoting_session_rul
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scope", ["session", "always"])
-@pytest.mark.parametrize("split", [False, True])
-async def test_strict_shell_grants_survive_reload_without_crossing_scope(tmp_path, monkeypatch, scope, split):
+@pytest.mark.parametrize("kind", ["exact", "single", "compound"])
+async def test_strict_shell_grants_survive_reload_without_crossing_scope(tmp_path, monkeypatch, scope, kind):
     """Exercise shell UNDETERMINED grants through real YAML and session files."""
     from jiuwenswarm.common.behavior_security import runtime_permission_config
 
@@ -102,7 +102,7 @@ async def test_strict_shell_grants_survive_reload_without_crossing_scope(tmp_pat
             "xiaoyi_work_security": {"cloud_authorization": {"enabled": True}},
         })
 
-    command = "cd repo && git status" if split else "printf TEST_GRANT"
+    command = "cd repo && git status" if kind == "compound" else "printf TEST_GRANT"
     args = {"command": command, "workdir": str(tmp_path), "shell_type": "bash"}
     assert (await PermissionEngine(snapshot("session-a")).check_permission("bash", args)).is_undetermined
     host = ToolPermissionHost(
@@ -111,17 +111,17 @@ async def test_strict_shell_grants_survive_reload_without_crossing_scope(tmp_pat
         persist_allow_rule=persist.persist_merged_allow_rule_snapshot,
     )
     rail = PermissionInterruptRail(config=snapshot(), host=host)
-    if split and scope == "always":
+    if kind != "exact" and scope == "always":
         assert rail._persist_session_allow("bash", {**args, "command": "printf SESSION_ONLY"}, session_id="session-a")
     save = rail._persist_session_allow if scope == "session" else rail._persist_allow_always
-    options = {"authorization_mode": "allow_with_scope", "authorization_scope": "subcommands"} if split else {}
+    options = {"authorization_mode": "allow_with_scope", "authorization_scope": "subcommands"} if kind != "exact" else {}
     assert save("bash", args, session_id="session-a", **options)
 
     reloaded = PermissionEngine(snapshot("session-a"))
     assert (await reloaded.check_permission("bash", args)).is_allowed
     other_session = await PermissionEngine(snapshot("session-b")).check_permission("bash", args)
     assert other_session.is_allowed if scope == "always" else other_session.is_undetermined
-    if split:
+    if kind == "compound":
         for child in ("cd repo", "git status", "git status && cd repo"):
             assert (await reloaded.check_permission("bash", {**args, "command": child})).is_allowed
         assert (await PermissionEngine(snapshot("session-b")).check_permission(
@@ -135,7 +135,10 @@ async def test_strict_shell_grants_survive_reload_without_crossing_scope(tmp_pat
         assert (await reloaded.check_permission("bash", changed)).is_undetermined
 
     persisted = config.load_yaml_round_trip(path)["permissions"]
-    assert len(persisted.get("approval_overrides", [])) == ((2 if split else 1) if scope == "always" else 0)
+    assert len(persisted.get("approval_overrides", [])) == ((1 if kind == "exact" else 2) if scope == "always" else 0)
+    if kind == "single":
+        stored = snapshot("session-a")["approval_overrides"]
+        assert {g["match_type"] for g in stored} == {"shell_subcommand", "exact_operation"}
     assert "strict_tool_command_merge" not in persisted
     for restriction in ("tool", "command"):
         cfg = snapshot("session-a")

@@ -181,6 +181,19 @@ def test_persist_session_allow_rule_uses_explicit_session_id_when_contextvar_emp
         CURRENT_SESSION_ID.reset(token)
 
 
+def test_session_batch_writes_only_supplied_approvals(sessions_root):
+    pp = _load_permissions_persist()
+    grants = [{"id": "first", "action": "allow"}, {"id": "second", "action": "allow"}]
+    snapshot = {
+        "approval_overrides": [*grants, {"id": "unrelated", "action": "allow"}],
+        "file_guard": {"paths": [{"path": "D:/unrelated", "read": "allow"}]},
+    }
+    assert pp.persist_session_allow_rule(snapshot, session_id="batch", approval_grants=grants)
+    stored = pp.load_session_permissions_overlay("batch")
+    assert stored["approval_overrides"] == grants
+    assert "file_guard" not in stored
+
+
 def test_persist_session_allow_rule_rejects_empty_session_id(sessions_root):
     pp = _load_permissions_persist()
     token = CURRENT_SESSION_ID.set("")

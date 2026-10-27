@@ -519,12 +519,16 @@ def write_session_permissions_overlay(session_id: str, overlay: dict[str, Any]) 
 def persist_session_allow_rule(
     permissions: dict[str, Any],
     session_id: str | None = None,
+    *, approval_grants: list[dict] | None = None,
 ) -> bool:
     """Incrementally persist session overlay for this session.
 
     ``permissions`` is the rail's already-merged snapshot (disk ∪ previous
     overlay ∪ this remember). Only paths/overrides that are new or escalated
     relative to disk ∪ existing overlay are written.
+
+    Core approval callbacks supply ``approval_grants``. In that path, persist
+    only this batch instead of discovering unrelated changes in the snapshot.
 
     Prefer the explicit ``session_id`` from the rail (``ctx.session``). The
     request ContextVar is often empty on interrupt resume.
@@ -539,7 +543,10 @@ def persist_session_allow_rule(
         return False
     existing = load_session_permissions_overlay(sid)
     baseline = apply_session_permissions_overlay(_disk_permissions(), existing)
-    delta = extract_session_overlay_delta(baseline, permissions)
+    requested = (
+        {"approval_overrides": approval_grants} if approval_grants is not None else permissions
+    )
+    delta = extract_session_overlay_delta(baseline, requested)
     if not delta:
         logger.info(
             "[PermissionPersist] persist_session_allow_rule.noop session=%s",
@@ -574,8 +581,7 @@ def get_permissions_with_session_overlay(
 
 
 def persist_merged_allow_rule_snapshot(
-    permissions: dict[str, Any], *, approval_grant: dict | None = None,
-    approval_grants: list[dict] | None = None,
+    permissions: dict[str, Any], *, approval_grants: list[dict] | None = None,
 ) -> bool:
     """HITL「永久记住」：把相对模板多出的场景 list 写入 config.yaml。"""
     if not isinstance(permissions, dict):
@@ -583,9 +589,7 @@ def persist_merged_allow_rule_snapshot(
     from jiuwenswarm.common.config import get_config
 
     live = get_config().get("permissions") or {}
-    grants = approval_grants if approval_grants is not None else (
-        [approval_grant] if approval_grant is not None else None
-    )
+    grants = approval_grants
     if isinstance(live.get("composition"), dict):
         if not grants:
             return False
