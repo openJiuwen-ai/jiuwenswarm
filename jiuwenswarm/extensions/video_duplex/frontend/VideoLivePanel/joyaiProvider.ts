@@ -489,7 +489,7 @@ export class JoyAIProvider {
             reply_language: this.replyLanguage,
           });
           this.callbacks.setStatus(
-            `JoyAI 限流，${Math.ceil(cooldownMs / 1_000)} 秒后重试，画面发送间隔已调整为 ${this.frameRequestIntervalMs / 1_000} 秒`,
+            `JoyAI 服务商限流（429，每分钟 token 额度已用完），${Math.ceil(cooldownMs / 1_000)} 秒后重试，画面发送间隔已调整为 ${this.frameRequestIntervalMs / 1_000} 秒`,
           );
         }
         throw error;
