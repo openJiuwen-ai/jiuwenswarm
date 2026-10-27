@@ -36,7 +36,8 @@ class _ExecutionRequest:
 
 class ExecutionSession:
 
-    def __init__(self, timeout_ms=45000, on_preview=None, demo_foreground=False):
+    def __init__(self, timeout_ms=45000, on_preview=None, demo_foreground=False, *, worker_launcher=None):
+        self.worker_launcher = worker_launcher
         self.demo_foreground = demo_foreground
         self.timeout_ms, self.on_preview = timeout_ms, on_preview
         self._child = self._pending = self._retiring = self._resetting = self._exited = None
@@ -162,6 +163,12 @@ class ExecutionSession:
             return
         env = dict(os.environ, COMPUTER_USE_REMOTE_PREVIEW="1" if self.on_preview is not None else "",
                    COMPUTER_USE_DEMO_FOREGROUND="1" if self.demo_foreground else "0", COMPUTER_USE_LIFETIME_FD="4")
+        if self.worker_launcher is not None:
+            child, self._reader, self._writer = await self.worker_launcher(env)
+            self._child = child
+            self._exited = self._track(child.wait())
+            self._track(self._receive(child, self._reader))
+            return
         if os.name == "nt":
             from .windows_worker import start_windows_worker
             child, self._reader, self._writer, job, listener = await start_windows_worker(env)

@@ -103,7 +103,8 @@ class Connection:
         # and preview pipe are not part of its driver's transport contract.
         preview = get_preview_handler() if not windows else None
         read_fd = write_fd = -1
-        lifetime = 4 if os.environ.get("COMPUTER_USE_LIFETIME_FD") == "4" else -1
+        lifetime_fd = os.environ.get("COMPUTER_USE_LIFETIME_FD", "")
+        lifetime = int(lifetime_fd) if lifetime_fd.isdecimal() and int(lifetime_fd) >= 3 else -1
         if preview is not None:
             read_fd, write_fd = os.pipe()
         try:

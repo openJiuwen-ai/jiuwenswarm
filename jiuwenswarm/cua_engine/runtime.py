@@ -35,10 +35,11 @@ def desktop_lane() -> DesktopLane:
 
 
 class ReplRuntime:
-    """One persistent engine session per delegation; the engine owns its worker."""
+    """One persistent session per delegation, launched by the bound host executor."""
 
-    def __init__(self, *, session=None):
+    def __init__(self, *, session=None, execution_backend=None):
         self.session = session
+        self.execution_backend = execution_backend
         self.call_lock = asyncio.Lock()
         self.close_task = None
         self.closing = False
@@ -48,12 +49,16 @@ class ReplRuntime:
         async with self.call_lock:
             if self.closing or self.cleanup_error:
                 raise RuntimeError("The previous REPL was closed; recreate variables in a fresh delegation.")
+            if self.execution_backend is None:
+                raise RuntimeError("No host code executor is bound. No code was sent.")
             try:
                 if self.session is None:
                     prepare_native()
                     from computer_use.mcp.session import ExecutionSession
 
-                    self.session = ExecutionSession()
+                    self.session = ExecutionSession(
+                        worker_launcher=self.execution_backend.start,
+                    )
                 # No retained-history capability is advertised: reads stay full.
                 result = await self.session.execute(code, title=title.strip() or None)
                 return CallToolResult.model_validate(result)

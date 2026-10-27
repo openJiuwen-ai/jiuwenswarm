@@ -293,8 +293,14 @@ async def main():
         if len(token) != 64 or any(char not in "0123456789abcdef" for char in token):
             raise RuntimeError("Invalid internal worker authentication.")
         reader, writer = await asyncio.open_connection("127.0.0.1", int(port), limit=10 * 1024 * 1024)
-        writer.write((token + "\t" + str(os.getpid()) + "\n").encode("ascii"))
+        admission = os.environ.pop("COMPUTER_USE_WORKER_ADMISSION", "") == "1"
+        claim = token + ("\tcode" if admission else "") + "\t" + str(os.getpid()) + "\n"
+        writer.write(claim.encode("ascii"))
         await writer.drain()
+        if admission and await reader.readline() != b"ready\n":
+            writer.close()
+            await writer.wait_closed()
+            raise RuntimeError("The host did not admit this code worker. No user code was executed.")
     else:
         ipc = socket.socket(fileno=3)
         try:

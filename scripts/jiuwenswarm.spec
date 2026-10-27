@@ -112,7 +112,7 @@ computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build
 computer_use_data = computer_use_build["bundle_data"](Path(project_root))
 computer_use_submodules = (
     collect_tree_python_modules(computer_use_source, ("computer_use",))
-    + ["jiuwenswarm.cua_engine.runtime"]
+    + ["jiuwenswarm.cua_engine.runtime", "jiuwenswarm.cua_engine.worker"]
 ) if computer_use_data else []
 
 try:
