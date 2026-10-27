@@ -278,11 +278,97 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // Built-in mode shows the actual built-in CLI path from detection instead of
   // the generic placeholder text.
   assert.match(sectionSource, /useBuiltin && detectedPath \? \(/);
-  // MRU history entries carry a per-option remove button; the active path and
-  // the detected PATH lookup must stay non-removable.
-  assert.match(sectionSource, /for \(const path of \[cliPath, detectedPath\]\) pushPathOption\(path, false\);/);
-  assert.match(sectionSource, /for \(const path of pathHistories\[cliAgent\] \?\? \[\]\) pushPathOption\(path, true\);/);
-  assert.match(sectionSource, /const removePathHistory = useCallback/);
+  // The path dropdown merges the persisted backend history between the saved
+  // path and the PATH-detected candidate, so switching addresses never loses
+  // the previous ones; explicit actions prune stale entries via
+  // external_cli.validate_paths (backend history, not localStorage).
+  assert.match(
+    sectionSource,
+    /for \(const path of \[cliPath, \.\.\.historyPaths, pathCandidates\[cliAgent\] \|\| '', detectedPath\]\)/,
+  );
+  assert.match(
+    sectionSource,
+    /parseExternalCliPathHistories\(draftValues\[externalCliKey\(cliAgent, 'path_histories'\)\]\)/,
+  );
+  assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
+  assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
+});
+
+test('an explicit detect or save prunes stale path-history entries through the backend', () => {
+  const sectionSource = readFileSync(
+    new URL('../src/components/ExternalCliAgentsSection.tsx', import.meta.url),
+    'utf8',
+  );
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+  const providerSource = readFileSync(
+    new URL('../src/features/settings/services/SettingsServicesProvider.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // Cleanup only runs when the caller marks the detect as an explicit user
+  // action: automatic probes (debounce, post-install, toggle) never touch it.
+  assert.match(
+    sectionSource,
+    /\(result\.status === 'ok' \|\| result\.status === 'warning'\) && options\?\.cleanupHistory/,
+  );
+  assert.match(sectionSource, /onCleanupPathHistories\?\.\(cliAgent, result\.path \|\| ''\)/);
+  assert.match(sectionSource, /detect\(cliAgent, cliPath, useBuiltin, \{ cleanupHistory: true \}\)/);
+  assert.match(sectionSource, /detect\(cliAgent, requestedPath, false, \{ cleanupHistory: true \}\)/);
+  // The settings module owns the cleanup: it validates history entries on
+  // disk and hands only the confirmed misses to the backend prune, which
+  // drops them from the on-disk history (never the whole key).
+  assert.match(settingsSource, /const cleanupPersistedPathHistories = useCallback/);
+  assert.match(settingsSource, /onValidateExternalCliPaths\(\[\.\.\.new Set\(\[\.\.\.histories, \.\.\.knownGood\]\)\]\)/);
+  // Only a confirmed miss evicts an entry; unreadable (null) stays put.
+  assert.match(settingsSource, /const removePaths = histories\.filter\(\(path\) => !knownGood\.includes\(path\) && results\[path\] === false\);/);
+  assert.match(settingsSource, /await onPruneExternalCliPathHistories\(cliAgent, removePaths\);/);
+  assert.match(settingsSource, /onCleanupPathHistories=\{cleanupPersistedPathHistories\}/);
+  // The service contract exposes the backend batch validator (three-valued)
+  // and the server-side prune used by the cleanup.
+  assert.match(
+    providerSource,
+    /onValidateExternalCliPaths\?: \(paths: string\[\]\) => Promise<Record<string, boolean \| null>>;/,
+  );
+  assert.match(
+    providerSource,
+    /onPruneExternalCliPathHistories\?: \(agent: ExternalCliAgentKind, removePaths: string\[\]\) => Promise<string\[\]>;/,
+  );
+});
+
+test('a saved cli_path change appends the previous path to the local history', () => {
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // persistUpdates mirrors the backend append so the dropdown offers the
+  // replaced path immediately, without waiting for a config reload.
+  assert.match(settingsSource, /const EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10;/);
+  assert.match(settingsSource, /if \(!oldPath \|\| oldPath === newPath\) continue;/);
+  assert.match(settingsSource, /historyPatch\[historyKey\] = JSON\.stringify\(/);
+  assert.match(settingsSource, /\[\.\.\.history, oldPath\]\.slice\(-EXTERNAL_CLI_PATH_HISTORY_LIMIT\)/);
+  // The mirrored history reaches savedValues, draftValues, and the config store.
+  assert.match(settingsSource, /for \(const \[key, value\] of Object\.entries\(historyPatch\)\) \{\s*next\[key\] = value;\s*\}/);
+});
+
+test('the replay save hands its pre-save path to the server-side prune cleanup', () => {
+  const settingsSource = readFileSync(
+    new URL('../src/features/settings/modules/agent/ExternalCliAgentsSettings.tsx', import.meta.url),
+    'utf8',
+  );
+
+  // The replay flow hands the pre-save path to the cleanup so the just
+  // appended old path is treated as known-good, never pruned away.
+  assert.match(settingsSource, /options\?: \{ effectivePath\?: string \}/);
+  assert.match(settingsSource, /effectivePath: pending\.cliPath,/);
+  // Cleanup must not overwrite the whole history key from a React snapshot:
+  // the backend prune is the only writer, so entries appended by a
+  // concurrent save between the snapshot and the prune survive.
+  assert.doesNotMatch(settingsSource, /replacedPath/);
+  assert.doesNotMatch(settingsSource, /const cleanupPersistedPathHistories = useCallback\((?:[^{}]|\{[^{}]*\})*?onSave\(updates\)/);
 });
 
 test('install-now bypasses the no-change short circuit so a deleted built-in CLI can be repaired', () => {

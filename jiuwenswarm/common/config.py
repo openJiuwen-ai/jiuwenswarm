@@ -49,6 +49,9 @@ DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
 DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
+EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
+# Cap per-kind CLI path histories so the config file cannot grow unbounded.
+EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
@@ -2691,6 +2694,61 @@ def _build_front_agent_registry(front_payload: dict[str, Any]) -> dict[str, Any]
     return registry
 
 
+def prune_external_cli_path_histories_in_config(cli_agent: str, remove_paths: list[str]) -> list[str]:
+    """Drop confirmed-missing paths from one kind's persisted history.
+
+    The prune is computed against the on-disk history right before writing,
+    so entries appended by a concurrent save (e.g. a just-replaced cli_path)
+    can never be rolled back by a stale frontend snapshot: only the
+    intersection of the stored history and ``remove_paths`` is removed.
+
+    Args:
+        cli_agent: History kind ("claude" / "codex" / custom agent name).
+        remove_paths: Paths confirmed missing by ``external_cli.validate_paths``.
+
+    Returns:
+        The surviving history for the kind after the prune.
+    """
+    name = str(cli_agent).strip()
+    remove_set = {
+        value
+        for value in (str(path or "").strip() for path in (remove_paths or []))
+        if value
+    }
+    surviving: list[str] = []
+    if not name or not remove_set:
+        return surviving
+
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    path_so_far: list[str] = []
+    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    key = EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]
+    histories = current.get(key)
+    if not isinstance(histories, dict) or not isinstance(histories.get(name), list):
+        return surviving
+    seen: set[str] = set()
+    for path in histories[name]:
+        value = str(path or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        if value not in remove_set:
+            surviving.append(value)
+    if surviving == [str(path or "").strip() for path in histories[name] if str(path or "").strip()]:
+        return surviving  # Nothing to drop: leave the file untouched.
+    if surviving:
+        histories[name] = surviving
+    else:
+        histories.pop(name, None)
+    if not histories:
+        current.pop(key, None)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    return surviving
+
+
 def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
     """Replace ``modes.team`` using the frontend team-editor payload.
 
@@ -2750,6 +2808,15 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
             agents = transformed_team.get("external_cli_agents")
             if isinstance(agents, list):
                 _carry_over_builtin_models(agents, existing_team.get("external_cli_agents"))
+    # The team-editor payload carries no path histories. The key lives under
+    # modes.team, so a plain replace would silently drop history appended by
+    # config.set between two team saves — carry the current value over.
+    default_team = team_mapping.get("jiuwen_team")
+    if isinstance(default_team, dict) and "external_cli_path_histories" not in default_team:
+        if isinstance(existing_teams, dict) and isinstance(existing_teams.get("jiuwen_team"), dict):
+            histories = existing_teams["jiuwen_team"].get("external_cli_path_histories")
+            if histories:
+                default_team["external_cli_path_histories"] = histories
     data["modes"]["team"] = team_mapping
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
@@ -2864,6 +2931,42 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
     else:
         current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
 
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]) -> None:
+    """Persist per-kind external CLI path histories for the default team.
+
+    Args:
+        histories: ``cli_agent`` to its history paths; kinds with an empty
+            list are dropped, and an empty mapping removes the whole key.
+    """
+    normalized: dict[str, list[str]] = {}
+    for cli_agent, paths in histories.items():
+        name = str(cli_agent).strip()
+        if not name or not isinstance(paths, list):
+            continue
+        deduped: list[str] = []
+        for path in paths:
+            value = str(path or "").strip()
+            if value and value not in deduped:
+                deduped.append(value)
+        if deduped:
+            # The caller appends the most recent path at the end, so keep the
+            # tail window: dropping from the front would evict the path that
+            # was replaced last, the one the dropdown most needs to keep.
+            normalized[name] = deduped[-EXTERNAL_CLI_PATH_HISTORY_LIMIT:]
+
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    path_so_far: list[str] = []
+    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    if normalized:
+        current[EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]] = normalized
+    else:
+        current.pop(EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1], None)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 

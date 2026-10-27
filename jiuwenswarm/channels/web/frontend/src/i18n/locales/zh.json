@@ -2245,7 +2245,6 @@
       "builtinPathPlaceholder": "内置 CLI（自动管理）",
       "installNow": "一键安装",
       "notInstalledHint": "暂未检测到SDK，请点击",
-      "removePath": "从历史记录中删除该路径",
       "savedHint": "已保存",
       "detectSucceeded": "检测成功",
       "editPath": "编辑",

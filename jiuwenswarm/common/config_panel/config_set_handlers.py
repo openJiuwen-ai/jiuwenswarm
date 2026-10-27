@@ -41,6 +41,7 @@ from jiuwenswarm.common.config import (
     DEFAULT_TEAM_DISPATCH_MODE,
     DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
+    EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
@@ -56,6 +57,7 @@ from jiuwenswarm.common.config import (
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
+    update_external_cli_path_histories_in_config,
     update_kv_cache_affinity_enabled_in_config,
     update_memory_forbidden_description_in_config,
     update_memory_forbidden_enabled_in_config,
@@ -395,9 +397,11 @@ CONFIG_YAML_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
+    "external_cli_agent_claude_path_histories",
     "external_cli_agent_codex_enabled",
     "external_cli_agent_codex_use_builtin",
     "external_cli_agent_codex_cli_path",
+    "external_cli_agent_codex_path_histories",
     "setup_guide_enabled",
     "skill_evolution",
     "ttse_enabled",
@@ -413,9 +417,11 @@ EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
+    "external_cli_agent_claude_path_histories",
     "external_cli_agent_codex_enabled",
     "external_cli_agent_codex_use_builtin",
     "external_cli_agent_codex_cli_path",
+    "external_cli_agent_codex_path_histories",
 })
 EXTERNAL_CLI_AGENT_KINDS = ("claude", "codex")
 EXTERNAL_CLI_AGENT_KEY_SUFFIXES = ("enabled", "use_builtin", "cli_path")
@@ -673,15 +679,27 @@ def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[st
                 continue
             if cli_agent:
                 configured[cli_agent] = {"cli_path": cli_path}
+    # Per-kind path histories persisted under their own config node so pure
+    # history writes do not rebuild agent entries.
+    histories = get_nested_config_value(raw, EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH, {})
     flat: dict[str, str] = {}
     for cli_agent in external_cli_agent_kinds():
         entry = configured.get(cli_agent)
         cli_path = entry.get("cli_path", "") if entry is not None else ""
         # A custom agent running its uploaded CLI uses the "built-in CLI" choice.
         builtin = entry is not None and cli_path in {"", _uploaded_cli_path(cli_agent)}
+        # Keep the first occurrence so a hand-edited config cannot show
+        # duplicate dropdown options.
+        history_paths: list[str] = []
+        history = histories.get(cli_agent) if isinstance(histories, dict) else None
+        if isinstance(history, list):
+            for path in history:
+                if isinstance(path, str) and path.strip() and path not in history_paths:
+                    history_paths.append(path)
         flat[external_cli_agent_key(cli_agent, "enabled")] = "true" if entry is not None else "false"
         flat[external_cli_agent_key(cli_agent, "use_builtin")] = "true" if builtin else "false"
         flat[external_cli_agent_key(cli_agent, "cli_path")] = "" if builtin else cli_path
+        flat[external_cli_agent_key(cli_agent, "path_histories")] = json.dumps(history_paths, ensure_ascii=False)
     return flat
 
 
@@ -1176,7 +1194,14 @@ def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any
                 untouched_entries[item.strip()] = {"cli_agent": item.strip()}
     agents: list[dict[str, Any]] = []
     for cli_agent in external_cli_agent_kinds():
-        if not any(key.startswith(f"external_cli_agent_{cli_agent}_") for key in params):
+        # A save that only rewrites path histories must not rebuild the
+        # entry, so a cleanup write never re-detects a stale cli_path.
+        touched_keys = [
+            key
+            for key in params
+            if key.startswith(f"external_cli_agent_{cli_agent}_") and not key.endswith("_path_histories")
+        ]
+        if not touched_keys:
             untouched = untouched_entries.get(cli_agent)
             if untouched is not None:
                 agents.append(dict(untouched))
@@ -1197,6 +1222,46 @@ def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any
             entry["cli_path"] = str(detection.get("path") or "").strip()
         agents.append(entry)
     return agents
+
+
+def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[str, Any]) -> dict[str, list[str]]:
+    """Merge persisted CLI path histories with this save's history params.
+
+    Args:
+        raw: The pre-save config snapshot.
+        params: The flattened settings params of this save.
+
+    Returns:
+        ``cli_agent`` to its merged history paths. Kinds whose history key is
+        absent from ``params`` keep their persisted history verbatim. When a
+        save switches an agent from one external path to another, the
+        previously effective path is appended so switching never loses it;
+        the currently effective path stays out of the history because it is
+        always the dropdown's first option.
+    """
+    current = flatten_external_cli_agents_for_config_panel(raw)
+    merged: dict[str, list[str]] = {}
+    for cli_agent in external_cli_agent_kinds():
+        history_key = external_cli_agent_key(cli_agent, "path_histories")
+        source = params.get(history_key, current.get(history_key, "[]"))
+        history: list[str] = []
+        try:
+            parsed = json.loads(str(source or "[]"))
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            history = [str(path) for path in parsed if str(path or "").strip()]
+        cli_path_key = external_cli_agent_key(cli_agent, "cli_path")
+        if cli_path_key in params:
+            old_path = str(current.get(cli_path_key, "") or "").strip()
+            _, _, new_path = external_cli_agent_effective_state(cli_agent, current, params)
+            # Switching to the built-in CLI reports an empty new path; the
+            # replaced custom path must still land in the history.
+            if old_path and old_path != new_path and old_path not in history:
+                history = [*history, old_path]
+        if history:
+            merged[cli_agent] = history
+    return merged
 
 
 def refresh_external_cli_builtin_models(external_cli_agents: list[dict[str, str]]) -> None:
@@ -1511,8 +1576,15 @@ def apply_config_payload(
                     # 每个卡片的“一键安装”独立触发：仅当本次保存显式携带了
                     # 该 agent 的配置键时才检查/安装它的依赖，避免动到本次
                     # 未触碰、但此前已启用过的另一个 agent。
-                    codex_touched = any(key.startswith("external_cli_agent_codex_") for key in params)
-                    claude_touched = any(key.startswith("external_cli_agent_claude_") for key in params)
+                    # Path-history-only keys must not trigger the install gate.
+                    codex_touched = any(
+                        key.startswith("external_cli_agent_codex_") and not key.endswith("_path_histories")
+                        for key in params
+                    )
+                    claude_touched = any(
+                        key.startswith("external_cli_agent_claude_") and not key.endswith("_path_histories")
+                        for key in params
+                    )
                     if codex_touched and any(item.get("cli_agent") == "codex" for item in external_cli_agents):
                         codex_dependency_install = (
                             ensure_codex_dependency() if ensure_codex_dependency else None
@@ -1534,6 +1606,9 @@ def apply_config_payload(
                     update_external_cli_agents_in_config(
                         external_cli_agents,
                         build_external_cli_publish_url(),
+                    )
+                    update_external_cli_path_histories_in_config(
+                        external_cli_path_histories_from_switches(raw, params)
                     )
                     refresh_external_cli_builtin_models(external_cli_agents)
                     external_cli_agents_updated = True

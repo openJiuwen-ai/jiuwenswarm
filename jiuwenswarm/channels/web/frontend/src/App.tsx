@@ -2198,6 +2198,21 @@ function AppContent({
     });
   }, [request]);
 
+  const validateExternalCliPaths = useCallback(async (paths: string[]) => {
+    const payload = await request<{ results: Record<string, boolean | null> }>('external_cli.validate_paths', {
+      paths,
+    });
+    return payload?.results ?? {};
+  }, [request]);
+
+  const pruneExternalCliPathHistories = useCallback(async (cliAgent: ExternalCliAgentKind, removePaths: string[]) => {
+    const payload = await request<{ histories: string[] }>('external_cli.prune_path_histories', {
+      cli_agent: cliAgent,
+      remove_paths: removePaths,
+    });
+    return payload?.histories ?? [];
+  }, [request]);
+
   const selectExternalCliPath = useCallback(async (cliAgent: ExternalCliAgentKind, initialPath?: string) => {
     const desktopPicker = window.pywebview?.api?.select_local_file_path;
     const title = t("config.externalCli.selectFileTitle", { agent: cliAgent });
@@ -4763,6 +4778,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               request={settingsRequest}
               onHasChangesChange={handleSettingsHasChangesChange}
               onDetectExternalCli={detectExternalCli}
+              onValidateExternalCliPaths={validateExternalCliPaths}
+              onPruneExternalCliPathHistories={pruneExternalCliPathHistories}
               onSelectExternalCliPath={selectExternalCliPath}
               onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
               externalCliInstallStatuses={externalCliInstallStatuses}

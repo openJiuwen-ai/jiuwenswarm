@@ -2261,7 +2261,6 @@
       "builtinPathPlaceholder": "Built-in CLI (managed)",
       "installNow": "Install",
       "notInstalledHint": "No SDK detected yet. Click",
-      "removePath": "Remove this path from history",
       "savedHint": "Saved",
       "detectSucceeded": "Detection passed",
       "editPath": "Edit",
