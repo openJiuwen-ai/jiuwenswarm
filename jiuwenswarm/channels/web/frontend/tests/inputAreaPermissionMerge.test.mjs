@@ -57,7 +57,13 @@ class MockWebSocket {
       payload = {
         skills: [
           { name: 'test-skill', description: 'Test skill for compacting text', skill_type: 'skill', installed: true },
-          { name: 'team-skill', description: 'Team skill', skill_type: 'swarm_skill', installed: true },
+          {
+            name: 'team-skill',
+            display_name: '旅行规划',
+            description: 'Team skill',
+            skill_type: 'swarm_skill',
+            installed: true,
+          },
         ],
         plugins: [],
       };
@@ -479,6 +485,132 @@ for (const language of ['zh', 'en']) {
     });
   }
 }
+
+const evolutionCommands = ['evolve', 'evolve_list', 'evolve_simplify', 'evolve_rebuild', 'evolve_rollback'];
+for (const command of evolutionCommands) {
+  for (const mode of ['agent', 'team']) {
+    for (const method of ['click', 'Enter', 'Tab']) {
+      test(`${mode}: /${command} completes a skill through ${method} and sends plain command text`, async () => {
+        await mount({ mode }, async ({ props, render, sessionId }) => {
+          const sent = [];
+          props.onSubmit = (content) => sent.push(content);
+          await render();
+          const skill = mode === 'team' ? 'team-skill' : 'test-skill';
+          // A full command without a space must show skills, not search for the command name.
+          await typeSlash(`/${command}`);
+          assert.ok(suggestionIds().includes(skill));
+          await typeSlash(`/${command} `);
+          assert.ok(suggestionIds().includes(skill));
+          await typeSlash(`/${command} ${mode === 'team' ? 'Team' : 'compacting'}`);
+          assert.deepEqual(suggestionIds(), [skill]);
+          if (method === 'click') await click(byId('chat-panel-composer-suggestion-item', skill));
+          else await pressKey(method);
+          assert.equal(byId('chat-panel-input').textContent, `/${command} ${skill} `);
+          assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          assert.equal(byId('chat-panel-input').querySelector('[contenteditable="false"]'), null);
+          assert.equal(useChatStore.getState().getRuntime(sessionId).inputValue, `/${command} ${skill} `);
+          assert.deepEqual(sent, []);
+          await click(byId('chat-panel-input-send'));
+          assert.deepEqual(sent, [`/${command} ${skill}`]);
+        });
+      });
+    }
+  }
+}
+
+for (const command of evolutionCommands) {
+  for (const mode of ['agent', 'team']) {
+    test(`${mode}: evolution ${command} with no candidates releases Tab and sends on Enter`, async () => {
+      await mount({ mode }, async ({ props, render }) => {
+        const sent = [];
+        props.onSubmit = (content) => sent.push(content);
+        await render();
+        // Cover both an unknown skill and an installed skill excluded by the mode filter.
+        for (const name of ['missing', mode === 'team' ? 'test-skill' : 'team-skill']) {
+          const text = `/${command} ${name}`;
+          await typeSlash(text);
+          assert.deepEqual(suggestionIds(), []);
+          const beforeTab = sent.length;
+          const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+          await act(async () => byId('chat-panel-input').dispatchEvent(event));
+          assert.equal(event.defaultPrevented, false);
+          assert.equal(sent.length, beforeTab);
+          assert.equal(byId('chat-panel-input').textContent, text);
+          assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          await typeSlash(text);
+          await pressKey('Enter');
+          assert.equal(sent.length, beforeTab + 1);
+          assert.equal(sent.at(-1), text);
+          assert.equal(byId('chat-panel-input').textContent, '');
+        }
+      });
+    });
+  }
+}
+
+test('evolution empty candidates preserve IME confirmation and Shift+Enter', async () => {
+  await mount({ mode: 'team' }, async ({ props, render }) => {
+    props.onSubmit = () => assert.fail('composition or Shift+Enter must not send');
+    await render();
+    const text = '/evolve_list missing';
+    for (const options of [{ isComposing: true }, { keyCode: 229 }, { shiftKey: true }]) {
+      await typeSlash(text);
+      const event = new dom.window.KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true, ...options,
+      });
+      await act(async () => byId('chat-panel-input').dispatchEvent(event));
+      assert.equal(event.defaultPrevented, false);
+      assert.equal(byId('chat-panel-input').textContent, text);
+      assert.notEqual(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    }
+  });
+});
+
+test('evolution skill completion stops at later arguments and preserves them when editing the skill', async () => {
+  await mount({ mode: 'team' }, async () => {
+    for (const text of [
+      '/evolve_simplify team-skill merge duplicate entries',
+      '/evolve_rollback team-skill latest',
+      '/evolve_list team-skill ',
+    ]) {
+      await typeSlash(text);
+      assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    }
+    await typeSlash('/evolve_simplify tea-old merge duplicates');
+    await act(async () => {
+      const editor = byId('chat-panel-input');
+      const range = document.createRange();
+      range.setStart(editor.firstChild, '/evolve_simplify tea'.length);
+      range.collapse(true);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+    await pressKey('Tab');
+    assert.equal(byId('chat-panel-input').textContent, '/evolve_simplify team-skill merge duplicates');
+  });
+});
+
+test('evolution completion matches translated display names but inserts the directory name', async () => {
+  await mount({ mode: 'team', language: 'zh' }, async () => {
+    await typeSlash('/evolve_list 旅行');
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+    await click(byId('chat-panel-composer-suggestion-item', 'team-skill'));
+    assert.equal(byId('chat-panel-input').textContent, '/evolve_list team-skill ');
+    assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+  });
+});
+
+test('unknown evolution skill query shows the skill empty state; ordinary slash search still works', async () => {
+  await mount({ mode: 'team' }, async () => {
+    await typeSlash('/evolve_list missing');
+    assert.deepEqual(suggestionIds(), []);
+    assert.equal(byId('chat-panel-composer-suggestion-empty').textContent, i18n.t('chat.slashPicker.noMatchingSkills'));
+    await typeSlash('/Team');
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+  });
+});
 
 test('welcome Tab and unknown slash Enter do not send input; /plan still executes from the menu', async () => {
   await mount({ sessionId: 'new' }, async ({ props, render }) => {

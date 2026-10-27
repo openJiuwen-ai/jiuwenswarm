@@ -79,6 +79,12 @@ import {
   resolveSlashCommandDescription,
   shouldExecuteRegisteredSlashCommand,
 } from './slashCommands/semantics';
+import {
+  getSkillArgumentSuggestion,
+  getSkillArgumentReplacement,
+  filterSkillSuggestions,
+  type SkillSuggestion,
+} from './slashCommands/skillArgumentCompletion';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
 import { planUnsentImageDiscard, type UnsentImageDraft } from './unsentImageDiscard';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
@@ -250,13 +256,15 @@ type InputAreaTeamMember = {
   status?: string;
 };
 
-type ComposerSuggestionKind = 'member' | 'role' | 'slash';
+type ComposerSuggestionKind = 'member' | 'role' | 'slash' | 'skill';
 type WorkIconName = 'add' | 'arrow' | 'check' | 'close' | 'collapse' | 'expand' | 'folder' | 'search';
 
-type ComposerSuggestionState = {
-  kind: ComposerSuggestionKind;
-  query: string;
-};
+type ComposerSuggestionState =
+  | {
+      kind: Exclude<ComposerSuggestionKind, 'skill'>;
+      query: string;
+    }
+  | SkillSuggestion;
 
 type ComposerSuggestionItem = {
   id: string;
@@ -283,9 +291,9 @@ function getComposerSuggestionItems(
   isTeamMode: boolean,
 ): ComposerSuggestionItem[] {
   if (!suggestion) return [];
-  if (suggestion.kind === 'slash') {
+  if (suggestion.kind === 'slash' || suggestion.kind === 'skill') {
     const query = suggestion.query.trim().toLowerCase();
-    const commands = slashCommands
+    const commands = (suggestion.kind === 'skill' ? [] : slashCommands)
       .filter((command) => !query || command.name.toLowerCase().includes(query))
       .map((command) => ({
         id: command.name,
@@ -294,21 +302,7 @@ function getComposerSuggestionItems(
         itemKind: 'command' as const,
         takesArgs: command.takesArgs,
       }));
-    const skills = slashSkills
-      .filter((skill) =>
-        // 单 agent：普通 skill + skillpack（技能包可当普通技能选用）；集群：swarm_skill。
-        isTeamMode
-          ? skill.skill_type === 'swarm_skill'
-          : !skill.skill_type || skill.skill_type === 'skill' || skill.skill_type === 'skillpack',
-      )
-      .filter((skill) => {
-        if (!query) return true;
-        return [skill.name, skill.display_name, skill.description]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-          .includes(query);
-      })
+    const skills = filterSkillSuggestions(slashSkills, query, isTeamMode, suggestion.kind === 'skill')
       .map((skill) => ({
         id: skill.name,
         label: skill.display_name || skill.name,
@@ -1382,7 +1376,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       isTeamMode,
     );
     return items.map((item) =>
-      item.itemKind === 'skill' && teamGroupSelectionActive
+      item.itemKind === 'skill' && composerSuggestion?.kind !== 'skill' && teamGroupSelectionActive
         ? { ...item, disabled: true, disabledReason: t('chat.teamSkillsGroupLocked') }
         : item.itemKind === 'command' && isSlashCommandDisabledByGoal(item.id, hasUnfinishedGoal)
           ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
@@ -1412,7 +1406,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   useEffect(() => {
-    if (composerSuggestion?.kind !== 'slash' || slashCatalogLoaded || slashCatalogLoading) return;
+    if (
+      !composerSuggestion ||
+      (composerSuggestion.kind !== 'slash' && composerSuggestion.kind !== 'skill') ||
+      slashCatalogLoaded || slashCatalogLoading
+    ) {
+      return;
+    }
     setSlashCatalogLoading(true);
     void Promise.all([
       webRequest<{ commands?: SlashCommandMeta[] }>('commands.list', {
@@ -2775,6 +2775,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     beforeRange.selectNodeContents(el);
     beforeRange.setEnd(range.endContainer, range.endOffset);
     const beforeText = beforeRange.toString().replace(/\u200B/g, '');
+    const skillSuggestion = getSkillArgumentSuggestion(beforeText);
+    if (skillSuggestion) return skillSuggestion;
     const slashMatch = beforeText.match(/(?:^|\s)(\/)([a-zA-Z][\w-]*)?$/);
     if (slashMatch) {
       return { kind: 'slash', query: slashMatch[2] ?? '' };
@@ -2795,7 +2797,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       return;
     }
     // slash 指令不依赖团队成员，即便没有可 @ 的成员也照常弹出
-    if (trigger.kind !== 'slash' && mentionCandidates.length === 0) {
+    if (trigger.kind !== 'slash' && trigger.kind !== 'skill' && mentionCandidates.length === 0) {
       setComposerSuggestion(null);
       return;
     }
@@ -2833,6 +2835,32 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       if (!el || !selection || selection.rangeCount === 0) return;
       const range = selection.getRangeAt(0);
       if (!el.contains(range.commonAncestorContainer)) return;
+
+      if (kind === 'skill') {
+        const trigger = getCurrentComposerTrigger();
+        if (trigger?.kind !== 'skill') return;
+        const beforeRange = range.cloneRange();
+        beforeRange.selectNodeContents(el);
+        beforeRange.setEnd(range.endContainer, range.endOffset);
+        const caret = beforeRange.toString().replace(/\u200B/g, '').length;
+        const edit = getSkillArgumentReplacement(extractPlainText(), caret, trigger, value);
+        const endRange = range.cloneRange();
+        setRangeStartByTextOffset(endRange, el, edit.end);
+        range.setEnd(endRange.startContainer, endRange.startOffset);
+        setRangeStartByTextOffset(range, el, edit.start);
+        range.deleteContents();
+        const text = document.createTextNode(edit.text);
+        range.insertNode(text);
+        range.setStartAfter(text);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        const sid = useChatStore.getState().activeSessionId;
+        if (sid) useChatStore.getState().setInputValue(sid, extractPlainText());
+        setComposerSuggestion(null);
+        el.focus();
+        return;
+      }
 
       // slash 选中
       if (kind === 'slash') {
@@ -3094,8 +3122,16 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
         if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
           if (isImeCompositionKey(e.nativeEvent, isComposingRef.current)) return;
-          e.preventDefault();
           const item = composerSuggestionItems[composerSuggestionIndex];
+          if (composerSuggestion.kind === 'skill' && !item) {
+            setComposerSuggestion(null);
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleSubmit();
+            }
+            return;
+          }
+          e.preventDefault();
           if (e.key === 'Enter' && composerSuggestion.kind === 'slash') {
             // 完整受限命令优先走提交守卫，避免过滤后误选名称/描述匹配的技能。
             const { name, args } = parseSlashLine(extractRichContent());
@@ -3708,7 +3744,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const currentMode = AGENT_MODE_OPTIONS.find((item) => item.value === mode) ?? AGENT_MODE_OPTIONS[0];
   const evolutionLabel = getEvolutionPillLabel(mode, evolutionStatus, t);
   const attachmentAlertPortalTarget = inputRef.current?.closest<HTMLElement>('.chat-panel-shell');
-  const showSlashSuggestionBelow = showWorkContextRow && composerSuggestion?.kind === 'slash';
+  const showSlashSuggestionBelow =
+    showWorkContextRow && (composerSuggestion?.kind === 'slash' || composerSuggestion?.kind === 'skill');
 
   return (
     <>
@@ -4003,7 +4040,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 }}
                 onPick={insertComposerToken}
                 loading={slashCatalogLoading}
-                slashSkillsOnly={isTeamMode}
+                slashSkillsOnly={isTeamMode || composerSuggestion.kind === 'skill'}
               />
             )}
             <div
@@ -5306,7 +5343,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }}
                   onPick={insertComposerToken}
                   loading={slashCatalogLoading}
-                  slashSkillsOnly={isTeamMode}
+                  slashSkillsOnly={isTeamMode || composerSuggestion.kind === 'skill'}
                   placement="below"
                 />
               )}
@@ -5861,7 +5898,7 @@ function ComposerSuggestionMenu({
   slashSkillsOnly: boolean;
   placement?: 'above' | 'below';
 }) {
-  const isSlash = suggestion.kind === 'slash';
+  const isSlash = suggestion.kind === 'slash' || suggestion.kind === 'skill';
   const tokenPrefix = suggestion.kind === 'role' ? '$' : '@';
   const { t } = useTranslation();
   const commandCount = items.filter((item) => item.itemKind === 'command').length;
