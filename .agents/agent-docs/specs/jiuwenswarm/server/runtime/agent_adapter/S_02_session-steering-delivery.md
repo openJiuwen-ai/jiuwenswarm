@@ -6,10 +6,12 @@ author: 刘瑜
 author_email: liuyu524@huawei.com
 modules:
   - jiuwenswarm/server/runtime/agent_adapter
+  - jiuwenswarm/agents/harness/common/prompt
   - jiuwenswarm/channels/web/frontend
 files:
   - jiuwenswarm/server/runtime/agent_adapter/session_input.py
   - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  - jiuwenswarm/agents/harness/common/prompt/priority_registry.py
   - jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts
 ---
 
@@ -25,9 +27,13 @@ files:
 
 补充要求到达后，服务端可将旧生成阶段的输出标记为 `output_suppressed`。Core 上下文中已存在的 assistant 消息不等于用户已经看到该回答。
 
-当在途模型产生的回答受到这条输入边界影响时，后续模型必须收到内部交付说明及相关回答文本，明确原结果可能尚未完整交付。最终可见回答应覆盖当前执行中仍有效的原任务结果和补充要求，用户明确撤销的要求除外。已完成工具的调用及结果保持原有上下文顺序，不为补答重复执行工具。
+当在途模型产生的回答受到这条输入边界影响时，服务端保持当前执行的原请求、已消费补充输入和相关旧回复为待交付状态。默认 FULL 提示模式通过公开 system prompt builder 的 `session_input_delivery` section（固定优先级 66）向每次后续模型调用提供这些交付约束，包括读图后的工具续接。不能用一次普通 UserMessage 提醒代替持续状态。最终可见回答应覆盖当前执行中仍有效的原任务结果和补充要求，用户明确撤销的要求除外。已完成工具的调用及结果保持原有上下文顺序，不为补答重复执行工具。
 
-内部交付说明不是用户正文，不得写入用户气泡、补充输入回执或原始媒体记录；不得包含模型 reasoning。临时记录受当前执行和输入批次约束，失败、结束和新的普通请求不会继承上轮待交付状态。同一执行等待权限或用户回答时保留待交付内容，恢复后随原队列继续处理。
+交付 section 的原请求和全部补充正文分别限制为 4,000 字符，旧回复共限制为 8,000 字符，截断时显式标记；引用内容是数据，不是更高优先级指令。不得包含模型 reasoning 或工具请求，不写入用户气泡、回执或产品聊天历史。
+
+状态受当前执行和输入批次约束。工具及模型重试不清除当前执行的义务；执行真正结束、卸载或新的普通请求时清理状态并移除 section。同一执行等待权限或用户回答时保留，恢复后随原队列继续处理。自定义 MINIMAL/NONE 提示模式由 Core 过滤 section，不在默认 FULL 模式的交付约束保证范围内。
+
+跨会话 Agent 输入继续通过原有带来源的工具消息进入上下文，system section 只记录有限来源引用，不复制 Agent 正文或将其解释为人类取消、替换或直接授权。
 
 ## Web 展示与持久化
 

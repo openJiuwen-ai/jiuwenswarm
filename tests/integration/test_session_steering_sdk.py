@@ -202,19 +202,25 @@ async def test_steering_survives_ask_user_resume(tmp_path, arrival, bound):
         final_messages = model.messages[-1]
         assert "Write 200 lines" in str(final_messages)
         assert "Python utility" in str(final_messages)
-        assert str(final_messages).count("CHANGE_TO_100_LINES") == 1
-        delivery_notes = [message for message in final_messages if message.metadata.get(
-            "_openjiuwen_message_source_kind"
-        ) == "session_input_delivery"]
-        assert len(delivery_notes) == 1
-        delivery_data = json.loads(delivery_notes[0].content.rsplit("\n", 1)[1])
+        assert "\n".join(str(message.content) for message in final_messages if message.role == "user").count(
+            "CHANGE_TO_100_LINES"
+        ) == 1
+        delivery_sections = [message.content for message in final_messages if message.role == "system"
+                             and "<quoted-delivery-data>" in str(message.content)]
+        assert len(delivery_sections) == 1
+        delivery_json = delivery_sections[0].split("<quoted-delivery-data>\n", 1)[1].split(
+            "\n</quoted-delivery-data>", 1
+        )[0]
+        delivery_data = json.loads(delivery_json)
         assert delivery_data["input_request_ids"] == ["supplement"]
+        assert delivery_data["original_request"]["text"] == "Write 200 lines"
         expected_draft = "Please choose the code type." if arrival == "before_question" else "completed"
         assert delivery_data["quoted_prior_output"][0]["text"] == expected_draft
         answer_index = next(
             i for i, msg in enumerate(final_messages) if getattr(msg, "tool_call_id", None) == "clarify-code"
         )
-        steer_index = next(i for i, msg in enumerate(final_messages) if "CHANGE_TO_100_LINES" in str(msg.content))
+        steer_index = next(i for i, msg in enumerate(final_messages)
+                           if msg.role == "user" and "CHANGE_TO_100_LINES" in str(msg.content))
         assert answer_index < steer_index
         assert agent.event_handler.interaction_queues.steering.empty()
         assert agent.event_handler.interaction_queues.drain_follow_up() == []
@@ -581,8 +587,10 @@ async def test_continuous_streaming_steers_have_exact_batch_identity_and_order(t
         assert chunks.index(receipts[0]) < chunks.index(receipts[1]) < chunks.index(phases[1])
         assert chunks.index(phases[1]) < chunks.index(receipts[2]) < chunks.index(phases[2])
         assert "same instruction" not in str(model.messages[0])
-        assert str(model.messages[1]).count("same instruction") == 2
-        assert str(model.messages[2]).count("same instruction") == 3
+        assert "\n".join(str(message.content) for message in model.messages[1]
+                         if message.role == "user").count("same instruction") == 2
+        assert "\n".join(str(message.content) for message in model.messages[2]
+                         if message.role == "user").count("same instruction") == 3
     finally:
         for release in model.release:
             release.set()
@@ -703,7 +711,8 @@ async def test_goal_steering_uses_real_adapter_stream_and_closes_after_clear(tmp
             assert [p["applied_input_ids"] for p in phases] == [[], []]
         else:
             assert "NEW_GOAL_CONSTRAINT" not in str(model.messages[0])
-            assert str(model.messages[1]).count("NEW_GOAL_CONSTRAINT") == 1
+            assert "\n".join(str(message.content) for message in model.messages[1]
+                             if message.role == "user").count("NEW_GOAL_CONSTRAINT") == 1
             assert [p["applied_input_ids"] for p in phases if p["applied_input_ids"]] == [["goal-supplement"]]
             assert agent.event_handler.interaction_queues.steering.empty()
         finals = [p for p in payloads if p.get("event_type") == "chat.final"]
@@ -858,10 +867,20 @@ async def test_mailbox_steer_reaches_running_runtime_sdk_with_agent_provenance(t
         else:
             assert events.status == 'succeeded', events
         assert mailbox.store.get(record.message_id).status == 'delivered'
-        prompt = next(str(message.content) for message in model.messages[-1] if 'CROSS_AGENT_ADJUSTMENT_731' in str(message.content))
+        prompt = next(str(message.content) for message in model.messages[-1]
+                      if message.role != "system" and 'CROSS_AGENT_ADJUSTMENT_731' in str(message.content))
         assert 'cross_session_message' in prompt and 'internal_dispatch' in prompt
         assert 'source-1' in prompt and record.message_id in prompt
         assert extract_permission_user_content(prompt) is None
+        system_delivery = next(str(message.content) for message in model.messages[-1]
+                               if message.role == "system" and "<quoted-delivery-data>" in str(message.content))
+        delivery_data = json.loads(system_delivery.split("<quoted-delivery-data>\n", 1)[1].split(
+            "\n</quoted-delivery-data>", 1
+        )[0])
+        reference = delivery_data["supplemental_requests"][-1]
+        assert reference["message_origin"] == "cross_session_agent" and reference["authority"] == "tool_result"
+        assert reference["cross_session"]["message_id"] == record.message_id
+        assert 'CROSS_AGENT_ADJUSTMENT_731' not in system_delivery
         marker = next(chunk.payload for chunk in chunks if getattr(chunk, 'type', None) == 'session_input_received')
         assert marker['message_origin'] == 'cross_session_agent'
         assert marker['cross_session']['message_id'] == record.message_id

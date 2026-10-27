@@ -18,11 +18,12 @@ generated: true
 | [agent_teams](#module-1) | 1 |
 | [agent_teams/workflow](#module-2) | 3 |
 | [jiuwenswarm](#module-3) | 3 |
-| [jiuwenswarm/channels/web/frontend](#module-4) | 3 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-5) | 1 |
-| [jiuwenswarm/observability](#module-6) | 1 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-7) | 2 |
-| [未分类](#module-8) | 12 |
+| [jiuwenswarm/agents/harness/common/prompt](#module-4) | 2 |
+| [jiuwenswarm/channels/web/frontend](#module-5) | 3 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-6) | 1 |
+| [jiuwenswarm/observability](#module-7) | 1 |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-8) | 2 |
+| [未分类](#module-9) | 12 |
 
 <a id="module-1"></a>
 
@@ -54,15 +55,24 @@ generated: true
 
 <a id="module-4"></a>
 
+## jiuwenswarm/agents/harness/common/prompt
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261027_1110_steer-undelivered-answer](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261027_1110_steer-undelivered-answer.md) | B | steer 后原问题答案未交付 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs, tests/unit_tests/agentserver/test_session_input_delivery.py, tests/integration/test_session_steering_sdk.py, tests/integration/test_steer_image_paths_sdk.py | 无独立 D：在 Issue 4516 当前 PR 的人工验收中确认，对现有 steer 回答交付语义进行局部修复，无独立设计文档。 |
+| [S_02_session-steering-delivery](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+
+<a id="module-5"></a>
+
 ## jiuwenswarm/channels/web/frontend
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [SDD-0026](designs/proposals/SDD-0026-trajectory-observability-web-ui/design.md) | D | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | @alan_cheng | jiuwenswarm/channels/web/frontend | — | — |
-| [B_20261027_1110_steer-undelivered-answer](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261027_1110_steer-undelivered-answer.md) | B | steer 后原问题答案未交付 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs, tests/unit_tests/agentserver/test_session_input_delivery.py, tests/integration/test_session_steering_sdk.py, tests/integration/test_steer_image_paths_sdk.py | 无独立 D：在 Issue 4516 当前 PR 的人工验收中确认，对现有 steer 回答交付语义进行局部修复，无独立设计文档。 |
-| [S_02_session-steering-delivery](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+| [B_20261027_1110_steer-undelivered-answer](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261027_1110_steer-undelivered-answer.md) | B | steer 后原问题答案未交付 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs, tests/unit_tests/agentserver/test_session_input_delivery.py, tests/integration/test_session_steering_sdk.py, tests/integration/test_steer_image_paths_sdk.py | 无独立 D：在 Issue 4516 当前 PR 的人工验收中确认，对现有 steer 回答交付语义进行局部修复，无独立设计文档。 |
+| [S_02_session-steering-delivery](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
 
-<a id="module-5"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -70,7 +80,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-6"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/observability
 
@@ -78,16 +88,16 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-7"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261027_1110_steer-undelivered-answer](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261027_1110_steer-undelivered-answer.md) | B | steer 后原问题答案未交付 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs, tests/unit_tests/agentserver/test_session_input_delivery.py, tests/integration/test_session_steering_sdk.py, tests/integration/test_steer_image_paths_sdk.py | 无独立 D：在 Issue 4516 当前 PR 的人工验收中确认，对现有 steer 回答交付语义进行局部修复，无独立设计文档。 |
-| [S_02_session-steering-delivery](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+| [B_20261027_1110_steer-undelivered-answer](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261027_1110_steer-undelivered-answer.md) | B | steer 后原问题答案未交付 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs, tests/unit_tests/agentserver/test_session_input_delivery.py, tests/integration/test_session_steering_sdk.py, tests/integration/test_steer_image_paths_sdk.py | 无独立 D：在 Issue 4516 当前 PR 的人工验收中确认，对现有 steer 回答交付语义进行局部修复，无独立设计文档。 |
+| [S_02_session-steering-delivery](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
 
-<a id="module-8"></a>
+<a id="module-9"></a>
 
 ## 未分类
 

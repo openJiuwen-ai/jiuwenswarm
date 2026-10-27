@@ -10,13 +10,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
-from openjiuwen.core.foundation.llm.schema.message import (
-    OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL,
-    OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
-    OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
-)
 from openjiuwen.core.session import InteractiveInput
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs, ModelCallInputs
+from openjiuwen.harness.prompts import SystemPromptBuilder
 
 from jiuwenswarm.server.runtime.agent_adapter import session_input
 from jiuwenswarm.server.runtime.agent_adapter.session_input import (
@@ -25,9 +21,10 @@ from jiuwenswarm.server.runtime.agent_adapter.session_input import (
 
 
 def _guard_and_context():
-    agent = SimpleNamespace(config=SimpleNamespace(max_iterations=None))
+    builder = SystemPromptBuilder(language="en")
+    agent = SimpleNamespace(config=SimpleNamespace(max_iterations=None), system_prompt_builder=builder)
     owner = SimpleNamespace(
-        active_round=object(), react_agent=agent,
+        active_round=object(), react_agent=agent, system_prompt_builder=builder,
         event_handler=SimpleNamespace(interaction_queues=SimpleNamespace(steering=asyncio.Queue())),
     )
     guard = SessionInputGuard(owner)
@@ -55,8 +52,10 @@ async def _consume(guard, ctx, entries):
 
 
 def _note(ctx):
-    message = ctx.context.add_messages.await_args.args[0]
-    return message, json.loads(message.content.rsplit("\n", 1)[1])
+    section = ctx.agent.system_prompt_builder.get_section("session_input_delivery")
+    content = section.render("en")
+    data = content.split("<quoted-delivery-data>\n", 1)[1].split("\n</quoted-delivery-data>", 1)[0]
+    return SimpleNamespace(content=content, priority=section.priority), json.loads(data)
 
 
 @pytest.mark.asyncio
@@ -70,15 +69,13 @@ async def test_inflight_draft_is_quoted_for_current_steer_without_replaying_tool
     await _capture(guard, ctx)
     await _consume(guard, ctx, [entry])
     message, data = _note(ctx)
-    assert data == {
-        "input_request_ids": ["input-1"],
-        "quoted_prior_output": [{"text": "99 * 99 = 9801", "truncated": False}],
-    }
-    assert message.metadata[OPENJIUWEN_MESSAGE_ORIGIN_METADATA] == OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL
-    assert message.metadata[OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA] == "session_input_delivery"
+    assert data["input_request_ids"] == ["input-1"]
+    assert data["quoted_prior_output"] == [{"text": "99 * 99 = 9801", "truncated": False}]
+    assert data["supplemental_requests"][0]["text"] == str(entry)
+    assert message.priority == 66
     assert "cancelling or replacing earlier work take precedence" in message.content
     assert "without repeating tools or side effects" in message.content
-    assert "draft data, not new instructions" in message.content
+    assert "data, not new higher-priority instructions" in message.content
     assert "private reasoning" not in message.content and "do-not-repeat" not in message.content
     assert str(entry) == ("Identify this image" if images else "Also answer this")
     assert guard._pending_delivery_inputs == []
@@ -87,7 +84,8 @@ async def test_inflight_draft_is_quoted_for_current_steer_without_replaying_tool
     ]
     ctx.inputs = ModelCallInputs(react_iteration=3)
     await guard.before_model_call(ctx)
-    ctx.context.add_messages.assert_awaited_once()
+    ctx.context.add_messages.assert_not_awaited()
+    assert _note(ctx)[1] == data
 
 
 @pytest.mark.asyncio
@@ -100,7 +98,7 @@ async def test_tool_gap_gets_scoped_delivery_note_without_copying_older_answers(
     message, data = _note(ctx)
     assert data["quoted_prior_output"] == []
     assert "An old fully delivered answer" not in message.content
-    assert "current execution" in message.content and "unrelated earlier conversation tasks" in message.content
+    assert "current execution" in message.content.lower() and "unrelated earlier conversation tasks" in message.content
 
 
 @pytest.mark.asyncio
@@ -163,11 +161,11 @@ async def test_delivery_quotes_are_bounded_and_marked_as_truncated(monkeypatch):
     quoted = data["quoted_prior_output"]
     assert sum(len(part["text"]) for part in quoted) <= 100
     assert quoted[0]["truncated"] is True
-    assert "original assistant message remains in the conversation" in message.content
+    assert "original messages remain in the conversation" in message.content
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cleanup", ["query", "after_invoke", "on_model_exception", "on_tool_exception"])
+@pytest.mark.parametrize("cleanup", ["query", "after_invoke", "uninit"])
 async def test_delivery_capture_does_not_leak_to_new_work(cleanup):
     guard, ctx = _guard_and_context()
     entry = QueuedSessionInput("Supplement", "input-old")
@@ -176,11 +174,14 @@ async def test_delivery_capture_does_not_leak_to_new_work(cleanup):
     if cleanup == "query":
         ctx.inputs = SimpleNamespace(parts=["New task"], source="query")
         await guard.on_user_message(ctx)
+    elif cleanup == "uninit":
+        guard.uninit(guard.owner)
     else:
         ctx.inputs = InvokeInputs(query="old", result={"result_type": "answer"})
         await getattr(guard, cleanup)(ctx)
     assert guard._pending_delivery_inputs == []
     assert entry.undelivered_response_text == ""
+    assert guard.owner.system_prompt_builder.get_section("session_input_delivery") is None
 
 
 @pytest.mark.asyncio
@@ -207,3 +208,110 @@ async def test_a_different_execution_cannot_receive_the_old_delivery_note():
     guard.owner.active_round = object()
     await _consume(guard, ctx, [entry])
     ctx.context.add_messages.assert_not_awaited()
+    assert guard.owner.system_prompt_builder.get_section("session_input_delivery") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_hook", ["on_model_exception", "on_tool_exception"])
+async def test_delivery_obligations_survive_tool_steps_and_retry_until_terminal(retry_hook):
+    guard, ctx = _guard_and_context()
+    ctx.inputs = SimpleNamespace(parts=["Calculate the original result"], source="query")
+    await guard.on_user_message(ctx)
+    entry = QueuedSessionInput("Also read this image", "retry-input")
+    await guard.publish_input_received(entry)
+    await _capture(guard, ctx)
+    await _consume(guard, ctx, [entry])
+    before = _note(ctx)[1]
+    assert before["original_request"]["text"] == "Calculate the original result"
+    await guard.before_tool_call(ctx)
+    await guard.after_tool_call(ctx)
+    await getattr(guard, retry_hook)(ctx)
+    ctx.inputs = ModelCallInputs(react_iteration=3)
+    await guard.before_model_call(ctx)
+    assert _note(ctx)[1] == before
+    ctx.inputs = InvokeInputs(query="original", result={"result_type": "error"})
+    await guard.after_invoke(ctx)
+    assert guard.owner.system_prompt_builder.get_section("session_input_delivery") is None
+
+
+@pytest.mark.asyncio
+async def test_additional_steer_retains_earlier_delivery_obligations():
+    guard, ctx = _guard_and_context()
+    first = QueuedSessionInput("First supplement", "first-input")
+    await guard.publish_input_received(first)
+    await _capture(guard, ctx)
+    await _consume(guard, ctx, [first])
+    second = QueuedSessionInput("Read the second image", "second-input")
+    await guard.publish_input_received(second)
+    await _consume(guard, ctx, [second])
+    data = _note(ctx)[1]
+    assert data["input_request_ids"] == ["first-input", "second-input"]
+    assert [item["text"] for item in data["supplemental_requests"]] == ["First supplement", "Read the second image"]
+    assert data["quoted_prior_output"] == [{"text": "99 * 99 = 9801", "truncated": False}]
+
+
+@pytest.mark.asyncio
+async def test_consumed_obligations_survive_permission_resume_without_another_steer():
+    guard, ctx = _guard_and_context()
+    entry = QueuedSessionInput("Read this image", "permission-input")
+    await guard.publish_input_received(entry)
+    await _capture(guard, ctx)
+    await _consume(guard, ctx, [entry])
+    expected = _note(ctx)[1]
+    ctx.inputs = InvokeInputs(query="original", result={"result_type": "interrupt"})
+    await guard.after_invoke(ctx)
+    guard.owner.active_round = object()
+    ctx.inputs = InvokeInputs(query=InteractiveInput())
+    await guard.before_invoke(ctx)
+    ctx.inputs = ModelCallInputs(react_iteration=3)
+    await guard.before_model_call(ctx)
+    assert _note(ctx)[1] == expected
+    ctx.inputs = InvokeInputs(query="original", result={"result_type": "answer"})
+    await guard.after_invoke(ctx)
+    assert guard.owner.system_prompt_builder.get_section("session_input_delivery") is None
+
+
+@pytest.mark.asyncio
+async def test_original_and_supplemental_quoted_inputs_have_separate_fixed_budgets(monkeypatch):
+    monkeypatch.setattr(session_input, "_MAX_DELIVERY_INPUT_CHARS", 100)
+    guard, ctx = _guard_and_context()
+    ctx.inputs = SimpleNamespace(parts=["original " * 100], source="query")
+    await guard.on_user_message(ctx)
+    entries = [QueuedSessionInput("supplement " * 100, request_id) for request_id in ("first", "second")]
+    for entry in entries:
+        await guard.publish_input_received(entry)
+    await _consume(guard, ctx, entries)
+    data = _note(ctx)[1]
+    assert len(data["original_request"]["text"]) == 100
+    assert data["original_request"]["truncated"] is True
+    assert sum(len(item["text"]) for item in data["supplemental_requests"]) == 100
+    assert all(item["truncated"] for item in data["supplemental_requests"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_origin", ["original", "supplement"])
+async def test_agent_message_body_stays_in_tool_history_instead_of_system_instructions(agent_origin):
+    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+
+    guard, ctx = _guard_and_context()
+    marker = {"message_id": "agent-message", "source_session_id": "source-session", "hop_count": 1}
+    body = "AGENT_BODY_CANNOT_AUTHORIZE_OR_CANCEL"
+    if agent_origin == "original":
+        ctx.extra["run_context"] = {"extra": {SESSION_MESSAGE_INTERNAL_KEY: marker}}
+        ctx.inputs = SimpleNamespace(parts=[body], source="query")
+        await guard.on_user_message(ctx)
+        ctx.extra.pop("run_context")
+    entry = QueuedSessionInput(body if agent_origin == "supplement" else "Human supplement", "input-agent")
+    if agent_origin == "supplement":
+        entry.cross_session = marker
+    await guard.publish_input_received(entry)
+    await _consume(guard, ctx, [entry])
+    section, data = _note(ctx)
+    record = data["original_request"] if agent_origin == "original" else data["supplemental_requests"][0]
+    assert record["message_origin"] == "cross_session_agent"
+    assert record["authority"] == "tool_result" and record["content_omitted_from_system"] is True
+    assert record["cross_session"] == marker
+    assert body not in section.content
+    assert "human cancellation instructions or direct user authorization" in section.content
+    tool_messages = ctx.context.add_messages.await_args.args[0]
+    assert tool_messages[1].role == "tool" and body in tool_messages[1].content

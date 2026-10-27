@@ -347,12 +347,14 @@ class DeliveryContinuationModel(ImageSteerModel):
             return AssistantMessage(content="99 * 99 = 9801", usage_metadata=UsageMetadata(
                 model_name="image-steer-test", finish_reason="stop",
             ))
-        notes = [message for message in messages if message.metadata.get(
-            "_openjiuwen_message_source_kind"
-        ) == "session_input_delivery"]
-        assert len(notes) == 1
-        delivery = json.loads(notes[0].content.rsplit("\n", 1)[1])
+        sections = [message.content for message in messages if message.role == "system"
+                    and "<quoted-delivery-data>" in str(message.content)]
+        assert len(sections) == 1
+        delivery = json.loads(sections[0].split("<quoted-delivery-data>\n", 1)[1].split(
+            "\n</quoted-delivery-data>", 1
+        )[0])
         assert delivery["input_request_ids"] == ["new-supplement"]
+        assert delivery["original_request"]["text"] == "Calculate 99 * 99"
         assert delivery["quoted_prior_output"] == [{"text": "99 * 99 = 9801", "truncated": False}]
         assert any(message.role == "assistant" and message.content == "99 * 99 = 9801" for message in messages)
         if self.action == "image" and len(self.messages) == 2:
@@ -361,7 +363,7 @@ class DeliveryContinuationModel(ImageSteerModel):
                 arguments=json.dumps({"file_path": self.media_items[0]["path"]}),
             )], usage_metadata=UsageMetadata(model_name="image-steer-test", finish_reason="tool_calls"))
         if self.action == "cancel":
-            assert "cancelling or replacing earlier work take precedence" in notes[0].content
+            assert "cancel" in sections[0].lower() or "取消" in sections[0]
             content = "CANCELLED"
         elif self.action == "image":
             assert any(isinstance(message.content, list) and any(
@@ -440,7 +442,7 @@ async def test_hidden_original_answer_is_carried_to_next_visible_reply(tmp_path,
         assert visible
         assert ("9801" in visible[-1]["content"]) is (action != "cancel")
         assert ("image has been read" in visible[-1]["content"]) is (action == "image")
-        assert "Runtime delivery note" not in "\n".join(str(payload.get("content", "")) for payload in payloads)
+        assert "<quoted-delivery-data>" not in "\n".join(str(payload.get("content", "")) for payload in payloads)
         phases = [payload["applied_input_ids"] for payload in payloads
                   if payload.get("event_type") == "chat.output_phase" and payload.get("applied_input_ids")]
         assert phases == [["new-supplement"]]

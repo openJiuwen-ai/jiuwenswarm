@@ -60,7 +60,7 @@ The outer loop is composed of `TaskLoopController`, `LoopCoordinator`, `TaskLoop
 - `steer`: inject runtime guidance into the current task.
 - `abort`: cancel the outer task loop and try to interrupt the inner ReAct loop.
 
-When `steer` arrives during an execution, output from the earlier generation may be hidden until the supplemental input is applied. Hidden output does not mean the original result was delivered to the user. The next answer must address the supplemental input together with still-applicable results from the original task; an explicit cancellation or replacement takes precedence. The server supplies this delivery state and the affected answer text to the next model call without repeating completed tool operations. Image supplements follow the same rule and use image-reading tools with uploaded paths from the current session.
+When `steer` arrives during an execution, output from the earlier generation may be hidden until the supplemental input is applied. Hidden output does not mean the original result was delivered to the user. The next answer must address the supplemental input together with still-applicable results from the original task; an explicit cancellation or replacement takes precedence. In the default Work/Code prompt mode, the server retains the original request, supplements and undelivered results as current execution obligations for every subsequent model call, including tool continuations after reading an image, without repeating completed tool operations. Image supplements follow the same rule and use image-reading tools with uploaded paths from the current session.
 
 Task planning and task completion are two key capabilities of the Agent Loop:
 
