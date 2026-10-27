@@ -95,6 +95,53 @@ def _install_session_metadata() -> None:
     register("session_metadata", _LocalSessionMetadataProvider(store))
 
 
+class _LocalMcpRegistryProvider:
+    """本地 mcp_registry 的双入口适配器。
+
+    同 ``_LocalSessionMetadataProvider``：同步透传 + ``__getattr__`` 全量
+    委托（模块上其余符号经本注入点取用的消费方不受影响）+ 增补
+    ``complete_oauth_callback_async``（``to_thread`` 包装，统一异步入口）。
+    """
+
+    def __init__(self, store: Any) -> None:
+        self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+    def complete_oauth_callback(self, query: dict[str, Any]) -> bool:
+        return self._store.complete_oauth_callback(query)
+
+    async def complete_oauth_callback_async(self, query: dict[str, Any]) -> bool:
+        return await asyncio.to_thread(self._store.complete_oauth_callback, query)
+
+
+def _install_mcp_domains() -> None:
+    """按运行形态注册 MCP 三域：WS 远端（预演）或本地实现。
+
+    核实结论：gateway 进程对 MCP 域的唯一消费是 oauth 回调
+    （mcp_registry 域）；状态/凭据的消费全部在 AgentServer 进程。
+    远端模式仅注册 mcp_registry 域的 WS 壳，mcp_state / mcp_credential
+    保持未注册（调用得到 ``ExternalProviderUnregistered``，注入点原生
+    降级），三个 server 侧模块完全不加载。
+    """
+    from gateway.routing.mcp_remote import remote_enabled
+
+    if remote_enabled():
+        from gateway.routing import mcp_remote
+
+        mcp_remote.install()
+        return
+
+    import jiuwenswarm.server.runtime.mcp.state_store  # noqa: F401
+    import jiuwenswarm.server.runtime.mcp.credential  # noqa: F401
+    import jiuwenswarm.server.runtime.mcp.registry as registry
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("mcp_registry", _LocalMcpRegistryProvider(registry))
+
+
 def install() -> None:
     """加载 server 侧实现模块，触发其向 common 注入点自注册（幂等）。"""
     global _INSTALLED
@@ -102,14 +149,12 @@ def install() -> None:
         return
     # import 即注册：各模块文件末尾调用
     # common.external_providers.register(<domain>, <module>)。
-    import jiuwenswarm.server.runtime.mcp.state_store  # noqa: F401
-    import jiuwenswarm.server.runtime.mcp.registry  # noqa: F401
-    import jiuwenswarm.server.runtime.mcp.credential  # noqa: F401
     import jiuwenswarm.server.runtime.a2ui.integration  # noqa: F401
     import jiuwenswarm.server.runtime.team_binding_store  # noqa: F401
     import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401
 
     _install_session_metadata()
+    _install_mcp_domains()
 
     from gateway.runtime.cron import factory as cron_factory
 

@@ -2034,6 +2034,10 @@ async def _run(
     from gateway.routing.session_metadata_remote import bind_agent_client as _bind_session_meta_client
 
     _bind_session_meta_client(client)
+    # mcp_registry 域 WS 远端实现（oauth 回调）的客户端绑定，同款装配
+    from gateway.routing.mcp_remote import bind_agent_client as _bind_mcp_client
+
+    _bind_mcp_client(client)
 
     # Heartbeat Store/Controller/Scheduler/Execution live in AgentServer.
     # Gateway keeps only the stable public-interface proxy wired to Web/TUI.
