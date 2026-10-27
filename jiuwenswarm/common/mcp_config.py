@@ -814,6 +814,12 @@ def _office_claw_mcp_schema_cache_enabled() -> bool:
 
 
 _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES = 256
+# Opt-in extra directories folded into the bundle fingerprint for layouts
+# that keep schema-defining code outside the entry script's directory tree.
+# Comma-separated; relative paths resolve against params["cwd"].
+_OFFICE_CLAW_MCP_BUNDLE_FINGERPRINT_ROOTS_ENV = (
+    "JIUWENSWARM_MCP_BUNDLE_FINGERPRINT_ROOTS"
+)
 
 
 def _fingerprint_bundle_tree(root: Path) -> list[dict[str, Any]] | None:
@@ -855,6 +861,47 @@ def _fingerprint_bundle_tree(root: Path) -> list[dict[str, Any]] | None:
     return sorted(entries, key=lambda entry: entry["path"])
 
 
+def _declared_fingerprint_roots(params: Mapping[str, Any]) -> list[Path]:
+    """Resolve JIUWENSWARM_MCP_BUNDLE_FINGERPRINT_ROOTS into directories.
+
+    Declared roots join the bundle fingerprint with the same walker rules
+    (node_modules and *.map skipped, per-root file cap). Unset or empty
+    entries are ignored; a declared root that does not resolve to an
+    existing directory is skipped rather than failing discovery.
+    """
+    raw = str(
+        os.environ.get(_OFFICE_CLAW_MCP_BUNDLE_FINGERPRINT_ROOTS_ENV, "") or ""
+    ).strip()
+    if not raw:
+        return []
+    cwd_raw = str(params.get("cwd") or "").strip()
+    bases = [Path(cwd_raw).expanduser()] if cwd_raw else []
+    bases.append(Path.cwd())
+    roots: list[Path] = []
+    for item in raw.split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        probe = Path(candidate).expanduser()
+        resolved: Path | None = None
+        if probe.is_absolute():
+            resolved = probe
+        else:
+            for base in bases:
+                joined = base / probe
+                if joined.is_dir():
+                    resolved = joined
+                    break
+        if resolved is None:
+            try:
+                resolved = probe.resolve(strict=False)
+            except OSError:
+                continue
+        if resolved.is_dir():
+            roots.append(resolved)
+    return roots
+
+
 def _office_claw_mcp_build_fingerprint(
     params: Mapping[str, Any],
 ) -> list[dict[str, Any]] | None:
@@ -872,6 +919,12 @@ def _office_claw_mcp_build_fingerprint(
     tree: the entry file is typically a thin shell that imports the toolset
     modules next to it, so a rebuild that only touches those imports must
     still rotate the key. ``node_modules`` and ``*.map`` files are skipped.
+
+    ``JIUWENSWARM_MCP_BUNDLE_FINGERPRINT_ROOTS`` (comma-separated directories,
+    relative to ``params['cwd']``) opts additional trees into the fingerprint
+    for layouts that keep schema-defining code outside the entry's owning
+    directory — the fingerprint then covers the declared roots with the same
+    walker rules.
 
     Returns ``None`` when a bundle tree exceeds ``_OFFICE_CLAW_MCP_BUNDLE_MAX_FILES``
     files — the caller then bypasses the cache instead of trusting a
@@ -934,6 +987,20 @@ def _office_claw_mcp_build_fingerprint(
             continue
         expanded_dirs.add(parent_key)
         tree = _fingerprint_bundle_tree(resolved.parent)
+        if tree is None:
+            return None
+        for entry in tree:
+            if entry["path"] in seen_paths:
+                continue
+            seen_paths.add(entry["path"])
+            fingerprints.append(entry)
+
+    for root in _declared_fingerprint_roots(params):
+        root_key = _normalized_path(str(root))
+        if root_key in expanded_dirs:
+            continue
+        expanded_dirs.add(root_key)
+        tree = _fingerprint_bundle_tree(root)
         if tree is None:
             return None
         for entry in tree:
