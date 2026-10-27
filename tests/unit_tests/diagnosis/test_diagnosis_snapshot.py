@@ -160,16 +160,23 @@ async def test_full_scope_yields_one_covering_range_per_subject() -> None:
 
 
 @pytest.mark.asyncio
-async def test_selection_matches_records_by_start_time() -> None:
+async def test_selection_counts_only_spans_with_start_and_end_covered() -> None:
     snapshot, _excluded = await load_trajectory_snapshot(_two_subject_reader(), SESSION_ID)
-    scope = SelectionScope(
+    # Span 210-300 starts inside [150, 215] but ends outside — same as the
+    # analysis swimlane, it must not count.
+    partial = SelectionScope(
         ranges=[SelectionRange(subject_id="main", start_unix_nano="150", end_unix_nano="215")],
     )
+    with pytest.raises(DiagnosisHostError) as raised:
+        resolve_ranges(snapshot, partial)
+    assert raised.value.code == "EMPTY_SCOPE"
 
-    ranges = resolve_ranges(snapshot, scope)
-
-    # Only the main span starting at 210 starts inside [150, 215]; the other subject is not selected.
-    assert ranges == [SubjectRange(subject_id="main", start_nano=150, end_nano=215)]
+    # Whole span 210-300 lies inside [205, 305].
+    covered = SelectionScope(
+        ranges=[SelectionRange(subject_id="main", start_unix_nano="205", end_unix_nano="305")],
+    )
+    ranges = resolve_ranges(snapshot, covered)
+    assert ranges == [SubjectRange(subject_id="main", start_nano=205, end_nano=305)]
     assert count_records_in_ranges(snapshot, ranges) == 1
 
 
@@ -178,7 +185,8 @@ async def test_selection_drops_ranges_without_records() -> None:
     snapshot, _excluded = await load_trajectory_snapshot(_two_subject_reader(), SESSION_ID)
     scope = SelectionScope(
         ranges=[
-            SelectionRange(subject_id="main", start_unix_nano="90", end_unix_nano="120"),
+            # Fully covers main span 100-200; partial or empty peers are dropped.
+            SelectionRange(subject_id="main", start_unix_nano="90", end_unix_nano="200"),
             SelectionRange(subject_id="member", start_unix_nano="1000", end_unix_nano="2000"),
             SelectionRange(subject_id="ghost", start_unix_nano="0", end_unix_nano="9999"),
         ],
@@ -187,6 +195,7 @@ async def test_selection_drops_ranges_without_records() -> None:
     ranges = resolve_ranges(snapshot, scope)
 
     assert [item.subject_id for item in ranges] == ["main"]
+    assert count_records_in_ranges(snapshot, ranges) == 1
 
 
 @pytest.mark.asyncio
@@ -236,12 +245,13 @@ def _ref(index: int, *, subject: str = "main", node: str | None = None) -> StepR
 @pytest.mark.asyncio
 async def test_scope_index_admits_only_known_nodes_inside_the_range() -> None:
     snapshot, _excluded = await load_trajectory_snapshot(_two_subject_reader(), SESSION_ID)
+    # Window must wholly cover at least one span to resolve; admits still uses overlap.
     scope = SelectionScope(
-        ranges=[SelectionRange(subject_id="main", start_unix_nano="205", end_unix_nano="215")],
+        ranges=[SelectionRange(subject_id="main", start_unix_nano="205", end_unix_nano="305")],
     )
     index = ScopeIndex.build(snapshot, resolve_ranges(snapshot, scope))
 
-    # Span 2 [210, 300] intersects the range; span 1 [100, 200] does not.
+    # Span 2 [210, 300] lies in the range; span 1 [100, 200] does not.
     assert index.admits(_ref(2, node="main:3")) is True
     assert index.admits(_ref(1, node="main:0")) is False
     # Unknown span, other subject without a range, missing node id.
