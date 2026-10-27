@@ -123,6 +123,8 @@ async def host(tmp_path, monkeypatch):
     yield SimpleNamespace(config=config, repository=repository, service=service, manager=manager, inbound=inbound,
         contexts=contexts, sent=sent, gateway=gateway, deliveries=deliveries, workspaces=workspaces, channel=channel,
         connections=connections, db=tmp_path / "agents.sqlite3")
+    # Delivery can be observed just before the substituted execution stream ends.
+    await settle(lambda: not manager.scheduler.running)
     await manager.aclose()
     await channel._http.aclose()
 

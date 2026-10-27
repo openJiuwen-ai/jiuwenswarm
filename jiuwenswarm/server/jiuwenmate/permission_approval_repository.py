@@ -37,6 +37,19 @@ CREATE INDEX IF NOT EXISTS permission_approvals_by_session
     ON permission_approvals (namespace_id, session_id, status, created_at);
 CREATE INDEX IF NOT EXISTS permission_approvals_by_request
     ON permission_approvals (namespace_id, request_id, created_at);
+CREATE INDEX IF NOT EXISTS permission_approvals_by_initiator
+    ON permission_approvals (namespace_id, agent_id, principal_ref, status, created_at);
+CREATE TABLE IF NOT EXISTS permission_reply_messages (
+    namespace_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    channel TEXT NOT NULL,
+    app_id TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    principal_ref TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    approval_id TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, agent_id, channel, app_id, target_id, principal_ref, message_id)
+);
 """
 
 
@@ -200,6 +213,43 @@ class PermissionApprovalRepository(SQLiteStore):
         with closing(self._connect()) as conn:
             rows = conn.execute(query, values).fetchall()
         return [self._approval(row) for row in rows]
+
+    def for_route(
+        self, namespace_id: str, agent_id: str, *, principal_ref: str | None,
+        channel: str, app_id: str, target_id: str,
+    ) -> list[PermissionApproval]:
+        """Find pending confirmations on a route, optionally limited to its initiator."""
+        from contextlib import closing
+
+        query = "SELECT * FROM permission_approvals WHERE namespace_id = ? AND agent_id = ? AND status = 'pending'"
+        values: tuple[Any, ...] = (namespace_id, agent_id)
+        if principal_ref is not None:
+            query += " AND principal_ref = ?"
+            values += (principal_ref,)
+        with closing(self._connect()) as conn:
+            rows = conn.execute(query + " ORDER BY created_at", values).fetchall()
+        approvals = [self._approval(row) for row in rows]
+        return [item for item in approvals if item.route is not None
+                and (item.route.channel, item.route.app_id, item.route.target_id) == (channel, app_id, target_id)]
+
+    def reply_approval(
+        self, *, namespace_id: str, agent_id: str, channel: str, app_id: str,
+        target_id: str, principal_ref: str, message_id: str, approval_id: str | None = None,
+    ) -> str | None:
+        """Bind once; an empty approval ID records a command with no unambiguous target."""
+        identity = (namespace_id, agent_id, channel, app_id, target_id, principal_ref, message_id)
+        with self._transaction() as conn:
+            if approval_id is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO permission_reply_messages VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (*identity, approval_id),
+                )
+            row = conn.execute(
+                "SELECT approval_id FROM permission_reply_messages WHERE namespace_id = ? AND agent_id = ?"
+                " AND channel = ? AND app_id = ? AND target_id = ? AND principal_ref = ? AND message_id = ?",
+                identity,
+            ).fetchone()
+        return None if row is None else row["approval_id"]
 
     def ready(self, namespace_id: str | None = None) -> list[PermissionApproval]:
         from contextlib import closing

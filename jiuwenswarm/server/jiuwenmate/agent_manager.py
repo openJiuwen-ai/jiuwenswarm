@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import re
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -59,6 +58,7 @@ from jiuwenswarm.server.jiuwenmate.permission_approval_repository import (
     PermissionApproval,
     PermissionApprovalRepository,
 )
+from jiuwenswarm.server.jiuwenmate.permission_replies import IMPermissionReplies, approval_instructions
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
@@ -570,39 +570,29 @@ class AgentManager:
         self._schedule_permission_resume(approval)
         return await self.request_view(approval.namespace_id, approval.request_id)
 
-    async def handle_feishu_permission_reply(
+    async def handle_im_permission_reply(
         self,
         text: str,
         *,
+        namespace_id: str,
+        agent_id: str,
         access: AccessSnapshot,
+        channel: str,
         target_id: str,
         app_id: str,
+        source_message_id: str,
+        is_direct_message: bool = True,
     ) -> bool:
-        """Consume an explicit Feishu approval command before it can become a new Agent Request."""
-        match = re.fullmatch(
-            r"\s*(approve|批准|同意|reject|拒绝)\s+([a-f0-9]{12})(?:\s+([^\s]+))?\s*",
-            text,
-            re.IGNORECASE,
+        """Consume trusted IM control messages before admitting ordinary business Requests."""
+        handler = IMPermissionReplies(
+            self._permission_approvals, decide=self.decide_permission_approval,
+            send=self._send_permission_notice,
         )
-        if match is None:
-            return False
-        decision = "approve" if match.group(1).lower() in ("approve", "批准", "同意") else "reject"
-        tool_call_id = match.group(3)
-        if (decision == "approve") != (tool_call_id is not None):
-            return True
-        try:
-            await self.decide_permission_approval(
-                match.group(2),
-                decision=decision,
-                access=access,
-                channel="feishu",
-                target_id=target_id,
-                app_id=app_id,
-                tool_call_id=tool_call_id,
-            )
-        except PersistentAgentError as exc:
-            logger.info("[JiuwenMate] Feishu permission reply was refused: code=%s", exc.code)
-        return True
+        return await handler.handle(
+            text, namespace_id=namespace_id, agent_id=agent_id, access=access,
+            channel=channel, target_id=target_id, app_id=app_id, source_message_id=source_message_id,
+            is_direct_message=is_direct_message,
+        )
 
     async def recover(
         self,
@@ -727,10 +717,12 @@ class AgentManager:
                 "chat_id": route.target_id,
                 "source_message_id": route.source_message_id,
                 "idempotency_key": f"permission:{approval.approval_id}",
+                **({"is_direct_message": self._sessions.get_request(
+                    approval.namespace_id, approval.request_id,
+                ).record.request_input.kind == "direct_message"} if route.channel == "dingtalk" else {}),
                 "text": (
                     f"该员工需要确认一次工具操作（15 分钟内有效）：\n{calls}\n"
-                    f"请在本会话逐个确认：批准 {approval.approval_id} <工具调用ID>；"
-                    f"拒绝全部调用：拒绝 {approval.approval_id}。"
+                    + approval_instructions(approval)
                 ),
             }),
             name="jiuwenmate-permission-notice",

@@ -524,11 +524,15 @@ class PersistentGroupFanout:
             # that this is the receiving Bot echoing its own message.
             sender_app_id = event.sender_app_id.strip() if _present(event.sender_app_id) else None
             request_input = self._request_input(event, sender_kind)
-            if await self._agent_manager.handle_feishu_permission_reply(
+            if await self._agent_manager.handle_im_permission_reply(
                 request_input.text,
+                namespace_id=binding.namespace_id,
+                agent_id=binding.agent_id,
                 access=access,
+                channel="feishu",
                 target_id=event.chat_id,
                 app_id=event.receiving_app_id,
+                source_message_id=event.message_id,
             ):
                 return InboundDisposition.HANDLED
             received_at = event.received_at.astimezone(timezone.utc)
