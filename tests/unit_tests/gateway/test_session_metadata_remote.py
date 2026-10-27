@@ -165,6 +165,19 @@ def test_local_adapter_keeps_late_bound_patch_semantics(monkeypatch: pytest.Monk
     assert adapter.get_session_metadata("sess") == {"team_name": "patched"}
 
 
+def test_local_adapter_delegates_the_full_module_interface() -> None:
+    """适配器只增补异步入口，不得收窄域接口（model_selection_store 等写路径依赖）。"""
+    store = _FakeStore()
+    store.update_session_model_selection = lambda sid, selection: ("written", sid, selection)
+    adapter = _LocalSessionMetadataProvider(store)
+
+    assert adapter.update_session_model_selection("sess", {"model": "GLM"}) == (
+        "written",
+        "sess",
+        {"model": "GLM"},
+    )
+
+
 @pytest.fixture(name="reset_bridge")
 def _reset_bridge(monkeypatch: pytest.MonkeyPatch):
     """Isolate bridge install state and the provider registry around install()."""

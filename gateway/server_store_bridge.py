@@ -35,10 +35,19 @@ class _LocalSessionMetadataProvider:
     绑定函数，测试对实现模块属性的 ``monkeypatch.setattr`` 对本注入点
     仍然生效（取属性发生在调用时）；异步入口经 ``asyncio.to_thread``
     包装，避免在事件循环内做文件 IO。
+
+    ``__getattr__`` 把其余符号透明委托给实现模块：本域的注册对象历史上
+    就是模块本身（全量接口，含 ``update_session_model_selection`` 等写
+    方法），适配器只允许"增补异步入口"，不允许收窄接口——否则同进程内
+    经 ``provider("session_metadata")`` 取用其它方法的消费方（如
+    ``model_selection_store`` 的写路径）会断裂。
     """
 
     def __init__(self, store: Any) -> None:
         self._store = store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
 
     def get_session_metadata(
         self,
