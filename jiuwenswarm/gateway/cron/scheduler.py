@@ -365,6 +365,51 @@ class CronSchedulerService:
         self._boot_time: float = now_fn()
         self._watch_task: asyncio.Task | None = None
 
+    def is_session_processing(self, session_id: str, user_id: str | None = None) -> bool:
+        """Return whether this owner's execution session has an active cron run."""
+        target_session_id = str(session_id or "").strip()
+        if not target_session_id:
+            return False
+        owner = str(user_id or "").strip()
+        for run_id, state in self._runs.items():
+            if str(state.exec_session_id or "").strip() != target_session_id:
+                continue
+            if str(state.exec_user_id or "").strip() != owner:
+                continue
+            if state.status != "running" or state.finished_at is not None:
+                continue
+            task = self._run_tasks.get(run_id)
+            if task is not None and not task.done():
+                return True
+        return False
+
+    async def finish_cancelled_session_runs(self, session_id: str, user_id: str | None = None) -> int:
+        """Release local waiters after the AgentServer confirmed cancellation."""
+        target_session_id = str(session_id or "").strip()
+        if not target_session_id:
+            return 0
+        owner = str(user_id or "").strip()
+        current_task = asyncio.current_task()
+        tasks = []
+        for run_id, state in list(self._runs.items()):
+            if str(state.exec_session_id or "").strip() != target_session_id:
+                continue
+            if str(state.exec_user_id or "").strip() != owner:
+                continue
+            if state.status != "running" or state.finished_at is not None:
+                continue
+            task = self._run_tasks.get(run_id)
+            # Team timeout cleanup can call MessageHandler from its own run.
+            # Its caller already owns finalization and must not cancel itself.
+            if task is not None and task is not current_task and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=10)
+            if pending:
+                raise RuntimeError("cancelled cron runs are still stopping")
+        return len(tasks)
+
     async def _sync_store_revision(self) -> None:
         """Snapshot current store revision to avoid redundant reloads."""
         try:

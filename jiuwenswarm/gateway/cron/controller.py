@@ -98,6 +98,14 @@ class CronController:
         """The underlying cron scheduler service."""
         return self._scheduler
 
+    def is_session_processing(self, session_id: str, user_id: str | None = None) -> bool:
+        """Return active cron execution state scoped to the session's owner."""
+        return self._scheduler.is_session_processing(session_id, user_id=user_id)
+
+    async def finish_cancelled_session_runs(self, session_id: str, user_id: str | None = None) -> int:
+        """Release this owner's cron waiters after confirmed backend cancellation."""
+        return await self._scheduler.finish_cancelled_session_runs(session_id, user_id=user_id)
+
     def set_target_channel(self, channel: CronTargetChannel) -> None:
         self._target_channel = channel
 

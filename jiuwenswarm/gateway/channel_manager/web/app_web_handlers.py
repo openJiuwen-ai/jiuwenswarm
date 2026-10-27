@@ -2871,12 +2871,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _session_get_metadata(ws, req_id, params, session_id, user_id=None):
-        """返回单个会话的元数据（mode / model / project_dir / last_user_message_at 等）。
+        """Return persisted metadata with current Web and owned cron activity.
 
-        经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
-        SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。运行态不属于
-        持久化 metadata：由 WebChannel 已维护的 session busy 状态在响应入队前覆盖，
-        这样页面刷新仍能恢复当前会话的停止按钮，并与随后同一 WS 上的状态事件保持顺序。
+        Project runtime state before enqueueing the response so page restoration
+        sees consistent processing fields without persisting or caching them.
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
@@ -2887,9 +2885,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
             if ok:
-                payload["is_processing"] = channel.is_session_busy(target_session_id)
-                # The busy map drives the stop button on page reload; expose
-                # the value it served for that session's metadata request.
+                is_processing = channel.is_session_busy(target_session_id)
+                cron_activity = getattr(_get_cron(), "is_session_processing", None)
+                if callable(cron_activity):
+                    is_processing = is_processing or cron_activity(target_session_id, user_id=user_id)
+                payload["is_processing"] = is_processing
+                payload["status"] = "processing" if is_processing else "idle"
+                # Cron executes outside the Web busy cache; keep this response
+                # projection separate from the channel's event-driven state.
                 logger.info(
                     "[WebHandlers] session.get_metadata runtime status: "
                     "session_id=%s is_processing=%s",
