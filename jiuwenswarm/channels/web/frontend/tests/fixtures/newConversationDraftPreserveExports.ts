@@ -4,8 +4,3 @@ export {
 } from '../../src/multi-session/state/newConversationLifecycle';
 export { useChatStore } from '../../src/stores/chatStore';
 export { useSessionStore } from '../../src/stores/sessionStore';
-export {
-  createComposerSkillRange,
-  readComposerSkillPositions,
-  readComposerText,
-} from '../../src/components/ChatPanel/composerDraftHydrate';

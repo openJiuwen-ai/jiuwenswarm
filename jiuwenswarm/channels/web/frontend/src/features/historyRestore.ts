@@ -2348,6 +2348,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   let requestCursor: string | null = null;
   let cursorMeta: HistoryCursorMeta | null = null;
   let snapshotMeta: HistoryCursorMeta | null = null;
+  let discoveredSubagentIds: string[] = [];
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2530,6 +2531,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     stopListening();
 
     try {
+      if (discoveredSubagentIds.length > 0) {
+        options.onDiscoveredSubagentIds?.(discoveredSubagentIds);
+      }
       if (isEmpty) {
         options.onEmpty?.(cursorMeta);
         return;
@@ -2592,7 +2596,6 @@ export interface FetchHistoryCursorBatchResult {
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
   contextUsageSnapshot: Record<string, unknown> | null;
-  tokenUsageSnapshot: SessionTokenUsageSnapshot | null;
   /** Parent history.done may list on-disk subagent bucket ids (GitCode #4887). */
   discoveredSubagentIds: string[];
   cursor: HistoryCursorMeta;
@@ -2635,7 +2638,6 @@ export function fetchHistoryCursorBatch(
 
   const entries: HistoryTimelineEntry[] = [];
   let cursorMeta: HistoryCursorMeta | null = null;
-  let completionTokenUsage: SessionTokenUsageSnapshot | null = null;
   let discoveredSubagentIds: string[] = [];
   let disposed = false;
   let finalized = false;
@@ -2742,7 +2744,6 @@ export function fetchHistoryCursorBatch(
     dispose();
     options.onReady({
       ...materialized,
-      tokenUsageSnapshot: completionTokenUsage ?? materialized.tokenUsageSnapshot,
       contextUsageSnapshot,
       discoveredSubagentIds,
       cursor: cursorMeta,

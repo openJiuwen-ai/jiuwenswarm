@@ -185,6 +185,30 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
     get_session_metadata,
 )
+from jiuwenswarm.server.runtime.session.session_message_service import (
+    SessionMessageExecutionResult,
+    SessionMessageService,
+    SessionMessagingError,
+)
+from jiuwenswarm.server.runtime.session.session_message_store import (
+    SessionMessageRecord,
+    SessionMessageStore,
+)
+from jiuwenswarm.server.runtime.session.session_history import (
+    HistorySnapshotChanged,
+    InvalidHistoryCursor,
+    append_compact_history_records,
+    append_history_record,
+    enqueue_history_request_completion,
+    history_exists,
+    is_valid_session_id,
+    list_session_subagent_ids,
+    load_history_records,
+    read_history_cursor_page,
+    read_member_history_records,
+    read_team_history_records,
+    wait_for_history_receipt,
+)
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
     build_yuanrong_sandbox_status_view,
@@ -8682,14 +8706,6 @@ class AgentWebSocketServer:
                 )
             next_seq += 1
 
-        session_usage = None
-        if not subagent_id and isinstance(session_id, str) and session_id.strip():
-            from jiuwenswarm.server.control.history_service import load_history_session_usage
-
-            session_usage = await asyncio.to_thread(
-                load_history_session_usage, session_id.strip()
-            )
-
         done_payload: dict[str, Any] = {
             "event_type": "history.message",
             "status": "done",
@@ -8703,18 +8719,17 @@ class AgentWebSocketServer:
             "snapshot_id": snapshot_id,
             "snapshot_end": snapshot_end,
         }
-        usage_revision = session_usage.get("revision") if isinstance(session_usage, dict) else None
-        if isinstance(usage_revision, int) and not isinstance(usage_revision, bool) and usage_revision > 0:
-            done_payload["session_usage"] = session_usage
         # Parent history cold-start: advertise on-disk subagent buckets so the
         # frontend can fetch per-subagent transcripts even when parent history
         # never persisted chat.subtask_update roster frames (GitCode #4887).
-        # Keep the if-condition to <=3 boolean expressions (G.CTL.03).
-        parent_session_id = session_id.strip() if isinstance(session_id, str) else ""
-        is_parent_history_request = not response_subagent_id and not subagent_id
-        if is_initial_history_batch and is_parent_history_request and parent_session_id:
+        if (
+            is_initial_history_batch
+            and not (response_subagent_id or subagent_id)
+            and isinstance(session_id, str)
+            and session_id.strip()
+        ):
             try:
-                discovered_ids = list_session_subagent_ids(parent_session_id)
+                discovered_ids = list_session_subagent_ids(session_id.strip())
             except Exception:  # noqa: BLE001
                 logger.debug(
                     "[history.get] list_session_subagent_ids failed: session_id=%s",
