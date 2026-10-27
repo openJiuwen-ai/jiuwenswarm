@@ -240,3 +240,29 @@ async def test_policy_allow_metadata_does_not_change_tool_execution_outcome(succ
     payload = _tool_result_payload(session)
     assert payload["success"] is success
     assert payload["reviewer_metadata"] == metadata
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("name", "result", "expected_success"),
+    [
+        ("ttse_consult", "经验正文 success=False，不代表调用失败。", True),
+        ("ttse_consult", SimpleNamespace(success=False, error="Tool execution error: boom"), False),
+        ("bash", "success=False", False),
+    ],
+)
+async def test_ttse_consult_plain_text_is_not_scanned_as_failure(name, result, expected_success):
+    session = _StreamSession()
+    await JiuSwarmStreamEventRail()._emit_tool_result(
+        session,
+        SimpleNamespace(name=name, id="tc-consult"),
+        result,
+    )
+    payload = _tool_result_payload(session)
+    assert payload["success"] is expected_success
+    if expected_success:
+        assert "status" not in payload
+        assert "is_error" not in payload
+    else:
+        assert payload["status"] == "error"
+        assert payload["is_error"] is True

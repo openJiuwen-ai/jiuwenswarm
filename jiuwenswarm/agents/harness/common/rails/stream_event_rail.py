@@ -1291,12 +1291,18 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     tool_result_payload,
                     raw_output,
                 )
-            error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
-            if error_state is not None:
-                tool_result_payload["success"] = not error_state
-                if error_state:
-                    tool_result_payload["status"] = "error"
-                    tool_result_payload["is_error"] = True
+            tool_name = str(tool_result_payload["tool_name"] or "").strip().lower()
+            if tool_name == "ttse_consult" and isinstance(result, str):
+                # FACT/TIP and argument warnings are plain text. A real failure
+                # arrives as an object with a boolean success field.
+                tool_result_payload["success"] = True
+            else:
+                error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
+                if error_state is not None:
+                    tool_result_payload["success"] = not error_state
+                    if error_state:
+                        tool_result_payload["status"] = "error"
+                        tool_result_payload["is_error"] = True
             _enrich_trusted_reviewer_result(
                 tool_result_payload,
                 raw_output,
