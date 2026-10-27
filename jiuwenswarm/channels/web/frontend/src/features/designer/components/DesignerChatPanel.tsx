@@ -276,6 +276,8 @@ export function DesignerChatPanel() {
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
       if (!sessionId) return false;
       const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
+      const interruptId =
+        pendingQuestion?.request_id === requestId ? pendingQuestion.interruptId : undefined;
       try {
         await webClient.request('chat.send', {
           session_id: sessionId,
@@ -289,6 +291,7 @@ export function DesignerChatPanel() {
             selectedModelSelection,
           }),
           ...(source ? { source } : {}),
+          ...(interruptId ? { interrupt_id: interruptId } : {}),
         });
         if (pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);

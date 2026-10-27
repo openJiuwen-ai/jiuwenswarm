@@ -2731,6 +2731,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             : {};
         const approvalSchemaPayload = approvalSchema ? { approval_schema: approvalSchema } : {};
         const sourcePayload = effectiveSource ? { source: effectiveSource } : {};
+        const interruptPayload =
+          pendingMatches && pendingQuestion?.interruptId
+            ? { interrupt_id: pendingQuestion.interruptId }
+            : {};
 
         // ── SwarmFlow human 回复 → chat.swarmflow_reply ──
         if (effectiveSource === 'swarmflow_human') {
@@ -2853,6 +2857,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               ...agentSelectionPayload,
               ...agentGroupSelectionPayload,
               ...sourcePayload,
+              ...interruptPayload,
               ...structuredPlanPayload,
               ...approvalSchemaPayload,
               ...evolutionMetaPayload,
@@ -2898,6 +2903,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             request_id: requestId,
             answers,
             ...sourcePayload,
+            ...interruptPayload,
             ...approvalSchemaPayload,
             ...evolutionMetaPayload,
           });
@@ -5360,6 +5366,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           questions,
           ...(typeof questionPayload.duplex_job_id === 'string'
             ? { duplexJobId: questionPayload.duplex_job_id } : {}),
+          ...(typeof questionPayload.interrupt_id === 'string' && questionPayload.interrupt_id
+            ? { interruptId: questionPayload.interrupt_id } : {}),
           ...(approvalSchema ? { approvalSchema } : {}),
           ...(evolutionMeta ? { evolutionMeta } : {}),
           ...(planApprovalKind ? { planApprovalKind } : {}),
