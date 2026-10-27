@@ -5,6 +5,7 @@ import {
   mergeHistoryToolReplayItems,
   parseHistoryJsonFileToTimelinePreview,
   parseSubagentHistoryReplay,
+  readDiscoveredSubagentIds,
   recoverSubagentToolHistory,
   shouldProcessHistoryPayload,
   parseHistoryJsonFileToPreviewMessages,
@@ -1053,6 +1054,18 @@ test('history skips chat.error with empty content', () => {
     },
   ], sessionId);
   assert.equal(messages.length, 0);
+});
+
+test('history.done subagent_ids discovery parses unique non-empty ids (#4887)', () => {
+  assert.deepEqual(
+    readDiscoveredSubagentIds({
+      status: 'done',
+      subagent_ids: [' sub-a ', 'sub-b', 'sub-a', '', 12, null],
+    }),
+    ['sub-a', 'sub-b'],
+  );
+  assert.deepEqual(readDiscoveredSubagentIds({ status: 'done' }), []);
+  assert.deepEqual(readDiscoveredSubagentIds({ subagentIds: ['legacy-id'] }), ['legacy-id']);
 });
 
 test('4470 history preserves token-related choices while masking custom input', () => {
