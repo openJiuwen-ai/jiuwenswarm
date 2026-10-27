@@ -52,6 +52,7 @@ from jiuwenswarm.server.handlers._shared import (
     resolve_request_runtime_mode,
 )
 from jiuwenswarm.server.handlers.stream_delta_coalesce import StreamDeltaCoalescer
+from jiuwenswarm.server.runtime.agent_manager import _is_interrupt_resume_request
 from jiuwenswarm.server.runtime.session_owner_routing import (
     bind_request_to_session_owner,
 )
@@ -512,12 +513,7 @@ async def _prepare_code_mode_chat_turn(
     _raw_mode = params.get("mode")
     explicit_mode_provided = isinstance(_raw_mode, str) and bool(_raw_mode.strip())
     source = str(params.get("source") or "").strip()
-    is_interrupt_continuation = (
-        source
-        in {"permission_interrupt", "confirm_interrupt", "ask_user_interrupt"}
-        and isinstance(params.get("answers"), list)
-        and bool(str(params.get("request_id") or "").strip())
-    )
+    is_interrupt_continuation = _is_interrupt_resume_request(request)
     from jiuwenswarm.server.runtime.session.work_mode import (
         resolve_request_work_mode,
     )

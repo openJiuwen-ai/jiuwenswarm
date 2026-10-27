@@ -88,7 +88,10 @@ def test_officeclaw_defaults_follow_environment_and_explicit_flash_wins(monkeypa
     assert _shared.resolve_request_runtime_mode(request).adapter_mode == expected
 
 
-@pytest.mark.parametrize("source", ["permission_interrupt", "confirm_interrupt", "ask_user_interrupt"])
+@pytest.mark.parametrize("source", [
+    "permission_interrupt", "confirm_interrupt", "ask_user_interrupt", "evolution_interrupt",
+    "subagent_skill_load", "subagent_tool_permission",
+])
 @pytest.mark.parametrize("mode,expected", [("agent", "agent"), ("flash", "flash")])
 def test_officeclaw_interrupt_resume_keeps_restored_mode(monkeypatch, source, mode, expected):
     monkeypatch.setenv(FLASH_ENV, "true")
@@ -106,6 +109,37 @@ def test_incomplete_interrupt_marker_does_not_disable_officeclaw_default(monkeyp
     }
     params.pop(missing)
     assert _shared.resolve_request_runtime_mode(make_request(params, channel="officeclaw")).adapter_mode == "flash"
+
+
+@pytest.mark.parametrize("source", [None, ""])
+@pytest.mark.parametrize("prefix", ["subagent_skill_load_", "subagent_tool_permission_"])
+@pytest.mark.parametrize("mode", ["agent", "flash"])
+def test_legacy_subagent_answer_keeps_restored_mode(monkeypatch, source, prefix, mode):
+    monkeypatch.setenv(FLASH_ENV, "true")
+    params = {"mode": mode, "answers": ["本次允许"], "request_id": prefix + "legacy"}
+    if source is not None:
+        params["source"] = source
+    incoming = make_request(params, channel="officeclaw")
+    assert _shared.resolve_request_runtime_mode(incoming).adapter_mode == mode
+
+
+@pytest.mark.parametrize("extra,expected", [
+    ({"source": "skill_evolution_approval", "evolution_meta": {"approval_transport": "interrupt"}}, "agent"),
+    ({"source": "skill_evolution_approval", "request_id": "call_evolve"}, "agent"),
+    ({"source": "skill_evolution_approval"}, "flash"),
+    ({"source": "skill_evolution_approval", "evolution_meta": {"approval_transport": "regular"}}, "flash"),
+    ({"source": "skill_evolution_approval", "evolution_meta": "interrupt"}, "flash"),
+    ({"source": ""}, "flash"),
+    ({"source": "unknown"}, "flash"),
+    ({"source": "subagent_skill_load", "answers": "本次允许"}, "flash"),
+    ({"source": "subagent_tool_permission", "request_id": ""}, "flash"),
+    ({"source": "evolution_interrupt", "answers": None}, "flash"),
+])
+def test_approval_routing_requires_supported_protocol(monkeypatch, extra, expected):
+    monkeypatch.setenv(FLASH_ENV, "true")
+    params = {"mode": "agent", "answers": [], "request_id": "skill_evolve_1", **extra}
+    incoming = make_request(params, channel="officeclaw")
+    assert _shared.resolve_request_runtime_mode(incoming).adapter_mode == expected
 
 
 @pytest.mark.parametrize("mode,expected", [

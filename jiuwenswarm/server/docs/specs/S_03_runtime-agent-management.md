@@ -60,8 +60,13 @@ Code、Team 和真正的 Plan 保留既有路由。
 
 环境配置选中 Flash 时，普通请求保留 `agent` / `agent.work.normal` 业务模式，
 通过 `adapter_mode=flash` 选择实现；会话创建将同一实现选择传给预热。
-已有 Flash 亲和、暂停实例查找及审批恢复保护继续复用；OfficeClaw 的审批、确认和
-问答中断续跑不应用默认开关，沿用恢复出的模式。本次默认选型调整不新增
+已有 Flash 亲和、暂停实例查找及审批恢复保护继续复用；OfficeClaw 的审批、确认、
+问答及技能演进中断续跑不应用默认开关，沿用恢复出的模式。请求准备、默认选型和
+AgentManager 统一使用恢复判定；子代理审批也保留原绑定，兼容无来源但带合法
+`subagent_skill_load_` / `subagent_tool_permission_` 请求 ID 的旧载荷。
+旧版 `skill_evolution_approval` 复用现有演进协议判定，只有中断传输或
+`call_` 工具调用 ID 才按中断恢复；任意答案与请求 ID 组合不自动视为恢复。
+本次默认选型调整不新增
 Deep 会话锁定：没有暂停实例保护的普通 Deep 续聊可能随当前开关改选 Flash。
 技能检索仍由 `flash.skill_selection.enabled` 独立控制。
 

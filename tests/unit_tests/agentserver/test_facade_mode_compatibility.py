@@ -248,6 +248,7 @@ def resume_routes(facades, monkeypatch, tmp_path):
     monkeypatch.setattr(_shared, "get_config", lambda: config)
     monkeypatch.setattr(_default, "_sessions_dir_for_request", lambda _: tmp_path)
     monkeypatch.setattr(_shared, "_sessions_dir_for_request", lambda _: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.common.utils.resolve_tenant_sessions_dir", lambda *a, **kw: tmp_path)
     monkeypatch.setattr(
         "jiuwenswarm.server.agent_ws_server.ensure_interface_deep_and_checkpointer", AsyncMock(),
     )
@@ -255,6 +256,8 @@ def resume_routes(facades, monkeypatch, tmp_path):
     monkeypatch.setattr(_default, "_check_post_process_plan_exit", AsyncMock())
     manager = object.__new__(AgentManager)
     manager.agents = {"officeclaw": {}}
+    manager._workspace_key = "default"
+    manager._env_service_id = manager._env_agent_id = None
     manager._agent_borrowers = {}
     manager._pending_tui_retirements = {}
     manager.wait_for_session_prewarm = AsyncMock()
@@ -269,7 +272,7 @@ def resume_routes(facades, monkeypatch, tmp_path):
         services=SimpleNamespace(
             agent_manager=manager, tenant_pool=lambda: pool, session_stream_tasks={},
         ),
-        sink=SimpleNamespace(send_chunk=AsyncMock(return_value=True)),
+        sink=SimpleNamespace(send_chunk=AsyncMock(return_value=True), send_unary=AsyncMock()),
     )
 
     async def add(mode, sub_mode=None):
@@ -293,7 +296,10 @@ def resume_routes(facades, monkeypatch, tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["handler", "manager", "pool", "handler_pool"])
-@pytest.mark.parametrize("source", ["permission_interrupt", "confirm_interrupt", "ask_user_interrupt"])
+@pytest.mark.parametrize("source", [
+    "permission_interrupt", "confirm_interrupt", "ask_user_interrupt",
+    "evolution_interrupt", "skill_evolution_approval",
+])
 @pytest.mark.parametrize("bound_mode", ["agent", "flash"])
 @pytest.mark.parametrize("incoming_mode", ["agent.plan", None])
 async def test_resume_reaches_paused_owner_stream(
@@ -315,6 +321,8 @@ async def test_resume_reaches_paused_owner_stream(
         answers=[{"option_id": "allow"}], request_id="tool-1", query="continue",
         project_dir=str(tmp_path), work_mode="work",
     )
+    if source == "skill_evolution_approval":
+        request.params["evolution_meta"] = {"approval_transport": "interrupt"}
     # The pool shortcut can receive a decision computed by an upstream handler.
     request.resolved_adapter_mode = other_mode
     request.resolved_adapter_source = "flash_enabled_default" if other_mode == "flash" else "default"
@@ -347,7 +355,10 @@ async def test_resume_reaches_paused_owner_stream(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("path", ["manager", "pool"])
 @pytest.mark.parametrize("bound_mode", ["agent", "flash"])
-@pytest.mark.parametrize("source", ["permission_interrupt", "confirm_interrupt", "ask_user_interrupt"])
+@pytest.mark.parametrize("source", [
+    "permission_interrupt", "confirm_interrupt", "ask_user_interrupt",
+    "evolution_interrupt", "skill_evolution_approval",
+])
 async def test_resume_reaches_paused_owner_unary(resume_routes, tmp_path, path, bound_mode, source):
     routes = resume_routes
     owner = await routes.add(bound_mode)
@@ -357,6 +368,8 @@ async def test_resume_reaches_paused_owner_unary(resume_routes, tmp_path, path, 
         answers=[{"option_id": "allow"}], request_id="tool-1", query="continue",
         project_dir=str(tmp_path), work_mode="work",
     )
+    if source == "skill_evolution_approval":
+        request.params["evolution_meta"] = {"approval_transport": "interrupt"}
     request.resolved_adapter_mode = "flash" if bound_mode == "agent" else "agent"
     routes.config["flash"]["enabled"] = bound_mode == "agent"
     target = routes.manager if path == "manager" else routes.pool
@@ -364,6 +377,49 @@ async def test_resume_reaches_paused_owner_unary(resume_routes, tmp_path, path, 
     assert response.ok
     assert owner._adapter.messages[0][0] is request
     assert request.resolved_adapter_mode == bound_mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["manager", "handler_pool"])
+@pytest.mark.parametrize("stream", [True, False])
+@pytest.mark.parametrize("stored_adapter,incoming_mode", [
+    ("agent", "flash"), ("flash", "agent.plan"), ("agent", None), ("flash", None),
+])
+@pytest.mark.parametrize("source", [None, "", "explicit"])
+@pytest.mark.parametrize("kind", ["skill_load", "tool_permission"])
+async def test_subagent_answer_keeps_stored_binding_without_outer_pause(
+    resume_routes, tmp_path, path, stream, stored_adapter, incoming_mode, source, kind,
+):
+    routes = resume_routes
+    routes.initialize("hosted-session", stored_adapter)
+    owner = await routes.add(stored_adapter)
+    other = await routes.add("flash" if stored_adapter == "agent" else "agent")
+    routes.config["flash"]["enabled"] = stored_adapter == "agent"
+    # Hosted approvals wait in their own registry, without pausing the outer loop.
+    assert routes.manager.find_agent_for_interrupt_resume_nowait("hosted-session") is None
+    request = make_request(
+        incoming_mode, session_id="hosted-session", request_id=f"subagent_{kind}_legacy",
+        answers=["本次允许"], query="", work_mode="work",
+    )
+    if source is not None:
+        request.params["source"] = f"subagent_{kind}" if source == "explicit" else source
+    if path == "handler_pool":
+        handler = _default._handle_stream_impl if stream else _default._handle_unary_impl
+        await handler(routes.ctx, request)
+    elif stream:
+        await _collect(routes.manager.process_message_stream(request))
+    else:
+        response = await routes.manager.process_message(request)
+        assert response.ok
+    assert owner._adapter.messages[0][0] is request
+    assert other._adapter.messages == []
+    assert request.resolved_adapter_mode == stored_adapter
+    assert len(routes.created) == 2
+    await asyncio.wait_for(asyncio.to_thread(session_metadata._METADATA_QUEUE.join), timeout=5)
+    metadata = session_metadata.get_session_metadata(
+        "hosted-session", cache_bust=True, enable_writeback=False, sessions_root=tmp_path,
+    )
+    assert metadata["adapter_mode"] == stored_adapter
 
 
 @pytest.mark.asyncio
