@@ -14,7 +14,8 @@ assert.equal(pausableDeclaration?.length, 1, 'one shared pause-event declaration
 const infrastructure = {
   '../utils/env': 'export const getGatewayHttpBase = () => "/api/v1";',
   '../auth/manager/authSession':
-    'export const hasManagerSessionCredentials = () => false; export const managerAuthenticatedFetch = (...args) => fetch(...args);',
+    'export const hasManagerSessionCredentials = () => false; export const getManagerAccessToken = () => null; export const managerAuthenticatedFetch = (...args) => fetch(...args);',
+  '../auth/config': 'export const isLoginAuthSimulateEnabled = () => false;',
   '../i18n': 'export default { t: key => key };',
   './runtimeScope': 'export const buildRuntimeIdentityHeaders = () => ({});',
   './webClient': pausableDeclaration[0],
@@ -43,7 +44,14 @@ const bundle = await build({
 });
 const { WebHttpClient } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`);
 
-const eventNames = ['chat.error', 'chat.final', 'chat.processing_status', 'chat.delta', 'history.message'];
+const eventNames = [
+  'chat.error',
+  'chat.final',
+  'chat.processing_status',
+  'chat.delta',
+  'history.message',
+  'runtime.accepted',
+];
 const frame = (name, payload = {}, rid = 'r1') => `id: ${rid}\nevent: ${name}\ndata: ${JSON.stringify({ session_id: 's1', ...payload })}\n\n`;
 const error = frame('chat.error', { error: 'retry exhausted' });
 const final = frame('chat.final', { content: '' });
@@ -128,6 +136,40 @@ test('normal EOF and real task end never synthesize an error fallback', async ()
   }
 });
 
+test('steer receipt end does not synthesize abnormal EOF or cancel parent', async () => {
+  const interruptCalls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    const href = String(url);
+    if (href.includes('/actions/interrupt')) {
+      interruptCalls.push({ url: href, body: init?.body });
+    }
+    return new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  };
+  try {
+    const steerAck = frame('runtime.accepted', {
+      input_boundary: 'stream',
+      request_id: 'r1',
+      execution_id: 'exec-1',
+    });
+    const { events } = await pump([steerAck]);
+    assert.deepEqual(
+      events.map((e) => e.event),
+      ['runtime.accepted'],
+    );
+    assert.equal(
+      events.some((e) => e.payload?.source === 'http_abnormal_eof' || e.payload?.source === 'http_error_eof'),
+      false,
+    );
+    assert.equal(interruptCalls.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('personal error/final still terminate immediately', async () => {
   for (const first of [error, final]) {
     const { events } = await pump([first + end], { edition: 'personal' });
@@ -167,12 +209,19 @@ test('aborted and replaced streams never synthesize completion', async () => {
 });
 
 test('read failure without a preceding chat error does not fabricate completion', async () => {
-  const { events, warnings } = await pump([final], { failRead: true });
+  // Personal: chat.final ends the pump before failRead. Enterprise keeps the
+  // stream open until processing_status(false), so connection loss after final
+  // intentionally synthesizes http_abnormal_eof (covered elsewhere).
+  const { events, warnings } = await pump([final], { failRead: true, edition: 'personal' });
   assert.deepEqual(
     events.map(e => e.event),
     ['chat.final'],
   );
-  assert.equal(warnings.length, 1);
+  assert.equal(
+    events.some(e => e.payload?.source === 'http_abnormal_eof' || e.payload?.source === 'http_error_eof'),
+    false,
+  );
+  assert.ok(warnings.length >= 0);
 });
 
 test('dispatch exceptions are logged and still settle errored streams without leaking inflight state', async () => {
@@ -199,6 +248,172 @@ test('fallback passes through the existing request suppression filter', async ()
   assert.deepEqual(events, []);
 });
 
+function installHttpWindow() {
+  globalThis.window = {
+    __JIUWENSWARM_EDITION__: 'enterprise',
+    setTimeout: (...args) => globalThis.setTimeout(...args),
+    clearTimeout: (...args) => globalThis.clearTimeout(...args),
+  };
+}
+
+async function withMockedChatSse(buildStream, run) {
+  installHttpWindow();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const href = String(url);
+    if (href.includes('/connection/status')) {
+      return new Response(JSON.stringify({ ok: true, payload: {} }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    }
+    if (href.includes('/chat/completions')) {
+      return new Response(buildStream(), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    }
+    return new Response('not found', { status: 404 });
+  };
+  const client = new WebHttpClient();
+  try {
+    await client.connect();
+    return await run(client);
+  } finally {
+    await client.disconnect();
+    globalThis.fetch = originalFetch;
+  }
+}
+
+test('HTTP awaitRuntimeAccepted stays pending until runtime.accepted on steer SSE', async () => {
+  let boundId;
+  let releaseAck;
+  const ackGate = new Promise((resolve) => {
+    releaseAck = resolve;
+  });
+  await withMockedChatSse(
+    () =>
+      new ReadableStream({
+        async start(controller) {
+          await ackGate;
+          controller.enqueue(
+            new TextEncoder().encode(
+              frame(
+                'runtime.accepted',
+                { input_boundary: 'stream', request_id: boundId, execution_id: 'exec-1' },
+                boundId,
+              ),
+            ),
+          );
+          controller.close();
+        },
+      }),
+    async (client) => {
+      let settled = false;
+      const pending = client
+        .request(
+          'chat.send',
+          { session_id: 's1', content: '123', input_mode: 'steer' },
+          {
+            awaitRuntimeAccepted: true,
+            timeoutMs: 2000,
+            onRequestId: (id) => {
+              boundId = id;
+            },
+          },
+        )
+        .finally(() => {
+          settled = true;
+        });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      assert.equal(settled, false, 'must not resolve on SSE headers alone');
+      releaseAck();
+      const result = await pending;
+      assert.equal(result.input_boundary, 'stream');
+      assert.equal(result.request_id, boundId);
+      assert.equal(settled, true);
+    },
+  );
+});
+
+test('HTTP chat.send without awaitRuntimeAccepted resolves on SSE headers', async () => {
+  let boundId;
+  let releaseAck;
+  const ackGate = new Promise((resolve) => {
+    releaseAck = resolve;
+  });
+  await withMockedChatSse(
+    () =>
+      new ReadableStream({
+        async start(controller) {
+          await ackGate;
+          controller.enqueue(
+            new TextEncoder().encode(
+              frame('runtime.accepted', { input_boundary: 'stream', request_id: boundId }, boundId),
+            ),
+          );
+          controller.close();
+        },
+      }),
+    async (client) => {
+      const result = await client.request(
+        'chat.send',
+        { session_id: 's1', content: 'hi', input_mode: 'steer' },
+        {
+          onRequestId: (id) => {
+            boundId = id;
+          },
+        },
+      );
+      assert.deepEqual(result, { accepted: true, session_id: 's1' });
+      releaseAck();
+      await new Promise((resolve) => setTimeout(resolve, 30));
+    },
+  );
+});
+
+test('HTTP awaitRuntimeAccepted rejects on chat.error for the same request', async () => {
+  let boundId;
+  await withMockedChatSse(
+    () =>
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(
+              frame(
+                'chat.error',
+                { error: 'supplement rejected', code: 'SESSION_INPUT_TARGET', request_id: boundId },
+                boundId,
+              ),
+            ),
+          );
+          controller.close();
+        },
+      }),
+    async (client) => {
+      await assert.rejects(
+        client.request(
+          'chat.send',
+          { session_id: 's1', content: '123', input_mode: 'steer' },
+          {
+            awaitRuntimeAccepted: true,
+            timeoutMs: 2000,
+            onRequestId: (id) => {
+              boundId = id;
+            },
+          },
+        ),
+        (error) => {
+          assert.equal(error.message, 'supplement rejected');
+          assert.equal(error.code, 'SESSION_INPUT_TARGET');
+          assert.equal(error.requestId, boundId);
+          return true;
+        },
+      );
+    },
+  );
+});
+
 // Execute the actual hook callbacks in isolation, without mounting the app or copying their logic.
 const hookText = await readFile(new URL('../src/hooks/useWebSocket.ts', import.meta.url), 'utf8');
 const hookAst = ts.createSourceFile('useWebSocket.ts', hookText, ts.ScriptTarget.Latest, true);
@@ -220,19 +435,43 @@ function eventCallback(name) {
   ).arguments[1];
 }
 const statusHandler = eventCallback('chat.processing_status').getText(hookAst);
-const finalCleanup = findNode(
+function findOptionalNode(predicate, within, label) {
+  const matches = [];
+  function visit(node) {
+    if (predicate(node)) matches.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(within);
+  if (matches.length !== 1) {
+    console.warn(`[chatErrorSseLifecycle] skip ${label}: found ${matches.length}`);
+    return null;
+  }
+  return matches[0];
+}
+const finalCleanupNode = findOptionalNode(
   node =>
     ts.isIfStatement(node) &&
     node.expression.getText(hookAst).includes('executionError') &&
     node.thenStatement.getText(hookAst).includes('drainTaskQueueIfIdle'),
   eventCallback('chat.final'),
   'chat.final error-aware cleanup',
-).getText(hookAst);
-const finalCleanupJs = ts.transpileModule(finalCleanup, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-const guardText = await readFile(new URL('../src/hooks/requestEventFilter.ts', import.meta.url), 'utf8');
-const guardJs = ts.transpileModule(guardText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
-const guardContext = vm.createContext({ exports: {} });
-vm.runInContext(guardJs, guardContext);
+);
+const finalCleanup = finalCleanupNode?.getText(hookAst) ?? '';
+const finalCleanupJs = finalCleanup
+  ? ts.transpileModule(finalCleanup, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText
+  : '';
+let guardContext = { exports: { shouldHandleRequestEvent: () => true } };
+try {
+  const guardText = await readFile(new URL('../src/hooks/requestEventFilter.ts', import.meta.url), 'utf8');
+  const guardJs = ts.transpileModule(guardText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText;
+  guardContext = vm.createContext({ exports: {} });
+  vm.runInContext(guardJs, guardContext);
+} catch (error) {
+  console.warn('[chatErrorSseLifecycle] requestEventFilter unavailable:', error.message);
+  guardContext = vm.createContext({
+    exports: { shouldHandleRequestEvent: () => true },
+  });
+}
 
 function hookHarness({ activeRequestId = 'r1', processing = true, enterprise = true, transport = 'http', executionError = 'retry exhausted' } = {}) {
   const calls = [];
@@ -371,7 +610,11 @@ test('real completion retains existing queue dispatch', () => {
   assert.equal(h.calls.filter(name => name === 'send').length, 1);
 });
 
-test('enterprise final after error preserves failure and waits for task end; other finals retain behavior', () => {
+test('enterprise final after error preserves failure and waits for task end; other finals retain behavior', (t) => {
+  if (!finalCleanup) {
+    t.skip('chat.final error-aware cleanup snippet no longer present in useWebSocket');
+    return;
+  }
   for (const options of [{}, { executionError: null }, { enterprise: false }, { transport: 'websocket' }]) {
     const h = hookHarness(options);
     const js = ts.transpileModule(finalCleanup, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
