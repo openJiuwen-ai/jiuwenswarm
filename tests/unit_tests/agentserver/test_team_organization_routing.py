@@ -12,7 +12,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
@@ -143,7 +143,7 @@ async def test_cancel_recovered_expert_without_owner_runtime(monkeypatch, persis
         response = await server._cancel_targeted_expert(request(ReqMethod.CHAT_CANCEL))
         assert response.ok is allowed
         assert expert.cancelled() is allowed
-        lookup.assert_awaited_once_with("session", "expert")
+        lookup.assert_awaited_once_with("session", "owner")
     finally:
         expert.cancel()
         await asyncio.gather(expert, return_exceptions=True)
@@ -649,11 +649,14 @@ async def test_direct_expert_failure_persists_error_once(monkeypatch, succeeded)
     )
 
     async def run_turn(self, *args, **kwargs):
+        assert args == ("expert", "session", {"query": "@expert-member Explain your finding"})
+        assert kwargs["source"] == "org_expert_direct"
         return succeeded
 
     monkeypatch.setattr(JiuwenExpertTeamLauncher, "run_organization_turn", run_turn)
     req = request()
-    req.params["content"] = "Explain your finding"
+    # Gateway normalizes the Web content field to query before AgentServer.
+    req.params["query"] = "@expert-member Explain your finding"
     chunks = [chunk async for chunk in server._targeted_expert_response_stream(req)]
     errors = [
         chunk.payload for chunk in chunks if chunk.payload["event_type"] == "chat.error"

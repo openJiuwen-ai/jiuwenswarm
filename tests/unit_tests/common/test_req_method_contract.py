@@ -37,7 +37,7 @@ def _gateway_req_method_literals() -> set[str]:
     """收集 gateway 源码中 ``req_method="..."`` 关键字实参字面量。"""
     found: set[str] = set()
     gateway_root = _REPO_ROOT / "gateway"
-    assert gateway_root.is_dir(), "Gateway source directory is missing"
+    assert gateway_root.is_dir(), f"Gateway source directory does not exist: {gateway_root}"
     for path in gateway_root.rglob("*.py"):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -71,6 +71,10 @@ def test_forwarded_methods_exist_in_protocol_req_method() -> None:
         f"未定义，服务端 ReqMethod(str) 会抛 ValueError：{unknown}。"
         "请在 agent-protocol 仓补齐后更新 pyproject/uv.lock 的 pin。"
     )
+
+
+def test_gateway_literal_scan_is_not_empty() -> None:
+    assert _gateway_req_method_literals(), "Gateway literal scan must inspect the current source directory"
 
 
 def test_req_method_reexports_are_identical() -> None:

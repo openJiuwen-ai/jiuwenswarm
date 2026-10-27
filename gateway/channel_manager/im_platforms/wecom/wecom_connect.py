@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import concurrent.futures
 import json
+import logging
 import os
 import re
 import threading
@@ -16,17 +16,21 @@ from collections import OrderedDict
 from typing import Any, Callable
 
 import requests
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
-from gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
-from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from gateway.channel_manager.base import (
+    BaseChannel,
+    ChannelMetadata,
+    RobotMessageRouter,
+)
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
-from jiuwenswarm.common.utils import get_agent_workspace_dir
+from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -632,7 +636,9 @@ class WecomChannel(BaseChannel):
 
     @staticmethod
     def _is_control_message(content: str) -> bool:
-        from gateway.message_handler.command_parser.slash_command import is_control_like_for_im_batching
+        from gateway.message_handler.command_parser.slash_command import (
+            is_control_like_for_im_batching,
+        )
 
         return is_control_like_for_im_batching(content)
 
@@ -1408,7 +1414,9 @@ class WecomChannel(BaseChannel):
 
         # 初始化文件服务
         try:
-            from gateway.channel_manager.im_platforms.wecom.wecom_file_service import WecomFileService
+            from gateway.channel_manager.im_platforms.wecom.wecom_file_service import (
+                WecomFileService,
+            )
             workspace_dir = self.config.workspace_dir or str(get_agent_workspace_dir())
             self._file_service = WecomFileService(
                 ws_client=client,

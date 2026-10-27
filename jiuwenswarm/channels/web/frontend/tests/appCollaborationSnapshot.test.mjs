@@ -18,7 +18,7 @@ const dependencyNames = [
   'request', 'setA2UIFeatureEnabled', 'normalizeA2UIEnabled', 'setRSIFeatureEnabled',
   'normalizeRSIEnabled',
   'normalizeTrajectoryDiagnosisEnabled', 'setTrajectoryDiagnosisEnabled',
-  'setTeamOrganizationUiEnabled', 'setTeamScheduledDispatchEnabled', 'setServerConfig', 'setConfigError',
+  'setTeamOrganizationUiEnabled', 'setComfyuiWorkflowEnabled', 'setTeamScheduledDispatchEnabled', 'setServerConfig', 'setConfigError',
   'modelSetupGuideEvaluatedRef', 'shouldPreviewModelSetupGuide', 'isSetupGuideEnabled',
   'setActiveNav', 'setModelSetupGuideStep', 'setAvailableModels', 'setAvailableModelGroups',
   'parseModelGroups', 't',

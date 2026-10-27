@@ -33,7 +33,7 @@ def test_default_team_config_enables_managed_worktrees():
     assert data["modes"]["team"]["jiuwen_team"]["worktree"] == {"enabled": True}
 
 
-def test_default_code_configs_do_not_load_multimodal_tools():
+def test_default_code_configs_do_not_duplicate_model_enabled_multimodal_tools():
     repo_root = Path(__file__).resolve().parents[2]
     config_files = [
         repo_root / "jiuwenswarm" / "resources" / "config.yaml",

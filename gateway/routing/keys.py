@@ -9,7 +9,7 @@ from typing import Any
 
 # AgentRef 为纯数据结构，source of truth 在 common/schema/agent（与
 # AgentRequest.agent_ref 同源），此处转发保持 gateway 树内既有引用不变。
-from jiuwenswarm.common.schema.agent import AgentRef  # noqa: F401
+from openjiuwen_protocol.e2a.agent_models import AgentRef  # noqa: F401
 
 WILDCARD = "*"
 APP_ID_DEFAULT = "default"

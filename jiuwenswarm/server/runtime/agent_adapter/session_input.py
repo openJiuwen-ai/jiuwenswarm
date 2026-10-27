@@ -18,7 +18,7 @@ from openjiuwen.core.foundation.llm.schema.message import (
 )
 from openjiuwen.harness.schema.interaction import InputDispatchMode
 
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY, SESSION_MESSAGE_ORIGIN
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY, SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.runtime.session.model import SessionExecutionState
 from jiuwenswarm.runtime.session_input import SessionInputTargetError, resolve_session_input_mode

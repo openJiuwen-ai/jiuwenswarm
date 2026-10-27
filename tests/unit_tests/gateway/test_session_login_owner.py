@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.auth import session_owners
-from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
+from openjiuwen_protocol.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
 from gateway.message_handler.message_handler import (
     _LOGIN_HINT_NO_OWNER,
     _LOGIN_HINT_OWNER_LOGGED_OUT,
@@ -28,7 +28,11 @@ def _owners_in_tmp(monkeypatch, tmp_path):
 
 def _run(env, *, session_model: str = "GLM-5.2") -> dict:
     handler = SimpleNamespace(agent_client=None)
-    handler._effective_session_model = lambda sid, params: params.get("model_name") or session_model
+
+    async def _effective_session_model(sid, params):
+        return params.get("model_name") or session_model
+
+    handler._effective_session_model = _effective_session_model
     asyncio.run(MessageHandler._apply_session_login_owner(handler, env))
     return env.params
 

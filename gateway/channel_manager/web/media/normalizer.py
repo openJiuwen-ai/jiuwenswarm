@@ -12,7 +12,7 @@ from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.attachment_safety import (
+from gateway.common.attachment_safety import (
     ensure_image_upload_filename,
     image_suffix_for_mime,
     safe_session_dirname,

@@ -63,7 +63,7 @@ from jiuwenswarm.common.utils import (
     get_root_dir,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
@@ -1454,8 +1454,8 @@ async def _clear_agent_config_cache(agent_client=None) -> None:
     """写回 config.yaml 后清除 agent 侧配置缓存，使下次读取时得到最新文件内容。"""
     try:
         if agent_client is not None:
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
+            from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+            from openjiuwen_protocol.message import ReqMethod
 
             env = e2a_from_agent_fields(
                 request_id=f"cfg-reload-{uuid.uuid4().hex[:8]}",
@@ -1479,8 +1479,8 @@ async def _restart_agent_browser_runtime(
     if agent_client is None:
         return
 
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+    from openjiuwen_protocol.message import ReqMethod
 
     env = e2a_from_agent_fields(
         request_id=f"browser-restart-{uuid.uuid4().hex[:8]}",
@@ -1808,7 +1808,7 @@ async def _upload_document_item_via_http(
     返回带 ``_persisted`` 标记的落盘记录，AgentServer 侧直接透传、不重复解码。
     上传失败返回 ``None``（调用方保留原 base64 项）。
     """
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         is_forbidden_document,
         safe_session_dirname,
         safe_upload_filename,
@@ -1866,7 +1866,7 @@ async def _pre_persist_large_documents(
     否则走 media_items 通道的大文档不会被 HTTP 预上传，原 base64 随 E2A 转发
     可能超内部 WS 帧限制。
     """
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         strip_data_uri_prefix as _strip_data_uri_prefix,
     )
     from gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
@@ -1943,7 +1943,7 @@ async def _upload_media_item_via_http(
     （``agent/sessions/<safe_session_id>/uploads/<safe_filename>``，同名去重）。
     上传失败返回 ``None``（调用方保留原 base64 项，由下游链路处理）。
     """
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         ensure_image_upload_filename,
         image_suffix_for_mime,
         safe_session_dirname,
@@ -2000,7 +2000,7 @@ async def _pre_persist_large_media(
         return params
     import json as _json
 
-    from jiuwenswarm.common.attachment_safety import (
+    from gateway.common.attachment_safety import (
         strip_data_uri_prefix as _strip_data_uri_prefix,
     )
     from gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
@@ -2049,30 +2049,6 @@ async def _pre_persist_large_media(
     return params
 
 
-def session_left_project_follow_up(channel: Any, topic_service: Any = None):
-    """What a conversation takes with it when it leaves a project: deleted from either client,
-    or moved to another project from the TUI.
-
-    The project's open pages re-read their sources.
-    """
-    async def session_left_project(project_id: str, session_id: str) -> None:
-        if not project_id:
-            return
-        if (project_id not in {"default", "default_code"} and topic_service is not None
-                and topic_service.configuration_status()["enabled"]):
-            from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-                scope_for_project,
-            )
-
-            context_scope = scope_for_project(project_id)
-            await channel.broadcast_event("topic_starters.ready", {"context_scope": context_scope, "state": "ready"})
-            topic_service.schedule_successor(
-                context_scope=context_scope, project_id=project_id, visit_id=f"session-left-project:{session_id}",
-            )
-
-    return session_left_project
-
-
 def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     """注册 Web 前端需要的 method 与 on_connect。
     on_config_saved: 可选，config.set 写回后调用的回调；
@@ -2091,23 +2067,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     cron_controller = bind.cron_controller
     heartbeat_controller = bind.heartbeat_controller
     updater_service = bind.updater_service
-    topic_starter_service = bind.topic_starter_service
-    topic_history_store = bind.topic_history_store
-    topic_prepare_service = bind.topic_prepare_service
-    topic_service = bind.topic_service
-    topic_outcome_queue = bind.topic_outcome_queue
 
-    if topic_service is not None:
-        def notify_topic_pool_prepared(context_scope: str, state: str, pool_written: bool) -> None:
-            spawn_background_task(
-                channel.broadcast_event("topic_starters.ready", {
-                    "context_scope": context_scope, "state": state, "pool_written": pool_written,
-                }),
-                name="broadcast_topic_starters_ready",
-            )
-        topic_service.on_prepared = notify_topic_pool_prepared
-
-    from jiuwenswarm.common.schema.message import EventType, Message
+    from openjiuwen_protocol.message import EventType, Message
 
     def _resolve(ref, key="value"):
         """若为 ref 字典则取 key（无则返回 None），否则返回自身。"""
@@ -2130,10 +2091,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         async def _sync() -> None:
             try:
-                from jiuwenswarm.common.e2a.gateway_normalize import (
+                from openjiuwen_protocol.e2a.gateway_normalize import (
                     e2a_from_agent_fields,
                 )
-                from jiuwenswarm.common.schema.message import ReqMethod
+                from openjiuwen_protocol.message import ReqMethod
 
                 real_client = _resolve(agent_client)
                 if real_client is None:
@@ -2215,8 +2176,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send(ack_msg)
 
     channel.on_connect(_on_connect)
-
-    session_deleted = session_left_project_follow_up(channel, topic_service)
 
     async def _on_disconnect(ws, _session_ids):
         mh = _resolve(message_handler)
@@ -2325,11 +2284,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _vendors_list(ws, req_id, params, session_id):
         """返回按 plan 分组的厂商预设列表(供前端 Tab+厂商卡片渲染)。
 
-        纯数据,读 ``jiuwenswarm.common.model_vendor_registry``,无副作用。
+        纯数据,读 ``gateway.common.model_vendor_registry``,无副作用。
         """
         del params, session_id
         try:
-            from jiuwenswarm.common.model_vendor_registry import to_frontend_payload
+            from gateway.common.model_vendor_registry import to_frontend_payload
             await channel.send_response(
                 ws, req_id, ok=True,
                 payload={"vendors": to_frontend_payload()},
@@ -2354,7 +2313,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         api_key = str(params.get("api_key") or "").strip()
         modality = str(params.get("modality") or "").strip()
         try:
-            from jiuwenswarm.common.model_vendor_registry import (
+            from gateway.common.model_vendor_registry import (
                 PlanKind,
                 get_preset,
             )
@@ -2440,7 +2399,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         ws, req_id, ok=False, error="unsupported model modality", code="BAD_REQUEST",
                     )
                     return
-                from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
+                from gateway.common.volcengine_endpoints import normalize_ark_api_base
 
                 try:
                     api_base = normalize_ark_api_base(str(params.get("api_base") or preset.api_base))
@@ -2751,7 +2710,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter 处理），
         AgentServer 输出与迁移前 Web fallback 投影（to_session_info）完全一致。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -2780,7 +2739,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         持久化 metadata：由 AgentServer 返回权威执行快照，Gateway 透传，
         避免 Gateway 重启后用空的本地 busy 缓存覆盖仍在执行的 Worker 状态。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2796,7 +2755,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _session_message_continue_queued(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2817,7 +2776,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         转发 AgentServer ``SESSION_PLAN_STATUS``：单 agent 读 live
         ``plan_mode``，集群 / 读不到 agent 状态时回退 metadata.mode。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2854,7 +2813,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST",
             )
             return
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         # 统一薄代理 E2A 转发（envelope.user_id 承载认证身份，
@@ -2883,7 +2842,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         下重命名必须落在用户 AgentServer 的会话目录（方案 §10.3 契约）。
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -2909,7 +2868,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
         SESSION_PIN，AgentServer 注入目录 session_metadata）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -2941,7 +2900,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         仅统计该项目的非置顶**普通**会话(``cron_id`` 为空)。置顶会话与 cron 会话
         不计入任何项目统计。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2958,7 +2917,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_get_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目下的非置顶普通会话列表（目标 AgentServer 执行）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2975,7 +2934,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_get_cron_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目 cron 会话（目标 AgentServer 执行）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -2997,7 +2956,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         injected user directory. Gateway only schedules deployment-side warm
         key reconciliation after a successful mutation.
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         async def after_create(ok, payload):
@@ -3027,7 +2986,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         默认项目禁止重命名(``FORBIDDEN``)。``name`` 与已有项目(含隐藏)重复时返回 ``CONFLICT``。
         ``name`` 含文件系统非法字符 / 为保留设备名时返回 ``BAD_REQUEST``。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3048,7 +3007,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         默认项目禁止置顶(``FORBIDDEN``)。新置顶项目 ``pin_order`` 默认 0,
         重编号后置于置顶区顶部(与 ``session.pin`` 行为一致)。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3084,7 +3043,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_remove(ws, req_id, params, session_id, user_id=None):
         """Forward project soft-deletion; stop its cron jobs, clean Git watchers."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import fetch_agent_unary
 
         project_id = str((params or {}).get("project_id") or "").strip()
@@ -3167,7 +3126,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _project_restore(ws, req_id, params, session_id, user_id=None):
         """Forward project restoration to the target AgentServer."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         project_id = str((params or {}).get("project_id") or "").strip()
@@ -3199,7 +3158,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         统计口径同 ``project.list``:仅统计该项目的非置顶普通会话(``cron_id`` 为空)。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3220,7 +3179,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         置顶会话已从项目分组中剥离,通过本接口独立获取。``project_dir`` 仍指向
         原归属项目。不接受任何参数。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3257,7 +3216,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 project_id, exc,
             )
 
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.message import ReqMethod
 
     def _make_git_proxy_handler(
         req_method, label, *, doc, mark_dirty=False, mark_dirty_on_failure=False
@@ -3378,7 +3337,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _path_get(ws, req_id, params, session_id, user_id=None):
         """读 browser.chrome_path 并返回给前端（会解析环境变量）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3417,7 +3376,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
         )
 
@@ -3450,7 +3409,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if params.get(decision_key) is not None:
                 set_params[decision_key] = params[decision_key]
 
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             fetch_agent_unary,
             is_legacy_shared_directory_client,
@@ -3522,7 +3481,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             else True
         )
 
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
             browser_decision_updates,
         )
@@ -3570,7 +3529,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（WorkspaceFileAdapter
         PATH_SELECT_DIRECTORY，注入 workspace 内解析/校验，越界返回 BAD_REQUEST）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3623,7 +3582,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         经统一薄代理 E2A 转发目标 AgentServer（WorkspaceFileAdapter
         PATH_SELECT_FILES，注入 workspace 内枚举，返回与桌面端同形元数据）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3761,7 +3720,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         MEDIA_PERSIST，base64 小文件由注入目录落盘；大文件在 Gateway 侧解码后
         走受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         real_client = _resolve(agent_client)
@@ -3787,7 +3746,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _media_discard(ws, req_id, params, session_id, user_id=None):
         """删除尚未发送的会话 uploads 副本（E2A 转发，路径边界在 AgentServer）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3805,7 +3764,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _document_persist(ws, req_id, params, session_id, user_id=None):
         """文档附件落盘（E2A 转发；base64 小文档由 AgentServer 注入目录落盘，
         大文档在 Gateway 侧解码后经受认证 HTTP bridge 上传，避免超内部 WS 帧限制）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         real_client = _resolve(agent_client)
@@ -3831,7 +3790,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _document_formats(ws, req_id, params, session_id, user_id=None):
         """返回文档上传黑名单格式（E2A 转发 AgentServer）。"""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -3890,7 +3849,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):
         """Return the selected AgentServer user's preferred language."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -3919,7 +3878,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _locale_set_conf(ws, req_id, params, session_id, user_id=None):
         """Update preferred language in the selected AgentServer directory."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -4789,7 +4748,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 try:
                     from jiuwenswarm.common.external_providers import provider
 
-                    meta = provider("session_metadata").get_session_metadata(
+                    meta = await provider("session_metadata").get_session_metadata_async(
                         session_id, cache_bust=True
                     )
                     if isinstance(meta, dict):
@@ -5056,703 +5015,77 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
-    def _get_topic_starter_service():
-        nonlocal topic_starter_service
-        if topic_starter_service is None:
-            from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
-                build_default_topic_starter_service,
-            )
+    async def _forward_recommendation(ws, req_id, params, session_id, user_id=None, *, action: str):
+        """Send a recommendation panel call to AgentServer and return its payload."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from gateway.routing.e2a_proxy import proxy_unary_request
 
-            topic_starter_service = build_default_topic_starter_service()
-        return topic_starter_service
-
-    def _get_topic_history_store():
-        nonlocal topic_history_store
-        if topic_history_store is None:
-            from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
-                TopicStarterStore,
-            )
-            from jiuwenswarm.common.utils import get_agent_workspace_dir
-
-            topic_history_store = TopicStarterStore(
-                get_agent_workspace_dir() / "recommendation.db"
-            )
-        return topic_history_store
-
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        load_recommendation_controls,
-        recommendation_model_config,
-        recommendation_model_options,
-        save_recommendation_controls,
-        save_recommendation_model,
-    )
-    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
-        background_configuration_status,
-    )
-    legacy_recommendation_tasks: set[asyncio.Task] = set()
-
-    async def _prompt_suggestion_event(ws, req_id, params, session_id):
-        """The page's outcome for the in-conversation suggestion above its composer."""
-        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
-            record_page_outcome,
-        )
-
-        if not load_recommendation_controls()["enabled"]:
-            await channel.send_response(ws, req_id, ok=True, payload={"recorded": False, "reason": "disabled"})
-            return
-        if isinstance(params, dict) and params.get("event_type") == "input_changed":
+        if (
+            action == "prompt_suggestion_event"
+            and isinstance(params, dict)
+            and params.get("event_type") == "input_changed"
+        ):
             target_session = params.get("session_id")
             if not isinstance(target_session, str) or not target_session.strip():
-                await channel.send_response(ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST")
-                return
-            client = _resolve(agent_client)
-            if client is None:
-                await channel.send_response(ws, req_id, ok=False, error="AgentServer is unavailable", code="NOT_READY")
-                return
-            from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-            from jiuwenswarm.common.schema.message import ReqMethod
-
-            response = await client.send_request(e2a_from_agent_fields(
-                request_id=req_id, channel_id="web", session_id=target_session.strip(),
-                req_method=ReqMethod.PROMPT_SUGGESTION_CANCEL, is_stream=False,
-            ))
-            await channel.send_response(ws, req_id, ok=response.ok, payload=response.payload)
-            return
-        recorded = record_page_outcome(_get_topic_history_store(), params) if isinstance(params, dict) else None
-        if recorded is None:
-            await channel.send_response(ws, req_id, ok=False, error="unknown suggestion or outcome", code="BAD_REQUEST")
-            return
-        await channel.send_response(ws, req_id, ok=True, payload={"recorded": recorded})
-
-    async def _topic_starters_status(ws, req_id, params, session_id):
-        payload = (topic_service.configuration_status()
-                   if topic_service is not None
-                   else background_configuration_status(recommendation_model_config()))
-        # The chat models the topic model is chosen from; this connection's login models are listed greyed.
-        models = await asyncio.to_thread(recommendation_model_options, getattr(ws, "_jiuwen_auth_session", "") or None)
-        payload = {**payload, **models, "enabled": load_recommendation_controls()["enabled"]}
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _topic_starters_select_model(ws, req_id, params, session_id):
-        """Keep the chosen topic model (its ID only) and put it in force at once."""
-        model = params.get("model") if isinstance(params, dict) else None
-        if not isinstance(model, str) or not save_recommendation_model(model):
-            await channel.send_response(ws, req_id, ok=False, error="model cannot prepare topics", code="BAD_REQUEST")
-            return
-        if topic_service is not None:
-            await topic_service.reload_config()
-        await _topic_starters_status(ws, req_id, {}, session_id)
-
-    async def _topic_starters_profile(ws, req_id, params, session_id):
-        from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-            inspect_recommendation_profile,
-        )
-        payload = inspect_recommendation_profile(_get_topic_history_store(), now=time.time())
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _topic_starters_restore_direction(ws, req_id, params, session_id):
-        from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-            inspect_recommendation_profile,
-            restore_dismissed_direction,
-        )
-        direction_id = params.get("direction_id") if isinstance(params, dict) else None
-        store = _get_topic_history_store()
-        if not isinstance(direction_id, str) or not restore_dismissed_direction(store, direction_id, now=time.time()):
-            await channel.send_response(ws, req_id, ok=False, error="no such permanent direction", code="BAD_REQUEST")
-            return
-        await channel.send_response(ws, req_id, ok=True, payload=inspect_recommendation_profile(store, now=time.time()))
-
-    async def _topic_starters_control(ws, req_id, params, session_id):
-        if (
-            not isinstance(params, dict)
-            or params.get("action") not in {"enable", "disable", "delete"}
-            or not isinstance(params.get("include_history", False), bool)
-        ):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="invalid recommendation control",
-                code="BAD_REQUEST",
-            )
-            return
-        action = params["action"]
-        # The switch is the user's decision, so this entry point records it; the service below
-        # only puts it in force. Deleting the data turns the switch off with it.
-        from jiuwenswarm.agents.harness.common.recommendation.switches import (
-            save_recommendation_switches,
-        )
-        save_recommendation_switches(topic_enabled=action == "enable", now=time.time())
-        if action != "enable":
-            tasks = tuple(legacy_recommendation_tasks)
-            for task in tasks:
-                task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-        if action != "enable" and topic_prepare_service is not None:
-            await topic_prepare_service.shutdown()
-        include_history = params.get("include_history", False)
-        if topic_service is not None:
-            if action == "delete":
-                await topic_service.delete_data()
-            else:
-                await topic_service.set_enabled(
-                    action == "enable", include_history=include_history
+                await channel.send_response(
+                    ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST",
                 )
-        else:
-            save_recommendation_controls(
-                enabled=action == "enable",
-                include_history=include_history,
-                deleted=action == "delete",
-                now=time.time(),
-            )
-            if action == "delete":
-                _get_topic_history_store().delete_recommendation_data()
-        await _topic_starters_status(ws, req_id, {}, session_id)
-        await channel.broadcast_event("topic_starters.control_changed", {"enabled": action == "enable"})
-
-    async def _topic_starters_get(ws, req_id, params, session_id):
-        received_at = time.time()
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        requested_session_id = str(
-            params.get("session_id") or session_id or ""
-        ).strip()
-        if not requested_session_id:
-            await channel.send_response(
-                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST"
-            )
-            return
-        from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
-            POLICY_ID as PREPARE_POLICY_ID,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            GLOBAL_NEW_CHAT_SCOPE,
-            project_id_for_scope,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            POLICY_ID as TOPIC_POLICY_ID,
+                return
+        body = dict(params) if isinstance(params, dict) else {}
+        if action == "control":
+            # The panel verb (enable/disable/delete) shares the name ``action``.
+            # Keep it before the RPC action overwrites that field.
+            body["control_action"] = body.get("action")
+        auth_session = getattr(ws, "_jiuwen_auth_session", "") or ""
+        if auth_session:
+            body["auth_session"] = auth_session
+        body["action"] = action
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=body,
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.RECOMMENDATION,
+            label="recommendation",
         )
 
-        policy_id = str(params.get("policy_id") or "").strip()
-        if policy_id in {"", "topic-starter-mvp-v4"}:
-            task = asyncio.current_task()
-            legacy_recommendation_tasks.add(task)
-            try:
-                from jiuwenswarm.agents.harness.common.recommendation import (
-                    topic_history,
-                )
-                from jiuwenswarm.server.runtime.opencode_zen import (
-                    get_zen_free_model_entries,
-                )
-
-                config = get_config()
-                payload = await topic_history.run_history_topic_get(
-                    params,
-                    store=_get_topic_history_store(),
-                    received_at=received_at,
-                    config_entries=get_default_models(config),
-                    zen_entries=get_zen_free_model_entries(),
-                    context_engine_config=(
-                        (config.get("react", {}) or {}).get(
-                            "context_engine_config", {}
-                        )
-                        or {}
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[TopicHistory] get failed: %s", exc)
-                payload = {
-                    "available": False,
-                    "reason": "topic_starter_unavailable",
-                }
-            finally:
-                legacy_recommendation_tasks.discard(task)
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-            return
-        if policy_id not in {
-            PREPARE_POLICY_ID,
-            TOPIC_POLICY_ID,
-        }:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="unsupported policy_id",
-                code="BAD_REQUEST",
-            )
-            return
-        context_scope = str(params.get("context_scope") or "")
-        project_id = params.get("project_id")
-        if policy_id == PREPARE_POLICY_ID:
-            _failed = (
-                (
-                    "context_scope" in params
-                    and context_scope != GLOBAL_NEW_CHAT_SCOPE
-                ) or ("project_id" in params and project_id is not None)
-            )
-            if _failed:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="prepare lane only supports global_new_chat without project_id",
-                    code="BAD_REQUEST",
-                )
-                return
-            try:
-                if topic_prepare_service is None:
-                    payload = {
-                        "available": False,
-                        "reason": "prepare_service_unavailable",
-                        "session_id": requested_session_id,
-                        "policy_id": PREPARE_POLICY_ID,
-                    }
-                else:
-                    payload = dict(
-                        topic_prepare_service.serve(requested_session_id)
-                    )
-                payload.update(
-                    {
-                        "session_id": requested_session_id,
-                        "policy_id": PREPARE_POLICY_ID,
-                    }
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[TopicPrepare] pool read failed: %s", exc)
-                payload = {
-                    "available": False,
-                    "reason": "topic_starter_unavailable",
-                    "session_id": requested_session_id,
-                    "policy_id": PREPARE_POLICY_ID,
-                }
-            await channel.send_response(ws, req_id, ok=True, payload=payload)
-            return
-        try:
-            if project_id_for_scope(context_scope) != project_id:
-                raise ValueError("project mismatch")
-        except ValueError:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="invalid context_scope or project_id",
-                code="BAD_REQUEST",
-            )
-            return
-        try:
-            if topic_service is None:
-                payload = {
-                    "available": False,
-                    "reason": "topic_service_unavailable",
-                    "session_id": requested_session_id,
-                    "policy_id": TOPIC_POLICY_ID,
-                    "context_scope": context_scope,
-                    "project_id": project_id,
-                }
-            else:
-                if topic_service.ark_config is None:
-                    # A model fixed on disk after this process started (a hand-edited
-                    # config.yaml fires no save event) still counts on the next read.
-                    try:
-                        await topic_service.reload_config()
-                    except Exception as exc:  # noqa: BLE001
-                        logger.warning("[Topic] config reload on read failed: %s", exc)
-                # The homepage read is the switch the page actually sees. A save that
-                # did not reach this process still has to change the cards on this read.
-                from jiuwenswarm.agents.harness.common.recommendation.switches import (
-                    is_topic_recommendation_enabled,
-                )
-                wanted = is_topic_recommendation_enabled()
-                if bool(topic_service.configuration_status()["enabled"]) != wanted:
-                    await topic_service.set_enabled(wanted, persist=False)
-                if params.get("manual_retry") is True:
-                    topic_service.retry(context_scope=context_scope,
-                        project_id=project_id, visit_id=requested_session_id)
-                payload = topic_service.serve(
-                    requested_session_id,
-                    context_scope=context_scope,
-                    project_id=project_id,
-                    **({"slate_id": params["slate_id"]} if params.get("slate_id") else {}),
-                )
-                if context_scope == GLOBAL_NEW_CHAT_SCOPE:
-                    topic_service.schedule_news_check(requested_session_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[Topic] pool read failed: %s", exc)
-            payload = {
-                "available": False,
-                "reason": "topic_starter_unavailable",
-                "session_id": requested_session_id,
-                "policy_id": TOPIC_POLICY_ID,
-                "context_scope": context_scope,
-                "project_id": project_id,
-            }
-        await channel.send_response(ws, req_id, ok=True, payload=payload)
-
-    async def _topic_starters_foreground(ws, req_id, params, session_id):
-        """A blank global new page came back to the foreground: run the news check."""
-        scheduled = False
-        _condition = (
-            load_recommendation_controls()["enabled"]
-            and topic_service is not None
-            and isinstance(params, dict)
-            and params.get("context_scope") == "global_new_chat"
-        )
-        if (
-            _condition
-        ):
-            visit_id = str(params.get("visit_id") or session_id or "").strip() or "foreground"
-            scheduled = topic_service.schedule_news_check(visit_id) is not None
-        await channel.send_response(ws, req_id, ok=True, payload={"scheduled": scheduled})
-
-    async def _topic_starters_event(ws, req_id, params, session_id):
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
-            )
-            return
-        event = dict(params)
-        event["session_id"] = str(event.get("session_id") or session_id or "").strip()
-        if (
-            not event["session_id"]
-            or not str(event.get("slate_id") or "").strip()
-            or not str(event.get("event_type") or "").strip()
-        ):
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="session_id, slate_id and event_type are required",
-                code="BAD_REQUEST",
-            )
-            return
-        policy_id = str(event.get("policy_id") or "").strip()
-        selection_mode = str(event.get("selection_mode") or "").strip()
-        from jiuwenswarm.agents.harness.common.recommendation.topic_pool import (
-            POLICY_ID as PREPARE_POLICY_ID,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            GLOBAL_NEW_CHAT_SCOPE,
-            project_id_for_scope,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-            POLICY_ID as TOPIC_POLICY_ID,
+    async def _prompt_suggestion_event(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="prompt_suggestion_event",
         )
 
-        if policy_id in {"topic-starter-mvp-v3", "topic-starter-mvp-v4"}:
-            if (
-                "profile_version" not in event
-                or selection_mode
-                not in {
-                    "static_fallback",
-                    "personalized_dynamic",
-                    "generic_dynamic",
-                }
-            ):
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="profile_version, policy_id and selection_mode are required",
-                    code="BAD_REQUEST",
-                )
-                return
-            event["policy_id"] = policy_id
-            event["selection_mode"] = selection_mode
-            event.setdefault("propensity", None)
-            event.setdefault("propensity_reason", "not_estimated")
-            event.setdefault("created_at", time.time())
-            try:
-                recorded = _get_topic_starter_service().record_event(event)
-                await channel.send_response(
-                    ws, req_id, ok=True, payload={"recorded": bool(recorded)}
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[TopicStarter] event failed: %s", exc)
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="failed to record event",
-                    code="INTERNAL_ERROR",
-                )
-            return
-        if policy_id not in {
-            PREPARE_POLICY_ID,
-            TOPIC_POLICY_ID,
-        }:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="unsupported policy_id",
-                code="BAD_REQUEST",
-            )
-            return
-        if policy_id == PREPARE_POLICY_ID:
-            if selection_mode not in {
-                "personalized_dynamic",
-                "mixed_dynamic",
-                "generic_dynamic",
-            }:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="selection_mode is required",
-                    code="BAD_REQUEST",
-                )
-                return
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="payload must be object",
-                    code="BAD_REQUEST",
-                )
-                return
-            context_scope = str(payload.get("context_scope") or "")
-            project_id = payload.get("project_id")
-            _failed2 = (
-                (
-                    "context_scope" in payload
-                    and context_scope != GLOBAL_NEW_CHAT_SCOPE
-                ) or ("project_id" in payload and project_id is not None)
-            )
-            if _failed2:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="prepare lane only supports global_new_chat without project_id",
-                    code="BAD_REQUEST",
-                )
-                return
-            manifest_id = str(payload.get("manifest_id") or "").strip()
-            generation_batch_id = str(
-                payload.get("generation_batch_id") or ""
-            ).strip()
-            if not manifest_id or not generation_batch_id:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="manifest_id and generation_batch_id are required",
-                    code="BAD_REQUEST",
-                )
-                return
+    async def _topic_starters_status(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="status")
 
-            recorded = False
-            event_type = str(event.get("event_type") or "").strip()
-            store = getattr(topic_prepare_service, "store", None)
-            if store is not None:
-                from jiuwenswarm.agents.harness.common.recommendation.topic_feedback import (
-                    record_v5_exposure,
-                    record_v5_interaction,
-                    record_v5_slate_event,
-                )
+    async def _topic_starters_select_model(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="select_model",
+        )
 
-                if event_type == "dynamic_exposure":
-                    raw_topics = payload.get("topics")
-                    cards = None
-                    if isinstance(raw_topics, list) and all(
-                        isinstance(item, dict) for item in raw_topics
-                    ):
-                        cards = [
-                            {
-                                "card_revision_id": str(
-                                    item.get("card_revision_id") or ""
-                                ).strip()
-                            }
-                            for item in raw_topics
-                        ]
-                    recorded = record_v5_exposure(
-                        store,
-                        session_id=event["session_id"],
-                        slate_id=str(event["slate_id"]),
-                        served={
-                            "manifest_id": manifest_id,
-                            "generation_batch_id": generation_batch_id,
-                            "cards": cards,
-                        },
-                        created_at=time.time(),
-                    )
-                elif event_type in {"topic_click", "not_interested"}:
-                    card_revision_id = str(
-                        payload.get("card_revision_id") or ""
-                    ).strip()
-                    if card_revision_id and card_revision_id == str(
-                        event.get("topic_id") or ""
-                    ).strip():
-                        recorded = record_v5_interaction(
-                            store,
-                            event_type=event_type,
-                            session_id=event["session_id"],
-                            slate_id=str(event["slate_id"]),
-                            manifest_id=manifest_id,
-                            card_revision_id=card_revision_id,
-                            generation_batch_id=generation_batch_id,
-                            request_id=str(req_id),
-                            created_at=time.time(),
-                        )
-                        if recorded and event_type == "not_interested":
-                            topic_prepare_service.schedule_successor()
-                elif event_type in {
-                    "post_exposure_direct",
-                    "page_left",
-                    "session_bound",
-                }:
-                    recorded = record_v5_slate_event(
-                        store,
-                        event_type=event_type,
-                        session_id=event["session_id"],
-                        slate_id=str(event["slate_id"]),
-                        manifest_id=manifest_id,
-                        generation_batch_id=generation_batch_id,
-                        created_at=time.time(),
-                    )
-            await channel.send_response(
-                ws, req_id, ok=True, payload={"recorded": bool(recorded)}
-            )
-            return
-        if policy_id == TOPIC_POLICY_ID:
-            if selection_mode not in {
-                "personalized_dynamic",
-                "mixed_dynamic",
-                "generic_dynamic",
-            }:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="selection_mode is required",
-                    code="BAD_REQUEST",
-                )
-                return
-            payload = event.get("payload")
-            if not isinstance(payload, dict):
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="payload must be object",
-                    code="BAD_REQUEST",
-                )
-                return
-            context_scope = str(payload.get("context_scope") or "")
-            project_id = payload.get("project_id")
-            try:
-                if project_id_for_scope(context_scope) != project_id:
-                    raise ValueError("project mismatch")
-            except ValueError:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="invalid context_scope or project_id",
-                    code="BAD_REQUEST",
-                )
-                return
-            manifest_id = str(payload.get("manifest_id") or "").strip()
-            generation_batch_id = str(
-                payload.get("generation_batch_id") or ""
-            ).strip()
-            if not manifest_id or not generation_batch_id:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="manifest_id and generation_batch_id are required",
-                    code="BAD_REQUEST",
-                )
-                return
-            recorded = False
-            event_type = str(event.get("event_type") or "").strip()
-            _item_items = (
-                (
-                    topic_service,
-                    topic_outcome_queue,
-                )
-            )
-            if event_type == "dynamic_exposure" and topic_service is not None:
-                recorded = topic_service.record_exposure(
-                    {
-                        "session_id": event["session_id"],
-                        "slate_id": str(event["slate_id"]),
-                        "manifest_id": manifest_id,
-                        "generation_batch_id": generation_batch_id,
-                        "context_scope": context_scope,
-                        "project_id": project_id,
-                        "exposure_slice_id": str(
-                            payload.get("exposure_slice_id") or ""
-                        ),
-                        "topics": payload.get("topics"),
-                    },
-                    created_at=time.time(),
-                )
-            elif event_type in {
-                "topic_click", "not_interested", "interest_paused", "not_interested_undone", "interest_pause_undone",
-            } and all(
-                item is not None
-                for item in _item_items
-            ):
-                await channel.send_response(
-                    ws, req_id, ok=True,
-                    payload=topic_service.record_interaction(
-                        event,
-                        outcome_queue=topic_outcome_queue,
-                        created_at=time.time(),
-                    ),
-                )
-                return
-            elif event_type in {
-                "post_exposure_direct",
-                "page_left",
-            } and topic_service is not None:
-                from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
-                    record_terminal_slate_outcome,
-                )
+    async def _topic_starters_profile(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="profile")
 
-                recorded = record_terminal_slate_outcome(
-                    topic_service.store,
-                    event_type=event_type,
-                    manifest_id=manifest_id,
-                    generation_batch_id=generation_batch_id,
-                    exposure_id=str(event["slate_id"]),
-                    context_scope=context_scope,
-                    project_id=project_id,
-                    created_at=time.time(),
-                )
-            elif event_type == "session_bound" and topic_service is not None:
-                card_revision_id = str(
-                    payload.get("card_revision_id") or ""
-                ).strip()
-                if card_revision_id and card_revision_id == str(
-                    event.get("topic_id") or ""
-                ).strip():
-                    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
-                        record_terminal_session_start,
-                    )
+    async def _topic_starters_restore_direction(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="restore_direction",
+        )
 
-                    recorded = record_terminal_session_start(
-                        topic_service.store,
-                        manifest_id=manifest_id,
-                        generation_batch_id=generation_batch_id,
-                        exposure_id=str(event["slate_id"]),
-                        card_revision_id=card_revision_id,
-                        context_scope=context_scope,
-                        project_id=project_id,
-                        started_session_id=str(event["session_id"]),
-                        created_at=time.time(),
-                    )
-            await channel.send_response(
-                ws, req_id, ok=True, payload={"recorded": bool(recorded)}
-            )
-            return
+    async def _topic_starters_control(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="control")
+
+    async def _topic_starters_get(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="get")
+
+    async def _topic_starters_foreground(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(
+            ws, req_id, params, session_id, user_id, action="foreground",
+        )
+
+    async def _topic_starters_event(ws, req_id, params, session_id, user_id=None):
+        await _forward_recommendation(ws, req_id, params, session_id, user_id, action="event")
 
     channel.register_method("external_cli.detect", _external_cli_detect)
     channel.register_method("external_cli.codex_install_status", _external_cli_codex_install_status)
@@ -5851,7 +5184,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # models.list 经目标 AgentServer 执行时无法看到 Gateway 连接，登录送的
             # 免费模型合并需要会话 id（AgentOS 既有缺口，A4g 统一后对 legacy 同样关键）。
             if isinstance(params, dict):
-                from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+                from openjiuwen_protocol.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 
                 forwarded = dict(params)
                 forwarded.pop(E2A_AUTH_SESSION_PARAM_KEY, None)
@@ -5874,7 +5207,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
         channel.register_method(method_name, _handler)
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _ConfigReq
+    from openjiuwen_protocol.message import ReqMethod as _ConfigReq
 
     async def _config_moa_status(ws, req_id, params, session_id, user_id=None):
         await _proxy_config_request(
@@ -5937,8 +5270,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     from gateway.channel_manager.web.lifecycle_handlers import (
         register_lifecycle_handlers,
     )
-    register_lifecycle_handlers(channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller),
-                                on_session_deleted=session_deleted)
+    register_lifecycle_handlers(
+        channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller),
+    )
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)
 
     # Git RPC handlers (设计文档 §4.1.11-§4.1.15)
@@ -5962,7 +5296,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _hooks_list(ws, req_id, params, session_id, user_id=None):
         # 单用户共享目录：本地读取 config.yaml（hooks 属用户态配置，共享目录等价；
         # AgentServer 未启动/断连时保持可用）。AgentOS：经 E2A 在目标注入目录执行。
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -6007,7 +5341,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         落到注入目录；避免前端直连要求 token 的 /file-api/upload 得到
         ``missing_token``（issue #5325）。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -6426,7 +5760,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _permissions_owner_scopes_get(ws, req_id, params, session_id, user_id=None):
         from gateway.routing.e2a_proxy import proxy_unary_request
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params={}, session_id=session_id, user_id=user_id,
@@ -6438,7 +5772,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         from gateway.routing.e2a_proxy import proxy_unary_request
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
 
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws, req_id=req_id,
                                   params=params, session_id=session_id, user_id=user_id,
@@ -6450,7 +5784,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_permissions_to_agent(ws, req_id, params, session_id, user_id=None, *, req_method):
         """Forward permissions requests; Gateway never falls back to local state."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(req_method, ReqMethod):
@@ -6468,7 +5802,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="permissions",
         )
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _PermReq
+    from openjiuwen_protocol.message import ReqMethod as _PermReq
 
     def _register_perm(method_name: str, rm: Any) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
@@ -6490,8 +5824,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
         """Forward an A4P User Authorizer RPC over the session's logical Web route."""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.message import ReqMethod
 
         if not isinstance(req_method, ReqMethod):
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
@@ -6574,7 +5908,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload=resp.payload if isinstance(resp.payload, dict) else {},
         )
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _A4PReq
+    from openjiuwen_protocol.message import ReqMethod as _A4PReq
 
     def _register_a4p(method_name: str, req_method: Any) -> None:
         async def _handler(ws, req_id, params, session_id):
@@ -6592,7 +5926,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
 
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -6617,7 +5951,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
@@ -6646,7 +5980,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         ``e2a_proxy`` 的 legacy fallback 在 Gateway 进程内执行同一业务；远程/
         AgentOS client 返回可重试错误，不读部署侧目录。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(req_method, ReqMethod):
@@ -6671,7 +6005,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="harness",
         )
 
-    from jiuwenswarm.common.schema.message import ReqMethod as _HarnessReq
+    from openjiuwen_protocol.message import ReqMethod as _HarnessReq
 
     def _register_harness(method_name: str, rm: Any) -> None:
         async def _handler(ws, req_id, params, session_id, user_id=None):
@@ -6712,7 +6046,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _harness_import_handler(ws, req_id, params, session_id, user_id=None):
         """Import harness archives without exceeding the internal WS frame limit."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.agent_http_bridge import (
             E2A_PAYLOAD_MAX_BYTES,
             upload_file_bytes_via_e2a,
@@ -6764,7 +6098,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.import", _harness_import_handler)
 
     async def _harness_export_handler(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
         await proxy_unary_request(channel=channel, agent_client=_resolve(agent_client), ws=ws,
                                   req_id=req_id, params=params if isinstance(params, dict) else {},

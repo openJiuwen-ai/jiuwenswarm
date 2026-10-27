@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
-import asyncio
 import time
 from abc import ABC
 from dataclasses import dataclass
@@ -17,9 +17,10 @@ from gateway.routing.keys import ChannelKey
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
+    from openjiuwen_protocol.message import Message
+
     from gateway.channel_manager.base import BaseChannel
     from gateway.message_handler import MessageHandler
-    from jiuwenswarm.common.schema.message import Message
 
 
 @dataclass
@@ -194,12 +195,12 @@ class ChannelManager(ABC):
         async def _persist_hook(content: Any, category: str, filename: str) -> dict[str, Any]:
             import base64 as _base64
 
-            from jiuwenswarm.common.schema.message import ReqMethod
-            from gateway.routing.e2a_proxy import fetch_agent_unary
+            from openjiuwen_protocol.message import ReqMethod
 
             from gateway.routing.agent_http_bridge import (
                 E2A_PAYLOAD_MAX_BYTES,
             )
+            from gateway.routing.e2a_proxy import fetch_agent_unary
 
             content_bytes = bytes(content)
             # 传输取舍（方案 §10.5）：超限的 base64 帧会超过内部 WS 8MB 帧限制
@@ -208,11 +209,11 @@ class ChannelManager(ABC):
             # 内容走 base64 E2A。不使用 HTTP bridge（upload_file_bytes）——其
             # 上传端口推导仅对已启动独立上传监听器的部署有效，单机模式不监听。
             if len(content_bytes) > E2A_PAYLOAD_MAX_BYTES:
+                import mimetypes
+
                 from gateway.routing.agent_http_bridge import (
                     upload_file_bytes_via_e2a,
                 )
-
-                import mimetypes
 
                 rel_path = (
                     f"agent/workspace/{storage_platform}_files/downloads/"
@@ -497,7 +498,7 @@ class ChannelManager(ABC):
                 # ── 企业飞书（feishu_enterprise:<app_id>）不进此分支：一 channel_id 一 bot 无需 fan-out，
                 # 且其 cron 推送的 feishu_chat_id 是创建任务时绑定的特定群（来自 routing_sid 的
                 # feishu::chat_id::bot_id::...，见 scheduler._push_to_targets），清掉会误投到 last_* 的群。
-                from jiuwenswarm.common.schema.message import EventType as _EventType
+                from openjiuwen_protocol.message import EventType as _EventType
                 _is_feishu_fanout = (
                     isinstance(msg.channel_id, str)
                     and msg.channel_id == "feishu"
@@ -591,7 +592,7 @@ class ChannelManager(ABC):
 
     async def _notify_cron_delivery_error(self, original_msg: "Message", error: Exception) -> None:
         """推送失败时，通过 web channel 发送 chat.error 通知前端。"""
-        from jiuwenswarm.common.schema.message import EventType, Message
+        from openjiuwen_protocol.message import EventType, Message
 
         cron_info = (original_msg.payload or {}).get("cron", {})
         job_name = cron_info.get("job_name", "")

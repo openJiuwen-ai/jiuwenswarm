@@ -534,13 +534,18 @@ test('autoLayoutDesignerNodes does not put scene specs in the clip column', () =
 
 test('portAddTemplatesFor limits port menus to the allowed node types', () => {
   const types = (nodeType, side) => portAddTemplatesFor(nodeType, side).map((item) => item.type);
+  // Port menus are derived from the shared wire matrix (issue #5382): a menu may
+  // only offer connections that free dragging accepts, and only for the node
+  // templates that exist (image / video / audio).
   for (const docType of ['text', 'table']) {
-    assert.deepEqual(types(docType, 'predecessor'), ['image']);
+    assert.deepEqual(types(docType, 'predecessor'), []);
     assert.deepEqual(types(docType, 'successor'), ['image', 'video']);
   }
+  // An image may also feed another image: `ImageNodeHandler` passes incoming
+  // image edges to the model as references (style-reference generation).
   assert.deepEqual(types('image', 'predecessor'), ['image']);
   assert.deepEqual(types('image', 'successor'), ['image', 'video']);
-  assert.deepEqual(types('video', 'predecessor'), ['image', 'video']);
+  assert.deepEqual(types('video', 'predecessor'), ['image', 'video', 'audio']);
   assert.deepEqual(types('video', 'successor'), ['video']);
   assert.deepEqual(types('audio', 'predecessor'), []);
   assert.deepEqual(types('audio', 'successor'), ['video']);

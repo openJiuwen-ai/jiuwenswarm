@@ -22,34 +22,38 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
+from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from jiuwenswarm.common.protocol_ids import (
-    InvalidProtocolId,
-    validate_session_id,
-    validate_workflow_run_id,
-)
-from jiuwenswarm.common.utils import get_logs_dir
-from gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter, ConnectHook
-from gateway.routing.base_ws_channel import BaseWsChannel
-from gateway.routing.keys import AgentRef, RoutingKey
-from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.security.ws_origin import (
-    get_header_value,
-)
-from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
-from jiuwenswarm.common.session_message import (
-    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
-    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
-)
-from jiuwenswarm.common.ws_diagnostics import (
-    describe_ws_exception,
-    describe_ws_peer,
-    format_ws_diagnostics,
+from gateway.channel_manager.base import (
+    ChannelMetadata,
+    ConnectHook,
+    RobotMessageRouter,
 )
 from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
+from gateway.common.protocol_ids import (
+    InvalidProtocolId,
+    validate_session_id,
+    validate_workflow_run_id,
+)
+from gateway.common.security.ws_origin import (
+    get_header_value,
+)
+from gateway.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
+from gateway.common.ws_diagnostics import (
+    describe_ws_exception,
+    describe_ws_peer,
+    format_ws_diagnostics,
+)
+from gateway.routing.base_ws_channel import BaseWsChannel
+from gateway.routing.keys import AgentRef, RoutingKey
+from gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.common.utils import get_logs_dir
 
 logger = logging.getLogger(__name__)
 
@@ -706,12 +710,12 @@ class WebChannel(BaseWsChannel):
         """同一端口承载 WebChannel 的 WebSocket 与 HTTP 路由（uvicorn/FastAPI）。"""
         import uvicorn
 
-        from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
         from gateway.channel_manager.web.transport_stall_guard import (
             guarded_http_protocol,
             guarded_websockets_protocol,
         )
         from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+        from gateway.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
 
         app = build_web_channel_app(self)
         uv_cfg = uvicorn.Config(
@@ -1355,7 +1359,7 @@ class WebChannel(BaseWsChannel):
         # 广播 processing_status{is_processing:false, paused:true}, 此处合成
         # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
         # pause 失败时也不合成 false — 状态未变, 合成会误报.
-        if event_name == "chat.interrupt_result" and payload.get("source") != "org_expert_direct":
+        if event_name == "chat.interrupt_result" and not str(payload.get("source") or "").startswith("org_"):
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
             if intent == "pause":
                 return
@@ -1511,18 +1515,37 @@ class WebChannel(BaseWsChannel):
             event_name = event_type.value
         else:
             event_name = str(payload.get("event_type") or "") if payload is not None else ""
-        if payload is not None and payload.get("source") == "org_expert_direct":
+        if payload is not None and payload.get("source") == "org_stop":
+            sid = payload.get("session_id") or msg.session_id
+            if sid and payload.get("success") is True:
+                self._session_busy[sid] = False
+                requests = self._expert_processing_requests.get(sid, set())
+                items = payload.get("cancelled_requests")
+                if isinstance(items, list):
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        team_id = item.get("team_id")
+                        request_id = item.get("request_id")
+                        if isinstance(team_id, str) and isinstance(request_id, str):
+                            requests.discard((team_id, request_id))
+                if not requests:
+                    self._expert_processing_requests.pop(sid, None)
+            return
+        if payload is not None and str(payload.get("source") or "").startswith("org_"):
             # Expert terminals cannot clear the owner's busy flag. Keep the
             # aggregate for Git write guards until every expert request exits.
             sid = payload.get("session_id") or msg.session_id
             team_id = str(payload.get("team_id") or payload.get("team_name") or "")
-            if sid and team_id and event_name in {"chat.processing_status", "org.turn_completed", "chat.error"}:
-                request_id = payload.get("request_id")
-                if not isinstance(request_id, str) or not request_id.strip():
+            terminal = event_name in {"org.turn_completed", "chat.error"}
+            is_processing_event = event_name == "chat.processing_status" or terminal
+            if sid and team_id and is_processing_event:
+                request_id = str(payload.get("request_id") or "").strip()
+                if not request_id:
                     return
                 request = (team_id, request_id)
                 requests = self._expert_processing_requests.setdefault(sid, set())
-                if payload.get("is_processing") is True:
+                if not terminal and payload.get("is_processing") is True:
                     requests.add(request)
                 else:
                     requests.discard(request)
@@ -1566,10 +1589,11 @@ class WebChannel(BaseWsChannel):
                 params={"session_id": session_id}, session_id=session_id,
                 user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
             )
-            if not ok or not isinstance(payload.get("expert_requests"), list):
+            snapshot = payload.get("organization_requests", payload.get("expert_requests"))
+            if not ok or not isinstance(snapshot, list):
                 return
             live = set()
-            for item in payload["expert_requests"]:
+            for item in snapshot:
                 if not isinstance(item, dict):
                     continue
                 team_id = item.get("team_id")

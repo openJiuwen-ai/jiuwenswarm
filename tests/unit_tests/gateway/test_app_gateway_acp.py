@@ -14,7 +14,7 @@ from gateway.app_gateway import (
     RouteConfig,
     _normalize_gateway_message,
 )
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
 
 class DummyBus:
@@ -2241,7 +2241,7 @@ async def test_gateway_injects_default_agent_type_on_forward():
 def _third_agent_registry():
     from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.registry import ExtensionRegistry
 
     ExtensionRegistry.reset_instance()
     registry = ExtensionRegistry.create_instance(AsyncCallbackFramework(), {}, None)
@@ -2250,7 +2250,7 @@ def _third_agent_registry():
 
 
 def _resolve_third_agent_for_test():
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.registry import ExtensionRegistry
     from gateway.routing.third_agent import get_unsupported_third_agent
 
     third = ExtensionRegistry.get_instance().get_third_agent()
@@ -2312,7 +2312,7 @@ async def test_gateway_agent_list_uses_local_handler_default_unsupported(
 async def test_gateway_agent_switch_local_handler_updates_connection(
     _third_agent_registry,
 ):
-    from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
+    from gateway.extensions.sdk.third_agent import ThirdAgentExtension
     from gateway.routing.third_agent import ThirdAgent
 
     class _FakeThirdAgent(ThirdAgent):
@@ -2434,7 +2434,7 @@ async def test_gateway_agent_switch_local_handler_updates_connection(
 
 @pytest.mark.asyncio
 async def test_gateway_agent_switch_rejects_unsupported_type(_third_agent_registry):
-    from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
+    from gateway.extensions.sdk.third_agent import ThirdAgentExtension
     from gateway.routing.third_agent import ThirdAgent
 
     class _FakeThirdAgent(ThirdAgent):

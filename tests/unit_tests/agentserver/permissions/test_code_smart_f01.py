@@ -16,7 +16,7 @@ from openjiuwen.core.single_agent.rail.base import AgentRail
 from openjiuwen.harness import DeepAgent
 from openjiuwen.harness.schema.config import SubAgentConfig
 
-from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
+from gateway.common.mode_matrix import supports_single_agent_permission_profile
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import supports_phase_auto_root
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (

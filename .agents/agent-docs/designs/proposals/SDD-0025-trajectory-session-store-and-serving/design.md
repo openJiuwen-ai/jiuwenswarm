@@ -4,7 +4,6 @@ title: 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 A
 slug: trajectory-session-store-and-serving
 status: draft
 stage: proposals
-owner: "@alan_cheng"
 reviewers: []
 created: 2026-09-15
 updated: 2026-09-15
@@ -39,6 +38,11 @@ implementation:
     - agent-core@b84617fee
     - agent-core@7e7871199
   tracking: "jiuwenswarm: jiuwenswarm/observability/ · jiuwenswarm/gateway/channel_manager/web/trajectory_http.py"
+author: '@alan_cheng'
+author_note: 由历史 owner 字段原值迁移
+type: D
+files: []
+author_email: null
 ---
 
 # 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API

@@ -10,7 +10,7 @@ from typing import Any, TypeVar
 import portalocker
 
 from jiuwenswarm.common.utils import get_cron_jobs_path
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from gateway.runtime.cron.cron_job_mutations import (
     _PROACTIVE_TICK_MODE,
     _ProactiveJobProtected,

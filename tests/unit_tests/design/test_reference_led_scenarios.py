@@ -483,6 +483,45 @@ def test_motion_condition_builds_restyle_node() -> None:
         assert clip["config"]["reference_first_frame_node"] == "n_restyle_01"
 
 
+def test_animate_image_binding_without_motion_role_animates_the_upload() -> None:
+    """A classifier row may name the binding but forget the motion_source role."""
+    graph = _intent_graph(
+        [_slot([ROLE_CHARACTER], binding="verbatim", path="/refs/painting.png")],
+        video_binding=VIDEO_ANIMATE_IMAGE,
+        scenes=[],
+    )
+    ref = _node(graph, "n_ref_01")
+    assert ref["config"]["reference_card_role"] == "motion"
+    for clip in _clips(graph):
+        cfg = clip["config"]
+        assert cfg["reference_call_mode"] == "i2v"
+        assert cfg["reference_first_frame"].endswith("painting.png")
+        # The same upload is the frame, not a second soft reference.
+        assert [entry["node_id"] for entry in cfg["reference_image_plan"]] == ["n_ref_01"]
+        overrides = video_generation_overrides(cfg, graph, [])
+        assert str(overrides["first_frame"]).endswith("painting.png")
+        assert not overrides["reference_images"]
+
+
+def test_animate_image_without_motion_role_keeps_companions_as_refs() -> None:
+    graph = _intent_graph(
+        [_slot([ROLE_CHARACTER], binding="verbatim", path="/refs/painting.png")],
+        characters=_FAMILY,
+        scenes=[],
+        video_binding=VIDEO_ANIMATE_IMAGE,
+    )
+    for node in graph["nodes"]:
+        if (node.get("config") or {}).get("companion_cast"):
+            node["output_ref"] = {"kind": "image", "uri": f"/out/{node['id']}.png"}
+    clip = _clips(graph)[0]
+    # Extra cast upgrades the job to R2V, with the animated upload leading.
+    assert clip["config"]["reference_call_mode"] == "r2v"
+    overrides = video_generation_overrides(clip["config"], graph, [])
+    refs = overrides["reference_images"] or []
+    assert any(str(p).endswith("painting.png") for p in refs)
+    assert any("/out/n_character_" in str(p) for p in refs)
+
+
 # --- Fix 2: classifier fields persist through stamp_creative_intent ---------
 
 

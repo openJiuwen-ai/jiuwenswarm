@@ -220,3 +220,23 @@ async def test_after_tool_call_projects_once_and_consumes_only_matching_metadata
             "reviewer_status": "denied",
         }
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("success", [True, False])
+async def test_policy_allow_metadata_does_not_change_tool_execution_outcome(success):
+    session = _StreamSession()
+    metadata = {
+        "decision_source": "policy_evaluator",
+        "final_reviewer_status": "approved",
+        "evidence_summary": "Your permission settings already allow this action. No approval needed.",
+    }
+    await JiuSwarmStreamEventRail()._emit_tool_result(
+        session,
+        SimpleNamespace(name="read_file", id="policy-read"),
+        SimpleNamespace(success=success),
+        reviewer_metadata=metadata,
+    )
+    payload = _tool_result_payload(session)
+    assert payload["success"] is success
+    assert payload["reviewer_metadata"] == metadata

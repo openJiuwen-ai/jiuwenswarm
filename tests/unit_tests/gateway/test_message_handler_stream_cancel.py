@@ -12,9 +12,9 @@ import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import ReqMethod
 from gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from gateway.routing.session_sharing import SubRole
 
@@ -399,9 +399,13 @@ async def test_owner_status_with_team_identity_still_waits_for_other_owner_work(
 @pytest.mark.parametrize("intent", ["cancel", "pause", "resume", "supplement"])
 async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent):
     handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": "owner"}
+
     monkeypatch.setattr(
         "jiuwenswarm.common.external_providers.provider",
-        lambda _: SimpleNamespace(get_session_metadata=lambda *args, **kwargs: {"team_name": "owner"}),
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
     msg.req_method = ReqMethod.CHAT_CANCEL
@@ -452,15 +456,20 @@ async def test_org_root_terminal_is_the_stream_terminal(source):
     ("team", "expert", "", False), ("team", "", "owner", False),
     ("team", "expert", "owner", True),
 ])
-def test_targeted_cancel_requires_team_mode_and_non_owner(monkeypatch, mode, target, owner, expected):
+@pytest.mark.asyncio
+async def test_targeted_cancel_requires_team_mode_and_non_owner(monkeypatch, mode, target, owner, expected):
     handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": owner}
+
     monkeypatch.setattr(
         "jiuwenswarm.common.external_providers.provider",
-        lambda _: SimpleNamespace(get_session_metadata=lambda *args, **kwargs: {"team_name": owner}),
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
     msg.params["target_team_id"] = target
-    assert handler._is_targeted_expert_cancel(msg) is expected
+    assert await handler._is_targeted_expert_cancel(msg) is expected
 
 
 @pytest.mark.asyncio

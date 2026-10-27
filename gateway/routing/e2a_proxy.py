@@ -28,8 +28,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import ReqMethod
 from gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
@@ -75,12 +75,16 @@ def is_agentos_routing_client(agent_client: Any) -> bool:
     stable module/class name instead.
     """
     client_type = type(agent_client)
+    module = client_type.__module__
     return (
         client_type.__name__ == "AgentOSRouterClient"
-        and client_type.__module__.startswith("jiuwenswarm.extensions.agentos.")
+        and module.startswith(("jiuwenswarm.extensions.agentos.", "gateway.extensions.agentos."))
     ) or (
         client_type.__name__ == "AdxRouterClient"
-        and client_type.__module__ == "jiuwenswarm.extensions.adx.router_client"
+        and module in (
+            "jiuwenswarm.extensions.adx.router_client",
+            "gateway.extensions.adx.router_client",
+        )
     )
 
 

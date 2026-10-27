@@ -101,6 +101,7 @@
       "bootstrapError": "Failed to build the workflow. Please try again later.",
       "notImplemented": "Not implemented",
       "send": "Send",
+      "running": "The design leader is working…",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
@@ -246,16 +247,6 @@
     },
     "edge": {
       "delete": "Delete connection"
-    },
-    "revision": {
-      "title": "Choose which version to keep",
-      "hint": "{{label}} was regenerated. The original is still here — pick which one to keep.",
-      "original": "Original",
-      "incoming": "New version",
-      "keepOriginal": "Keep original",
-      "keepIncoming": "Use new version",
-      "pending": "Needs choice",
-      "compare": "Compare versions"
     },
     "materials": {
       "title": "Outputs",
@@ -806,7 +797,9 @@
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "multiModelCollaboration": "Multi-model collaboration"
+      "multiModelCollaboration": "Multi-model collaboration",
+      "toolOptimize": "Tool retrieval optimization",
+      "designMode": "Design Mode"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -994,6 +987,14 @@
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization",
         "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI workflow integration",
+        "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
+      },
+      "progressive_tool_optimize": {
+        "title": "Enable tool retrieval optimization",
+        "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
       },
       "team_scheduled_dispatch_enabled": {
         "title": "Enable scheduled dispatch",
@@ -1235,22 +1236,36 @@
         "weak": "Not met"
       },
       "signalSource": {
-        "keyword_tool": "Tool output hit",
-        "keyword_user": "User message hit",
-        "reward": "Reward score"
+        "keyword_tool": "Tool output",
+        "keyword_user": "User message",
+        "reward": "Reward",
+        "user": "User note"
+      },
+      "signalSourceLabel": "Source: {{source}}",
+      "attributionLabel": "Attribution: {{kind}}",
+      "attributionKind": {
+        "artifact": "Artifact",
+        "skill": "Skill",
+        "experience": "Experience"
       },
       "signalScore": "Score {{score}}",
       "signalSurfacedAt": "Surfaced at {{nodes}}",
       "causeAt": "At {{nodes}}",
       "evidence": "Based on",
-      "findingsIssuesOnly": "{{issues}} issues",
-      "findingsIssuesAndExperience": "{{issues}} issues, plus {{experience}} experience verdict(s)",
-      "findingsExperienceOnly": "{{experience}} experience verdict(s)",
+      "dimension": "Dimension",
       "requestCount": "{{count}} model requests",
-      "objectSteps": "Steps",
-      "objectStepsCount": "{{count}} trajectory steps",
+      "objectSteps": "Scope",
+      "objectStepsCount": "{{count}} OTel spans",
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
+      "objectSummary": "Trajectory summary",
+      "findingCauses": "{{count}} artifact finding(s)",
+      "findingSkill": "{{count}} skill finding(s)",
+      "findingExperience": "{{count}} experience finding(s)",
+      "findingJoin": ", ",
+      "findingWithEvolution": "{{causes}}, plus {{evolution}}",
+      "findingLegacyCauses": "{{count}} legacy finding(s)",
+      "relatedSignals": "Related signals",
       "suggestionsUnfinished": "The diagnosis did not finish, so there are no suggestions",
       "process": "Diagnosis process",
       "processSteps": "{{count}} steps",
@@ -1751,6 +1766,8 @@
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
     "teamSelect": {
+      "unavailable": "Unavailable",
+      "unavailableHint": "This Expert Team is unavailable. Reinstall its package to continue; history is preserved.",
       "tooltip": "Switch the Team being viewed",
       "loadingLabel": "Loading teams…",
       "fallbackLabel": "Select Team"
@@ -2321,11 +2338,11 @@
       "openFile": "Open file",
       "compatibilityWarning": "The detected version may be incompatible. You can change the executable path, upgrade the version, or click \"Install\" to use the built-in CLI.",
       "compatibilityWarningWithVersion": "The detected version may be incompatible. You can change the executable path, upgrade to {{version}} or later, or click \"Install\" to use the built-in CLI.",
-      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or click \"Install\" to use the built-in CLI.",
-      "missingPath": "Path does not exist: {{path}}. Check the path, or click \"Install\" to use the built-in CLI.",
-      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or click \"Install\" to use the built-in CLI.",
-      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or click \"Install\" to use the built-in CLI.",
-      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or click \"Install\" to use the built-in CLI.",
+      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or cancel and click \"Install\" to use the built-in CLI.",
+      "missingPath": "Path does not exist: {{path}}. Check the path, or cancel and click \"Install\" to use the built-in CLI.",
+      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or cancel and click \"Install\" to use the built-in CLI.",
       "autoSaved": "{{agents}} dependencies finished installing. Your configuration has been saved automatically.",
       "installDialogTitle": "Install optional components",
       "installDialogDescription": "Closing this dialog does not interrupt installation. Your configuration will be saved automatically when installation finishes.",
@@ -4175,7 +4192,7 @@
           "manual": "Manual approval",
           "system": "System permission check"
         },
-        "risk": "Risk",
+        "risk": "Tool capability risk",
         "riskValues": {
           "critical": "Critical",
           "high": "High",
@@ -4183,7 +4200,7 @@
           "low": "Low",
           "unknown": "Unknown"
         },
-        "reason": "Reason",
+        "reason": "Approval rationale",
         "reasonValues": {
           "approved": "Permission review allowed this operation.",
           "denied": "Permission review denied this operation.",
@@ -4300,6 +4317,7 @@
     "pauseFailed": "Pause failed",
     "cancelFailed": "Cancel failed",
     "supplementFailed": "Supplement failed",
+    "supplementAttachmentsUnsupported": "Messages with attachments cannot be sent immediately. Click \"Edit\" to remove the attachments, then send again.",
     "resumeFailed": "Resume failed",
     "submitAnswerFailed": "Failed to submit answer",
     "unknownError": "Unknown error",
@@ -4337,6 +4355,7 @@
     "pipRestart": "Restart now",
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
+    "builtOn": "Built on",
     "latestVersion": "Latest version",
     "state": "Update state",
     "publishedAt": "Published at",

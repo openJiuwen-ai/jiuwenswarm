@@ -220,6 +220,40 @@ async def test_hub_mcp_list_show_install_and_uninstall(tmp_path: Path, monkeypat
 
 
 @pytest.mark.anyio
+async def test_uninstall_hub_mcp_is_idempotent(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(marketplace.registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(marketplace.registry, "disconnect_mcp", lambda name: {"removed": True})
+    await marketplace.install_hub_mcp(
+        "mcp-asset-uuid", hub_port=FakeHub(), downloader=FakeDownloader()
+    )
+
+    first = marketplace.uninstall_hub_mcp("mcp-asset-uuid")
+    second = marketplace.uninstall_hub_mcp("mcp-asset-uuid")
+
+    assert first["removed"] is True
+    assert second == {
+        "id": "mcp-asset-uuid",
+        "name": "mcp-asset-uuid",
+        "removed": False,
+        "already_removed": True,
+    }
+
+
+def test_uninstall_hub_mcp_cleans_orphan_package_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(marketplace.registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(marketplace.registry, "disconnect_mcp", lambda name: {"removed": True})
+    orphan = tmp_path / "mcp" / "mcp_hub" / "amap"
+    orphan.mkdir(parents=True)
+
+    result = marketplace.uninstall_hub_mcp("amap")
+
+    assert result == {"id": "amap", "name": "amap", "removed": True}
+    assert not orphan.exists()
+
+
+@pytest.mark.anyio
 async def test_mcp_market_search_forwards_keyword_to_hub(
     tmp_path: Path, monkeypatch
 ) -> None:

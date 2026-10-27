@@ -90,6 +90,7 @@ import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../
 import { ApplicationPluginTaskRuntimes, flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { generateUuidV4 } from '../../utils/uuid';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
 import { requestLogin, useAuthStore } from '../../stores/authStore';
 import type { PromptSuggestionBox } from '../../hooks/usePromptSuggestionBox';
 import { webClient, webRequest } from '../../services/webClient';
@@ -1242,7 +1243,10 @@ export const ChatPanel = React.memo(function ChatPanel({
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
   const expertIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
-  const isProcessing = conversationId === activeSessionId ? sessionIsProcessing : expertIsProcessing;
+  const organizationIsProcessing = useOrganizationProcessing(activeSessionId);
+  const isProcessing = conversationId === activeSessionId
+    ? sessionIsProcessing || organizationIsProcessing
+    : expertIsProcessing;
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );

@@ -8,7 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.runtime.cron.cron_job_mutations import (
     apply_cron_job_patch,
     build_new_cron_job,

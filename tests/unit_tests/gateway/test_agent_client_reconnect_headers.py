@@ -5,9 +5,9 @@ import json
 import pytest
 from websockets.exceptions import ConnectionClosedError
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
-from jiuwenswarm.common.schema.agent import AgentResponse
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.wire_codec import encode_agent_response_for_wire
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from gateway.routing.agent_client import WebSocketAgentServerClient
 
 

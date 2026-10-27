@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jiuwenswarm.common.cron_session import cron_session_matches_job
-from jiuwenswarm.common.work_mode import is_default_project_id
+from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.session import lifecycle as lc, project_store
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
@@ -718,6 +718,13 @@ class SessionArchiveService:
         await asyncio.to_thread(
             lc.complete, "session", session_id, deleted=True, result=payload
         )
+        from jiuwenswarm.server.runtime.recommendation_host import (
+            active_recommendation_host,
+        )
+
+        host = active_recommendation_host()
+        if host is not None:
+            await host.session_left_project(str(project_id or ""), session_id)
 
     @staticmethod
     def _save_cleanup_failure(

@@ -1,3 +1,13 @@
+---
+title: Team 模式接入专家团 Manifest 加载设计
+author: null
+author_note: 历史作者待确认；未用迁入者或原 owner 推断作者
+id: team_expert_group_manifest_design
+type: D
+modules: []
+files: []
+---
+
 # Team 模式接入专家团 Manifest 加载设计
 
 ## 1. 背景与目标

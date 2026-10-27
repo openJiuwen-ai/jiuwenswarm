@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_WEB_WORK_MODE,
     is_default_project_id,

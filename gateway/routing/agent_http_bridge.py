@@ -66,7 +66,7 @@ async def upload_file_bytes_via_e2a(
     import base64
     import uuid
 
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.message import ReqMethod
     from gateway.routing.e2a_proxy import fetch_agent_unary
 
     if not content:

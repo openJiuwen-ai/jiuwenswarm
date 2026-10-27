@@ -14,18 +14,18 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import requests
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
-from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
-from gateway.channel_manager.base import RobotMessageRouter, BaseChannel
-from gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
-    FeishuFileService,
-    is_image_file,
-    is_audio_file,
-    is_video_file,
-)
+
+from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
+)
+from gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
+    FeishuFileService,
+    is_audio_file,
+    is_image_file,
+    is_video_file,
 )
 from gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     CardKitError,
@@ -33,6 +33,7 @@ from gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     FeishuStreamingSession,
 )
 from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from gateway.common.mode_matrix import is_team_mode
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 
@@ -76,14 +77,14 @@ class FeishuConfig(BaseModel):
 try:
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import (
-        CreateImageRequest,
-        CreateImageRequestBody,
         CreateFileRequest,
         CreateFileRequestBody,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
+        CreateImageRequest,
+        CreateImageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
+        CreateMessageRequest,
+        CreateMessageRequestBody,
         Emoji,
         P2ImMessageReceiveV1,
     )
@@ -1274,7 +1275,9 @@ class FeishuChannel(BaseChannel):
 
     @staticmethod
     def _is_control_message(content: str) -> bool:
-        from gateway.message_handler.command_parser.slash_command import is_control_like_for_im_batching
+        from gateway.message_handler.command_parser.slash_command import (
+            is_control_like_for_im_batching,
+        )
 
         return is_control_like_for_im_batching(content)
 
@@ -2834,7 +2837,9 @@ class FeishuChannel(BaseChannel):
                     pass
             elif self.channel_id.startswith("feishu_enterprise:") and self.config.bot_key:
                 try:
-                    from jiuwenswarm.common.config import update_channel_subsection_in_config
+                    from jiuwenswarm.common.config import (
+                        update_channel_subsection_in_config,
+                    )
 
                     update_channel_subsection_in_config(
                         "feishu_enterprise",

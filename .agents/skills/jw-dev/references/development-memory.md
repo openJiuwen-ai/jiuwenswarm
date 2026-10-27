@@ -17,7 +17,7 @@
 ## 命名与位置
 
 - spec：`.agents/agent-docs/specs/<module>/S_NN_<slug>.md`，沿用现有编号。
-- feature：`.agents/agent-docs/features/<module>/F_YYYYMMDD_HHMM_<slug>.md`。
+- feature：`.agents/agent-docs/features/F_YYYYMMDD_HHMM_<slug>.md`。
 - bugfix：`.agents/agent-docs/bugfix/<module>/B_YYYYMMDD_HHMM_<slug>.md`。
 - 时间为 Asia/Singapore、精确到分钟，slug 使用小写英文和短横线。完整名称重名先确认是否为同一记录；否则细化主题，不覆盖。
 - 已有编号和文件名不调整，不为 feature / bugfix 分配递增号；修订不改创建标识。
@@ -27,6 +27,17 @@
 设计是开发前资产，管理字段留在设计中，评审按日期修订。features 是开发落地后的实施与决策归档，
 引用设计标识，记录实际实现、实际取舍、设计偏差、验证证据及遗留，不复制整篇设计，不回填开发事实到设计。
 可复制 [feature.md](../assets/templates/feature.md)，其验证与遗留骨架提取自原特性方案模板。
+
+## 决策维护与故障复用
+
+新建、续写及替代关系遵循 [决策归属与替代](../../jw-design/references/decision-records.md)。
+一次连贯特性继续维护一份 feature；新独立决定需要自己的记录，旧依据保留可发现链接。
+当时事实与后续修订分开，当前契约在 spec 更新；不以复用旧记录为由覆盖原失败或验证结果。
+模型可见行为、实际副作用及证据重验按 [行为证据](behavior-evidence.md) 记录。
+值得复用的故障按 [防错模式提炼](defensive-patterns.md) 维护所属规则；这里不另建重复索引或全仓模式台账。
+
+上下文选择、资料新鲜度、因果链及验证后局部同步遵循 [上下文与流程](context-and-flows.md)。
+更新本次影响的当前事实和链接，保留历史证据；没有分析库时不新建分析库，不为文档同步追加重复变更记录。
 
 ## 内容约定
 

@@ -26,8 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, TypeVar
 
-from jiuwenswarm.common.utils import get_agent_root_dir
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
@@ -38,6 +37,7 @@ from jiuwenswarm.common.work_mode import (
     normalize_work_mode,
     resolve_default_project_id,
 )
+from jiuwenswarm.common.utils import get_agent_root_dir
 from jiuwenswarm.server.runtime.session.work_mode import (
     infer_legacy_project_work_mode,
 )
@@ -342,7 +342,7 @@ def _normalize_path_for_match(path: str) -> str:
 def _normalize_work_mode_value(work_mode: str) -> str:
     """规范化 work_mode 参数,非法值兜底为 ``"work"``。
 
-    与 :func:`jiuwenswarm.common.work_mode.normalize_work_mode` 一致,
+    与 :func:`gateway.common.work_mode.normalize_work_mode` 一致,
     仅在 store 内部调用时兜底非法入参;公开入口应使用严格解析。
     """
     return normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE)

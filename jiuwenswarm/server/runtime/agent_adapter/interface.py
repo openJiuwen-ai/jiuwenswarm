@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.session_message import (
+from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
@@ -89,7 +89,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_team_mode as is_team_runtime_mode,
@@ -309,6 +309,20 @@ def _announce_durable_completion(
         }))
         _COMPLETION_ANNOUNCEMENTS.add(task)
         task.add_done_callback(_COMPLETION_ANNOUNCEMENTS.discard)
+        from jiuwenswarm.server.runtime.recommendation_host import (
+            active_recommendation_host,
+        )
+
+        host = active_recommendation_host()
+        if host is not None:
+            try:
+                host.on_chat_completed(session_id, request_id)
+            except Exception:  # noqa: BLE001 - replenishment must not block the receipt
+                logger.warning(
+                    "topic replenishment after completion failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
     # Observe the receipt with a done callback so no cancelled waiter can
     # cancel the receipt the history writer still has to resolve.
@@ -2909,7 +2923,9 @@ class JiuWenSwarm:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                package_manager.uninstall_agent_group(params)
+                from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
+
+                await uninstall_organization_agent_group(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
                 cards = await package_manager.list_agent_templates_with_hub(params)
@@ -4374,18 +4390,24 @@ class JiuWenSwarm:
             merged["reasoning_updated_at"] = updated_at or started_at or (time.time() * 1000)
             return merged
 
-        async def _persist_pending_reasoning() -> None:
-            """异常/非 Goal 结束兜底：把未随 tool_call/final 落盘的思考补落一条记录。
-
-            正常完成时 reasoning 已被最后一条 tool_call/final 附走、缓冲为空，这里 no-op。
-            单独落成 chat.reasoning 记录（不带正文 final），前端按 reasoning_content 提取。
-            """
-            started_at = durable_pending_reasoning_started_at
-            updated_at = durable_pending_reasoning_updated_at
-            reasoning_text, _, _ = _consume_durable_reasoning_content()
-            if not reasoning_text.strip():
-                return
+        async def _persist_pending_reasoning(member_key: str | None = None) -> None:
+            """Persist reasoning left unattached at an interaction or stream boundary."""
             now_ms = time.time() * 1000
+            if member_key is not None:
+                pending = team_member_history.take_pending_reasoning(member_key)
+                if pending is None:
+                    return
+                started_at, extra_fields = pending
+            else:
+                reasoning_text, started_at, updated_at = _consume_durable_reasoning_content()
+                if not reasoning_text.strip():
+                    return
+                extra_fields = {
+                    **output_phase_metadata,
+                    "reasoning_output_order": durable_pending_reasoning_order,
+                    "reasoning_content": reasoning_text,
+                    "reasoning_updated_at": updated_at or started_at or now_ms,
+                }
             await _run_history_io(
                 append_history_record,
                 session_id=session_id,
@@ -4396,12 +4418,7 @@ class JiuWenSwarm:
                 content="",
                 timestamp=(started_at or now_ms) / 1000,
                 extra=_with_web_agent_template_metadata(
-                    {
-                        **output_phase_metadata,
-                        "reasoning_output_order": durable_pending_reasoning_order,
-                        "reasoning_content": reasoning_text,
-                        "reasoning_updated_at": updated_at or started_at or now_ms,
-                    },
+                    extra_fields,
                     request.params,
                     cid,
                     event_type="chat.reasoning",
@@ -4526,6 +4543,8 @@ class JiuWenSwarm:
                 return False
             if event_type in MEMBER_SEGMENT_BOUNDARY_EVENTS:
                 await _persist_team_member_pending_final(member_key)
+                if event_type in USER_INTERACTION_EVENTS:
+                    await _persist_pending_reasoning(member_key)
             elif event_type == "chat.final":
                 ensure_final_mode_inplace(payload)
                 if content:
@@ -5038,17 +5057,13 @@ class JiuWenSwarm:
                                 _note_durable_reasoning_delta(data.payload)
                                 durable_pending_reasoning_chunks.append(payload_content)
                                 should_record = False
-                            elif et in (
-                                "chat.tool_call",
-                                # 中断边界（ask_user / 权限确认）结束本轮输出且不会再有
-                                # 收尾 chat.final；不冲刷的话中断前流出的正文整段
-                                # 不落盘，刷新后这段回答凭空消失（#3785）。
-                                "chat.ask_user_question",
-                                "harness.activate_interaction",
-                            ):
+                            elif et == "chat.tool_call" or et in USER_INTERACTION_EVENTS:
                                 if is_proactive_request and et == "chat.tool_call":
                                     saw_proactive_tool_call_since_final = True
                                 await _persist_pending_final_text()
+                                if et in USER_INTERACTION_EVENTS:
+                                    # A pause may have reasoning without any text or final.
+                                    await _persist_pending_reasoning()
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
@@ -5322,15 +5337,12 @@ class JiuWenSwarm:
                             _note_durable_reasoning_delta(data)
                             durable_pending_reasoning_chunks.append(payload_content)
                             should_record = False
-                        elif et in (
-                            "chat.tool_call",
-                            # 同上：中断边界结束本轮输出，冲刷 pending 正文（#3785）。
-                            "chat.ask_user_question",
-                            "harness.activate_interaction",
-                        ):
+                        elif et == "chat.tool_call" or et in USER_INTERACTION_EVENTS:
                             if is_proactive_request and et == "chat.tool_call":
                                 saw_proactive_tool_call_since_final = True
                             await _persist_pending_final_text()
+                            if et in USER_INTERACTION_EVENTS:
+                                await _persist_pending_reasoning()
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
                                 first_a2ui_suppression = not suppress_a2ui_stream

@@ -533,7 +533,7 @@ class GitDiffWebSocketHandler:
           故仅在 ``errors`` 为空时截断;有错误时返回 ``ok=False, partial=True``
           并保留日志,调用方可重试。
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
 
         await self._proxy_turn_mutation(
             ws,
@@ -558,7 +558,7 @@ class GitDiffWebSocketHandler:
           - 会话非忙碌(agent 未在执行)
           - 最后一轮已被 discard(status == "discarded")
         """
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
 
         await self._proxy_turn_mutation(
             ws,

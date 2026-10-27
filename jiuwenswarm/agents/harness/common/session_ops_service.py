@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
+from gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session import lifecycle as lc
 from jiuwenswarm.server.runtime.session.session_history import (

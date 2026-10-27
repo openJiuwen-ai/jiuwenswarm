@@ -19,3 +19,15 @@
 前端按其 `package.json` 选择已有 `npm run test:<功能>`；不以定向新用例替代已有消费者回归。
 不运行格式化或静态检查。报告实际命令、版本、结果及未验证范围。
 提交遵循本仓库规则，先给出具体范围并取得确认，不沿用 core 的 harness / agent_teams 拆提交要求。
+
+## 决策与行为证据
+
+决策续写/替代按 [决策归属](../../jw-design/references/decision-records.md) 维护，不把 core 专属归档与拆提交规则同步到本仓。
+按 [行为证据](behavior-evidence.md) 覆盖受影响的 Runtime、Gateway/AgentServer、Web/TUI、Process CLI/SDK 实际消费入口；
+不机械要求无关渠道重测。模型输入、工具结果、UI/协议输出和最终文件/数据库/进程状态按各自语义取证，不能以 chat.final、ACK 或成功提示替代实际副作用。
+前端共享组件核对真实调用方、主题/窄屏/无障碍与中英文；跨仓回放 fixtures 或生成资源变更同时核对 core 版本与实际读者，保留本地 editable 和锁定依赖证据的区别。
+有证据支持的故障类别按 [防错模式](defensive-patterns.md) 写回所属模块规则/协议并链接 bugfix，不因单渠道故障增加全局禁令。
+
+按 [上下文与流程](context-and-flows.md) 追踪渠道输入、Runtime 状态、持久化、Gateway 事件和客户端派生输出的相关因果链，
+明确 session/history、缓存、UI 投影及遥测的实际职责；不假定每条路径都经过同一渠道或网络入口。
+已有 `.doc_project_maintainer/` 只作为按需导航，核实其版本与相关片段；验证后同步受影响的已有资料，未覆盖部分继续明确保留。

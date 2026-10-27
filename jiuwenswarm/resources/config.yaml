@@ -1,5 +1,5 @@
-# 配置版本号：与程序版本（jiuwenswarm/common/_build_config.py 的 VERSION）同步。
-# 空串表示未迁移，首次启动迁移后由程序写回实际版本。
+# 应用版本与打包日期：例如 "0.2.8 · 2026-10-26"，日期按 UTC+08:00 记录。
+# 启动时自动同步；保留 WHL 完整版本后缀，旧包或源码无日期时仅写版本号。
 config_version: ""
 
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
@@ -11,6 +11,10 @@ preferred_language: zh
 # false：不挂载 ProgressiveToolRail，未显式声明 exposure 的工具按 direct 暴露。
 # ToolCard 自己显式声明的 exposure 优先级更高。集群模式改后新建团队生效。
 progressive_tool_enabled: true
+# tool_search 渐进式披露优化开关：仅当 progressive_tool_enabled 与本开关同时为
+# true 时才挂载 tool_search（分类目录 + get_schema）检索层；
+# false 时 deferred 判定保留，但检索层关闭、工具全部直达。
+progressive_tool_optimize: false
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
@@ -645,6 +649,7 @@ trajectory_ui:
 
 experimental:
   team_organization_ui_enabled: false # Team Organization 多团队视图；关闭后新建团队不挂载 org 工具
+  comfyui_workflow_enabled: false
   task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
   task_asr_enabled: false            # 默认关闭普通任务对话中的语音转写入口
 

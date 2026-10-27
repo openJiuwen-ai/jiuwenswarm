@@ -101,7 +101,7 @@ async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persis
     """
     import base64 as _b64
 
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.message import ReqMethod
     from gateway.routing.agent_http_bridge import (
         _E2A_UPLOAD_CHUNK_BYTES,
         E2A_PAYLOAD_MAX_BYTES,
@@ -150,7 +150,7 @@ async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persis
 @pytest.mark.asyncio
 async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persist_hook):
     """小附件（≤4MB）保持 base64 E2A 落盘（IM_FILE_PERSIST）。"""
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.message import ReqMethod
 
     calls = []
 

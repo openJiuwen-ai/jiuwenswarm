@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
 )

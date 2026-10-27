@@ -8,11 +8,11 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentManager,
     AgentRuntime,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
 from gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
 from jiuwenswarm.extensions.yuanrong_frontend_client import AgentFileDownloadChunk, SandboxInfo

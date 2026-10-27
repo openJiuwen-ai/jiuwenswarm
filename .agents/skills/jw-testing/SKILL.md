@@ -24,6 +24,16 @@ description: 根据 JiuwenSwarm 的设计、spec、实现和已有验证证据�
 6. 按 [testing-lifecycle.md](references/testing-lifecycle.md) 记录真实评审与测试进展。
    仅要求撰写时交付草稿和待确认项，不自动推进到已测试或已验收。
 
+## 验证依据与重验条件
+
+按 [行为证据](../jw-dev/references/behavior-evidence.md) 整理受影响的模型/用户可见结果、真实入口、
+副作用和必要负向用例；已有快照仅是证据的一层，不以工具成功文本替代最终状态。
+测试计划与实际执行分开，记录对应候选、依赖/环境、适用范围及改变哪些前提后需要重验。
+复用旧报告时核对其版本与场景，尚未核实写待重验；本节不自动执行测试或扩大外部调用权限。
+
+转测依据的资料版本、可信程度和因果链断点按 [上下文与覆盖口径](../jw-dev/references/context-and-flows.md) 表达。
+用例/资料已整理与测试已执行分别记录；待核实或待重验的场景不计入已验证范围，指出所缺入口、环境或消费者证据。
+
 ## 存放与标识
 
 - 默认输出 `.agents/agent-docs/designs/testing/<关联设计目录名>/testing.md`，附件放同目录 `assets/`。
@@ -40,3 +50,8 @@ description: 根据 JiuwenSwarm 的设计、spec、实现和已有验证证据�
 交付文档路径、用例范围、执行准备、证据、待确认项与当前状态。
 用户要求执行测试时另按授权和仓库环境执行，只更新实际覆盖的结果；
 不自动调用外部服务、提交文件、创建 PR 或写入审批结论，不运行格式化或静态检查。
+
+## 文档元数据与索引
+
+遵循 [作者、设计关联与索引规则](../jw-design/references/document-metadata.md)：受管文档以 frontmatter 标注 Git author，移除 owner；新 F 平铺在 features/，F/B 显式声明 designs。
+写作/修改后自动运行文档同步工具刷新索引；检视只报告缺口，不改写待审资料。

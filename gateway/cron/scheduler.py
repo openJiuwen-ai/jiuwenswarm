@@ -10,7 +10,11 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
+from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
     resolve_dingtalk_push_metadata,
@@ -26,12 +30,9 @@ from gateway.cron.models import (
 )
 from gateway.cron.store_base import CronJobStoreBackend
 from gateway.message_handler.message_handler import MessageHandler
-from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
 from gateway.runtime.cron.cron_expr import next_cron_datetime
+from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +99,9 @@ def _login_model_auth_for_job(job: CronJob) -> dict[str, Any] | None:
     拿不到凭据不在这里报错：AgentServer 对"登录模型没带凭据"有面向用户的
     ``login_required`` 报错，任务以明确原因失败，而不是静默换默认模型。
     """
+    from gateway.auth.passthrough import refreshed_credential_for_ref
     from jiuwenswarm.common.auth.apig import resolve_apig_config
     from jiuwenswarm.common.auth.login_credentials import is_credential_ref
-    from gateway.auth.passthrough import refreshed_credential_for_ref
 
     ref = str(getattr(job, "credential_ref", "") or "").strip()
     if not ref or not is_credential_ref(ref):
@@ -227,11 +228,13 @@ def _extract_text_from_stream_payload(payload: dict | None) -> str | None:
     return None
 
 
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.cron_team_completion import (
     apply_cron_team_round_event,
     cron_team_round_should_end,
-    is_cron_leader_placeholder_text as _is_cron_leader_placeholder_text,
     new_cron_team_round_state,
+)
+from gateway.common.cron_team_completion import (
+    is_cron_leader_placeholder_text as _is_cron_leader_placeholder_text,
 )
 
 

@@ -22,7 +22,7 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from gateway.channel_manager.base import (
     BaseChannel,
     ChannelMetadata,

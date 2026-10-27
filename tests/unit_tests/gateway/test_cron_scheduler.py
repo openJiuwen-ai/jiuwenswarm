@@ -12,15 +12,15 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.message import ReqMethod
 from gateway.cron.models import CronJob, CronRunState
 from gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
     CronSchedulerService,
     _Event,
 )
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.cron_team_completion import (
     cron_team_round_should_end,
     new_cron_team_round_state,
 )

@@ -5,11 +5,19 @@ interface ConfirmDialogProps {
   title: string;
   message: string;
   confirmLabel?: string;
+  busy?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }
 
-export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfirm }: ConfirmDialogProps) {
+export function ConfirmDialog({
+  title,
+  message,
+  confirmLabel,
+  busy = false,
+  onCancel,
+  onConfirm,
+}: ConfirmDialogProps) {
   const { t } = useTranslation();
   // 用 Portal 渲染到 document.body：这个遮罩根节点原本是详情页 `.detail-body` 的直接子元素，
   // 会被 index.css 的 `.detail-body > * { width: min(1400px, calc(100% - 80px)); margin: auto }`
@@ -20,7 +28,7 @@ export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfir
       className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-cron-dialog"
       data-testid="connector-market-confirm-dialog"
       onClick={(event) => {
-        if (event.target === event.currentTarget) onCancel();
+        if (!busy && event.target === event.currentTarget) onCancel();
       }}
     >
       <div className="w-[340px] rounded-2xl bg-card p-6 shadow-xl">
@@ -30,7 +38,8 @@ export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfir
           <button
             type="button"
             onClick={onCancel}
-            className="flex h-8 items-center justify-center rounded-lg border border-border px-3 text-[13px] text-text hover:border-border-hover"
+            disabled={busy}
+            className="flex h-8 items-center justify-center rounded-lg border border-border px-3 text-[13px] text-text hover:border-border-hover disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="connector-market-confirm-cancel"
           >
             {t('connectorMarket.common.cancel')}
@@ -38,7 +47,9 @@ export function ConfirmDialog({ title, message, confirmLabel, onCancel, onConfir
           <button
             type="button"
             onClick={onConfirm}
-            className="flex h-8 items-center justify-center rounded-lg bg-danger px-3 text-[13px] text-white hover:opacity-90"
+            disabled={busy}
+            aria-busy={busy || undefined}
+            className="flex h-8 items-center justify-center rounded-lg bg-danger px-3 text-[13px] text-white hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
             data-testid="connector-market-confirm-ok"
           >
             {confirmLabel ?? t('connectorMarket.common.confirm')}

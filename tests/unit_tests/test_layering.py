@@ -9,6 +9,8 @@
   R2 server  禁止 import gateway
   R3 gateway 禁止 import server/agents/channels
 
+例外：``gateway.common`` 为无状态纯组件的唯一真源，母仓反向引用不计违规。
+
 上游同步、本仓提交引入新的跨层依赖时本测试失败；白名单内的存量
 （燃尽清单）随解耦 PR 逐步缩减——存量消除后白名单未同步缩减同样失败
 （脚本输出会标注 ``[已消除]``）。
