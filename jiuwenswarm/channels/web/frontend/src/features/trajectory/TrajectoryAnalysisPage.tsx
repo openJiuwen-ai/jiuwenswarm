@@ -46,6 +46,8 @@ export interface TrajectoryAnalysisPageProps {
    * a range is being chosen or the diagnosis sub-page is showing.
    */
   onComposerPolicyChange?: (policy: TrajectoryComposerPolicy) => void;
+  /** Return to the conversation after a suggestion is written into the composer. */
+  onComposerFilled?: () => void;
 }
 
 interface FocusedCause {
@@ -59,6 +61,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
   sessionId,
   onBack,
   onComposerPolicyChange,
+  onComposerFilled,
 }: TrajectoryAnalysisPageProps) {
   const { t } = useTranslation();
   const [subpage, setSubpage] = useState<TrajectoryAnalysisSubpage>('trajectory');
@@ -348,6 +351,7 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           subjectLabels={subjectLabels}
           focusedFindingId={focused?.causeId ?? null}
           onFocusFinding={focusCause}
+          onComposerFilled={onComposerFilled ?? onBack}
         />
       </div>
       {selecting ? (
