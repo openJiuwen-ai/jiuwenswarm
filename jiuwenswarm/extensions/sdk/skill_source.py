@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 import httpx
 
 try:
-    from jiuwenswarm.extensions.sdk.base import BaseExtension
+    from gateway.extensions.sdk.base import BaseExtension
 except ModuleNotFoundError:  # gateway_protocol is provided by the runtime image
     class BaseExtension:  # type: ignore[no-redef]
         """Stand-in so AgentServer unit tests can import the SPI without the protocol package."""

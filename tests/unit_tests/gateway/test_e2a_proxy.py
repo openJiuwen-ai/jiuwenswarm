@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 from gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,

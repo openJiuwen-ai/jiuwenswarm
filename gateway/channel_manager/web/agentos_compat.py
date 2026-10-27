@@ -10,7 +10,7 @@ import json
 from collections import Counter
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import DEPRECATION_MAP, is_single_agent_mode, is_team_mode
+from gateway.common.mode_matrix import DEPRECATION_MAP, is_single_agent_mode, is_team_mode
 
 
 def _mode(value: Any) -> Any:

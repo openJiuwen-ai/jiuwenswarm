@@ -22,6 +22,7 @@ from openjiuwen.core.foundation.llm import (
     ToolMessage,
 )
 from openjiuwen.core.session.agent import Session
+from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.ability_manager import resolve_tool_result_text
 from openjiuwen.core.single_agent.rail.base import (
@@ -364,12 +365,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Shared across sessions (same workspace → same tool instance)
         self._main_todo_tool: Optional[TodoListTool] = None
         # Track in-flight tool calls for cancellation status emission
-        self._inflight_tool_calls: dict[str, dict[str, Any]] = {}
+        self._inflight_tool_calls: dict[tuple[str, str], dict[str, Any]] = {}
         # Store cancelled tool info for interrupt response (per-session to avoid
         # cross-session leakage in concurrent collect→get→clear sequences).
         self._cancelled_tool_results: dict[str, list[dict[str, Any]]] = {}
         self._quarantined_sessions: set[str] = set()
-        # tool_call_id -> sid of calls whose tool_call/tool_update chunks were
+        # (sid, tool_call_id) of calls whose tool_call/tool_update chunks were
         # already emitted.  Resume replays the full rail cycle for the same
         # tool_call_id; without this latch history.jsonl gets a duplicate
         # tool_call + tool_update pair (#3785).  Lifecycle: set on first emit,
@@ -379,7 +380,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # some providers reset tool_call ids per response (call_0, call_1...),
         # and a stale latch would swallow the next round's legitimate call.
         # cleanup_session drops leftovers when the session is destroyed.
-        self._emitted_tool_call_ids: dict[str, str] = {}
+        self._emitted_tool_call_ids: set[tuple[str, str]] = set()
         self._symphony_stream_handler = SymphonyToolStreamHandler()
 
     def callback_priority(self, event: AgentCallbackEvent) -> int:
@@ -694,12 +695,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
 
-    def cleanup_session(self, session_id: str = "") -> None:
-        """Remove ALL per-session state for *session_id*.
+    def cleanup_session(
+        self, session_id: str = "", *, preserve_tool_call_ids: bool = False,
+    ) -> None:
+        """Release stream state, optionally retaining tool replay deduplication.
 
         Called by the adapter when the last task for a session completes
-        (Counter drops to 0). Prevents unbounded growth of the per-session
-        dicts on long-lived adapters serving many unique sessions.
+        (Counter drops to 0). Suspended calls need only their emitted IDs;
+        in-flight tool metadata remains available for later stop collection.
         """
         sid = self._sid_key(session_id)
         self._abort_requested.pop(sid, None)
@@ -717,11 +720,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Drop this session's leftover latch entries (interrupted calls that
         # never completed).  Other sessions' entries must stay: shared adapters
         # serve many sessions concurrently.
-        self._emitted_tool_call_ids = {
-            tc_id: owner_sid
-            for tc_id, owner_sid in self._emitted_tool_call_ids.items()
-            if owner_sid != sid
-        }
+        if not preserve_tool_call_ids:
+            self._clear_emitted_tool_calls(sid)
+
+    def _clear_emitted_tool_calls(self, sid: str) -> None:
+        """Release dedup state without touching pause/abort or cancellation results."""
+        self._emitted_tool_call_ids = {key for key in self._emitted_tool_call_ids if key[0] != sid}
 
     def quarantine_session(
         self, session_id: str, session: Session | None = None
@@ -775,7 +779,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         """
         sid = self._sid_key(session_id)
         bucket = self._cancelled_tool_results.setdefault(sid, [])
-        for tc_id, info in list(self._inflight_tool_calls.items()):
+        for key, info in list(self._inflight_tool_calls.items()):
             # Only collect tools matching the target session (in-flight entries
             # store the rail's normalized sid).
             if session_id and info.get("session_id") != sid:
@@ -785,12 +789,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 continue
             payload = {
                 "tool_name": getattr(tc, "name", ""),
-                "tool_call_id": tc_id,
+                "tool_call_id": key[1],
                 "result": "[Interrupted] Tool execution cancelled by user.",
                 "status": "error",
             }
             bucket.append(payload)
-            self._inflight_tool_calls.pop(tc_id, None)
+            self._inflight_tool_calls.pop(key, None)
         logger.info(
             "[StreamEventRail] collected %d cancelled tools for session=%s",
             len(bucket),
@@ -820,6 +824,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         raw_conv_id = ctx.inputs.conversation_id or ""
         sid = raw_conv_id.strip() or "default"
         self.raise_if_quarantined(sid, ctx.session)
+        if not isinstance(ctx.inputs.query, InteractiveInput) or ctx.inputs.query.raw_inputs is not None:
+            # Fresh input supersedes any paused call retained after stream end.
+            self._clear_emitted_tool_calls(sid)
         if raw_conv_id:
             self._conversation_ids[sid] = raw_conv_id
         self._main_sessions[sid] = ctx.session
@@ -1104,7 +1111,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             # rail 周期时会带着相同 id 再进这里，重复发射会在 history.jsonl 留下
             # 重复记录（#3785）。
             tc_id = getattr(tc, "id", "")
-            if not (tc_id and self._emitted_tool_call_ids.get(tc_id) == sid):
+            if not (tc_id and (sid, tc_id) in self._emitted_tool_call_ids):
                 tool_call_emitted = await self._emit_tool_call(
                     session,
                     tc,
@@ -1126,7 +1133,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                         reviewer_metadata=reviewer_progress_metadata,
                     )
                 if tc_id:
-                    self._emitted_tool_call_ids[tc_id] = sid
+                    self._emitted_tool_call_ids.add((sid, tc_id))
             self._symphony_stream_handler.bind_progress(
                 ctx,
                 session,
@@ -1134,9 +1141,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             # Track in-flight tool call for cancellation
             if tc_id:
-                self._inflight_tool_calls[tc_id] = {
+                self._inflight_tool_calls[(sid, tc_id)] = {
                     "tool_call": tc,
-                    "session": session,
                     "session_id": sid,
                 }
 
@@ -1160,7 +1166,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         try:
             self._symphony_stream_handler.reset_progress(ctx)
             if tc_id:
-                self._inflight_tool_calls.pop(tc_id, None)
+                self._inflight_tool_calls.pop((self._resolve_sid(ctx, session), tc_id), None)
             reviewer_metadata = peek_reviewer_tool_result_metadata(
                 getattr(ctx, "extra", None), tool_call_id=tc_id
             )
@@ -1184,7 +1190,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     consume_reviewer_tool_result_metadata(
                         getattr(ctx, "extra", None), tool_call_id=tc_id
                     )
-                    self._emitted_tool_call_ids.pop(tc_id, None)
+                    self._emitted_tool_call_ids.discard((self._resolve_sid(ctx, session), tc_id))
         finally:
             if getattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE, None) == "projecting":
                 delattr(ctx, _TERMINAL_PROJECTION_STATE_ATTRIBUTE)
@@ -1349,7 +1355,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             return
         tc_id = self._tool_call_id(tool_call)
         sid = self._resolve_sid(ctx, session)
-        if tc_id and self._emitted_tool_call_ids.get(tc_id) == sid:
+        if tc_id and (sid, tc_id) in self._emitted_tool_call_ids:
             return
         try:
             call_goal, cleaned_args = extract_call_goal(
@@ -1367,7 +1373,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 OutputSchema(type="tool_call", index=0, payload={"tool_call": payload})
             )
             if tc_id:
-                self._emitted_tool_call_ids[tc_id] = sid
+                self._emitted_tool_call_ids.add((sid, tc_id))
             result_text = (
                 "Waiting for user input"
                 if self._get_prompt_language() == "en"

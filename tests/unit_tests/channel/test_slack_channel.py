@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message
+from openjiuwen_protocol.message import EventType, Message
 from gateway.channel_manager.base import RobotMessageRouter
 from gateway.channel_manager.im_platforms.slack import slack_connect
 from gateway.channel_manager.im_platforms.slack.slack_connect import (

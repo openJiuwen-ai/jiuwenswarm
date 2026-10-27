@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE
 from gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,

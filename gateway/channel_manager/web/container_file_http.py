@@ -26,6 +26,8 @@ FILE_API_PREFIX = "/file-api"
 MAX_UPLOAD_COUNT = 20
 _STREAM_CHUNK = 65536
 _VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
+# Keep the verified-download wire chunk bound aligned with AgentServer.
+_VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES = 512 * 1024
 
 
 class RawFileQuery(BaseModel):
@@ -526,7 +528,6 @@ async def serve_file_chunks(
     *, inline: bool | None = None,
 ) -> Response:
     """Stream a bounded AgentServer reader with shared HEAD/Range semantics."""
-    from gateway.embedded.runtime.file_download import _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES
 
     first_result = await read_chunk(0, 1)
     if isinstance(first_result, JSONResponse):

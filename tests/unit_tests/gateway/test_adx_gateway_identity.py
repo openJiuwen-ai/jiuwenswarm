@@ -104,7 +104,7 @@ async def test_extension_registers_only_when_adx_backend_is_selected(monkeypatch
 
 @pytest.mark.parametrize("method", ["history.get", "chat.send", "command.goal"])
 async def test_adx_cron_snapshot_is_turn_only_and_owner_scoped(monkeypatch, method):
-    from jiuwenswarm.common.e2a.models import E2AEnvelope
+    from openjiuwen_protocol.e2a.models import E2AEnvelope
     from gateway.message_handler.message_handler import MessageHandler
 
     client = _client(monkeypatch)

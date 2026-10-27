@@ -11,7 +11,7 @@ import os
 from typing import Any
 
 from jiuwenswarm.common.config import get_config, get_default_models, get_mcp_servers
-from jiuwenswarm.common.mode_matrix import deprecate_mode, is_team_mode
+from gateway.common.mode_matrix import deprecate_mode, is_team_mode
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.utils import get_config_file, mask_sensitive

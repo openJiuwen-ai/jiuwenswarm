@@ -11,7 +11,7 @@ from typing import Any, Mapping
 
 import yaml
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
     canonicalize_mode_text,

@@ -5,14 +5,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-import logging
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
-from gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from gateway.channel_manager.base import (
+    BaseChannel,
+    ChannelMetadata,
+    RobotMessageRouter,
+)
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 
@@ -23,9 +27,9 @@ try:
     from telegram.ext import (
         Application,
         CommandHandler,
+        ContextTypes,
         MessageHandler,
         filters,
-        ContextTypes,
     )
 
     TELEGRAM_AVAILABLE = True

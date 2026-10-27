@@ -17,7 +17,7 @@ import math
 import sys
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_plan_mode, is_team_mode
+from gateway.common.mode_matrix import is_plan_mode, is_team_mode
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (

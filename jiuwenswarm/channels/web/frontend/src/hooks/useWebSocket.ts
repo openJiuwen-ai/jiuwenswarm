@@ -2010,6 +2010,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
+        const queuedTask = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
+        if (queuedTask && ['queued', 'failed'].includes(queuedTask.status) && queuedTask.mediaItems?.length) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement',
+            success: false,
+            message: t('network.supplementAttachmentsUnsupported'),
+          });
+          return false;
+        }
         // The button supplies input intent; Runtime decides whether it can steer the target.
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
         await sendQueuedTaskInput(sessionId, taskId, request, {

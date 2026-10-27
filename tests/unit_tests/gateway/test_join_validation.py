@@ -11,8 +11,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.common.schema.message import Message
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from openjiuwen_protocol.message import Message
 from gateway.message_handler.command_parser.slash_command import (
     ParsedChannelControl,
     ParsedControlAction,

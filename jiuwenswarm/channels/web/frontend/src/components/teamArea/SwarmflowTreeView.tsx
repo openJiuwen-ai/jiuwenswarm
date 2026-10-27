@@ -229,7 +229,7 @@ function AgentLoopNode({
           <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
-        <span className="text-sm font-medium text-text break-words">{name}</span>
+        <span className="text-sm font-medium text-text break-words" title={name}>{name}</span>
         <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
@@ -324,7 +324,7 @@ function PhaseLoopNode({
           <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
-        <span className="text-sm font-medium text-text break-words">{baseName}</span>
+        <span className="text-sm font-medium text-text break-words" title={baseName}>{baseName}</span>
         <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
@@ -679,11 +679,11 @@ function AgentNode({
           data-testid="team-area-swarmflow-agent-name"
           data-variant={agent.id}
           title={agent.agent_template
-            ? t('swarmflow.expertIdentity', {
+            ? `${agent.name}\n${t('swarmflow.expertIdentity', {
                 name: agent.display_name ?? agent.agent_template,
                 template: agent.agent_template,
-              })
-            : undefined}
+              })}`
+            : agent.name}
         >
           {agent.name}
         </span>
@@ -1026,7 +1026,7 @@ function VerifyPanel({
           <ChevronRight className="w-3.5 h-3.5 text-text-muted shrink-0" />
         )}
         <span className="text-sm text-cyan-600 dark:text-cyan-300 shrink-0">▦</span>
-        <span className="text-sm font-medium text-text">{group.label}</span>
+        <span className="text-sm font-medium text-text" title={group.label}>{group.label}</span>
         {group.threshold != null && (
           <span className="text-xs text-text-muted shrink-0">{t('swarmflow.verifyThreshold', { count: group.threshold })}</span>
         )}
@@ -1330,7 +1330,7 @@ function PhaseNode({
           <div className="w-4 shrink-0" />
         )}
         <StatusIcon status={phase.status} />
-        <span className="text-sm font-medium text-text break-words flex-1" data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
+        <span className="text-sm font-medium text-text break-words flex-1" title={phase.name} data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
           {phase.name}
         </span>
         {phase.phase_type === 'child' && (
@@ -1508,7 +1508,7 @@ function RunNode({
         <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text-strong truncate" data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
+            <span className="text-sm font-semibold text-text-strong truncate" title={run.name} data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
               {run.name}
             </span>
             <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>

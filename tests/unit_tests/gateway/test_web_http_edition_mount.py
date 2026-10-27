@@ -15,11 +15,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[3]
-MAPPED_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
-OUTBOUND_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "outbound.py"
-TIMEOUTS_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_http_timeouts.py"
-HTTP_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_http_routes.py"
-CHANNEL_APP_PATH = ROOT / "jiuwenswarm" / "gateway" / "channel_manager" / "web" / "web_channel_app.py"
+MAPPED_PATH = ROOT / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
+OUTBOUND_PATH = ROOT / "gateway" / "channel_manager" / "web" / "outbound.py"
+TIMEOUTS_PATH = ROOT / "gateway" / "channel_manager" / "web" / "web_http_timeouts.py"
+HTTP_PATH = ROOT / "gateway" / "channel_manager" / "web" / "web_http_routes.py"
+CHANNEL_APP_PATH = ROOT / "gateway" / "channel_manager" / "web" / "web_channel_app.py"
 
 
 def _load_module(mod_name: str, path: Path) -> ModuleType:
@@ -71,12 +71,20 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
     traj.attach_trajectory_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, traj.__name__, traj)
 
+    diagnosis = ModuleType("gateway.channel_manager.web.diagnosis_http")
+    diagnosis.attach_diagnosis_routes = lambda app, channel: None
+    monkeypatch.setitem(sys.modules, diagnosis.__name__, diagnosis)
+
+    files = ModuleType("gateway.channel_manager.web.enterprise_files")
+    files.register_enterprise_file_routes = lambda app, channel: None
+    monkeypatch.setitem(sys.modules, files.__name__, files)
+
     auth = ModuleType("gateway.channel_manager.web.web_http_auth")
     auth.register_auth_routes = lambda app: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, auth.__name__, auth)
 
     # security.ws_origin used at import of web_channel_app
-    sec = ModuleType("jiuwenswarm.common.security.ws_origin")
+    sec = ModuleType("gateway.common.security.ws_origin")
     sec.get_header_value = lambda *a, **k: None  # type: ignore[attr-defined]
     sec.is_allowed_browser_origin = lambda *a, **k: True  # type: ignore[attr-defined]
     sec.is_origin_check_enabled = lambda: False  # type: ignore[attr-defined]
@@ -91,7 +99,7 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
     adapter.StarletteWsAdapter = object  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, adapter.__name__, adapter)
 
-    ext_host = ModuleType("jiuwenswarm.extensions.application_host")
+    ext_host = ModuleType("gateway.extensions.application_host")
     ext_host.iter_websocket_routes = lambda *_a, **_k: []  # type: ignore[attr-defined]
     ext_host.mount_application_plugin_http_routes = lambda *_a, **_k: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "jiuwenswarm.extensions", ModuleType("jiuwenswarm.extensions"))
@@ -133,11 +141,19 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     traj.attach_trajectory_routes = lambda app, channel: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, traj.__name__, traj)
 
+    diagnosis = ModuleType("gateway.channel_manager.web.diagnosis_http")
+    diagnosis.attach_diagnosis_routes = lambda app, channel: None
+    monkeypatch.setitem(sys.modules, diagnosis.__name__, diagnosis)
+
+    files = ModuleType("gateway.channel_manager.web.enterprise_files")
+    files.register_enterprise_file_routes = lambda app, channel: None
+    monkeypatch.setitem(sys.modules, files.__name__, files)
+
     auth = ModuleType("gateway.channel_manager.web.web_http_auth")
     auth.register_auth_routes = lambda app: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, auth.__name__, auth)
 
-    sec = ModuleType("jiuwenswarm.common.security.ws_origin")
+    sec = ModuleType("gateway.common.security.ws_origin")
     sec.get_header_value = lambda *a, **k: None  # type: ignore[attr-defined]
     sec.is_allowed_browser_origin = lambda *a, **k: True  # type: ignore[attr-defined]
     sec.is_origin_check_enabled = lambda: False  # type: ignore[attr-defined]
@@ -147,7 +163,7 @@ def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyP
     adapter.StarletteWsAdapter = object  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, adapter.__name__, adapter)
 
-    ext_host = ModuleType("jiuwenswarm.extensions.application_host")
+    ext_host = ModuleType("gateway.extensions.application_host")
     ext_host.iter_websocket_routes = lambda *_a, **_k: []  # type: ignore[attr-defined]
     ext_host.mount_application_plugin_http_routes = lambda *_a, **_k: None  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, ext_host.__name__, ext_host)

@@ -10,7 +10,7 @@ from collections import deque
 import pytest
 
 from gateway.channel_manager.protocol.acp.acp_connect import AcpChannel, AcpChannelConfig
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
 
 class DummyBus:

@@ -230,7 +230,7 @@ class DiagnosisHost:
         if method is ReqMethod.DIAGNOSIS_RUN:
             # Access errors (flag, session) take precedence over body errors.
             service.check_access(session_id)
-            record = await service.start(session_id, _validate(DiagnosisRunRequest, body))
+            record = await service.start(session_id, _validate(DiagnosisRunRequest, _fill_default_locale(body)))
             return record.model_dump(mode="json", exclude_none=True)
         if method is ReqMethod.DIAGNOSIS_LIST:
             items = service.list_summaries(session_id)
@@ -246,7 +246,7 @@ class DiagnosisHost:
         if method is ReqMethod.DIAGNOSIS_TTSE_TRIGGER:
             service.check_access(session_id)
             trigger_request = _validate(TtseTriggerRequest, body)
-            results = await service.trigger_ttse(session_id, diagnosis_id, trigger_request.root_cause_ids)
+            results = await service.trigger_ttse(session_id, diagnosis_id, trigger_request.evolution_judge_id)
             return {
                 "results": {key: value.model_dump(mode="json", exclude_none=True) for key, value in results.items()},
             }
@@ -256,6 +256,19 @@ class DiagnosisHost:
         """Cancel running diagnoses; a never-used host has nothing to stop."""
         if self._service is not None:
             await self._service.shutdown()
+
+
+def _fill_default_locale(body: Any) -> Any:
+    """Backfill the request locale from the saved UI language when the body omits it."""
+    if not isinstance(body, Mapping):
+        return body
+    payload = dict(body)
+    if not str(payload.get("locale") or "").strip():
+        from jiuwenswarm.common.config import get_config
+
+        lang = str(get_config().get("preferred_language") or "zh").strip().lower()
+        payload["locale"] = lang if lang in ("zh", "en") else "zh"
+    return payload
 
 
 def _validate(model: type[Any], body: Any) -> Any:

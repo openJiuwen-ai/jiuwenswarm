@@ -238,7 +238,7 @@ async def test_protected_steer_is_refused_before_sdk_submission(
 ):
     from openjiuwen.harness.task_loop.loop_queues import LoopQueues
     from openjiuwen.harness.task_loop.task_loop_controller import TaskLoopController
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
     from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
     protected = not during_prepare
@@ -302,7 +302,7 @@ async def test_protected_steer_is_refused_before_sdk_submission(
 @pytest.mark.parametrize("cross_session", [False, True])
 async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is_stream, cross_session):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     @asynccontextmanager
     async def admission(*_args):

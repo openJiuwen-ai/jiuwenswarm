@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jiuwenswarm.common.cron_session import cron_session_matches_job
-from jiuwenswarm.common.work_mode import is_default_project_id
+from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.session import lifecycle as lc, project_store
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 

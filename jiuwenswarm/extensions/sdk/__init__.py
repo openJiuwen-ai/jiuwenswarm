@@ -20,23 +20,23 @@ _EXPORTS = {
         "AgentServerClientExtension",
     ),
     "ApplicationPluginExtension": (
-        "gateway_protocol.sdk.application_plugin",
+        "gateway.extensions.sdk.application_plugin",
         "ApplicationPluginExtension",
     ),
     "ApplicationPluginServices": (
-        "gateway_protocol.sdk.application_plugin",
+        "gateway.extensions.sdk.application_plugin",
         "ApplicationPluginServices",
     ),
     "FrontendContribution": (
-        "gateway_protocol.sdk.application_plugin",
+        "gateway.extensions.sdk.application_plugin",
         "FrontendContribution",
     ),
     "ManifestApplicationPlugin": (
-        "gateway_protocol.sdk.application_plugin",
+        "gateway.extensions.sdk.application_plugin",
         "ManifestApplicationPlugin",
     ),
     "WebSocketRouteContribution": (
-        "gateway_protocol.sdk.application_plugin",
+        "gateway.extensions.sdk.application_plugin",
         "WebSocketRouteContribution",
     ),
     "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),

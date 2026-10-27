@@ -9,18 +9,20 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field
 import httpx
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from pydantic import BaseModel, Field
 
-from gateway.channel_manager.base import RobotMessageRouter, BaseChannel
-from gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import (
+    DingTalkFileService,
+)
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.common.utils import get_agent_workspace_dir
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -104,11 +106,11 @@ class DingTalkImageSendRequest:
 
 try:
     from dingtalk_stream import (
-        DingTalkStreamClient,
-        Credential,
+        AckMessage,
         CallbackHandler,
         CallbackMessage,
-        AckMessage,
+        Credential,
+        DingTalkStreamClient,
     )
     from dingtalk_stream.chatbot import ChatbotMessage
 

@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from jiuwenswarm.common.request_identity import apply_routing_metadata
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 from gateway.routing.agent_client import DuplicateRequestIdError
 from gateway.routing.e2a_proxy import fetch_agent_unary
 

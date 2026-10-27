@@ -4,31 +4,30 @@
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from typing import Any, AsyncIterator
 from urllib.parse import urlsplit
 
-from websockets.exceptions import ConnectionClosed, PayloadTooBig
-
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import (
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+from openjiuwen_protocol.e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.moa_config import redact_moa_credentials
-from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.common.ws_diagnostics import (
+from websockets.exceptions import ConnectionClosed, PayloadTooBig
+
+from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
-
+from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from jiuwenswarm.common.moa_config import redact_moa_credentials
 
 logger = logging.getLogger(__name__)
 _STREAM_TRAILING_MESSAGE_GRACE_SECONDS = 0.7
@@ -739,8 +738,7 @@ async def mock_agent_server_handler(ws: Any) -> None:
     协议兼容的 Mock AgentServer：按 is_stream 回 E2AResponse 线 JSON（与生产 AgentServer 一致）。
     """
     import websockets
-
-    from jiuwenswarm.common.e2a.wire_codec import (
+    from openjiuwen_protocol.e2a.wire_codec import (
         encode_agent_chunk_for_wire,
         encode_agent_response_for_wire,
     )
@@ -812,7 +810,7 @@ async def run_mock_agent_server(
 
 async def _run_verification() -> None:
     """用内存 Mock 服务端验证 WebSocketAgentServerClient 的 connect/send_request/send_request_stream."""
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
     port = 18765
     uri = f"ws://127.0.0.1:{port}"

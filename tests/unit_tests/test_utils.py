@@ -973,9 +973,18 @@ class TestCleanupStaleOpenjiuwenDescs:
         source = (root / relative_path).read_text(encoding="utf-8")
         cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 
+        # 只约束 openjiuwen SDK 本体：清理针对的是 SDK 会读取的过期描述文件。
+        # ``openjiuwen_protocol`` 是独立的纯协议包，不读取 workspace 描述文件，
+        # 按导入分组规则可以排在清理调用之前。
+        sdk_import_markers = (
+            "from openjiuwen.",
+            "from openjiuwen import",
+            "import openjiuwen.",
+            "import openjiuwen\n",
+        )
         openjiuwen_imports = [
             source.find(marker)
-            for marker in ("from openjiuwen", "import openjiuwen")
+            for marker in sdk_import_markers
             if source.find(marker) >= 0
         ]
         if openjiuwen_imports:

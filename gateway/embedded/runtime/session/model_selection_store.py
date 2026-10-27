@@ -9,7 +9,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from jiuwenswarm.common.model_selection import ModelSelection
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 _LOCK = threading.Lock()

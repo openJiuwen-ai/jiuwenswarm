@@ -18,13 +18,14 @@ import re
 import secrets
 from typing import TYPE_CHECKING, Any
 
+from gateway.routing.interaction_context import PendingInteraction
 from jiuwenswarm.common.config import _parse_custom_headers
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
-from gateway.routing.interaction_context import PendingInteraction
 
 if TYPE_CHECKING:
+    from openjiuwen_protocol.message import Message
+
     from gateway.im_pipeline.im_inbound import IMPlatformAdapter
-    from jiuwenswarm.common.schema.message import Message
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,10 @@ class IMOutboundPipeline:
 
         try:
             from openjiuwen.core.foundation.llm import Model
-            from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
+            from openjiuwen.core.foundation.llm.schema.config import (
+                ModelClientConfig,
+                ModelRequestConfig,
+            )
 
             client_config = ModelClientConfig(
                 client_provider=client_provider,

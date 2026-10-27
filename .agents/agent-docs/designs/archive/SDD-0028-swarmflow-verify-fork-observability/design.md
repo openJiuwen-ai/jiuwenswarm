@@ -4,7 +4,6 @@ title: swarmflow verify / fork 可观测与前端呈现
 slug: swarmflow-verify-fork-observability
 status: shipped
 stage: archive
-owner: "@xiajing"
 reviewers: ["@xiajing"]
 created: 2026-09-22
 updated: 2026-09-29
@@ -28,7 +27,13 @@ implementation:
     - agent-core@d560a0238
     - agent-core@d8b009e39
     - agent-core@7b9564ecd
+author: '@xiajing'
+author_note: 由历史 owner 字段原值迁移
+type: D
+files: []
+author_email: null
 ---
+
 # 设计文档 — swarmflow verify / fork 可观测与前端呈现（2026-09-22）
 
 > 用途：本轮 swarmflow 改动的完整设计，供同事评审。按功能点组织，自包含。

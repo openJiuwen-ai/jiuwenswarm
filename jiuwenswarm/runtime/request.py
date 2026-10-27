@@ -9,7 +9,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     ResolvedMode,
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
@@ -20,7 +20,7 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 
 logger = logging.getLogger(__name__)

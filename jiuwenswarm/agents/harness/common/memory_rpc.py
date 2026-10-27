@@ -28,7 +28,7 @@ from jiuwenswarm.agents.harness.common.rails.project_memory import (
 )
 from jiuwenswarm.common.coding_memory_paths import resolve_project_coding_memory_dir
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.mode_matrix import is_code_profile_mode
+from gateway.common.mode_matrix import is_code_profile_mode
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)

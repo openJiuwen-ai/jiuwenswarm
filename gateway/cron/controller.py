@@ -12,7 +12,7 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from zoneinfo import ZoneInfo
 
 
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     EXECUTION_WORK_MODES,
@@ -521,7 +521,7 @@ class CronController:
             )
             model_selection = params.get("model_selection")
             if model_selection is not None:
-                from jiuwenswarm.common.model_selection import ModelSelection
+                from gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
                 selection = ModelSelection.model_validate(model_selection)
                 ModelSelectionResolver().resolve(selection)
@@ -733,7 +733,7 @@ class CronController:
         # gateway 本地 project_store 反查已删除。marker 缺失的 patch 不允许
         # 携带项目字段（必须先经 AgentServer 解析）；work_mode 单独 patch
         # 沿用原规则拒绝（仅能伴随项目重解析生效）。
-        from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+        from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 
         caller_work_mode = str(patch.get("work_mode") or "").strip()
         has_project_fields = "project_id" in patch or "project_dir" in patch

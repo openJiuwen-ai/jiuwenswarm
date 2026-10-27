@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, ModelSelectionError
-from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
+from gateway.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedSelection
 
 
 def compile_model_selection(resolved: ResolvedSelection) -> Any:

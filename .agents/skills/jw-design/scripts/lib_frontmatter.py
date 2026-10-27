@@ -39,7 +39,7 @@ REQUIRED_FIELDS: tuple[str, ...] = (
     "slug",
     "status",
     "stage",
-    "owner",
+    "author",
     "created",
     "updated",
     "domain",

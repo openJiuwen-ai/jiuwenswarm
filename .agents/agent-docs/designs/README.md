@@ -1,3 +1,13 @@
+---
+title: 设计资产
+author: null
+author_note: 历史作者待确认；缺少原 owner 和可靠创建署名
+id: README
+type: D
+modules: []
+files: []
+---
+
 # 设计资产
 
 本目录维护 JiuwenSwarm 的应用与跨仓接入设计。流程及模板见

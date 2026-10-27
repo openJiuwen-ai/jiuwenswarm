@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, WebSocket
 from fastapi.responses import PlainTextResponse
 
-from jiuwenswarm.common.security.ws_origin import (
+from gateway.common.security.ws_origin import (
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,

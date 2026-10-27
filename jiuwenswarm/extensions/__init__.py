@@ -15,24 +15,24 @@ _EXPORTS = {
     "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
     "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
     "AgentServerClientExtension": (
-        "gateway_protocol.sdk.agent_server_client",
+        "gateway.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",
     ),
     "ApplicationPluginExtension": (
-        "gateway_protocol.sdk.application_plugin",
+        "gateway.extensions.sdk.application_plugin",
         "ApplicationPluginExtension",
     ),
-    "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),
+    "BaseExtension": ("gateway.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
-        "gateway_protocol.sdk.crypto_utility",
+        "gateway.extensions.sdk.crypto_utility",
         "CryptoUtility",
     ),
     "ThirdAgentExtension": (
-        "gateway_protocol.sdk.third_agent",
+        "gateway.extensions.sdk.third_agent",
         "ThirdAgentExtension",
     ),
-    "ExtensionConfig": ("gateway_protocol.types", "ExtensionConfig"),
-    "ExtensionMetadata": ("gateway_protocol.types", "ExtensionMetadata"),
+    "ExtensionConfig": ("gateway.extensions.types", "ExtensionConfig"),
+    "ExtensionMetadata": ("gateway.extensions.types", "ExtensionMetadata"),
 }
 
 

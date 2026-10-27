@@ -176,7 +176,7 @@ class GatewayHealthCheckService(IHealthCheck):
 
     async def _tick(self) -> None:
         """执行一次探活:构造 E2A 发往 AgentServer,不向 Channel 下发。"""
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 
         if not self._is_active_now():
             logger.debug(
@@ -240,7 +240,7 @@ class GatewayHealthCheckService(IHealthCheck):
             # 发送 EventType.HEALTH_CHECK_RELAY(新值);接收端(8 个 IM 渠道 + web_connect)
             # 已在任务 2 全量切换到 HEALTH_CHECK_RELAY,端到端一致。
             if self._config.relay_channel_id and self._message_handler:
-                from jiuwenswarm.common.schema.message import Message, EventType
+                from openjiuwen_protocol.message import Message, EventType
 
                 relay_msg = Message(
                     id=f"healthcheck-relay-{request_id}",

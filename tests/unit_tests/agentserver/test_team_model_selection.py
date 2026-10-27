@@ -27,8 +27,8 @@ from jiuwenswarm.common.model_errors import (
     TEAM_MODEL_SELECTION_STALE,
     ModelSelectionError,
 )
-from jiuwenswarm.common.model_selection import ModelSelection
-from jiuwenswarm.common.model_selection import (
+from gateway.common.model_selection import ModelSelection
+from gateway.common.model_selection import (
     ResolvedModel as SwarmResolvedModel,
     ResolvedModelGroup as SwarmResolvedModelGroup,
     ResolvedRoute as SwarmResolvedRoute,

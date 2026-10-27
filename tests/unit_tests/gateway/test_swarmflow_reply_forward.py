@@ -19,9 +19,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 from gateway.message_handler.message_handler import MessageHandler
 
 

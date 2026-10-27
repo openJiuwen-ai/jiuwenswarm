@@ -23,7 +23,7 @@ from gateway.routing.container_files import (
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
     AgentCreateFailed,
     AgentCreatingTimeout,
@@ -45,12 +45,12 @@ from jiuwenswarm.extensions.agentos.agentos_router.config import (
     read_mapping_path,
     read_optional_float,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
+from gateway.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
     format_agentos,
     log_agentos,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.models import (
+from gateway.extensions.agentos.agentos_router.models import (
     AgentInfo,
     AgentStatus,
     ImageInfo,
@@ -65,6 +65,10 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     cmd_for_access_mode,
     compute_backoff_delay,
     instance_service_id,
+    parse_access_mode,
+)
+from gateway.extensions.agentos.registry_watcher.decode import (
+    web_svc_port as _web_svc_port,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import (
     cleanup_stale_sandboxes,

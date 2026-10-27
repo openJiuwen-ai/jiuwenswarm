@@ -8,11 +8,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     DEFAULT_AGENT_KEY_FIELDS,
     normalize_agent_key_fields,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import log_agentos
+from gateway.extensions.agentos.agentos_router.logutil import log_agentos
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryConfig
 from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
     YuanrongSshSettings,

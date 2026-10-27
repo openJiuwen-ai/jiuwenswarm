@@ -376,7 +376,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (  #
     resolve_declared_auto_workspace,
     supports_phase_auto_root,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
@@ -508,6 +508,7 @@ from jiuwenswarm.server.utils.stream_utils import (
     parse_stream_chunk as parse_common_stream_chunk,
 )
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
+    MULTIMODAL_TOOL_GROUPS,
     apply_audio_model_config_from_yaml,
     apply_image_gen_model_config_from_yaml,
     apply_video_model_config_from_yaml,
@@ -660,7 +661,7 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     deprecate_mode,
@@ -739,12 +740,9 @@ def _resolve_agent_composition_scope(mode: str, sub_mode: str | None) -> str:
         return "team_root"
     if normalized_mode == "code" and normalized_sub_mode == "team":
         return "team_root"
-    if normalized_mode in {"agent", "code"} and normalized_sub_mode in {
-        "",
-        "normal",
-        "plan",
-        "fast",
-    }:
+    from gateway.common.mode_matrix import supports_single_agent_permission_profile
+
+    if supports_single_agent_permission_profile(mode, sub_mode):
         return "single_agent"
     return "unsupported"
 
@@ -3646,7 +3644,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 metadata = get_session_metadata(sid)
-                from jiuwenswarm.common.model_selection import ModelSelection
+                from gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
 
                 # Explicit stable selections win; legacy ordinary names are also an
@@ -4019,6 +4017,7 @@ class JiuWenSwarmDeepAdapter:
         """Decrement the active-task count for *session_id*; remove when zero.
 
         When the count drops to zero, optionally cleans up per-session rail state.
+        Suspended tool calls retain only replay and cancellation state.
         Skip ``cleanup_rail`` when the stream consumer was cancelled but AgentServer
         work may still be winding down — ``process_interrupt`` owns teardown then.
         """
@@ -4027,8 +4026,26 @@ class JiuWenSwarmDeepAdapter:
         if count <= 1:
             self._active_session_ids.pop(sid, None)
             if cleanup_rail and self._stream_event_rail is not None:
+                # If interruption state is unreadable, keep replay deduplication
+                # until resume or fresh input, but still release stream state.
+                preserve_tool_call_ids = True
                 try:
-                    self._stream_event_rail.cleanup_session(sid)
+                    # An ordinary HITL stream ends while its tool call is still
+                    # suspended. Keep emitted IDs so resume cannot repeat it.
+                    preserve_tool_call_ids = (
+                        not self._stream_event_rail.is_abort_requested(sid)
+                        and self._deep_agent_loop_session_id() == sid
+                        and self._stream_completion_state(had_interaction=False) == "suspended"
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] cannot read suspension state for %s; "
+                        "preserving tool call IDs: %s", sid, exc,
+                    )
+                try:
+                    self._stream_event_rail.cleanup_session(
+                        sid, preserve_tool_call_ids=preserve_tool_call_ids,
+                    )
                 except Exception as exc:
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] cleanup_session(%s) failed: %s",
@@ -4732,7 +4749,7 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> str:
         """Resolve managed-browser binary from saved browser config."""
-        from jiuwenswarm.agents.harness.common.browser_config import resolve_chrome_path
+        from jiuwenswarm.common.browser_config import resolve_chrome_path
 
         if config_base is None:
             config_base = get_config()
@@ -5143,6 +5160,11 @@ class JiuWenSwarmDeepAdapter:
                     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                 ),
             )
+            from jiuwenswarm.common.browser_config import (
+                apply_browser_decision_config,
+            )
+
+            apply_browser_decision_config(browser_spec, config_base)
             self._prepare_browser_runtime_security(browser_spec)
             # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入 browser
             # subagent 的 MCP env（与 swarm.browser_agent 同一契约；放在安全加固
@@ -6904,70 +6926,150 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
-    def _sync_multimodal_tools_for_runtime(self) -> None:
-        """Sync multimodal tool registration after config reload."""
-        # The owner id, not ``card.id``: these instances are agent-owned, and a
-        # reload must rebuild them under the same owner the create path used.
-        agent_id = self._tool_owner_id()
-        self._vision_tools, self._vision_tools_registered = self._sync_tool_group(
-            current_tools=self._vision_tools,
-            registered=self._vision_tools_registered,
-            enabled=self._vision_model_config is not None,
-            create_fn=lambda: create_vision_tools(
-                language=self._resolve_runtime_language(),
-                vision_model_config=self._vision_model_config,
-                agent_id=agent_id,
+    def _build_multimodal_tool_groups(
+        self, agent_id: str, *, fail_on_error: bool = False,
+    ) -> dict[str, list[Any]]:
+        """Materialize enabled capabilities for both Work and Code builds.
+
+        Building a candidate Spec must not replace the live adapter's tool
+        records. Registration and adoption happen at their lifecycle boundaries.
+        Disabled groups are empty; failed groups are omitted unless the caller
+        requires failure propagation to abort a candidate Spec replacement.
+        """
+        factories = (
+            (
+                "vision tools", self._vision_model_config is not None,
+                lambda: create_vision_tools(
+                    language=self._resolve_runtime_language(),
+                    vision_model_config=self._vision_model_config,
+                    agent_id=agent_id,
+                ),
             ),
-            warn_label="vision tools",
+            (
+                "audio tools", self._audio_model_config is not None,
+                lambda: self._iter_runtime_audio_tools(agent_id),
+            ),
+            (
+                "video tool", bool(self._video_model_config),
+                lambda: mark_stateless([video_understanding]),
+            ),
+            (
+                "generate_image tool", bool(self._image_gen_model_config),
+                lambda: mark_stateless([generate_image]),
+            ),
+            (
+                "generate_video tools", bool(self._video_gen_model_config),
+                lambda: mark_stateless([generate_video, check_video_status]),
+            ),
+            (
+                "generate_visual tool", bool(self._visual_gen_model_config),
+                lambda: mark_stateless([generate_visual]),
+            ),
         )
+        groups: dict[str, list[Any]] = {}
+        for label, enabled, create in factories:
+            if not enabled:
+                groups[label] = []
+                continue
+            try:
+                groups[label] = list(create())
+            except Exception as exc:
+                logger.warning("[JiuWenSwarmDeepAdapter] %s build failed: %s", label, exc)
+                if fail_on_error:
+                    raise
+        return groups
 
-        desired_audio_tools = self._iter_runtime_audio_tools(agent_id)
-        if self._audio_tools_registered:
-            current_names = {tool.card.name for tool in self._audio_tools}
-            desired_names = {tool.card.name for tool in desired_audio_tools}
-            if current_names != desired_names:
-                self._remove_registered_tools(self._audio_tools)
-                self._audio_tools = []
-                self._audio_tools_registered = False
-        self._audio_tools, self._audio_tools_registered = self._sync_tool_group(
-            current_tools=self._audio_tools,
-            registered=self._audio_tools_registered,
-            enabled=bool(desired_audio_tools),
-            create_fn=lambda: desired_audio_tools,
-            warn_label="audio tools",
+    def _set_multimodal_runtime_state(self, tools: list[Any]) -> None:
+        """Adopt successfully registered tools without rebuilding instances."""
+        by_name = {
+            tool.card.name: tool
+            for tool in tools
+            if getattr(tool, "card", None) is not None
+        }
+        self._vision_tools = [
+            by_name[name] for name in MULTIMODAL_TOOL_GROUPS["vision tools"] if name in by_name
+        ]
+        self._audio_tools = [
+            by_name[name] for name in MULTIMODAL_TOOL_GROUPS["audio tools"] if name in by_name
+        ]
+        self._vision_tools_registered = bool(self._vision_tools)
+        self._audio_tools_registered = bool(self._audio_tools)
+        self._video_tool_registered = "video_understanding" in by_name
+        self._image_gen_tool_registered = "generate_image" in by_name
+        self._video_gen_tool_registered = all(
+            name in by_name for name in MULTIMODAL_TOOL_GROUPS["generate_video tools"]
         )
+        self._visual_gen_tool_registered = "generate_visual" in by_name
 
-        _, self._video_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([video_understanding]),
-            registered=self._video_tool_registered,
-            enabled=bool(self._video_model_config),
-            create_fn=lambda: mark_stateless([video_understanding]),
-            warn_label="video tool",
-        )
+    def _get_multimodal_tools(self) -> list[Any]:
+        """Return the live instances tracked by this adapter."""
+        tools = [*self._vision_tools, *self._audio_tools]
+        if self._video_tool_registered:
+            tools.append(video_understanding)
+        if self._image_gen_tool_registered:
+            tools.append(generate_image)
+        if self._video_gen_tool_registered:
+            tools.extend([generate_video, check_video_status])
+        if self._visual_gen_tool_registered:
+            tools.append(generate_visual)
+        return tools
 
-        _, self._image_gen_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([generate_image]),
-            registered=self._image_gen_tool_registered,
-            enabled=bool(self._image_gen_model_config),
-            create_fn=lambda: mark_stateless([generate_image]),
-            warn_label="generate_image tool",
-        )
+    def _register_multimodal_tools(
+        self, agent_id: str, *, fail_on_error: bool = False,
+    ) -> list[Any]:
+        """Register initial/candidate groups with the same rollback as reloads.
 
-        _, self._video_gen_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([generate_video, check_video_status]),
-            registered=self._video_gen_tool_registered,
-            enabled=bool(self._video_gen_model_config),
-            create_fn=lambda: mark_stateless([generate_video, check_video_status]),
-            warn_label="generate_video tools",
-        )
+        Return instances for the caller to adopt only after its build succeeds.
+        Shared resources stay registered when a group fails or an agent retires.
+        A candidate Spec aborts on failure and reclaims all registrations made
+        here, including earlier groups not yet returned to its build context.
+        """
+        registered: list[Any] = []
+        groups = self._build_multimodal_tool_groups(agent_id, fail_on_error=fail_on_error)
+        for label, tools in groups.items():
+            attempted: list[Any] = []
+            try:
+                for tool in tools:
+                    attempted.append(tool)
+                    register_tool(tool, agent_id)
+            except Exception as exc:
+                rollback_tools = registered + attempted if fail_on_error else attempted
+                for tool in rollback_tools:
+                    try:
+                        unregister_tool(tool)
+                    except Exception as cleanup_exc:
+                        logger.warning("[JiuWenSwarmDeepAdapter] remove tool failed: %s", cleanup_exc)
+                logger.warning("[JiuWenSwarmDeepAdapter] %s registration failed: %s", label, exc)
+                if fail_on_error:
+                    raise
+            else:
+                registered.extend(tools)
+        return registered
 
-        _, self._visual_gen_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([generate_visual]),
-            registered=self._visual_gen_tool_registered,
-            enabled=bool(self._visual_gen_model_config),
-            create_fn=lambda: mark_stateless([generate_visual]),
-            warn_label="generate_visual tool",
-        )
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Reconcile the same capability groups used by initial Spec/Work builds."""
+        current_tools = self._get_multimodal_tools()
+        desired_groups = self._build_multimodal_tool_groups(self._tool_owner_id())
+        active: list[Any] = []
+        for label, names in MULTIMODAL_TOOL_GROUPS.items():
+            current = [tool for tool in current_tools if tool.card.name in names]
+            if label not in desired_groups:
+                active.extend(current)
+                continue
+            desired = desired_groups[label]
+            if current and {tool.card.name for tool in current} != {tool.card.name for tool in desired}:
+                self._remove_registered_tools(current)
+                self._prune_tool_cards({tool.card.name for tool in current})
+                current = []
+            tools, _ = self._sync_tool_group(
+                current_tools=current,
+                registered=bool(current),
+                enabled=bool(desired),
+                create_fn=lambda group=desired: group,
+                warn_label=label,
+            )
+            active.extend(tools)
+        self._set_multimodal_runtime_state(active)
 
     def _invalidate_stale_paid_search_tool(self) -> None:
         """Re-register paid search when its configured-provider metadata changes."""
@@ -6992,7 +7094,7 @@ class JiuWenSwarmDeepAdapter:
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid-search tool registration after config reload."""
         self._invalidate_stale_paid_search_tool()
-        # The owner id, not ``card.id``; see ``_sync_multimodal_tools_for_runtime``.
+        # Registration and AbilityManager must use the same tool owner id.
         agent_id = self._tool_owner_id()
         tools, self._paid_search_registered = self._sync_tool_group(
             current_tools=[self._paid_search_tool] if self._paid_search_tool else [],
@@ -7339,7 +7441,7 @@ class JiuWenSwarmDeepAdapter:
         ]
         if default_groups:
             group_id = str(default_groups[0].get("model_group_id") or "")
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
             from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
             resolved = ModelSelectionResolver().resolve(ModelSelection(type="model_group", id=group_id))
@@ -7373,6 +7475,41 @@ class JiuWenSwarmDeepAdapter:
             None,
         )
         self._last_models_config_fingerprint = new_fp
+        return self._model
+
+    def _configured_default_model(self) -> Model | None:
+        """Materialize the configured fallback only when a request needs it.
+
+        Session bootstrap may use a different model. Unknown names and empty
+        selections still fall back to the original configuration, never to
+        whichever provider happened to be constructed first.
+        """
+        group_id = getattr(self, "_configured_default_group_id", "")
+        if group_id:
+            cached = self._model_group_cache.get(group_id)
+            if cached is None:
+                from gateway.common.model_selection import ModelSelection
+                from jiuwenswarm.server.runtime.model_compiler_adapter import (
+                    build_model_from_selection,
+                )
+                from jiuwenswarm.server.runtime.model_routing_registry import (
+                    ModelSelectionResolver,
+                )
+
+                resolved = ModelSelectionResolver().resolve(
+                    ModelSelection(type="model_group", id=group_id)
+                )
+                cached = build_model_from_selection(resolved)
+                self._model_group_cache[group_id] = cached
+                self._model_cache[f"model_group:{group_id}"] = cached
+            return cached
+        keys = getattr(self, "_configured_default_model_keys", None)
+        if keys is None:
+            return self._model
+        for key in keys:
+            model = self._materialize_model_recipe(key)
+            if model is not None:
+                return model
         return self._model
 
     @staticmethod
@@ -7531,7 +7668,7 @@ class JiuWenSwarmDeepAdapter:
         )
         return self._model
 
-    def _requested_model_name(self, request: AgentRequest) -> str:
+    def _enterprise_requested_model_name(self, request: AgentRequest) -> str:
         """Resolve the model name this request should use.
 
         Explicit ``model_name`` wins. Otherwise, if this adapter has not yet
@@ -7542,7 +7679,7 @@ class JiuWenSwarmDeepAdapter:
         raw_selection = params.get("model_selection")
         if isinstance(raw_selection, dict):
             try:
-                from jiuwenswarm.common.model_selection import ModelSelection
+                from gateway.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
                 suffix = f":{selection.route_id}" if selection.route_id else ""
                 return f"{selection.type}:{selection.id}{suffix}"
@@ -7563,6 +7700,144 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("invalid session id while resolving model selection: %r", session_id)
         return self._session_stored_model_name(getattr(request, "session_id", None))
 
+    def _requested_model_name(self, request: AgentRequest) -> str:
+        """Resolve the model name this request should use.
+
+        Stable explicit/session selections win over legacy display names.
+        """
+        from jiuwenswarm.edition import is_enterprise
+
+        if is_enterprise():
+            return self._enterprise_requested_model_name(request)
+        params = request.params if isinstance(request.params, dict) else {}
+        raw_selection = params.get("model_selection")
+        if raw_selection is not None:
+            try:
+                from gateway.common.model_selection import ModelSelection
+                selection = ModelSelection.model_validate(raw_selection)
+                if self._is_cron_execution_session(getattr(request, "session_id", None)):
+                    from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+
+                    selection = ModelSelectionResolver().restore(selection)
+                suffix = f":{selection.route_id}" if selection.route_id else ""
+                return f"{selection.type}:{selection.id}{suffix}"
+            except ValidationError as exc:
+                raise ValueError(f"invalid model_selection: {exc}") from exc
+        session_id = str(getattr(request, "session_id", None) or "").strip()
+        explicit_legacy = str(params.get("model_name") or "").strip()
+        single_agent = (
+            not is_team_mode(getattr(self, "_session_instance_mode", "agent"))
+            and not self._is_cron_execution_session(session_id)
+        )
+        if session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.model_selection_store import get_session_model_selection
+                selection = get_session_model_selection(session_id)
+                if selection is not None:
+                    from jiuwenswarm.common.model_catalog import ModelCatalog
+
+                    catalog = ModelCatalog()
+                    if catalog.has_selection(selection):
+                        suffix = f":{selection.route_id}" if selection.route_id else ""
+                        return f"{selection.type}:{selection.id}{suffix}"
+                    logger.info(
+                        "session %s selects deleted %s %s; using current default",
+                        session_id, selection.type, selection.id,
+                    )
+                    from jiuwenswarm.server.runtime.model_routing_registry import (
+                        ModelExecutionContext, ModelSelectionResolver,
+                    )
+
+                    default = ModelSelectionResolver(catalog).choose(None, ModelExecutionContext())
+                    return f"{default.type}:{default.id}"
+            except ValueError:
+                logger.warning("invalid session id while resolving model selection: %r", session_id)
+        from jiuwenswarm.common.model_catalog import ModelCatalog
+        from gateway.common.model_selection import ModelSelection
+        from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
+
+        catalog = ModelCatalog()
+        definition = getattr(self, "_session_instance_agent_definition", None) or {}
+        instance_config = getattr(self, "_session_instance_config", None) or {}
+        raw_spec_selection = definition.get("model_selection", instance_config.get("model_selection"))
+        spec_selection = ModelSelection.model_validate(raw_spec_selection) if raw_spec_selection is not None else None
+        requested = explicit_legacy or self._session_stored_model_name(getattr(request, "session_id", None))
+        context = ModelExecutionContext(spec_selection=spec_selection, legacy_model_name=requested)
+        has_default_group = any(g.get("is_default") and g.get("enabled", True) for g in catalog.snapshot["groups"])
+        matches = []
+        for model in catalog.list_public_models():
+            if requested and requested in {model["model_name"], model["alias"]}:
+                matches.append(model)
+        ordinary_requested = bool(requested) and single_agent
+        if ordinary_requested and spec_selection is None and len(matches) <= 1:
+            # An explicitly chosen/restored ordinary model must not be replaced
+            # by a globally default group. Login/free names remain boundary
+            # selectors; configured aliases resolve to their stable model ID.
+            return f"model:{matches[0]['model_id']}" if matches else requested
+        if len(matches) > 1 and spec_selection is None and not has_default_group:
+            from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
+            raise ModelSelectionError(MODEL_GROUP_INVALID, "ambiguous legacy model name; select a stable model_id")
+        if spec_selection is not None or has_default_group or matches:
+            selection = ModelSelectionResolver(catalog).choose(None, context)
+            suffix = f":{selection.route_id}" if selection.route_id else ""
+            return f"{selection.type}:{selection.id}{suffix}"
+        # Login/free models and old TUI index selectors remain boundary-only.
+        return requested
+
+    def _resolve_stable_model(self, requested: str, can_access=None) -> Model:
+        """Cache by resolved content, not only ID: edits take effect without restart."""
+        from gateway.common.model_selection import ModelSelection
+        from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+        from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
+
+        selection_type, selection_id, *route_parts = requested.split(":", 2)
+        selection = ModelSelection(
+            type=selection_type, id=selection_id, route_id=route_parts[0] if route_parts else None,
+        )
+        resolved = ModelSelectionResolver().resolve(selection, ModelExecutionContext(can_access=can_access))
+        fingerprint = hashlib.sha256(resolved.model_dump_json().encode()).hexdigest()
+        cache = getattr(self, "_stable_selection_cache", {})
+        cached = cache.get(requested)
+        if cached is not None and cached[0] == fingerprint:
+            return cached[1]
+        model = build_model_from_selection(resolved)
+        # Bound to the current selection; do not retain obsolete credentials.
+        self._stable_selection_cache = {requested: (fingerprint, model)}
+        return model
+
+    def _prepare_moa_for_build(self, config_base: dict[str, Any], model: Model | None = None) -> Model:
+        """Freeze the session's selected group and scorer before initialization."""
+        from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled
+
+        snapshot = self._instance_overrides.get("moa_config_snapshot") or config_base
+        selection = self._instance_overrides.get("moa_model_selection")
+        self._moa_enabled = effective_moa_enabled(
+            snapshot, selection, mode=self._session_instance_mode,
+            is_cron=self._is_cron_execution_session(self._parent_session_id),
+        )
+        self._moa_runtime = None
+        self._moa_fingerprint = None
+        if not self._moa_enabled:
+            return model if model is not None else self._create_model(config_base)
+        # Group construction uses its frozen config and access policy rather
+        # than _create_model, so consume bootstrap credentials on this path too.
+        self._initial_execution_request = None
+        if is_team_mode(self._session_instance_mode) or self._is_cron_execution_session(self._parent_session_id):
+            raise ValueError("MoA is available only for single-agent sessions")
+        from jiuwenswarm.server.runtime.moa_runtime import build_moa_runtime
+
+        snapshot = self._instance_overrides.get("moa_config_snapshot") or config_base
+        self._moa_runtime = build_moa_runtime(
+            snapshot, selection, can_access=self._instance_overrides.get("moa_can_access"),
+        )
+        self._moa_fingerprint = self._moa_runtime.fingerprint
+        self._model = self._moa_runtime.aggregator
+        self._default_model_name = self._moa_runtime.model_name
+        self._model_client_config = self._model.model_client_config
+        self._model_request_config = self._model.model_config
+        self._selected_model_context_window_tokens = getattr(self._model_request_config, "context_window", None)
+        return self._model
+
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
@@ -7581,7 +7856,7 @@ class JiuWenSwarmDeepAdapter:
         # 模型组 / 模型稳定 ID 路由（模型ID迁移后的 model_selection 语义）：
         # requested 形如 "model:<model_id>" 或 "model_group:<group_id>[:<route_id>]"。
         if requested.startswith(("model:", "model_group:")):
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             from jiuwenswarm.server.runtime.model_routing_registry import (
                 ModelExecutionContext,
                 ModelSelectionResolver,
@@ -11331,93 +11606,12 @@ class JiuWenSwarmDeepAdapter:
             self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(tool_instance.card)
 
-        self._vision_tools = []
-        self._vision_tools_registered = False
-        if self._vision_model_config is not None:
-            try:
-                for tool in create_vision_tools(
-                    language=self._resolve_runtime_language(),
-                    vision_model_config=self._vision_model_config,
-                    agent_id=agent_id,
-                ):
-                    self._register_agent_owned_tool(tool, agent_id)
-                    tool_cards.append(tool.card)
-                    self._vision_tools.append(tool)
-                self._vision_tools_registered = bool(self._vision_tools)
-            except Exception as exc:
-                self._vision_tools = []
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] vision tools registration failed: %s",
-                    exc,
-                )
-
-        self._audio_tools = []
-        self._audio_tools_registered = False
-        try:
-            self._audio_tools = self._iter_runtime_audio_tools(agent_id)
-            for tool in self._audio_tools:
-                self._register_agent_owned_tool(tool, agent_id)
-                tool_cards.append(tool.card)
-            self._audio_tools_registered = bool(self._audio_tools)
-        except Exception as exc:
-            self._audio_tools = []
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] audio tools registration failed: %s",
-                exc,
-            )
-
-        self._video_tool_registered = False
-        if self._video_model_config:
-            try:
-                self._register_shared_tool(video_understanding)
-                tool_cards.append(video_understanding.card)
-                self._video_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] video tool registration failed: %s",
-                    exc,
-                )
-
-        # generate_image tool: use dedicated image_gen model config
-        self._image_gen_tool_registered = False
-        if self._image_gen_model_config:
-            try:
-                self._register_shared_tool(generate_image)
-                tool_cards.append(generate_image.card)
-                self._image_gen_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] generate_image tool registration failed: %s",
-                    exc,
-                )
-
-        # generate_video/check_video_status tools: dedicated video_gen model config
-        self._video_gen_tool_registered = False
-        if self._video_gen_model_config:
-            try:
-                self._register_shared_tool(generate_video)
-                tool_cards.append(generate_video.card)
-                self._register_shared_tool(check_video_status)
-                tool_cards.append(check_video_status.card)
-                self._video_gen_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] generate_video tools registration failed: %s",
-                    exc,
-                )
-
-        # generate_visual tool: dedicated visual_gen model config
-        self._visual_gen_tool_registered = False
-        if self._visual_gen_model_config:
-            try:
-                self._register_shared_tool(generate_visual)
-                tool_cards.append(generate_visual.card)
-                self._visual_gen_tool_registered = True
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] generate_visual tool registration failed: %s",
-                    exc,
-                )
+        multimodal_tools = self._register_multimodal_tools(agent_id)
+        self._set_multimodal_runtime_state(multimodal_tools)
+        tool_cards.extend(tool.card for tool in multimodal_tools)
+        if self._instance is None and self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
+            for tool in multimodal_tools:
+                self._append_tool_card(tool.card)
 
         # 小艺手机端工具：由 channels.xiaoyi.phone_tools_enabled 控制
         config_base = get_config()
@@ -17214,7 +17408,7 @@ class JiuWenSwarmDeepAdapter:
     def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
         """Refuse protected-mode steering before any SDK submission."""
         from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
-        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.context import get_current_runtime
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
@@ -18900,7 +19094,7 @@ class JiuWenSwarmDeepAdapter:
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
                 reset_session_messaging_route(session_message_context_token)
-            # Always clean up rail state — process_interrupt's
+            # Request rail cleanup (suspended HITL calls retain only tool state) — process_interrupt's
             # _stop_session_interrupt_work sets abort flags but does NOT
             # call cleanup_session(), so skipping cleanup here would leak
             # _abort_requested / _pause_events entries on long-lived adapters.

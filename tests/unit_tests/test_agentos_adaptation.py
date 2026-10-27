@@ -10,8 +10,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 from jiuwenswarm.common.etcd.client import EtcdError, _extract_watch_kvs
-from jiuwenswarm.extensions.agentos.config_updater.client import FetchResult
-from jiuwenswarm.extensions.agentos.config_updater.service import ConfigUpdaterApplier, ConfigUpdaterService
+from gateway.extensions.agentos.config_updater.client import FetchResult
+from gateway.extensions.agentos.config_updater.service import ConfigUpdaterApplier, ConfigUpdaterService
 
 
 class ConfigUpdaterTest(unittest.IsolatedAsyncioTestCase):

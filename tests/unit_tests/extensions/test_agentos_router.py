@@ -12,7 +12,7 @@ import pytest
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentCreating,
     AgentManager,
     AgentRuntime,
@@ -31,7 +31,7 @@ from jiuwenswarm.extensions.yuanrong_frontend_client import (
     RuntimeProbeSettings,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.extension import AgentOSRouter
-from jiuwenswarm.extensions.agentos.agentos_router.models import (
+from gateway.extensions.agentos.agentos_router.models import (
     AgentInfo,
     AgentStatus,
     ImageInfo,

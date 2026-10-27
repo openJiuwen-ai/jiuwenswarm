@@ -112,6 +112,7 @@
       "bootstrapError": "搭建工作流失败，请稍后重试。",
       "notImplemented": "未实现",
       "send": "发送",
+      "running": "设计团长正在执行…",
       "attach": "添加参考素材",
       "removeAttachment": "移除参考素材",
       "attachHint": "支持图片、视频、音频。最多 5 张图、1 个视频、1 段音频。",
@@ -257,16 +258,6 @@
     },
     "edge": {
       "delete": "删除连线"
-    },
-    "revision": {
-      "title": "选择要保留的版本",
-      "hint": "{{label}} 已重新生成。原版还在，请选择保留哪一份。",
-      "original": "原版",
-      "incoming": "新内容",
-      "keepOriginal": "保留原版",
-      "keepIncoming": "采用新内容",
-      "pending": "待选择",
-      "compare": "比较版本"
     },
     "materials": {
       "title": "产出物料",
@@ -811,7 +802,8 @@
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
-      "toolOptimize": "工具检索优化"
+      "toolOptimize": "工具检索优化",
+      "designMode": "设计模式"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -1012,6 +1004,10 @@
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization 界面",
         "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI 工作流集成",
+        "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中"
       },
       "progressive_tool_optimize": {
         "title": "启用工具检索优化",
@@ -1257,22 +1253,36 @@
         "weak": "未达标"
       },
       "signalSource": {
-        "keyword_tool": "工具输出命中",
-        "keyword_user": "用户消息命中",
-        "reward": "Reward 评分"
+        "keyword_tool": "工具输出",
+        "keyword_user": "用户消息",
+        "reward": "Reward",
+        "user": "用户补充"
+      },
+      "signalSourceLabel": "信号来源：{{source}}",
+      "attributionLabel": "归因：{{kind}}",
+      "attributionKind": {
+        "artifact": "产物",
+        "skill": "技能",
+        "experience": "经验"
       },
       "signalScore": "得分 {{score}}",
-      "signalSurfacedAt": "问题露出于 {{nodes}}",
+      "signalSurfacedAt": "问题定位到 {{nodes}}",
       "causeAt": "位于 {{nodes}}",
       "evidence": "依据",
-      "findingsIssuesOnly": "{{issues}} 处问题",
-      "findingsIssuesAndExperience": "{{issues}} 处问题，另有 {{experience}} 条经验判定",
-      "findingsExperienceOnly": "{{experience}} 条经验判定",
+      "dimension": "评分维度",
       "requestCount": "模型请求 {{count}} 次",
-      "objectSteps": "步骤",
-      "objectStepsCount": "{{count}} 个轨迹步骤",
+      "objectSteps": "范围",
+      "objectStepsCount": "{{count}} 个 OTel Span",
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
+      "objectSummary": "轨迹摘要",
+      "findingCauses": "{{count}} 条产物归因",
+      "findingSkill": "{{count}} 条技能归因",
+      "findingExperience": "{{count}} 条经验归因",
+      "findingJoin": "、",
+      "findingWithEvolution": "{{causes}}，另有 {{evolution}}",
+      "findingLegacyCauses": "{{count}} 处旧版归因",
+      "relatedSignals": "相关归因信号",
       "suggestionsUnfinished": "诊断未完成，没有建议",
       "process": "诊断过程",
       "processSteps": "{{count}} 步",
@@ -2364,11 +2374,11 @@
       "openFile": "打开文件",
       "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或点击“一键安装”改用内置 CLI。",
       "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或点击“一键安装”改用内置 CLI。",
-      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或点击“一键安装”使用内置 CLI。",
-      "missingPath": "路径不存在：{{path}}。请检查路径，或点击“一键安装”使用内置 CLI。",
-      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或点击“一键安装”使用内置 CLI。",
-      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或点击“一键安装”使用内置 CLI。",
-      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或点击“一键安装”使用内置 CLI。",
+      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或取消后点击“一键安装”使用内置 CLI。",
+      "missingPath": "路径不存在：{{path}}。请检查路径，或取消后点击“一键安装”使用内置 CLI。",
+      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或取消后点击“一键安装”使用内置 CLI。",
+      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或取消后点击“一键安装”使用内置 CLI。",
+      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或取消后点击“一键安装”使用内置 CLI。",
       "autoSaved": "{{agents}} 依赖安装完成，已自动保存您的配置。",
       "installDialogTitle": "安装可选组件",
       "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，您的配置将自动保存。",
@@ -4246,7 +4256,7 @@
           "manual": "人工审批",
           "system": "系统权限检查"
         },
-        "risk": "风险",
+        "risk": "工具能力风险",
         "riskValues": {
           "critical": "严重",
           "high": "高",
@@ -4254,7 +4264,7 @@
           "low": "低",
           "unknown": "未知"
         },
-        "reason": "原因",
+        "reason": "本次审批依据",
         "reasonValues": {
           "approved": "权限审查已允许此操作。",
           "denied": "权限审查已拒绝此操作。",
@@ -4371,6 +4381,7 @@
     "pauseFailed": "暂停失败",
     "cancelFailed": "取消失败",
     "supplementFailed": "补充失败",
+    "supplementAttachmentsUnsupported": "带附件的消息无法插队发送，请先点击“编辑”移除附件后再发送。",
     "resumeFailed": "恢复失败",
     "submitAnswerFailed": "提交回答失败",
     "unknownError": "未知错误",

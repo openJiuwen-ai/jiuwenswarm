@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[3]
 PACKAGE = ROOT / "jiuwenswarm"
 # M0-c：gateway 已升为顶层包（与 jiuwenswarm 并列），边界扫描需覆盖两者
@@ -79,9 +78,12 @@ def test_gateway_does_not_import_a4p_implementation():
 
 
 def test_a4p_implementation_does_not_import_gateway():
+    # gateway.common 是无状态纯组件的唯一真源，a4p 允许引用；其余 gateway 子包禁止。
     _assert_boundary(
         set(PACKAGE.rglob("a4p*.py")) | set((PACKAGE / "agents/harness/common/a4p").rglob("*.py")),
-        lambda name: name == "gateway" or name.startswith("gateway."),
+        lambda name: (
+            name == "gateway" or name.startswith("gateway.")
+        ) and not name.startswith("gateway.common"),
     )
 
 

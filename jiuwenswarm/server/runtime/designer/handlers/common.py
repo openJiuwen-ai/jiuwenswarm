@@ -27,7 +27,7 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,  # re-exported; image/compose handlers call it on this module
     get_default_project_session_workspace_dir,
 )
-from jiuwenswarm.common.work_mode import is_default_project_id
+from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 from jiuwenswarm.server.runtime.designer.user_references import user_reference_image_paths
 from jiuwenswarm.server.runtime.session import project_store
@@ -343,8 +343,6 @@ def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
         state["status"] = NODE_STATUS_COMPLETED
         state["output_ref"] = dict(ref)
         state["output_refs"] = [dict(ref)]
-        state["candidate_output_ref"] = None
-        state["candidate_output_refs"] = []
         state["error"] = None
         states[node_id] = state
         changed = True

@@ -86,6 +86,17 @@ def test_safe_session_dirname_keeps_ascii_allowlist():
     assert safe_session_dirname("   ") == "default"
 
 
+@pytest.mark.parametrize("raw", [".", "..", "...", ".. "])
+def test_safe_session_dirname_rejects_dot_directories(raw):
+    """点目录过白名单后仍是自身，作为目录名会跳出 sessions 树，一律回落 default。"""
+    assert safe_session_dirname(raw) == "default"
+
+
+def test_safe_session_dirname_keeps_a_dot_inside_the_name():
+    # 只剥尾部的点与空格（Windows 的静默语义），名字中间的照旧保留。
+    assert safe_session_dirname("sess.1") == "sess.1"
+
+
 def test_unique_upload_path_suffixes_existing_files(tmp_path: Path):
     target = tmp_path / "需求文档.md"
     target.write_text("first", encoding="utf-8")

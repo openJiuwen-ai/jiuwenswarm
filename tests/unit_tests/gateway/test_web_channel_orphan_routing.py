@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from jiuwenswarm.common.schema.message import EventType, Message
+from openjiuwen_protocol.message import EventType, Message
 from gateway.channel_manager.web.web_connect import WebChannel
 from gateway.routing.keys import AgentRef, RoutingKey
 

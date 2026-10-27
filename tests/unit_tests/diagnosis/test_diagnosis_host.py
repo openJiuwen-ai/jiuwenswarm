@@ -117,18 +117,51 @@ async def test_run_get_list_ttse_trigger_and_delete_found_trip(tmp_path: Path) -
     diagnosis_id = started.payload["diagnosis_id"]
     finished = await _wait_finished(host, diagnosis_id)
     listing = await host.handle(_request(ReqMethod.DIAGNOSIS_LIST))
-    signal_id = next(item["id"] for item in finished["root_causes"] if item["category"].startswith("ttse_"))
+    judge_id = next(item["id"] for item in finished["evolution_judge"] if item["category"] == "experience")
     triggered = await host.handle(
-        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id=diagnosis_id, request={"root_cause_ids": [signal_id]}),
+        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id=diagnosis_id, request={"evolution_judge_id": judge_id}),
     )
     deleted = await host.handle(_request(ReqMethod.DIAGNOSIS_DELETE, diagnosis_id=diagnosis_id))
     missing = await host.handle(_request(ReqMethod.DIAGNOSIS_GET, diagnosis_id=diagnosis_id))
 
     assert finished["status"] == "completed"
     assert [item["diagnosis_id"] for item in listing.payload["items"]] == [diagnosis_id]
-    assert triggered.payload["results"][signal_id]["result"] == "triggered"
+    assert triggered.payload["results"][judge_id]["result"] == "triggered"
     assert (deleted.ok, deleted.payload) == (True, {})
     assert (missing.ok, missing.payload["code"]) == (False, "NOT_FOUND")
+
+
+@pytest.mark.asyncio
+async def test_run_backfills_locale_from_preferred_language(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {"preferred_language": "en"})
+    host = _host(tmp_path, _Pushes())
+
+    started = await host.handle(
+        _request(ReqMethod.DIAGNOSIS_RUN, request={"scope": {"kind": "full"}}),
+    )
+    explicit = await host.handle(
+        _request(
+            ReqMethod.DIAGNOSIS_RUN,
+            request={"scope": {"kind": "full"}, "locale": "zh"},
+        ),
+    )
+
+    finished = await _wait_finished(host, started.payload["diagnosis_id"])
+    assert started.ok is True and started.payload["input"]["locale"] == "en"
+    assert explicit.ok is False  # the session already runs one diagnosis
+    assert finished["status"] == "completed"
+
+    explicit_host = _host(tmp_path / "explicit", _Pushes())
+    explicit_started = await explicit_host.handle(
+        _request(
+            ReqMethod.DIAGNOSIS_RUN,
+            request={"scope": {"kind": "full"}, "locale": "zh"},
+        ),
+    )
+    assert explicit_started.payload["input"]["locale"] == "zh"
 
 
 @pytest.mark.asyncio
@@ -138,7 +171,7 @@ async def test_errors_become_error_payloads(tmp_path: Path) -> None:
     not_object = await host.handle(_request(ReqMethod.DIAGNOSIS_RUN, request=["x"]))
     invalid = await host.handle(_request(ReqMethod.DIAGNOSIS_RUN, request={"scope": {"kind": "selection", "ranges": []}}))
     no_signals = await host.handle(
-        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id="dg_0123456789abcdef", request={"root_cause_ids": []}),
+        _request(ReqMethod.DIAGNOSIS_TTSE_TRIGGER, diagnosis_id="dg_0123456789abcdef", request={"evolution_judge_id": ""}),
     )
     other_session = await host.handle(
         AgentRequest(
@@ -212,18 +245,18 @@ async def test_production_wiring_pushes_to_the_gateway_and_triggers_ttse(
 
     started = await host.handle(_request(ReqMethod.DIAGNOSIS_RUN, request=_FULL))
     finished = await _wait_finished(host, started.payload["diagnosis_id"])
-    signal_id = next(item["id"] for item in finished["root_causes"] if item["category"].startswith("ttse_"))
+    judge_id = next(item["id"] for item in finished["evolution_judge"] if item["category"] == "experience")
     triggered = await host.handle(
         _request(
             ReqMethod.DIAGNOSIS_TTSE_TRIGGER,
             diagnosis_id=started.payload["diagnosis_id"],
-            request={"root_cause_ids": [signal_id]},
+            request={"evolution_judge_id": judge_id},
         ),
     )
 
-    assert triggered.payload["results"][signal_id]["result"] == "triggered"
+    assert triggered.payload["results"][judge_id]["result"] == "triggered"
     assert forwarded[0][0] == "web"
-    assert forwarded[0][1][0]["id"] == signal_id
+    assert forwarded[0][1][0]["id"] == judge_id
     last = pushes.messages[-1]
     assert (last["channel_id"], last["session_id"], last["is_complete"]) == ("web", SESSION_ID, False)
     assert last["payload"]["event_type"] == "trajectory.diagnosis.status"

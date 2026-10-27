@@ -17,7 +17,7 @@ from pathlib import Path
 import yaml
 
 from jiuwenswarm.edition import is_enterprise
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     is_code_profile_mode,
