@@ -1243,6 +1243,7 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
         "chrome_path": "/agent/chrome", "headless": False, "decision_mode": "llm",
         "decision_provider": "typesafe", "jev_key_configured": False,
         "decision_model": "jev-1.13.0", "decision_api_base": "https://api.typesafe.ai/v1",
+        "decision_display_name": "",
     }
     assert updates == [{"chrome_path": "/agent/new-chrome", "headless": True}]
     assert changed.metadata["config_changed"] is True
@@ -1273,6 +1274,7 @@ async def test_config_adapter_resolves_platform_browser_path_for_runtime_restart
         "jev_key_configured": False,
         "decision_model": "jev-1.13.0",
         "decision_api_base": "https://api.typesafe.ai/v1",
+        "decision_display_name": "",
     }
 
 
@@ -1422,10 +1424,12 @@ def test_saving_decision_fields_keeps_the_rest_of_the_jev_settings(tmp_path, mon
         encoding="utf-8",
     )
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
-    config_module.update_browser_decision_in_config({"mode": "hybrid"})
+    config_module.update_browser_decision_in_config({"mode": "hybrid", "display_name": "My Jev"})
     saved = path.read_text(encoding="utf-8")
     assert "mode: hybrid" in saved and "provider: openrouter" in saved
     assert "min_confidence: 0.55" in saved and "headless: false" in saved
+    assert "display_name: My Jev" in saved
+
 
 
 def test_jev_provider_defaults_match_openjiuwen() -> None:
@@ -1500,6 +1504,7 @@ async def test_custom_jev_model_and_endpoint_round_trip_through_front(monkeypatc
     changed = await adapter.handle(_set(
         decision_provider="custom", decision_model="jev-preview",
         decision_api_base="https://jev.example.test/v1",
+        decision_display_name="Custom Jev",
     ))
     assert changed.ok
     # Simulate a Front process whose environment predates Runtime's credential write.
@@ -1509,6 +1514,8 @@ async def test_custom_jev_model_and_endpoint_round_trip_through_front(monkeypatc
     assert reopened.payload["decision_provider"] == "custom"
     assert reopened.payload["decision_model"] == "jev-preview"
     assert reopened.payload["decision_api_base"] == "https://jev.example.test/v1"
+    assert reopened.payload["decision_display_name"] == "Custom Jev"
+    assert current["browser"]["decision"]["display_name"] == "Custom Jev"
     assert reopened.payload["jev_key_configured"] is True
     assert "synthetic-custom-key" not in repr(reopened.payload)
     keys = await config_service.handle_config_request(_request(ReqMethod.CONFIG_GET))

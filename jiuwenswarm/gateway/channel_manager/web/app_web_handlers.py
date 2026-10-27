@@ -3592,7 +3592,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
         # Older clients omit the decision fields; the saved values are then left untouched.
         set_params = {"chrome_path": chrome_path, "headless": headless}
-        for decision_key in ("decision_mode", "decision_provider", "decision_model", "decision_api_base"):
+        for decision_key in (
+            "decision_mode", "decision_provider", "decision_model", "decision_api_base", "decision_display_name",
+        ):
             if params.get(decision_key) is not None:
                 set_params[decision_key] = params[decision_key]
 
@@ -3677,6 +3679,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         decision_updates, error = browser_decision_updates(
             set_params.get("decision_mode"), set_params.get("decision_provider"), get_config(),
             model=set_params.get("decision_model"), api_base=set_params.get("decision_api_base"),
+            display_name=set_params.get("decision_display_name"),
         )
         if error:
             await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
@@ -5259,6 +5262,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
+
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
     _register_config_proxy("models.get", _ConfigReq.MODELS_GET,

@@ -1076,6 +1076,7 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
             "jev_key_configured": False,
             "decision_model": "jev-1.13.0",
             "decision_api_base": "https://api.typesafe.ai/v1",
+            "decision_display_name": "",
         },
         "error": None,
         "code": None,
@@ -1112,6 +1113,38 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "BAD_REQUEST"
     assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
+    from jiuwenswarm.common import config as config_module
+
+    current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: current)
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda updates: None)
+    def save_decision(updates):
+        for key, value in updates.items():
+            if key == "display_name" and value is None:
+                current["browser"]["decision"].pop(key, None)
+            else:
+                current["browser"]["decision"][key] = value
+
+    monkeypatch.setattr(config_module, "update_browser_decision_in_config", save_decision)
+
+    async def no_runtime_change(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", no_runtime_change)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", no_runtime_change)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods["path.set"](
+        object(), "req-name", {"chrome_path": "", "decision_display_name": "  My Jev  "}, "sess-1",
+    )
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["decision_display_name"] == "My Jev"
+    assert current["browser"]["decision"]["display_name"] == "My Jev"
+
 
 
 class FakeUpdaterService:

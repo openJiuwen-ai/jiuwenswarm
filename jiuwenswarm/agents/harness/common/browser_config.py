@@ -42,6 +42,8 @@ def browser_decision_state(config: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def _sdk_decision_section(section: dict[str, Any]) -> dict[str, Any]:
+    # Display metadata belongs to the application, not the SDK configuration.
+    section = {key: value for key, value in section.items() if key != "display_name"}
     # Custom endpoints use the TypeSafe Jev wire format, not chat completions.
     if section.get("provider") != "custom":
         return section
@@ -53,11 +55,12 @@ def _sdk_decision_section(section: dict[str, Any]) -> dict[str, Any]:
 
 def browser_decision_updates(
     mode: Any, provider: Any, config: dict[str, Any] | None,
-    *, model: Any = None, api_base: Any = None,
+    *, model: Any = None, api_base: Any = None, display_name: Any = None,
 ) -> tuple[dict[str, Any], str | None]:
     """The browser.decision fields to write, or an error when the result could not run.
 
-    ``None`` leaves that setting unchanged. A Jev mode is refused when the installed
+    ``None`` leaves that setting unchanged.
+    A Jev mode is refused when the installed
     openjiuwen has no Jev support or the provider's key variable is unset; switching
     to llm always succeeds.
     """
@@ -84,10 +87,23 @@ def browser_decision_updates(
         value = value.strip()
         if value != updates.get(name, section.get(name)):
             updates[name] = value
+    if display_name is not None:
+        if not isinstance(display_name, str):
+            return {}, "decision_display_name must be a non-empty string"
+        display_name = display_name.strip()
+        # Clearing metadata accompanies disabling Jev, never editing its connection.
+        if not display_name and (
+            mode != "llm" or model is not None or api_base is not None or "provider" in updates
+        ):
+            return {}, "decision_display_name must be a non-empty string"
+        if len(display_name) > 100:
+            return {}, "decision_display_name must not exceed 100 characters"
+        if display_name != section.get("display_name"):
+            updates["display_name"] = display_name
     section = {**section, **updates}
     if not updates:
         return updates, None
-    if updates == {"mode": "llm"}:
+    if section.get("mode", "llm") == "llm" and not {"provider", "model", "api_base"}.intersection(updates):
         return updates, None
     try:
         resolved = _sdk_decision_section(section)

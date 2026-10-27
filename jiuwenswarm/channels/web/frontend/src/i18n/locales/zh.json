@@ -501,7 +501,15 @@
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
-      "jevTab": "Jev",
+      "jevTab": "决策模型",
+      "jevTabHelp": "可选配置。用于增强浏览器子智能体，以及单智能体会话中多模型协同的决策能力。",
+      "jevModels": "Jev 模型",
+      "jevDeleteFailed": "清除 Jev 配置失败，请重试。",
+      "jevEmpty": "尚未配置 Jev 模型",
+      "jevEmptyDescription": "添加一个 Jev 模型，供浏览器决策和多模型协同共用。",
+      "jevDisplayNamePlaceholder": "请输入模型展示名称",
+      "jevApiBasePlaceholder": "例如：https://jev.example.com/v1",
+      "jevModelHint": "请填写提供商支持的 Jev 模型名，例如 typesafe/jev-1.13 或 jev-1.13.0。",
       "modelGroups": "模型组",
       "modelGroupsManagement": "模型组管理",
       "empty": "尚未配置模型",
@@ -728,8 +736,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "自定义",
       "jevConfig": "Jev 模型配置",
-      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > Jev」配置。",
-      "clearSharedJevConfirm": "清除当前提供商的 Jev 密钥？浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
+      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > 决策模型」中添加 Jev 模型。",
+      "clearSharedJevConfirm": "清除当前 Jev 模型的密钥和展示名称？连接参数将保留，浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
       "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
@@ -810,7 +818,7 @@
       },
       "decision_mode": {
         "title": "浏览器决策",
-        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > Jev」中的共享配置。"
+        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > 决策模型」中的共享配置。"
       },
       "decision_provider": {
         "title": "Jev 服务提供方",
@@ -990,7 +998,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV 决策",
-        "description": "使用「模型 > Jev」中配置的 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
+        "description": "使用「模型 > 决策模型」中配置的 Jev 决定是否咨询参考模型；关闭时使用模型组的组内默认模型验证执行进度。"
       },
       "moa_verifier_interval": {
         "title": "验证间隔（轮）",

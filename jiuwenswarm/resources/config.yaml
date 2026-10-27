@@ -1435,8 +1435,9 @@ browser:
   # Browser-only decisions. Existing LLM still handles fallback and final answers.
   decision:
     mode: llm # llm | shadow (observe only) | hybrid; shadow and hybrid need an openjiuwen with Jev
-    provider: openrouter # openrouter | typesafe
+    provider: openrouter # openrouter | typesafe | custom
     model: typesafe/jev-1.13
+    display_name: ""
     api_base: https://openrouter.ai/api/alpha
     # Use a dedicated OpenRouter key, or explicitly reference API_KEY if it is already an OpenRouter key.
     api_key_env: OPENROUTER_API_KEY
