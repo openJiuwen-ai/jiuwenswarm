@@ -3499,8 +3499,7 @@ class JiuWenSwarm:
                     raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
                 )
             else:
-                # 豁免分支单独文案：此时 query 是转换后的成品 prompt（a2ui client_event）
-                # 或 InteractiveInput，若仍打「使用原始query」会误导排障
+                # 豁免分支：query 是成品 prompt，单独文案避免与原始 query 混淆
                 logger.info(
                     "[JiuWenSwarm] Team模式豁免raw_query覆写(a2ui client_event/InteractiveInput)，保留转换后query: type=%s",
                     type(inputs.get("query")).__name__,

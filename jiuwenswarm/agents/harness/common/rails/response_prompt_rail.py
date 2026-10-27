@@ -28,11 +28,9 @@ SKIP_A2UI_PROMPT_CONTEXT_KEY = "skip_a2ui"
 A2UI_BROWSER_WORKFLOW_CONTEXT_KEY = "a2ui_browser_workflow"
 # browser-workflow 功能总开关（休眠中）：False 时 a2ui prompt 不注入
 # preflight/发送确认门禁规则，browser 意图检测被旁路。
-# 翻 True 重开前必须：① 修复 3 个预存 latent 问题（prompt_instructions 的
-# build_a2ui_browser_workflow_instruction 无 language 纯英文 / _BROWSER_WORKFLOW_INTENT_RE
-# 过宽 / protocol 14 个 _build_* 前缀仅英文）；② 与工具注册联动——同时设置 env
-# PLAYWRIGHT_RUNTIME_MCP_ENABLED，否则只开 prompt 无工具；只开 env 不开本开关
-# 则模型可执行浏览器动作但缺确认门禁提示（安全不对称）。
+# 重开前需：① 修复 browser-workflow prompt 的已知问题（见 PR #8390 检视记录）；
+# ② 与工具注册联动——同时设置 env PLAYWRIGHT_RUNTIME_MCP_ENABLED，否则只开
+# prompt 无工具；只开 env 不开本开关则模型可执行浏览器动作但缺确认门禁提示。
 # 两处 call-site（before_invoke / before_model_call）均引用本常量，恢复只改这一处。
 _BROWSER_WORKFLOW_ENABLED = False
 _RESPONSE_SECTION_NAMES = (
@@ -248,10 +246,10 @@ class ResponsePromptRail(DeepAgentRail):
                         priority=PromptPriority.A2UI,
                     )
                 )
-                # a2ui 强化(boost)：仅 officeclaw 注入（web 无 request_system_prompt/soul(110)
-                # 压顶，a2ui 本就突出不需对冲）。priority 117（THINKING_DISCIPLINE 115 之后、
-                # FINAL_VISIBLE_REPLY 120 之前），强化 a2ui 触发倾向、抵消 soul 的「结构化输出」
-                # 引导，引导交互场景走 a2ui-json 而非 ask_user/markdown 模拟。
+                # a2ui 强化(boost)：仅 officeclaw 注入（officeclaw 的 system prompt 含
+                # 性格描述，会引导模型走结构化输出而非 a2ui，需对冲）。priority 117
+                # （THINKING_DISCIPLINE 115 之后、FINAL_VISIBLE_REPLY 120 之前），
+                # 引导交互场景走 a2ui-json 而非 ask_user/markdown 模拟。
                 is_officeclaw = str(channel or "").strip().lower() == "officeclaw"
                 if is_officeclaw:
                     self.system_prompt_builder.add_section(

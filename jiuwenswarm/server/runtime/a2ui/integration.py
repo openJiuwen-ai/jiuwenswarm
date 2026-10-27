@@ -30,7 +30,8 @@ _A2UI_CHANNEL_ID = "web"
 _A2UI_CHANNEL_IDS = frozenset({"web", "officeclaw"})
 
 # a2ui 流式 probe（pending render chunk）机制的适用渠道：目前仅 web 前端。
-# officeclaw (relay-claw) 用 parseA2UIContent 从累积文本提取 <a2ui-json> 块，
+# officeclaw (relay-claw) 用 parseA2UIContent（本仓库 channels/web/frontend
+# a2uiContent.ts，relay-claw 经 vendor 同步使用）从累积文本提取 <a2ui-json> 块，
 # probe 插入的 <a2ui-json>\n 会与 agent 原始块重复、污染 content 致前端提取失败。
 # 与 _A2UI_CHANNEL_IDS（能原生渲染 a2ui 的渠道）有意双轨：新增渠道时
 # 「能渲染」不自动等于「需要 probe」，两侧必须各自显式声明，防语义搭便车。
