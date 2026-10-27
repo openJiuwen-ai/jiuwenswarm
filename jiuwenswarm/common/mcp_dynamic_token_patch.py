@@ -36,13 +36,17 @@ Mechanism (SDK v0.1.16, AgentServer 主进程 site-packages 版):
 
   C. ``DynamicTokenProvider`` is an ``httpx.Auth``: ``async_auth_flow`` lays
      down the static template headers/query params (same semantics as the
-     stock provider), then fetches a fresh token **before the first ``yield``**,
-     then injects the dynamic agent-workload header ``X-Actor-Token: Bearer
-     <token>`` alongside the static ``Authorization`` (§2.1 dual matrix: user
-     authorization vs agent-workload authorization). A token-fetch failure does
-     **not** abort the request: the dynamic header is sent empty and the call
-     proceeds (the gateway decides). Concurrency is merged with single-flight
-     (in-flight fetches are shared; strictly one fetch per request).
+     stock provider), then overrides ``Authorization`` with the current turn's
+     ``X-User-Token`` when the request-level ext context carries one (静态头是
+     connect 时刻快照，逐轮轮换的用户令牌必须每请求现读请求级 ContextVar；
+     turn 栈外读不到 → 保留静态快照), then fetches a fresh token **before the
+     first ``yield``**, then injects the dynamic agent-workload header
+     ``X-Actor-Token: Bearer <token>`` alongside ``Authorization`` (§2.1 dual
+     matrix: user authorization vs agent-workload authorization). A token-fetch
+     failure does **not** abort the request: the dynamic header is sent empty
+     and the call proceeds (the gateway decides). Concurrency is merged with
+     single-flight (in-flight fetches are shared; strictly one fetch per
+     request).
 
 Configuration (two levels, both delivered by the upstream Manager):
 
@@ -118,12 +122,21 @@ _NEGATIVE_CACHE_TTL_S = 30.0
 #: 响应中 token 的字段名。
 TOKEN_RESPONSE_FIELD = "access_token"
 #: 注入 MCP 请求的动态头名（§2.1 Agent-to-Tool 双重安全矩阵中的智能体负载
-#: 授权头；用户授权仍走模板静态 ``Authorization`` 头，两者并存）。
+#: 授权头；用户授权走逐轮 ``X-User-Token`` → ``Authorization`` 覆盖 + 模板
+#: 静态头兜底，见 ``_current_user_authorization``）。
 TOKEN_HEADER_NAME = "X-Actor-Token"
 #: 动态头值前缀。
 TOKEN_HEADER_PREFIX = "Bearer "
 #: 单次取 token 超时（秒）。须显著小于 mcp_call_timeout_patch 的 30s 调用超时。
 TOKEN_TIMEOUT_S = 5.0
+
+#: 每轮用户令牌的请求级 ext 字段名：网关企业模式把浏览器请求的同名头放进
+#: ``metadata['ext']``（web_http_dispatch._build_http_ext），随 E2A 到
+#: AgentServer，入口 ``lift_from_metadata`` 抬升到 ContextVar（agent_ws_server
+#: dispatch_parsed_request），此处按请求现读。
+USER_TOKEN_EXT_KEY = "X-User-Token"
+#: 用户令牌值长度上限（httpx 头约束 + ext JSON 4KiB 载体上限之内）。
+_MAX_USER_TOKEN_LEN = 4096
 
 
 class McpDynamicTokenUnavailableError(RuntimeError):
@@ -388,6 +401,39 @@ async def fetch_dynamic_token(
 
 
 # ---------------------------------------------------------------------------
+# 用户授权（逐轮 X-User-Token → Authorization 覆盖）
+# ---------------------------------------------------------------------------
+
+
+def _current_user_authorization() -> str:
+    """读当前对话请求上下文的 ``X-User-Token`` 完整值，用作 Authorization 覆盖。
+
+    上游下发的条目 ``auth_headers`` 是**注册/connect 时刻的快照**（TOOL_AUTH
+    只在 connect 触发、provider 按 server_id 跨重连复用），逐轮轮换的用户
+    令牌走不了静态链路。因此与 actor token 同机制——每个 MCP 请求出网前
+    现读请求级 ContextVar：MCP 工具调用发生在本轮对话栈内（call_tool 及其
+    自愈重连都在 turn 栈里），能读到本轮真实值；turn 栈外（后台 TTL 刷新、
+    预热重连、cron 轮次）读不到 → 返回空串，回退静态快照头。
+
+    防御：剔首尾空白；含控制字符（含 CR/LF）或非可打印 ASCII 的值一律拒绝
+    ——这类值注入请求头会在 httpx/h11 发送阶段抛 LocalProtocolError /
+    UnicodeEncodeError，击穿"取不到不阻断"的降级语义。
+    """
+    try:
+        from jiuwenswarm.common.request_ext import get_ext
+
+        raw = get_ext().get(USER_TOKEN_EXT_KEY)
+    except Exception:  # noqa: BLE001 - ext 读取失败不阻断请求
+        return ""
+    value = str(raw or "").strip()
+    if not value or len(value) > _MAX_USER_TOKEN_LEN:
+        return ""
+    if any(not (0x20 <= ord(ch) <= 0x7E) for ch in value):
+        return ""
+    return value
+
+
+# ---------------------------------------------------------------------------
 # httpx.Auth Provider
 # ---------------------------------------------------------------------------
 
@@ -397,13 +443,16 @@ class DynamicTokenProvider(httpx.Auth):
 
     ``async_auth_flow`` 顺序：
       1. 铺静态模板 headers（对齐 ``AuthHeaderAndQueryProvider`` 语义——
-         用户授权 Authorization 原样保留）；
+         条目下发的 Authorization 原样保留）；
       2. 合并 auth_query_params；
-      3. 取 token——**失败不阻断请求**：打 warning 后动态头置空（空字符串），
+      3. 用户授权逐轮覆盖：本轮请求上下文（ext）带 ``X-User-Token`` 时用其
+         完整值覆盖静态 ``Authorization``（逐轮轮换的用户令牌走不了 connect
+         快照链路）；取不到保留静态值；
+      4. 取 token——**失败不阻断请求**：打 warning 后动态头置空（空字符串），
          照常发起调用，由网关决定放行或 401；
-      4. 追加注入智能体负载授权头 ``X-Actor-Token: Bearer <token>``（§2.1
-         双重安全矩阵，与静态 ``Authorization`` 并存）；
-      5. yield request。
+      5. 追加注入智能体负载授权头 ``X-Actor-Token: Bearer <token>``（§2.1
+         双重安全矩阵，与 ``Authorization`` 并存）；
+      6. yield request。
     ``McpDynamicTokenUnavailableError`` 仍由 ``fetch_dynamic_token`` /
     ``_request_token`` 抛出（preflight 场景感知细节用），provider 内消化。
     """
@@ -435,6 +484,13 @@ class DynamicTokenProvider(httpx.Auth):
                 request.headers[key] = value
         if self.query_params:
             request.url = request.url.copy_merge_params(self.query_params)
+        # 用户授权逐轮覆盖：本轮请求上下文带 X-User-Token 时，用其完整值
+        # （含自带的 Bearer 前缀）覆盖静态快照 Authorization——静态链路是
+        # connect 时刻快照，逐轮轮换的用户令牌只能走请求级现读。取不到
+        # （turn 栈外 / 非企业 / 前端未带）保留静态值，不阻断请求。
+        user_authorization = _current_user_authorization()
+        if user_authorization:
+            request.headers["Authorization"] = user_authorization
         try:
             token = await self._get_token()
         except McpDynamicTokenUnavailableError:

@@ -44,6 +44,7 @@ from jiuwenswarm.common.session_message import (
 )
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.request_ext import lift_from_metadata, reset_ext
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
@@ -2634,6 +2635,11 @@ class AgentWebSocketServer:
             if tokens is None:
                 tokens = self._startup_preparation_tokens = set()
             tokens.add(priority_token)
+        # 请求级 ext 抬升（X-User-Token 等）：把本请求 metadata['ext'] 抬到
+        # ContextVar，供本轮栈内消费（如 MCP 动态 token 网关的每请求用户授权
+        # 覆盖，见 mcp_dynamic_token_patch）。无 ext 的请求 lift 返回 None，
+        # finally 里 reset 为 no-op。
+        ext_token = lift_from_metadata(request.metadata)
         try:
             if self._request_requires_sandbox_bootstrap(request):
                 preparation = getattr(self, "_sandbox_start_task", None)
@@ -3219,6 +3225,7 @@ class AgentWebSocketServer:
                 async with send_lock:
                     await send_wire_payload(ws, wire)
         finally:
+            reset_ext(ext_token)
             if priority_token is not None:
                 registry.resume_background(priority_token)
                 self._startup_preparation_tokens.discard(priority_token)

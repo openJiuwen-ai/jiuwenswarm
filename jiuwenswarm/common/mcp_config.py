@@ -291,6 +291,16 @@ async def preflight_mcp_server_reachable(
     else:
         query_params = None
 
+    # 用户授权逐轮覆盖（mcp_dynamic_token_patch._current_user_authorization）：
+    # 会话内注册发生在本轮对话栈内，探活与真实调用同源——本轮上下文带
+    # X-User-Token 时用它覆盖静态 Authorization（完整值，含自带 Bearer 前缀）。
+    # 读不到（冷启动 / 后台 / 非企业）保持条目静态头，行为不变。
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _current_user_authorization
+
+    user_authorization = _current_user_authorization()
+    if user_authorization:
+        headers["Authorization"] = user_authorization
+
     # Body must mirror the mcp SDK's initialize exactly: some gateways (e.g.
     # GitHub Copilot) return a body-format 400 before auth, masking a real 401.
     protocol_version = ""
