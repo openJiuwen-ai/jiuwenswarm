@@ -111,6 +111,8 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: string;
+  /** True until the server confirms this optimistic input's timestamp. */
+  isTimestampPending?: boolean;
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;

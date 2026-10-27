@@ -3940,6 +3940,7 @@
     "messageQueue": "Message Queue",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
+    "turnStarting": "Starting…",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",

@@ -11,6 +11,7 @@ import { A2UIProvider } from '@a2ui/react';
 
 const frontendRoot = fileURLToPath(new URL('..', import.meta.url));
 let useWebSocket, useChatStore, useSessionStore, useGoalStore, webClient, TaskQueue, ChatTimelineList, buildTimelineItems;
+let useAgentCatalogStore;
 
 before(async () => {
   const outdir = join(frontendRoot, 'node_modules/.cache/session-input');
@@ -20,6 +21,7 @@ before(async () => {
       chatStore: 'src/stores/chatStore.ts',
       sessionStore: 'src/stores/sessionStore.ts',
       goalStore: 'src/stores/goalStore.ts',
+      agentCatalog: 'src/stores/agentCatalogStore.ts',
       webClient: 'src/services/webClient.ts',
       timeline: 'src/features/chatTimeline/buildTurnTimeline.ts',
       TaskQueue: 'queue-component',
@@ -60,6 +62,7 @@ before(async () => {
   ({ useChatStore } = await load('chatStore'));
   ({ useSessionStore } = await load('sessionStore'));
   ({ useGoalStore } = await load('goalStore'));
+  ({ useAgentCatalogStore } = await load('agentCatalog'));
   ({ webClient } = await load('webClient'));
   ({ buildTimelineItems } = await load('timeline'));
   ({ TaskQueue, ChatTimelineList } = await load('TaskQueue'));
@@ -377,6 +380,206 @@ async function sendNormalMessage(c) {
   return { requestId: request.id, messageId: user.id };
 }
 
+for (const event of ['runtime.accepted', 'chat.output_phase']) {
+  test(`sending shows a starting label until ${event} confirms the input timestamp`, async (context) => {
+    const c = await mount(context);
+    try {
+      c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+      act(() => c.store.clearMessages(c.sid));
+      const sent = await sendNormalMessage(c);
+      const elapsed = () => document.querySelector('[data-testid="chat-panel-turn-elapsed-value"]')?.textContent;
+      const status = () =>
+        document.querySelector('[data-testid="chat-panel-turn-elapsed"]')?.getAttribute('data-variant');
+      assert.equal(status(), 'starting');
+      assert.equal(elapsed(), undefined);
+
+      await c.tick(1_500);
+      assert.equal(status(), 'starting');
+      assert.equal(elapsed(), undefined, 'the browser timestamp must not start the visible counter');
+      const serverInputTimestamp = Date.now() - 250;
+      c.receive(event, {
+        request_id: sent.requestId,
+        timestamp: event === 'runtime.accepted' ? serverInputTimestamp : Date.now(),
+        ...(event === 'chat.output_phase' ? {
+          input_timestamp: serverInputTimestamp,
+          output_phase_id: 'first-phase',
+          applied_input_ids: [],
+        } : {}),
+      });
+      assert.equal(status(), 'active');
+      assert.equal(elapsed(), '0s');
+      assert.equal(c.runtime().messages[0].timestamp, new Date(serverInputTimestamp).toISOString());
+
+      await c.tick(1_000);
+      assert.equal(elapsed(), '1s');
+      c.receive('chat.output_phase', {
+        request_id: sent.requestId,
+        input_timestamp: Date.now(),
+        timestamp: Date.now(),
+        output_phase_id: 'later-phase',
+        applied_input_ids: [],
+      });
+      assert.equal(elapsed(), '1s', 'a later phase must not restart the confirmed counter');
+      await c.tick(1_000);
+      assert.equal(elapsed(), '2s');
+
+      c.receive('chat.final', {
+        request_id: sent.requestId,
+        timestamp: serverInputTimestamp + 2_500,
+        content: 'finished answer',
+      });
+      assert.equal(status(), 'finished');
+      assert.equal(elapsed(), '2.50s', 'completion must retain the existing timestamp-based calculation');
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+for (const mode of ['team', 'team.plan', 'auto_harness']) {
+  test(`${mode} retains its existing elapsed display without timestamp confirmation`, async (context) => {
+    const c = await mount(context);
+    try {
+      c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+      act(() => {
+        c.store.clearMessages(c.sid);
+        useSessionStore.getState().setMode(c.sid, mode);
+      });
+      const sent = await sendNormalMessage(c);
+      const user = () => c.runtime().messages.find((message) => message.id === sent.messageId);
+      assert.equal(user().isTimestampPending, undefined);
+      await c.tick(1_500);
+      for (const [event, expectedElapsed] of [['chat.reasoning', '1s'], ['chat.delta', '2s']]) {
+        c.receive(event, {
+          request_id: sent.requestId,
+          role: 'leader',
+          content: event === 'chat.reasoning' ? 'team reasoning' : 'team answer',
+          timestamp: Date.now(),
+        });
+        await c.tick(250);
+        assert.equal(user().isTimestampPending, undefined);
+        assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed"]')?.getAttribute('data-variant'),
+          'active');
+        assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed-value"]')?.textContent,
+          expectedElapsed);
+      }
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+for (const mode of ['team', 'team.plan']) {
+  test(`${mode} retains numeric timing for the recorded cluster frames without request timestamps`, async (context) => {
+    const c = await mount(context);
+    try {
+      c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+      act(() => {
+        c.store.clearMessages(c.sid);
+        useSessionStore.getState().setMode(c.sid, mode);
+      });
+      const sent = await sendNormalMessage(c);
+      c.receive('chat.processing_status', {
+        request_id: sent.requestId, is_processing: true, execution_id: 'recorded-team-execution',
+      });
+      // These fields match the reported cluster stream: no request_id or timestamp on output.
+      const teamPayload = { rid: 1, role: 'leader', execution_id: 'recorded-team-execution' };
+      c.receive('chat.reasoning', { ...teamPayload, content: 'team reasoning' });
+      await c.tick(1_500);
+      assert.equal(c.runtime().messages.find((message) => message.id === sent.messageId).isTimestampPending, undefined);
+      assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed-value"]').textContent, '1s');
+      c.receive('chat.delta', { ...teamPayload, content: 'team reply' });
+      await c.tick(500);
+      assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed-value"]').textContent, '2s');
+      c.receive('chat.final', { ...teamPayload, content: 'team reply' });
+      c.receive('chat.processing_status', { request_id: sent.requestId, is_processing: false });
+      const label = document.querySelector('[data-testid="chat-panel-completed-work-chip-label"]')
+        ?? document.querySelector('[data-testid="chat-panel-turn-elapsed-label"]');
+      assert.match(label.textContent, /任务用时.*\d/);
+    } finally {
+      await c.dispose();
+    }
+  });
+}
+
+for (const { restored, catalogLoaded } of [
+  { restored: false, catalogLoaded: true },
+  { restored: true, catalogLoaded: true },
+  { restored: true, catalogLoaded: false },
+]) {
+  test(`external expert restored=${restored}, catalogLoaded=${catalogLoaded} retains its existing timer`, async (context) => {
+    const c = await mount(context);
+    const previousCatalog = useAgentCatalogStore.getState();
+    const previousSession = useSessionStore.getState().currentSession;
+    try {
+      c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+      act(() => {
+        c.store.clearMessages(c.sid);
+        useAgentCatalogStore.setState({
+          catalog: catalogLoaded
+            ? [{ id: 'external-expert', runtimePackageName: 'external-runtime', runtime: { provider_name: 'codex' } }]
+            : null,
+        });
+        if (restored) {
+          useSessionStore.setState({ currentSession: {
+            session_id: c.sid, session_equipment: { agent_template_name: 'external-runtime' },
+          } });
+        } else {
+          useSessionStore.getState().setAgentSelectionIntent(c.sid, { kind: 'select', id: 'external-expert' });
+        }
+      });
+      const sent = await sendNormalMessage(c);
+      assert.equal(c.runtime().messages.find((message) => message.id === sent.messageId).isTimestampPending, undefined);
+      c.receive('chat.delta', { request_id: sent.requestId, content: 'external answer' });
+      await c.tick(1_500);
+      assert.ok(c.runtime().messages.some((message) => message.content.includes('external answer')));
+      assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed"]')?.getAttribute('data-variant'), 'active');
+      assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed-value"]')?.textContent, '1s');
+    } finally {
+      useAgentCatalogStore.setState(previousCatalog);
+      useSessionStore.setState({ currentSession: previousSession });
+      await c.dispose();
+    }
+  });
+}
+
+test('reasoning output does not confirm a native Agent timestamp', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    act(() => c.store.clearMessages(c.sid));
+    const sent = await sendNormalMessage(c);
+    c.receive('chat.reasoning', { request_id: sent.requestId, content: 'reasoning before confirmation' });
+    await c.tick(1_500);
+    assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed"]')?.getAttribute('data-variant'), 'starting');
+    assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed-value"]'), null);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('a selected native expert uses the existing timestamp confirmation', async (context) => {
+  const c = await mount(context);
+  const previousCatalog = useAgentCatalogStore.getState();
+  try {
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    act(() => {
+      c.store.clearMessages(c.sid);
+      useAgentCatalogStore.setState({ catalog: [{ id: 'native-expert', runtimePackageName: 'native-runtime' }] });
+      useSessionStore.getState().setAgentSelectionIntent(c.sid, { kind: 'select', id: 'native-runtime' });
+    });
+    const sent = await sendNormalMessage(c);
+    assert.equal(c.runtime().messages.find((message) => message.id === sent.messageId).isTimestampPending, true);
+    c.receive('chat.output_phase', {
+      request_id: sent.requestId, input_timestamp: Date.now(), output_phase_id: 'native-phase', applied_input_ids: [],
+    });
+    assert.equal(document.querySelector('[data-testid="chat-panel-turn-elapsed"]')?.getAttribute('data-variant'), 'active');
+  } finally {
+    useAgentCatalogStore.setState(previousCatalog);
+    await c.dispose();
+  }
+});
+
 for (const timestamp of [undefined, 'invalid', 0]) {
   test(`an invalid ACK timestamp (${timestamp}) retains the output-phase fallback`, async (context) => {
     const c = await mount(context);
@@ -384,6 +587,7 @@ for (const timestamp of [undefined, 'invalid', 0]) {
       const sent = await sendNormalMessage(c);
       const serverTimestamp = Date.now() - 60_000;
       c.receive('runtime.accepted', { request_id: sent.requestId, timestamp });
+      assert.equal(c.runtime().messages.find((m) => m.id === sent.messageId).isTimestampPending, true);
       c.receive('chat.output_phase', {
         request_id: sent.requestId,
         output_phase_id: 'timestamp-phase',
@@ -393,6 +597,7 @@ for (const timestamp of [undefined, 'invalid', 0]) {
         c.runtime().messages.find((m) => m.id === sent.messageId).timestamp,
         new Date(serverTimestamp).toISOString(),
       );
+      assert.equal(c.runtime().messages.find((m) => m.id === sent.messageId).isTimestampPending, false);
     } finally {
       await c.dispose();
     }
