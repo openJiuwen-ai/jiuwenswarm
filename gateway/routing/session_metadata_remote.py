@@ -117,9 +117,13 @@ class SessionMetadataRemoteProvider:
         cache_bust: bool = False,
         *,
         enable_writeback: bool = True,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
         """经 WS 读取目标会话元数据。
 
+        ``user_id``：AgentOS/ADX 多用户路由部署的必需身份（路由层对空
+        user_id 直接拒绝，不传则每次读都会失败）；单机/单用户路由可省。
+        有 user 上下文的调用方（TUI/Web 面板、消息处理）应传入。
         传输失败（不可达/超时/路由拒绝）抛
         ``SessionMetadataRemoteUnavailable``；会话不存在（NOT_FOUND）
         返回空 dict，对齐本地实现语义。
@@ -129,7 +133,7 @@ class SessionMetadataRemoteProvider:
             req_method=ReqMethod.SESSION_GET_METADATA,
             params={"session_id": session_id},
             session_id=session_id,
-            user_id=None,
+            user_id=user_id or None,
             channel_id=_SESSION_METADATA_CHANNEL_ID,
             label="session.metadata",
             timeout_seconds=SESSION_METADATA_QUERY_TIMEOUT_SECONDS,

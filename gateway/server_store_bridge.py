@@ -66,7 +66,9 @@ class _LocalSessionMetadataProvider:
         cache_bust: bool = False,
         *,
         enable_writeback: bool = True,
+        user_id: str | None = None,
     ) -> dict[str, Any]:
+        # user_id 仅供远端实现路由使用；本地文件读无路由身份，接受即忽略
         return await asyncio.to_thread(
             self._store.get_session_metadata,
             session_id,

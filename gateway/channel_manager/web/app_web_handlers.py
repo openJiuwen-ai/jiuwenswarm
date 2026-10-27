@@ -4749,7 +4749,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     from jiuwenswarm.common.external_providers import provider
 
                     meta = await provider("session_metadata").get_session_metadata_async(
-                        session_id, cache_bust=True
+                        session_id, cache_bust=True, user_id=user_id,
                     )
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")

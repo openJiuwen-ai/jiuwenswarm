@@ -4015,7 +4015,7 @@ class MessageHandler(ABC):
             from jiuwenswarm.common.external_providers import provider
 
             metadata = await provider("session_metadata").get_session_metadata_async(
-                msg.session_id, enable_writeback=False,
+                msg.session_id, enable_writeback=False, user_id=msg.user_id,
             )
             owner_id = str((metadata or {}).get("team_name") or "").strip()
         except SessionMetadataRemoteUnavailable:
@@ -4359,7 +4359,9 @@ class MessageHandler(ABC):
             user_id=getattr(msg, "user_id", None),
         )
 
-    async def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str | None:
+    async def _effective_session_model(
+        self, session_id: str, params: dict[str, Any], user_id: str | None = None
+    ) -> str | None:
         """返回会话生效模型名；``None`` 表示读取失败（未知），空串表示明确无模型。
 
         登录提示判定消费 ``None`` 跳过结论——传输失败时把"未知"当"无模型"
@@ -4383,7 +4385,7 @@ class MessageHandler(ABC):
             if get_session_model_selection(session_id) is not None:
                 return ""
             metadata = await provider("session_metadata").get_session_metadata_async(
-                session_id, cache_bust=True, enable_writeback=False,
+                session_id, cache_bust=True, enable_writeback=False, user_id=user_id,
             )
         except SessionMetadataRemoteUnavailable:
             # 传输失败≠读为空：模型未知，调用方应跳过登录提示判定
@@ -4433,7 +4435,9 @@ class MessageHandler(ABC):
             from jiuwenswarm.common.auth.login_credentials import bare_model_name
 
             owner = session_owners.lookup(session_id)
-            effective_model = await self._effective_session_model(session_id, params)
+            effective_model = await self._effective_session_model(
+                session_id, params, user_id=str(getattr(env, "user_id", "") or "").strip() or None,
+            )
             if effective_model is None:
                 # 模型未知（传输失败）：不下登录结论，放行本条
                 return

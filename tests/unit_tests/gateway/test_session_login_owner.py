@@ -29,7 +29,7 @@ def _owners_in_tmp(monkeypatch, tmp_path):
 def _run(env, *, session_model: str = "GLM-5.2") -> dict:
     handler = SimpleNamespace(agent_client=None)
 
-    async def _effective_session_model(sid, params):
+    async def _effective_session_model(sid, params, user_id=None):
         return params.get("model_name") or session_model
 
     handler._effective_session_model = _effective_session_model
@@ -122,7 +122,7 @@ def test_login_hint_skipped_when_model_unknown():
     env = _env("tui", {"q": "hi"})
     handler = SimpleNamespace(agent_client=None)
 
-    async def _unknown(sid, params):
+    async def _unknown(sid, params, user_id=None):
         return None
 
     handler._effective_session_model = _unknown

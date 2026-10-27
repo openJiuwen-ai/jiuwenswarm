@@ -81,6 +81,18 @@ async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
         fake_unary.captured["timeout_seconds"]
         == session_metadata_remote.SESSION_METADATA_QUERY_TIMEOUT_SECONDS
     )
+
+
+@pytest.mark.asyncio
+async def test_remote_forwards_user_id_for_routed_deployments(fake_unary) -> None:
+    """AgentOS/ADX 多用户路由必需 user_id——路由层对空身份直接拒绝。"""
+    bind_agent_client(SimpleNamespace(name="agent-client"))
+
+    await SessionMetadataRemoteProvider().get_session_metadata_async(
+        "sess-1", user_id="owner-1"
+    )
+
+    assert fake_unary.captured["user_id"] == "owner-1"
     assert session_metadata_remote.SESSION_METADATA_QUERY_TIMEOUT_SECONDS <= 5.0
 
 
@@ -175,7 +187,7 @@ async def test_local_adapter_async_entry() -> None:
     store = _FakeStore({"team_name": "local-team"})
 
     result = await _LocalSessionMetadataProvider(store).get_session_metadata_async(
-        "sess-3", cache_bust=True, enable_writeback=False
+        "sess-3", cache_bust=True, enable_writeback=False, user_id="owner-9"
     )
 
     assert result == {"team_name": "local-team"}
