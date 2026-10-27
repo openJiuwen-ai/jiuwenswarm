@@ -9,6 +9,7 @@ import {
   externalCliDependencyInstalls,
   externalCliSaveValidationMessage,
   externalCliKey,
+  parseExternalCliPathHistories,
   type ExternalCliAgentChoice,
   type ExternalCliAgentKind,
   type ExternalCliConfigSaveResult,
@@ -27,12 +28,16 @@ function externalCliDefaults(agents: ExternalCliAgentKind[]): Record<string, str
       [externalCliKey(agent, 'enabled'), 'false'],
       [externalCliKey(agent, 'use_builtin'), 'false'],
       [externalCliKey(agent, 'cli_path'), ''],
+      [externalCliKey(agent, 'path_histories'), '[]'],
     ]),
   );
 }
 
 /** Auto-dismiss both the save-failure banner and the auto-save success notice after this delay. */
 const NOTICE_AUTO_DISMISS_MS = 8000;
+
+/** Mirrors EXTERNAL_CLI_PATH_HISTORY_LIMIT on the backend (config.py). */
+const EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10;
 
 /**
  * Module-scope registry of deferred-choice replays whose async save is still
@@ -67,6 +72,8 @@ function ExternalCliSettings({
     onGetExternalCliInstallStatus,
     onExternalCliInstallStatusChange,
     onSelectExternalCliPath,
+    onValidateExternalCliPaths,
+    onPruneExternalCliPathHistories,
     onTrackExternalCliDependencyInstalls,
   } = useSettingsServices();
   const sourceValues = useMemo(
@@ -130,6 +137,55 @@ function ExternalCliSettings({
     }
   }, [changed, restoredDraftValues, sourceValues]);
 
+  // After a successful detection, drop stale addresses from the persisted
+  // Prunes stale entries from the persisted path history: the persisted
+  // cli_path and the just-detected path count as known-good, everything
+  // else is checked on disk via external_cli.validate_paths. The actual
+  // drop happens server-side (external_cli.prune_path_histories) against
+  // the on-disk history, so entries appended by a concurrent save — e.g.
+  // the just-replaced cli_path — can never be rolled back by this
+  // component's snapshot.
+  const cleanupPersistedPathHistories = useCallback(
+    async (
+      cliAgent: ExternalCliAgentKind,
+      detectedPath: string,
+      options?: { effectivePath?: string },
+    ) => {
+      if (!onValidateExternalCliPaths || !onPruneExternalCliPathHistories) return;
+      const historyKey = externalCliKey(cliAgent, 'path_histories');
+      const effectivePath = (options?.effectivePath ?? savedValues[externalCliKey(cliAgent, 'cli_path')] ?? '').trim();
+      const histories = parseExternalCliPathHistories(savedValues[historyKey]);
+      if (!histories.length) return;
+      const knownGood = [effectivePath, detectedPath].filter(Boolean);
+      let results: Record<string, boolean | null>;
+      try {
+        results = await onValidateExternalCliPaths([...new Set([...histories, ...knownGood])]);
+      } catch {
+        return; // Validation unavailable: keep the history untouched.
+      }
+      // Only a confirmed miss is handed to the backend: an unreadable path
+      // (null) or one the backend could not answer stays put. The server
+      // drops only the intersection with the on-disk history, so anything
+      // appended after this snapshot was taken survives.
+      const removePaths = histories.filter((path) => !knownGood.includes(path) && results[path] === false);
+      if (!removePaths.length) return;
+      let next: string[];
+      try {
+        // Adopt the server's survivors: the prune ran against the on-disk
+        // history, so this also picks up entries a concurrent save appended
+        // after this component's snapshot was taken.
+        next = await onPruneExternalCliPathHistories(cliAgent, removePaths);
+      } catch {
+        return; // The next explicit action retries the cleanup.
+      }
+      const updates = { [historyKey]: JSON.stringify(next) };
+      setSavedValues((current) => ({ ...current, ...updates }));
+      setDraftValues((current) => ({ ...current, ...updates }));
+      onConfigPatch(updates);
+    },
+    [onConfigPatch, onPruneExternalCliPathHistories, onValidateExternalCliPaths, savedValues],
+  );
+
   // When a dependency install finishes, replay the user's deferred choices:
   // save on success, drop on failure (user retries manually as before).
   useEffect(() => {
@@ -176,7 +232,7 @@ function ExternalCliSettings({
       setDraftValues((current) => {
         const next = { ...current };
         for (const agent of failed) {
-          for (const suffix of ['enabled', 'use_builtin', 'cli_path'] as const) {
+          for (const suffix of ['enabled', 'use_builtin', 'cli_path', 'path_histories'] as const) {
             const key = externalCliKey(agent, suffix);
             next[key] = savedValues[key];
           }
@@ -216,7 +272,14 @@ function ExternalCliSettings({
               // next manual detect or a full page reload.
               try {
                 const probe = await onDetectExternalCli?.(agent, pending.cliPath, pending.useBuiltin === 'true');
-                if (probe) setDetectResults?.((current) => ({ ...current, [agent]: probe }));
+                if (probe) {
+                  setDetectResults?.((current) => ({ ...current, [agent]: probe }));
+                  if (probe.status === 'ok' || probe.status === 'warning') {
+                    void cleanupPersistedPathHistories(agent, probe.path || '', {
+                      effectivePath: pending.cliPath,
+                    }).catch(() => {});
+                  }
+                }
               } catch {
                 // Keep the stale result; the user can re-run detect manually.
               }
@@ -248,7 +311,7 @@ function ExternalCliSettings({
           }),
         );
     })();
-  }, [externalCliInstallStatuses, onConfigPatch, onDetectExternalCli, onSave, pendingChoices, savedValues, setDetectResults, setPendingChoices, t]);
+  }, [cleanupPersistedPathHistories, externalCliInstallStatuses, onConfigPatch, onDetectExternalCli, onSave, pendingChoices, savedValues, setDetectResults, setPendingChoices, t]);
 
   // Persists one batch of agent updates on behalf of a card-level commit.
   // Errors are rethrown so the calling card can surface them in its own
@@ -311,6 +374,32 @@ function ExternalCliSettings({
         savedPatch[key] = value;
         configPatch[key] = value;
       }
+      // Mirror the backend's history append locally: when a save replaces one
+      // agent's cli_path, the previous effective path joins the path history
+      // so the dropdown offers it immediately instead of only after the next
+      // config reload. Deferred agents are skipped because the backend has
+      // not stored their entry yet; the replay save appends server-side.
+      const historyPatch: Record<string, string> = {};
+      for (const agent of EXTERNAL_CLI_AGENT_KINDS) {
+        if (deferredAgents.includes(agent)) continue;
+        const pathKey = externalCliKey(agent, 'cli_path');
+        if (!(pathKey in updates)) continue;
+        const oldPath = (savedValues[pathKey] ?? '').trim();
+        const newPath = (updates[pathKey] ?? '').trim();
+        // Switching to the built-in CLI writes an empty path; the replaced
+        // custom path must still join the local history.
+        if (!oldPath || oldPath === newPath) continue;
+        const historyKey = externalCliKey(agent, 'path_histories');
+        const history = parseExternalCliPathHistories(savedValues[historyKey]);
+        if (history.includes(oldPath)) continue;
+        historyPatch[historyKey] = JSON.stringify(
+          [...history, oldPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT),
+        );
+      }
+      for (const [key, value] of Object.entries(historyPatch)) {
+        savedPatch[key] = value;
+        configPatch[key] = value;
+      }
       // Merge functionally: card-level saves run per agent and can overlap, so
       // each settled save only adds its own keys on top of the latest state —
       // spreading a captured snapshot would clobber the other agent's merge.
@@ -324,6 +413,9 @@ function ExternalCliSettings({
           if (isDeferredKey(key)) continue;
           next[key] = value;
         }
+        for (const [key, value] of Object.entries(historyPatch)) {
+          next[key] = value;
+        }
         return next;
       });
       if (Object.keys(configPatch).length) onConfigPatch(configPatch);
@@ -334,6 +426,7 @@ function ExternalCliSettings({
       onSave,
       onTrackExternalCliDependencyInstalls,
       setPendingChoices,
+      savedValues,
       t,
     ],
   );
@@ -399,6 +492,7 @@ function ExternalCliSettings({
         }}
         onDetect={onDetectExternalCli}
         onCommitAgent={commitAgentChoice}
+        onCleanupPathHistories={cleanupPersistedPathHistories}
         onSelectFile={onSelectExternalCliPath}
         initialResults={detectResults}
         onResultsChange={setDetectResults}
