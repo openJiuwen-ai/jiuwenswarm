@@ -2496,7 +2496,13 @@ class AgentWebSocketServer:
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop", "voice.task.checkpoint.ack",
             }
-            if guarded_method not in unguarded_methods:
+            # skills.* / plugins.* 等无状态 RPC 不依赖会话存活；前端广场请求常
+            # 附带当前聊天 session_id，若会话已永久删除，lifecycle.guard 会把
+            # 整页推荐/搜索拦成 NOT_FOUND（#5886）。
+            if (
+                guarded_method not in unguarded_methods
+                and not self._is_stateless_method_request(request)
+            ):
                 try:
                     guard(
                         str(guarded_params.get("session_id") or request.session_id or ""),

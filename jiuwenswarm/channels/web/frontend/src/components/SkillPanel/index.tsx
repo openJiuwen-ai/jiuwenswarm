@@ -265,7 +265,7 @@ export function SkillPanel({
     openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
-  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView, withSession });
+  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView });
 
   const {
     skillGraphPanelRef,
@@ -633,13 +633,15 @@ export function SkillPanel({
     [t],
   );
 
-  // 通过聊天创建：新建会话，选中 skill-creator（统一入口）并在 chip 后追加创建提示文字
+  // 通过聊天创建：新建会话，选中 skill-creator（统一入口）并在 chip 后追加创建提示文字。
+  // skill-creator 走单 Agent；显式 mode，避免仍停在集群模式或未发送的 team 草稿。
   const handleCreateViaChat = useCallback(() => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
           skillName: 'skill-creator',
           suffixText: t('skills.chatPrompts.createSkill'),
+          mode: 'agent' as const,
           metadata: { scene: 'create_skill' },
         },
       }),

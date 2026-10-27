@@ -155,7 +155,12 @@ export function OnlineSkillSearchPanel({
     setExpandedKey(null);
     void (async () => {
       try {
-        const data = await webRequest<OnlineSearchResponse>('skills.online_search.search', withSession({ q: query, limit: 20 }), { timeoutMs: 45_000 });
+        // 搜索是无状态读：不绑 session_id，避免已删会话拖垮广场搜索（#5886）。
+        const data = await webRequest<OnlineSearchResponse>(
+          'skills.online_search.search',
+          { q: query, limit: 20 },
+          { timeoutMs: 45_000 },
+        );
         if (requestSequence !== requestSequenceRef.current) return;
         setItems(data.items || []);
         setPartial(Boolean(data.partial));
@@ -175,7 +180,7 @@ export function OnlineSkillSearchPanel({
         });
       }
     })();
-  }, [externalSearchQuery, t, withSession]);
+  }, [externalSearchQuery, t]);
 
   const isInstalled = useCallback(
     (item: OnlineSearchItem) => {

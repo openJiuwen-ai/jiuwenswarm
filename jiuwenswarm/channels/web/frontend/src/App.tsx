@@ -3039,8 +3039,20 @@ function AppContent({
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { skillName: string; prefixText?: string; suffixText?: string; secondSkillName?: string; metadata?: Record<string, unknown>; mode?: AgentMode };
-      enterNewConversation(detail.mode);
+      const detail = (e as CustomEvent).detail as {
+        skillName: string;
+        prefixText?: string;
+        suffixText?: string;
+        secondSkillName?: string;
+        metadata?: Record<string, unknown>;
+        mode?: AgentMode;
+      };
+      // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
+      // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
+      enterNewConversation(
+        detail.mode,
+        detail.mode ? { forceMode: detail.mode } : {},
+      );
       // 存储 metadata，sendMessage 时随 chat.send 发送后清除（skill-creator 统一入口等场景）
       if (detail.metadata) {
         useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
