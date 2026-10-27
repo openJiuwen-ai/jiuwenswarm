@@ -9586,10 +9586,8 @@ class AgentWebSocketServer:
             if action == "state_remove":
                 return _ok({"record": state_store.remove_mcp_record(name)})
             if action == "oauth_callback":
-                from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
-
-                completed = mcp_registry.complete_oauth_callback(params.get("query") or {})
-                return _ok({"completed": bool(completed)})
+                # 已移交异步方法 _command_mcp_oauth_callback（外部 HTTP 往返）
+                raise AssertionError("unreachable: oauth_callback dispatches to the async handler")
             if action == "credential_get_all":
                 from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
 
@@ -9619,19 +9617,57 @@ class AgentWebSocketServer:
             payload={"error": f"unknown internal action: {action}", "code": "MCP_BAD_REQUEST"},
         )
 
+    async def _command_mcp_oauth_callback(self, request: AgentRequest) -> AgentResponse:
+        """``oauth_callback`` 的异步形态：换码经 to_thread 执行（见分发处注释）。"""
+        if str(getattr(request, "channel_id", "") or "") != "gateway":
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": "internal MCP state actions are gateway-only",
+                    "code": "PERMISSION",
+                },
+            )
+        params = request.params if isinstance(request.params, dict) else {}
+        try:
+            from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
+
+            completed = await mcp_registry.complete_oauth_callback_async(
+                params.get("query") or {}
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"completed": bool(completed)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] command.mcp oauth callback failed: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "MCP_INTERNAL"},
+            )
+
     async def _handle_command_mcp(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         try:
             params = request.params or {}
             action = str(params.get("action", "list")).strip().lower()
 
-            if action in {
+            if action == "oauth_callback":
+                # 换码含外部 HTTP 往返（IdP 最长 20s），必须经异步孪生走
+                # to_thread，不得在事件循环上同步执行（否则冻结本进程
+                # 全部通道的流式帧与心跳）
+                resp = await self._command_mcp_oauth_callback(request)
+            elif action in {
                 "state_config_view",
                 "state_list",
                 "state_get_record",
                 "state_upsert",
                 "state_set_enabled",
                 "state_remove",
-                "oauth_callback",
                 "credential_get_all",
                 "credential_resolve",
             }:

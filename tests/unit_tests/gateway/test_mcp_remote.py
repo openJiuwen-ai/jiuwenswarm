@@ -196,3 +196,32 @@ def test_install_registers_remote_and_skips_server_modules_when_env_set(
     # gateway 进程对这两域零消费：远端模式的 bridge 不加载、不注册它们
     assert "mcp_state" not in after
     assert "mcp_credential" not in after
+
+
+@pytest.mark.asyncio
+async def test_server_oauth_callback_branch_is_async(monkeypatch) -> None:
+    """oauth_callback 经异步孪生执行（to_thread），不阻塞 AgentServer 事件循环。"""
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
+
+    called: list[dict] = {}
+
+    async def _async_twin(query):
+        called["query"] = query
+        return True
+
+    monkeypatch.setattr(mcp_registry, "complete_oauth_callback_async", _async_twin)
+    srv = object.__new__(AgentWebSocketServer)
+
+    # 非 gateway 通道拒绝（与同步 action 族同门控）
+    denied = await srv._command_mcp_oauth_callback(
+        SimpleNamespace(request_id="r1", channel_id="web", params={"query": {"code": "c"}})
+    )
+    assert denied.ok is False and denied.payload["code"] == "PERMISSION"
+    assert called == {}
+
+    ok_resp = await srv._command_mcp_oauth_callback(
+        SimpleNamespace(request_id="r2", channel_id="gateway", params={"query": {"code": "c"}})
+    )
+    assert ok_resp.ok is True and ok_resp.payload == {"completed": True}
+    assert called == {"query": {"code": "c"}}
