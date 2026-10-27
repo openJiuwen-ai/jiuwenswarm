@@ -49,7 +49,6 @@ SECTION_NAME = "designer_authoring"
 AUTORUN_FAILURE_HINT = (
     "建图失败：不要用 designer_graph_patch 手动拼图，"
     "把上面的错误原因转告用户，等用户调整需求或要求重试。"
-    "也不要建议用户切换模型——设计使用 Settings > Agent 里选定的模型。"
 )
 
 _PROMPT_CN = """# 画布建图（designer_graph_autorun）
