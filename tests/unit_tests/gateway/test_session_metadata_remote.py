@@ -72,7 +72,10 @@ async def test_remote_returns_payload_and_shapes_request(fake_unary) -> None:
     assert result == {"team_name": "remote-team"}
     assert fake_unary.captured["agent_client"] is not None
     assert fake_unary.captured["req_method"].value == "session.get_metadata"
-    assert fake_unary.captured["params"] == {"session_id": "sess-1"}
+    assert fake_unary.captured["params"] == {
+        "session_id": "sess-1",
+        "enable_writeback": True,
+    }
     assert fake_unary.captured["session_id"] == "sess-1"
     # 内部通道标识避开 "web"，不触发 server 侧排队会话消息附加逻辑
     assert fake_unary.captured["channel_id"] == "gateway"

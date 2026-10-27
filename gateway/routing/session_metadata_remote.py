@@ -132,7 +132,12 @@ class SessionMetadataRemoteProvider:
         ok, payload = await fetch_agent_unary(
             agent_client=_agent_client,
             req_method=ReqMethod.SESSION_GET_METADATA,
-            params={"session_id": session_id},
+            params={
+                "session_id": session_id,
+                # 只读语义随调用方声明透传（server 侧读路径据此关闭推断写盘），
+                # 与本地适配器的参数透传行为一致
+                "enable_writeback": bool(enable_writeback),
+            },
             session_id=session_id,
             user_id=user_id or None,
             channel_id=_SESSION_METADATA_CHANNEL_ID,

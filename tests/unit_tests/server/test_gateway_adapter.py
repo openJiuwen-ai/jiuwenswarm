@@ -405,9 +405,15 @@ class TestSessionAdapter:
 
     async def test_get_metadata(self, monkeypatch) -> None:
         """session.get_metadata：OK 返回 metadata；不存在返回 NOT_FOUND（与 Web fallback 语义一致）。"""
+        captured: dict[str, object] = {}
+
+        def _read(sid, cache_bust=False, *, enable_writeback=True):
+            captured["enable_writeback"] = enable_writeback
+            return {"session_id": sid, "mode": "agent", "model": "m1"}
+
         monkeypatch.setattr(
             "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
-            lambda sid, cache_bust=False: {"session_id": sid, "mode": "agent", "model": "m1"},
+            _read,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "sess-1"})
@@ -415,10 +421,25 @@ class TestSessionAdapter:
         assert resp.ok is True
         assert resp.payload["session_id"] == "sess-1"
         assert resp.payload["model"] == "m1"
+        # 缺省保持既有调用方（web/TUI/video_duplex）的原行为：允许推断写盘
+        assert captured["enable_writeback"] is True
+
+        # gateway 远端读声明的只读语义随参数透传，不得静默升级为可写
+        resp = await SessionAdapter().handle(
+            _request(
+                ReqMethod.SESSION_GET_METADATA,
+                {"session_id": "sess-1", "enable_writeback": False},
+            )
+        )
+        assert resp.ok is True
+        assert captured["enable_writeback"] is False
+
+        def _empty(sid, cache_bust=False, *, enable_writeback=True):
+            return {}
 
         monkeypatch.setattr(
             "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
-            lambda sid, cache_bust=False: {},
+            _empty,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "missing"})
