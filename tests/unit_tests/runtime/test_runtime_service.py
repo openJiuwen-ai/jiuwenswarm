@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +31,8 @@ from jiuwenswarm.runtime.request import prepare_chat_turn
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+    CancelExecutionResult,
+    RuntimeSessionState,
     SessionCloseTimeoutError,
     SessionExecutionState,
     SessionWorkKind,
@@ -46,6 +49,8 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionProvisionState,
     SessionSwitchResult,
 )
+
+test_logger = logging.getLogger("tests.runtime_service")
 
 
 async def _collect_events(stream) -> list[RuntimeEvent]:
@@ -288,6 +293,7 @@ async def test_team_attach_only_registers_persistent_waiter_kind() -> None:
     assert captured["work_kind"] is SessionWorkKind.TEAM_REQUEST
     details = cast(TeamExecutionDetails, captured["details"])
     assert details.waiter_kind is TeamWaiterKind.PERSISTENT
+    assert details.observation_only is True
     assert details.session_message_id is None
 
 
@@ -1113,6 +1119,338 @@ async def test_prepare_chat_turn_requires_atomic_manager_admission() -> None:
         )
 
     manager.get_agent.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("registered", "paused", "adapter_success", "timed_out", "expect_push"),
+    [
+        (True, True, False, (), True),
+        (True, False, True, (), True),
+        (True, False, False, (), False),
+        (True, True, False, ("observer",), False),
+        (False, True, True, (), True),
+        (False, False, False, (), False),
+    ],
+)
+async def test_team_pause_publishes_once_after_business_consumers_exit(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    registered: bool,
+    paused: bool,
+    adapter_success: bool,
+    timed_out: tuple[str, ...],
+    expect_push: bool,
+) -> None:
+    monkeypatch.setattr(runtime_service_module.logger, "handlers", [caplog.handler])
+    order: list[str] = []
+    pushes: list[dict[str, Any]] = []
+    observer = asyncio.create_task(asyncio.Event().wait())
+
+    async def pause_session(*args: object, **kwargs: object) -> bool:
+        order.append("pause")
+        return paused
+
+    async def cancel_agent(*args: object, **kwargs: object) -> AgentResponse:
+        order.append("adapter")
+        return AgentResponse(
+            request_id="pause-request",
+            channel_id="web",
+            payload={"success": adapter_success},
+        )
+
+    async def cancel_execution(*args: object, **kwargs: object) -> CancelExecutionResult:
+        observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)
+        order.append("drained")
+        return CancelExecutionResult(matched=1, cancelled=1, timed_out=timed_out)
+
+    async def publish(session_id: str, *, generation: int | None, channel_id: str) -> None:
+        if registered:
+            assert observer.cancelled()
+            assert order[-1] == "drained"
+        pushes.append({"session_id": session_id, "generation": generation, "channel_id": channel_id})
+        order.append("push")
+
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: (
+            SimpleNamespace(
+                session_id=session_id,
+                generation=2,
+                state=RuntimeSessionState.READY,
+                executions=(),
+            )
+            if registered else None
+        ),
+        cancel_execution=AsyncMock(side_effect=cancel_execution),
+    )
+    lifecycle = SimpleNamespace(
+        pause_session=AsyncMock(side_effect=pause_session),
+        publish_pause_completed=AsyncMock(side_effect=publish),
+    )
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=lifecycle,
+    )
+    request = AgentRequest(
+        request_id="pause-request",
+        channel_id="web",
+        session_id="session-a",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"mode": "team", "intent": "pause"},
+    )
+    monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
+    try:
+        response = await runtime.cancel_request(request)
+    finally:
+        observer.cancel()
+        await asyncio.gather(observer, return_exceptions=True)
+
+    assert response.ok is True
+    assert len(pushes) == int(expect_push)
+    if timed_out:
+        assert "skipped after cancellation timeout" in caplog.text
+        assert "session_id=session-a generation=2" in caplog.text
+        assert "observer" in caplog.text
+    if registered:
+        assert order[:3] == ["pause", "adapter", "drained"]
+    if expect_push:
+        assert pushes[0] == {
+            "channel_id": "web",
+            "session_id": "session-a",
+            "generation": 2 if registered else None,
+        }
+    test_logger.info("Pause order=%s pushes=%s", order, len(pushes))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("new_state", [RuntimeSessionState.READY, RuntimeSessionState.CLOSED])
+async def test_team_pause_does_not_push_completion_to_replaced_session(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    new_state: RuntimeSessionState,
+) -> None:
+    monkeypatch.setattr(runtime_service_module.logger, "handlers", [caplog.handler])
+    snapshot = SimpleNamespace(
+        session_id="session-a",
+        generation=2,
+        state=RuntimeSessionState.READY,
+        executions=(),
+    )
+
+    async def cancel_agent(*args: object, **kwargs: object) -> AgentResponse:
+        snapshot.generation = 3
+        snapshot.state = new_state
+        return AgentResponse(request_id="pause", channel_id="web", payload={"success": True})
+
+    # Return independent snapshots so replacement cannot mutate the captured generation.
+    coordinator = SimpleNamespace(
+        snapshot_session=lambda session_id: SimpleNamespace(**vars(snapshot)),
+        cancel_execution=AsyncMock(return_value=CancelExecutionResult(matched=0, cancelled=0, timed_out=())),
+    )
+    publish = AsyncMock()
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=SimpleNamespace(
+            pause_session=AsyncMock(return_value=False),
+            publish_pause_completed=publish,
+        ),
+    )
+    monkeypatch.setattr("jiuwenswarm.runtime.request.cancel_request", cancel_agent)
+
+    response = await runtime.cancel_request(
+        AgentRequest(
+            request_id="pause",
+            channel_id="web",
+            session_id="session-a",
+            req_method=ReqMethod.CHAT_CANCEL,
+            params={"mode": "team", "intent": "pause"},
+        )
+    )
+
+    assert response.ok is True
+    publish.assert_not_awaited()
+    assert "Skipped stale Team pause completion" in caplog.text
+    assert "generation=2 current_generation=3" in caplog.text
+    test_logger.info("Suppressed pause completion after Session replacement: state=%s", new_state)
+
+
+@pytest.mark.asyncio
+async def test_team_pause_publication_failure_preserves_completed_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    publish = AsyncMock(side_effect=RuntimeError("Broadcast unavailable"))
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_runtime_lifecycle=SimpleNamespace(publish_pause_completed=publish),
+    )
+    response = AgentResponse(request_id="pause", channel_id="web", payload={"success": True})
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.request.cancel_request",
+        AsyncMock(return_value=response),
+    )
+
+    result = await runtime.cancel_request(
+        AgentRequest(
+            request_id="pause",
+            channel_id="web",
+            session_id="session-a",
+            req_method=ReqMethod.CHAT_CANCEL,
+            params={"mode": "team", "intent": "pause"},
+        )
+    )
+
+    assert result is response
+    publish.assert_awaited_once()
+    test_logger.info("Broadcast failure did not replace the pause response")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("intent", ["pause", "cancel"])
+async def test_team_pause_retains_attach_for_later_mailbox_output(
+    monkeypatch: pytest.MonkeyPatch,
+    intent: str,
+) -> None:
+    from contextlib import AsyncExitStack, aclosing
+
+    from jiuwenswarm.agents.harness.team import TeamManager
+    from jiuwenswarm.runtime.session import RuntimeSessionCoordinator
+    from jiuwenswarm.runtime.team_session_lifecycle import TeamSessionLifecycleAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _consume_attach_only_stream
+
+    coordinator = RuntimeSessionCoordinator()
+    session = await coordinator.register_session("session-a", "web")
+    manager = TeamManager()
+    manager.bind_generation("session-a", session.generation)
+    monkeypatch.setattr(manager, "pause_session_runtime", AsyncMock(return_value=True))
+    monkeypatch.setattr(manager, "stop_session_runtime", AsyncMock(return_value=True))
+    lifecycle = TeamSessionLifecycleAdapter(coordinator=coordinator, team_manager=manager)
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+        session_coordinator=coordinator,
+        session_runtime_lifecycle=lifecycle,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.request.cancel_request",
+        AsyncMock(
+            return_value=AgentResponse(
+                request_id="interrupt",
+                channel_id="web",
+                payload={"success": True},
+            ),
+        ),
+    )
+    attached = asyncio.Event()
+    business_started = asyncio.Event()
+    terminal_seen = asyncio.Event()
+    next_round_seen = asyncio.Event()
+    payloads: list[dict[str, Any]] = []
+    request = AgentRequest(
+        request_id="attach",
+        channel_id="web",
+        session_id="session-a",
+        params={"mode": "team", TEAM_ATTACH_ONLY_PARAM: True},
+    )
+    startup = AsyncExitStack()
+
+    async def signal_attached() -> None:
+        attached.set()
+
+    startup.push_async_callback(signal_attached)
+
+    async def observe() -> None:
+        stream = coordinator.run_team_stream(
+            "session-a",
+            "attach",
+            SessionWorkKind.TEAM_REQUEST,
+            lambda context: _consume_attach_only_stream(
+                request=request,
+                team_manager=manager,
+                startup=startup,
+                generation=context.session.generation,
+            ),
+            details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT, observation_only=True),
+        )
+        async with aclosing(stream):
+            async for chunk in stream:
+                payloads.append(chunk.payload)
+                if chunk.payload.get("is_processing") is False:
+                    terminal_seen.set()
+                if chunk.payload.get("content") == "mailbox reply after pause":
+                    next_round_seen.set()
+
+    async def business_operation(context: TeamExecutionContext) -> AsyncIterator[dict[str, Any]]:
+        manager.add_waiter("session-a", "business", asyncio.Queue(), generation=context.session.generation)
+        business_started.set()
+        try:
+            await asyncio.Event().wait()
+            yield {}
+        finally:
+            manager.remove_waiter("session-a", "business", generation=context.session.generation)
+
+    async def business() -> None:
+        stream = coordinator.run_team_stream(
+            "session-a",
+            "business",
+            SessionWorkKind.TEAM_REQUEST,
+            business_operation,
+            details=TeamExecutionDetails(waiter_kind=TeamWaiterKind.PERSISTENT),
+        )
+        async with aclosing(stream):
+            async for _chunk in stream:
+                pass
+
+    observer = asyncio.create_task(observe())
+    worker = asyncio.create_task(business())
+    try:
+        await asyncio.wait_for(attached.wait(), timeout=2)
+        await asyncio.wait_for(business_started.wait(), timeout=2)
+        await runtime.cancel_request(
+            AgentRequest(
+                request_id="interrupt",
+                channel_id="web",
+                session_id="session-a",
+                req_method=ReqMethod.CHAT_CANCEL,
+                params={"mode": "team", "intent": intent},
+            )
+        )
+        await asyncio.gather(worker, return_exceptions=True)
+        assert worker.cancelled()
+        if intent == "pause":
+            await asyncio.wait_for(terminal_seen.wait(), timeout=2)
+            assert not observer.done()
+            assert [rid for rid, _queue in manager.get_waiters("session-a")] == ["attach"]
+            executions = coordinator.snapshot_session("session-a").executions
+            attach = next(item for item in executions if item.request_id == "attach")
+            assert attach.state is SessionExecutionState.WAITING_FOR_INPUT
+            assert attach.cancellation_requested is False
+            assert sum(item.get("is_processing") is False for item in payloads) == 1
+            coordinator.resume_waiting_for_input("session-a", session.generation)
+            await manager.broadcast_event(
+                "session-a",
+                {"event_type": "chat.delta", "content": "mailbox reply after pause"},
+            )
+            await asyncio.wait_for(next_round_seen.wait(), timeout=2)
+            await coordinator.close_session("session-a")
+            await asyncio.gather(observer, return_exceptions=True)
+            assert observer.cancelled()
+        else:
+            await asyncio.gather(observer, return_exceptions=True)
+            assert observer.cancelled()
+            assert manager.get_waiters("session-a") == []
+    finally:
+        observer.cancel()
+        worker.cancel()
+        await asyncio.gather(observer, worker, return_exceptions=True)
+        await coordinator.close_session("session-a")
+    assert manager.get_waiters("session-a") == []
+    test_logger.info("Team interrupt=%s preserved observations only for pause", intent)
 
 
 @pytest.mark.asyncio

@@ -144,6 +144,8 @@ class TeamExecutionDetails:
     background_trigger: str | None = None
     session_message_id: str | None = None
     waiter_kind: TeamWaiterKind = TeamWaiterKind.NONE
+    # A pure subscription survives business pause and observes later rounds.
+    observation_only: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

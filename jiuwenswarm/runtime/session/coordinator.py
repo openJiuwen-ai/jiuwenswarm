@@ -796,7 +796,9 @@ class RuntimeSessionCoordinator:
         execution_id: str | None = None,
         generation: int | None = None,
         wait_timeout: float | None = None,
+        excluded_execution_ids: tuple[str, ...] = (),
     ) -> CancelExecutionResult:
+        """Cancel matching executions and descendants except explicitly retained owners."""
         handles = self._registry.select(
             session_id=session_id,
             request_id=request_id,
@@ -805,6 +807,8 @@ class RuntimeSessionCoordinator:
             active_only=True,
         )
         handles = self._with_descendants(handles)
+        excluded_ids = set(excluded_execution_ids)
+        handles = [handle for handle in handles if handle.execution_id not in excluded_ids]
         direct = [handle for handle in handles if self._requires_direct_cancel(handle)]
         work = [handle for handle in handles if handle.work_kind.scheduled]
         direct_ids = {handle.execution_id for handle in direct}

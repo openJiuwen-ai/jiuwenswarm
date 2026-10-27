@@ -2859,21 +2859,8 @@ class JiuWenSwarm:
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
-                if paused:
-                    # The persistent foreground stream survives pause, so the
-                    # gateway's stream-exit fallback never fires.  Emit the
-                    # terminal frame explicitly; shape matches the old
-                    # gateway fallback exactly.
-                    await team_manager.broadcast_event(
-                        session_id,
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                        },
-                        channel_id=request.channel_id,
-                    )
+                # Runtime retains pure observation subscriptions and broadcasts
+                # completion after the cancelled business response streams exit.
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,

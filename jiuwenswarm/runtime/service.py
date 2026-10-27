@@ -60,6 +60,7 @@ from jiuwenswarm.runtime.session_lifecycle import (
     SessionInputIntentEvent,
     SessionKind,
     SessionLifecycleTarget,
+    SessionRuntimeLifecyclePort,
 )
 from jiuwenswarm.runtime.session.model import (
     TEAM_ATTACH_ONLY_PARAM,
@@ -330,7 +331,7 @@ class AgentRuntime:
         participant_registry: RuntimeParticipantRegistry | None = None,
         resource_lease: RuntimeResourceLease | None = None,
         team_execution_controller: object | None = None,
-        session_runtime_lifecycle: object | None = None,
+        session_runtime_lifecycle: SessionRuntimeLifecyclePort | None = None,
     ) -> None:
         self._agent_manager = agent_manager or AgentManager()
         self._initializer = initializer or _initialize_runtime_dependencies
@@ -1157,13 +1158,14 @@ class AgentRuntime:
             else None
         )
         is_team_request = self._request_targets_team(request)
+        team_paused = False
         if is_team_request and snapshot is not None:
             context = SessionLifecycleContext(
                 session_id=snapshot.session_id,
                 generation=snapshot.generation,
             )
             if intent == "pause":
-                await self._team_lifecycle().pause_session(
+                team_paused = await self._team_lifecycle().pause_session(
                     context,
                     reason=ExecutionCancelCause.USER_PAUSE.value,
                     channel_id=request.channel_id,
@@ -1181,6 +1183,14 @@ class AgentRuntime:
             request,
             allow_create=allow_create,
         )
+        if is_team_request and intent == "pause" and not team_paused:
+            # The adapter may pause successfully even when the generation-aware
+            # lifecycle did not find a matching Team runtime.
+            team_paused = (
+                response.ok
+                and isinstance(response.payload, dict)
+                and response.payload.get("success") is True
+            )
         if (
             response.ok
             and intent in {"cancel", "supplement"}
@@ -1190,14 +1200,75 @@ class AgentRuntime:
             )
         ):
             await self._clear_pending_interaction(request.session_id or "default")
+        cancellation_drained = True
         if request.session_id and self._owns_session(request.session_id):
             target_request_id = str(params.get("target_request_id") or "").strip()
-            await self._session_coordinator.cancel_execution(
+            excluded_execution_ids: tuple[str, ...] = ()
+            if is_team_request and intent == "pause":
+                current = self._session_coordinator.snapshot_session(request.session_id)
+                excluded_execution_ids = tuple(
+                    item.execution_id
+                    for item in current.executions
+                    if item.team is not None and item.team.observation_only
+                )
+            cancellation = await self._session_coordinator.cancel_execution(
                 request.session_id,
                 request_id=target_request_id or None,
                 generation=snapshot.generation if snapshot is not None else None,
+                excluded_execution_ids=excluded_execution_ids,
+            )
+            cancellation_drained = not cancellation.timed_out
+            if team_paused and not cancellation_drained:
+                logger.warning(
+                    "[Runtime] Team pause completion skipped after cancellation timeout: session_id=%s "
+                    "generation=%s timed_out_execution_ids=%s",
+                    request.session_id,
+                    snapshot.generation if snapshot is not None else None,
+                    cancellation.timed_out,
+                )
+        if team_paused and cancellation_drained:
+            await self._publish_team_pause_completed(
+                request,
+                generation=snapshot.generation if snapshot is not None else None,
             )
         return response
+
+    async def _publish_team_pause_completed(
+        self,
+        request: AgentRequest,
+        *,
+        generation: int | None,
+    ) -> None:
+        """Publish pause completion after business streams exit, retaining observers."""
+        current = self._session_coordinator.snapshot_session(request.session_id)
+        current_generation = current.generation if current is not None else None
+        if (
+            current_generation != generation
+            or (current is not None and current.state is RuntimeSessionState.CLOSED)
+        ):
+            logger.warning(
+                "[Runtime] Skipped stale Team pause completion: session_id=%s "
+                "generation=%s current_generation=%s",
+                request.session_id,
+                generation,
+                current_generation,
+            )
+            return
+
+        # Business waiters have exited. The retained observation subscription
+        # owns delivery, with the Team manager's existing waiter-less fallback.
+        try:
+            await self._team_lifecycle().publish_pause_completed(
+                request.session_id,
+                generation=generation,
+                channel_id=request.channel_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[Runtime] Team pause completion publication failed: session_id=%s error=%s",
+                request.session_id,
+                exc,
+            )
 
     async def cancel_all_inflight_work(
         self,
@@ -1421,6 +1492,7 @@ class AgentRuntime:
                 }:
                     self._team_lifecycle()
                     team_details = TeamExecutionDetails(
+                        observation_only=self._is_attach_only_request(request),
                         control_id=(
                             self._team_control_id(request)
                             if work_kind is SessionWorkKind.TEAM_CONTROL
@@ -1983,6 +2055,7 @@ class AgentRuntime:
                 if team_execution:
                     self._team_lifecycle()
                     details = TeamExecutionDetails(
+                        observation_only=self._is_attach_only_request(request),
                         control_id=(
                             self._team_control_id(request)
                             if work_kind is SessionWorkKind.TEAM_CONTROL
@@ -3587,7 +3660,7 @@ class AgentRuntime:
         params = request.params if isinstance(request.params, dict) else {}
         return params.get(TEAM_ATTACH_ONLY_PARAM) is True
 
-    def _team_lifecycle(self) -> object:
+    def _team_lifecycle(self) -> SessionRuntimeLifecyclePort:
         if self._session_runtime_lifecycle is None:
             from jiuwenswarm.runtime.team_session_lifecycle import (
                 TeamSessionLifecycleAdapter,
