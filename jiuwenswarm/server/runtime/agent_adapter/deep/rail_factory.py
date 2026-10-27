@@ -390,9 +390,8 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
 
     general-purpose 子代理与父 agent **共享同一个** PermissionInterruptRail 实例
     （factory 注入时按引用复制），直接改共享实例会污染父 agent 后续的权限审批，
-    因此采用 suspend/restore：调用方在 spawn 结束后（finally 中）执行恢复。
-    ``resolve_interrupt`` 首次工具调用时会用 ``host.get_permissions_snapshot``
-    刷新配置覆盖本设置，因此该回调也需临时替换。
+    因此采用 suspend/restore：``update_config(enabled=False)``，spawn 结束后恢复。
+    判定路径不再 snapshot 刷新，无需改 ``get_permissions_snapshot``。
     """
     configured = (
         subagent.configured_rails()
@@ -400,15 +399,14 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
         else []
     )
     rail_names = [rail.__class__.__name__ for rail in configured or []]
+    suspendable = (
+        "PermissionInterruptRail",
+        "SkillAuthorizationPermissionRail",
+        "SkillTurboPermissionRail",
+        "FlashPermissionRail",
+    )
 
-    def _make_restore(
-        rail: Any,
-        saved_config: dict,
-        host: Any,
-        saved_snapshot: Any,
-    ) -> Callable[[], None]:
-        """构造恢复函数，捕获当前循环轮次 rail 的挂起状态。"""
-
+    def _make_restore(rail: Any, saved_config: dict) -> Callable[[], None]:
         def _restore() -> None:
             try:
                 rail.update_config(saved_config)
@@ -417,46 +415,20 @@ def _suspend_subagent_permission_rails(subagent: Any) -> Callable[[], None]:
                     "[spawn_fallback] failed to restore permission rail config",
                     exc_info=True,
                 )
-            if host is not None:
-                host.get_permissions_snapshot = saved_snapshot
 
         return _restore
-
-    def _make_disabled_snapshot(config: dict) -> Callable[[], dict]:
-        """构造「原配置 + enabled=False」的权限快照回调。
-
-        resolve_interrupt 刷新时以此覆盖引擎配置；返回残缺 dict 会把
-        tools/file_guard 二次清空（同 update_config 整体替换语义），
-        故必须携带完整挂起配置。
-        """
-
-        def _snapshot() -> dict:
-            return dict(config)
-
-        return _snapshot
 
     restore_steps: list[Callable[[], None]] = []
     for rail in configured or []:
         cls_name = rail.__class__.__name__
-        if cls_name not in (
-            "PermissionInterruptRail",
-            "SkillAuthorizationPermissionRail",
-            "SkillTurboPermissionRail",
-        ):
+        if cls_name not in suspendable:
             continue
         try:
             saved_config = dict(getattr(rail, "_static_config", None) or {})
             suspended_config = dict(saved_config)
             suspended_config["enabled"] = False
-            host = getattr(rail, "_host", None)
-            saved_snapshot = (
-                host.get_permissions_snapshot if host is not None else None
-            )
-
             rail.update_config(suspended_config)
-            if host is not None:
-                host.get_permissions_snapshot = _make_disabled_snapshot(suspended_config)
-            restore_steps.append(_make_restore(rail, saved_config, host, saved_snapshot))
+            restore_steps.append(_make_restore(rail, saved_config))
         except Exception:
             logger.warning(
                 "[spawn_fallback] failed to suspend permission rail %s",

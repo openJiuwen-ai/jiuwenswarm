@@ -98,38 +98,51 @@ async def check_avatar_permission(
     tool_args: dict,
     channel_id: str,
     session_id: str | None,
+    *,
+    permission_key: str | None = None,
 ) -> str:
     """单工具 owner_scopes 权限检查。返回 "allow" 或 "deny"（ASK 自动降级为 DENY）。
+
+    读已发布 ``permission_key`` 上的配置与全局策略，不现场拉 yaml / 不造临时 config。
 
     Args:
         tool_name: 工具名称
         tool_args: 工具参数
         channel_id: 频道 ID
-        session_id: 会话 ID
+        session_id: 会话 ID（保留兼容，未参与裁决）
+        permission_key: 与 PermissionInterruptRail 同一 manager key
 
     Returns:
         "allow" 或 "deny"
     """
-    from openjiuwen.harness.security.core import PermissionEngine as OJPermissionEngine
+    del channel_id, session_id  # channel comes from ContextVar; session unused
+    from agent_shield.tool_permission import get_permission_manager
     from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
-    from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-        get_effective_permissions_config,
-    )
-    from jiuwenswarm.common.utils import get_workspace_dir
+    from openjiuwen.harness.security.permission_key import DEFAULT_KEY
 
     perm_ctx = TOOL_PERMISSION_CONTEXT.get()
     if perm_ctx is None or not perm_ctx.principal_user_id:
         logger.info("[check_avatar_permission] perm_ctx is None or no principal_user_id")
         return "deny"
 
-    perm_cfg = get_effective_permissions_config()
-    if not isinstance(perm_cfg, dict):
-        perm_cfg = {}
-    engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
+    key = (
+        permission_key.strip()
+        if isinstance(permission_key, str) and permission_key.strip()
+        else DEFAULT_KEY
+    )
+    manager = get_permission_manager()
+    try:
+        perm_cfg = dict(manager.get_config(key))
+    except KeyError:
+        logger.warning(
+            "[check_avatar_permission] unregistered_key key=%s fail_closed=deny",
+            key,
+        )
+        return "deny"
     owner_scopes = perm_cfg.get("owner_scopes")
     logger.info(
-        "[check_avatar_permission] tool=%s channel=%s user=%s owner_scopes_type=%s owner_scopes_keys=%s",
-        tool_name, perm_ctx.channel_id, perm_ctx.principal_user_id,
+        "[check_avatar_permission] tool=%s channel=%s user=%s key=%s owner_scopes_type=%s owner_scopes_keys=%s",
+        tool_name, perm_ctx.channel_id, perm_ctx.principal_user_id, key,
         type(owner_scopes).__name__, list(owner_scopes.keys()) if isinstance(owner_scopes, dict) else None
     )
     if not isinstance(owner_scopes, dict) or not owner_scopes:
@@ -146,10 +159,10 @@ async def check_avatar_permission(
     logger.info("[check_avatar_permission] resolved level=%s", level)
 
     try:
-        global_level, _rule = engine.evaluate_global_policy_directly(
+        global_level, _rule = await manager.evaluate_global_policy_directly(
             tool_name,
             tool_args,
-            include_external_directory=True,
+            key,
         )
         global_level_value = global_level.value if global_level is not None else None
     except Exception as exc:
@@ -239,23 +252,65 @@ def persist_to_owner_scope(
     channel_id: str,
     user_id: str,
     config: dict,
-) -> None:
-    """将规则持久化到 config.yaml 的 owner_scopes 节点."""
-    try:
-        from jiuwenswarm.common.config import get_config_raw, set_config
+    *,
+    rail: Any | None = None,
+) -> bool:
+    """将规则持久化到 permissions.owner_scopes，并按 1B 刷新 rail。
 
-        with _persist_lock:
-            raw = get_config_raw()
-            perm_cfg = raw.setdefault("permissions", {})
-            scopes = perm_cfg.setdefault("owner_scopes", {})
+    谁落盘谁更新：写盘成功后若传入 ``rail``，必须 ``rail.update_config``；
+    未传 rail 时只落盘并打警告（manager 不刷新）。``config`` 为调用方持有的
+    permissions 段，成功后就地同步 ``owner_scopes``。
+    """
+    try:
+        from copy import deepcopy
+
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            persist_permissions_mutate,
+        )
+
+        def _apply_rule(perms: dict[str, Any]) -> None:
+            scopes = perms.setdefault("owner_scopes", {})
+            if not isinstance(scopes, dict):
+                scopes = {}
+                perms["owner_scopes"] = scopes
             ch = scopes.setdefault(channel_id, {})
+            if not isinstance(ch, dict):
+                ch = {}
+                scopes[channel_id] = ch
             user = ch.setdefault(user_id, {})
+            if not isinstance(user, dict):
+                user = {}
+                ch[user_id] = user
             tools = user.setdefault("tools", {})
+            if not isinstance(tools, dict):
+                tools = {}
+                user["tools"] = tools
             existing = tools.get(tool_name)
             if isinstance(existing, dict):
                 existing["*"] = pattern
             else:
                 tools[tool_name] = pattern
-            set_config(raw)
+
+        if isinstance(config, dict):
+            _apply_rule(config)
+
+        with _persist_lock:
+            persisted = persist_permissions_mutate(
+                _apply_rule,
+                persist_scope="base",
+                source="persist_to_owner_scope",
+            )
+
+        if isinstance(config, dict) and isinstance(persisted, dict):
+            config["owner_scopes"] = deepcopy(persisted.get("owner_scopes") or {})
+
+        if rail is not None:
+            rail.update_config(persisted)
+        else:
+            logger.warning(
+                "persist_to_owner_scope ok but rail missing; manager not refreshed"
+            )
+        return True
     except Exception as e:
         logger.warning("persist_to_owner_scope failed: %s", e)
+        return False

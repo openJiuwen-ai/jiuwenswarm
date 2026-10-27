@@ -7,7 +7,9 @@ import json
 import logging
 from copy import deepcopy
 from dataclasses import replace
+from typing import Any
 
+from agent_shield.tool_permission import get_permission_manager
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.rails.interrupt.interrupt_base import (
     ApproveResult,
@@ -15,7 +17,6 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
     RejectResult,
 )
 from openjiuwen.harness.rails.security.tool_security_rail import compute_batch_allow_key
-from openjiuwen.harness.security.core import PermissionEngine
 from openjiuwen.harness.security.host import ToolPermissionHost
 from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
 from openjiuwen.harness.security.patterns import (
@@ -48,17 +49,58 @@ def _requires_explicit_approval(operation, permission, matched_rule):
     return operation.explicit and permission == PermissionLevel.ALLOW and default_rule
 
 
-class FlashPermissionEngine(PermissionEngine):
-    """Use SDK evaluation for every constituent; only combine its decisions."""
+class FlashPermissionRail(SkillTurboPermissionRail):
+    """Keep stock Skill/Turbo/hosted approval behavior with action-scoped checks.
 
-    async def check_permission(self, tool_name, tool_args):
-        outer = await super().check_permission(tool_name, tool_args)
-        if not self.enabled or (
-            self._permission_checks_active and not self._permission_checks_active()
-        ):
+    Projection adjudication goes through ``get_permission_manager`` (same path as
+    the parent rail), not a private ``PermissionEngine`` instance.
+    """
+
+    @classmethod
+    def create(cls, config=None, **kwargs):
+        """Build the rail with a scene hook that keeps projected tools on HITL."""
+        host = kwargs.pop("host", None) or ToolPermissionHost()
+        scene_hook = host.permission_scene_hook
+
+        async def guarded_scene(request):
+            result = await scene_hook(request) if scene_hook else None
+            if not result or result[0] != "approve":
+                return result
+            if request.normalized_tool_name in {"search_skill", "install_skill"} or (
+                is_projected(request.normalized_tool_name, request.tool_args)
+            ):
+                return None
+            return result
+
+        return cls(
+            config=config,
+            host=replace(host, permission_scene_hook=guarded_scene),
+            **kwargs,
+        )
+
+    async def _check_tool_permission(
+        self,
+        tool_name: str,
+        tool_args: dict[str, Any],
+        ctx,
+    ) -> PermissionResult:
+        """Outer tool + Flash-projected constituents; strongest decision wins."""
+        outer = await super()._check_tool_permission(tool_name, tool_args, ctx)
+        if not self.enabled:
+            return outer
+        checks = self._host.tool_permission_checks_active
+        if checks is not None and not checks():
+            return outer
+        skill_cfg = self._skill_overlay_config(ctx)
+        # project_operations needs a dict view; adjudication uses key unless overlay.
+        try:
+            project_cfg = skill_cfg or dict(
+                get_permission_manager().get_config(self._key)
+            )
+        except KeyError:
             return outer
         try:
-            operations = project_operations(tool_name, tool_args, self.config)
+            operations = project_operations(tool_name, tool_args, project_cfg)
         except (TypeError, ValueError, KeyError):
             return PermissionResult(
                 PermissionLevel.DENY,
@@ -66,8 +108,20 @@ class FlashPermissionEngine(PermissionEngine):
                 "Invalid Flash action or resources",
             )
         results = [outer]
+        manager = get_permission_manager()
         for operation in operations:
-            result = await super().check_permission(operation.name, operation.args)
+            if skill_cfg is not None:
+                result = await manager.check_permission(
+                    operation.name,
+                    operation.args,
+                    config=skill_cfg,
+                )
+            else:
+                result = await manager.check_permission(
+                    operation.name,
+                    operation.args,
+                    self._key,
+                )
             if _requires_explicit_approval(
                 operation, result.permission, result.matched_rule
             ):
@@ -88,44 +142,12 @@ class FlashPermissionEngine(PermissionEngine):
             or None,
         )
 
-
-class FlashPermissionRail(SkillTurboPermissionRail):
-    """Keep stock Skill/Turbo/hosted approval behavior with action-scoped checks."""
-
-    @classmethod
-    def create(cls, config=None, **kwargs):
-        """Build the projected engine from the host's public constructor inputs."""
-        host = kwargs.pop("host", None) or ToolPermissionHost()
-        workspace_root = None
-        if host.resolve_workspace_dir is not None:
-            try:
-                workspace_root = host.resolve_workspace_dir()
-            except Exception:
-                logger.debug("Flash permission workspace resolution failed", exc_info=True)
-        engine = FlashPermissionEngine(
-            config=config,
-            llm=kwargs.get("llm"),
-            model_name=kwargs.get("model_name"),
-            workspace_root=workspace_root,
-        )
-        scene_hook = host.permission_scene_hook
-
-        async def guarded_scene(request):
-            result = await scene_hook(request) if scene_hook else None
-            if not result or result[0] != "approve":
-                return result
-            if request.normalized_tool_name in {"search_skill", "install_skill"} or (
-                is_projected(request.normalized_tool_name, request.tool_args)
-            ):
-                return None
-            return result
-
-        return cls(
-            config=config,
-            engine=engine,
-            host=replace(host, permission_scene_hook=guarded_scene),
-            **kwargs,
-        )
+    def _skill_overlay_config(self, ctx) -> dict[str, Any] | None:
+        """ACTIVE Skill overlay one-off config, or None to use published key."""
+        compose = getattr(self, "_compose_active_skill_config", None)
+        if not callable(compose):
+            return None
+        return compose(ctx)
 
     async def before_tool_call(self, ctx):
         tool_call = getattr(getattr(ctx, "inputs", None), "tool_call", None)
@@ -170,8 +192,7 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 ctx, tool_call, user_input, auto_confirm_config
             )
         try:
-            self._refresh_permissions_for_tool_call(ctx)
-            if self._engine.enabled and self._resolve_session_id(ctx) in (
+            if self.enabled and self._resolve_session_id(ctx) in (
                 None,
                 "",
                 "default",
@@ -180,12 +201,12 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                     tool_result="[PERMISSION_DENIED] Flash action requires a bound session"
                 )
             config_fingerprint = self._policy_fingerprint()
-            result = await self._engine.check_permission(
-                tool_call.name, self.parse_tool_args(tool_call)
+            result = await self._check_tool_permission(
+                tool_call.name, self.parse_tool_args(tool_call), ctx
             )
         except Exception:  # noqa: BLE001 — no stale-policy fallback at this boundary.
             return self.reject(
-                tool_result="[PERMISSION_DENIED] Flash permission snapshot unavailable"
+                tool_result="[PERMISSION_DENIED] Flash permission check failed"
             )
         pending = dict(ctx.session.get_state(_PENDING) or {}) if ctx.session else {}
         signature = (compute_batch_allow_key(tool_call), config_fingerprint)
@@ -216,15 +237,14 @@ class FlashPermissionRail(SkillTurboPermissionRail):
         if ctx.session:
             ctx.session.update_state({_PENDING: pending})
         if isinstance(decision, ApproveResult):
-            # Hosted confirmation may await while the policy is revoked/reloaded.
+            # Re-check only; config changes arrive via update_config / persist (1B).
             try:
-                self._refresh_permissions_for_tool_call(ctx)
-                final = await self._engine.check_permission(
-                    tool_call.name, self.parse_tool_args(tool_call)
+                final = await self._check_tool_permission(
+                    tool_call.name, self.parse_tool_args(tool_call), ctx
                 )
-            except Exception:  # noqa: BLE001 — an approval cannot bypass refresh failure.
+            except Exception:  # noqa: BLE001 — an approval cannot bypass recheck failure.
                 return self.reject(
-                    tool_result="[PERMISSION_DENIED] Permission refresh failed"
+                    tool_result="[PERMISSION_DENIED] Permission recheck failed"
                 )
             if final.permission == PermissionLevel.DENY:
                 return self.reject(
@@ -247,8 +267,7 @@ class FlashPermissionRail(SkillTurboPermissionRail):
 
         resolve = super().resolve_interrupt
         args = self.parse_tool_args(call)
-        self._refresh_permissions_for_tool_call(ctx)
-        if not args.get("install", True) or not self._engine.enabled:
+        if not args.get("install", True) or not self.enabled:
             return await resolve(ctx, call, user_input, auto_confirm_config)
         if self._resolve_session_id(ctx) in (None, "", "default"):
             return self.reject(
@@ -272,7 +291,7 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             return self.reject(
                 tool_result="[PERMISSION_DENIED] No matching installation approval"
             )
-        outer = await self._engine.check_permission("search_skill", args)
+        outer = await self._check_tool_permission("search_skill", args, ctx)
         if outer.permission == PermissionLevel.DENY:
             save_state(ctx.session, call.id, None)
             return self.reject(tool_result="[PERMISSION_DENIED] Skill search is denied")
@@ -306,7 +325,6 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 state["phase"] = "install"
                 # An outer search approval is not an installation approval.
                 user_input = None
-                self._refresh_permissions_for_tool_call(ctx)
                 state["policy"] = self._policy_fingerprint()
             if state["phase"] == "finished":
                 return self.approve()
@@ -331,8 +349,8 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                     ),
                 }
             )
-            check = await self._engine.check_permission(
-                "install_skill", self.parse_tool_args(inner)
+            check = await self._check_tool_permission(
+                "install_skill", self.parse_tool_args(inner), ctx
             )
             if check.permission == PermissionLevel.DENY:
                 decision = self.reject(
@@ -344,9 +362,8 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 state["phase"] = "install"
                 save_state(ctx.session, call.id, state)
                 return decision
-            self._refresh_permissions_for_tool_call(ctx)
-            check = await self._engine.check_permission(
-                "install_skill", self.parse_tool_args(inner)
+            check = await self._check_tool_permission(
+                "install_skill", self.parse_tool_args(inner), ctx
             )
             approved = (
                 isinstance(decision, ApproveResult)
@@ -371,7 +388,7 @@ class FlashPermissionRail(SkillTurboPermissionRail):
 
     def _policy_fingerprint(self):
         return hashlib.sha256(
-            json.dumps(self._engine.config, sort_keys=True, default=str).encode()
+            json.dumps(self._static_config, sort_keys=True, default=str).encode()
         ).hexdigest()
 
     def _persist_allow_always(self, normalized_name, tool_args):
@@ -415,14 +432,21 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 changed |= updated
         if not changed:
             return False
-        persist = self._host.persist_allow_rule
-        saved = (
-            persist(config)
-            if persist
-            else write_permissions_section_to_agent_config_yaml(
+        # 1B: host persist refreshes via rail.update_config; yaml path publishes here.
+        if self._host.persist_allow_rule is not None:
+            try:
+                return bool(self._host.persist_allow_rule(config))
+            except Exception:
+                logger.warning(
+                    "Flash persist_allow_rule failed",
+                    exc_info=True,
+                )
+                return False
+        saved = bool(
+            write_permissions_section_to_agent_config_yaml(
                 self._host.permission_yaml_path, config
             )
         )
         if saved:
-            self.update_config(config)
-        return bool(saved)
+            self._publish_persisted(config)
+        return saved

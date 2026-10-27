@@ -3,7 +3,8 @@
 """spawn_fallback 权限挂起保全与 interrupt 结果识别的回归测试。
 
 - ``_suspend_subagent_permission_rails`` 挂起时只应翻转 enabled，不得清空
-  tools/file_guard（agent-core update_config 是整体替换语义）。
+  tools/file_guard（agent-core update_config 是整体替换语义）；不再改
+  ``get_permissions_snapshot``（判定路径已不走 snapshot 刷新）。
 - interrupt result（``result_type == "interrupt"``）无 output 字段，
   ``spawn_fallback`` 应显式报错而非吞成空输出。
 """
@@ -71,9 +72,8 @@ def test_suspend_preserves_full_config_only_flips_enabled() -> None:
     assert rail.engine_config["file_guard"] == {"workspace": {"read": "allow"}}
 
 
-def test_suspend_snapshot_callback_carries_full_config() -> None:
-    """临时 snapshot 回调必须携带完整配置：resolve_interrupt 首次工具调用会
-    用 host.get_permissions_snapshot 刷新引擎，返回残缺 dict 会二次清空。"""
+def test_suspend_does_not_patch_host_snapshot() -> None:
+    """挂起只走 update_config(enabled=False)，不改 host.get_permissions_snapshot。"""
     rail = PermissionInterruptRail(
         {
             "enabled": True,
@@ -83,17 +83,14 @@ def test_suspend_snapshot_callback_carries_full_config() -> None:
     )
     subagent = _FakeSubagent([rail])
 
-    restore = _suspend_subagent_permission_rails(subagent)
+    _suspend_subagent_permission_rails(subagent)
 
-    snapshot = rail._host.get_permissions_snapshot()
-    assert isinstance(snapshot, dict)
-    assert snapshot["enabled"] is False
-    assert snapshot["tools"] == {"web_search": "allow"}
-    assert snapshot["file_guard"] == {"workspace": {"read": "allow"}}
+    assert rail.engine_config["enabled"] is False
+    assert rail._host.get_permissions_snapshot() == {"enabled": True}
 
 
-def test_suspend_restore_returns_original_config_and_snapshot() -> None:
-    """恢复后：引擎配置与 host snapshot 回到挂起前的原值。"""
+def test_suspend_restore_returns_original_config() -> None:
+    """恢复后：引擎配置回到挂起前的原值；host snapshot 本就未改。"""
     original = {
         "enabled": True,
         "tools": {"web_search": "allow"},
@@ -106,6 +103,29 @@ def test_suspend_restore_returns_original_config_and_snapshot() -> None:
 
     assert rail.engine_config == original
     assert rail._host.get_permissions_snapshot() == {"enabled": True}
+
+
+def test_suspend_includes_flash_permission_rail() -> None:
+    """FlashPermissionRail 在 suspendable 白名单内。"""
+
+    class FlashPermissionRail:  # noqa: N801 — 匹配生产白名单类名
+        def __init__(self, config: dict[str, Any]) -> None:
+            self._static_config = dict(config)
+            self.engine_config = dict(config)
+
+        def update_config(self, config: dict[str, Any]) -> None:
+            self._static_config = dict(config)
+            self.engine_config = dict(config)
+
+    rail = FlashPermissionRail({"enabled": True, "tools": {"cron_flash": "ask"}})
+    subagent = _FakeSubagent([rail])
+
+    restore = JiuWenSwarmDeepAdapter._suspend_subagent_permission_rails(subagent)
+
+    assert rail.engine_config["enabled"] is False
+    assert rail.engine_config["tools"] == {"cron_flash": "ask"}
+    restore()
+    assert rail.engine_config["enabled"] is True
 
 
 def test_suspend_ignores_unrelated_rails() -> None:
