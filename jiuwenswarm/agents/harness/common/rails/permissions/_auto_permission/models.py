@@ -7,7 +7,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind, InterruptRequest
 
 
 logger = logging.getLogger(__name__)
@@ -98,3 +98,4 @@ class PermissionInterruptRequest(InterruptRequest):
     """Interrupt request that preserves permission metadata for UI rendering."""
 
     model_config = {"extra": "allow"}
+    interrupt_kind: str = InterruptKind.PERMISSION

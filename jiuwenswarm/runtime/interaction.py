@@ -9,6 +9,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.evolution import (
@@ -16,14 +17,6 @@ from jiuwenswarm.runtime.evolution import (
 )
 
 
-_INTERRUPT_RESUME_SOURCES = frozenset(
-    {
-        "confirm_interrupt",
-        "permission_interrupt",
-        "ask_user_interrupt",
-        "evolution_interrupt",
-    }
-)
 _WORK_MODES = frozenset({"work", "code"})
 
 
@@ -156,7 +149,7 @@ class InteractionAnswerInput:
     def resumes_interrupted_turn(self) -> bool:
         """Return whether this answer targets a suspended chat execution."""
 
-        if self.source in _INTERRUPT_RESUME_SOURCES:
+        if self.source in INTERRUPT_RESUME_SOURCES:
             return True
         payload: dict[str, Any] = {
             "request_id": self.interaction_id,

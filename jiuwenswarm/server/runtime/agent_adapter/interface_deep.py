@@ -139,6 +139,8 @@ from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
 
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+
 from jiuwenswarm.runtime.checkpointer import (
     ensure_persistent_checkpointer, close_persistent_checkpointer as close_persistent_checkpointer,
 )
@@ -15497,16 +15499,7 @@ class JiuWenSwarmDeepAdapter:
         source = str(params.get("source") or "").strip()
         answers = params.get("answers")
         request_id = str(params.get("request_id") or "").strip()
-        if (
-            bool(request_id)
-            and isinstance(answers, list)
-            and source in {
-                "ask_user_interrupt",
-                "confirm_interrupt",
-                "permission_interrupt",
-                "evolution_interrupt",
-            }
-        ):
+        if bool(request_id) and isinstance(answers, list) and source in INTERRUPT_RESUME_SOURCES:
             return True
         from jiuwenswarm.runtime.evolution import (
             is_interrupt_evolution_approval_answer_payload,

@@ -17,6 +17,10 @@ from typing import Any, Mapping
 from collections.abc import Callable
 from copy import deepcopy
 
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind
+
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,
 )
@@ -48,14 +52,6 @@ from jiuwenswarm.common.utils import logger
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
 LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE = "skill_evolution_approval"
-INTERRUPT_RESUME_SOURCES = frozenset(
-    {
-        "permission_interrupt",
-        "confirm_interrupt",
-        "ask_user_interrupt",
-        EVOLUTION_INTERRUPT_SOURCE,
-    }
-)
 EVOLUTION_INTERRUPT_METADATA_SOURCES = frozenset(
     {
         EVOLUTION_INTERRUPT_SOURCE,
@@ -946,6 +942,24 @@ def _read_value_field(value_obj: Any, field_name: str, default: Any = "") -> Any
     return default
 
 
+def _interrupt_kind(value_obj: Any) -> str:
+    """The ``InterruptKind`` of a request or its dict form; "" when the raiser declared none.
+
+    Skill-evolution approvals persisted before the field existed carry their
+    kind only in ``metadata["interrupt_kind"]``.
+    """
+    kind = _read_value_field(value_obj, "interrupt_kind", "") or _extract_interrupt_metadata(value_obj).get(
+        "interrupt_kind"
+    )
+    return kind if isinstance(kind, str) else ""
+
+
+def _interrupt_id(value_obj: Any) -> str:
+    """The ``interrupt_id`` of a request or its dict form; "" before agent-core assigned one."""
+    interrupt_id = _read_value_field(value_obj, "interrupt_id", "")
+    return interrupt_id if isinstance(interrupt_id, str) else ""
+
+
 def _normalize_tool_args(raw: Any) -> dict | None:
     if raw is None:
         return None
@@ -961,6 +975,9 @@ def _normalize_tool_args(raw: Any) -> dict | None:
 
 
 def _is_ask_user_interrupt_value(value_obj: Any) -> bool:
+    kind = _interrupt_kind(value_obj)
+    if kind:
+        return kind == InterruptKind.ASK_USER
     tool_name = str(_read_value_field(value_obj, "tool_name", "") or "").strip()
     # Prefer the explicit tool identity whenever it is available.  Many tools
     # (for example memory_search) have a plain ``query`` argument, so treating
@@ -982,6 +999,9 @@ def _is_ask_user_interrupt_value(value_obj: Any) -> bool:
 
 
 def _is_explicit_ask_user_shell(value_obj: Any) -> bool:
+    kind = _interrupt_kind(value_obj)
+    if kind:
+        return kind == InterruptKind.ASK_USER
     return (
         str(_read_value_field(value_obj, "tool_name", "") or "").strip() == "ask_user"
     )
@@ -1084,10 +1104,36 @@ def _parse_plan_metadata_from_message(message: str) -> tuple[str, str]:
     return plan_path, plan_slug
 
 
-def _resolve_interrupt_source(tool_name: str, message: str) -> str:
+_SOURCE_BY_KIND = {
+    InterruptKind.PERMISSION: "permission_interrupt",
+    InterruptKind.CONFIRM: "confirm_interrupt",
+}
+_APPROVAL_KINDS = frozenset({
+    InterruptKind.PERMISSION,
+    InterruptKind.CONFIRM,
+    InterruptKind.SKILL_EVOLUTION_APPROVAL,
+    InterruptKind.TEAM_TOOL_APPROVAL,
+})
+
+
+def _resolve_interrupt_source(value_obj: Any) -> str:
+    """Return ``permission_interrupt`` or ``confirm_interrupt`` for an approval.
+
+    The request's kind decides; a request without one (a session paused
+    before kinds existed, a rail that declares none) is told by its wording.
+    """
+    source = _SOURCE_BY_KIND.get(_interrupt_kind(value_obj))
+    if source is not None:
+        return source
+    tool_name, message, _tool_args = _read_interrupt_fields(value_obj)
     if _is_permission_interrupt_message(message, tool_name):
         return "permission_interrupt"
     return "confirm_interrupt"
+
+
+def _interrupt_identity(value_obj: Any) -> dict[str, str]:
+    """The fields a host answers an interrupt by (``interrupt_id``) and renders it by (``kind``)."""
+    return {"interrupt_id": _interrupt_id(value_obj), "kind": _interrupt_kind(value_obj)}
 
 
 def convert_interactions_to_ask_user_question(
@@ -1160,6 +1206,7 @@ def convert_interactions_to_ask_user_question(
                 "request_id": request_id,
                 "questions": questions,
                 "source": "ask_user_interrupt",
+                **_interrupt_identity(value_obj),
             }
 
         for interaction in interactions:
@@ -1174,6 +1221,7 @@ def convert_interactions_to_ask_user_question(
                     "request_id": request_id,
                     "questions": [plain_question],
                     "source": "ask_user_interrupt",
+                    **_interrupt_identity(value_obj),
                 }
 
     # Only the Host-bound Smart queue owns the single-card contract. Ordinary
@@ -1200,7 +1248,7 @@ def convert_interactions_to_ask_user_question(
         source = (
             "permission_interrupt"
             if has_permission_locator
-            else _resolve_interrupt_source(tool_name, message)
+            else _resolve_interrupt_source(value_obj)
         )
         structured_approval = (
             None
@@ -1220,6 +1268,7 @@ def convert_interactions_to_ask_user_question(
             "request_id": request_id,
             "questions": [question_data],
             "source": source,
+            **_interrupt_identity(value_obj),
         }
         if (
             source == "confirm_interrupt"
@@ -1269,13 +1318,13 @@ def build_verified_permission_ask_user_question(
         "request_id": request_id,
         "questions": [question],
         "source": "permission_interrupt",
+        **_interrupt_identity(value_obj),
     }
 
 
 def _is_permission_interaction(interaction: Any) -> bool:
     _request_id, value_obj = _extract_interaction_parts(interaction)
-    tool_name, message, _tool_args = _read_interrupt_fields(value_obj)
-    return _resolve_interrupt_source(tool_name, message) == "permission_interrupt"
+    return _resolve_interrupt_source(value_obj) == "permission_interrupt"
 
 
 def _iter_interactions(state_outputs: list) -> Any:
@@ -1309,7 +1358,12 @@ def _extract_questions_from_value(value_obj: Any) -> list | None:
 
     Additional source: StructuredAskUserRail puts `questions` in the tool call
     arguments, which are preserved in ToolCallInterruptRequest.tool_args.
+
+    A request whose kind says it is an approval is never a question, even when
+    it pauses an ``ask_user`` call whose arguments carry ``questions``.
     """
+    if _interrupt_kind(value_obj) in _APPROVAL_KINDS:
+        return None
     # 1. Direct questions attribute on value_obj
     if hasattr(value_obj, "questions"):
         qs = value_obj.questions
@@ -1598,12 +1652,11 @@ def _classify_structured_approval(
     del question_data
     metadata = _extract_interrupt_metadata(value_obj)
     source = str(metadata.get("source") or "").strip()
-    interrupt_kind = str(metadata.get("interrupt_kind") or "").strip()
     tool_name = _extract_tool_name(value_obj)
 
     is_evolution_interrupt = (
-        source in EVOLUTION_INTERRUPT_METADATA_SOURCES
-        or interrupt_kind == LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE
+        _interrupt_kind(value_obj) == InterruptKind.SKILL_EVOLUTION_APPROVAL
+        or source in EVOLUTION_INTERRUPT_METADATA_SOURCES
     )
     if (
         not is_evolution_interrupt
@@ -1657,7 +1710,7 @@ def extract_question_from_interaction(
     source = (
         "permission_interrupt"
         if locator_state == "live"
-        else _resolve_interrupt_source(tool_name, message)
+        else _resolve_interrupt_source(value_obj)
     )
     return _format_question_from_interaction(
         payload,

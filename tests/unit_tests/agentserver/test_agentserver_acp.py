@@ -851,6 +851,30 @@ def test_parse_stream_chunk_unwraps_controller_output_interaction():
     assert parsed["questions"][0]["question"] == "Need details?"
 
 
+@pytest.mark.parametrize(
+    ("kind", "source"), [("ask_user", "ask_user_interrupt"), ("permission", "permission_interrupt")],
+)
+def test_controller_output_question_keeps_its_interrupt_identity(kind, source):
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="controller_output",
+            payload={
+                "event_type": "chat.ask_user_question",
+                "request_id": "ask-user-3",
+                "interrupt_id": "intr-3",
+                "kind": kind,
+                "questions": [{"question": "Need details?", "header": "Details", "options": []}],
+            },
+        )
+    )
+
+    assert parsed["request_id"] == "ask-user-3"
+    assert parsed["interrupt_id"] == "intr-3"
+    assert parsed["kind"] == kind
+    assert parsed["source"] == source
+    assert parsed["questions"][0]["question"] == "Need details?"
+
+
 def test_parse_stream_chunk_prefers_ask_user_when_controller_has_mixed_interactions():
     parsed = parse_stream_chunk(
         types.SimpleNamespace(

@@ -25,6 +25,7 @@ from jiuwenswarm.channels.process_cli.live_input import (
 )
 from jiuwenswarm.channels.process_cli.persistence import flush_session_writes
 from jiuwenswarm.channels.process_cli.render import EventRenderer
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -56,14 +57,6 @@ SESSION_OPERATIONS = frozenset(
         SESSION_SWITCH_OPERATION,
         SESSION_FORK_OPERATION,
         SESSION_DELETE_OPERATION,
-    }
-)
-INTERRUPT_RESUME_SOURCES = frozenset(
-    {
-        "confirm_interrupt",
-        "permission_interrupt",
-        "ask_user_interrupt",
-        "evolution_interrupt",
     }
 )
 INTERACTION_EVENTS = frozenset({"chat.ask_user_question", "plan.approval_required"})

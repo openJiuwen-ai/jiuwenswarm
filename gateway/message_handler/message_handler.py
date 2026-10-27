@@ -38,6 +38,7 @@ from gateway.common.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
 )
+from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from gateway.common.mode_matrix import (
     DEPRECATION_MAP,
     MODE_ALIASES,
@@ -130,12 +131,6 @@ _KNOWN_JIUWENSWARM_SESSION_PREFIXES = (
     "slack_",
     "whatsapp_",
 )
-_INTERRUPT_RESUME_SOURCES = frozenset({
-    "ask_user_interrupt",
-    "confirm_interrupt",
-    "permission_interrupt",
-    "evolution_interrupt",
-})
 # 定时任务会话里点允许之后，如果这一轮又冒出新的提问，纸条先留着。
 _CRON_RESUME_PAUSE_EVENTS = frozenset({
     "chat.ask_user_question",
@@ -848,7 +843,7 @@ class MessageHandler(ABC):
         source = str(msg.params.get("source") or "").strip()
         answers = msg.params.get("answers")
         request_id = str(msg.params.get("request_id") or "").strip()
-        if bool(request_id) and isinstance(answers, list) and source in _INTERRUPT_RESUME_SOURCES:
+        if bool(request_id) and isinstance(answers, list) and source in INTERRUPT_RESUME_SOURCES:
             return True
         return cls._is_interrupt_evolution_approval_answer_payload(msg.params)
 
@@ -3636,7 +3631,7 @@ class MessageHandler(ABC):
         if not isinstance(params, dict):
             return False
         source = str(params.get("source") or "").strip()
-        if source not in _INTERRUPT_RESUME_SOURCES:
+        if source not in INTERRUPT_RESUME_SOURCES:
             return False
         answers = params.get("answers")
         request_id = str(params.get("request_id") or "").strip()
