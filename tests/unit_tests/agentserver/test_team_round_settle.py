@@ -102,6 +102,15 @@ class _SettleRecordingManager:
         self._seen: dict[str, bool] = {}
         self._terminal: dict[str, bool] = {}
         self._degraded_sessions: dict[str, str] = {}
+        self._user_turn_epochs: dict[str, int] = {}
+
+    def bump_user_turn_epoch(self, session_id: str) -> int:
+        epoch = self._user_turn_epochs.get(session_id, 0) + 1
+        self._user_turn_epochs[session_id] = epoch
+        return epoch
+
+    def user_turn_epoch(self, session_id: str) -> int:
+        return self._user_turn_epochs.get(session_id, 0)
 
     def mark_session_degraded(self, session_id: str, detail: str = "") -> None:
         self._degraded_sessions[session_id] = detail

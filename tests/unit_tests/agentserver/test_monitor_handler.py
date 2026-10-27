@@ -25,10 +25,10 @@ from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMo
 
 class _FakeMessage:
     def __init__(
-        self,
-        message_id: str,
-        content: str,
-        protocol: str = "plain",
+            self,
+            message_id: str,
+            content: str,
+            protocol: str = "plain",
     ) -> None:
         self.message_id = message_id
         self.content = content
@@ -84,13 +84,13 @@ class _FakeDb:
 
 class _FakeMonitor:
     def __init__(
-        self,
-        members: list[_FakeMember],
-        leader_member_name: str | None,
-        events: list[MonitorEvent] | None = None,
-        tasks: list[_FakeTask] | None = None,
-        messages: list[_FakeMessage] | None = None,
-        task_dao: _FakeTaskDao | None = None,
+            self,
+            members: list[_FakeMember],
+            leader_member_name: str | None,
+            events: list[MonitorEvent] | None = None,
+            tasks: list[_FakeTask] | None = None,
+            messages: list[_FakeMessage] | None = None,
+            task_dao: _FakeTaskDao | None = None,
     ):
         self.team_name = "team-1"
         self._members = members
@@ -988,7 +988,8 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     assert snapshot is not None
     assert bound == ["sess-19f8"]
     shared.initialize.assert_awaited()
-    shared.create_cur_session_tables.assert_awaited()
+    # 读路径不再前置写锁 DDL(预建已删):表缺失由 TeamNotEstablishedError 收口
+    shared.create_cur_session_tables.assert_not_awaited()
     assert snapshot["team_id"] == "team-sess-1"
     assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
     assert len(snapshot["tasks"]) == 1
@@ -1000,3 +1001,85 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     assert out["title"].startswith("T" * _TASK_TEXT_LIMIT)
     assert out["content"] == "body"
     assert "content_truncated" not in out
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_from_db_unmounted_daos_returns_none_transient(
+        monkeypatch,
+) -> None:
+    """team 行在（团队已建立）但 per-session DAO 未挂载（close 竞态/初始化
+    未竟）= 瞬态：返回 None 让 settle 续窗复核——不得抛
+    TeamNotEstablishedError（那会被 settle 按「团队已解散」补 error 终态
+    并级联 park 收流，误杀健康运行时）。
+
+    断言须区分「瞬态归类」与「提前返回/异常被吞」：只断 snapshot is None
+    时，函数顶部直接 return None 的桩或通用 except 吞异常同样能通过。
+    因此追加三重证据——initialize/get_team 已被 await（执行确实走到 DAO
+    挂载检查点，非参数/路径守卫提前返回）、瞬态专属 warning 落日志
+    （非通用失败 warning；本仓日志体系 caplog 收不到记录，用 spy 替换
+    模块 logger，同 test_team_config_loader.py 惯例）。"""
+    from pathlib import Path
+    from unittest.mock import MagicMock, patch
+
+    class _FakeTeamInfo:
+        leader_member_name = "team-leader"
+
+    class _FakeSharedDb:
+        def __init__(self) -> None:
+            self.team = SimpleNamespace(
+                get_team=AsyncMock(return_value=_FakeTeamInfo())
+            )
+            # DAO 未挂载形态：close 竞态/初始化未竟（瞬态）
+            self.member = None
+            self.task = None
+            self.initialize = AsyncMock()
+
+    shared = _FakeSharedDb()
+    logger_spy = MagicMock()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.handlers.team_monitor_handler.logger",
+        logger_spy,
+    )
+    with (
+        patch(
+            "jiuwenswarm.agents.harness.team.config_loader.resolve_team_sqlite_db_path",
+            return_value=Path("/tmp/team.db"),
+        ),
+        patch("jiuwenswarm.common.config.get_config", return_value={}),
+        patch(
+            "openjiuwen.agent_teams.spawn.shared_resources.get_shared_db",
+            return_value=shared,
+        ),
+        patch(
+            "openjiuwen.agent_teams.tools.database.config.DatabaseConfig",
+            return_value=SimpleNamespace(),
+        ),
+        patch(
+            "openjiuwen.agent_teams.context.set_session_id",
+            return_value="token",
+        ),
+        patch(
+            "openjiuwen.agent_teams.context.reset_session_id",
+            return_value=None,
+        ),
+    ):
+        snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
+            "sess-daonull", "team-sess-1"
+        )
+
+    assert snapshot is None, "DAO 未挂载是瞬态，按 None 归（settle 续窗复核）"
+    # 区分「瞬态归类」与「提前返回」：执行必须走到 DAO 挂载检查点
+    shared.initialize.assert_awaited()
+    shared.team.get_team.assert_awaited()
+    # 区分「瞬态归类」与「通用 except 吞异常」：日志口径必须不同
+    warnings = [
+        c.args[0] % c.args[1:] if len(c.args) > 1 else str(c.args[0])
+        for c in logger_spy.warning.call_args_list
+        if c.args
+    ]
+    assert any("not mounted" in m for m in warnings), (
+        "DAO 未挂载须落瞬态专属 warning（区别于通用失败口径）"
+    )
+    assert not any("get_team_snapshot_from_db failed" in m for m in warnings), (
+        "瞬态归类不得走通用 except（那是读取失败口径）"
+    )
