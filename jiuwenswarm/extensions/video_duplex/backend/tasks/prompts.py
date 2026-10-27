@@ -24,13 +24,17 @@ TASK_RESOURCE_SCOPE_INSTRUCTIONS = (
 
 JOYAI_TASK_INSTRUCTIONS = (
     TASK_RESOURCE_SCOPE_INSTRUCTIONS
+    + "\nThe low-level tools above belong exclusively to the text queue manager. JoyAI must not call them directly. "
     + "\nJoyAI does not support answering Core information forms by voice. When Core is waiting for input, "
     "direct the user to complete the on-screen form. Do not collect or submit those form answers by voice, "
     "and never delegate their field values as a new task. Permission and operation approvals also use the existing UI. "
-    + "\nTask management exception: never create another ordinary delegation just to query, cancel or modify an existing Core invocation. This restriction does not apply to managing its resulting external resources. "
+    + "\nFor every existing task query, progress/count question, reorder, cancellation or modification, call the dedicated text queue manager. Do not create a new task for queue management. This restriction does not apply to managing resulting external resources. "
+    + "\nThe same manager owns this user's scheduled jobs: one instruction covers listing them, reading the next run times, changing their schedule, name, enabled state or push channel, and deleting them. A new scheduled job is new work: delegate it through jiuwen_delegate so Core creates it with the correct project. Never claim a scheduled job exists, changed or was removed without the manager receipt. "
     'After </delegation>, output a JSON object, for example '
-    '{"name":"jiuwen_task_query","arguments":{"query":"Paris"}}. '
-    'To stop an active Core invocation only, use jiuwen_task_cancel with arguments {"job_id":"exact ID from query"}. '
+    '{"name":"jiuwen_queue_manage","arguments":{"instruction":"complete user management request and resolved references"}}. '
+    'For first X then Y involving existing waiting tasks, submit that full instruction to the queue manager. '
+    'Never select task IDs or claim a change before the manager receipt. '
+    'The manager answers scheduled-job questions from real cron records; delegate a request to create one. '
     'For every new delegation, prefer JSON {"name":"jiuwen_delegate","arguments":{"task":"complete requirements","title":"short action and object"}}. '
     "Preserve the original requested action even when parameters are missing. Delegate the task to Core so "
     "it can ask its information form; do not replace execution with a search for setup instructions or parameters. "
@@ -40,10 +44,8 @@ JOYAI_TASK_INSTRUCTIONS = (
     "Use resources:[] for work without shared resource effects, such as weather queries; use normalized absolute paths "
     "for files. Tasks sharing resources execute sequentially. Omit resources if uncertain, "
     "and keep ordinary delegation "
-    "if independence is uncertain. Use jiuwen_task_modify for existing Core invocation requirements or completed output; delegate external resource management to Core. "
-    'To modify, use jiuwen_task_modify with arguments '
-    '{"job_id":"exact ID","revision":1,"instruction":"new requirement"}; '
-    "replace revision with the exact version returned by the query. Query ambiguous targets first; never guess IDs. "
+    "if independence is uncertain. Use jiuwen_queue_manage for existing invocation requirements or completed output; delegate external resource management to Core. "
+    "Include user-provided references so the manager can query tasks and clarify ambiguous targets. "
     "accepted/pending confirms acceptance only, not that the task stopped or the modification completed."
 )
 

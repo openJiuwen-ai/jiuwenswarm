@@ -76,6 +76,35 @@ sending the new request. Failed events stay in memory in their original order an
 the same event IDs on retry. Retry after storage recovers; pending writes do not survive
 a page reload. Distinct turns with identical text remain separate in restored history.
 
+Qwen and JoyAI send existing-task queries, reorder, cancellation and modification to the same
+dedicated text model through `jiuwen_queue_manage`. The manager queries actual tasks in the
+current conversation and uses the existing queue tools. Qwen reports their receipts. JoyAI
+uses the manager's receipt-based answer for both text and speech, withholding its original
+unconfirmed promise without issuing another management operation. JoyAI information forms
+and approvals still require the UI; Qwen information answers remain supported.
+New tasks still use `jiuwen_delegate`. The realtime model must initiate the management call: spoken promises
+without a tool call are not automatically executed.
+
+Scheduled jobs go to that same text model instead of a fixed "query scheduled jobs" delegation.
+The manager reads the user's real cron jobs, next runs and timezones with `jiuwen_cron_query`,
+changes name, cron expression, timezone, description, enabled state, push channel, mode or
+timeout with `jiuwen_cron_update`, and removes one with `jiuwen_cron_delete`. Every write must
+copy a `job_id` from an earlier query receipt; the model may not guess one. Jobs driven by a
+settings switch (`proactive.tick`) cannot be changed or deleted by voice. Legacy anonymous
+connections retain read-only access; updates and deletion require an identified user who owns
+the job. If an update returns no valid job record or the controller raises an error, the receipt
+reports that the task was unsuccessful. The final state is unconfirmed: do not claim no change
+or rollback, and query the job before retrying. Creating a scheduled
+job is new work: `jiuwen_delegate` hands it to Core, which creates it through its cron tools with
+the current project, so project binding and credential resolution stay unchanged.
+
+The manager reuses the first configured text model by default. Set `DUPLEX_QUEUE_MANAGER_MODEL`
+in `.env` to an existing model ID, alias or unique name, then restart. It receives instructions
+and task records, without audio or images. Each request allows six model decisions within
+40 seconds. Errors preserve earlier receipts and do not imply success or rollback. Duplicate
+command IDs share execution while cached in the current process. Approvals still require
+an on-screen click.
+
 JoyAI refreshes an expired context token in the same authorized chat and retries the
 unexecuted user request once. Cancellation or session replacement stops that retry.
 Authorization failures and errors after inference begins are not replayed.

@@ -38,7 +38,8 @@ _ACTION_INSTRUCTIONS = (
     "For external or current facts, research, calculations, file access or actions, you MUST "
     "delegate to Core instead of answering or refusing: </response> brief acknowledgement "
     '</delegation> {"name":"jiuwen_delegate","arguments":{"task":"full user requirements"}}. '
-    "For existing tasks use the exact management tool JSON defined below. "
+    "For existing task queries, reorder, cancellation or modification, call jiuwen_queue_manage "
+    "with the complete instruction as defined below; a dedicated text model manages the queue. "
     "Delegate the requested action even when parameters are missing; Core will ask its information form. "
     "Do not replace execution with searching for setup instructions or parameters. "
     "For a passive frame with nothing to say: </silence>. "
@@ -63,6 +64,9 @@ _USER_KNOWLEDGE_GUARD = (
     "委派执行时同样必须在同一次输出中给出完整 Delegate："
     '</response> 简短说明 </delegation> {"name":"jiuwen_delegate","arguments":{"task":"完整任务描述"}}。'
     "工具 JSON 只能放在 </delegation> 后，不能放在 </response> 的播报文字中。"
+    "已有任务的查询、排序、取消或修改属于队列管理，必须交给专用文本模型，不要创建新任务："
+    '</response> 简短说明 </delegation> {"name":"jiuwen_queue_manage","arguments":{"instruction":"完整管理指令和明确的指代信息"}}。'
+    "例如‘先打开飞书，再打开微信’涉及已有等待任务时，应提交排序指令；收到真实回执前不得说已调整。"
 )
 _RESPONSE_MARKER = re.compile(r"</?response>", flags=re.IGNORECASE)
 _SILENCE_MARKER = re.compile(r"</?silence>", flags=re.IGNORECASE)
