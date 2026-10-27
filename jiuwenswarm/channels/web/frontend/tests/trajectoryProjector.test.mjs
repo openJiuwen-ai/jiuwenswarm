@@ -3539,3 +3539,74 @@ test('a turn that answered and then failed shows the failure after what it did',
   // The turn already shows what it was handed, on the call that read it.
   assert.equal(cells.filter(cell => cell.text.startsWith('<team-inbound')).length, 0);
 });
+
+function recordingJsonParse(run) {
+  const parsed = [];
+  const original = JSON.parse;
+  JSON.parse = function recordedParse(text, reviver) {
+    parsed.push(text);
+    return original.call(this, text, reviver);
+  };
+  try {
+    run();
+  } finally {
+    JSON.parse = original;
+  }
+  return parsed;
+}
+
+test('a span that no model call reads never parses the request it restates', () => {
+  const history = JSON.stringify([structuredMessage('user', 'restated history only')]);
+  const tools = JSON.stringify([{ name: 'restated_tool_only', parameters: {} }]);
+  const instructions = JSON.stringify([{ type: 'text', content: 'restated instructions only' }]);
+  const record = {
+    resourceSpans: [{
+      scopeSpans: [{
+        spans: [{
+          traceId: 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd',
+          spanId: '0000000000000001',
+          name: 'execute_tool bash',
+          startTimeUnixNano: '1000',
+          endTimeUnixNano: '2000',
+          attributes: [
+            v2Attribute('gen_ai.conversation.id', 'lazy-session'),
+            v2Attribute('gen_ai.tool.name', 'bash'),
+            v2Attribute('gen_ai.input.messages', history),
+            v2Attribute('gen_ai.tool.definitions', tools),
+            v2Attribute('gen_ai.system_instructions', instructions),
+          ],
+        }],
+      }],
+    }],
+  };
+
+  const parsed = recordingJsonParse(() => projectOtelTrajectory([record]));
+
+  assert.equal(parsed.includes(history), false);
+  assert.equal(parsed.includes(tools), false);
+  assert.equal(parsed.includes(instructions), false);
+});
+
+test('model calls restating the same tool list parse it once', () => {
+  const tools = JSON.stringify([{
+    name: 'shared_tool_list_probe',
+    description: 'stated by every call',
+    parameters: { type: 'object' },
+  }]);
+  const records = [1, 2].map(requestNumber => {
+    const record = legacyInferenceRecord({
+      output: `answer ${requestNumber}`,
+      requestNumber,
+      spanId: `000000000000000${requestNumber}`,
+      startTimeUnixNano: requestNumber * 10_000,
+      stepId: `step-${requestNumber}`,
+      stepNumber: requestNumber,
+    });
+    setStringAttribute(spansOf([record])[0], 'gen_ai.tool.definitions', tools);
+    return record;
+  });
+
+  const parsed = recordingJsonParse(() => projectOtelTrajectory(records));
+
+  assert.equal(parsed.filter(text => text === tools).length, 1);
+});
