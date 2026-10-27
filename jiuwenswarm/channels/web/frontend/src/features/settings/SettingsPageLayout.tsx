@@ -6,6 +6,7 @@ import { SettingItemRenderer, SettingsConfirmDialog, SettingsSection } from './c
 import type { SettingsAccessResult, SettingsModuleDefinition, SettingsPageDefinition } from './registry/types';
 import { restrictSettingsAccess } from './registry/buildSettingsPageDefinition';
 import { useSettingsServices } from './services/SettingsServicesProvider';
+import { formatSettingsSaveError, InlineSaveFeedbackContext } from './services/settingsSaveFeedback';
 import { SettingsSourceProvider, SettingsSourceVisibility } from './services/SettingsSourceProvider';
 import type { SettingsModuleTarget } from './settingsNavigation';
 import './SettingsPage.css';
@@ -109,14 +110,27 @@ export function SettingsPageLayout({
   const { saveQueue, unsavedChanges } = useSettingsServices();
   const [activeModuleId, setActiveModuleId] = useState<string | null>(null);
   const [pendingModuleId, setPendingModuleId] = useState<string | null>(null);
+  const [inlineOperations, setInlineOperations] = useState<ReadonlyMap<string, number>>(() => new Map());
+  const registerInlineFeedback = useCallback((operation: string) => {
+    setInlineOperations((current) => {
+      const next = new Map(current);
+      next.set(operation, (next.get(operation) ?? 0) + 1);
+      return next;
+    });
+    return () => setInlineOperations((current) => {
+      const next = new Map(current);
+      const count = next.get(operation) ?? 0;
+      if (count <= 1) next.delete(operation);
+      else next.set(operation, count - 1);
+      return next;
+    });
+  }, []);
   const saveStatus = useSyncExternalStore(
     saveQueue.subscribe.bind(saveQueue),
     saveQueue.getSnapshot,
     saveQueue.getSnapshot,
   );
-  const missingJevKey =
-    /^Jev API key is not configured(?: \([A-Za-z_][A-Za-z0-9_]*\))?$/.test(saveStatus.error ?? '') ||
-    saveStatus.error === 'Jev API key is required in Models > Jev settings';
+  const inlineError = saveStatus.status === 'error' && saveStatus.operation !== null && inlineOperations.has(saveStatus.operation);
   const availableModules = useMemo(
     () =>
       definition.modules
@@ -202,32 +216,32 @@ export function SettingsPageLayout({
                   <Check size={14} aria-hidden />
                   {t('settingsPanel.feedback.saved')}
                 </span>
-              ) : saveStatus.status === 'error' ? (
+              ) : saveStatus.status === 'error' && !inlineError ? (
                 <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
                   <CircleAlert size={14} aria-hidden />
-                  {missingJevKey
-                    ? t('settingsPanel.browser.jevKeyMissing')
-                    : saveStatus.error || t('settingsPanel.feedback.saveFailed')}
+                  {formatSettingsSaveError(saveStatus.error, t)}
                 </span>
               ) : null}
             </header>
-            <SettingsSourceProvider source={active.module.source}>
-              <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
-                {active.visible.sections.map(({ section, items }) => (
-                  <SettingsSourceVisibility key={section.id} when={section.visibleWhen}>
-                    <SettingsSection
-                      title={section.titleKey ? t(section.titleKey) : undefined}
-                      description={section.descriptionKey ? t(section.descriptionKey) : undefined}
-                      separatedRows={section.separatedRows === true}
-                    >
-                      {items.map(({ item, access }) => (
-                        <SettingsItem key={item.id} item={item} access={access} />
-                      ))}
-                    </SettingsSection>
-                  </SettingsSourceVisibility>
-                ))}
-              </div>
-            </SettingsSourceProvider>
+            <InlineSaveFeedbackContext.Provider value={registerInlineFeedback}>
+              <SettingsSourceProvider source={active.module.source}>
+                <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
+                  {active.visible.sections.map(({ section, items }) => (
+                    <SettingsSourceVisibility key={section.id} when={section.visibleWhen}>
+                      <SettingsSection
+                        title={section.titleKey ? t(section.titleKey) : undefined}
+                        description={section.descriptionKey ? t(section.descriptionKey) : undefined}
+                        separatedRows={section.separatedRows === true}
+                      >
+                        {items.map(({ item, access }) => (
+                          <SettingsItem key={item.id} item={item} access={access} />
+                        ))}
+                      </SettingsSection>
+                    </SettingsSourceVisibility>
+                  ))}
+                </div>
+              </SettingsSourceProvider>
+            </InlineSaveFeedbackContext.Provider>
           </div>
         </main>
       )}

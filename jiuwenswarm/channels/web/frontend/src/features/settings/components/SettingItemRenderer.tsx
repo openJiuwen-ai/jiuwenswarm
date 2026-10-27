@@ -1,10 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useContext, useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Input, Select, Switch } from '../../../components/ui';
 import type { SettingItemDefinition } from '../registry/types';
 import { parseConfigBoolean } from '../services/settingsContract';
 import { useSettingsServices } from '../services/SettingsServicesProvider';
-import { SettingsSourceProvider, useSettingsSource } from '../services/SettingsSourceProvider';
+import { formatSettingsSaveError, InlineSaveFeedbackContext } from '../services/settingsSaveFeedback';
+import { useSettingsSource } from '../services/SettingsSourceProvider';
 import { useUnsavedChanges } from '../services/useUnsavedChanges';
 import { SettingRow } from './SettingRow';
 
@@ -91,10 +92,12 @@ function SimpleSettingItem({
   item,
   disabled,
   onEditingChange,
+  error,
 }: {
   item: Exclude<SettingItemDefinition, { component: 'custom' }>;
   disabled: boolean;
   onEditingChange?: EditingChange;
+  error?: { id: string; message: string };
 }) {
   const { t } = useTranslation();
   const { isConnected } = useSettingsServices();
@@ -138,6 +141,7 @@ function SimpleSettingItem({
     control = (
       <Switch
         aria-label={title}
+        aria-describedby={error?.id}
         checked={checked}
         disabled={controlDisabled || configuring || editingSubItems.size > 0}
         onChange={(next) => {
@@ -151,35 +155,33 @@ function SimpleSettingItem({
     const showSubItems = item.subItems?.show === 'always' || checked;
     const subItemsDisabled = disabled || (item.subItems?.disabled === 'when-parent-unchecked' && !checked);
     return (
-      <>
-        <SettingRow
-          className={item.rowClassName}
-          title={title}
-          description={description}
-          subSettings={
-            item.subItems && showSubItems
-              ? item.subItems.items.map((subItem) => (
-                  <SettingItemRenderer
-                    key={subItem.id}
-                    item={subItem}
-                    disabled={subItemsDisabled}
-                    onEditingChange={reportSubItemEditing}
-                  />
-                ))
-              : undefined
-          }
-        >
-          {control}
-        </SettingRow>
-        {configuring && Configuration ? (
-          <Configuration
-            onSave={async () => {
-              await source.save(buildSwitchUpdates(true), item.id, { optimistic: false });
-            }}
-            onClose={() => setConfiguring(false)}
-          />
-        ) : null}
-      </>
+      <SettingRow
+        title={title}
+        description={
+          <>
+            {description}
+            {error ? (
+              <span className="setting-row__error" id={error.id} role="alert" data-testid="settings-item-error" data-variant={item.id}>
+                {error.message}
+              </span>
+            ) : null}
+          </>
+        }
+        subSettings={
+          item.subItems && showSubItems
+            ? item.subItems.items.map((subItem) => (
+                <SettingItemRenderer
+                  key={subItem.id}
+                  item={subItem}
+                  disabled={subItemsDisabled}
+                  onEditingChange={reportSubItemEditing}
+                />
+              ))
+            : undefined
+        }
+      >
+        {control}
+      </SettingRow>
     );
   }
 
@@ -211,6 +213,28 @@ function SimpleSettingItem({
   );
 }
 
+function InlineFeedbackSettingItem({
+  item,
+  disabled,
+  onEditingChange,
+}: {
+  item: Extract<SettingItemDefinition, { component: 'switch' }>;
+  disabled: boolean;
+  onEditingChange?: EditingChange;
+}) {
+  const { t } = useTranslation();
+  const { saveQueue } = useSettingsServices();
+  const registerInlineFeedback = useContext(InlineSaveFeedbackContext);
+  const errorId = useId();
+  const subscribe = useCallback((listener: () => void) => saveQueue.subscribe(listener), [saveQueue]);
+  const saveStatus = useSyncExternalStore(subscribe, saveQueue.getSnapshot, saveQueue.getSnapshot);
+  useEffect(() => registerInlineFeedback(item.id), [item.id, registerInlineFeedback]);
+  const error = saveStatus.status === 'error' && saveStatus.operation === item.id
+    ? { id: errorId, message: formatSettingsSaveError(saveStatus.error, t) }
+    : undefined;
+  return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} error={error} />;
+}
+
 export function SettingItemRenderer({
   item,
   disabled = false,
@@ -240,6 +264,9 @@ export function SettingItemRenderer({
   if (item.component === 'custom') {
     const CustomItem = item.render;
     return <CustomItem disabled={disabled} onEditingChange={reportCustomEditing} />;
+  }
+  if (item.component === 'switch' && item.errorDisplay === 'inline') {
+    return <InlineFeedbackSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
   }
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
 }

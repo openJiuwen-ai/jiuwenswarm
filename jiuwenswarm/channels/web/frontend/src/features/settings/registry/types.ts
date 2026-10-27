@@ -52,6 +52,7 @@ export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'switch';
       key: string;
+      errorDisplay?: 'inline';
       subItems?: SettingSubItems;
       configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })

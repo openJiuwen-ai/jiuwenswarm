@@ -846,7 +846,7 @@ async def test_moa_rail_emits_transient_reference_and_verification_status(moa_co
         for event in mailbox.pending:
             assert set(event) == {"operation_id", "phase", "status"}
             by_operation.setdefault(event["operation_id"], []).append(event["status"])
-        assert len(by_operation) == 3
+        assert len(by_operation) == (5 if jev_enabled else 3)
         assert all(statuses == ["started", "completed"] for statuses in by_operation.values())
     finally:
         await runtime.aclose()
