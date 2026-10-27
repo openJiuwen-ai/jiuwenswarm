@@ -8,6 +8,24 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
 
 
 @pytest.mark.asyncio
+async def test_snapshot_publish_failure_removes_temporary_file(tmp_path, monkeypatch):
+    source = tmp_path / "source.txt"
+    source.write_text("material content")
+    context = {"original_query": "参考附件研究", "files": [{"path": str(source)}],
+               "scope": "session", "output_dir": str(tmp_path)}
+    failure = OSError("publish failed")
+
+    def fail_replace(*args):
+        raise failure
+
+    monkeypatch.setattr(m.os, "replace", fail_replace)
+    with pytest.raises(OSError) as caught:
+        await m.prepare_materials(context, "35c0b386-7e75-4923-b373-720ed2ed848b")
+    assert caught.value is failure
+    assert all(path.is_dir() for path in (tmp_path / ".deepresearch-materials").rglob("*"))
+
+
+@pytest.mark.asyncio
 async def test_snapshot_large_text_partial_failure_and_dedup(tmp_path):
     source = tmp_path / "source.txt"
     source.write_text("独特事实青鹭项目效率为73.42%。" * 10000)

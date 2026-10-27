@@ -2640,6 +2640,11 @@ class RequestScopedOfficeClawMcpTool(Tool):
         self._server_name = str(server_name or "")
         self._use_global_pool = bool(use_global_pool)
 
+    @property
+    def server_name(self) -> str:
+        """只读暴露工具所属来源，不改变请求级连接身份。"""
+        return self._server_name
+
     async def _acquire_mcp_session(self, *, force_rebuild: bool = False):
         if self._use_global_pool:
             from jiuwenswarm.common.mcp_server_registry import get_mcp_server_registry

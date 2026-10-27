@@ -2567,8 +2567,10 @@ async def _push_materials_progress(content: str) -> None:
         logger.warning("[deepresearch] material progress push unavailable")
 
 
-_materials_reference_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar("deepresearch_materials_reference", default=None)
-_mcp_servers_ctx: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar("deepresearch_mcp_servers", default=None)
+_materials_reference_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "deepresearch_materials_reference", default=None)
+_mcp_servers_ctx: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar(
+    "deepresearch_mcp_servers", default=None)
 
 
 # Both dedicated entry points must hand new research back to the same Skill.

@@ -324,7 +324,9 @@ class DeepResearchExecutionRail(DeepAgentRail):
             agent_id=self._agent_id,
             request_id=request_id,
             requested_report_type=requested_report_type,
-            materials_context=(self._materials_context_provider() if callable(self._materials_context_provider) else None),
+            materials_context=(
+                self._materials_context_provider() if callable(self._materials_context_provider) else None
+            ),
             mcp_servers=mcp_servers,
             mcp_context_provider=self._mcp_context_provider,
             load_state=lambda: _load_states(ctx.session).get(workflow_id),

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import logging
 import os
 from pathlib import Path
 import re
@@ -106,7 +107,11 @@ def context_from_request(params, *, scope, output_dir):
     """Copy only the current authenticated request, before prompt construction."""
     files = params.get("files") or []
     if isinstance(files, dict):
-        files = [item for values in files.values() if isinstance(values, list) for item in values]
+        flattened = []
+        for values in files.values():
+            if isinstance(values, list):
+                flattened.extend(values)
+        files = flattened
     if not isinstance(files, list):
         files = []
     context = {"original_query": str(params.get("original_user_query", params.get("query", ""))),
@@ -126,7 +131,9 @@ def _public(address):
 def _validate_url(url):
     try:
         parsed = urlsplit(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError()
+        if parsed.username or parsed.password:
             raise ValueError()
         if parsed.port not in {None, 80, 443}:
             raise ValueError()
@@ -237,7 +244,8 @@ async def fetch_url(url):
                             tag.decompose()
                         # Preserve table cells and row boundaries as plain text.
                         for row in soup.find_all('tr'):
-                            row.replace_with(soup.new_string(' | '.join(c.get_text(' ', strip=True) for c in row.find_all(['th', 'td'])) + '\n'))
+                            row.replace_with(soup.new_string(
+                                ' | '.join(c.get_text(' ', strip=True) for c in row.find_all(['th', 'td'])) + '\n'))
                         text = soup.get_text('\n', strip=True)
                     return text, title, {"original_url": original, "final_url": url,
                                           "fetched_at": datetime.now(timezone.utc).isoformat()}
@@ -252,7 +260,8 @@ async def extract_attachment(path_string):
     before = _direct(path)
     if before.st_size > MAX_INPUT:
         raise MaterialsError("材料超出限额")
-    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+    # 只读打开不创建文件；mode 不影响现有附件权限。
+    fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0), mode=0o600)
     with os.fdopen(fd, 'rb') as stream:
         opened = os.fstat(stream.fileno())
         if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
@@ -273,12 +282,16 @@ async def extract_attachment(path_string):
                                                stdin=asyncio.subprocess.PIPE,
                                                stdout=asyncio.subprocess.PIPE,
                                                stderr=asyncio.subprocess.DEVNULL)
+
     async def exchange():
         proc.stdin.write(data)
         await proc.stdin.drain()
         proc.stdin.close()
         output = bytearray()
-        while chunk := await proc.stdout.read(65536):
+        while True:
+            chunk = await proc.stdout.read(65536)
+            if not chunk:
+                break
             output.extend(chunk)
             if len(output) > MAX_TEXT * 4:
                 raise MaterialsError("材料超出限额")
@@ -293,6 +306,7 @@ async def extract_attachment(path_string):
             proc.kill()
         # Process.wait alone can block on paused unread pipe transports even after kill.
         # The worker output is bounded; drain remaining bytes while reaping it.
+
         async def reap():
             while await proc.stdout.read(65536):
                 pass
@@ -317,6 +331,7 @@ def _parse_worker(suffix):
     data = sys.stdin.buffer.read(MAX_INPUT + 1)
     if len(data) > MAX_INPUT:
         raise MaterialsError("材料超出限额")
+
     class BoundedText(io.StringIO):
         def write(self, value):
             if self.tell() + len(value) > MAX_TEXT:
@@ -356,6 +371,7 @@ async def prepare_materials(context, conversation_id):
         return None
     results, materials, seen, total = [], [], {}, 0
     semaphore = asyncio.Semaphore(3)
+
     async def read(row):
         async with semaphore:
             async with asyncio.timeout(TIMEOUT):
@@ -364,6 +380,7 @@ async def prepare_materials(context, conversation_id):
                         raise MaterialsPolicyError('附件读取权限不足')
                     return await extract_attachment(row['source']), row['title'], {}
                 return await fetch_url(row['source'])
+
     async def guarded(row, index):
         if index >= MAX_ITEMS:
             return MaterialsError('材料超出限额')
@@ -425,12 +442,22 @@ async def prepare_materials(context, conversation_id):
         if len(body) > MAX_SNAPSHOT:
             raise MaterialsError('材料快照超出限额')
         fd, temporary = tempfile.mkstemp(dir=task_dir)
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        target = task_dir / 'materials.json'
-        os.replace(temporary, target)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(body)
+                stream.flush()
+                os.fsync(stream.fileno())
+            target = task_dir / 'materials.json'
+            os.replace(temporary, target)
+        finally:
+            # 成功时文件已原子重命名；失败时仅回收未发布的临时文件。
+            try:
+                os.unlink(temporary)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                # 清理失败不覆盖原有发布异常，也不记录路径或材料内容。
+                logging.getLogger(__name__).warning("[DeepResearch] Material temporary file cleanup unavailable")
         return {'path': str(target), 'sha256': hashlib.sha256(body).hexdigest(),
                 'schema_version': 1, 'conversation_id': cid, 'results': results}
     except (MaterialsError, OSError, ValueError) as exc:

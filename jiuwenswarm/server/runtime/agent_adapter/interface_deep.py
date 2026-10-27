@@ -5173,7 +5173,9 @@ class JiuWenSwarmDeepAdapter:
                     except Exception:
                         policy = None
                     if policy and policy.get("enabled") and tool_defs:
-                        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
+                        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import (
+                            project_search_server,
+                        )
                         research_server = project_search_server(name, policy["config"], params)
                         if research_server:
                             buffers.research_servers.append(research_server)
@@ -5211,7 +5213,7 @@ class JiuWenSwarmDeepAdapter:
             from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import fully_admitted_servers
             research_servers = fully_admitted_servers(
                 buffers.research_servers, buffers.research_tool_names,
-                [(tool._server_name, tool.card.name) for tool in registration.tool_instances],
+                [(tool.server_name, tool.card.name) for tool in registration.tool_instances],
             )
             self._deepresearch_mcp_snapshot = (registration, research_servers, frozenset(server_names))
             publish_live_office_claw_allowlist(registration.tool_ids)
@@ -10410,14 +10412,23 @@ class JiuWenSwarmDeepAdapter:
 
     async def _get_deepresearch_mcp_context(self) -> list[dict[str, Any]]:
         from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import get_search_mcp_context
+
+        def request_state():
+            return (getattr(self, "_deepresearch_mcp_snapshot", None),
+                    self._active_office_claw_mcp, self._current_request_route)
+
+        def resolve_permission_config(**kwargs):
+            return self._resolve_permission_config_for_agent(**kwargs)
+
         return await get_search_mcp_context(
             self, registry_provider=get_mcp_server_registry,
             owner_policy_provider=get_effective_permissions_config,
+            request_state=request_state,
+            resolve_permission_config=resolve_permission_config,
         )
 
     def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
         # Per-session adapter snapshot survives long-lived runner Task boundaries.
-        import copy
         context = copy.deepcopy(self._current_request_route.get("materials_context"))
         if context is None:
             return None
@@ -19306,7 +19317,9 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import context_from_request
         material_context = context_from_request(
             request.params,
-            scope="|".join(str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)),
+            scope="|".join(
+                str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)
+            ),
             output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
         )
         self._current_request_route = {
@@ -20138,7 +20151,9 @@ class JiuWenSwarmDeepAdapter:
         from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import context_from_request
         material_context = context_from_request(
             request.params,
-            scope="|".join(str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)),
+            scope="|".join(
+                str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)
+            ),
             output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
         )
         self._current_request_route = {

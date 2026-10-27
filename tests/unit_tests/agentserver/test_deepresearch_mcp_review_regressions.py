@@ -36,7 +36,7 @@ async def test_stopped_resume_only_restores_original_mcp_sources(originally_auth
 
 
 def adapter_for(policy=None, disabled=(), *, registry=False):
-    tool = SimpleNamespace(_server_name='search', card=SimpleNamespace(name='search', description='Search',
+    tool = SimpleNamespace(server_name='search', card=SimpleNamespace(name='search', description='Search',
                                                                      input_params={'type': 'object'}),
                            invoke=AsyncMock(return_value={'result': '{}'}))
     registration = SimpleNamespace(request_id='req', session_id='session', tool_instances=(tool,), tool_ids=('search-tool',))

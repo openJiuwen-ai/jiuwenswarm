@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
 | 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch}.py |
-| 最近一次修订日期 | 2026-10-20 |
+| 最近一次修订日期 | 2026-10-27 |
 | 关联 feature | F_01_deepresearch-mcp-delegation.md |
 
 ## 范围 / 边界
@@ -80,6 +80,7 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 | 模块 | 关键符号 | 语义要点 |
 |---|---|---|
 | `mcp_config.py` | `create_mcp_tool` / `build_mcp_server_config` / `build_enabled_mcp_server_configs` / `acquire_request_scoped_mcp_session` / `RequestScopedOfficeClawMcpTool` / `list_request_mcp_server_tools` / `validate_office_claw_mcp_config` / `bind_active_office_claw_mcp_tools` / `ensure_request_scoped_mcp_tool_allowed` / `preflight_mcp_server_reachable` | N1–N4 |
+| `mcp_config.py` | `RequestScopedOfficeClawMcpTool.server_name` | 只读返回原 `_server_name`；供来源匹配使用，不改变 worker key、请求绑定或工具权限 |
 | `mcp_server_registry.py` | `McpServerRegistry` / `GlobalMcpWorkerPool` / `get_mcp_server_registry` / `start_mcp_registry_runtime` / `snapshot_for_chat` / `acquire_worker` / `redact_mcp_config` / `extract_mcp_server_list` / `McpRegistrySettings` | N5 / N6 |
 | `mcp_server_registry.py` | `snapshot_for_deepresearch(name) -> tuple[dict, list, dict]` | N10；缺失抛 `UnknownMcpServerError`，停用抛 `DisabledMcpServerError` |
 | `mcp_call_timeout_patch.py` | `apply_mcp_call_timeout_patch` / `force_invalidate_mcp_client` / `is_retryable_mcp_dead_session_error` / `DEFAULT_CALL_TIMEOUT = 30.0` | N7 |

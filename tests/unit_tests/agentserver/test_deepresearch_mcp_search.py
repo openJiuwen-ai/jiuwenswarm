@@ -64,7 +64,7 @@ async def test_adapter_provider_requires_current_request_and_permission():
     from types import SimpleNamespace
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
     registration = SimpleNamespace(request_id="req-1", session_id="session-1", tool_instances=(
-        SimpleNamespace(_server_name="search", card=SimpleNamespace(name="search")),))
+        SimpleNamespace(server_name="search", card=SimpleNamespace(name="search")),))
     adapter = SimpleNamespace(
         _deepresearch_mcp_snapshot=(registration, [SERVER]), _active_office_claw_mcp=registration,
         _current_request_route={"request_id": "req-1", "session_id": "session-1"},
@@ -164,7 +164,7 @@ def test_url_credential_rotation_preserves_source_but_scope_changes_do_not():
 async def test_provider_rejects_cross_session_and_disabled_tool(session, disabled):
     from types import SimpleNamespace
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-    tool = SimpleNamespace(_server_name='search', card=SimpleNamespace(name='search'))
+    tool = SimpleNamespace(server_name='search', card=SimpleNamespace(name='search'))
     registration = SimpleNamespace(request_id='req', session_id='original', tool_instances=(tool,))
     adapter = SimpleNamespace(
         _deepresearch_mcp_snapshot=(registration, [SERVER]), _active_office_claw_mcp=registration,
@@ -209,7 +209,7 @@ async def test_provider_exposes_only_host_allowed_tools(level, rules, expected):
     from types import SimpleNamespace
     from openjiuwen.harness.security.core import PermissionEngine
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-    tool = SimpleNamespace(_server_name='search', card=SimpleNamespace(name='search'))
+    tool = SimpleNamespace(server_name='search', card=SimpleNamespace(name='search'))
     registration = SimpleNamespace(request_id='req', session_id='session', tool_instances=(tool,))
     policy = {'enabled': True, 'tools': {'search': level}, 'rules': rules, 'file_guard': {'enabled': False}}
     adapter = SimpleNamespace(

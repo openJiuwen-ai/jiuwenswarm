@@ -6,6 +6,7 @@ import copy
 import hashlib
 import hmac
 import json
+import logging
 import math
 import secrets
 import socket
@@ -43,9 +44,13 @@ def fully_admitted_servers(servers: list[dict], discovered: dict[str, list[str]]
     admitted = {}
     for server_name, tool_name in installed:
         admitted.setdefault(server_name, []).append(tool_name)
-    return [server for server in servers
-            if discovered.get(server["server_name"])
-            and sorted(discovered[server["server_name"]]) == sorted(admitted.get(server["server_name"], []))]
+    result = []
+    for server in servers:
+        name = server["server_name"]
+        if discovered.get(name) and sorted(discovered[name]) == sorted(admitted.get(name, [])):
+            result.append(server)
+    return result
+
 
 def project_search_server(name: str, config: dict, params: dict) -> dict | None:
     """Map admitted host MCP to SDK's default search purpose, without classification.
@@ -63,8 +68,9 @@ def project_search_server(name: str, config: dict, params: dict) -> dict | None:
         return None
     try:
         parsed = urlsplit(url)
-        if (parsed.scheme not in {"http", "https"} or not parsed.hostname
-                or parsed.username or parsed.password or parsed.fragment):
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return None
+        if parsed.username or parsed.password or parsed.fragment:
             return None
         if any(key not in CREDENTIAL_QUERY_KEYS
                for key, _ in parse_qsl(parsed.query, keep_blank_values=True)):
@@ -80,31 +86,31 @@ def project_search_server(name: str, config: dict, params: dict) -> dict | None:
     if any(v.startswith(("SDK-HMAC-", "V11-HMAC-")) for v in headers.values()):
         return None
     timeout = params.get("timeout_s", 30.0)
-    if (isinstance(timeout, bool) or not isinstance(timeout, (int, float))
-            or not math.isfinite(timeout) or timeout <= 0):
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        return None
+    if not math.isfinite(timeout) or timeout <= 0:
         return None
     return {"server_name": name, "server_url": url,
             "transport_type": "sse" if transport == "sse" else "streamable_http",
             "headers": dict(headers), "timeout": float(timeout), "type": "search"}
 
 
-async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_provider) -> list[dict]:
+async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_provider,
+                                request_state, resolve_permission_config) -> list[dict]:
     """Bind only current-request tools to the private research MCP endpoint."""
-    import copy
     from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import TOOL_PERMISSION_CONTEXT
     from jiuwenswarm.common.config import resolve_string_or_list_config
     from jiuwenswarm.common.mcp_config import bind_active_office_claw_mcp_tools
-    snapshot = getattr(adapter, "_deepresearch_mcp_snapshot", None)
-    active = adapter._active_office_claw_mcp
-    route = adapter._current_request_route
+    snapshot, active, route = request_state()
     permission_context = TOOL_PERMISSION_CONTEXT.get()
     if not snapshot or active is not snapshot[0]:
         return []
     registry_names = snapshot[2] if len(snapshot) > 2 else frozenset()
 
     def current_request():
-        return (snapshot is adapter._deepresearch_mcp_snapshot and active is adapter._active_office_claw_mcp
-                and route is adapter._current_request_route
+        current_snapshot, current_active, current_route = request_state()
+        return (snapshot is current_snapshot and active is current_active
+                and route is current_route
                 and active.request_id == str(route.get("request_id") or "")
                 and active.session_id == str(route.get("session_id") or ""))
 
@@ -127,7 +133,7 @@ async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_pro
                 (getattr(adapter, "_config_cache", None) or {}).get("disabled_tools")))
             if name in disabled:
                 return False
-            policy = adapter._resolve_permission_config_for_agent(session_id=active.session_id)
+            policy = resolve_permission_config(session_id=active.session_id)
             if permission_context is not None:
                 # Avatar approvals use a separate scene hook. Do not bypass
                 # that interactive boundary through a background SDK call.
@@ -188,8 +194,10 @@ async def get_search_mcp_context(adapter, *, registry_provider, owner_policy_pro
                     continue
                 source = latest
             except Exception:
+                # 不记录可能含凭据的异常；刷新失败时仍拒绝委派该来源。
+                logging.getLogger(__name__).warning("[DeepResearch] MCP source refresh unavailable")
                 continue
-        tools = [tool for tool in active.tool_instances if tool._server_name == source["server_name"]]
+        tools = [tool for tool in active.tool_instances if tool.server_name == source["server_name"]]
         grant = SearchMcpServer(source, tools,
                                 lambda name, args, source=source: allowed(source, name, args), invoke)
         if any([await grant.allowed(name, {}) for name in grant.tools]):
@@ -240,9 +248,16 @@ async def search_mcp_gateway(servers):
             if alias in bindings:
                 raise ValueError('mcp_tool_identity_collision')
             bindings[alias] = (server, name)
-    mcp = FastMCP('deepresearch-search', stateless_http=True, json_response=True)
 
-    @mcp._mcp_server.list_tools()
+    class SearchGateway(FastMCP):
+        @property
+        def protocol_server(self):
+            # 动态列表需直接注册低层处理器；FastMCP 没有对应公开注册接口。
+            return self._mcp_server
+
+    mcp = SearchGateway('deepresearch-search', stateless_http=True, json_response=True)
+
+    @mcp.protocol_server.list_tools()
     async def list_tools():
         tools = []
         for alias, (server, name) in bindings.items():
@@ -252,7 +267,7 @@ async def search_mcp_gateway(servers):
                                         inputSchema=card.input_params or {'type': 'object'}))
         return tools
 
-    @mcp._mcp_server.call_tool()
+    @mcp.protocol_server.call_tool()
     async def call_tool(name, arguments):
         try:
             server, original = bindings[name]
@@ -271,7 +286,9 @@ async def search_mcp_gateway(servers):
 
     @app.middleware('http')
     async def authenticate(request, call_next):
-        if not hmac.compare_digest(request.headers.get('authorization', '').encode('utf-8'), credential.encode('ascii')):
+        if not hmac.compare_digest(
+            request.headers.get('authorization', '').encode('utf-8'), credential.encode('ascii')
+        ):
             return Response(status_code=401)
         return await call_next(request)
 
@@ -287,8 +304,14 @@ async def search_mcp_gateway(servers):
             app, log_config=None, access_log=False, log_level='warning',
             timeout_graceful_shutdown=1, lifespan='on'))
         # An embedded task must not replace the host service's signal handlers.
-        server.capture_signals = lambda: nullcontext()
-        server.install_signal_handlers = lambda: None
+        def capture_signals():
+            return nullcontext()
+
+        def install_signal_handlers():
+            return None
+
+        server.capture_signals = capture_signals
+        server.install_signal_handlers = install_signal_handlers
         task = asyncio.create_task(server.serve(sockets=[sock]))
 
         async def started():

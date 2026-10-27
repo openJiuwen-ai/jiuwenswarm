@@ -651,8 +651,9 @@ def _format_evidence_review_markdown(data: dict[str, Any]) -> str | None:
     statuses = {"covered": "已覆盖", "weak": "证据偏弱", "missing": "缺少证据", "unknown": "待核验"}
     blocks = ["需要补充检索。" if required else "无需补充检索。"]
     for item in coverage:
-        if (not isinstance(item, dict) or not _text_field(item.get("section_id"))
-                or not isinstance(item.get("status"), str) or item["status"] not in statuses):
+        if not isinstance(item, dict) or not _text_field(item.get("section_id")):
+            return None
+        if not isinstance(item.get("status"), str) or item["status"] not in statuses:
             return None
         section = _escape_markdown_text(_text_field(item["section_id"]))
         blocks.append(f"- 章节 {section}：{statuses[item['status']]}")
