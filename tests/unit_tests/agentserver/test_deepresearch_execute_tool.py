@@ -3222,12 +3222,17 @@ async def test_optional_denial_with_core_parse_failure_does_not_handoff(tmp_path
     if failure == 'snapshot':
         from jiuwenswarm.agents.harness.common.tools.deepresearch import materials as m
         monkeypatch.setattr(m, 'extract_attachment', AsyncMock(return_value='readable content'))
-        monkeypatch.setattr(m.tempfile, 'mkstemp', lambda **kwargs: (_ for _ in ()).throw(OSError('disk full')))
+        create_snapshot = Mock(side_effect=OSError('disk full'))
+        monkeypatch.setattr(m.tempfile, 'NamedTemporaryFile', create_snapshot)
     context = {'original_query': '必须使用 broken.docx 作为核心材料研究主题。另参考 http://127.0.0.1/source',
                'files': [{'path': str(source), 'name': source.name}],
                'scope': 'mixed-denied', 'output_dir': str(tmp_path)}
     with patch.object(de, '_call_deepresearch_stream_impl', new=AsyncMock()) as stream:
         result, _ = await _invoke(materials_context=context)
+    if failure == 'snapshot':
+        create_snapshot.assert_called_once()
+    assert result['kind'] == 'error'
+    assert result['error_code'] == 'materials_preparation_failed'
     assert 'fallback' not in result
     stream.assert_not_awaited()
 
