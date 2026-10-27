@@ -70,14 +70,21 @@ import ImageIO
         try validate(initial)
         if activate {
             try Input.requireDesktopInput()
-            if let native = try ForegroundAssist.nativeWindow(window.mapping.pid, id),
+            let native = try ForegroundAssist.nativeWindow(window.mapping.pid, id)
+            if let native,
                AXAccess.read(native, kAXMinimizedAttribute).value as? Bool == true {
                 state.recordEffect()
                 guard AXUIElementSetAttributeValue(native, kAXMinimizedAttribute as CFString, kCFBooleanFalse) == .success else {
                     throw DriverError("could not restore the minimized window", code: .inputUnavailable)
                 }
             }
+            // Non-key panels can receive pointer input while their document
+            // remains the keyboard window. Keyboard dispatch checks separately.
+            let pointer = NativePointerUnit(application: window.application,
+                window: window.mapping, nativeWindow: native)
+            let center = CGPoint(x: window.mapping.frame.midX, y: window.mapping.frame.midY)
             try await ForegroundAssist().prepare(BackgroundTarget(window.application), window: id,
+                pointerAt: pointer.foregroundPreparationPoint(at: center),
                 onAction: { self.state.recordEffect() })
             _ = try catalogue()
         }

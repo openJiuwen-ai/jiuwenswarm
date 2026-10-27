@@ -1,43 +1,232 @@
 import AppKit
 import ApplicationServices
 
+/// A transport receipt does not prove that a first mouse-down reaches content.
+/// Passive wheel delivery has no initial button event to consume for activation.
+enum NativePointerReadiness {
+    enum WindowKind { case keyRequiring, otherDeclared, visualOnly, identityConflict }
+    enum WindowFocus: Equatable {
+        case target, otherWindow, absent, unresolved, failed, notRequired
+        var reported: Bool { self == .target || self == .otherWindow }
+    }
+
+    /// A positive native mapping takes precedence over object equality. A
+    /// missing optional bridge is not a conflicting identity.
+    static func focusIdentity(nativeID: CGWindowID?, retainedEqual: Bool,
+                              targetID: CGWindowID) -> WindowFocus {
+        if let nativeID { return nativeID == targetID ? .target : .otherWindow }
+        return retainedEqual ? .target : .unresolved
+    }
+
+    private enum Field: Equatable {
+        case declared(String), absent, failed
+        init(_ read: AXRead<CFTypeRef>) {
+            switch read {
+            case .unsupported, .unavailable(.noValue): self = .absent
+            case .value(let value):
+                if let value = value as? String {
+                    self = value.isEmpty || value == kAXUnknownSubrole ? .absent : .declared(value)
+                } else { self = .failed }
+            default: self = .failed
+            }
+        }
+    }
+
+    static func windowKind(role: AXRead<CFTypeRef>, subrole: AXRead<CFTypeRef>, nativeWindowMatches: Bool?,
+                           observed: [String: AXRead<CFTypeRef>]? = nil) -> WindowKind {
+        guard nativeWindowMatches != false else { return .identityConflict }
+        let role = Field(role), subrole = Field(subrole)
+        // Labels choose preparation, not window identity. Use a current
+        // declaration even if its semantics changed; retain an original only
+        // when the provider is temporarily unable to report the field.
+        func declaration(_ field: Field, original: AXRead<CFTypeRef>?) -> String? {
+            if case .declared(let value) = field { return value }
+            if let original, case .declared(let value) = Field(original) { return value }
+            return nil
+        }
+        guard let role = declaration(role, original: observed?[kAXRoleAttribute]) else { return .visualOnly }
+        // Menus and declared content scopes need not expose an AX window ID.
+        // Their retained capture/element boundary still owns the physical hit.
+        guard role == kAXWindowRole else { return .otherDeclared }
+        guard let subrole = declaration(subrole, original: observed?[kAXSubroleAttribute]) else { return .visualOnly }
+        // A nonactivating NSPanel can itself declare AXSystemDialog. Do not
+        // infer key eligibility from dialog names or impose a key requirement
+        // on menus/panels. This strong gate covers standard documents only.
+        return subrole == kAXStandardWindowSubrole ? .keyRequiring : .otherDeclared
+    }
+
+    static func ready(kind: NativePointerIntent.Kind, foreground: Bool, windowKind: WindowKind,
+                      focus: WindowFocus, initialFocus: WindowFocus? = nil,
+                      backgroundPrepared: Bool, exclusive: Bool) -> Bool {
+        if foreground {
+            if kind == .scroll { return true }
+            switch windowKind {
+            case .keyRequiring:
+                switch focus {
+                case .target: return true
+                case .otherWindow: return false
+                case .absent: return initialFocus?.reported != true
+                // A provider failure or missing private bridge does not prove
+                // a different key window. Keep the exact physical visual route.
+                case .unresolved, .failed, .notRequired: return true
+                }
+            case .otherDeclared, .visualOnly: return true
+            case .identityConflict: return false
+            }
+        }
+        return kind == .scroll && !exclusive && backgroundPrepared
+    }
+}
+
 /// One selected native window route. No target search, foreground fallback,
 /// screenshot refresh, AXPress substitution or post-dispatch retry lives here.
 @MainActor struct NativePointerUnit {
     let application: NSRunningApplication
     let window: WindowGeometry.WindowMapping
+    let nativeWindow: AXUIElement?
+    private let observedWindowAttributes: [String: AXRead<CFTypeRef>]?
     private var target: BackgroundTarget { BackgroundTarget(application) }
 
-    init(application: NSRunningApplication, window: WindowGeometry.WindowMapping) {
-        self.application = application; self.window = window
+    init(application: NSRunningApplication, window: WindowGeometry.WindowMapping, nativeWindow: AXUIElement? = nil,
+         observedWindowAttributes: [String: AXRead<CFTypeRef>]? = nil) {
+        self.application = application; self.window = window; self.nativeWindow = nativeWindow
+        self.observedWindowAttributes = observedWindowAttributes
     }
 
     init(capture: NativeCapture.Entry) {
-        self.init(application: capture.surface.native?.application ?? capture.surface.owner, window: capture.mapping)
+        self.init(application: capture.surface.native?.application ?? capture.surface.owner,
+            window: capture.mapping, nativeWindow: capture.surface.element)
     }
 
     func foregroundWindow(at point: CGPoint? = nil) -> Bool {
-        target.isForeground && BackgroundEvents.inputWindow(at: point ?? CGPoint(x: window.frame.midX, y: window.frame.midY)) == window.id
+        target.isForeground && inputWindowHit(at: point).windowID == window.id
     }
 
-    func ready(at point: CGPoint? = nil) -> Bool {
-        // An exact already-frontmost destination needs no background routing
-        // SPI or activation. This is also the result of authorized foreground
-        // preparation; readiness must describe the route delivery will use.
-        foregroundWindow(at: point) || (!BackgroundTarget.isExclusive
-            && BackgroundEvents.pointerPreparationIsCurrent(target, window: window))
+    func inputWindowHit(at point: CGPoint? = nil) -> NativeInputWindowHit {
+        BackgroundEvents.inputWindowHit(at: point ?? CGPoint(x: window.frame.midX, y: window.frame.midY),
+            retained: window, nativeWindow: nativeWindow)
     }
 
-    func prepare(foreground: Bool, atNative point: CGPoint, check: () throws -> Void, onPreparation: @escaping (String) -> Void) async throws {
+    private var windowKind: NativePointerReadiness.WindowKind {
+        // Standard documents need exact-window preparation before their first
+        // button. Initial AX absence retains the foreground visual route.
+        guard let nativeWindow else { return .visualOnly }
+        var pid: pid_t = 0
+        guard AXUIElementGetPid(nativeWindow, &pid) == .success else { return .visualOnly }
+        guard pid == window.pid else { return .identityConflict }
+        let role = AXAccess.read(nativeWindow, kAXRoleAttribute)
+        let subrole = AXAccess.read(nativeWindow, kAXSubroleAttribute)
+        return NativePointerReadiness.windowKind(role: role, subrole: subrole,
+            nativeWindowMatches: BackgroundEvents.nativeWindowID(nativeWindow).map { $0 == window.id },
+            observed: observedWindowAttributes)
+    }
+
+    func validateWindowIdentity() throws {
+        guard let nativeWindow else { return }
+        var pid: pid_t = 0
+        let owner = AXUIElementGetPid(nativeWindow, &pid)
+        if (owner == .success && pid != window.pid)
+            || BackgroundEvents.nativeWindowID(nativeWindow).map({ $0 != window.id }) == true {
+            throw DriverError("the retained accessibility window no longer matches the pointer destination", code: .staleTarget)
+        }
+    }
+
+    func foregroundPreparationPoint(at point: CGPoint) -> CGPoint? {
+        windowKind == .keyRequiring ? nil : point
+    }
+
+    private func windowFocus() -> NativePointerReadiness.WindowFocus {
+        // Timeout belongs only to this fresh root proxy, never the retained
+        // target or another equal AX object used by observation/input.
+        let root = AXUIElementCreateApplication(window.pid)
+        AXUIElementSetMessagingTimeout(root, 0.1)
+        switch AXAccess.read(root, kAXFocusedWindowAttribute) {
+        case .unsupported, .unavailable(.noValue): return .absent
+        case .value(let raw):
+            guard CFGetTypeID(raw) == AXUIElementGetTypeID() else { return .failed }
+            let focused = unsafeDowncast(raw, to: AXUIElement.self)
+            var pid: pid_t = 0
+            guard AXUIElementGetPid(focused, &pid) == .success, pid == window.pid else { return .unresolved }
+            let equal = nativeWindow.map { CFEqual(focused, $0) } ?? false
+            // Bound this new non-target proxy before even the optional native
+            // bridge. Never change the retained target's messaging policy.
+            if !equal { AXUIElementSetMessagingTimeout(focused, 0.05) }
+            var id = BackgroundEvents.nativeWindowID(focused)
+            if id == nil && !equal {
+                id = NativeInputWindowQuery.publicIdentity(of: focused, pid: window.pid).window?.id
+            }
+            return NativePointerReadiness.focusIdentity(nativeID: id, retainedEqual: equal, targetID: window.id)
+        default: return .failed
+        }
+    }
+
+    /// Process-addressed notifications and AXMain cannot establish a cold
+    /// content window's real key state. Already-foreground window selection
+    /// remains available; passive wheel input retains its background route.
+    func canPrepareWindowDirected(kind: NativePointerIntent.Kind = .click) -> Bool {
+        kind == .scroll || target.isForeground
+    }
+
+    func requireWindowDirectedPreparation(kind: NativePointerIntent.Kind = .click) throws {
+        try validateWindowIdentity()
+        guard canPrepareWindowDirected(kind: kind) else {
+            throw NativePreparationUnavailable(description:
+                "the first mouse-down may only activate this window; foreground preparation is required before sending pointer input")
+        }
+    }
+
+    /// The caller supplies an already-checked physical foreground/window hit.
+    /// Reuse this for offer sampling, preparation and final event validation.
+    private struct Readiness {
+        let ready: Bool
+        let foreground: Bool
+        let focus: NativePointerReadiness.WindowFocus
+        let windowKind: NativePointerReadiness.WindowKind
+    }
+
+    private func contentReadiness(foreground: Bool, kind: NativePointerIntent.Kind,
+                                  declaredWindow: NativePointerReadiness.WindowKind? = nil,
+                                  initialFocus: NativePointerReadiness.WindowFocus? = nil) -> Readiness {
+        // The declaration class is gesture-local. Rechecking labels for every
+        // down/up would add slow provider RPCs to the event cadence. The real
+        // object/process/window and physical hit remain checked for every event.
+        let declared = declaredWindow ?? (foreground && kind != .scroll ? windowKind : .visualOnly)
+        let focus = foreground && declared == .keyRequiring ? windowFocus() : .notRequired
+        let prepared = !foreground && kind == .scroll && !BackgroundTarget.isExclusive
+            && BackgroundEvents.pointerPreparationIsCurrent(target, window: window)
+        return Readiness(ready: NativePointerReadiness.ready(kind: kind, foreground: foreground, windowKind: declared,
+            focus: focus, initialFocus: initialFocus, backgroundPrepared: prepared, exclusive: BackgroundTarget.isExclusive),
+            foreground: foreground, focus: focus, windowKind: declared)
+    }
+
+    private func sampleReadiness(at point: CGPoint? = nil, kind: NativePointerIntent.Kind) -> Readiness {
+        let foreground = foregroundWindow(at: point)
+        return contentReadiness(foreground: foreground, kind: kind)
+    }
+
+    func ready(at point: CGPoint? = nil, kind: NativePointerIntent.Kind = .click) -> Bool {
+        sampleReadiness(at: point, kind: kind).ready
+    }
+
+    func prepare(foreground: Bool, atNative point: CGPoint, kind: NativePointerIntent.Kind = .click,
+                 check: @escaping @MainActor () throws -> Void, onPreparation: @escaping @MainActor (String) -> Void,
+                 onCleanupUnknown: @escaping @MainActor () -> Void = {}) async throws {
         try check(); try target.validate(input: true); try BackgroundTarget.validateReleasedInput()
-        if ready(at: point) { return }
+        try validateWindowIdentity()
+        let currentReady = ready(at: point, kind: kind)
+        try check()
+        if currentReady { return }
         if foreground {
             let assist = ForegroundAssist()
-            try await assist.prepare(target, window: window.id, pointerAt: point,
-                onAction: { onPreparation("foreground window activation") })
+            // The point alone cannot prepare a different standard document:
+            // the first mouse-down may only make it key. Keep hit-only
+            // preparation for non-key panels, menus and visual-only surfaces.
+            try await assist.prepare(target, window: window.id, pointerAt: kind != .scroll && windowKind == .keyRequiring ? nil : point,
+                onAction: { onPreparation("foreground window activation") }, onCleanupUnknown: onCleanupUnknown)
         } else {
+            try requireWindowDirectedPreparation(kind: kind)
             do {
-                try await BackgroundEvents.prepare(target, window: window, requireKeyboardFocus: false,
+                try await BackgroundEvents.prepare(target, window: window, requireKeyboardFocus: kind != .scroll,
                     onAction: { onPreparation("background pointer window preparation") }, beforeAction: check)
             } catch let error as DriverError where error.code == .inputUnavailable {
                 try check(); try target.validate(input: true); try BackgroundTarget.validateReleasedInput()
@@ -45,7 +234,7 @@ import ApplicationServices
             }
         }
         try check()
-        guard ready(at: point) else { throw NativePreparationUnavailable(description: "pointer route is not ready; no pointer event sent") }
+        guard ready(at: point, kind: kind) else { throw NativePreparationUnavailable(description: "pointer route is not ready; no pointer event sent") }
     }
 
     func point(_ pixel: CGPoint) throws -> CGPoint {
@@ -80,7 +269,9 @@ import ApplicationServices
                  check: @escaping @MainActor () throws -> Void, onDispatch: () throws -> Void,
                  onPosted: () -> Void, onCleanupUnknown: @escaping () -> Void) async throws {
         try check(); try target.validate(input: true); try BackgroundTarget.validateReleasedInput()
-        guard ready(at: start) else { throw DriverError("pointer route changed before dispatch", code: .inputUnavailable) }
+        try validateWindowIdentity()
+        let initial = sampleReadiness(at: start, kind: request.kind)
+        guard initial.ready else { throw DriverError("pointer route changed before dispatch", code: .inputUnavailable) }
         // Freeze one route for the entire gesture. A visible foreground target
         // receives ordinary HID input (including the global pointer position
         // some toolkits poll). Background windows remain process-addressed;
@@ -113,13 +304,18 @@ import ApplicationServices
         }
         func validate(_ point: CGPoint, held: Bool) throws {
             try check(); try target.validate(input: true)
+            try validateWindowIdentity()
             guard NativeProcessIdentity.read(window.pid) == process else { throw DriverError("pointer recipient changed", code: .staleTarget) }
             let button: CGMouseButton = request.button == "right" ? .right : request.button == "middle" ? .center : .left
             try BackgroundTarget.validateReleasedInput(allowing: global && held ? button : nil)
             if global {
-                guard target.isForeground, BackgroundEvents.inputWindow(at: point) == window.id else {
+                guard target.isForeground, inputWindowHit(at: point).windowID == window.id else {
                     throw DriverError("pointer location is covered by another window", code: .inputUnavailable,
                         next: "read the desktop and inspect the covering window")
+                }
+                if !held && !contentReadiness(foreground: true, kind: request.kind,
+                    declaredWindow: initial.windowKind, initialFocus: initial.focus).ready {
+                    throw DriverError("pointer content window changed before input", code: .inputUnavailable)
                 }
             } else if !BackgroundEvents.pointerPreparationIsCurrent(target, window: window) {
                 throw DriverError("background pointer route changed", code: .inputUnavailable)
