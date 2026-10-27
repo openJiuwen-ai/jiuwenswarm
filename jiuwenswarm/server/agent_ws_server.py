@@ -8523,14 +8523,14 @@ class AgentWebSocketServer:
         # Parent history cold-start: advertise on-disk subagent buckets so the
         # frontend can fetch per-subagent transcripts even when parent history
         # never persisted chat.subtask_update roster frames (GitCode #4887).
+        parent_session_id = session_id.strip() if isinstance(session_id, str) else ""
         if (
             is_initial_history_batch
             and not (response_subagent_id or subagent_id)
-            and isinstance(session_id, str)
-            and session_id.strip()
+            and parent_session_id
         ):
             try:
-                discovered_ids = list_session_subagent_ids(session_id.strip())
+                discovered_ids = list_session_subagent_ids(parent_session_id)
             except Exception:  # noqa: BLE001
                 logger.debug(
                     "[history.get] list_session_subagent_ids failed: session_id=%s",
