@@ -1221,6 +1221,7 @@
         "cancelDelete": "Cancel",
         "deleteRunning": "A diagnosis in progress cannot be deleted"
       },
+      "rewardResult": "Artifact evaluation",
       "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
       "rewardTotal": "Total {{score}}",
       "artifactFix": "Artifact fix",
@@ -1242,7 +1243,11 @@
         "user": "User note"
       },
       "signalSourceLabel": "Source: {{source}}",
-      "attributionLabel": "Attribution: {{kind}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}: {{dimension}}",
+      "findingDimension": "Dimension",
+      "findingProblem": "Problem",
+      "findingReason": "Cause",
       "attributionKind": {
         "artifact": "Artifact",
         "skill": "Skill",

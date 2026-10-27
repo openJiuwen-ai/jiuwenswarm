@@ -220,8 +220,8 @@ function RecordCards({
           onFocusFinding={onFocusFinding}
         />
         {trajectorySummary === '' ? null : (
-          <div className={css.taskBox} data-testid="trajectory-diagnosis-task">
-            <span className={css.lineLabel}>{t('trajectory.diagnosis.objectSummary')}</span>
+          <div className={`${css.block} ${css.summaryBlock}`} data-testid="trajectory-diagnosis-task">
+            <h4 className={css.blockTitle}>{t('trajectory.diagnosis.objectSummary')}</h4>
             <PlainFold text={trajectorySummary} />
           </div>
         )}
