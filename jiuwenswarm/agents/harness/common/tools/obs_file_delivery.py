@@ -9,10 +9,8 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
-from jiuwenswarm.agents.harness.common.tools.web_file_download import (
-    WebFileDownloadManager,
-)
 from jiuwenswarm.common.obs_files import (
     AttachmentStore,
     DOWNLOAD_TTL_SECONDS,
@@ -41,29 +39,20 @@ def build_object_file_download_info(
     key = download_object_key(tenant, asset_id, name)
     try:
         store = AttachmentStore.from_env()
-        uploaded = store.upload_file(file_path, key)
+        uploaded = store.upload_file(file_path, key, session_id=session_id)
+        url = store.presign_download(key)
     except Exception as exc:
         raise RuntimeError("enterprise object-store delivery failed") from exc
-    manager = WebFileDownloadManager.get_instance()
     expires_at = int(time.time()) + DOWNLOAD_TTL_SECONDS
-    token = manager.generate_object_asset_token(
-        asset_id=asset_id,
-        expires_at=expires_at,
-        size=uploaded["size"],
-        digest=uploaded["digest"],
-        file_name=name,
-        session_id=session_id,
-        tenant_key=tenant,
-        bucket=store.bucket,
-        object_key=key,
-        etag=uploaded["etag"],
-        routing_identity=identity,
-    )
     return {
         "name": name,
         "size": uploaded["size"],
         "mime_type": mimetypes.guess_type(name)[0] or "application/octet-stream",
-        "download_url": manager.generate_download_url(token, user_id),
-        "download_token": token,
+        "url": url,
+        "download_url": "/file-api/download?" + urlencode({
+            "url": url, "name": name, "session_id": session_id,
+            **{key: identity[key] for key in ("group_id", "bot_id", "user_id")},
+        }),
+        "download_token": url,
         "expires_at": expires_at,
     }

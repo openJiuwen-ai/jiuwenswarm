@@ -151,12 +151,16 @@ async def test_import_object_delivery_without_local_snapshot(manager, tmp_path, 
     package = _zip_skill(tmp_path, name="object-delivery", filename="object-delivery.skill")
     data = package.read_bytes()
     restored = []
-    def download(payload, destination):
-        restored.append(payload["kind"])
-        destination.write_bytes(data)
-    store = SimpleNamespace(bucket="bucket", upload_file=lambda *args: {
+    def download(url, tenant, session_id):
+        if session_id != "object-session":
+            raise ValueError("session mismatch")
+        restored.append(url)
+        return data
+    scoped_store = AttachmentStore(None, "bucket", "http://obs")
+    store = SimpleNamespace(bucket="bucket", upload_file=lambda *args, **kwargs: {
         "size":len(data), "digest":"sha256:"+hashlib.sha256(data).hexdigest(), "etag":"etag"
-    }, download_file=download)
+    }, read_download=download, download_key=scoped_store.download_key,
+        presign_download=lambda key: "http://obs/bucket/" + key)
     monkeypatch.setattr(AttachmentStore, "from_env", lambda: store)
     file = build_object_file_download_info(package, "object-session", "u", metadata={
         "user_id": "u", "routing": {"group_id": "g", "bot_id": "b"},
@@ -164,7 +168,9 @@ async def test_import_object_delivery_without_local_snapshot(manager, tmp_path, 
     package.unlink()
     result = await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "object-session"})
     assert result["success"] and result["skill"]["name"] == "object-delivery"
-    assert restored == ["obs_asset_v1"]
+    assert restored == [file["url"]]
+    with pytest.raises(SkillRpcError, match="无法读取"):
+        await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "another"})
     monkeypatch.setattr(TenantContext, "current_tenant_key", lambda: build_tenant_key("g", "b", "other"))
     with pytest.raises(SkillRpcError, match="租户不匹配"):
         await manager.handle_skills_import_local({"download_token": file["download_token"], "_session_id": "object-session"})

@@ -5064,33 +5064,34 @@ class SkillManager:
                 "缺少会话信息，无法校验 download_token",
             )
 
-        payload = validate_file_download_token(
-            download_token,
-            session_id=session_id,
-            check_expiry=True,
-        )
-        if not payload:
-            raise SkillRpcError(
-                ERROR_SKILL_DOWNLOAD_TOKEN_INVALID,
-                "download_token 无效、已过期或会话不匹配",
-            )
         from jiuwenswarm.edition import is_enterprise
         from jiuwenswarm.server.runtime.tenant_context import TenantContext
 
-        if is_enterprise() and (
-            not TenantContext.current_tenant_key()
-            or payload.get("tenant_key") != TenantContext.current_tenant_key()
-        ):
-            raise SkillRpcError(ERROR_SKILL_DOWNLOAD_TOKEN_INVALID, "download_token 租户不匹配")
+        enterprise = is_enterprise()
+        if enterprise:
+            from jiuwenswarm.common.obs_files import AttachmentStore
+
+            tenant = TenantContext.current_tenant_key()
+            if not tenant:
+                raise SkillRpcError(ERROR_SKILL_DOWNLOAD_TOKEN_INVALID, "download_token 租户不匹配")
+            try:
+                store = AttachmentStore.from_env()
+                key = store.download_key(download_token, tenant)
+            except (ValueError, RuntimeError) as exc:
+                raise SkillRpcError(ERROR_SKILL_DOWNLOAD_TOKEN_INVALID, "download_token 租户不匹配或对象存储不可用") from exc
+            payload = {"name": Path(key).name}
+        else:
+            payload = validate_file_download_token(download_token, session_id=session_id, check_expiry=True)
+            if not payload:
+                raise SkillRpcError(ERROR_SKILL_DOWNLOAD_TOKEN_INVALID, "download_token 无效、已过期或会话不匹配")
 
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_token_") as tmpdir:
             tmp_path = Path(tmpdir)
-            if payload.get("kind") == "obs_asset_v1":
-                from jiuwenswarm.common.obs_files import AttachmentStore
-
+            if enterprise:
                 src = tmp_path / payload["name"]
                 try:
-                    await asyncio.to_thread(AttachmentStore.from_env().download_file, payload, src)
+                    data = await asyncio.to_thread(store.read_download, download_token, tenant, session_id)
+                    src.write_bytes(data)
                 except Exception as exc:
                     raise SkillRpcError(
                         ERROR_SKILL_DOWNLOAD_TOKEN_INVALID, "无法读取交付对象或文件校验失败"

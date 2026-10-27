@@ -7,16 +7,15 @@ import asyncio
 import base64
 import json
 import mimetypes
-from urllib.parse import quote
+from urllib.parse import quote, unquote, urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from minio.error import S3Error
 
 from jiuwenswarm.common.obs_files import (
     AttachmentStore,
     MAX_FILE_BYTES,
-    OBJECT_ASSET_KIND,
+    _obs_http_client,
     object_prefix,
 )
 from jiuwenswarm.common.utils import build_tenant_key
@@ -24,132 +23,106 @@ from jiuwenswarm.common.request_identity import normalize_routing_identity
 from jiuwenswarm.server.runtime.attachments.upload_storage import safe_upload_filename
 
 
-def file_routing_identity(request: Request, token_payload: dict | None = None) -> dict:
-    # Native download links carry a signed tenant rather than custom headers.
-    # This fallback selects the route only: OBS/AgentServer still validates the
-    # token and its tenant binding before exposing any file bytes.
-    parts = str((token_payload or {}).get("tenant_key") or "").split("::")
-    token_route = dict(zip(("group_id", "bot_id", "user_id"), parts)) if len(parts) == 3 else {}
+def file_routing_identity(request: Request) -> dict:
     return normalize_routing_identity(
         {key: request.headers.get(f"x-{key.replace('_', '-')}")
          for key in ("group_id", "bot_id", "user_id")},
         request.query_params,
-        (token_payload or {}).get("identity"),
-        token_route,
     )
 
 
-async def serve_object_download(
-    request: Request, token: str, identity: dict
-) -> Response:
-    from jiuwenswarm.agents.harness.common.tools.web_file_download import (
-        WebFileDownloadManager,
-    )
-    from gateway.channel_manager.web.container_file_http import (
-        _parse_single_byte_range,
-    )
-
-    payload = WebFileDownloadManager.get_instance().validate_token(
-        token, session_id=request.query_params.get("session_id")
-    )
-    tenant = build_tenant_key(
-        identity["group_id"], identity["bot_id"], identity["user_id"]
-    )
-    if (
-        not payload
-        or payload.get("kind") != OBJECT_ASSET_KIND
-        or payload.get("tenant_key") not in {
-            tenant,
-            "::".join(identity[key] for key in ("group_id", "bot_id", "user_id")),
-        }
-    ):
-        return JSONResponse({"error": "invalid_download_token"}, status_code=403)
+async def serve_presigned_download(request: Request, url: str, identity: dict) -> Response:
+    """Proxy OBS's signed GET; no Gateway/AgentServer shared signing key."""
     try:
         store = AttachmentStore.from_env()
-        if payload["bucket"] != store.bucket:
-            return JSONResponse({"error": "invalid_download_bucket"}, status_code=403)
-        info = await asyncio.to_thread(
-            store.client.stat_object, store.bucket, payload["object_key"]
-        )
-        if (
-            info.size != payload["size"]
-            or info.etag != payload["etag"]
-            or info.metadata.get("x-amz-meta-sha256") != payload["digest"]
-        ):
-            return JSONResponse({"error": "download_object_changed"}, status_code=403)
-        size = payload["size"]
-        range_header = request.headers.get("range", "").strip()
-        byte_range = (
-            _parse_single_byte_range(range_header, size) if range_header else None
-        )
-        if range_header and byte_range is None:
-            return Response(
-                status_code=416,
-                headers={
-                    "Content-Range": f"bytes */{size}",
-                    "Content-Length": "0",
-                    "Accept-Ranges": "bytes",
-                    "Cache-Control": "no-store",
-                },
-            )
-        start, end = byte_range or (0, max(size - 1, 0))
-        length = end - start + 1 if size else 0
-        name = payload["name"]
-        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
-        inline = request.query_params.get("inline", "").lower() in {"true", "1"}
-        safe_inline = (
-            mime.startswith(("image/", "audio/", "video/")) and mime != "image/svg+xml"
-        )
-        disposition = "inline" if inline and safe_inline else "attachment"
-        headers = {
-            "Content-Length": str(length),
-            "Accept-Ranges": "bytes",
-            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(name, safe='')}",
-            "Cache-Control": "no-store",
-            "X-Content-Type-Options": "nosniff",
-            "Content-Security-Policy": "sandbox",
-        }
-        status = 206 if byte_range else 200
-        if byte_range:
-            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
-        if request.method == "HEAD" or not size:
-            return Response(status_code=status, headers=headers, media_type=mime)
-        upstream = await asyncio.to_thread(
-            store.client.get_object,
-            store.bucket,
-            payload["object_key"],
-            offset=start,
-            length=length,
-            request_headers={"If-Match": f'"{info.etag}"'},
-        )
-    except KeyError:
-        return JSONResponse({"error": "invalid_download_token"}, status_code=403)
-    except S3Error as exc:
-        status = 404 if exc.code in {"NoSuchKey", "NoSuchObject"} else 503
-        return JSONResponse(
-            {"error": "download_object_unavailable"}, status_code=status
-        )
-    except (OSError, ValueError, RuntimeError):
+        tenant = build_tenant_key(identity["group_id"], identity["bot_id"], identity["user_id"])
+        store.download_key(url, tenant)
+    except (ValueError, KeyError):
+        return JSONResponse({"error": "forbidden_download_url"}, status_code=403)
+    except RuntimeError:
         return JSONResponse({"error": "object_store_unavailable"}, status_code=503)
 
-    async def stream():
-        remaining = length
+    transport = _obs_http_client()
+    upstream = None
+    closed = False
+
+    def close():
+        nonlocal closed
+        if closed:
+            return
+        closed = True
         try:
-            while remaining:
-                chunk = await asyncio.to_thread(upstream.read, min(65536, remaining))
-                if not chunk:
-                    raise RuntimeError("download object truncated")
-                remaining -= len(chunk)
-                yield chunk
+            if upstream is not None:
+                try:
+                    upstream.close()
+                finally:
+                    upstream.release_conn()
         finally:
+            transport.clear()
+
+    try:
+        range_header = request.headers.get("range", "")
+        headers = {"Range": range_header} if range_header else {}
+        # OBS signs a GET, not a HEAD. Probe one byte without downloading the file.
+        if request.method == "HEAD" and not range_header:
+            headers["Range"] = "bytes=0-0"
+        upstream = await asyncio.to_thread(
+            transport.request, "GET", url, headers=headers,
+            redirect=False, preload_content=False,
+        )
+        if request.method == "HEAD" and not range_header and upstream.status == 416:
+            # Empty objects cannot satisfy bytes=0-0; their ordinary GET is valid.
             try:
                 upstream.close()
             finally:
                 upstream.release_conn()
+            upstream = await asyncio.to_thread(
+                transport.request, "GET", url, headers={},
+                redirect=False, preload_content=False,
+            )
+        if upstream.status not in {200, 206}:
+            status = upstream.status if upstream.status in {403, 404, 410, 416} else 502
+            close()
+            return JSONResponse({"error": "obs_download_failed"}, status_code=status)
+        session_id = request.query_params.get("session_id")
+        if session_id and upstream.headers.get("x-amz-meta-session-id") != session_id:
+            close()
+            return JSONResponse({"error": "download_context_mismatch"}, status_code=403)
+        name = safe_upload_filename(
+            request.query_params.get("name") or unquote(urlsplit(url).path.rsplit("/", 1)[-1]),
+            fallback="download",
+        )
+        mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        inline = request.query_params.get("inline", "").lower() in {"1", "true"}
+        safe_inline = mime.startswith(("image/", "audio/", "video/")) and mime != "image/svg+xml"
+        disposition = "inline" if inline and safe_inline else "attachment"
+        response_headers = {
+            "Content-Disposition": f"{disposition}; filename*=UTF-8''{quote(name, safe='')}",
+            "Accept-Ranges": "bytes", "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox",
+        }
+        for key in ("Content-Length", "Content-Range"):
+            if upstream.headers.get(key):
+                response_headers[key] = upstream.headers[key]
+        status = upstream.status
+        if request.method == "HEAD":
+            close()
+            return Response(status_code=status, headers=response_headers, media_type=mime)
+    except Exception:
+        close()
+        return JSONResponse({"error": "obs_download_failed"}, status_code=502)
 
-    return StreamingResponse(
-        stream(), status_code=status, headers=headers, media_type=mime
-    )
+    async def stream():
+        try:
+            while True:
+                data = await asyncio.to_thread(upstream.read, 65536)
+                if not data:
+                    break
+                yield data
+        finally:
+            close()
+
+    return StreamingResponse(stream(), status_code=status, headers=response_headers, media_type=mime)
 
 
 def register_enterprise_file_routes(app: FastAPI, channel) -> None:
@@ -269,21 +242,7 @@ def register_enterprise_file_routes(app: FastAPI, channel) -> None:
 
     @app.api_route("/file-api/download", methods=["GET", "HEAD"])
     async def download(request: Request) -> Response:
-        from gateway.channel_manager.web.container_file_http import (
-            _decode_download_token_payload,
-            serve_verified_download,
-        )
-
-        token = request.query_params.get("token", "")
-        payload = _decode_download_token_payload(token) if len(token) <= 16384 else None
-        identity = file_routing_identity(request, payload)
-        if not all(identity.get(key) for key in ("group_id", "bot_id", "user_id")):
-            return JSONResponse({"error": "invalid_download_token"}, status_code=403)
-        if payload and payload.get("kind") == OBJECT_ASSET_KIND:
-            return await serve_object_download(request, token, identity)
-        if not payload or payload.get("kind") != "verified_asset_v1":
-            return JSONResponse({"error": "invalid_download_token"}, status_code=403)
-        return await serve_verified_download(
-            request, channel, identity["user_id"], token, payload,
-            routing_identity=identity,
-        )
+        url = request.query_params.get("url", "")
+        if not url or len(url) > 16384:
+            return JSONResponse({"error": "invalid_download_url"}, status_code=400)
+        return await serve_presigned_download(request, url, file_routing_identity(request))

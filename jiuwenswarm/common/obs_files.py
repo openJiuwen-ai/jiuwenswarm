@@ -21,7 +21,6 @@ from urllib3 import PoolManager, Timeout
 
 MAX_FILE_BYTES = 50 * 1024 * 1024
 DOWNLOAD_TTL_SECONDS = 7 * 24 * 60 * 60
-OBJECT_ASSET_KIND = "obs_asset_v1"
 
 
 def download_object_key(tenant_key: str, asset_id: str, filename: str) -> str:
@@ -136,7 +135,7 @@ class AttachmentStore:
             "size": len(data),
         }
 
-    def upload_file(self, path: Path, key: str) -> dict:
+    def upload_file(self, path: Path, key: str, *, session_id: str = "") -> dict:
         """Upload the workspace file directly; no local delivery copy is created."""
         descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         with os.fdopen(descriptor, "rb") as source:
@@ -153,48 +152,37 @@ class AttachmentStore:
             source.seek(0)
             reader = _DigestReader(source)
             self._ensure_bucket()
+            metadata = {"sha256": digest}
+            if session_id:
+                metadata["session-id"] = session_id
             result = self.client.put_object(
-                self.bucket, key, reader, size, metadata={"sha256": digest}
+                self.bucket, key, reader, size, metadata=metadata
             )
             if f"sha256:{reader.digest.hexdigest()}" != digest:
                 self.client.remove_object(self.bucket, key)
                 raise ValueError("delivery source changed during upload")
             return {"size": size, "digest": digest, "etag": result.etag}
 
-    def download_file(self, payload: dict, destination: Path) -> None:
-        """Materialize a signed delivery for consumers such as Skill-package import."""
-        if payload["bucket"] != self.bucket:
-            raise ValueError("download bucket mismatch")
-        response = self.client.get_object(
-            self.bucket,
-            payload["object_key"],
-            request_headers={"If-Match": f'"{payload["etag"]}"'},
+    def presign_download(self, key: str) -> str:
+        return self.client.presigned_get_object(
+            self.bucket, key, expires=timedelta(seconds=DOWNLOAD_TTL_SECONDS)
         )
-        digest, total = hashlib.sha256(), 0
-        created = False
-        try:
-            with destination.open("xb") as output:
-                created = True
-                while chunk := response.read(65536):
-                    total += len(chunk)
-                    if total > payload["size"]:
-                        raise ValueError("download size mismatch")
-                    digest.update(chunk)
-                    output.write(chunk)
-            if (
-                total != payload["size"]
-                or f"sha256:{digest.hexdigest()}" != payload["digest"]
-            ):
-                raise ValueError("download digest mismatch")
-        except BaseException:
-            if created:
-                destination.unlink(missing_ok=True)
-            raise
-        finally:
-            try:
-                response.close()
-            finally:
-                response.release_conn()
+
+    def download_key(self, url: str, tenant_key: str) -> str:
+        """Restrict proxy URLs to this store and the selected tenant's deliveries."""
+        parsed = urlsplit(url)
+        prefix = f"/{self.bucket}/"
+        if (
+            f"{parsed.scheme}://{parsed.netloc}" != self.origin
+            or parsed.fragment or parsed.username is not None
+            or not parsed.path.startswith(prefix)
+        ):
+            raise ValueError("download must use the configured object store")
+        key = unquote(parsed.path[len(prefix):])
+        parts = key.split("/")
+        if len(parts) != 4 or key != download_object_key(tenant_key, parts[2], parts[3]):
+            raise ValueError("download does not belong to the current tenant")
+        return key
 
     def _upload_key(self, url: str, prefix: str) -> str:
         parsed = urlsplit(url)
@@ -222,6 +210,14 @@ class AttachmentStore:
 
     def read(self, url: str, prefix: str) -> bytes:
         self._upload_key(url, prefix)
+        return self._read_signed_url(url)
+
+    def read_download(self, url: str, tenant_key: str, session_id: str = "") -> bytes:
+        self.download_key(url, tenant_key)
+        return self._read_signed_url(url, session_id=session_id)
+
+    @staticmethod
+    def _read_signed_url(url: str, *, session_id: str = "") -> bytes:
         # Use the signed URL so its expiry/signature is enforced by OBS. Never
         # follow redirects or reinterpret the URL as an unrestricted SDK key.
         transport = _obs_http_client()
@@ -232,6 +228,8 @@ class AttachmentStore:
             try:
                 if response.status != 200:
                     raise ValueError("attachment URL rejected by OBS")
+                if session_id and response.headers.get("x-amz-meta-session-id") != session_id:
+                    raise ValueError("download session mismatch")
                 data = response.read(MAX_FILE_BYTES + 1)
                 if not data or len(data) > MAX_FILE_BYTES:
                     raise ValueError("file must contain 1..50 MiB")
