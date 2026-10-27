@@ -764,3 +764,39 @@ async def test_voice_is_told_to_click_approval_cards_and_cannot_approve_them(tmp
     assert "NOT approved" in result["message"] and "Do not claim" in result["message"]
     stored = service.store.read(task["id"])
     assert stored["status"] == "waiting_user" and stored["interaction"]["state"] == "pending"
+
+
+@pytest.mark.parametrize("version_kind", ["quoted", "invalid", "omitted"])
+async def test_voice_reorder_with_quoted_version_pushes_queue_and_changes_execution_order(queue, version_kind):
+    q = queue
+    await q.start("A")
+    await until(lambda: q.executed == ["A"])
+    desktop, weather = await q.start("B"), await q.start("C")
+    before = q.manager.snapshot("alice", "scope")
+    q.events.clear()
+    await q.manager.handle_qwen_tool(None, "voice-move", {
+        "name": "jiuwen_task_reorder", "call_id": "move-weather",
+        "search_session_id": "scope", "question": "把天气任务调到最前面",
+        "arguments": json.dumps({
+            "job_id": weather, "action": "next",
+            **({"queue_version": str(before["queue_version"])} if version_kind == "quoted" else
+               {"queue_version": "invalid"} if version_kind == "invalid" else {}),
+        }),
+    }, None)
+    assert q.responses[-1]["ok"]
+    receipt = q.responses[-1]["payload"]["tool_result"]
+    assert receipt["operation"]["state"] == "reordered"
+    assert receipt["queue_version"] > before["queue_version"]
+    await until(lambda: any(name == "video.search.queue" for name, _ in q.events))
+    pushed = next(payload for name, payload in q.events if name == "video.search.queue")
+    positions = {job["job_id"]: job["queue_position"] for job in pushed["jobs"]}
+    assert positions[weather] == 1 and positions[desktop] == 2
+    assert q.executed == ["A"], "Reordering must not interrupt current work"
+    q.gates["A"].set()
+    await until(lambda: len(q.executed) == 2)
+    assert q.executed == ["A", "C"]
+    q.gates["C"].set()
+    await until(lambda: len(q.executed) == 3)
+    assert q.executed == ["A", "C", "B"]
+    q.gates["B"].set()
+    await until(lambda: q.record(desktop)["status"] == "completed")

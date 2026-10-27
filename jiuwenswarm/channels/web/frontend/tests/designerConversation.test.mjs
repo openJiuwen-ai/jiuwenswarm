@@ -20,7 +20,7 @@ await build({
       else if (path.endsWith('designerChatStore')) contents = 'export const useDesignerChatStore = {getState: () => ({replaceMessages: (...args) => globalThis.designCreate.history.push(args)})};';
       else if (path.endsWith('designerGraphClient')) contents = 'export const designerWorkspaceClient = {createSession: params => globalThis.designCreate.create(params)};';
       else if (path.endsWith('ApplicationPluginOutlet')) contents = 'export const flushApplicationConversationHistory = async () => {};';
-      else contents = 'export const webClient = {request: () => {throw new Error("Must not send a fabricated prompt")}};';
+      else contents = 'export const webRequest = () => {throw new Error("Must not send a fabricated prompt")}; export const webClient = {request: webRequest};';
       return { contents, loader: 'js' };
     });
   } }],

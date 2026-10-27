@@ -9,8 +9,9 @@ from typing import Any
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
-from .tasks.errors import QueueVersionConflict, TaskRevisionConflict, TaskNotFound
+from .tasks.errors import CancellationSettlementTimeout, QueueVersionConflict, TaskRevisionConflict, TaskNotFound
 from .tasks.interactions import approval_cards
+from .tasks.diagnostics import receipt_state, task_state, trace_task
 from .tasks.prompts import (
     APPROVAL_REQUIRES_CLICK_INSTRUCTIONS,
     EMPTY_QUERY_INSTRUCTIONS,
@@ -20,24 +21,13 @@ from .tasks.prompts import (
     REVISION_CONFLICT_INSTRUCTIONS,
     task_query_instructions,
 )
-from .qwen_omni_tools import parse_qwen_omni_tool_call
+from .qwen_omni_tools import delegate_matches_input, parse_qwen_omni_tool_call
 from .core_receipts import receipt_payload
 
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
 STOP_SETTLEMENT_TIMEOUT = 90
-SCHEDULED_JOBS_LIMIT = 20
-# How long a voice answer to a typed chat card waits for Core to resume the turn.
-CHAT_ANSWER_CONFIRM_TIMEOUT = 10
-
-
-async def gateway_scheduled_jobs(owner):
-    """Read the Gateway cron store with the same owner scope as the sidebar's ``cron.job.list``."""
-    from agent_gateway.cron.controller import CronController
-
-    # Empty identity reads anonymous jobs only; None would expose every owner's jobs.
-    return await CronController.get_instance().list_jobs(user_id=owner)
 
 
 class AgentRequestTimeoutError(TimeoutError):
@@ -343,6 +333,22 @@ class AgentTaskExecutor:
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
+        if not probe:
+            # Revoke unclaimed admission in the same transaction as bind.
+            with self.store.transaction() as db:
+                current = self.store.get(db, task["id"])
+                if current["request_id"] != task["request_id"]:
+                    raise RuntimeError("Task execution changed before cancellation")
+                if current["execution_cancelled"] and current["execution_settled"]:
+                    return True
+                if current["status"] == "cancelling" and not current["execution_bound"]:
+                    current.update(checkpoint_open=False, execution_settled=True,
+                                   execution_cancelled=True, output_closed=True,
+                                   sequence=current["sequence"] + 1)
+                    self.store.put(db, current)
+                    trace_task("cancel_before_execution_bound", task=task_state(current))
+                    return True
+
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
@@ -360,31 +366,10 @@ class AgentTaskExecutor:
         )
         trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id, probe=probe)
         response = await asyncio.wait_for(client.send_request(request), 20)
-        trace_task("cancel_rpc_response", task=task_state(task),
-                   ok=response.ok, payload=receipt_state(response.payload))
-        return response
-
-    async def cancel(self, task, *, probe=False):
-        """Stop the exact request; with probe=True only ask whether Core still runs it."""
-        if not probe:
-            # Revoke unclaimed admission in the same transaction as bind.
-            with self.store.transaction() as db:
-                current = self.store.get(db, task["id"])
-                if current["request_id"] != task["request_id"]:
-                    raise RuntimeError("Task execution changed before cancellation")
-                if current["execution_cancelled"] and current["execution_settled"]:
-                    return True
-                if current["status"] == "cancelling" and not current["execution_bound"]:
-                    current.update(checkpoint_open=False, execution_settled=True,
-                                   execution_cancelled=True, output_closed=True,
-                                   sequence=current["sequence"] + 1)
-                    self.store.put(db, current)
-                    trace_task("cancel_before_execution_bound", task=task_state(current))
-                    return True
-
-        response = await self._send_cancel_request(task, probe=probe)
+        trace_task("cancel_rpc_response", task=task_state(task), ok=response.ok, payload=receipt_state(response.payload))
         if not response.ok or (response.payload or {}).get("success") is False:
-            raise RuntimeError("Agent has not confirmed the stop request")
+            detail = str((response.payload or {}).get("code") or (response.payload or {}).get("error") or "")[:500]
+            raise RuntimeError("Agent has not confirmed the stop request" + (": " + detail if detail else ""))
         if (response.payload or {}).get("managed_task_settled"):
             # Core holds no binding, reporter or CUA for this request (#5486):
             # the execution is gone, so no settle callback will ever arrive.
@@ -397,8 +382,16 @@ class AgentTaskExecutor:
             return True
         if probe:
             return False
-        while not self.store.read(task["id"])["execution_settled"]:
-            await asyncio.sleep(0.2)
+        try:
+            async with asyncio.timeout(STOP_SETTLEMENT_TIMEOUT):
+                while not self.store.read(task["id"])["execution_settled"]:
+                    await asyncio.sleep(0.2)
+        except TimeoutError as exc:
+            trace_task("cancel_settlement_timeout", task=task_state(self.store.read(task["id"])))
+            raise CancellationSettlementTimeout(
+                f"Stop accepted, but execution cleanup was not confirmed within {STOP_SETTLEMENT_TIMEOUT} seconds"
+            ) from exc
+        trace_task("cancel_settled", task=task_state(self.store.read(task["id"])))
         return False
 
 
@@ -891,7 +884,9 @@ class VideoSearchManager:
                     ws,
                     question=params.get("question") or call.task,
                     query=call.task,
-                    title=call.arguments.get("title", ""),
+                    title=(call.arguments.get("title", "")
+                           if delegate_matches_input(question or call.task, call.arguments.get("title", ""))
+                           else ""),
                     search_session_id=scope,
                     frame_data_url=frame,
                     tool_call_id=call.call_id,
@@ -905,9 +900,7 @@ class VideoSearchManager:
                 )
                 return {"search_job": task, "call_id": call.call_id}
             return {
-                "tool_result": await self.operate(
-                    owner, scope, call, ws=ws, user_instruction=params.get("question") or "",
-                ),
+                "tool_result": await self.operate(owner, scope, call, user_instruction=params.get("question") or ""),
                 "call_id": call.call_id,
             }
 
@@ -918,44 +911,27 @@ class VideoSearchManager:
             "question": str(params.get("question") or "")[:1000],
         })
 
-    async def manage_queue_call(self, owner, scope, call, instruction, *, allow_answers=True, reply_language="match"):
-        """Share deduplication and lifecycle for provider queue management calls."""
-        from .cron_control import CronControl
-        from .queue_manager import manage_queue
-
-        key = (owner, scope, call.call_id)
-        signature = (call.task, instruction, allow_answers, reply_language)
-        existing = self._queue_requests.get(key)
-        if existing is not None and existing[0] != signature:
-            raise ValueError("Queue command ID reused with different instructions")
-        if existing is None:
-            if len(self._queue_requests) >= 128:
-                expired = next((k for k, v in self._queue_requests.items() if v[1].done()), None)
-                if expired is None:
-                    raise ValueError("Too many queue management requests")
-                del self._queue_requests[expired]
-            task = asyncio.create_task(manage_queue(
-                self, owner, scope, call, instruction,
-                allow_answers=allow_answers, reply_language=reply_language,
-                cron=CronControl(owner),
-            ))
-            self._queue_requests[key] = (signature, task)
-        return await asyncio.shield(self._queue_requests[key][1])
-
-    async def operate(self, owner, scope, call, *, ws=None, approvals_only=False, user_instruction=""):
+    async def operate(self, owner, scope, call, *, user_instruction=""):
         args = call.arguments
         if args.get("job_id"):
             try:
                 self.service.get(owner, scope, args["job_id"])
             except TaskNotFound:
+                logger.info(
+                    "Voice task target not found: operation=%s job_id=%s scope=%s",
+                    call.name, args["job_id"], scope,
+                )
                 return {
                     "state": "rejected", "applied": False, "code": "TASK_NOT_FOUND",
                     "attempted_job_id": args["job_id"], "retryable": True,
                     "message": (
-                        "No operation was performed: this ID is not a Core invocation in the current conversation; "
-                        "IDs inside result text identify external resources and belong in the instruction to Core. "
-                        "Query jiuwen_task_query without job_id, copy the intended invocation's exact job_id and "
-                        "revision, and never repeat this rejected ID or recreate the resource."
+                        "No operation was performed. This ID does not identify a Core invocation in the current conversation. "
+                        "Do not infer that the resulting resource was deleted or that the user request is impossible. "
+                        "Query jiuwen_task_query without job_id, locate the intended invocation from its requirement "
+                        "and result, and copy its exact job_id and revision before trying a corrected operation. "
+                        "IDs inside result text identify external resources, not Core invocations; send such IDs "
+                        "to Core in the follow-up instruction, never as job_id. If the target remains ambiguous, ask the user. "
+                        "Never repeat this rejected ID, operate on another conversation, or recreate the resource."
                     ),
                 }
         if call.name == "jiuwen_task_query":

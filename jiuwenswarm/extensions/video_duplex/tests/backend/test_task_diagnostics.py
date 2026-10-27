@@ -55,16 +55,9 @@ async def test_task_rpc_trace_distinguishes_completion_and_rejection(monkeypatch
             raise ValueError("stale revision")
         return {"tool_result": {"state": "accepted", "job_id": "job-1", "result": "large output"}}
 
-    class DiagnosticManager(task_adapter.VideoSearchManager):
-        async def respond(self, ws, req_id, callback, trace):
-            await self._respond(ws, req_id, callback, trace=trace)
-
-    manager = DiagnosticManager(
-        SimpleNamespace(send_response=send_response), None,
-        log_event=lambda *args: None, qwen_active=lambda: True,
-    )
-    await manager.respond(
-        object(), "rpc-1", action,
+    manager = SimpleNamespace(channel=SimpleNamespace(send_response=send_response))
+    await task_adapter.VideoSearchManager._respond(
+        manager, object(), "rpc-1", action,
         trace={"call_id": "call-1", "source": "qwen"},
     )
     assert [record[0] for record in records] == [

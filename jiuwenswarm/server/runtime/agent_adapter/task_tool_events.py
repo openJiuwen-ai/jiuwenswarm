@@ -339,6 +339,14 @@ async def _invoke_with_event_forwarding(
         if normalized_type == "cua_agent"
         else None
     )
+    if cua_execution is not None:
+        _logger.info(
+            "[task-tool-events] registered managed CUA execution request=%s "
+            "parent_session=%s sub_session=%s",
+            cua_execution.request_id,
+            parent_session_id,
+            sub_session_id,
+        )
     try:
         result = await original_invoke(
             task_tool,

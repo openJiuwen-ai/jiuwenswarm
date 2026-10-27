@@ -16,7 +16,6 @@ from .diagnostics import trace_task, task_state
 
 TERMINAL = {"completed", "failed", "cancelled"}
 CANCEL_SETTLEMENT_TIMEOUT = 90
-RECONCILE_INTERVAL = 5
 logger = logging.getLogger(__name__)
 
 
@@ -172,10 +171,9 @@ class TaskService:
                 lambda done, key=task["id"]: self._worker_done(key, done)
             )
 
-    @staticmethod
-    def _holds_capacity(t):
-        # A settled waiting_user task holds no execution; unknown ones are not ours.
-        return t["status"] != "unknown" and not (
+    def _holds_capacity(self, t):
+        # An uncertain execution still owned by our worker keeps its capacity.
+        return (t["status"] != "unknown" or t["id"] in self.workers) and not (
             t["status"] == "waiting_user" and t.get("execution_settled")
         )
 
@@ -447,31 +445,49 @@ class TaskService:
             )
             if replay:
                 return replay
-            # A repeated stop asks Core again so a lost settle ack cannot hold the task (#5545).
             recheck = task["status"] == "cancelling"
-            if task["status"] == "queued" and not task.get("resume_answer"):
-                task["status"] = "cancelled"
-            elif task["status"] not in TERMINAL:
-                task["status"] = "cancelling"
-            task["revision"] += 1
-            task["sequence"] += 1
-            for change in task["changes"]:
-                if change["state"] == "pending":
-                    change["state"] = "rejected"
-            if task.get("interaction"):
-                task["interaction"]["state"] = "expired"
-            self.store.put(db, task)
-            receipt = dict(
-                task_id=task_id,
-                operation_id=command_id,
-                state="accepted" if task["status"] == "cancelling" else task["status"],
-                task_status=task["status"],
-                stopped=task["status"] == "cancelled",
-                message=("取消已受理，正在等待执行停止；尚未确认停止。"
-                         if task["status"] == "cancelling" else
-                         "任务已取消。" if task["status"] == "cancelled" else
-                         "本次 Core 执行已经结束，未执行新的取消操作；其结果仍可另行委托 Core 修改或继续处理。"),
-            )
+            if task["status"] == "completed" and user_instruction:
+                if task["successor_id"]:
+                    raise TaskRevisionConflict("Task already has a follow-up; query the current task")
+                # Reuse completed-task modification without guessing how to undo effects.
+                child = self._successor(db, task, user_instruction, title="处理取消请求")
+                task["changes"].append(dict(
+                    id=command_id, instruction=user_instruction,
+                    state="followup", successor_id=child["id"],
+                ))
+                task["revision"] += 1
+                task["sequence"] += 1
+                self.store.put(db, task)
+                receipt = dict(
+                    task_id=task_id, operation_id=command_id, state="followup",
+                    task_status="completed", stopped=False, revision=task["revision"],
+                    successor_id=child["id"], converted_to="modify",
+                    message="原执行已完成，已将用户的完整取消要求交给 Core 后续处理；尚未确认处理结果。",
+                )
+            else:
+                if task["status"] == "queued" and not task.get("resume_answer"):
+                    task["status"] = "cancelled"
+                elif task["status"] not in TERMINAL:
+                    task["status"] = "cancelling"
+                task["revision"] += 1
+                task["sequence"] += 1
+                for change in task["changes"]:
+                    if change["state"] == "pending":
+                        change["state"] = "rejected"
+                if task.get("interaction"):
+                    task["interaction"]["state"] = "expired"
+                self.store.put(db, task)
+                receipt = dict(
+                    task_id=task_id,
+                    operation_id=command_id,
+                    state="accepted" if task["status"] == "cancelling" else task["status"],
+                    task_status=task["status"],
+                    stopped=task["status"] == "cancelled",
+                    message=("取消已受理，正在等待执行停止；尚未确认停止。"
+                             if task["status"] == "cancelling" else
+                             "任务已取消。" if task["status"] == "cancelled" else
+                             "本次 Core 执行已经结束，未执行新的取消操作；其结果仍可另行委托 Core 修改或继续处理。"),
+                )
             self.store.command(db, task, command_id, fingerprint, receipt)
         if task["status"] == "cancelling" and task_id not in self.cancellations:
             work = asyncio.create_task(self._cancel(task), name="managed-task-cancel")
@@ -487,6 +503,14 @@ class TaskService:
         trace_task("task_cancel_worker_started", task=task_state(task))
         try:
             await self.executor.cancel(task)
+        except CancellationSettlementTimeout as exc:
+            task = self.store.update(task["id"], lambda t: (
+                t.update(status="unknown", error=str(exc)) if t["status"] == "cancelling" else None
+            ))
+            trace_task("task_cancel_worker_failed", task=task_state(task), error=str(exc))
+            await self._notify(task)
+            self.kick()
+            return
         except Exception as exc:
             # A failed stop request does not end the execution; its settle ack still decides.
             message = str(exc) or type(exc).__name__
@@ -502,12 +526,23 @@ class TaskService:
             if observer and not observer.done():
                 observer.cancel()
                 await asyncio.gather(observer, return_exceptions=True)
-        # Without a worker (e.g. after restart) nothing else closes the output.
-        while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
-            await asyncio.sleep(0.05)
-        # Wait for the execution's settle ack, which arrives even after a rejected stop.
-        while not self.store.read(task["id"])["execution_settled"]:
-            await asyncio.sleep(0.05)
+        try:
+            async with asyncio.timeout(CANCEL_SETTLEMENT_TIMEOUT):
+                # Without a worker (e.g. after restart) nothing else closes the output.
+                while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
+                    await asyncio.sleep(0.05)
+                # Wait for the execution's settle ack, which arrives even after a rejected stop.
+                while not self.store.read(task["id"])["execution_settled"]:
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            task = self.store.update(task["id"], lambda t: (
+                t.update(status="unknown", error="Stop accepted, but execution cleanup was not confirmed")
+                if t["status"] == "cancelling" else None
+            ))
+            trace_task("task_cancel_settlement_timeout", task=task_state(task))
+            await self._notify(task)
+            self.kick()
+            return
         task = self.store.update(
             task["id"],
             lambda t: (

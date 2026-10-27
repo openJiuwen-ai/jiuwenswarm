@@ -883,13 +883,20 @@ export class RealtimeDuplexSession {
     const response = event.response as Record<string, unknown> | undefined;
     const eventResponseId = String(event.response_id || response?.id || '') || null;
     const outputResponseId = eventResponseId || this.responseId || '';
-    // Allow message-item text and audio to stream before response.done.
-    // A later tool item cannot retract output already delivered to the user.
+    if (type === 'conversation.item.created') {
+      const item = event.item as Record<string, unknown> | undefined;
+      if (item?.type === 'function_call_output') this.emitDiagnostic('qwen_tool_output_acknowledged', {
+        call_id: String(item.call_id || ''), item_id: String(item.id || ''),
+      });
+    }
+    // A message item may precede a function call in the same response.
+    // Keep message text and audio together even when the response also calls a tool.
     if (type === 'response.output_item.added') {
       const item = event.item as Record<string, unknown> | undefined;
-      if (item?.type === 'function_call') this.silenceToolResponse(outputResponseId);
-      else if (item?.type === 'message' && !this.silentToolResponses.has(outputResponseId) &&
+      if (item?.type === 'function_call') this.suppressUnclassifiedToolOutput(outputResponseId);
+      else if (item?.type === 'message' &&
         !this.finishedOutputResponses.has(outputResponseId) && !this.interruptedResponseIds.has(outputResponseId)) {
+        this.silentToolResponses.delete(outputResponseId);
         const items = this.messageOutputItems.get(outputResponseId) || new Set<string>();
         items.add(String(item.id || ''));
         this.messageOutputItems.set(outputResponseId, items);
@@ -906,13 +913,13 @@ export class RealtimeDuplexSession {
       }
     }
     if (type === 'response.function_call_arguments.done') {
-      this.silenceToolResponse(outputResponseId);
+      this.suppressUnclassifiedToolOutput(outputResponseId);
     }
     if (this.holdResponseOutput(type, event, outputResponseId)) return;
     if (type === 'response.done') {
       const output = response?.output;
       if (Array.isArray(output) && output.some(item => item?.type === 'function_call')) {
-        this.silenceToolResponse(outputResponseId);
+        this.suppressUnclassifiedToolOutput(outputResponseId);
       }
       this.releaseResponseOutput(outputResponseId, String(response?.status || 'completed'));
     }
@@ -975,6 +982,14 @@ export class RealtimeDuplexSession {
         }
       }
       this.responseActive = true;
+      if (this.pendingResponseInterrupt) {
+        this.pendingResponseInterrupt = false;
+        this.speechReplyPendingAt = null;
+        this.speechReplyId = null;
+        this.interruptedResponseIds.add(this.responseId);
+        this.send(createQwenOmniCancelResponseEvent());
+        return;
+      }
       this.speechReplyId = this.speechReplyPendingAt !== null ? this.responseId : null;
       this.speechReplyPendingAt = null;
       if (this.cardTurn && !this.cardTurn.cancelling) {
@@ -1043,7 +1058,10 @@ export class RealtimeDuplexSession {
       // With a card open the provider left this speech unanswered; reply with its words in the card notice.
       this.replyForCardTurn(transcript.trim());
     } else if (type === 'error') {
-      if (!readableError(event.error || event).includes('Conversation already has an active response')) {
+      const message = readableError(event.error || event);
+      const imageAppendError = /^Error append image before append audio\.?$/i.test(message);
+      const supersededResponse = message === 'Response request cancelled by new input';
+      if (!imageAppendError && !supersededResponse && !message.includes('Conversation already has an active response')) {
         this.releaseResponseOutput(outputResponseId, 'failed');
       }
       const media = this.qwenMedia.snapshot();
@@ -1074,7 +1092,19 @@ export class RealtimeDuplexSession {
         this.callbacks.onIdleTimeout();
         return;
       }
-      this.callbacks.onError(readableError(error || event));
+      if (imageAppendError) {
+        // The rejected frame does not end audio or an already completed response.
+        // Wait for the next provider speech turn before sending another image.
+        this.qwenMedia.pauseVideo();
+        return;
+      }
+      if (supersededResponse) {
+        // Qwen discarded the pending response when the next spoken input arrived.
+        this.pendingResponseInterrupt = false;
+        if (!this.responseId) this.responseActive = false;
+        return;
+      }
+      this.callbacks.onError(message);
     }
   }
 
@@ -1089,7 +1119,8 @@ export class RealtimeDuplexSession {
         this.interruptedResponseIds.delete(this.interruptedResponseIds.values().next().value!);
       }
     }
-    const cancelEventSent = this.responseActive;
+    const cancelEventSent = this.responseActive && Boolean(interruptedResponseId);
+    if (this.responseActive && !interruptedResponseId) this.pendingResponseInterrupt = true;
     this.closeStreamedText(interruptedResponseId || '');
     this.heldOutput.delete(interruptedResponseId || '');
     this.messageOutputItems.delete(interruptedResponseId || '');
@@ -1185,19 +1216,17 @@ export class RealtimeDuplexSession {
     return itemId ? items.has(itemId) || items.has('') : items.size > 0;
   }
 
-  private silenceToolResponse(responseId: string): void {
-    this.closeStreamedText(responseId);
-    this.messageOutputItems.delete(responseId);
-    this.silentToolResponses.add(responseId);
-    this.heldOutput.delete(responseId);
-    // Some providers open a second response for the call while the first
-    // acknowledgement is still unfinished. Both belong to the same input.
+  private suppressUnclassifiedToolOutput(responseId: string): void {
+    if (!this.messageOutputItems.has(responseId)) {
+      this.silentToolResponses.add(responseId);
+      this.heldOutput.delete(responseId);
+    }
+    // A separate tool response must also preserve an earlier message's audio.
     const inputId = this.responseInputs.get(responseId);
     if (!inputId) return;
     for (const heldId of this.heldOutput.keys()) {
       if (this.responseInputs.get(heldId) !== inputId) continue;
-      this.closeStreamedText(heldId);
-      this.messageOutputItems.delete(heldId);
+      if (this.messageOutputItems.has(heldId)) continue;
       this.silentToolResponses.add(heldId);
       this.heldOutput.delete(heldId);
     }

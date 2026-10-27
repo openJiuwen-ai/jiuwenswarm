@@ -33,32 +33,27 @@ def trace_task(event, **fields):
 
 def task_state(task):
     """Select the authoritative lifecycle fields needed to compare queue updates."""
-    keys = (
+    return {key: task.get(key) for key in (
         "id", "session", "core_session_id", "request_id", "status", "revision",
         "sequence", "position", "execution_bound", "checkpoint_open",
         "execution_settled", "execution_cancelled", "output_closed",
-    )
-    return {key: task.get(key) for key in keys}
+    )}
 
 
 def receipt_state(payload):
     """Retain operation outcomes and queue identities without full task content."""
     if not isinstance(payload, dict):
         return {"payload_type": type(payload).__name__}
-    keys = (
+    result = {key: payload[key] for key in (
         "state", "applied", "code", "error", "queue_version", "call_id",
         "job_id", "task_id", "status", "success", "search_session_id", "revision",
-    )
-    result = {key: payload[key] for key in keys if key in payload}
+    ) if key in payload}
     for key in ("operation", "tool_result", "search_job", "target"):
         if isinstance(payload.get(key), dict):
             result[key] = receipt_state(payload[key])
     if isinstance(payload.get("jobs"), list):
-        job_keys = (
+        result["jobs"] = [{key: job.get(key) for key in (
             "id", "job_id", "status", "revision", "sequence", "queue_position",
             "queue_version", "request_id",
-        )
-        result["jobs"] = []
-        for job in payload["jobs"]:
-            result["jobs"].append({key: job.get(key) for key in job_keys})
+        )} for job in payload["jobs"]]
     return result

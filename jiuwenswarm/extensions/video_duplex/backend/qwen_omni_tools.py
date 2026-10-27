@@ -160,24 +160,17 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("arguments must be a JSON object")
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
-    if name == "jiuwen_queue_manage":
-        instruction = arguments.get("instruction")
-        if set(arguments) != {"instruction"} or not isinstance(instruction, str):
-            raise ValueError("Queue management requires a nonempty instruction")
-        if not 1 <= len(instruction.strip()) <= 16000:
-            raise ValueError("Queue management requires a nonempty instruction")
-        return QwenOmniToolCall(name, call_id, {"instruction": instruction.strip()}, instruction.strip())
     if "title" in arguments:
         title = arguments["title"]
-        if not isinstance(title, str) or not title.strip() or len(title) > 80:
-            raise ValueError("Invalid title")
-        if "\n" in title or "\r" in title:
+        if not isinstance(title, str) or not title.strip() or len(title) > 80 or "\n" in title or "\r" in title:
             raise ValueError("Invalid title")
         arguments["title"] = title.strip()
     if name in _TASK_TOOLS:
         if name == "jiuwen_task_reorder" and "queue_version" in arguments:
             version = arguments["queue_version"]
-            if _canonical_queue_version(version):
+            if isinstance(version, str) and (
+                version == "0" or (version.isascii() and version.isdecimal() and not version.startswith("0"))
+            ) and len(version) <= 16:
                 version = int(version)
             if type(version) is not int or not 0 <= version <= 2**53 - 1:
                 # The model may miscopy this large internal token. Let the
@@ -200,15 +193,15 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
                 # Some providers quote JSON integers despite the integer schema.
                 # Normalize only canonical decimal queue tokens; never coerce
                 # booleans, fractions, signs, exponents or arbitrary text.
-                if key == "queue_version" and _canonical_queue_version(item):
+                if key == "queue_version" and isinstance(item, str) and (
+                    item == "0" or (item.isascii() and item.isdecimal() and not item.startswith("0"))
+                ) and len(item) <= 16:
                     item = int(item)
                     arguments[key] = item
                 if type(item) is not int or item < (1 if key == "revision" else 0):
                     raise ValueError(f"Invalid {key}")
                 if key == "queue_version" and item > 2**53 - 1:
                     raise ValueError("Invalid queue_version: exceeds JavaScript safe integer range")
-            elif name == "jiuwen_task_answer" and key == "job_id" and item == "":
-                continue  # A typed-chat approval card has no job; it is answered with job_id "".
             elif (
                 not isinstance(item, str)
                 or not item.strip()
@@ -299,10 +292,7 @@ def task_management_tools():
             {
                 "job_id": {"type": "string"},
                 "queue_version": {"type": "integer", "minimum": 0,
-                                  "description": (
-                                      "Optional legacy concurrency token. "
-                                      "Omit it; the server reads the current queue version."
-                                  )},
+                                  "description": "Optional legacy concurrency token. Omit it; the server reads the current queue version."},
                 "action": {"type": "string", "enum": ["next", "before"]},
                 "before_job_id": {"type": "string"},
             },

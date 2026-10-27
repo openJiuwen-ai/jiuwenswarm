@@ -118,7 +118,7 @@ export function clearTaskFullDuplexError(): void {
   publish({ error: "" });
 }
 
-export async function startTaskFullDuplex(sessionId?: string, visualSource?: 'screen' | 'camera'): Promise<void> {
+export async function startTaskFullDuplex(sessionId?: string): Promise<void> {
   if (!controller) {
     publish({ state: "idle", error: "全双工运行时尚未就绪，请稍后重试。" });
     return;

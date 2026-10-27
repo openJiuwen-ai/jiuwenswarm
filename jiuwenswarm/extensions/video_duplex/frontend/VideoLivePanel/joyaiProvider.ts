@@ -364,6 +364,10 @@ export class JoyAIProvider {
       if (this.queuedRequestCount > 0) return;
       const frameDataUrl = this.callbacks.getLatestFrameDataUrl();
       if (!frameDataUrl && !this.promptLifecycle.hasPending) return;
+      if (
+        frameDataUrl && this.lastFrameRequestAt !== null
+        && now - this.lastFrameRequestAt < this.frameRequestIntervalMs
+      ) return;
       const pendingPrompt = this.promptLifecycle.claim();
       const request = this.requestFrame(pendingPrompt?.instruction || '', pendingPrompt?.question || '', frameDataUrl);
       void request
@@ -435,6 +439,7 @@ export class JoyAIProvider {
           },
           { timeoutMs: requestKind === 'user' ? 90_000 : 60_000 },
         );
+        if (frameDataUrl) this.lastFrameRequestAt = Date.now();
         try {
           result = await send();
         } catch (error) {
@@ -478,7 +483,7 @@ export class JoyAIProvider {
             reply_language: this.replyLanguage,
           });
           this.callbacks.setStatus(
-            `JoyAI 服务商限流（429，每分钟 token 额度已用完），${Math.ceil(cooldownMs / 1_000)} 秒后重试，画面发送间隔已调整为 ${this.frameRequestIntervalMs / 1_000} 秒`,
+            `JoyAI 限流，${Math.ceil(cooldownMs / 1_000)} 秒后重试，画面发送间隔已调整为 ${this.frameRequestIntervalMs / 1_000} 秒`,
           );
         }
         throw error;

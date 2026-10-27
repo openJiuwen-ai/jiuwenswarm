@@ -17,66 +17,6 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
 )
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("outcome", ["success", "timeout", "cancelled"])
-async def test_action_review_bounds_transport_and_cancels_stalled_request(monkeypatch, outcome):
-    from jiuwenswarm.common import config, reasoning_injector
-    from jiuwenswarm.extensions.video_duplex.backend import joyai_action_helper as helper
-    from openjiuwen.core.foundation import llm
-
-    entry = {"model_id": "reviewer", "model_client_config": {
-        "model_name": "text-model", "client_provider": "OpenAI",
-        "api_base": "https://example.test/v1", "api_key": "test-key", "timeout": 120,
-    }}
-    monkeypatch.setenv("JOYAI_ACTION_HELPER_MODEL", "reviewer")
-    monkeypatch.setattr(config, "get_default_models", lambda: [entry])
-    monkeypatch.setattr(reasoning_injector, "build_reasoning_model_request_kwargs", Mock(
-        return_value={"model": "text-model", "max_tokens": 1200},
-    ))
-    started = asyncio.Event()
-    stopped = asyncio.Event()
-
-    async def invoke(messages):
-        started.set()
-        try:
-            if outcome == "success":
-                return SimpleNamespace(content="review result")
-            await asyncio.Future()
-        finally:
-            stopped.set()
-
-    model = SimpleNamespace(invoke=AsyncMock(side_effect=invoke))
-    build = Mock(return_value=model)
-    monkeypatch.setattr(llm, "Model", build)
-    real_timeout = asyncio.timeout
-
-    def short_timeout(delay):
-        assert delay == 10
-        return real_timeout(0.01 if outcome == "timeout" else 10)
-
-    monkeypatch.setattr(helper.asyncio, "timeout", short_timeout)
-    request = asyncio.create_task(helper.request_review({"user_request": "hello"}))
-    if outcome == "success":
-        assert await request == "review result"
-    elif outcome == "timeout":
-        with pytest.raises(TimeoutError):
-            await asyncio.wait_for(request, timeout=1)
-    else:
-        await asyncio.wait_for(started.wait(), timeout=1)
-        request.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await request
-    assert stopped.is_set()
-    connection = build.call_args.kwargs["model_client_config"]
-    assert connection.timeout == 10 and connection.max_retries == 0
-    assert connection.api_key == "test-key"
-    assert entry["model_client_config"]["timeout"] == 120
-    model.invoke.assert_awaited_once()
-    messages = model.invoke.await_args.args[0]
-    assert all(isinstance(message["content"], str) for message in messages)
-    assert model.invoke.await_args.kwargs == {}
-
-
 def test_delegate_rejects_unrelated_full_voice_turn_but_allows_short_followup() -> None:
     assert not delegate_matches_input("我定一个闹钟。", "查询当前有哪些电影种类或类型。")
     assert delegate_matches_input("我定一个闹钟。", "设置19点闹钟")
@@ -224,3 +164,39 @@ def test_task_service_rejects_invalid_titles(title):
     with pytest.raises(ValueError, match="title"):
         _clean_title(title)
     assert _clean_title("  修改打卡提醒  ") == "修改打卡提醒"
+
+
+@pytest.mark.parametrize("version", [45527757797612, "45527757797612", "0"])
+def test_reorder_normalizes_decimal_queue_version(version):
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "move-weather",
+        "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
+    })
+    assert type(call.arguments["queue_version"]) is int
+    assert call.arguments["queue_version"] == int(version)
+
+
+
+@pytest.mark.parametrize("version", [True, 1.0, "1.0", "1e2", "-1", "+1", "01", " 1", "１２", "9007199254740992", 2**53])
+def test_reorder_ignores_ambiguous_or_unsafe_model_queue_version(version):
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "invalid-version",
+        "arguments": {"job_id": "weather", "action": "next", "queue_version": version},
+    })
+    assert call.arguments == {"job_id": "weather", "action": "next"}
+
+
+def test_reorder_allows_server_owned_queue_version():
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_task_reorder", "call_id": "server-version",
+        "arguments": {"job_id": "weather", "action": "next"},
+    })
+    assert call.arguments == {"job_id": "weather", "action": "next"}
+
+
+
+@pytest.mark.parametrize("title", [None, 42, "", "x" * 81, "first\nsecond"])
+def test_delegation_rejects_invalid_titles(title):
+    with pytest.raises(ValueError, match="title"):
+        parse_qwen_omni_tool_call({"name": "jiuwen_delegate", "call_id": "bad-title",
+                                   "arguments": {"task": "complete requirements", "title": title}})

@@ -113,8 +113,11 @@
 }
 
 .task-full-duplex-orb:hover .task-full-duplex-orb__controls,
+.task-full-duplex-orb:hover .task-full-duplex-sharing,
 .task-full-duplex-orb.is-dragging .task-full-duplex-orb__controls,
-.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls {
+.task-full-duplex-orb.is-dragging .task-full-duplex-sharing,
+.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls,
+.task-full-duplex-orb:focus-within .task-full-duplex-sharing {
   opacity: 1;
   pointer-events: auto;
 }
@@ -213,23 +216,6 @@
   color: inherit;
   background: var(--color-surface-card);
   cursor: pointer;
-}
-
-.task-full-duplex-sharing > span:not(.task-full-duplex-sharing__dot) {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-
-.task-full-duplex-orb__handle {
-  width: 80px;
-  height: 80px;
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
-}
-
-.task-full-duplex-orb.is-dragging .task-full-duplex-orb__handle {
-  cursor: grabbing;
 }
 
 .task-full-duplex-sharing > span:not(.task-full-duplex-sharing__dot) {

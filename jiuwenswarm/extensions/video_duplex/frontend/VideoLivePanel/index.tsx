@@ -35,6 +35,7 @@ import { JoyAIProvider } from './joyaiProvider';
 import { captureVideoFrame, FrameEncoder } from './frameEncoding';
 import { setDuplexVoicePhase } from '../duplexAudioMeter';
 import { describeDuplexError } from '../duplexErrorMessage';
+import { reportedRuntimeState } from './runtimeState';
 import {
   mergeSearchProgressJob,
   searchAwareToolStatus,
@@ -1196,7 +1197,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
         await startRealtime();
         return Boolean(duplexRef.current || joyaiProviderRef.current?.active);
       }
-      const result = visualSource === 'camera' ? await startCamera() : await startScreen(true);
+      const result = await startScreen(true);
       if (result === 'unsupported') {
         // Fallback, not a root-cause fix: keep voice duplex usable when the
         // runtime cannot share the screen (#5283).

@@ -406,6 +406,62 @@ test('speech before and after delegation is discarded; acceptance is spoken exac
   assert.equal(posted.filter(item => item.type === 'audio').length, 1);
 });
 
+test('a spoken action promise and its later tool receipt both retain audio', async () => {
+  const { session, assistantTexts, posted, sent, functionCalls } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'wechat-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'wechat-input', transcript: '你打开微信。' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'wechat-input' });
+  session.handleEvent({ type: 'response.created', response: { id: 'wechat-response' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'wechat-response',
+    item: { id: 'promise', type: 'message' } });
+  session.handleEvent({ type: 'response.text.done', response_id: 'wechat-response',
+    item_id: 'promise', text: '这就帮你把微信打开。' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'wechat-response',
+    item_id: 'promise', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.equal(assistantTexts.at(-1).text, '这就帮你把微信打开。');
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+
+  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'wechat-response',
+    name: 'jiuwen_delegate', call_id: 'wechat-call', arguments: '{"task":"打开微信"}' });
+  session.handleEvent({ type: 'response.done', response: { id: 'wechat-response', status: 'completed' } });
+  assert.equal(functionCalls.length, 1);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你把微信打开。']);
+  session.enqueueOperationResult('wechat-call', { state: 'accepted', job_id: 'wechat-job' });
+  assert.equal(sent.filter(event => event.type === 'response.create').length, 1);
+  session.handleEvent({ type: 'response.created', response: { id: 'wechat-receipt' } });
+  session.handleEvent({ type: 'response.text.done', response_id: 'wechat-receipt', text: '微信任务已排队。' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'wechat-receipt', delta: btoa('bb') });
+  session.handleEvent({ type: 'response.done', response: { id: 'wechat-receipt', status: 'completed' } });
+  await session.playbackOperation;
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你把微信打开。', '微信任务已排队。']);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
+});
+
+test('an action turn without a tool streams its message text and audio', async () => {
+  const { session, assistantTexts, posted } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'action-input' });
+  session.handleEvent({ type: 'conversation.item.input_audio_transcription.completed',
+    item_id: 'action-input', transcript: '帮我查询任务状态' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'action-input' });
+  session.handleEvent({ type: 'response.created', response: { id: 'no-tool' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'no-tool',
+    item: { id: 'answer', type: 'message' } });
+  session.handleEvent({ type: 'response.text.done', response_id: 'no-tool',
+    item_id: 'answer', text: '目前没有待执行任务。' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'no-tool',
+    item_id: 'answer', delta: btoa('aa') });
+  await session.playbackOperation;
+  assert.equal(assistantTexts.at(-1).text, '目前没有待执行任务。');
+  assert.equal(assistantTexts.at(-1).final, false);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  session.handleEvent({ type: 'response.done', response: { id: 'no-tool', status: 'completed' } });
+  await session.playbackOperation;
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['目前没有待执行任务。']);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+});
+
 test('direct answers release text and audio once, only after response.done', async () => {
   const { session, assistantTexts, posted } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'direct' } });
@@ -486,7 +542,7 @@ test('text received before its item type is released once when that message item
   assert.deepEqual(assistantTexts.map(update => [update.text, update.final]), [['Hello', false]]);
 });
 
-for (const ending of ['tool', 'interrupt', 'failed']) {
+for (const ending of ['interrupt', 'failed']) {
   test(`streamed text is finalized on ${ending} and late deltas cannot reopen it`, () => {
     const { session, assistantTexts } = createSession();
     session.handleEvent({ type: 'response.created', response: { id: 'partial-text' } });
@@ -494,8 +550,7 @@ for (const ending of ['tool', 'interrupt', 'failed']) {
     const delta = { type: 'response.text.delta', response_id: 'partial-text', delta: 'Partial answer' };
     session.handleEvent(added);
     session.handleEvent(delta);
-    if (ending === 'tool') session.handleEvent({ ...added, item: { type: 'function_call' } });
-    else if (ending === 'interrupt') session.interruptQwenResponse('new-turn', 200, 100, 80);
+    if (ending === 'interrupt') session.interruptQwenResponse('new-turn', 200, 100, 80);
     else session.handleEvent({ type: 'response.done', response: { id: 'partial-text', status: 'failed' } });
     session.handleEvent(added);
     session.handleEvent(delta);
@@ -514,7 +569,7 @@ test('stopping media finalizes the visible text stream and clears output item st
   assert.equal(session.messageOutputItems.size, 0);
 });
 
-test('early function_call item suppresses audio before complete tool arguments arrive', async () => {
+test('a message following a tool item retains audio without executing incomplete arguments', async () => {
   const { session, assistantTexts, posted, functionCalls } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'tool' } });
   session.handleEvent({ type: 'response.audio.delta', response_id: 'tool', delta: btoa('aa') });
@@ -524,8 +579,9 @@ test('early function_call item suppresses audio before complete tool arguments a
   session.handleEvent({ type: 'response.text.done', response_id: 'tool', text: 'Unverified answer' });
   session.handleEvent({ type: 'response.done', response: { id: 'tool', status: 'completed' } });
   await session.playbackOperation;
-  assert.deepEqual(posted.filter(item => item.type === 'audio'), []);
-  assert.deepEqual(assistantTexts, []);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.equal(assistantTexts.at(-1).text, 'Unverified answer');
+  assert.equal(assistantTexts.at(-1).final, true);
   assert.deepEqual(functionCalls, [], 'an item announcement must not execute incomplete arguments');
 });
 
@@ -546,18 +602,21 @@ test('audio waits for matching item type and a delayed message item releases it 
   assert.equal(posted.filter(item => item.type === 'audio').length, 2);
 });
 
-test('late tool item stops future audio but cannot retract streamed message audio', async () => {
-  const { session, posted } = createSession();
+test('late tool item preserves the remaining audio and text of the same message', async () => {
+  const { session, posted, assistantTexts } = createSession();
   session.handleEvent({ type: 'response.created', response: { id: 'mixed' } });
   session.handleEvent({ type: 'response.output_item.added', response_id: 'mixed', item: { type: 'message' } });
+  session.handleEvent({ type: 'response.text.delta', response_id: 'mixed', delta: '这就帮你查查' });
   session.handleEvent({ type: 'response.audio.delta', response_id: 'mixed', delta: btoa('aa') });
   await session.playbackOperation;
   assert.equal(posted.filter(item => item.type === 'audio').length, 1);
   session.handleEvent({ type: 'response.output_item.added', response_id: 'mixed', item: { type: 'function_call' } });
+  session.handleEvent({ type: 'response.text.delta', response_id: 'mixed', delta: '今天香港的天气情况。' });
   session.handleEvent({ type: 'response.audio.delta', response_id: 'mixed', delta: btoa('bb') });
   session.handleEvent({ type: 'response.done', response: { id: 'mixed', status: 'completed' } });
   await session.playbackOperation;
-  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 2);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你查查今天香港的天气情况。']);
   assert.equal(session.messageOutputItems.size, 0);
 });
 
@@ -722,6 +781,48 @@ test('the first image is deferred until a previous audio append exists', () => {
   assert.equal(sent[2].image, 'dGVzdC1qcGVn');
 });
 
+test('Qwen drops deferred video at speech end and waits for new speech before resuming video', () => {
+  const { session, sent } = createSession('dGVzdC1qcGVn');
+  session.sendAudio(new Int16Array([1]), true);
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped' });
+  session.sendAudio(new Int16Array([2]), true);
+  session.sendAudio(new Int16Array([3]), true);
+  assert.deepEqual(sent.map((event) => event.type), Array(3).fill('input_audio_buffer.append'));
+
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'new-speech' });
+  session.sendAudio(new Int16Array([4]), true);
+  session.sendAudio(new Int16Array([5]), true);
+  assert.deepEqual(sent.slice(3).map((event) => event.type), [
+    'input_audio_buffer.append', 'input_audio_buffer.append', 'input_image_buffer.append',
+  ]);
+});
+
+test('rejected Qwen image frame stays diagnostic and does not report voice failure', () => {
+  const errors = [];
+  const { session, sent, diagnostics } = createSession('dGVzdC1qcGVn', {
+    onError: (message) => errors.push(message),
+  });
+  session.sendAudio(new Int16Array([1]), true);
+  session.sendAudio(new Int16Array([2]), true);
+  session.handleEvent({ type: 'response.created', response: { id: 'answered' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'answered', status: 'completed' } });
+  session.handleEvent({
+    type: 'error', error: { type: 'invalid_request_error', message: 'Error append image before append audio.' },
+  });
+  assert.deepEqual(errors, []);
+  assert.equal(diagnostics.at(-1).event, 'qwen_realtime_error');
+  assert.equal(diagnostics.at(-1).message, 'Error append image before append audio.');
+
+  session.sendAudio(new Int16Array([3]), true);
+  assert.equal(sent.filter((event) => event.type === 'input_image_buffer.append').length, 1);
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'later-speech' });
+  session.sendAudio(new Int16Array([4]), true);
+  session.sendAudio(new Int16Array([5]), true);
+  assert.equal(sent.filter((event) => event.type === 'input_image_buffer.append').length, 2);
+  session.handleEvent({ type: 'error', error: { message: 'A different provider failure' } });
+  assert.deepEqual(errors, ['A different provider failure']);
+});
+
 test('user speech cancels an active response and discards unclassified text', () => {
   const { session, posted, sent, states, assistantTexts, diagnostics } = createSession();
   session.responseId = 'qwen-speaking';
@@ -738,6 +839,23 @@ test('user speech cancels an active response and discards unclassified text', ()
   assert.equal(session.heldOutput.size, 0);
   assert.equal(states.at(-1), 'listening');
   assert.equal(diagnostics.at(-1).event, 'qwen_response_interrupted_by_user');
+});
+
+test('continuous speech cancels a reserved response only after response.created', () => {
+  const errors = [];
+  const { session, sent, diagnostics } = createSession(undefined, { onError: (message) => errors.push(message) });
+  session.enqueueOperationResult('alarm', { state: 'accepted', job_id: 'alarm-job' });
+  assert.equal(session.responseId, null);
+  for (let i = 0; i < 5; i++) session.interruptQwenResponse('next-speech', 256 + i * 32, 900, 80);
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 0);
+  assert.equal(diagnostics.filter((event) => event.event === 'qwen_response_interrupted_by_user').length, 1);
+  session.handleEvent({ type: 'response.created', response: { id: 'receipt-response' } });
+  assert.equal(sent.filter((event) => event.type === 'response.cancel').length, 1);
+  session.handleEvent({ type: 'response.done', response: { id: 'receipt-response', status: 'cancelled' } });
+  session.handleEvent({ type: 'response.created', response: { id: 'next-answer' } });
+  session.handleEvent({ type: 'error', error: { message: 'Response request cancelled by new input' } });
+  assert.equal(session.responseActive, true, 'an old cancellation must not discard the new answer');
+  assert.deepEqual(errors, []);
 });
 
 test('server cancellation discards held assistant text', () => {
@@ -840,6 +958,28 @@ test('function calls are emitted once with parsed arguments', () => {
     },
   ]);
   assert.equal(diagnostics.at(-1).event, 'qwen_tool_call_received');
+});
+
+test('a separate tool response preserves the earlier message and its delayed audio', async () => {
+  const { session, assistantTexts, posted, functionCalls } = createSession();
+  session.handleEvent({ type: 'input_audio_buffer.speech_started', item_id: 'weather-input' });
+  session.handleEvent({ type: 'input_audio_buffer.speech_stopped', item_id: 'weather-input' });
+  session.handleEvent({ type: 'response.created', response: { id: 'weather-ack' } });
+  session.handleEvent({ type: 'response.output_item.added', response_id: 'weather-ack',
+    item: { type: 'message', id: 'weather-message' } });
+  session.handleEvent({ type: 'response.audio_transcript.delta', response_id: 'weather-ack',
+    item_id: 'weather-message', delta: '这就帮你查查今天香港的天气情况。' });
+  session.handleEvent({ type: 'response.created', response: { id: 'weather-tool' } });
+  session.handleEvent({ type: 'response.function_call_arguments.done', response_id: 'weather-tool',
+    name: 'jiuwen_delegate', call_id: 'weather-call', arguments: '{"task":"查询香港天气"}' });
+  session.handleEvent({ type: 'response.audio.delta', response_id: 'weather-ack',
+    item_id: 'weather-message', delta: btoa('aa') });
+  session.handleEvent({ type: 'response.done', response: { id: 'weather-ack', status: 'completed' } });
+  session.handleEvent({ type: 'response.done', response: { id: 'weather-tool', status: 'completed' } });
+  await session.playbackOperation;
+  assert.equal(functionCalls.length, 1);
+  assert.equal(posted.filter(item => item.type === 'audio').length, 1);
+  assert.deepEqual(assistantTexts.filter(item => item.final).map(item => item.text), ['这就帮你查查今天香港的天气情况。']);
 });
 
 test('a new response cannot release an earlier unclassified acknowledgement', () => {
@@ -1496,4 +1636,17 @@ test('completed cancellation receipt permits Core follow-up for the user request
   });
   assert.equal(functionCalls.length, 1);
   assert.equal(functionCalls[0].name, 'jiuwen_task_modify');
+});
+
+
+test('converted completed cancellation is announced as a pending Core followup', () => {
+  const { session, sent } = createSession();
+  session.enqueueOperationResult('cancel', {
+    state: 'followup', converted_to: 'modify', task_status: 'completed', stopped: false, successor_id: 'child',
+  });
+  assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
+  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
+  assert.match(continuation, /backend already submitted the original user action to Core/);
+  assert.match(continuation, /do not issue another cancellation/);
+  assert.match(continuation, /followup means a linked revision/);
 });

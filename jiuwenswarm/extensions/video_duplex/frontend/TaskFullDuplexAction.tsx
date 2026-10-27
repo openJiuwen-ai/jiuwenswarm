@@ -48,9 +48,6 @@ export function TaskFullDuplexAction({
   labels,
   hasTextDraft = false,
 }: ApplicationPluginTaskInputActionProps) {
-  const { t } = useTranslation();
-  const [shareDialog, setShareDialog] = useState(false);
-  const [shareSource, setShareSource] = useState<'screen' | 'camera'>('screen');
   const enabled = useTaskFullDuplexEnabled();
   const { state: runtimeState, sessionId: runtimeSessionId, error } = useTaskFullDuplexRuntime();
   const state = runtimeSessionId === sessionId ? runtimeState : 'idle';
@@ -94,10 +91,6 @@ export function TaskFullDuplexAction({
       exitTaskFullDuplex();
       return;
     }
-    if (isTaskDuplexScreenSharingEnabled()) {
-      setShareDialog(true);
-      return;
-    }
     await beginSession();
   }, [beginSession, state]);
 
@@ -106,39 +99,6 @@ export function TaskFullDuplexAction({
 
   return (
     <>
-      {shareDialog ? (
-        <FormDialog
-          open
-          title={t('chat.duplexControls.chooseSource')}
-          description={t('chat.duplexControls.chooseSourceDescription')}
-          confirmLabel={t('common.confirm')}
-          cancelLabel={t('common.cancel')}
-          onConfirm={() => void beginSession(shareSource)}
-          onCancel={() => setShareDialog(false)}
-          testIdPrefix="chat-panel-duplex-share-dialog"
-        >
-          <div
-            className="task-full-duplex-sources"
-            role="radiogroup"
-            aria-label={t('chat.duplexControls.chooseSource')}
-          >
-            {(['screen', 'camera'] as const).map((source) => (
-              <button
-                key={source}
-                type="button"
-                role="radio"
-                aria-checked={shareSource === source}
-                onClick={() => setShareSource(source)}
-                data-testid="chat-panel-duplex-source"
-                data-variant={source}
-              >
-                {source === 'screen' ? <Monitor aria-hidden /> : <Camera aria-hidden />}
-                {t(source === 'screen' ? 'chat.duplexControls.screenOrWindow' : 'videoLive.sources.camera')}
-              </button>
-            ))}
-          </div>
-        </FormDialog>
-      ) : null}
       {showAction && !hasTextDraft ? (
         <button
           type="button"

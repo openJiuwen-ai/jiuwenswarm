@@ -418,26 +418,16 @@ def register_video_live_handler(
                     raise
                 protocol_invalid = True
                 result = {**exc.completion, "decision": "response", "response": "", "delegation": ""}
-            if request_kind == "user" and result.get("decision") == "delegation":
-                delegation = str(result.get("delegation") or "").strip()
-                # Plain-text delegation remains a supported legacy format.
-                # Structured controls must pass the same parser used for execution.
-                if delegation.startswith(("{", "[", "```")):
-                    try:
-                        _parse_joyai_task_operation(delegation, str(params.get("command_id") or req_id) + ":0")
-                    except (ValueError, TypeError):
-                        protocol_invalid = True
-            if request_kind == "user" and (protocol_invalid or result.get("decision") != "delegation"):
+            if request_kind == "user" and result.get("decision") != "delegation":
                 try:
                     owner, scope = await search_manager.scope(ws, {"search_session_id": search_session_id})
                     snapshot = search_manager.snapshot(owner, scope)
                     jobs = snapshot["jobs"]
                     active = [job for job in jobs if job["status"] not in {"completed", "failed", "cancelled"}]
                     recent = active[:8] + [job for job in jobs[-8:] if job not in active[:8]]
-                    task_fields = (
+                    task_context = [{key: job.get(key) for key in (
                         "job_id", "title", "question", "status", "revision", "parent_id", "successor_id",
-                    )
-                    task_context = [{key: job.get(key) for key in task_fields} for job in recent]
+                    )} for job in recent]
                     for task in task_context:
                         task["question"] = str(task.get("question") or "")[:1000]
                     result = await joyai_action_helper.review_action(
@@ -453,14 +443,13 @@ def register_video_live_handler(
                 except Exception as exc:
                     # The original answer may promise an action that was never
                     # submitted. Withhold it if review cannot establish a result.
-                    error = duplex_failure(exc, stage="JoyAI 辅助模型复核", request_id=req_id)
                     await asyncio.to_thread(_append_joyai_log, {
                         **request_log, "stage": "failed", "error_code": "JOYAI_ACTION_HELPER_ERROR",
-                        "error_type": type(exc).__name__, "error": error,
+                        "error_type": type(exc).__name__,
                     })
                     await channel.send_response(
                         ws, req_id, ok=False,
-                        error=f"{error}; no new task was submitted. Retry or check the task list.",
+                        error="JoyAI action review failed; no new task was submitted. Retry or check the task list.",
                         code="JOYAI_ACTION_HELPER_ERROR",
                     )
                     return
@@ -492,7 +481,8 @@ def register_video_live_handler(
         # the same validation and command deduplication path as native calls.
         scheduling = None
         task_title = ""
-        for operation_index in range(3):
+        operation_count = 0
+        while operation_count < 3:
             delegation = str(result.get("delegation") or "").strip()
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
                 break
@@ -514,29 +504,12 @@ def register_video_live_handler(
                 owner, scope = await search_manager.scope(
                     ws, {"search_session_id": search_session_id}
                 )
-                if call.name == "jiuwen_queue_manage":
-                    if request_kind != "user":
-                        raise ValueError("Queue management requires an explicit user request")
-                    management_instruction = question or instruction
-                    queue_management = await search_manager.manage_queue_call(
-                        owner, scope, call, management_instruction,
-                        allow_answers=False, reply_language=reply_language,
-                    )
-                    tools_used.append(call.name)
-                    response_text = queue_management.get("response", "")
-                    if queue_management.get("state") == "incomplete":
-                        response_text = (
-                            "Queue management did not finish. "
-                            "Check the task list and scheduled jobs for any changes already applied."
-                            if reply_language == "en" or (
-                                reply_language == "match" and not re.search(r"[\u4e00-\u9fff]", question or instruction)
-                            ) else "队列管理未全部完成，请查看任务列表和定时任务确认已执行的操作。"
-                        )
-                    # Only the manager's receipt-based answer reaches chat/TTS.
-                    # Never speak JoyAI's unconfirmed acknowledgement or ask it
-                    # to issue another operation for the same request.
-                    result = {**result, "decision": "response", "response": response_text, "delegation": ""}
-                    break
+                call = parse_qwen_omni_tool_call(
+                    {
+                        **value,
+                        "call_id": f"{params.get('command_id') or req_id}:{operation_count}",
+                    }
+                )
                 if call.name == "jiuwen_delegate":
                     task_title = call.arguments.get("title", "")
                     scheduling = {
@@ -546,9 +519,7 @@ def register_video_live_handler(
                     }
                     result = {**result, "delegation": call.task}
                     break
-                receipt = await search_manager.operate(
-                    owner, scope, call, ws=ws, approvals_only=True, user_instruction=question or instruction,
-                )
+                receipt = await search_manager.operate(owner, scope, call, user_instruction=question or instruction)
                 operation_count += 1
                 # Feed facts through the same provider conversation, including ids
                 # needed for query -> modify. A receipt cannot manufacture a task.
@@ -568,16 +539,13 @@ def register_video_live_handler(
                     ws, req_id, ok=False, error=error, code="TASK_REQUEST_REJECTED"
                 )
                 return
-        else:
-            if result.get("decision") == "delegation":
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="Task operation limit reached; query current state",
-                    code="TASK_REQUEST_REJECTED",
-                )
-                return
+        if operation_count == 3 and result.get("decision") == "delegation":
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error="Task operation limit reached; query current state",
+                code="TASK_REQUEST_REJECTED",
+            )
+            return
 
         delegation = str(result.get("delegation") or "").strip()
         if result.get("decision") == "delegation" and delegation:
@@ -663,15 +631,12 @@ def register_video_live_handler(
             from .tasks.diagnostics import trace_task
 
             if event_name.startswith("task_trace_") and isinstance(params.get("jobs"), list):
-                allowed["jobs"] = []
-                task_fields = ("job_id", "status", "sequence", "queue_position", "queue_version")
-                for job in params["jobs"][:100]:
-                    if not isinstance(job, dict):
-                        continue
-                    allowed["jobs"].append({
-                        key: job.get(key) for key in task_fields
-                        if isinstance(job.get(key), (str, int, float, bool))
-                    })
+                allowed["jobs"] = [
+                    {key: job.get(key) for key in (
+                        "job_id", "status", "sequence", "queue_position", "queue_version",
+                    ) if isinstance(job.get(key), (str, int, float, bool))}
+                    for job in params["jobs"][:100] if isinstance(job, dict)
+                ]
             trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
         if event_name in {
             "realtime_answer_final",
