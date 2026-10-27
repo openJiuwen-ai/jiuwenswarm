@@ -184,7 +184,7 @@ test('all four kinds open the shared review, retain moderation result, and never
     assert.match(find('asset-publish-result-metadata').textContent, /hub-asset/);
     assert.match(find('asset-publish-result-metadata').textContent, /1\.0\.0/);
     assert.ok(find('asset-publish-result-footer'));
-    assert.equal(find('asset-publish-new-version').closest('[data-testid="asset-publish-result-footer"]') !== null, true);
+    assert.equal(find('asset-publish-result-edit').closest('[data-testid="asset-publish-drawer-footer"]') !== null, true);
     assert.equal(find('asset-publish-notice'), null);
     assert.equal(find('asset-publish-visibility-unconfirmed'), null);
     await act(async () => find('asset-publish-close').click());
@@ -241,7 +241,7 @@ test('unresolved submission cannot be replaced by old history or lose its retry 
   assert.equal(find('asset-publish-record').disabled, true);
   assert.equal(find('asset-publish-edit').disabled, true);
   await act(async () => find('asset-publish-record').click());
-  assert.equal(!!find('asset-publish-new-version'), false);
+  assert.equal(!!find('asset-publish-result'), false);
   await act(async () => find('asset-publish-commit').click());
   await tick();
   assert.equal(ids.length, 2);
@@ -260,7 +260,7 @@ test('unresolved submission cannot be replaced by old history or lose its retry 
   await act(async () => find('asset-publish-refresh').click());
   await tick();
   assert.equal(find('asset-publish-result').dataset.variant, 'submitted');
-  assert.ok(find('asset-publish-new-version'));
+  assert.ok(find('asset-publish-result-edit'));
   await act(async () => find('asset-publish-close').click());
 });
 test('definitive expired draft rejection unlocks editing and requires a new package check', async () => {
@@ -328,6 +328,8 @@ test('record errors show the Hub guidance instead of the generic fallback', asyn
   assetPublishApi.records = async () => ({ records: [record] });
   await act(async () => openAssetPublish({ kind: 'skill', local_id: 'hub-guidance' }));
   await tick();
+  // #4765: the result card is opened from the history list instead of covering the form on open.
+  await act(async () => find('asset-publish-record').click());
   const message = document.querySelector('.asset-publish-result-error').textContent;
   assert.equal(message, '发布新版本时不能修改 Skill 可见性，请沿用现有设置');
   assert.doesNotMatch(message, /Retry or sign in again/);
@@ -344,6 +346,8 @@ test('curated local text keeps priority for known codes', async () => {
   assetPublishApi.records = async () => ({ records: [record] });
   await act(async () => openAssetPublish({ kind: 'skill', local_id: 'version-clash' }));
   await tick();
+  // #4765: the result card is opened from the history list instead of covering the form on open.
+  await act(async () => find('asset-publish-record').click());
   const message = document.querySelector('.asset-publish-result-error').textContent;
   assert.match(message, /This version exists/);
   assert.doesNotMatch(message, /hub-only wording/);
@@ -380,6 +384,8 @@ test('completed records use the same local text, variants, and icon regardless o
     await act(async () => openAssetPublish({ kind: 'plugin', local_id: record.operation_id }));
     await tick();
 
+    // #4765: the drawer opens on the form now, the result card is opened from the history list.
+    await act(async () => find('asset-publish-record').click());
     assert.equal(find('asset-publish-result').dataset.variant, 'submitted');
     assert.equal(find('asset-publish-result-status').textContent, 'Submitted');
     assert.ok(find('asset-publish-result-icon').querySelector('svg.lucide-circle-check'));
@@ -403,6 +409,8 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   await act(async () => openAssetPublish({ kind: 'plugin', local_id: record.operation_id }));
   await tick();
 
+  // #4765: opening the history record is what shows the result card.
+  await act(async () => find('asset-publish-record').click());
   assert.equal(find('asset-publish-result').dataset.variant, 'unconfirmed');
   assert.equal(find('asset-publish-result-status').textContent, 'Submission result unconfirmed');
   assert.ok(find('asset-publish-result-icon').querySelector('svg.lucide-clock-3'));
@@ -410,7 +418,7 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   assert.equal(status.textContent, 'Submission result unconfirmed');
   assert.equal(status.dataset.variant, 'unconfirmed');
   // #4749: an unverified outcome must not lock the asset; the drawer keeps an exit.
-  const entry = find('asset-publish-new-version');
+  const entry = find('asset-publish-result-edit');
   assert.ok(entry);
   assert.equal(entry.disabled, false);
   assert.equal(find('asset-publish-record').disabled, false);
@@ -418,6 +426,42 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   await tick();
   assert.equal(find('asset-publish-result'), null);
   assert.ok(find('asset-publish-form'));
+  await act(async () => find('asset-publish-close').click());
+});
+test('opening the drawer with history lands on the form and the result card reopens on demand', async () => {
+  const record = {
+    operation_id: 'history-only',
+    execution_status: 'completed',
+    result: { publish_result: 'published', version: '2.0.0' },
+    error: null,
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'history-only' }));
+  await tick();
+
+  // #4765: a stale record must not cover the form; the drawer opens on the editable fields.
+  assert.ok(find('asset-publish-form'));
+  assert.equal(!!find('asset-publish-result'), false);
+  assert.equal(find('asset-publish-version').value, '1.0.0');
+
+  // The result of a history record is still one click away.
+  await act(async () => find('asset-publish-record').click());
+  assert.equal(find('asset-publish-result').dataset.variant, 'submitted');
+  assert.match(find('asset-publish-result-metadata').textContent, /2\.0\.0/);
+
+  // "Back to editing" sits in the drawer footer, left of "close", not inside the card.
+  assert.equal(find('asset-publish-result-edit').closest('[data-testid="asset-publish-drawer-footer"]') !== null, true);
+  assert.equal(find('asset-publish-result-edit').nextElementSibling.dataset.testid, 'asset-publish-done');
+  assert.equal(find('asset-publish-result-footer').querySelector('button'), null);
+  assert.equal(find('asset-publish-result-edit').textContent, 'Back to editing');
+
+  // "Back to editing" restores the form and keeps the entered values.
+  await act(async () => find('asset-publish-result-edit').click());
+  await tick();
+  assert.equal(!!find('asset-publish-result'), false);
+  assert.ok(find('asset-publish-form'));
+  assert.equal(find('asset-publish-version').value, '1.0.0');
   await act(async () => find('asset-publish-close').click());
 });
 test('logged-out publishing loads local names for all five kinds and preserves edits after login', async () => {
