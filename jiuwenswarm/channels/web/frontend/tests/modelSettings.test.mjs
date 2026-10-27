@@ -394,14 +394,14 @@ test('display name validation is required, unique among display names, and exclu
       .model_name,
     undefined,
   );
-  assert.match(
+  // Model ID may match another configuration's display name (#5808).
+  assert.equal(
     validateModelDraft({ ...baseDraft, alias: 'unique', model_name: 'second' }, models, undefined, catalog, t)
       .model_name,
-    /modelNameConflict/,
+    undefined,
   );
 
-  // Legacy peers with empty alias + same model_name: seeding display name from model_name
-  // must not block editing endpoint/key (#5646 / review P2).
+  // Empty-alias peers still display model_name; that visible name must stay unique.
   const legacyDuplicateModels = [
     {
       model_id: 'mdl_a',
@@ -420,7 +420,7 @@ test('display name validation is required, unique among display names, and exclu
       model_provider: 'OpenAI',
     },
   ];
-  assert.equal(
+  assert.match(
     validateModelDraft(
       { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
       legacyDuplicateModels,
@@ -428,20 +428,27 @@ test('display name validation is required, unique among display names, and exclu
       catalog,
       t,
     ).alias,
-    undefined,
+    /aliasConflict/,
   );
   assert.match(
     validateModelDraft(
-      { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
-      [
-        { ...legacyDuplicateModels[0], alias: 'GLM-5.2' },
-        legacyDuplicateModels[1],
-      ],
-      { model_id: 'mdl_b' },
+      { ...baseDraft, alias: 'GLM-5.2', model_name: 'glm-5.2' },
+      legacyDuplicateModels,
+      undefined,
       catalog,
       t,
     ).alias,
     /aliasConflict/,
+  );
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'GLM-5.2-custom', model_name: 'GLM-5.2' },
+      legacyDuplicateModels,
+      { model_id: 'mdl_a' },
+      catalog,
+      t,
+    ).alias,
+    undefined,
   );
 
   // Upsert edit path: entries use model_id without origin_index. Display name equal to own
