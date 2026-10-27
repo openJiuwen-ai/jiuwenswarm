@@ -1,19 +1,22 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Gateway HTTP read API for persisted single-Agent trajectory records."""
+"""Gateway HTTP read API for persisted single-Agent trajectory records.
+
+The SQLite reader and ``trajectory_ui`` settings live in the AgentServer.
+These routes keep the browser contract and forward each read as a
+``trajectory.*`` request. An archive, or any body over 2 MiB, is pulled in
+chunks and only then written to the client, so a failed query is still JSON.
+"""
 
 from __future__ import annotations
 
-import asyncio
+import base64
 import io
 import json
 import logging
 import re
 import tempfile
-import zipfile
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator, Mapping, Sequence
-from contextlib import aclosing
-from pathlib import Path
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from typing import IO, TYPE_CHECKING, Any
 from urllib.parse import SplitResult, urlsplit
 
@@ -25,17 +28,13 @@ from gateway.common.mode_matrix import (
     is_single_agent_mode,
     is_team_mode,
 )
+from gateway.common.protocol_ids import is_valid_session_id
 from gateway.common.security.ws_origin import (
     get_allowed_origin_hosts,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from jiuwenswarm.observability.config import (
-    TrajectoryStoreSettings,
-    load_trajectory_store_settings,
-)
-from jiuwenswarm.observability.store import AsyncTrajectoryReader
-from gateway.common.protocol_ids import is_valid_session_id
+from jiuwenswarm.common.schema.message import ReqMethod
 
 if TYPE_CHECKING:
     from gateway.channel_manager.web.web_connect import WebChannel
@@ -46,11 +45,8 @@ TRAJECTORY_API_PREFIX = "/api/trajectory"
 # The one entry of an archive zip: the store's archive lines, one JSON object
 # per line, in the order the store yields them.
 TRAJECTORY_ARCHIVE_ENTRY_NAME = "trajectory.jsonl"
-# An archive this small stays in memory; a larger one moves to a temporary file.
+# Reassembled archives this small stay in memory; a larger one moves to a file.
 _ARCHIVE_SPOOL_MAX_BYTES = 16 * 1024 * 1024
-# Encoded lines are handed to the compressor in chunks of about this size, off
-# the event loop, so deflating a large session does not stall other requests.
-_ARCHIVE_WRITE_CHUNK_BYTES = 1024 * 1024
 _ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
 _TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
@@ -66,143 +62,128 @@ _MAX_SEQUENCE_REQUEST = 200
 
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
 _MAX_CURSOR_LENGTH = 512
+# A blob pull terminates on the peer's ``done`` flag; these guards keep a
+# misbehaving peer (old AgentServer, broken blob read) from hanging the HTTP
+# request in a no-progress loop or streaming an unbounded "archive".
+_MAX_BLOB_CHUNKS = 4096
 
-SessionMetadataLoader = Callable[[str], Awaitable[Mapping[str, Any]]]
+SessionMetadataLoader = Callable[[str, "str | None"], Awaitable[Mapping[str, Any]]]
+TrajectoryFetch = Callable[
+    [ReqMethod, dict[str, Any], str | None],
+    Awaitable[tuple[bool, dict[str, Any]]],
+]
+_UNAVAILABLE_CODES = frozenset(
+    {
+        "SERVICE_UNAVAILABLE",
+        "RUNTIME_WARMING",
+        "RUNTIME_DRAINING",
+        "RUNTIME_FAILED",
+        "RUNTIME_QUEUE_FULL",
+        "REQUEST_CANCELLED",
+    },
+)
+_TIMEOUT_CODE = "AGENT_SERVER_TIMEOUT"
+
+
+def error_status(code: str, reported_status: Any = None) -> int:
+    """Return the HTTP status carried on an AgentServer error payload.
+
+    Trajectory errors include ``status``. Transport failures that never reach
+    the reader are mapped from ``code``. Anything else is 500.
+    """
+    if isinstance(reported_status, int) and not isinstance(reported_status, bool) and 100 <= reported_status <= 599:
+        return reported_status
+    if code in _UNAVAILABLE_CODES:
+        return 503
+    if code == _TIMEOUT_CODE:
+        return 504
+    logger.warning("[trajectory] error payload has no usable status, using 500: code=%s", code)
+    return 500
 
 
 class TrajectoryHttpService:
-    """Validated HTTP response layer over the asynchronous SQLite reader."""
+    """Validated HTTP response layer over an AgentServer trajectory read."""
 
     def __init__(
         self,
-        settings: TrajectoryStoreSettings | None = None,
         *,
-        reader: AsyncTrajectoryReader | None = None,
         metadata_loader: SessionMetadataLoader | None = None,
+        fetch: TrajectoryFetch,
     ) -> None:
-        # A pinned snapshot keeps callers that own their settings deterministic.
-        # The gateway leaves it unset: `trajectory_ui.enabled` is toggled at
-        # runtime through config.set, and the reload broadcast only reaches the
-        # Agent runtime, so a snapshot taken at mount time would keep answering
-        # TRAJECTORY_DISABLED until the gateway process restarts.
-        self._pinned_settings = settings
-        self._reader_override = reader
-        self._reader: AsyncTrajectoryReader | None = None
-        self._reader_database_path: Path | None = None
-        self._metadata_loader = metadata_loader or _load_session_metadata
-
-    @property
-    def settings(self) -> TrajectoryStoreSettings:
-        """Return the pinned snapshot, or the live ``trajectory_ui`` settings."""
-        if self._pinned_settings is not None:
-            return self._pinned_settings
-        return load_trajectory_store_settings()
-
-    @property
-    def reader(self) -> AsyncTrajectoryReader:
-        """Return the reader bound to the currently configured store root."""
-        return self._reader_for(self.settings)
-
-    def _reader_for(
-        self,
-        settings: TrajectoryStoreSettings,
-    ) -> AsyncTrajectoryReader:
-        """Return a reader for one resolved settings snapshot.
+        """Bind the session gate and the AgentServer caller.
 
         Args:
-            settings: Settings resolved once for the current request.
-
-        Returns:
-            Reader bound to ``settings.database_path``; rebuilt only when the
-            configured store root changes.
+            metadata_loader: Session metadata source for the mode gate.
+            fetch: Sends one ``trajectory.*`` request and returns ``(ok, payload)``.
         """
-        if self._reader_override is not None:
-            return self._reader_override
-        database_path = settings.database_path
-        reader = self._reader
-        if reader is None or self._reader_database_path != database_path:
-            reader = AsyncTrajectoryReader(database_path, session_scoped=True)
-            self._reader = reader
-            self._reader_database_path = database_path
-        return reader
+        self._metadata_loader = metadata_loader or _load_session_metadata
+        self._fetch = fetch
 
     async def list_subjects(
         self,
         session_id: str,
         *,
         after_revision: int,
+        user_id: str | None = None,
     ) -> Response:
         """List the execution subjects that own a chain in one session."""
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         if after_revision < 0:
             return _error_response("after_revision must be >= 0", "BAD_REQUEST", 400)
         if after_revision > _MAX_SQLITE_INTEGER:
             return _error_response("after_revision is too large", "BAD_REQUEST", 400)
-        try:
-            items, store_epoch, watermark = await self._reader_for(settings).list_subjects(
-                session_id,
-                after_revision=after_revision,
-            )
-        except Exception:
-            logger.exception("Trajectory subject listing failed: session_id=%s", session_id)
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        return _json_response(
-            {
-                "schema_version": 1,
-                "session_id": session_id,
-                "items": items,
-                "watermark": watermark,
-                "store_epoch": store_epoch,
-            }
+        return await self._json_query(
+            ReqMethod.TRAJECTORY_SUBJECTS_LIST,
+            {"session_id": session_id, "after_revision": after_revision},
+            user_id=user_id,
         )
 
-    async def export_archive(self, session_id: str) -> Response:
-        """Export one session's trajectory as a zipped, content-addressed JSONL archive.
+    async def export_archive(
+        self,
+        session_id: str,
+        user_id: str | None = None,
+    ) -> Response:
+        """Export one session's trajectory as a zipped JSONL archive.
 
-        The archive is written completely before the response starts, so a
-        failed query still answers with an error rather than a truncated
-        download. It is spooled to a temporary file, which keeps a large
-        session off the heap and leaves the zip seekable: every local header
-        then states its sizes, and a browser can inflate the entry as a
-        stream.
+        The AgentServer builds the zip before the first byte is returned.
+        This method then pulls the chunks and only starts the download once
+        the whole archive is in hand, so a failed query is still JSON.
 
         Args:
             session_id: Session to export.
+            user_id: Caller identity forwarded when the request has one.
 
         Returns:
             An ``application/zip`` download holding one ``trajectory.jsonl``
             entry, or a JSON error response.
         """
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
+        ok, payload = await self._call(
+            ReqMethod.TRAJECTORY_ARCHIVE_OPEN,
+            {"session_id": session_id},
+            user_id,
+        )
+        if not ok:
+            return _failure(payload)
+        if not payload.get("chunked"):
+            return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+        export_id = str(payload.get("export_id") or "")
         spool = tempfile.SpooledTemporaryFile(max_size=_ARCHIVE_SPOOL_MAX_BYTES)
         try:
-            await _write_archive_zip(
-                self._reader_for(settings).iter_session_archive_lines(session_id),
-                spool,
-            )
+            await self._copy_blob(export_id, spool, user_id)
             size = spool.seek(0, io.SEEK_END)
             spool.seek(0)
+        except _QueryFailed as exc:
+            spool.close()
+            return exc.response
         except Exception:
             spool.close()
-            logger.exception(
-                "Trajectory archive query failed: session_id=%s",
-                session_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
+            logger.exception("Trajectory archive query failed: session_id=%s", session_id)
+            return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
         return StreamingResponse(
             _iter_spooled_chunks(spool),
             status_code=200,
@@ -216,65 +197,35 @@ class TrajectoryHttpService:
             },
         )
 
-    async def get_session_usage(self, session_id: str) -> Response:
+    async def get_session_usage(
+        self,
+        session_id: str,
+        user_id: str | None = None,
+    ) -> Response:
         """Return session-complete request usage partitioned by execution subject."""
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
-        try:
-            items, store_epoch = await self._reader_for(settings).get_session_request_usage(
-                session_id
-            )
-        except Exception:
-            logger.exception(
-                "Trajectory session-usage query failed: session_id=%s",
-                session_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        return _json_response({
-            "schema_version": 1,
-            "session_id": session_id,
-            "store_epoch": store_epoch,
-            "scope": "session",
-            "items": items,
-        })
+        return await self._json_query(
+            ReqMethod.TRAJECTORY_USAGE_GET,
+            {"session_id": session_id},
+            user_id=user_id,
+        )
 
-    async def get_checkpoints(self, session_id: str) -> Response:
+    async def get_checkpoints(
+        self,
+        session_id: str,
+        user_id: str | None = None,
+    ) -> Response:
         """Return what retention left for one session's removed turns, with its content."""
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
-        try:
-            result = await self._reader_for(settings).get_retention_checkpoints(session_id)
-        except Exception:
-            logger.exception(
-                "Trajectory checkpoint query failed: session_id=%s",
-                session_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        if result is None:
-            # No database is a session retention never touched: nothing to seed.
-            result = {
-                "store_epoch": "absent",
-                "checkpoints": [],
-                "sequences": {},
-                "blobs": {},
-            }
-        return _json_response({
-            "schema_version": 1,
-            "session_id": session_id,
-            **result,
-        })
+        return await self._json_query(
+            ReqMethod.TRAJECTORY_CHECKPOINTS_GET,
+            {"session_id": session_id},
+            user_id=user_id,
+        )
 
     async def get_subject(
         self,
@@ -283,10 +234,10 @@ class TrajectoryHttpService:
         *,
         since_revision: int,
         limit: int,
+        user_id: str | None = None,
     ) -> Response:
         """Build one page of an execution subject's chain, in commit order."""
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         normalized_subject_id = str(subject_id or "").strip()
@@ -297,69 +248,16 @@ class TrajectoryHttpService:
         if since_revision > _MAX_SQLITE_INTEGER:
             return _error_response("since_revision is too large", "BAD_REQUEST", 400)
         if not 1 <= limit <= 1000:
-            return _error_response(
-                "limit must be between 1 and 1000",
-                "BAD_REQUEST",
-                400,
-            )
-        try:
-            result = await self._reader_for(settings).get_subject_records(
-                session_id,
-                normalized_subject_id,
-                since_revision=since_revision,
-                limit=limit,
-                max_bytes=settings.detail_max_bytes,
-            )
-        except Exception:
-            logger.exception(
-                "Trajectory subject-detail query failed: session_id=%s subject_id=%s",
-                session_id,
-                normalized_subject_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        if result is None:
-            return _error_response("subject not found", "NOT_FOUND", 404)
-        # One page states its records as references and resolves them once,
-        # so content several records share crosses the wire a single time and
-        # content the reader already holds does not cross it at all.
-        head_hashes: set[str] = set()
-        for record in result.get("records", ()):
-            for reference in (record.get("sequences") or {}).values():
-                if reference.get("hash"):
-                    head_hashes.add(str(reference["hash"]))
-        heads = sorted(head_hashes)
-        resolved: dict[str, Any] = {"sequences": {}, "blobs": {}}
-        if heads:
-            try:
-                found = await self._reader_for(settings).resolve_sequences(
-                    session_id,
-                    heads,
-                    since_revision=since_revision,
-                )
-            except Exception:
-                logger.exception(
-                    "Trajectory sequence resolution failed: session_id=%s",
-                    session_id,
-                )
-                return _error_response(
-                    "trajectory query failed",
-                    "TRAJECTORY_QUERY_FAILED",
-                    500,
-                )
-            if found is not None:
-                resolved = found
-        return _json_response(
+            return _error_response("limit must be between 1 and 1000", "BAD_REQUEST", 400)
+        return await self._json_query(
+            ReqMethod.TRAJECTORY_SUBJECT_GET,
             {
-                "schema_version": 1,
                 "session_id": session_id,
                 "subject_id": normalized_subject_id,
-                **result,
-                **resolved,
-            }
+                "since_revision": since_revision,
+                "limit": limit,
+            },
+            user_id=user_id,
         )
 
     async def get_stream_frames(
@@ -368,15 +266,10 @@ class TrajectoryHttpService:
         *,
         since_frame_seq: int,
         limit: int,
+        user_id: str | None = None,
     ) -> Response:
-        """Build one page of a session's stream frames, in commit order.
-
-        A reader that fell behind -- a reconnect, a slow tab -- resumes from
-        the last frame it holds and walks forward, rather than waiting for
-        the answer to finish before it can show anything.
-        """
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        """Build one page of a session's stream frames, in commit order."""
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         if since_frame_seq < 0:
@@ -389,30 +282,14 @@ class TrajectoryHttpService:
                 "BAD_REQUEST",
                 400,
             )
-        try:
-            result = await self._reader_for(settings).get_stream_frames(
-                session_id,
-                since_frame_seq=since_frame_seq,
-                limit=limit,
-            )
-        except Exception:
-            logger.exception(
-                "Trajectory stream-frame query failed: session_id=%s",
-                session_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        if result is None:
-            return _error_response("session not found", "NOT_FOUND", 404)
-        return _json_response(
+        return await self._json_query(
+            ReqMethod.TRAJECTORY_STREAM_FRAMES_GET,
             {
-                "schema_version": 1,
                 "session_id": session_id,
-                **result,
-            }
+                "since_frame_seq": since_frame_seq,
+                "limit": limit,
+            },
+            user_id=user_id,
         )
 
     async def get_sequences(
@@ -421,15 +298,10 @@ class TrajectoryHttpService:
         seq_hashes: Sequence[str],
         *,
         since_revision: int = 0,
+        user_id: str | None = None,
     ) -> Response:
-        """Resolve chains by hash, for a reader whose cache lost them.
-
-        The page read already carries what a reader following along needs.
-        This is the path back for one that does not have it: a reload, a
-        second device, an entry expired from the browser's cache.
-        """
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        """Resolve chains by hash, for a reader whose cache lost them."""
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         requested = [str(value or "").strip() for value in seq_hashes]
@@ -444,35 +316,25 @@ class TrajectoryHttpService:
             )
         if any(_SEQUENCE_HASH_PATTERN.fullmatch(value) is None for value in requested):
             return _error_response("invalid sequence hash", "BAD_REQUEST", 400)
-        try:
-            resolved = await self._reader_for(settings).resolve_sequences(
-                session_id,
-                requested,
-                since_revision=max(0, int(since_revision)),
-            )
-        except Exception:
-            logger.exception(
-                "Trajectory sequence query failed: session_id=%s",
-                session_id,
-            )
-            return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
-        if resolved is None:
-            return _error_response("session not found", "NOT_FOUND", 404)
-        return _json_response({
-            "schema_version": 1,
-            "session_id": session_id,
-            **resolved,
-        })
+        return await self._json_query(
+            ReqMethod.TRAJECTORY_SEQUENCES_GET,
+            {
+                "session_id": session_id,
+                "hashes": requested,
+                "since_revision": max(0, int(since_revision)),
+            },
+            user_id=user_id,
+        )
 
     async def get_raw_record(
         self,
         session_id: str,
         trace_id: str,
         span_id: str,
+        user_id: str | None = None,
     ) -> Response:
         """Return the exact stored OTLP bytes for one session-owned span."""
-        settings = self.settings
-        error = await self._validate_access(session_id, settings)
+        error = await self._validate_access(session_id, user_id)
         if error is not None:
             return error
         normalized_trace_id = str(trace_id or "").strip().lower()
@@ -481,28 +343,23 @@ class TrajectoryHttpService:
             return _error_response("invalid trace_id", "BAD_REQUEST", 400)
         if _SPAN_ID_PATTERN.fullmatch(normalized_span_id) is None:
             return _error_response("invalid span_id", "BAD_REQUEST", 400)
+        ok, payload = await self._call(
+            ReqMethod.TRAJECTORY_RAW_GET,
+            {
+                "session_id": session_id,
+                "trace_id": normalized_trace_id,
+                "span_id": normalized_span_id,
+            },
+            user_id,
+        )
+        if not ok:
+            return _failure(payload)
         try:
-            raw_json = await self._reader_for(settings).get_raw_record(
-                session_id,
-                normalized_trace_id,
-                normalized_span_id,
-            )
-        except Exception:
-            logger.exception(
-                "Trajectory raw-record query failed: session_id=%s trace_id=%s span_id=%s",
-                session_id,
-                normalized_trace_id,
-                normalized_span_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        if raw_json is None:
-            return _error_response("span not found", "NOT_FOUND", 404)
+            raw = await self._payload_bytes(payload, user_id)
+        except _QueryFailed as exc:
+            return exc.response
         return Response(
-            content=raw_json,
+            content=raw,
             status_code=200,
             headers={
                 **_NO_STORE_HEADERS,
@@ -510,22 +367,12 @@ class TrajectoryHttpService:
             },
         )
 
-    async def _validate_access(
-        self,
-        session_id: str,
-        settings: TrajectoryStoreSettings,
-    ) -> Response | None:
-        if not settings.enabled:
-            return _error_response(
-                "trajectory UI is disabled",
-                "TRAJECTORY_DISABLED",
-                503,
-            )
+    async def _validate_access(self, session_id: str, user_id: str | None) -> Response | None:
         normalized_session_id = str(session_id or "").strip()
         if normalized_session_id != session_id or not is_valid_session_id(normalized_session_id):
             return _error_response("invalid session_id", "BAD_REQUEST", 400)
         try:
-            metadata = await self._metadata_loader(normalized_session_id)
+            metadata = await self._metadata_loader(normalized_session_id, user_id)
         except Exception:
             logger.exception(
                 "Trajectory session metadata lookup failed: session_id=%s",
@@ -558,33 +405,202 @@ class TrajectoryHttpService:
             )
         return None
 
+    async def _json_query(
+        self,
+        method: ReqMethod,
+        params: dict[str, Any],
+        *,
+        user_id: str | None,
+    ) -> Response:
+        ok, payload = await self._call(method, params, user_id)
+        if not ok:
+            return _failure(payload)
+        if payload.get("chunked"):
+            try:
+                raw = await self._payload_bytes(payload, user_id)
+                body = json.loads(raw)
+            except _QueryFailed as exc:
+                return exc.response
+            except Exception:
+                logger.exception("[trajectory] chunked JSON body was not an object")
+                return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+            if not isinstance(body, dict):
+                return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+            return _json_response(body)
+        result = payload.get("result")
+        if not isinstance(result, dict):
+            return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+        return _json_response(result)
+
+    async def _call(
+        self,
+        method: ReqMethod,
+        params: dict[str, Any],
+        user_id: str | None,
+    ) -> tuple[bool, dict[str, Any]]:
+        try:
+            ok, payload = await self._fetch(method, params, user_id)
+        except Exception:
+            logger.exception("[trajectory] proxy failed: method=%s", getattr(method, "value", method))
+            return False, {"error": "trajectory query failed", "code": "TRAJECTORY_QUERY_FAILED"}
+        if not isinstance(payload, dict):
+            return False, {"error": "trajectory query failed", "code": "TRAJECTORY_QUERY_FAILED"}
+        return bool(ok), payload
+
+    async def _payload_bytes(self, payload: dict[str, Any], user_id: str | None) -> bytes:
+        if not payload.get("chunked"):
+            encoded = payload.get("raw_b64")
+            if not isinstance(encoded, str):
+                raise _QueryFailed(_error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500))
+            return base64.b64decode(encoded)
+        export_id = str(payload.get("export_id") or "")
+        buffer = io.BytesIO()
+        try:
+            await self._copy_blob(export_id, buffer, user_id)
+        except Exception:
+            buffer.close()
+            raise
+        return buffer.getvalue()
+
+    async def _copy_blob(self, export_id: str, target: IO[bytes], user_id: str | None) -> None:
+        offset = 0
+        chunks = 0
+        try:
+            while True:
+                ok, payload = await self._call(
+                    ReqMethod.TRAJECTORY_BLOB_READ,
+                    {"export_id": export_id, "offset": offset},
+                    user_id,
+                )
+                if not ok:
+                    raise _QueryFailed(_failure(payload))
+                encoded = payload.get("data")
+                if not isinstance(encoded, str):
+                    raise _QueryFailed(_error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500))
+                target.write(base64.b64decode(encoded))
+                chunks += 1
+                if payload.get("done"):
+                    return
+                next_offset = _blob_next_offset(payload.get("next_offset"))
+                if next_offset is None or next_offset <= offset:
+                    # A peer that keeps reporting the same window would spin
+                    # here forever; fail closed so the request still ends in
+                    # JSON and the finally below returns the held blob.
+                    logger.warning(
+                        "[trajectory] blob read made no progress: export_id=%s offset=%s",
+                        export_id,
+                        offset,
+                    )
+                    raise _QueryFailed(
+                        _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+                    )
+                if chunks >= _MAX_BLOB_CHUNKS:
+                    raise _QueryFailed(
+                        _error_response(
+                            "trajectory export exceeds the chunk limit",
+                            "TRAJECTORY_EXPORT_TOO_LARGE",
+                            500,
+                        )
+                    )
+                offset = next_offset
+        finally:
+            await self._call(ReqMethod.TRAJECTORY_BLOB_CLOSE, {"export_id": export_id}, user_id)
+
+
+class _QueryFailed(Exception):
+    """A blob read that already has an HTTP response to return."""
+
+    def __init__(self, response: Response) -> None:
+        super().__init__("trajectory query failed")
+        self.response = response
+
+
+def _failure(payload: Mapping[str, Any]) -> JSONResponse:
+    code = str(payload.get("code") or "TRAJECTORY_QUERY_FAILED")
+    return _error_response(
+        str(payload.get("error") or "trajectory query failed"),
+        code,
+        error_status(code, payload.get("status")),
+    )
+
+
+def _blob_next_offset(value: Any) -> int | None:
+    """Return the peer's next blob offset, or None when it is malformed."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def build_trajectory_fetch(channel: WebChannel) -> TrajectoryFetch:
+    """Return the callable that sends one ``trajectory.*`` request."""
+
+    async def fetch(
+        method: ReqMethod,
+        params: dict[str, Any],
+        user_id: str | None = None,
+    ) -> tuple[bool, dict[str, Any]]:
+        from gateway.routing.e2a_proxy import fetch_agent_unary
+
+        client = getattr(channel, "trajectory_agent_client", None)
+        return await fetch_agent_unary(
+            agent_client=client,
+            req_method=method,
+            params=params,
+            session_id=str(params.get("session_id") or "") or None,
+            user_id=user_id,
+            channel_id="web",
+            label="trajectory",
+        )
+
+    return fetch
+
+
+def _request_user_id(request: Request) -> str | None:
+    """Resolve the caller identity the AgentServer routes the read by.
+
+    A middleware-injected ``request.state.agentos_user_id`` wins; otherwise
+    this resolves exactly like the container file API (claimed query value,
+    ``x-user-id`` header, then the token username), so an AgentOS/ADX
+    multi-user deployment gets the non-empty routing identity its routing
+    layer requires. Single-user routing tolerates the omitted case, which
+    stays None. A claim that contradicts the IAM identity raises
+    FileApiUserMismatch; the route boundary maps that to a 403.
+    """
+    value = getattr(request.state, "agentos_user_id", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    from gateway.channel_manager.web.container_file_http import (
+        resolve_request_user_id,
+    )
+
+    uid = resolve_request_user_id(request, request.query_params.get("user_id"))
+    return uid or None
+
 
 def attach_trajectory_routes(
     app: FastAPI,
     channel: WebChannel,
     *,
-    settings: TrajectoryStoreSettings | None = None,
-    reader: AsyncTrajectoryReader | None = None,
     metadata_loader: SessionMetadataLoader | None = None,
+    fetch: TrajectoryFetch | None = None,
 ) -> TrajectoryHttpService:
     """Mount the trajectory HTTP routes on the WebChannel FastAPI app.
 
     Args:
         app: WebChannel FastAPI application.
         channel: Owning WebChannel, retained on app state for route provenance.
-        settings: Optional pinned settings override. Omit it so every request
-            resolves the live ``trajectory_ui`` settings.
-        reader: Optional reader override for tests.
         metadata_loader: Optional session metadata loader override.
+        fetch: Optional AgentServer caller. Production uses ``channel``.
 
     Returns:
         Mounted service instance.
     """
     service = TrajectoryHttpService(
-        settings,
-        reader=reader,
         metadata_loader=metadata_loader,
+        fetch=fetch or build_trajectory_fetch(channel),
     )
+    from gateway.channel_manager.web.container_file_http import FileApiUserMismatch
+
     app.state.trajectory_http_service = service
     app.state.trajectory_web_channel = channel
 
@@ -602,6 +618,8 @@ def attach_trajectory_routes(
             return await call_next(request)
         try:
             response = await call_next(request)
+        except FileApiUserMismatch:
+            return _error_response("user_id 与 token 不匹配", "USER_MISMATCH", 403)
         except Exception:
             logger.exception("Unhandled trajectory HTTP request failure: path=%s", path)
             return _error_response(
@@ -643,7 +661,11 @@ def attach_trajectory_routes(
         parsed_after = _parse_integer_query(after_revision)
         if parsed_after is None:
             return _error_response("after_revision must be an integer", "BAD_REQUEST", 400)
-        return await service.list_subjects(session_id, after_revision=parsed_after)
+        return await service.list_subjects(
+            session_id,
+            after_revision=parsed_after,
+            user_id=_request_user_id(request),
+        )
 
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/stream-frames")
@@ -672,6 +694,7 @@ def attach_trajectory_routes(
             session_id,
             since_frame_seq=parsed_since,
             limit=parsed_limit,
+            user_id=_request_user_id(request),
         )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/sequences")
@@ -694,6 +717,7 @@ def attach_trajectory_routes(
             session_id,
             requested,
             since_revision=parsed_since,
+            user_id=_request_user_id(request),
         )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/archive")
@@ -706,7 +730,7 @@ def attach_trajectory_routes(
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        return await service.export_archive(session_id)
+        return await service.export_archive(session_id, user_id=_request_user_id(request))
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/checkpoints")
     async def get_trajectory_checkpoints(
@@ -718,7 +742,7 @@ def attach_trajectory_routes(
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        return await service.get_checkpoints(session_id)
+        return await service.get_checkpoints(session_id, user_id=_request_user_id(request))
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/usage")
     async def get_trajectory_session_usage(
@@ -730,7 +754,7 @@ def attach_trajectory_routes(
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        return await service.get_session_usage(session_id)
+        return await service.get_session_usage(session_id, user_id=_request_user_id(request))
 
     @app.get(
         f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects/{{subject_id}}/records"
@@ -762,6 +786,7 @@ def attach_trajectory_routes(
             subject_id,
             since_revision=parsed_since_revision,
             limit=parsed_limit,
+            user_id=_request_user_id(request),
         )
 
     @app.get(
@@ -778,18 +803,27 @@ def attach_trajectory_routes(
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        return await service.get_raw_record(session_id, trace_id, span_id)
+        return await service.get_raw_record(
+            session_id,
+            trace_id,
+            span_id,
+            user_id=_request_user_id(request),
+        )
 
     return service
 
 
-async def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
+async def _load_session_metadata(
+    session_id: str,
+    user_id: str | None = None,
+) -> Mapping[str, Any]:
     from jiuwenswarm.common.external_providers import provider
 
     return await provider("session_metadata").get_session_metadata_async(
         session_id,
         cache_bust=True,
         enable_writeback=False,
+        user_id=user_id or None,
     )
 
 
@@ -906,35 +940,6 @@ def _validate_http_origin(request: Request) -> Response | None:
     return _error_response("origin not allowed", "FORBIDDEN_ORIGIN", 403)
 
 
-async def _write_archive_zip(
-    lines: AsyncGenerator[dict[str, Any], None],
-    target: IO[bytes],
-) -> None:
-    """Deflate archive lines into a one-entry zip written to *target*.
-
-    Args:
-        lines: Archive lines, written one JSON object per line. The generator
-            is closed on return or failure, which releases its read snapshot.
-        target: Seekable binary file receiving the zip.
-    """
-    async with aclosing(lines) as stream:
-        with zipfile.ZipFile(target, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            with archive.open(TRAJECTORY_ARCHIVE_ENTRY_NAME, "w", force_zip64=True) as entry:
-                pending = bytearray()
-                async for line in stream:
-                    pending += json.dumps(
-                        line,
-                        ensure_ascii=False,
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                    pending += b"\n"
-                    if len(pending) >= _ARCHIVE_WRITE_CHUNK_BYTES:
-                        await asyncio.to_thread(entry.write, bytes(pending))
-                        pending.clear()
-                if pending:
-                    await asyncio.to_thread(entry.write, bytes(pending))
-
-
 def _iter_spooled_chunks(spool: IO[bytes]) -> Iterator[bytes]:
     """Read a spooled archive in chunks, closing it once the body is done."""
     try:
@@ -967,9 +972,12 @@ def validate_http_origin(request: Request) -> Response | None:
     return _validate_http_origin(request)
 
 
-async def load_session_metadata(session_id: str) -> Mapping[str, Any]:
+async def load_session_metadata(
+    session_id: str,
+    user_id: str | None = None,
+) -> Mapping[str, Any]:
     """Load persisted session metadata without writing back."""
-    return await _load_session_metadata(session_id)
+    return await _load_session_metadata(session_id, user_id)
 
 
 __all__ = [

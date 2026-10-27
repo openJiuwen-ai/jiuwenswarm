@@ -220,6 +220,17 @@ def _resolve_user_id(request: Request, explicit: str | None = None) -> str:
     return uid
 
 
+def resolve_request_user_id(request: Request, explicit: str | None = None) -> str:
+    """Resolve the caller ``user_id`` for sibling HTTP APIs on this app.
+
+    Same chain as the file API routes: the claimed ``explicit`` value, the
+    ``x-user-id`` header, then the token username, checked against the IAM
+    identity when authentication ran for the request. Raises
+    FileApiUserMismatch when a claim contradicts the token.
+    """
+    return _resolve_user_id(request, explicit)
+
+
 def _bind_file_api_session(request: Request, session_id: str) -> None:
     sid = str(session_id or "").strip()
     if sid:

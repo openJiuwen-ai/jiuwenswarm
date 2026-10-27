@@ -19,14 +19,13 @@ method（server 侧 ``gateway_adapter/session_adapter.py`` 已有只读处理器
 - 缺失会话/不可达/超时一律返回空 dict（消费方"读不到就当没有"的既有
   语义），错误细节进日志。
 
-启用：环境变量 ``JIUWENSWARM_SESSION_METADATA_REMOTE=1`` 时由
-``server_store_bridge.install()`` 改注册本实现（默认仍走本地桥）。
+bridge 退役后本实现是 session_metadata 域在 gateway 进程的唯一注册
+形态（``app_gateway`` 启动装配）。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from jiuwenswarm.common.external_providers import register
@@ -45,14 +44,7 @@ SESSION_METADATA_QUERY_TIMEOUT_SECONDS = 5.0
 #: 内部调用通道标识；刻意避开 ``web``，不触发 server 侧排队会话消息的附加逻辑。
 _SESSION_METADATA_CHANNEL_ID = "gateway"
 
-_REMOTE_ENV = "JIUWENSWARM_SESSION_METADATA_REMOTE"
-
 _agent_client: Any = None
-
-
-def remote_enabled() -> bool:
-    """是否以 WS 远端实现注册 session_metadata 域（默认本地桥）。"""
-    return os.environ.get(_REMOTE_ENV, "").strip() in ("1", "true", "True")
 
 
 def bind_agent_client(client: Any) -> None:

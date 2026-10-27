@@ -118,6 +118,15 @@ Use `read_file` to load `workflows/sop-elicitation.md` (absolute path in the "Sk
 
 **Iron Rule**: Do NOT generate any document until requirements are fully understood and all inversion completion criteria are satisfied.
 
+### Skip Handling
+
+- Always ask clarification questions as structured questions with options (a plain free-text question carries no answer the transport can keep: an empty confirmation is dropped and the same question gets asked again). Use `Other` when the user needs a free-form answer.
+- A skipped question (empty confirmation, the 「跳过」 button, or the 「取消」 button) means the user did not answer THAT question. It does NOT mean the user skipped A1, A2, A3, the SDD flow, or the deliverable.
+- Treat a skipped question as an open assumption: record it explicitly as a public assumption in the generated document and move on to the next question.
+- NEVER re-ask a question the user already skipped or left unanswered, and never keep drilling down on it.
+- If EVERY clarification question is skipped, proceed with the raw requirement, list the skipped points as public assumptions, and still produce the document.
+- After producing the artifact you MUST call `sdd_advance` — a skipped question never removes that obligation.
+
 ## [A2] Document Generation (Generator Pattern)
 
 **Completion: template-conformant output produced at target path**
@@ -132,13 +141,29 @@ Use `read_file` to load `workflows/sop-generation.md` (absolute path in the "Ski
 
 ## [A3] Review and Revision
 
-- Prompt the user for review authorization:
-  > "我已经完成了需求分析文档的生成。是否需要进行文档审查与修订？"
+- Prompt the user for review authorization with a **structured** question — the authorization must be a choice, not a free-text box, so the answer can never be lost in transport:
+
+  ```json
+  {
+    "query": "我已经完成了需求分析文档的生成，是否需要进行文档审查与修订？",
+    "questions": [{
+      "question": "我已经完成了需求分析文档的生成。是否需要进行文档审查与修订？",
+      "header": "审查授权",
+      "options": [
+        {"label": "需要审查与修订"},
+        {"label": "跳过审查"}
+      ]
+    }]
+  }
+  ```
+
 - IF the user wants review:
   - Call `sdd_advance` tool with `stage=analysis_review` to enter the analysis review stage.
   - The review stage will handle the review pipeline automatically (subagent gate, user revision, re-gate).
-- IF the user declines review:
-  - Call `sdd_advance` tool with `stage=analysis_review` to enter the review stage, then choose "跳过复审" to proceed quickly.
+- IF the user declines review (picked "跳过审查", clicked 「跳过」 or 「取消」, or explicitly said no review):
+  - Call `sdd_advance` tool with `stage=design` to skip the review stage and go straight to the design stage.
+  - Do NOT enter the review stage in order to skip it: the review stage has no "skip review" entry point before its own user gate, so entering it forces the full gate pipeline (R1 subagent gate + R2 revision) that the user just declined.
+  - Skipping the review is NOT skipping the SDD flow — the design document still has to be produced.
 
 </instruct>
 

@@ -8,9 +8,11 @@ import re
 from typing import Any, TypedDict
 
 from jiuwenswarm.common.schema.designer_graph import (
+    NODE_ROLE_BRIEF,
     NODE_ROLE_CLIP,
     NODE_TYPE_TABLE,
     NODE_TYPE_TEXT,
+    DesignerExecutionGraph,
     DesignerGraphNode,
     node_config,
     node_pipeline,
@@ -48,6 +50,14 @@ Explicit user facts and constraints are authoritative. For a sparse request, dev
 story, celebration, advertisement, or other fitting concept rather than stretching one premise.
 
 Request:
+"""
+
+_BRIEF_REVISION_INSTRUCTION = """Revise the approved short-film Brief below so it follows the edited brief task.
+Apply what the edited task asks for and what it directly implies across every section;
+keep everything else, including identity locks and explicit user facts, unchanged.
+Output the full revised Brief as Markdown only.
+
+Edited brief task:
 """
 
 STORYBOARD_COLUMNS: tuple[tuple[str, str], ...] = (
@@ -322,12 +332,44 @@ def _sync_style_authority(text: str, ctx: NodeExecutionContext) -> None:
     synchronize_graph_style_from_brief(ctx.graph, text)
 
 
+def mark_brief_prompt_edits(before: DesignerExecutionGraph, after: DesignerExecutionGraph) -> None:
+    """Keep a brief prompt edit made after the director approved a brief as ``user_edit_prompt``."""
+    meta = after.get("metadata") if isinstance(after.get("metadata"), dict) else {}
+    if not str(meta.get("approved_brief") or "").strip():
+        return
+    previous = {
+        str(node.get("id") or ""): str(node_config(node).get("prompt") or "").strip()
+        for node in before.get("nodes") or []
+        if isinstance(node, dict)
+    }
+    for node in after.get("nodes") or []:
+        if not isinstance(node, dict) or node_pipeline(node) != NODE_ROLE_BRIEF:
+            continue
+        prompt = str(node_config(node).get("prompt") or "").strip()
+        old = previous.get(str(node.get("id") or ""))
+        if prompt and old and prompt != old:
+            node["config"] = {**node_config(node), "user_edit_prompt": prompt}
+
+
+async def _revise_approved_brief(approved: str, edit: str, cfg: dict[str, Any]) -> str:
+    text = await complete_designer_node_text(
+        f"{_BRIEF_REVISION_INSTRUCTION}{edit}\n\nApproved Brief:\n{approved}",
+        delegate=str(cfg.get("delegate") or ""),
+    )
+    if not str(text or "").strip():
+        raise RuntimeError("Chat model did not return a usable revised brief.")
+    return text
+
+
 class BriefNodeHandler:
     async def execute(self, node: DesignerGraphNode, ctx: NodeExecutionContext) -> NodeResult:
         cfg = node_config(node)
         meta = ctx.graph.get("metadata") if isinstance(ctx.graph.get("metadata"), dict) else {}
         approved = str(meta.get("approved_brief") or "").strip()
         if approved:
+            edit = str(cfg.get("user_edit_prompt") or "").strip()
+            if edit:
+                approved = await _revise_approved_brief(approved, edit, cfg)
             _sync_style_authority(approved, ctx)
             text = _stamp_bible_on_text(approved, ctx)
             path = write_workspace_text(f"designer_brief_{ctx.run_id}_{ctx.node_id}", text)
@@ -365,7 +407,10 @@ class StoryboardNodeHandler:
         if not text:
             planned = node_config(node).get("planned_shots")
             if not isinstance(planned, list) or not planned:
-                raise RuntimeError("Storyboard has no planned shots to tabulate.")
+                raise RuntimeError(
+                    "Storyboard has no planned shots because this graph was not built "
+                    "by the Director chain; rebuild the graph."
+                )
             analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
             characters = [c for c in (analysis.get("characters") or []) if isinstance(c, dict)]
             from jiuwenswarm.server.runtime.designer.pipeline.content_language import (

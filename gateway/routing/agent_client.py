@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import asdict
 from typing import Any, AsyncIterator
@@ -243,6 +244,13 @@ class WebSocketAgentServerClient(AgentServerClient):
             for key, value in dict(extra_headers or {}).items()
             if str(value).strip()
         }
+        # 内部通道身份（连接级，P1 修正）：握手头部绑定共享密钥，供
+        # AgentServer 侧的 gateway 专有 action（如 command.mcp 的
+        # oauth_callback）做连接级放行——载荷字段（channel_id）可被任
+        # 意客户端伪造，不能作权限判据。
+        internal_token = os.getenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN", "").strip()
+        if internal_token:
+            cleaned_headers["X-Jiuwen-Gateway-Internal"] = internal_token
         # Retain a snapshot for automatic reconnect, including authentication.
         self._extra_headers = cleaned_headers
         try:

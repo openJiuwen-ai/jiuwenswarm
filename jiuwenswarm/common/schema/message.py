@@ -52,6 +52,19 @@ _ensure_req_method("RECOMMENDATION", "recommendation.job")
 # does not define it, so a missing attribute fails chat and session creation
 # before their own handlers run.
 _ensure_req_method("MCP_OAUTH_START", "mcp.oauth.start")
+# Trajectory reads are served by the AgentServer. The pinned protocol package
+# does not define these members yet; registration leaves a matching upstream
+# member in place once that package ships the same name and value.
+_ensure_req_method("TRAJECTORY_SUBJECTS_LIST", "trajectory.subjects.list")
+_ensure_req_method("TRAJECTORY_STREAM_FRAMES_GET", "trajectory.stream_frames.get")
+_ensure_req_method("TRAJECTORY_SEQUENCES_GET", "trajectory.sequences.get")
+_ensure_req_method("TRAJECTORY_CHECKPOINTS_GET", "trajectory.checkpoints.get")
+_ensure_req_method("TRAJECTORY_USAGE_GET", "trajectory.usage.get")
+_ensure_req_method("TRAJECTORY_SUBJECT_GET", "trajectory.subject.get")
+_ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
+_ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
+_ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
+_ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
 
 logger = logging.getLogger(__name__)
 

@@ -29,6 +29,7 @@ from gateway.cron.models import (
     normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
 )
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from gateway.cron.store_base import CronJobStoreBackend
 from gateway.message_handler.message_handler import MessageHandler
 from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
@@ -1100,6 +1101,13 @@ class CronSchedulerService:
             if job_id in new_job_ids
         }
         for job in jobs:
+            if not is_scheduled_task_supported(job.targets):
+                logger.info(
+                    "[Cron] skipping unsupported target job=%s target=%s",
+                    job.id,
+                    job.targets,
+                )
+                continue
             try:
                 if use_db_schedule:
                     push_dt, wake_dt, run_id = await self._next_run_from_db(job)
@@ -1413,6 +1421,10 @@ class CronSchedulerService:
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
+        if not is_scheduled_task_supported(job.targets):
+            raise ValueError(
+                f"scheduled tasks are not supported for target: {job.targets}"
+            )
         if (
             not self._use_db_schedule()
             and not await self.project_execution_allowed(
@@ -1755,6 +1767,13 @@ class CronSchedulerService:
 
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
+        if job is not None and not is_scheduled_task_supported(job.targets):
+            logger.info(
+                "[Cron] dropping unsupported target event job=%s target=%s",
+                job.id,
+                job.targets,
+            )
+            return
         if (
             job is not None
             and not self._use_db_schedule()
@@ -2926,6 +2945,13 @@ class CronSchedulerService:
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
+        if not is_scheduled_task_supported(job.targets):
+            logger.info(
+                "[Cron] push skipped: unsupported target job=%s target=%s",
+                job.id,
+                job.targets,
+            )
+            return
         logger.info(
             "[Cron] push_to_targets job=%s run_id=%s channel=%s is_placeholder=%s text_len=%d status=%s",
             job.id,

@@ -509,24 +509,22 @@ class RailStateMachineBase(DeepAgentRail):
                 f"under .aet/features/; if none exists, ask the user for a feature "
                 f"name and create the directory)\n\n"
             )
-            if next_stage:
-                advance_instruction = (
-                    f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
-                    f"(with stage={next_stage}) to advance to the next stage."
-                )
-            else:
-                advance_instruction = (
-                    f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
-                    f"to advance the flow."
-                )
+            advance_instruction = self._build_production_advance_instruction(next_stages)
         else:
             prev_artifact = self._find_previous_stage_artifact(stage)
             review_target = prev_artifact or "<previous-stage-artifact>"
+            target_path, target_exists = self._resolve_artifact_path(prev_artifact)
             stage_intro = (
                 f"Review target: .aet/features/<feature-name>/design/{review_target}"
                 f" (the file produced by the previous stage)\n"
                 f"(<feature-name> is resolved from the latest-modified subdirectory "
-                f"under .aet/features/)\n\n"
+                f"under .aet/features/)\n"
+                f"Resolved absolute path: {target_path}\n"
+                f"Exists: {'yes' if target_exists else 'no'}\n"
+                f"Path existence is verified by the framework. Do NOT shell out to "
+                f"`test -f` / `[[ -f ]]` to check it — those are not portable to "
+                f"Windows PowerShell. If it is missing, stop and ask the user for "
+                f"the correct path.\n\n"
             )
             # Review stages run the SKILL.md R1->R2->R3->R4 pipeline. The
             # advance instruction must NOT say "after completing the review,
@@ -561,6 +559,7 @@ class RailStateMachineBase(DeepAgentRail):
             f"`read_file` with the absolute paths in the \"Skill File Index\" "
             f"section below. "
             f"{advance_instruction}\n\n"
+            f"{self._SKIP_SEMANTICS}"
             f"--- Methodology Body Start ---\n"
             f"{body}\n"
             f"--- Methodology Body End ---\n\n"
@@ -573,6 +572,10 @@ class RailStateMachineBase(DeepAgentRail):
         Review stages have no ``artifacts`` of their own — they review the
         file produced by the preceding production stage (found by scanning
         ``stages`` for a ``next`` entry containing *current*).
+
+        Skip edges (a production stage's second ``next`` entry, pointing at
+        the stage that follows the review) never point at a review stage, so
+        the scan still resolves the producing stage for every review stage.
         """
         for _stage_name, stage_cfg in self.stages.items():
             next_list = stage_cfg.get("next") or []
@@ -581,6 +584,123 @@ class RailStateMachineBase(DeepAgentRail):
                 if isinstance(prev_artifacts, list) and prev_artifacts:
                     return prev_artifacts[0]
         return None
+
+    # ------------------------------------------------------------------
+    # Advance-instruction helpers
+    # ------------------------------------------------------------------
+
+    _SKIP_SEMANTICS = (
+        "IMPORTANT: skipping a question (an empty confirmation, the 「跳过」 "
+        "button, or the 「取消」 button) only means the user did not answer "
+        "THAT question. It never means skipping the SDD flow, skipping the "
+        "current stage, or dropping the deliverable: you must still produce "
+        "the artifact and call the advance tool. Never re-ask a question the "
+        "user already skipped or left unanswered.\n\n"
+    )
+
+    def _next_stage_options(self, next_stages: object) -> list[tuple[str, str]]:
+        """Classify each declared forward target as review / skip / terminal.
+
+        * ``review``   — declares a skill but no artifact (runs the R1-R4 gate)
+        * ``skip``     — declares an artifact (the stage reached by skipping
+          the review)
+        * ``terminal`` — declares neither (e.g. ``done``)
+        """
+        options: list[tuple[str, str]] = []
+        if not isinstance(next_stages, list):
+            return options
+        for name in next_stages:
+            if not isinstance(name, str):
+                continue
+            cfg = self.stages.get(name) or {}
+            artifacts = cfg.get("artifacts") or []
+            has_artifacts = isinstance(artifacts, list) and len(artifacts) > 0
+            skill = cfg.get("skill")
+            has_skill = isinstance(skill, str) and bool(skill.strip())
+            if has_artifacts:
+                kind = "skip"
+            elif has_skill:
+                kind = "review"
+            else:
+                kind = "terminal"
+            options.append((name, kind))
+        return options
+
+    def _build_production_advance_instruction(self, next_stages: object) -> str:
+        """Advance instruction for a production stage.
+
+        A production stage may declare more than one forward target: the
+        review stage (run the gate pipeline) and a skip target (the user
+        declined the review). Both are named explicitly so the agent never
+        has to guess — and so "skip the review" is a reachable choice
+        instead of an unreachable one.
+        """
+        options = self._next_stage_options(next_stages)
+        if not options:
+            return (
+                f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
+                f"to advance the flow."
+            )
+        if len(options) == 1:
+            return (
+                f"After producing the file, call the `{self.ADVANCE_TOOL}` tool "
+                f"(with stage={options[0][0]}) to advance to the next stage."
+            )
+
+        lines = [
+            f"After producing the file, call the `{self.ADVANCE_TOOL}` tool to "
+            f"advance. Pick exactly one target:"
+        ]
+        for name, kind in options:
+            if kind == "review":
+                lines.append(
+                    f"- (with stage={name}) → run the document review pipeline "
+                    f"(R1-R4) before moving on."
+                )
+            elif kind == "terminal":
+                lines.append(
+                    f"- (with stage={name}) → skip the review stage because the "
+                    f"user declined the review, and finish the flow."
+                )
+            else:
+                lines.append(
+                    f"- (with stage={name}) → skip the review stage because the "
+                    f"user declined the review, and go straight to that stage."
+                )
+        lines.append(
+            "If the user declined the review (skipped or cancelled the review "
+            "authorization), use the skip target. Do NOT enter the review stage "
+            "in order to skip it — the review stage has no skip entry point "
+            "before its own user gate, so entering it forces the full gate "
+            "pipeline."
+        )
+        return "\n".join(lines)
+
+    def _resolve_artifact_path(self, artifact: Optional[str]) -> tuple[str, bool]:
+        """Return ``(absolute path, exists)`` for a stage-declared artifact.
+
+        The review stage needs to confirm the deliverable exists before
+        gating it. Doing that check in the framework keeps it portable
+        (no shell), and the result is injected into the methodology frame
+        so the agent does not have to probe the filesystem itself.
+        """
+        if not artifact:
+            return ("<unresolved artifact path>", False)
+        feature = self._resolve_feature_name()
+        if not feature:
+            return (
+                f"<no feature directory under {self._project_dir}/.aet/features/>",
+                False,
+            )
+        path = (
+            self._project_dir
+            / ".aet"
+            / "features"
+            / feature
+            / "design"
+            / Path(str(artifact)).name
+        )
+        return (str(path), path.exists())
 
     # ------------------------------------------------------------------
     # Skill file index (absolute paths only — no content inlining)

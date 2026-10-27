@@ -2166,6 +2166,9 @@
       "slack": "是否启用 Slack 频道；关闭后保留已有配置。",
       "whatsapp": "是否启用 WhatsApp 频道；关闭后保留已有配置。"
     },
+    "availability": {
+      "xiaoyi": "小艺暂不支持定时任务和文件发送。"
+    },
     "configurationGuide": "配置方法",
     "addConfiguration": "添加配置",
     "enable": "启用",
@@ -2647,6 +2650,7 @@
       "web": "网页 (web)",
       "tui": "终端 (tui)",
       "xiaoyi": "小艺 (xiaoyi)",
+      "xiaoyiUnsupported": "小艺（暂不支持）",
       "feishu": "飞书 (feishu)",
       "dingtalk": "钉钉 (dingtalk)",
       "whatsapp": "WhatsApp (whatsapp)",

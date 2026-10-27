@@ -1049,27 +1049,20 @@
   min-width: 0;
 }
 
-.designer-chat-panel__model {
+/* Canvas model switcher (#5394): this used to be a static label, so the
+   composer must now host the real picker without squeezing the send button. */
+.designer-chat-panel__composer-actions .chat-model-selector {
   display: inline-flex;
   min-width: 0;
   max-width: calc(100% - 40px);
-  align-items: center;
-  gap: 6px;
-  color: var(--color-text-primary);
-  font-size: 12px;
-  line-height: 1;
-  pointer-events: none;
-  user-select: none;
 }
 
-.designer-chat-panel__model-icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
+.designer-chat-panel__composer-actions .chat-mode-select__trigger {
+  min-width: 0;
+  max-width: 100%;
 }
 
-.designer-chat-panel__model-label {
+.designer-chat-panel__composer-actions .chat-mode-select__label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;

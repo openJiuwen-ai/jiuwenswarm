@@ -11,42 +11,37 @@ web 通道的 oauth 回调（``mcp_oauth_http`` → ``common.mcp_oauth`` →
 ``ExternalProviderUnregistered``，注入点原生降级）。
 
 远端调用经既有 Gateway ↔ AgentServer WebSocket 通道上的 ``command.mcp``
-扩展 action（``oauth_callback``）。该 action 族在 server 侧按
+扩展 action（``oauth_callback``，服务端按握手绑定的连接级共享密钥放行）。该 action 族在 server 侧按
 ``channel_id == "gateway"`` 门控（``agent_ws_server._command_mcp_internal_state``），
 不脱敏的原始数据不会暴露给 web/TUI 通道。
 
-启用：环境变量 ``JIUWENSWARM_MCP_REMOTE=1`` 时由
-``server_store_bridge.install()`` 改注册本实现（默认仍走本地桥）。
+bridge 退役后本实现是 mcp_registry 域在 gateway 进程的唯一注册形态
+（``app_gateway`` 启动装配）。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from jiuwenswarm.common.external_providers import register
+from jiuwenswarm.common.mcp_oauth import McpOAuthError
 from jiuwenswarm.common.schema.message import ReqMethod
 
 from gateway.routing.e2a_proxy import fetch_agent_unary
 
 logger = logging.getLogger(__name__)
 
-#: oauth 回调远端执行的 unary 超时（秒）。回调是浏览器重定向后的等待页，
-#: 5s 上限与 session_metadata 远端读一致（超时按失败降级，不悬挂页面）。
-MCP_OAUTH_CALLBACK_TIMEOUT_SECONDS = 5.0
+#: oauth 回调远端执行的 unary 超时（秒）。换码含 IdP 外部 HTTP 往返
+#: （服务端 ``_HTTP_TIMEOUT_S=20s``）：预算来源与 session_metadata 的
+#: 控制路径短等待完全不同，须覆盖服务端满额换码再加余量，否则用户看到
+#: 失败落地页而凭据实际写入生效（状态与 UI 不一致）。
+MCP_OAUTH_CALLBACK_TIMEOUT_SECONDS = 25.0
 
 #: 内部调用通道标识；server 侧对 command.mcp 的内部 action 族按此门控。
 _MCP_INTERNAL_CHANNEL_ID = "gateway"
 
-_REMOTE_ENV = "JIUWENSWARM_MCP_REMOTE"
-
 _agent_client: Any = None
-
-
-def remote_enabled() -> bool:
-    """是否以 WS 远端实现注册 mcp_registry 域（默认本地桥）。"""
-    return os.environ.get(_REMOTE_ENV, "").strip() in ("1", "true", "True")
 
 
 def bind_agent_client(client: Any) -> None:
@@ -65,9 +60,9 @@ class McpRegistryRemoteProvider:
 
     @staticmethod
     def complete_oauth_callback(query: dict[str, Any]) -> bool:
-        """同步入口降级：无法同步等待 WS 往返，返回失败并告警。"""
+        """同步入口降级：无法同步等待 WS 往返，按失败告警（不静默成功）。"""
         logger.warning(
-            "[mcp-registry-remote] sync entry degraded in remote mode; "
+            "[mcp-registry-remote] sync entry degraded; "
             "oauth callback treated as failed（migrate to "
             "complete_oauth_callback_async）"
         )
@@ -87,12 +82,12 @@ class McpRegistryRemoteProvider:
             timeout_seconds=MCP_OAUTH_CALLBACK_TIMEOUT_SECONDS,
         )
         if not ok:
-            logger.warning(
-                "[mcp-registry-remote] oauth callback failed: error=%s code=%s",
-                (payload or {}).get("error"),
-                (payload or {}).get("code"),
+            # 失败语义随线保留：handler 不检查返回值，折叠成 False 会把失败
+            # 显示成"授权成功"。服务端错误文案（如 flow unknown/expired）经
+            # McpOAuthError 透传，回调页仍得到 400 落地而非 500。
+            raise McpOAuthError(
+                str((payload or {}).get("error") or "oauth callback failed")
             )
-            return False
         return bool((payload or {}).get("completed"))
 
 

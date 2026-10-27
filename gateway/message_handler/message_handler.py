@@ -3487,7 +3487,7 @@ class MessageHandler(ABC):
                 "[MessageHandler] trajectory update skipped because web channel is unavailable"
             )
             return True
-        from jiuwenswarm.observability.models import CommittedTraceUpdate
+        from gateway.channel_manager.web.trace_update import CommittedTraceUpdate
 
         try:
             frame_seq = int(payload.get("frame_seq", 0))

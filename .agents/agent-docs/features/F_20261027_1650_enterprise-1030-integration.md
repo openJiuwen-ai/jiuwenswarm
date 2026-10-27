@@ -27,7 +27,40 @@ files:
 
 # 1030 集成候选记录
 
-## 当前结论（2026-10-27 更新）
+## 当前 PR 冲突处理（2026-10-27，基线 b901e8cb6）
+
+本节替代上一轮的当前基线和“不 push”交付状态，历史验证证据保留。
+本轮从已推送的 integration `c0ffec2e25deb6c98101c8f4e1199920ce507cc5` 合并
+upstream/develop `b901e8cb611110a56ad27b76a64cfab5ecdd2cc5`，包含主线新增的 11 个提交。
+提交前再次 fetch 两端，版本未变化；使用普通 merge，不改写历史，交付目标为推送 origin 的 integration 以更新 PR。
+不直接修改 upstream/develop。原工作目录的 feature/enterprise-verify 与本地 release/1030 保持不变；
+本轮读取到 origin/release/1030 已由其他工作推进至 `e0945addc76db571a7542b789f5afea2fdf68fa0`，本任务未改动该分支。
+
+三个文本冲突的处理：
+
+- `gateway/cron/controller.py` 同时保留企业身份字段保护与主线 scheduled-task policy。
+- `gateway/cron/scheduler.py` 先拒绝不支持的小艺定时任务，再沿用企业 DB 调度、租户三元组与项目准入路径；未覆盖为个人版调度实现。
+- `ChatModelSelector.tsx` 使用主线显式 sessionId 绑定设计画布的选择，同时保留企业版 disabled 限制，避免改到其他会话或绕过模型权限。
+
+自动合并部分保留主线 server_store_bridge 退役、MCP 远程回调、轨迹 AgentServer 代理及共享协议成员注册；
+核对 Gateway 装配、Web 客户端绑定和消费者，并运行相应回归。未恢复已退役本地桥。
+
+本轮行为证据：
+
+- 后端原 138 文件加本轮新增/修改测试，共 148 文件：**3550 passed / 3 skipped，65.28 秒**。
+  日志 `/private/tmp/integration-conflict-backend.log`；实际清单 `/private/tmp/integration-conflict-tests.txt`。
+- 随后将小艺立即执行/重载调度用例参数化为 personal/enterprise 两版；调度文件复验 **148 passed，4.03 秒**，
+  日志 `/private/tmp/integration-conflict-cron-final.log`。此数字与上述大轮有重复，不相加。
+- 前端 8 组 **58 passed**：chat-model-selection 13、xiaoyi-cron-target 2、cron-target-keys 2、
+  agent-avatar 19、designer-store-save 2、designer-materials 6、designer-material-filename 5、designer-chat-history 9。
+  日志 `/private/tmp/integration-conflict-frontend.log` 与 `/private/tmp/integration-conflict-frontend-retest.log`。
+- 四个设计画布测试最初在导入 webClient 时缺 window；补用共用 browserEnvironment fixture，并将相关 esbuild 的
+  import.meta.env 注入补齐后通过。未改变业务代码来迁就 Node，未放宽行为断言。
+
+环境沿用下文已记录 Python/Runtime/依赖源码与 Node 环境。没有运行格式化、静态检查或生产构建。
+本轮为合并增量及相关回归验证，不代表全仓 UT、真实客户联调或部署验收；下文服务级冒烟限制继续有效。
+
+## 上一轮结论（2026-10-27，基线 ef7473ba7）
 
 本记录续写同一集成任务。以下当前结论替代历史章节的“未处理/阻断”状态；旧测试数字保留为当时证据，不代表当前候选。
 

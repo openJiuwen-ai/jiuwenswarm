@@ -2026,6 +2026,12 @@ async def _run(
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
+    # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
+    # 器经 provider("cron_store_factory") 创建 gateway 侧 cron store
+    from gateway.runtime.cron import factory as _cron_factory
+    from jiuwenswarm.common.external_providers import register as _register_provider
+
+    _register_provider("cron_store_factory", _cron_factory)
     # session_metadata 域 WS 远端实现的客户端绑定（仅远端预演模式消费）
     from gateway.routing.session_metadata_remote import bind_agent_client as _bind_session_meta_client
 
@@ -3903,13 +3909,17 @@ def main() -> None:
             # Error was already printed by parse_dotenv_early()
             raise SystemExit(1)
 
-    # 过渡装配：注册 server 侧存储实现供 common 注入点取用
-    # （gateway 独立成仓时删除，见 gateway/server_store_bridge.py）
-    from gateway.server_store_bridge import (
-        install as _install_server_stores,
+    # gateway 进程注入点装配（bridge 已退役）：session_metadata 与
+    # mcp_registry 两域注册 WS 远端实现——gateway 仓不再加载任何
+    # server 侧模块；a2ui/team/mcp_state/mcp_credential 域在本进程
+    # 零消费，保持未注册（调用得到 ExternalProviderUnregistered 降级）。
+    from gateway.routing.mcp_remote import install as _install_mcp_registry_remote
+    from gateway.routing.session_metadata_remote import (
+        install as _install_session_metadata_remote,
     )
 
-    _install_server_stores()
+    _install_session_metadata_remote()
+    _install_mcp_registry_remote()
 
     default_host = os.getenv("AGENT_SERVER_HOST", "127.0.0.1")
     default_port = os.getenv("AGENT_SERVER_PORT") or os.getenv("AGENT_PORT", "18092")
