@@ -156,11 +156,8 @@ def install() -> None:
     _install_session_metadata()
     _install_mcp_domains()
 
-    from gateway.runtime.cron import factory as cron_factory
-
-    from jiuwenswarm.common.external_providers import register
-
-    register("cron_store_factory", cron_factory)
+    # cron_store_factory 注册已移交 app_gateway 启动装配（gateway 自有
+    # 工厂，不涉 server import，无需经桥）
 
     _INSTALLED = True
     logger.info("[server-store-bridge] server store providers installed")

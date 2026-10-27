@@ -2030,6 +2030,12 @@ async def _run(
     cron_controller = CronController.get_instance(store=cron_store, scheduler=cron_scheduler)
     cron_controller.bind_agent_client(client)
     message_handler.set_cron_controller(cron_controller)
+    # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
+    # 器经 provider("cron_store_factory") 创建 gateway 侧 cron store
+    from gateway.runtime.cron import factory as _cron_factory
+    from jiuwenswarm.common.external_providers import register as _register_provider
+
+    _register_provider("cron_store_factory", _cron_factory)
     # session_metadata 域 WS 远端实现的客户端绑定（仅远端预演模式消费）
     from gateway.routing.session_metadata_remote import bind_agent_client as _bind_session_meta_client
 
