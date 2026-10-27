@@ -7,7 +7,7 @@ import { ModelsSettings, type ModelSettingsTabId } from './ModelsSettings';
 export const modelSettingsTabs = [
   { id: 'models', labelKey: 'settingsPanel.models.modelsTab' },
   { id: 'groups', labelKey: 'settingsPanel.models.modelGroups' },
-  { id: 'jev', labelKey: 'settingsPanel.models.jevTab' },
+  { id: 'jev', labelKey: 'settingsPanel.models.jevTab', helpKey: 'settingsPanel.models.jevTabHelp' },
 ] as const satisfies readonly SettingsTabDefinition<ModelSettingsTabId>[];
 
 export const defaultModelSettingsTab: ModelSettingsTabId = 'models';
