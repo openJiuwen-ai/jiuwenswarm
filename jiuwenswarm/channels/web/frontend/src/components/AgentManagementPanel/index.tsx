@@ -443,12 +443,8 @@ export function AgentManagementPanel({
       ]);
       if (requestScope !== catalogScope()) return;
       const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
-      const mineNames = new Map(mineCatalog.map(item => [item.id, item.searchNames]));
       const catalog = Array.from(
-        new Map([...mineCatalog, ...marketplaceCatalog].map(item => [item.id, {
-          ...item,
-          searchNames: mineNames.get(item.id) ?? item.searchNames,
-        }])).values(),
+        new Map([...mineCatalog, ...marketplaceCatalog].map(item => [item.id, item])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, cache);
