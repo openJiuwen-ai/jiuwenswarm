@@ -28,6 +28,7 @@ import base64
 import logging
 import mimetypes
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -35,8 +36,14 @@ from typing import Any
 import httpx
 from openjiuwen.core.foundation.tool import tool
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    RootDecisionContext,
+    current_root_decision_context,
+)
 from jiuwenswarm.agents.harness.common.tools import gen_toolkits
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
+from jiuwenswarm.common.chat_final import FINAL_MODE_APPEND, annotate_chat_final
+from jiuwenswarm.common.host_services import send_runtime_push
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
@@ -48,6 +55,111 @@ _VIDEO_MIN_SECONDS = 4
 _VIDEO_MAX_SECONDS = 15
 # MiniMax-H3-Max rejects clips shorter than 5 s.
 _H3_MAX_MIN_SECONDS = 5
+
+# A video job that is still running when generate_video's/check_video_status's
+# own bounded poll window gives up is not forgotten here: this module keeps
+# polling it in the background and pushes the outcome into the chat once it
+# settles. Without this, a slow job submitted in Team/multi-agent mode is
+# never surfaced again once that round's stream ends (GitCode #5806) - the
+# user has to think to ask again, and the agent has to think to re-call
+# check_video_status, neither of which is guaranteed once the turn is over.
+_WATCH_POLL_INTERVAL_SECONDS = 20
+_WATCH_MAX_SECONDS = 30 * 60
+# All of generate_video's/check_video_status's own "still running" messages
+# (both the direct OpenRouter-style path here and every gen_toolkits backend)
+# share this "Video job <id> submitted and still ..." / "Video job <id> is
+# still ..." shape - see _pending_submit_message and the check_video_status
+# paths below.
+_PENDING_JOB_ID_RE = re.compile(r"^Video job (\S+) (?:submitted and still|is still) \w+")
+_SAVED_TO_RE = re.compile(r"Saved to: (.+?)\n")
+# job_ids with an active background watcher - guards against piling up a
+# second watcher every time the agent (or this module itself) polls a job
+# that is still pending.
+_WATCHED_PENDING_JOBS: set[str] = set()
+# Keeps the scheduled tasks referenced so they aren't garbage-collected mid-flight.
+_BACKGROUND_WATCH_TASKS: set[asyncio.Task[None]] = set()
+
+
+def _extract_pending_job_id(message: str) -> str | None:
+    match = _PENDING_JOB_ID_RE.match(message or "")
+    return match.group(1) if match else None
+
+
+def _schedule_completion_watch_if_pending(result: str, save_dir: str | None) -> None:
+    """Arm a background watcher the first time *result* reports a still-running job."""
+    job_id = _extract_pending_job_id(result)
+    if not job_id or job_id in _WATCHED_PENDING_JOBS:
+        return
+    context = current_root_decision_context()
+    if context is None:
+        # No session/request to deliver to (e.g. a CLI/offline call) - the
+        # caller is expected to poll check_video_status itself.
+        return
+    _WATCHED_PENDING_JOBS.add(job_id)
+    task = asyncio.create_task(_watch_until_settled(job_id, save_dir, context))
+    _BACKGROUND_WATCH_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_WATCH_TASKS.discard)
+
+
+async def _watch_until_settled(
+    job_id: str, save_dir: str | None, context: RootDecisionContext
+) -> None:
+    try:
+        elapsed = 0
+        while elapsed < _WATCH_MAX_SECONDS:
+            await asyncio.sleep(_WATCH_POLL_INTERVAL_SECONDS)
+            elapsed += _WATCH_POLL_INTERVAL_SECONDS
+            result = await _check_video_status_impl(job_id, save_dir)
+            if _extract_pending_job_id(result) != job_id:
+                await _deliver_watch_result(job_id, result, context)
+                return
+        logger.warning(
+            "[generate_video] gave up watching job %s for completion after %ss",
+            job_id, elapsed,
+        )
+    except Exception:
+        logger.exception("[generate_video] background completion watch failed for job %s", job_id)
+    finally:
+        _WATCHED_PENDING_JOBS.discard(job_id)
+
+
+async def _deliver_watch_result(job_id: str, result: str, context: RootDecisionContext) -> None:
+    """Push a settled job's outcome into the chat it was submitted from.
+
+    There is no live agent turn left to read this tool's return value once
+    the bounded poll window (and the turn/stream that originally called
+    generate_video) has already ended - this is the proactive-delivery path
+    send_file_to_user already uses for files, reused here for the same reason.
+    """
+    saved_to = _SAVED_TO_RE.search(result + "\n")
+    if saved_to:
+        from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
+
+        toolkit = SendFileToolkit(context.request_id, context.session_id, context.channel_id)
+        delivery = await toolkit.send_file(saved_to.group(1).strip())
+        logger.info(
+            "[generate_video] delivered completed job %s to session %s: %s",
+            job_id, context.session_id, delivery,
+        )
+        return
+
+    pushed = await send_runtime_push(
+        {
+            "request_id": context.request_id,
+            "channel_id": context.channel_id,
+            "session_id": context.session_id,
+            "payload": annotate_chat_final(
+                {"content": f"视频生成任务 {job_id} 未能成功完成：{result}"},
+                final_mode=FINAL_MODE_APPEND,
+            ),
+            "is_complete": False,
+        }
+    )
+    if not pushed:
+        logger.warning(
+            "[generate_video] no active push host to deliver job %s result to session %s",
+            job_id, context.session_id,
+        )
 
 
 def video_gen_enabled() -> bool:
@@ -296,7 +408,9 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
             prompt, aspect_ratio, resolution, duration_seconds, generate_audio, frame_data_uri,
             reference_image_uris=tuple(reference_uris), reference_mode=reference_mode,
         )
-        return await gen_toolkits.submit_video(target, request, save_dir)
+        result = await gen_toolkits.submit_video(target, request, save_dir)
+        _schedule_completion_watch_if_pending(result, save_dir)
+        return result
     if reference_uris or reference_mode:
         return (
             f"[ERROR]: the configured video model {model!r} ({api_base}) only supports text-to-video and "
@@ -346,11 +460,13 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
                 return poll_error
 
             if status not in _TERMINAL_STATUSES:
-                return (
+                pending_message = (
                     f"Video job {job_id} submitted and still {status} after {elapsed}s - generation can "
                     f"take several minutes. Call check_video_status with job_id={job_id} to check progress "
                     "and download it once ready."
                 )
+                _schedule_completion_watch_if_pending(pending_message, save_dir)
+                return pending_message
             if status != "completed":
                 return (
                     f"[ERROR]: video job {job_id} ended with status {status}: "
@@ -360,6 +476,50 @@ async def generate_video(  # pylint: disable=huawei-too-many-arguments
             return await _download_video(ctx, api_base, save_dir)
     except httpx.HTTPError as exc:
         return f"[ERROR]: video generation request failed: {exc!r}"
+
+
+async def _check_video_status_impl(job_id: str, save_dir: str | None = None) -> str:
+    api_key, api_base, model = _get_video_gen_api_credentials()
+    backend = gen_toolkits.detect_backend("VIDEO_GEN_PROTOCOL", api_base)
+    if not (api_base and (api_key or backend in gen_toolkits.KEYLESS_BACKENDS)):
+        return (
+            "[ERROR]: video generation is not configured - set the Video processing "
+            "API key, API URL, and model name in configuration settings."
+        )
+    job_id = (job_id or "").strip()
+    if not job_id:
+        return "[ERROR]: job_id is required."
+
+    if backend:
+        target = gen_toolkits.GenerationTarget(backend, api_key, api_base, model)
+        result = await gen_toolkits.check_video(target, job_id, save_dir)
+        _schedule_completion_watch_if_pending(result, save_dir)
+        return result
+
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=30, verify=get_requests_verify()) as client:
+            poll = await client.get(f"{api_base}/videos/{job_id}", headers=headers)
+            if poll.status_code != 200:
+                return f"[ERROR]: checking video job {job_id} failed: {poll.status_code} {poll.text}"
+            try:
+                job = poll.json()
+            except ValueError as exc:
+                return f"[ERROR]: checking video job {job_id} returned invalid JSON: {exc!r}"
+            status = job.get("status", "unknown")
+            if status == "completed":
+                ctx = _JobContext(client=client, headers=headers, job_id=job_id)
+                return await _download_video(ctx, api_base, save_dir)
+            if status in _TERMINAL_STATUSES:
+                return (
+                    f"[ERROR]: video job {job_id} ended with status {status}: "
+                    f"{job.get('error', 'no error detail provided')}"
+                )
+            pending_message = f"Video job {job_id} is still {status}."
+            _schedule_completion_watch_if_pending(pending_message, save_dir)
+            return pending_message
+    except httpx.HTTPError as exc:
+        return f"[ERROR]: checking video job {job_id} failed: {exc!r}"
 
 
 @tool(
@@ -381,40 +541,4 @@ async def check_video_status(job_id: str, save_dir: str | None = None) -> str:
     Returns:
         Path to the generated video file, or a status message if still running.
     """
-    api_key, api_base, model = _get_video_gen_api_credentials()
-    backend = gen_toolkits.detect_backend("VIDEO_GEN_PROTOCOL", api_base)
-    if not (api_base and (api_key or backend in gen_toolkits.KEYLESS_BACKENDS)):
-        return (
-            "[ERROR]: video generation is not configured - set the Video processing "
-            "API key, API URL, and model name in configuration settings."
-        )
-    job_id = (job_id or "").strip()
-    if not job_id:
-        return "[ERROR]: job_id is required."
-
-    if backend:
-        target = gen_toolkits.GenerationTarget(backend, api_key, api_base, model)
-        return await gen_toolkits.check_video(target, job_id, save_dir)
-
-    headers = {"Authorization": f"Bearer {api_key}"}
-    try:
-        async with httpx.AsyncClient(timeout=30, verify=get_requests_verify()) as client:
-            poll = await client.get(f"{api_base}/videos/{job_id}", headers=headers)
-            if poll.status_code != 200:
-                return f"[ERROR]: checking video job {job_id} failed: {poll.status_code} {poll.text}"
-            try:
-                job = poll.json()
-            except ValueError as exc:
-                return f"[ERROR]: checking video job {job_id} returned invalid JSON: {exc!r}"
-            status = job.get("status", "unknown")
-            if status == "completed":
-                ctx = _JobContext(client=client, headers=headers, job_id=job_id)
-                return await _download_video(ctx, api_base, save_dir)
-            if status in _TERMINAL_STATUSES:
-                return (
-                    f"[ERROR]: video job {job_id} ended with status {status}: "
-                    f"{job.get('error', 'no error detail provided')}"
-                )
-            return f"Video job {job_id} is still {status}."
-    except httpx.HTTPError as exc:
-        return f"[ERROR]: checking video job {job_id} failed: {exc!r}"
+    return await _check_video_status_impl(job_id, save_dir)
