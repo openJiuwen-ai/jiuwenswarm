@@ -331,6 +331,7 @@ export function ContextUsageIndicator() {
                     <span data-testid="chat-panel-context-usage-input-column-label">
                       {t('chat.contextUsage.inputTokens')}
                     </span>
+                    <span className="context-usage-token-totals__separator" aria-hidden="true">/</span>
                     <span data-testid="chat-panel-context-usage-output-column-label">
                       {t('chat.contextUsage.outputTokens')}
                     </span>
@@ -357,6 +358,7 @@ export function ContextUsageIndicator() {
                             ? t('chat.contextUsage.notReported')
                             : formatCumulativeTokens(usage.input_tokens)}
                         </strong>
+                        <span className="context-usage-token-totals__separator" aria-hidden="true">/</span>
                         <strong data-variant="output" data-testid="chat-panel-context-usage-output-tokens">
                           {usage.output_tokens === null
                             ? t('chat.contextUsage.notReported')
