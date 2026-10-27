@@ -1300,6 +1300,73 @@ test('consecutive supplemented phases carry the unseen answer only into the fina
   }
 });
 
+test('a supplemented reconciliation phase hides its business draft until the reconciled answer is visible once', async (context) => {
+  const c = await mount(context);
+  try {
+    const { emit, supplement, assertVisibleAnswer } = answerCarryContract(c);
+    emit('chat.output_phase', 'reconcile-old', { applied_input_ids: [] });
+    const inputId = await supplement('reconcile-old', 'Read the complete image text', steerImages[0]);
+    emit('chat.final', 'reconcile-old', { content: '99 * 99 = 9801', output_suppressed: true });
+    emit('chat.output_phase', 'reconcile-pending', {
+      applied_input_ids: [inputId], delivery_reconciliation_pending: true,
+    });
+    const draft = 'The image text is PROOF-RECONCILE.';
+    emit('chat.delta', 'reconcile-pending', { content: draft, output_suppressed: true });
+    emit('chat.final', 'reconcile-pending', { content: draft, output_suppressed: true });
+    await c.tick(16);
+    assert.equal(c.runtime().isProcessing, true, 'a hidden business final cannot complete the turn');
+    assert.equal(c.runtime().messages.filter((message) => message.role === 'assistant').length, 0);
+    assert.ok(!document.body.textContent.includes('PROOF-RECONCILE'));
+    const answer = '99 * 99 = 9801. The image text is PROOF-RECONCILE.';
+    emit('chat.final', 'reconcile-pending', { content: answer, delivery_reconciled: true });
+    await assertVisibleAnswer(answer, 1);
+    assert.equal(document.querySelectorAll('[data-testid="chat-panel-msg-file-card"]').length, 1);
+  } finally {
+    await c.dispose();
+  }
+});
+
+for (const language of ['zh', 'en']) {
+  test(`delivery reconciliation failure shows ${language} guidance while hiding the draft until terminal state`, async (context) => {
+    const c = await mount(context);
+    const previousLanguage = i18n.language;
+    try {
+      await act(async () => i18n.changeLanguage(language));
+      const { emit, supplement } = answerCarryContract(c);
+      emit('chat.output_phase', 'delivery-failure-old', { applied_input_ids: [] });
+      const inputId = await supplement('delivery-failure-old', 'Read the image', steerImages[0]);
+      emit('chat.final', 'delivery-failure-old', { content: '99 * 99 = 9801', output_suppressed: true });
+      emit('chat.output_phase', 'delivery-failure-pending', {
+        applied_input_ids: [inputId], delivery_reconciliation_pending: true,
+      });
+      const draft = 'DRAFT-IMAGE-ONLY-RESULT';
+      emit('chat.delta', 'delivery-failure-pending', { content: draft, output_suppressed: true });
+      emit('chat.final', 'delivery-failure-pending', { content: draft, output_suppressed: true });
+      assert.equal(c.runtime().isProcessing, true);
+      emit('chat.error', 'delivery-failure-pending', {
+        code: 'SESSION_INPUT_DELIVERY_FAILED', error: 'private reconciliation diagnostics',
+      });
+      await c.flush();
+      assert.equal(c.runtime().isProcessing, true, 'the authoritative processing terminal has not arrived');
+      assert.equal(c.runtime().executionError, i18n.t('chat.steerDeliveryFailed'));
+      const systemMessages = c.runtime().messages.filter((message) => message.role === 'system');
+      assert.equal(systemMessages.length, 1);
+      assert.ok(systemMessages[0].content.includes(i18n.t('chat.steerDeliveryFailed')));
+      assert.ok(document.querySelector('[data-testid="chat-panel-system-message-bubble"]')?.textContent.includes(i18n.t('chat.steerDeliveryFailed')));
+      assert.ok(!document.body.textContent.includes(draft));
+      assert.ok(!document.body.textContent.includes('private reconciliation diagnostics'));
+      assert.equal(c.runtime().messages.filter((message) => message.role === 'assistant').length, 0);
+      c.receive('chat.processing_status', { request_id: 'original', is_processing: false });
+      await c.flush();
+      assert.equal(c.runtime().isProcessing, false);
+      assert.ok(!c.runtime().messages.some((message) => message.content.includes(draft)));
+    } finally {
+      await act(async () => i18n.changeLanguage(previousLanguage));
+      await c.dispose();
+    }
+  });
+}
+
 for (const ackFirst of [true, false]) {
   test(`ordered input boundary freezes old output with ${ackFirst ? 'early' : 'late'} ACK`, async (context) => {
     const c = await mount(context);

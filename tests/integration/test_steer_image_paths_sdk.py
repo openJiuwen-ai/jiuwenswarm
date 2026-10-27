@@ -338,8 +338,33 @@ class DeliveryContinuationModel(ImageSteerModel):
         super().__init__(media_items)
         self.action = action
         self.entered, self.release = asyncio.Event(), asyncio.Event()
+        self.reconciliation_messages = []
 
     async def invoke(self, messages, **kwargs):
+        if len(messages) == 2 and "delivery_data" in str(messages[-1].content):
+            self.reconciliation_messages.append(copy.deepcopy(messages))
+            assert kwargs.get("tools") is None
+            data = json.loads(messages[-1].content)["delivery_data"]
+            assert data["original_request_id"] == "original-math"
+            assert data["input_request_ids"] == ["new-supplement"]
+            assert data["original_request"] == "Calculate 99 * 99"
+            assert data["original_reply"] == "99 * 99 = 9801"
+            assert "9801" not in data["latest_draft"]
+            if self.action == "invalid-coverage":
+                result = {"reply": data["latest_draft"], "coverage": []}
+            elif self.action == "cancel":
+                result = {"reply": "CANCELLED", "coverage": [
+                    {"id": "original-math", "status": "superseded", "evidence": "Cancel the earlier calculation"},
+                    {"id": "new-supplement", "status": "included", "evidence": "CANCELLED"},
+                ]}
+            else:
+                result = {"reply": data["original_reply"] + ". " + data["latest_draft"], "coverage": [
+                    {"id": "original-math", "status": "included", "evidence": "9801"},
+                    {"id": "new-supplement", "status": "included", "evidence": data["latest_draft"]},
+                ]}
+            return AssistantMessage(content=json.dumps(result), usage_metadata=UsageMetadata(
+                model_name="image-steer-test", finish_reason="stop", input_tokens=11, output_tokens=7, total_tokens=18,
+            ))
         self.messages.append(copy.deepcopy(messages))
         if len(self.messages) == 1:
             self.entered.set()
@@ -369,17 +394,17 @@ class DeliveryContinuationModel(ImageSteerModel):
             assert any(isinstance(message.content, list) and any(
                 isinstance(part, dict) and part.get("type") == "image_url" for part in message.content
             ) for message in messages)
-            content = "99 * 99 = 9801. The supplied image has been read."
+            content = "The supplied image has been read."
         else:
-            content = "99 * 99 = 9801. The supplemental text answer is 7."
+            content = "The supplemental text answer is 7."
         return AssistantMessage(content=content, usage_metadata=UsageMetadata(
             model_name="image-steer-test", finish_reason="stop",
         ))
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("action", ["image", "text", "cancel"])
-async def test_hidden_original_answer_is_carried_to_next_visible_reply(tmp_path, monkeypatch, action):
+@pytest.mark.parametrize("action", ["image", "text", "cancel", "invalid-coverage"])
+async def test_hidden_original_delivery_is_reconciled_or_fails_explicitly(tmp_path, monkeypatch, action):
     from jiuwenswarm.agents.harness import agent_observability
 
     session_id = f"steer-delivery-{uuid.uuid4().hex}"
@@ -406,6 +431,7 @@ async def test_hidden_original_answer_is_carried_to_next_visible_reply(tmp_path,
     facade._adapter = adapter
     reader = None
     payloads = []
+    completed_plans = []
 
     async def collect():
         original = AgentRequest(
@@ -418,6 +444,15 @@ async def test_hidden_original_answer_is_carried_to_next_visible_reply(tmp_path,
 
     try:
         await adapter.install_session_input_guard()
+        take_completed = adapter._session_input_guard.take_completed_delivery
+
+        def record_completed():
+            plan = take_completed()
+            if plan is not None:
+                completed_plans.append(plan)
+            return plan
+
+        monkeypatch.setattr(adapter._session_input_guard, "take_completed_delivery", record_completed)
         await agent.start(session=session)
         reader = asyncio.create_task(collect())
         await asyncio.wait_for(model.entered.wait(), 15)
@@ -425,6 +460,7 @@ async def test_hidden_original_answer_is_carried_to_next_visible_reply(tmp_path,
             "image": "Identify the supplied image as well.",
             "text": "Also answer the supplemental text question with 7.",
             "cancel": "Cancel the earlier calculation and answer only CANCELLED.",
+            "invalid-coverage": "Also answer the supplemental text question with 7.",
         }[action]
         acknowledgements = [chunk async for chunk in facade.deliver_session_input(AgentRequest(
             request_id="new-supplement", channel_id="web", session_id=session_id,
@@ -435,13 +471,29 @@ async def test_hidden_original_answer_is_carried_to_next_visible_reply(tmp_path,
         assert acknowledgements[0].payload["event_type"] == "runtime.accepted"
         model.release.set()
         await asyncio.wait_for(reader, 25)
-        assert not any(payload.get("event_type") == "chat.error" for payload in payloads)
+        errors = [payload for payload in payloads if payload.get("event_type") == "chat.error"]
         assert any(payload.get("output_suppressed") and "9801" in str(payload.get("content")) for payload in payloads)
         visible = [payload for payload in payloads if payload.get("event_type") == "chat.final"
                    and not payload.get("output_suppressed") and payload.get("content")]
-        assert visible
-        assert ("9801" in visible[-1]["content"]) is (action != "cancel")
-        assert ("image has been read" in visible[-1]["content"]) is (action == "image")
+        assert len(completed_plans) == 1
+        plan = completed_plans[0]
+        assert plan.original_request_id == "original-math" and plan.original_reply == "99 * 99 = 9801"
+        assert plan.input_request_ids == ("new-supplement",) and plan.context is not None
+        assert any(payload.get("event_type") == "chat.output_phase"
+                   and payload.get("delivery_reconciliation_pending") is True for payload in payloads)
+        assert any(payload.get("event_type") == "chat.final" and payload.get("output_suppressed")
+                   and payload.get("content") == plan.latest_draft for payload in payloads)
+        if action == "invalid-coverage":
+            assert len(model.reconciliation_messages) == 2
+            assert errors and "SESSION_INPUT_DELIVERY_FAILED" in str(errors)
+            assert not visible
+        else:
+            assert not errors
+            assert len(model.reconciliation_messages) == 1
+            assert len(visible) == 1 and visible[0]["delivery_reconciled"] is True
+            assert ("9801" in visible[0]["content"]) is (action != "cancel")
+            assert ("image has been read" in visible[0]["content"]) is (action == "image")
+            assert plan.context.get_messages()[-1].content == visible[0]["content"]
         assert "<quoted-delivery-data>" not in "\n".join(str(payload.get("content", "")) for payload in payloads)
         phases = [payload["applied_input_ids"] for payload in payloads
                   if payload.get("event_type") == "chat.output_phase" and payload.get("applied_input_ids")]

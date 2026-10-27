@@ -12,6 +12,7 @@ const LIFECYCLE_ERROR_KEYS: Record<string, string> = {
   NOT_FOUND: 'chat.sessionDeleted',
   OPERATION_IN_PROGRESS: 'chat.sessionOperationInProgress',
   SESSION_INPUT_IMAGE_UNAVAILABLE: 'chat.steerImageUnavailable',
+  SESSION_INPUT_DELIVERY_FAILED: 'chat.steerDeliveryFailed',
   SWARMFLOW_SESSION_BUDGET_EXHAUSTED: 'swarmflow.budgetExhaustedSession',
 };
 

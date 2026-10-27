@@ -62,6 +62,8 @@ The outer loop is composed of `TaskLoopController`, `LoopCoordinator`, `TaskLoop
 
 When `steer` arrives during an execution, output from the earlier generation may be hidden until the supplemental input is applied. Hidden output does not mean the original result was delivered to the user. The next answer must address the supplemental input together with still-applicable results from the original task; an explicit cancellation or replacement takes precedence. In the default Work/Code prompt mode, the server retains the original request, supplements and undelivered results as current execution obligations for every subsequent model call, including tool continuations after reading an image, without repeating completed tool operations. Image supplements follow the same rule and use image-reading tools with uploaded paths from the current session.
 
+For an ordinary human execution with an already-generated original answer that was not fully displayed, the server performs a tool-free final delivery reconciliation after the business model finishes. It validates coverage or explicit replacement of the original request and each supplement before displaying and persisting one final reply. This uses the model selected for the same request, and its usage is included in the turn. Each call has a 30-second timeout; only invalid formatting permits one retry. Failure is explicit rather than presenting a hidden draft as a successful answer. Goal and Agent-origin tasks retain their existing execution semantics.
+
 Task planning and task completion are two key capabilities of the Agent Loop:
 
 - `TaskPlanningRail` connects todo tools, `TaskPlan`, task dependencies, progress reminders, and multi-model selection to the loop.

@@ -16,9 +16,11 @@ generated: true
 | 模块 | 文档数 |
 |---|---|
 | [jiuwenswarm/agents/harness/common/prompt](#module-1) | 1 |
-| [jiuwenswarm/channels/web/frontend](#module-2) | 1 |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-3) | 1 |
-| [未分类](#module-4) | 1 |
+| [jiuwenswarm/channels/process_cli](#module-2) | 1 |
+| [jiuwenswarm/channels/tui/frontend](#module-3) | 1 |
+| [jiuwenswarm/channels/web/frontend](#module-4) | 1 |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-5) | 1 |
+| [未分类](#module-6) | 1 |
 
 <a id="module-1"></a>
 
@@ -26,25 +28,41 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/process_cli, jiuwenswarm/channels/tui/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/steer_delivery.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
 
 <a id="module-2"></a>
+
+## jiuwenswarm/channels/process_cli
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/process_cli, jiuwenswarm/channels/tui/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/steer_delivery.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+
+<a id="module-3"></a>
+
+## jiuwenswarm/channels/tui/frontend
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/process_cli, jiuwenswarm/channels/tui/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/steer_delivery.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+
+<a id="module-4"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/process_cli, jiuwenswarm/channels/tui/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/steer_delivery.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
 
-<a id="module-3"></a>
+<a id="module-5"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
+| [S_02_session-steering-delivery](jiuwenswarm/server/runtime/agent_adapter/S_02_session-steering-delivery.md) | S | 当前执行补充输入的回答交付契约 | 刘瑜 | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/channels/web/frontend, jiuwenswarm/channels/process_cli, jiuwenswarm/channels/tui/frontend | jiuwenswarm/server/runtime/agent_adapter/session_input.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/steer_delivery.py, jiuwenswarm/agents/harness/common/prompt/priority_registry.py, jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts | — |
 
-<a id="module-4"></a>
+<a id="module-6"></a>
 
 ## 未分类
 

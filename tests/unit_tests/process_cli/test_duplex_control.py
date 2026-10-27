@@ -300,7 +300,7 @@ async def test_unattended_permission_rejects_and_continues_via_runtime(run_facto
     run.control = DuplexController(None, run.writer, unattended=True)
     run.client.original.emit(_event(
         "chat.ask_user_question", request_id="permission-card",
-        source="permission_interrupt",
+        source="permission_interrupt", output_suppressed=True,
         questions=[{"options": [{"value": "allow"}, {"value": "reject"}]}],
     ))
     run.client.original.emit(None)

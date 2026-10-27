@@ -37,6 +37,13 @@ test('model_not_configured is replaced by the setup guidance', () => {
   assert.equal(describeChatError({ code: 'model_not_configured' }, 'x', t), '<chat.modelNotConfigured>');
 });
 
+test('supplemental delivery failure explains that the original task and supplement are incomplete', () => {
+  assert.equal(
+    describeChatError({ code: 'SESSION_INPUT_DELIVERY_FAILED' }, 'private reconciliation diagnostics', t),
+    '<chat.steerDeliveryFailed>',
+  );
+});
+
 test('errors without a known code are shown as-is', () => {
   assert.equal(describeChatError({}, RAW, t), RAW);
   assert.equal(describeChatError({ code: 'something_else', upstream: true }, RAW, t), RAW);

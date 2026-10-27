@@ -1879,6 +1879,7 @@
     "uploadFailed": "Upload failed",
     "steerImagesOnly": "Immediate input supports uploaded images only. Wait for image uploads to finish; other files must remain queued.",
     "steerImageUnavailable": "This Agent cannot read images yet. Enable image input for the main model or configure an image understanding tool, then try again.",
+    "steerDeliveryFailed": "Could not combine the original task and supplemental input into a complete answer. Please try again.",
     "retry": "Retry",
     "deleteLongPress": "Delete, long press for more actions",
     "deleteAttachment": "Delete attachment",

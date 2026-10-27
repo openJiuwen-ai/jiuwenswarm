@@ -426,7 +426,12 @@ class _MachineRun:
             self.observe(event)
             if self.summary.error is not None:
                 return False
-            if event.ok and (event.is_complete or event.event_type == "chat.final"):
+            hidden_text = (
+                isinstance(event.payload, dict)
+                and event.payload.get("output_suppressed") is True
+                and event.event_type in {"chat.delta", "chat.final", "chat.reasoning"}
+            )
+            if event.ok and not hidden_text and (event.is_complete or event.event_type == "chat.final"):
                 completed = True
             if event.event_type in _INTERACTION_EVENTS:
                 raise MachineRunError(

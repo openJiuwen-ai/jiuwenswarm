@@ -442,6 +442,7 @@ def _steer_ctx(max_iterations: int | None, iteration: int) -> SimpleNamespace:
         agent=SimpleNamespace(config=SimpleNamespace(max_iterations=max_iterations)),
         inputs=SimpleNamespace(react_iteration=iteration),
         session=SimpleNamespace(write_stream=AsyncMock()),
+        context=None,
         extra={"session_output_phase": "phase"},
     )
 

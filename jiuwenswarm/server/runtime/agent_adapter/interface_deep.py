@@ -18466,7 +18466,19 @@ class JiuWenSwarmDeepAdapter:
         visible_answer_deltas: list[str] = []
         output_phase_id: str | None = None
         pending_input_ids: set[str] = set()
+        delivery_reconciliation_pending = False
+        delivery_reconciliation_allowed = False
         output_sequence = 0
+
+        def add_delivery_usage(records) -> None:
+            for record in records:
+                usage = record.model_dump() if hasattr(record, "model_dump") else record
+                if not isinstance(usage, dict):
+                    continue
+                for field in usage_accumulator:
+                    value = usage.get(field, 0) or 0
+                    if isinstance(value, (int, float)):
+                        usage_accumulator[field] += value
 
         def should_skip_duplicate_ask_user(parsed: dict | None) -> bool:
             if not isinstance(parsed, dict):
@@ -18495,6 +18507,11 @@ class JiuWenSwarmDeepAdapter:
                 if (
                     pending_input_ids and not stream_end
                     and event_type not in ("chat.input_received", "chat.output_phase")
+                ):
+                    payload["output_suppressed"] = True
+                if (
+                    delivery_reconciliation_pending and not stream_end
+                    and event_type in ("chat.delta", "chat.final")
                 ):
                     payload["output_suppressed"] = True
             if event_type in ("chat.delta", "chat.reasoning", "chat.final"):
@@ -19069,6 +19086,7 @@ class JiuWenSwarmDeepAdapter:
                 and not attach_goal_request
                 and not goal_stream_request
             )
+            delivery_reconciliation_allowed = stream_is_user_originated and not attach_subscription
             # A previous consumer may have stopped mid-round; this stream must
             # sample the run kind again on its own first chunk.
             self._reset_round_kind_latch()
@@ -19150,6 +19168,10 @@ class JiuWenSwarmDeepAdapter:
                     else:
                         output_phase_id = chunk.payload["output_phase_id"]
                         pending_input_ids.difference_update(chunk.payload["applied_input_ids"])
+                        delivery_reconciliation_pending = bool(
+                            delivery_reconciliation_allowed
+                            and chunk.payload.get("delivery_reconciliation_pending")
+                        )
                         event_type = "chat.output_phase"
                     yield AgentResponseChunk(
                         request_id=rid, channel_id=cid,
@@ -19428,6 +19450,50 @@ class JiuWenSwarmDeepAdapter:
                     is_complete=False,
                 )
 
+            # Reconcile only completed human input before making its drafts
+            # visible. The SDK's tool execution and model conversation have
+            # finished; this compact, tool-free call runs in the same request.
+            if run_failure is None and delivery_reconciliation_allowed:
+                guard = self._session_input_guard
+                take_delivery = getattr(guard, "take_completed_delivery", None)
+                delivery_plan = take_delivery() if callable(take_delivery) else None
+                completion = self._stream_completion_state(
+                    had_interaction=bool(emitted_ask_user_events),
+                )
+                if delivery_plan is not None and completion == "completed":
+                    from openjiuwen.core.foundation.llm.schema.message import AssistantMessage
+                    from jiuwenswarm.server.runtime.agent_adapter.steer_delivery import (
+                        SessionInputDeliveryError, reconcile_steer_delivery,
+                    )
+
+                    try:
+                        reconciled = await reconcile_steer_delivery(
+                            resolved_model, delivery_plan, delivery_plan.latest_draft,
+                        )
+                    except SessionInputDeliveryError as exc:
+                        add_delivery_usage(exc.usage_records)
+                        raise
+                    add_delivery_usage(reconciled.usage_records)
+                    await delivery_plan.context.add_messages(AssistantMessage(
+                        content=reconciled.content,
+                        metadata={"_openjiuwen_message_source_kind": "session_input_delivery_final"},
+                    ))
+                    await self._instance.react_agent.context_engine.save_contexts(delivery_plan.session)
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=await note_chat_payload({
+                            "event_type": "chat.final", "content": reconciled.content,
+                            "delivery_reconciled": True,
+                        }, stream_end=True),
+                        is_complete=False,
+                        runtime_completion=completion,
+                    )
+                elif delivery_reconciliation_pending and completion == "completed":
+                    from jiuwenswarm.server.runtime.agent_adapter.steer_delivery import SessionInputDeliveryError
+
+                    raise SessionInputDeliveryError("Supplemental reply delivery did not produce a completion plan")
+
             # pause→clear (and similar): round cancelled, iterator ends without
             # a model chat.final. Synthesize a real final so the frontend can
             # stopStreaming; do not demote or suppress this stream-end control
@@ -19513,6 +19579,7 @@ class JiuWenSwarmDeepAdapter:
                     "request_id": rid,
                     "error": str(exc),
                     "error_type": type(exc).__name__,
+                    **({"code": exc.code} if isinstance(getattr(exc, "code", None), str) else {}),
                 },
                 is_complete=False,
             )

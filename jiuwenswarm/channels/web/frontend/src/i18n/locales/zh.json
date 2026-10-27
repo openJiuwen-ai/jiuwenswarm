@@ -1863,6 +1863,7 @@
     "uploadFailed": "上传失败",
     "steerImagesOnly": "立即输入仅支持已上传的图片。请等待图片上传完成，其他文件请保留在队列中发送。",
     "steerImageUnavailable": "当前 Agent 没有可用的读图能力，请启用主模型图片输入或配置图片理解工具后重试。",
+    "steerDeliveryFailed": "补充后的结果整理失败，未能完整回答原问题和补充内容。请重试。",
     "retry": "重试",
     "deleteLongPress": "删除，长按显示更多操作",
     "deleteAttachment": "删除附件",

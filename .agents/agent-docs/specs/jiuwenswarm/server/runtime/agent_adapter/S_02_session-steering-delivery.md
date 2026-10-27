@@ -8,9 +8,12 @@ modules:
   - jiuwenswarm/server/runtime/agent_adapter
   - jiuwenswarm/agents/harness/common/prompt
   - jiuwenswarm/channels/web/frontend
+  - jiuwenswarm/channels/process_cli
+  - jiuwenswarm/channels/tui/frontend
 files:
   - jiuwenswarm/server/runtime/agent_adapter/session_input.py
   - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  - jiuwenswarm/server/runtime/agent_adapter/steer_delivery.py
   - jiuwenswarm/agents/harness/common/prompt/priority_registry.py
   - jiuwenswarm/channels/web/frontend/src/features/historyRestore.ts
 ---
@@ -35,15 +38,30 @@ files:
 
 跨会话 Agent 输入继续通过原有带来源的工具消息进入上下文，system section 只记录有限来源引用，不复制 Agent 正文或将其解释为人类取消、替换或直接授权。
 
-## Web 展示与持久化
+## 最终交付整理
+
+持续提示不是最终交付的充分证据。普通 human `user` 执行中，只有原请求和补充均为人类输入、且确有已生成的原可见回复受到输入边界影响时，phase 才标记 `delivery_reconciliation_pending`。Goal、Agent 原任务及没有旧回复的工具间隙沿用既有输出语义。
+
+该 phase 的业务文本 delta/final 继续标记 `output_suppressed`，工具、权限和错误事件不因此被吞掉。真正 answer 终态生成只消费一次的 `CompletedSessionInputDelivery`，保留完整原请求、旧可见回复、补充顺序、最新草稿及当前 context/session；完整整理数据不沿用 system section 的引用截断预算，不包含 reasoning 或工具请求。暂停不会生成完成计划；新任务、错误和卸载清理临时状态。
+
+原请求的 adapter 在同一 Runtime 执行内，用开始时选定的 `resolved_model` 进行一次 compact、无图片、无工具的最终整理，不重新计算或执行任务。输出必须为严格 JSON：非空 reply，及覆盖原请求 ID 和全部补充 ID 各一次的 coverage。included 必须引用最终 reply 中实际存在的字面证据；superseded 必须引用该项之后到达的人类补充中的取消或替代证据，最后一条补充不能自行声称被替代。拒绝工具调用、重复 JSON 键、遗漏 ID 和无效证据。
+
+每次整理最多 30 秒，仅格式校验失败允许一次重试；provider 或超时错误不伪装为成功。失败报告 `SESSION_INPUT_DELIVERY_FAILED`，不回落到漏答草稿。成功后先通过公开 context API 写入并保存最终 assistant，再发送唯一可见 `chat.final`（`delivery_reconciled=true`）；整理用量计入本轮统计。Runtime 在整个 adapter 迭代完成前保持执行中。
+
+## 客户端展示与持久化
 
 实时 Web 客户端与历史恢复均忽略 `output_suppressed` 的旧阶段文本。后续阶段交付的联合回答是可见结果，不通过重新展示隐藏旧答案补齐结果，不把两个阶段的 final 无条件拼接。
 
 同一组事件在实时展示及刷新后恢复时，应具有相同的用户问题、补充图片关联、工具顺序及最终可见回答。明确取消原问题的补充输入不应在刷新后恢复旧答案；连续补充不得重复展示已经由最终阶段交付的答案。
 
+Process CLI 和 TUI 同样不能将隐藏文本显示、聚合为最终结果，或把隐藏 final 当成完成信号。原始 JSON/JSONL 诊断事件保留标记；权限、工具及错误事件按既有协议处理。
+
 ## 验证入口
 
 - `tests/unit_tests/agentserver/test_session_input_delivery.py`：交付说明、批次身份、失败和生命周期清理。
+- `tests/unit_tests/agentserver/test_steer_delivery.py`：无工具整理、coverage、格式重试、用量及失败。
 - `tests/integration/test_session_steering_sdk.py`：锁定 Core 的实际模型流与 steer 生命周期。
 - `tests/integration/test_steer_image_paths_sdk.py`：上传引用、实际读图工具与模型图片上下文。
 - `jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs`：实时 React 展示与历史恢复一致。
+- `tests/unit_tests/process_cli/test_suppressed_output.py`、`test_duplex_control.py`：可见文本、机器聚合及完成边界。
+- `jiuwenswarm/channels/tui/frontend/tests/output-suppressed.test.mjs`：实际 TUI live/history/权限与终态行为。

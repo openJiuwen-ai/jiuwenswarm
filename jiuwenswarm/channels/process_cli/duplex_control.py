@@ -361,7 +361,12 @@ class DuplexController:
                     self._check_answer_available()
             else:
                 observe(event)
-                if event.event_type not in _ACK_EVENTS and event.ok:
+                hidden_text = (
+                    isinstance(event.payload, dict)
+                    and event.payload.get("output_suppressed") is True
+                    and event.event_type in {"chat.delta", "chat.final", "chat.reasoning"}
+                )
+                if event.event_type not in _ACK_EVENTS and event.ok and not hidden_text:
                     root_terminal = (
                         not had_interaction
                         and item.operation_id == request.request_id
