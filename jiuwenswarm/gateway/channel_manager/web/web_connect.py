@@ -19,6 +19,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
+from weakref import WeakKeyDictionary
 
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
@@ -103,6 +104,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.tool_update",
         "chat.tool_result",
         "chat.processing_status",
+        "chat.moa_status",
         "chat.interrupt_result",
         "chat.evolution_status",
         "chat.error",
@@ -214,6 +216,7 @@ class WebChannel(BaseWsChannel):
         # (complete/reject) 时登记，把该恢复 turn 的迟到事件改投到这个 ws，
         # 而不是当孤儿丢弃；turn 的终态事件送达后解除绑定。
         self._a4p_rebound_ws: dict[str, str] = {}
+        self._queued_moa_notices: WeakKeyDictionary[asyncio.Queue, int] = WeakKeyDictionary()
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
         self.git_watcher_registry: Any = None
@@ -277,6 +280,7 @@ class WebChannel(BaseWsChannel):
         """Merge only contiguous stream frames with identical non-content data."""
         parsed = self._coalescible_stream_frame(first_frame)
         if parsed is None:
+            self._consume_moa_notice(first_frame, queue)
             return [first_frame]
 
         decoded, merged_content = parsed
@@ -296,6 +300,7 @@ class WebChannel(BaseWsChannel):
                 candidate_parsed is None
                 or not self._same_stream_identity(decoded, candidate_parsed[0])
             ):
+                self._consume_moa_notice(candidate, queue)
                 trailing.append(candidate)
                 break
             merged_content += candidate_parsed[1]
@@ -368,7 +373,40 @@ class WebChannel(BaseWsChannel):
             )
 
             data = project_agentos_web_frame(data)
+        ws_id = getattr(ws, "_jiuwen_ws_id", "")
+        queue = self._send_queues.get(ws_id) if ws_id else None
+        if queue is not None and not getattr(ws, "closed", False):
+            if self._is_moa_status_frame(data):
+                if not queue.full():
+                    queue.put_nowait(data)
+                    self._queued_moa_notices[queue] = self._queued_moa_notices.get(queue, 0) + 1
+                return
+            # Only trim optional notices under congestion; preserve every other
+            # frame's order and the existing full-queue policy when none exist.
+            if queue.full() and self._queued_moa_notices.get(queue, 0):
+                retained = []
+                while not queue.empty():
+                    frame = queue.get_nowait()
+                    queue.task_done()
+                    if not self._is_moa_status_frame(frame):
+                        retained.append(frame)
+                for frame in retained:
+                    queue.put_nowait(frame)
+                self._queued_moa_notices.pop(queue, None)
         super()._enqueue_send(ws, data)
+
+    def _consume_moa_notice(self, frame: Any, queue: asyncio.Queue) -> None:
+        if not self._is_moa_status_frame(frame):
+            return
+        remaining = self._queued_moa_notices.get(queue, 0) - 1
+        if remaining > 0:
+            self._queued_moa_notices[queue] = remaining
+        else:
+            self._queued_moa_notices.pop(queue, None)
+
+    @staticmethod
+    def _is_moa_status_frame(frame: Any) -> bool:
+        return isinstance(frame, dict) and frame.get("type") == "event" and frame.get("event") == "chat.moa_status"
 
     # ── 帧发送 API（公开给处理器使用）─────────────────────
 
@@ -1261,11 +1299,7 @@ class WebChannel(BaseWsChannel):
         # interrupt_result 根据 intent 决定 is_processing 状态
         # (busy 映射已在 send() 入口 _track_session_busy 统一维护,此处仅补发
         #  合成的 processing_status 事件让前端同步状态)
-        # pause 不合成任何帧: 服务端在 pause_session_runtime 成功 park 后显式
-        # 广播 processing_status{is_processing:false, paused:true}, 此处合成
-        # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
-        # pause 失败时也不合成 false — 状态未变, 合成会误报.
-        if event_name == "chat.interrupt_result" and payload.get("source") != "org_expert_direct":
+        if event_name == "chat.interrupt_result" and not str(payload.get("source") or "").startswith("org_"):
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
             if intent == "pause":
                 return
@@ -1421,18 +1455,37 @@ class WebChannel(BaseWsChannel):
             event_name = event_type.value
         else:
             event_name = str(payload.get("event_type") or "") if payload is not None else ""
-        if payload is not None and payload.get("source") == "org_expert_direct":
+        if payload is not None and payload.get("source") == "org_stop":
+            sid = payload.get("session_id") or msg.session_id
+            if sid and payload.get("success") is True:
+                self._session_busy[sid] = False
+                requests = self._expert_processing_requests.get(sid, set())
+                items = payload.get("cancelled_requests")
+                if isinstance(items, list):
+                    for item in items:
+                        if not isinstance(item, dict):
+                            continue
+                        team_id = item.get("team_id")
+                        request_id = item.get("request_id")
+                        if isinstance(team_id, str) and isinstance(request_id, str):
+                            requests.discard((team_id, request_id))
+                if not requests:
+                    self._expert_processing_requests.pop(sid, None)
+            return
+        if payload is not None and str(payload.get("source") or "").startswith("org_"):
             # Expert terminals cannot clear the owner's busy flag. Keep the
             # aggregate for Git write guards until every expert request exits.
             sid = payload.get("session_id") or msg.session_id
             team_id = str(payload.get("team_id") or payload.get("team_name") or "")
-            if sid and team_id and event_name in {"chat.processing_status", "org.turn_completed", "chat.error"}:
-                request_id = payload.get("request_id")
-                if not isinstance(request_id, str) or not request_id.strip():
+            terminal = event_name in {"org.turn_completed", "chat.error"}
+            is_processing_event = event_name == "chat.processing_status" or terminal
+            if sid and team_id and is_processing_event:
+                request_id = str(payload.get("request_id") or "").strip()
+                if not request_id:
                     return
                 request = (team_id, request_id)
                 requests = self._expert_processing_requests.setdefault(sid, set())
-                if payload.get("is_processing") is True:
+                if not terminal and payload.get("is_processing") is True:
                     requests.add(request)
                 else:
                     requests.discard(request)
@@ -1476,10 +1529,11 @@ class WebChannel(BaseWsChannel):
                 params={"session_id": session_id}, session_id=session_id,
                 user_id=user_id, channel_id=self.channel_id, timeout_seconds=2,
             )
-            if not ok or not isinstance(payload.get("expert_requests"), list):
+            snapshot = payload.get("organization_requests", payload.get("expert_requests"))
+            if not ok or not isinstance(snapshot, list):
                 return
             live = set()
-            for item in payload["expert_requests"]:
+            for item in snapshot:
                 if not isinstance(item, dict):
                     continue
                 team_id = item.get("team_id")

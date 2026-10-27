@@ -1136,6 +1136,19 @@ async def test_resumed_cua_receipt_tracks_execution_missing_from_scheduler(tasks
     )
     adapter = TaskAdapter(
         _instance=harness, _voice_agent_task_rail=rail, _is_session_scoped_adapter=True
+async def test_restored_open_card_refuses_a_new_task_before_binding(tasks, monkeypatch):
+    # #5487: a card restored from disk would take the new voice task as its answer.
+    # Refusing before bind keeps the task failed rather than unknown.
+    service, executor = tasks
+    task = submit(service, "card-open", session="task-duplex:chat")
+    await until(lambda: executor.calls)
+    card = SimpleNamespace(interrupted_tools={"call_1": object()})
+    adapter = TaskAdapter(
+        _instance=SimpleNamespace(
+            _react_agent=object(), loop_session=SimpleNamespace(get_state=lambda _key: card),
+        ),
+        _is_session_scoped_adapter=True,
+        _voice_agent_task_rail=SimpleNamespace(managed_tasks={}),
     )
     request = SimpleNamespace(
         channel_id="video_tool", session_id=task["core_session_id"], request_id=task["request_id"],
@@ -1200,3 +1213,7 @@ async def test_failed_stop_without_settlement_becomes_unknown_and_retains_capaci
     await asyncio.sleep(0.03)
     assert service.store.read(waiting["id"])["status"] == "queued"
     assert len(executor.calls) == 1
+    with pytest.raises(RuntimeError, match="确认卡片"):
+        async with bind_task_execution(request, adapter, {"query": "追加一行"}):
+            pytest.fail("the task must not run while a card is open")
+    assert not service.store.read(task["id"]).get("execution_bound")

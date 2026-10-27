@@ -9,13 +9,16 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 import hashlib
 import json
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.browser_settings import resolve_jev_connection
 from jiuwenswarm.common.model_selection import ModelSelection
 from jiuwenswarm.common.moa_config import build_moa_config_from_frontend
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.moa_progress import MoaProgress
 
 
 def effective_moa_enabled(config: dict[str, Any], selection: ModelSelection | dict | None,
@@ -128,10 +131,13 @@ class MoARuntime:
     fingerprint: str
     model_name: str
     _jev_client: Any = field(default=None, repr=False)
+    progress: MoaProgress | None = field(default=None, repr=False)
     _close_task: asyncio.Task | None = field(default=None, init=False, repr=False)
 
     async def aclose(self) -> None:
         """Close the owned transport once, settling it before propagating cancellation."""
+        if self.progress is not None:
+            self.progress.close()
         if self._jev_client is None:
             return
         if self._close_task is None:
@@ -159,8 +165,14 @@ class MoARuntime:
 async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | dict,
                             *, can_access: Callable[[str, str], bool] | None = None) -> MoARuntime:
     from openjiuwen.core.foundation.llm.routing import get_model_group_models
-    from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
-    from openjiuwen.harness.moa import JevConfig, LlmVerifierProgressScorer, MoAConfig, VerifierConfig
+    from openjiuwen.harness.moa import JevConfig, MoAConfig, VerifierConfig
+
+    from jiuwenswarm.server.runtime.moa_progress import (
+        MoaProgress,
+        ProgressJevSystemOneClient,
+        ProgressLlmVerifierScorer,
+        ReferenceProgressModel,
+    )
 
     candidate, group, fingerprint = resolve_moa_settings(config, selection, can_access=can_access)
     members = get_model_group_models(group)
@@ -170,14 +182,16 @@ async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | 
             aggregator=aggregator.model, config=None,
             fingerprint=fingerprint, model_name=aggregator.model_name,
         )
-    references = tuple(member.model for member in members[1:])
+    progress = MoaProgress()
+    references = tuple(ReferenceProgressModel(member.model, progress) for member in members[1:])
     verifier = candidate["verifier"]
     async with AsyncExitStack() as resources:
         client = None
         if verifier["type"] == "jev":
-            client = JevSystemOneClient(**candidate["jev"])
+            client = ProgressJevSystemOneClient(**candidate["jev"])
+            client.progress = progress
             owned = MoARuntime(
-                aggregator.model, None, fingerprint, aggregator.model_name, _jev_client=client,
+                aggregator.model, None, fingerprint, aggregator.model_name, _jev_client=client, progress=progress,
             )
             async def close_on_failure(exc_type, _exc, _traceback):
                 try:
@@ -196,9 +210,11 @@ async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | 
                 jev=JevConfig(client=client, interval=verifier["interval"]),
             )
         else:
+            scorer = ProgressLlmVerifierScorer(model=aggregator.model)
+            scorer.progress = progress
             moa = MoAConfig(
                 reference_models=references, mode="verifier_routed",
-                scorer=LlmVerifierProgressScorer(model=aggregator.model),
+                scorer=scorer,
                 verifier=VerifierConfig(interval=verifier["interval"], n_evaluations=3),
             )
         runtime = owned if client is not None else MoARuntime(
@@ -206,5 +222,6 @@ async def build_moa_runtime(config: dict[str, Any], selection: ModelSelection | 
             model_name=aggregator.model_name,
         )
         runtime.config = moa
+        runtime.progress = progress
         resources.pop_all()
         return runtime

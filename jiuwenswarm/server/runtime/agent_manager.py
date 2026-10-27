@@ -2023,8 +2023,9 @@ class AgentManager:
         agent_definition_fingerprint: str | None = None,
     ) -> "JiuWenSwarm | None":
         """Admit one request and pin Auto sessions to their first owner/root."""
+        from jiuwenswarm.runtime.request import resolve_request_owner_channel
 
-        channel_id = getattr(request, "channel_id", "")
+        channel_id = resolve_request_owner_channel(request)
         params = getattr(request, "params", {})
         params = params if isinstance(params, dict) else {}
         mode_full = params.get("mode", "agent")

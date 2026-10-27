@@ -205,8 +205,42 @@ _PHOTOREAL_STYLE_WORDS = (
 )
 
 
+# ``look`` is the only style field rendered into user-visible prompts; the rest are agent-facing locks.
+_STYLE_LOOK_ZH = {
+    STYLE_LOCK_DEFAULT["look"]: "卡通动画长片画风，扁平造型，柔和渲染，圆润形体，所有设定图与镜头保持一致",
+    (
+        "cartoonish animated feature look (卡通画风), flat shapes, soft rendering, "
+        "rounded forms, coherent across every spec sheet and clip"
+    ): "卡通画风，扁平造型，柔和渲染，圆润形体，每张设定图与每个镜头保持一致",
+    "watercolor illustration with soft washes and visible paper texture": "水彩插画，柔和晕染，可见纸张纹理",
+    "oil-painted artwork with visible brush texture and painterly lighting": "油画质感，可见笔触纹理与绘画式光影",
+    "ink-wash illustration with expressive lines and controlled tonal washes": "水墨画风，线条写意，墨色浓淡有度",
+    "pixel-art animation with deliberate pixel shapes and a stable limited palette": "像素动画，像素造型清晰，配色稳定且有限",
+    "clay-animation look with tactile rounded models and soft handcrafted lighting": "黏土动画质感，圆润的手工模型，柔和的手作光影",
+    "paper-cut illustration with layered shapes and handcrafted edges": "剪纸插画，层叠造型，手工裁切边缘",
+    "photoreal cinematic — continuous color grade; never cartoon restyle": "写实电影质感，全片调色连贯统一",
+}
+
+
+def is_default_style_look(look: Any) -> bool:
+    """True when ``look`` is the product default (no style cue in the brief), in either language."""
+    default = STYLE_LOCK_DEFAULT["look"]
+    return look in (default, _STYLE_LOOK_ZH[default])
+
+
 def default_style_lock(prompt: str = "", scene_desc: str = "") -> dict[str, str]:
     """Infer the brief's film-wide style; unspecified briefs default to cartoonish."""
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        current_content_language,
+    )
+
+    lock = _infer_style_lock(prompt, scene_desc)
+    if current_content_language() == "zh":
+        lock["look"] = _STYLE_LOOK_ZH.get(lock.get("look", ""), lock.get("look", ""))
+    return lock
+
+
+def _infer_style_lock(prompt: str, scene_desc: str) -> dict[str, str]:
     lock = dict(STYLE_LOCK_DEFAULT)
     blob = f"{prompt} {scene_desc}".lower()
     # Explicit artistic media must survive instead of being collapsed into either
@@ -301,7 +335,7 @@ def style_lock_from_brief(
         inferred = default_style_lock(authored)
         # Preserve uncommon authored media that are more specific than our small
         # canonical vocabulary.
-        if inferred.get("look") == STYLE_LOCK_DEFAULT.get("look") and not any(
+        if is_default_style_look(inferred.get("look")) and not any(
             cue in authored.lower()
             for cue in ("cartoon", "animation", "animated", "卡通", "动画", "扁平", "圆润")
         ):
@@ -352,7 +386,7 @@ def synchronize_graph_style_from_brief(
     # Never let a later authored artifact contradict an explicit user medium.
     # For prompts without a recognized style cue, Brief/Storyboard remains the
     # authority and may carry a richer Director inference.
-    if user_style.get("look") != STYLE_LOCK_DEFAULT.get("look"):
+    if not is_default_style_look(user_style.get("look")):
         style = user_style
     else:
         style = style_lock_from_brief(text, fallback=existing)

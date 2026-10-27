@@ -1018,3 +1018,196 @@ def test_analysis_prompt_reference_roster_is_not_a_shot() -> None:
     assert "pulpit" not in blob
     assert "pew" not in blob
     assert "mountain pass" in blob
+
+
+def _still_graph(nodes: list[dict], refs: list[dict]) -> dict:
+    return attach_user_references_to_graph(
+        {"nodes": nodes, "edges": [], "metadata": {}}, refs
+    )
+
+
+@pytest.mark.asyncio
+async def test_character_card_uses_an_upload_no_model_ever_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upload added on the canvas has no route yet; the cast card must still see it."""
+    from jiuwenswarm.common.schema.designer_graph import NODE_TYPE_IMAGE, NODE_TYPE_TEXT
+    from jiuwenswarm.server.runtime.designer.handlers import image_nodes
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+
+    photo = tmp_path / "bride.png"
+    photo.write_bytes(_png_bytes())
+    refs = normalize_user_references(
+        [{"kind": "image", "path": str(photo), "filename": "bride.png", "mime_type": "image/png"}],
+        dest_dir=tmp_path / "refs",
+    )
+    graph = _still_graph(
+        [
+            {"id": "n_brief", "type": NODE_TYPE_TEXT, "config": {"role": "brief"}},
+            {
+                "id": "n_character",
+                "type": NODE_TYPE_IMAGE,
+                "config": {
+                    "role": "character",
+                    "character_ids": ["char_1"],
+                    "character_name": "Bride",
+                    "prompt": "bride",
+                },
+            },
+        ],
+        refs,
+    )
+    assert not [edge for edge in graph["edges"] if edge["target"] == "n_character"]
+
+    seen: dict[str, object] = {}
+
+    async def fake_image(prompt, size="1K", reference_images=None, max_tries=2, **kwargs):
+        seen["refs"] = list(reference_images or [])
+        out = tmp_path / "out.png"
+        out.write_bytes(_png_bytes())
+        return {"image_path": str(out)}
+
+    monkeypatch.setattr(image_nodes.handler_io, "generate_designer_image", fake_image)
+    node = next(n for n in graph["nodes"] if n["id"] == "n_character")
+    await image_nodes.CharacterDesignNodeHandler().execute(
+        node,
+        NodeExecutionContext(graph=graph, run_id="run_char", node_id="n_character", run={}),
+    )
+    assert [Path(p).name for p in seen["refs"]] == [Path(refs[0]["path"]).name]
+
+
+@pytest.mark.asyncio
+async def test_scene_card_uses_an_upload_when_the_graph_has_no_cast_card(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.common.schema.designer_graph import NODE_TYPE_IMAGE, NODE_TYPE_TEXT
+    from jiuwenswarm.server.runtime.designer.handlers import image_nodes
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+
+    venue = tmp_path / "hall.png"
+    venue.write_bytes(_png_bytes())
+    refs = normalize_user_references(
+        [{"kind": "image", "path": str(venue), "filename": "hall.png", "mime_type": "image/png"}],
+        dest_dir=tmp_path / "refs",
+    )
+    graph = _still_graph(
+        [
+            {"id": "n_brief", "type": NODE_TYPE_TEXT, "config": {"role": "brief"}},
+            {
+                "id": "n_scene",
+                "type": NODE_TYPE_IMAGE,
+                "config": {"role": "scene", "setting_id": "set_1", "prompt": "hall"},
+            },
+        ],
+        refs,
+    )
+    seen: dict[str, object] = {}
+
+    async def fake_image(prompt, size="1K", reference_images=None, max_tries=2, **kwargs):
+        seen["refs"] = list(reference_images or [])
+        out = tmp_path / "out.png"
+        out.write_bytes(_png_bytes())
+        return {"image_path": str(out)}
+
+    monkeypatch.setattr(image_nodes.handler_io, "generate_designer_image", fake_image)
+    node = next(n for n in graph["nodes"] if n["id"] == "n_scene")
+    await image_nodes.SceneNodeHandler().execute(
+        node,
+        NodeExecutionContext(graph=graph, run_id="run_scene", node_id="n_scene", run={}),
+    )
+    assert [Path(p).name for p in seen["refs"]] == [Path(refs[0]["path"]).name]
+
+
+@pytest.mark.asyncio
+async def test_unclassified_upload_is_never_guessed_across_two_cast_cards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from jiuwenswarm.common.schema.designer_graph import NODE_TYPE_IMAGE, NODE_TYPE_TEXT
+    from jiuwenswarm.server.runtime.designer.handlers import image_nodes
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+
+    photo = tmp_path / "someone.png"
+    photo.write_bytes(_png_bytes())
+    refs = normalize_user_references(
+        [{"kind": "image", "path": str(photo), "filename": "someone.png", "mime_type": "image/png"}],
+        dest_dir=tmp_path / "refs",
+    )
+    graph = _still_graph(
+        [
+            {"id": "n_brief", "type": NODE_TYPE_TEXT, "config": {"role": "brief"}},
+            {
+                "id": "n_character_1",
+                "type": NODE_TYPE_IMAGE,
+                "config": {"role": "character", "character_ids": ["char_1"], "prompt": "a"},
+            },
+            {
+                "id": "n_character_2",
+                "type": NODE_TYPE_IMAGE,
+                "config": {"role": "character", "character_ids": ["char_2"], "prompt": "b"},
+            },
+        ],
+        refs,
+    )
+    seen: dict[str, object] = {}
+    notes: list[str] = []
+
+    async def fake_image(prompt, size="1K", reference_images=None, max_tries=2, **kwargs):
+        seen["refs"] = list(reference_images or [])
+        out = tmp_path / "out.png"
+        out.write_bytes(_png_bytes())
+        return {"image_path": str(out)}
+
+    def emit(kind, text, tool=""):
+        notes.append(str(text))
+
+    monkeypatch.setattr(image_nodes.handler_io, "generate_designer_image", fake_image)
+    node = next(n for n in graph["nodes"] if n["id"] == "n_character_1")
+    await image_nodes.CharacterDesignNodeHandler().execute(
+        node,
+        NodeExecutionContext(
+            graph=graph,
+            run_id="run_char",
+            node_id="n_character_1",
+            run={},
+            emit_activity=emit,
+        ),
+    )
+    assert seen["refs"] == []
+    assert any("is not wired" in note for note in notes)
+
+
+def test_style_only_upload_never_seeds_a_cast_card(tmp_path: Path) -> None:
+    from jiuwenswarm.common.schema.designer_graph import NODE_TYPE_IMAGE, NODE_TYPE_TEXT
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+    from jiuwenswarm.server.runtime.designer.user_references import (
+        identity_reference_images_for_node,
+    )
+
+    palette = tmp_path / "palette.png"
+    palette.write_bytes(_png_bytes())
+    refs = normalize_user_references(
+        [
+            {
+                "kind": "image",
+                "role": "style",
+                "path": str(palette),
+                "filename": "palette.png",
+                "mime_type": "image/png",
+            }
+        ],
+        dest_dir=tmp_path / "refs",
+    )
+    graph = _still_graph(
+        [
+            {"id": "n_brief", "type": NODE_TYPE_TEXT, "config": {"role": "brief"}},
+            {
+                "id": "n_character",
+                "type": NODE_TYPE_IMAGE,
+                "config": {"role": "character", "character_ids": ["char_1"]},
+            },
+        ],
+        refs,
+    )
+    node = next(n for n in graph["nodes"] if n["id"] == "n_character")
+    ctx = NodeExecutionContext(graph=graph, run_id="run_style", node_id="n_character", run={})
+    assert identity_reference_images_for_node(ctx, node) == []

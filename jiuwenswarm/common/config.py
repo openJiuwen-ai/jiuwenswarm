@@ -1055,6 +1055,23 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_cua_agent_enabled_in_config(value: bool | None) -> None:
+    """Persist an explicit desktop preference, or null to follow the release default."""
+    if value is not None and not isinstance(value, bool):
+        raise ValueError("cua_agent.enabled must be true, false or null")
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        current = data
+        for key in ("react", "subagents", "cua_agent"):
+            if not isinstance(current.get(key), dict):
+                current[key] = {}
+            current = current[key]
+        current["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_enable_free_models_in_config(value: bool) -> None:
     """原子更新 models.enable_free_models（历史兼容；前端已不再暴露此开关）。"""
     def mutator(data: dict[str, Any]) -> dict[str, Any]:

@@ -21,24 +21,29 @@ from typing import Any, Literal, Protocol
 
 from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import (
-    ArtifactEval,
     DiagnosisError,
-    DiagnosisSuggestions,
+    EvolutionJudge,
     ModeProfile,
-    RootCause,
+    RewardFailureCause,
 )
 from jiuwenswarm.diagnosis.snapshot import SubjectRange, TrajectorySnapshot
 
-EngineEventKind = Literal["stage_started", "output_delta", "stage_finished", "root_causes"]
+EngineEventKind = Literal[
+    "stage_started",
+    "output_delta",
+    "stage_finished",
+    "reward_failure_causes",
+    "evolution_judge",
+]
 
 
 @dataclass(frozen=True, slots=True)
 class EngineEvent:
     """One progress notification produced by an engine.
 
-    A ``root_causes`` event carries the root causes found so far for one signal
-    (``signal_id``); it replaces what the host holds for that signal, so an
-    engine can report findings while the stage is still running.
+    ``reward_failure_causes`` and ``evolution_judge`` events carry the whole
+    list known so far; the host replaces its table with it, so an engine can
+    report findings while the stage is still running.
     """
 
     stage_id: str
@@ -48,8 +53,8 @@ class EngineEvent:
     status: Literal["completed", "failed", "skipped"] | None = None
     summary: str | None = None
     skip_reason: str | None = None
-    signal_id: str | None = None
-    root_causes: list[RootCause] | None = None
+    reward_failure_causes: list[RewardFailureCause] | None = None
+    evolution_judge: list[EvolutionJudge] | None = None
 
 
 EmitFn = Callable[[EngineEvent], Awaitable[None]]
@@ -76,6 +81,8 @@ class EngineInputs:
         snapshot: Finished records of every subject of the session.
         ranges: At most one closed time range per diagnosed subject.
         model: Resolved model the engine should call.
+        skill_evolution: Host switch: local skill evolution and consolidation is on.
+        ttse_advice: Host switch: local experience (TTSE) evolution is on.
     """
 
     session_id: str
@@ -85,6 +92,8 @@ class EngineInputs:
     snapshot: TrajectorySnapshot
     ranges: list[SubjectRange]
     model: ResolvedDiagnosisModel
+    skill_evolution: bool = True
+    ttse_advice: bool = True
 
 
 @dataclass(slots=True)
@@ -97,13 +106,12 @@ class EngineResult:
     marks the failed stage, but keeps the record completed.
     """
 
-    headline: str | None = None
-    artifact_eval: ArtifactEval | None = None
-    root_causes: list[RootCause] = field(default_factory=list)
-    suggestions: DiagnosisSuggestions = field(default_factory=DiagnosisSuggestions)
+    trajectory_summary: str = ""
+    reward_failure_causes: list[RewardFailureCause] = field(default_factory=list)
+    evolution_judge: list[EvolutionJudge] = field(default_factory=list)
+    artifact_improvement: str | None = None
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None
-    task_description: str | None = None
 
 
 class DiagnosisEngine(Protocol):

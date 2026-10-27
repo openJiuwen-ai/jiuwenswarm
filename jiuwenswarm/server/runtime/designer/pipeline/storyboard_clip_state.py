@@ -12,9 +12,25 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+    current_content_language,
+    phrase,
+    sentence,
+    strip_phrase,
+)
+
 
 def _short(text: str, *, limit: int = 200) -> str:
     return re.sub(r"\s+", " ", str(text or "").strip())[:limit]
+
+
+def _prose(value: Any, *, limit: int) -> str:
+    """Authored prose only. Structured blocking stays in config and is never ``str()``-ed into text."""
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        value = "; ".join(item.strip() for item in value if item.strip())
+    if not isinstance(value, str):
+        return ""
+    return _short(value, limit=limit)
 
 
 def _as_state(raw: Any) -> dict[str, Any]:
@@ -29,7 +45,11 @@ def normalize_shot_state(raw: Any) -> dict[str, Any]:
     """Normalize start_state / end_state to a compact structured dict."""
     st = _as_state(raw)
     out: dict[str, Any] = {}
-    pose = _short(str(st.get("pose") or st.get("blocking") or st.get("holds") or ""), limit=280)
+    pose = (
+        _prose(st.get("pose"), limit=280)
+        or _prose(st.get("blocking"), limit=280)
+        or _prose(st.get("holds"), limit=280)
+    )
     if pose:
         out["pose"] = pose
     seats = st.get("seats") if isinstance(st.get("seats"), dict) else {}
@@ -51,7 +71,7 @@ def normalize_shot_state(raw: Any) -> dict[str, Any]:
                 cleaned[key] = {"place": str(anchor).strip()[:120]}
         if cleaned:
             out["seats"] = cleaned
-    facing = _short(str(st.get("facing") or st.get("gaze") or ""), limit=160)
+    facing = _prose(st.get("facing"), limit=160) or _prose(st.get("gaze"), limit=160)
     if facing:
         out["facing"] = facing
     camera = _short(str(st.get("camera") or ""), limit=120)
@@ -77,16 +97,8 @@ def normalize_shot_state(raw: Any) -> dict[str, Any]:
 
 
 def _infer_start_from_shot(shot: dict[str, Any]) -> dict[str, Any]:
-    staging = shot.get("staging") if isinstance(shot.get("staging"), dict) else {}
-    pose = _short(
-        str(
-            shot.get("start_pose")
-            or staging.get("positioning_lock")
-            or shot.get("blocking")
-            or ""
-        ),
-        limit=280,
-    )
+    # positioning_lock and dict blocking are machine locks for the agent, not opening prose.
+    pose = _prose(shot.get("start_pose"), limit=280) or _prose(shot.get("blocking"), limit=280)
     seats = shot.get("seat_anchors") if isinstance(shot.get("seat_anchors"), dict) else {}
     out: dict[str, Any] = {}
     if pose:
@@ -432,15 +444,20 @@ def stamp_shot_states_on_clip_cfg(
         if isinstance(start.get("seats"), dict) and start["seats"]:
             out["seat_anchors"] = dict(start["seats"])
         holds = [str(x) for x in (out.get("pose_holds") or []) if str(x).strip()]
+        lang = current_content_language()
         pose = str(start.get("pose") or "").strip()
         if pose:
-            hold = pose if pose.lower().startswith("already") else f"Opening hold: {pose}"
+            hold = (
+                pose
+                if pose.lower().startswith(("already", "已经"))
+                else phrase(_STORY_LINE_PHRASES, lang, "opening_hold", pose=strip_phrase(pose))
+            )
             if hold not in holds:
                 holds.insert(0, hold[:200])
             out["pose_holds"] = holds[:8]
         facing = str(start.get("facing") or "").strip()
         if facing:
-            hold = f"Opening facing: {facing}"
+            hold = phrase(_STORY_LINE_PHRASES, lang, "opening_facing", facing=strip_phrase(facing))
             if hold not in (out.get("pose_holds") or []):
                 out.setdefault("pose_holds", [])
                 out["pose_holds"] = [hold, *list(out.get("pose_holds") or [])][:8]
@@ -478,9 +495,28 @@ def stamp_shot_states_on_clip_cfg(
     return out
 
 
-def start_end_story_lines(cfg: dict[str, Any] | None) -> list[str]:
+_STORY_LINE_PHRASES: dict[str, dict[str, str]] = {
+    "en": {
+        "facing": "Opening: facing {facing}.",
+        "opening_hold": "Opening hold: {pose}.",
+        "opening_facing": "Opening facing: {facing}.",
+        "last_frame": "By the last frame, {state}.",
+        "climax": "This shot is the film's single climax.",
+    },
+    "zh": {
+        "facing": "开场：面向{facing}。",
+        "opening_hold": "开场姿态：{pose}。",
+        "opening_facing": "开场朝向：{facing}。",
+        "last_frame": "到最后一帧时，{state}。",
+        "climax": "本镜头是全片唯一的高潮。",
+    },
+}
+
+
+def start_end_story_lines(cfg: dict[str, Any] | None, lang: str = "") -> list[str]:
     """Opening placement from start_state. Finished action poses stay off the video body."""
     cfg = cfg if isinstance(cfg, dict) else {}
+    lang = lang or current_content_language()
     lines: list[str] = []
     action = str(cfg.get("clip_action") or cfg.get("action") or "")
     prior_action = str(cfg.get("previous_clip_action") or "")
@@ -489,24 +525,17 @@ def start_end_story_lines(cfg: dict[str, Any] | None) -> list[str]:
     if start.get("pose") and not _is_action_restatement(
         str(start["pose"]), action, prior_action
     ):
-        lines.append(str(start["pose"]).rstrip(".") + ".")
+        lines.append(sentence(start["pose"], lang))
     elif start.get("facing"):
-        lines.append(f"Opening: facing {start['facing']}.")
-    seats = start.get("seats") if isinstance(start.get("seats"), dict) else {}
-    for cid, anchor in list(seats.items())[:4]:
-        if isinstance(anchor, dict):
-            place = anchor.get("place") or anchor.get("zone") or anchor.get("seat") or ""
-            if place:
-                lines.append(f"{cid} begins at {place}.")
-        elif str(anchor).strip():
-            lines.append(f"{cid} begins at {anchor}.")
+        lines.append(phrase(_STORY_LINE_PHRASES, lang, "facing", facing=strip_phrase(start["facing"])))
+    # Seats become seat_anchors and are phrased per cast member, by name, in the cast sentence.
     irreversible = _short(str(cfg.get("irreversible") or end.get("irreversible") or ""), limit=160)
     if irreversible and not _is_action_restatement(irreversible, action):
-        lines.append(f"By the last frame, {irreversible.rstrip('.')}.")
+        lines.append(phrase(_STORY_LINE_PHRASES, lang, "last_frame", state=strip_phrase(irreversible)))
     if emotion_label(cfg.get("emotion")) == "climax":
-        lines.append("This shot is the film's single climax.")
+        lines.append(phrase(_STORY_LINE_PHRASES, lang, "climax"))
     for change in list(cfg.get("wardrobe_changes") or [])[:3]:
         text = _short(str(change), limit=160)
         if text:
-            lines.append(text.rstrip(".") + ".")
+            lines.append(sentence(text, lang))
     return lines[:8]

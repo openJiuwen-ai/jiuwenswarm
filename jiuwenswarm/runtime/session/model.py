@@ -166,6 +166,8 @@ class SessionExecutionHandle:
     root_work_kind: SessionWorkKind | None = None
     root_request_id: str | None = None
     waiting_control_id: str | None = None
+    # Every card this execution still waits on; waiting_control_id is the latest.
+    pending_control_ids: set[str] = field(default_factory=set, repr=False)
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None
