@@ -234,6 +234,7 @@ async def search_mcp_gateway(servers):
     from mcp.server.fastmcp import FastMCP
     from mcp import types
     import uvicorn
+    from starlette.middleware.base import BaseHTTPMiddleware
     from starlette.responses import Response
 
     bindings = {}
@@ -284,13 +285,14 @@ async def search_mcp_gateway(servers):
     app = mcp.streamable_http_app()
     credential = 'Bearer ' + secrets.token_urlsafe(32)
 
-    @app.middleware('http')
     async def authenticate(request, call_next):
         if not hmac.compare_digest(
             request.headers.get('authorization', '').encode('utf-8'), credential.encode('ascii')
         ):
             return Response(status_code=401)
         return await call_next(request)
+
+    app.add_middleware(BaseHTTPMiddleware, dispatch=authenticate)
 
     sock = socket.socket()
     task = None

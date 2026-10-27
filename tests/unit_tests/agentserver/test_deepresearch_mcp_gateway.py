@@ -10,6 +10,13 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import Sear
 from test_deepresearch_mcp_search import SERVER
 
 
+@pytest.fixture(autouse=True)
+def without_legacy_middleware_decorator(monkeypatch):
+    """Exercise the Starlette 1.x API surface even on older installations."""
+    from starlette.applications import Starlette
+    monkeypatch.delattr(Starlette, 'middleware', raising=False)
+
+
 @pytest.mark.asyncio
 async def test_sdk_gateway_preserves_default_blacklist_and_enforces_calls():
     from openjiuwen_deepsearch.framework.openjiuwen.tools.mcp.client import McpClient
@@ -55,6 +62,22 @@ async def test_sdk_gateway_preserves_default_blacklist_and_enforces_calls():
             await client.close()
     with pytest.raises(OSError):
         socket.create_connection(('127.0.0.1', port), timeout=.2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('authorization', [None, 'Bearer incorrect', 'Bearer 无效'])
+async def test_gateway_rejects_missing_or_invalid_credentials(authorization):
+    import httpx
+    called = AsyncMock()
+    tool = SimpleNamespace(card=SimpleNamespace(name='search', description='Search', input_params={}))
+    grant = SearchMcpServer(SERVER, [tool], AsyncMock(return_value=True), called)
+    async with search_mcp_gateway([grant]) as native:
+        # Bytes permit malformed non-ASCII credentials to reach the HTTP boundary.
+        headers = {} if authorization is None else {'Authorization': authorization.encode('utf-8')}
+        async with httpx.AsyncClient() as client:
+            response = await client.post(native[0]['server_url'], headers=headers, json={})
+        assert response.status_code == 401
+        called.assert_not_awaited()
 
 
 @pytest.mark.asyncio
