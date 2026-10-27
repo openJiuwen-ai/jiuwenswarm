@@ -1192,3 +1192,95 @@ async def test_preflight_marked_gateway_without_creds_keeps_static(_patch_httpx)
     headers = _RecordingAsyncClient.requests[0][2]["headers"]
     assert headers["Authorization"] == "Bearer static"
     assert "X-Actor-Token" not in headers
+
+
+# ---------------------------------------------------------------------------
+# 11.5 评审二轮回归：第三轮无令牌不沿用上一轮；握手前装好登记代理
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_auth_flow_id_bearing_call_does_not_inherit_last_turn():
+    """评审复现：A → A，B → B，第三轮不带用户令牌 → 静态快照（不沿用 B）。"""
+    provider = _make_provider(token="tok-1")
+    inner = _FakeSendStream()
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _TurnTokenTaggingStream
+
+    stream = _TurnTokenTaggingStream(inner, "srv-1")
+
+    with _turn_ext({"X-User-Token": "Bearer A"}):
+        await stream.send(_FakeSessionMessage(_FakeRequestRoot(1, "tools/call")))
+    sent_a = await _run_flow(provider, _jsonrpc_request(request_id=1))
+
+    with _turn_ext({"X-User-Token": "Bearer B"}):
+        await stream.send(_FakeSessionMessage(_FakeRequestRoot(2, "tools/call")))
+    sent_b = await _run_flow(provider, _jsonrpc_request(request_id=2))
+
+    # 第三轮：本轮上下文没有用户令牌（后台轮次/cron）→ 登记缺失 → 静态快照
+    with _turn_ext(None):
+        await stream.send(_FakeSessionMessage(_FakeRequestRoot(3, "tools/call")))
+    sent_c = await _run_flow(provider, _jsonrpc_request(request_id=3))
+
+    assert sent_a.headers["Authorization"] == "Bearer A"
+    assert sent_b.headers["Authorization"] == "Bearer B"
+    assert sent_c.headers["Authorization"] == "Bearer static"  # 不沿用 B
+
+
+@pytest.mark.asyncio
+async def test_authenticate_sets_pending_install_marker():
+    """TOOL_AUTH 命中动态网关：留下会话归属标记（ClientSession 构造点消费）。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _PENDING_TAG_SERVER
+
+    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
+    apply_mcp_dynamic_token_patch()
+    assert mark_dynamic_token_server("srv-1", "http://kc.example/token")
+
+    assert _PENDING_TAG_SERVER.get() == ""
+    await DynamicTokenAuthStrategy().authenticate(_auth_config(tool_id="srv-1"))
+    assert _PENDING_TAG_SERVER.get() == "srv-1"
+    _PENDING_TAG_SERVER.set("")  # 测试上下文清理
+
+
+@pytest.mark.asyncio
+async def test_authenticate_fallback_clears_stale_marker():
+    """静态网关（未标记/无凭据）：清除陈旧标记，不把无关会话错挂归属。"""
+    from jiuwenswarm.common.mcp_dynamic_token_patch import _PENDING_TAG_SERVER
+
+    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
+    apply_mcp_dynamic_token_patch()  # srv-other 未标记 → 回退原策略
+
+    _PENDING_TAG_SERVER.set("srv-stale")
+    await DynamicTokenAuthStrategy().authenticate(_auth_config(tool_id="srv-other"))
+    assert _PENDING_TAG_SERVER.get() == ""
+
+
+@pytest.mark.asyncio
+async def test_client_session_init_installs_tagging_before_first_send():
+    """接缝一（主）：ClientSession 构造消费归属标记装代理——先于 initialize。
+
+    用真实 mcp ClientSession + anyio 内存流验证：构造完成后写流已是登记
+    代理，其后 session.initialize() 发出的握手请求即在登记范围内；标记
+    一次性消费，后续无关会话不再安装。
+    """
+    import anyio
+    from mcp.client.session import ClientSession
+
+    from jiuwenswarm.common.mcp_dynamic_token_patch import (
+        _PENDING_TAG_SERVER,
+        _TurnTokenTaggingStream,
+    )
+
+    apply_mcp_dynamic_token_patch()  # 安装 ClientSession.__init__ 接缝
+
+    inbound_send, inbound_receive = anyio.create_memory_object_stream(10)
+    outbound_send, _outbound_receive = anyio.create_memory_object_stream(10)
+
+    _PENDING_TAG_SERVER.set("srv-real")
+    session = ClientSession(read_stream=inbound_receive, write_stream=outbound_send)
+    assert isinstance(session._write_stream, _TurnTokenTaggingStream)
+    assert session._write_stream._inner is outbound_send
+    assert _PENDING_TAG_SERVER.get() == ""  # 一次性消费
+
+    # 标记已消费：随后的无关会话不安装
+    session2 = ClientSession(read_stream=inbound_receive, write_stream=outbound_send)
+    assert not isinstance(session2._write_stream, _TurnTokenTaggingStream)
