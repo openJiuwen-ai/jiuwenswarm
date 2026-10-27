@@ -489,6 +489,21 @@ def _log_background_session_kvc_failure(task: asyncio.Task) -> None:
             exc_info=exc,
         )
 
+_TRAJECTORY_REQ_METHODS = frozenset(
+    {
+        ReqMethod.TRAJECTORY_SUBJECTS_LIST,
+        ReqMethod.TRAJECTORY_STREAM_FRAMES_GET,
+        ReqMethod.TRAJECTORY_SEQUENCES_GET,
+        ReqMethod.TRAJECTORY_CHECKPOINTS_GET,
+        ReqMethod.TRAJECTORY_USAGE_GET,
+        ReqMethod.TRAJECTORY_SUBJECT_GET,
+        ReqMethod.TRAJECTORY_RAW_GET,
+        ReqMethod.TRAJECTORY_ARCHIVE_OPEN,
+        ReqMethod.TRAJECTORY_BLOB_READ,
+        ReqMethod.TRAJECTORY_BLOB_CLOSE,
+    },
+)
+
 _DIAGNOSIS_REQ_METHODS = frozenset(
     {
         ReqMethod.DIAGNOSIS_RUN,
@@ -3056,6 +3071,9 @@ class AgentWebSocketServer:
             # Trajectory diagnosis: run, query and TTSE writes proxied by the Gateway.
             if request.req_method in _DIAGNOSIS_REQ_METHODS:
                 await self._handle_diagnosis_request(ws, request, send_lock)
+                return
+            if request.req_method in _TRAJECTORY_REQ_METHODS:
+                await self._handle_trajectory_request(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if (
@@ -13683,6 +13701,37 @@ class AgentWebSocketServer:
                 channel_id=request.channel_id,
                 ok=False,
                 payload={"error": str(exc), "code": "INTERNAL_ERROR"},
+            )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    def _get_trajectory_host(self) -> Any:
+        """Lazily build the trajectory read host once."""
+        if getattr(self, "_trajectory_host", None) is None:
+            from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+            self._trajectory_host = TrajectoryHost()
+        return self._trajectory_host
+
+    async def _handle_trajectory_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Answer one ``trajectory.*`` read proxied by the Gateway."""
+        try:
+            resp = await self._get_trajectory_host().handle(request)
+        except Exception as exc:
+            logger.exception("[AgentServer] trajectory request failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": "trajectory query failed",
+                    "code": "TRAJECTORY_QUERY_FAILED",
+                    "status": 500,
+                },
             )
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)

@@ -16,8 +16,16 @@ async def _usage_metadata_loader(_session_id: str) -> dict[str, str]:
     }
 
 
-from gateway.channel_manager.web.trajectory_http import TrajectoryHttpService
+from gateway.channel_manager.web.trajectory_http import TrajectoryHttpService as _GatewayTrajectoryHttpService
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
+from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+
+def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, fetch=None):
+    """Exercise the gateway usage route through the in-process trajectory host."""
+    if fetch is None:
+        fetch = TrajectoryHost(settings=settings, reader=reader).call
+    return _GatewayTrajectoryHttpService(metadata_loader=metadata_loader, fetch=fetch)
 
 
 class _UsageReader:

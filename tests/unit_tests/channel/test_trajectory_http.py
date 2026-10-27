@@ -28,13 +28,40 @@ import uvicorn
 from fastapi import FastAPI
 
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from gateway.channel_manager.web import trajectory_http
 from gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
     TRAJECTORY_ARCHIVE_ENTRY_NAME,
-    TrajectoryHttpService,
-    attach_trajectory_routes,
+    TrajectoryHttpService as _GatewayTrajectoryHttpService,
+    attach_trajectory_routes as _attach_trajectory_routes,
 )
+
+
+def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, fetch=None):
+    """Build the HTTP service against an in-process trajectory host.
+
+    Production mounts the E2A fetch. These tests keep the reader and the
+    settings snapshot on the AgentServer host and exercise the same gateway
+    validation in front of it.
+    """
+    if fetch is None:
+        from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+        fetch = TrajectoryHost(settings=settings, reader=reader).call
+    return _GatewayTrajectoryHttpService(metadata_loader=metadata_loader, fetch=fetch)
+
+
+def attach_trajectory_routes(app, channel, *, settings=None, reader=None, metadata_loader=None, fetch=None):
+    """Mount routes with the in-process host the HTTP tests already own."""
+    if fetch is None:
+        from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+        fetch = TrajectoryHost(settings=settings, reader=reader).call
+    return _attach_trajectory_routes(
+        app,
+        channel,
+        metadata_loader=metadata_loader,
+        fetch=fetch,
+    )
 from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
     session_database_path,
@@ -1213,8 +1240,7 @@ async def test_http_follows_a_runtime_settings_toggle(
     _seed(session_path, session_id="session-1")
     live = {"settings": _settings(store_root, enabled=False)}
     monkeypatch.setattr(
-        trajectory_http,
-        "load_trajectory_store_settings",
+        "jiuwenswarm.observability.config.load_trajectory_store_settings",
         lambda: live["settings"],
     )
     # No pinned snapshot: this is how the gateway mounts the service.
@@ -1795,3 +1821,39 @@ def test_real_web_proxy_preserves_outer_host_and_guards_all_trajectory_reads(
     }
     assert any(item["host"] == "trusted.example" for item in captured_headers)
     test_logger.info("real proxy chain guarded list, revision, detail, and raw reads")
+
+
+@pytest.mark.asyncio
+async def test_missing_trajectory_status_is_logged() -> None:
+    """A failure without an integer status is 500 and is logged."""
+    records: list[logging.LogRecord] = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Handler()
+    proxy_logger = logging.getLogger("gateway.channel_manager.web.trajectory_http")
+    proxy_logger.addHandler(handler)
+    try:
+        async def fetch(method, params, user_id=None):
+            del method, params, user_id
+            return False, {
+                "error": "trajectory query failed",
+                "code": "TRAJECTORY_QUERY_FAILED",
+            }
+
+        service = _GatewayTrajectoryHttpService(
+            metadata_loader=_metadata_loader(),
+            fetch=fetch,
+        )
+        response = await service.list_subjects("session-1", after_revision=0)
+    finally:
+        proxy_logger.removeHandler(handler)
+
+    assert response.status_code == 500
+    assert _response_json(response) == {
+        "error": "trajectory query failed",
+        "code": "TRAJECTORY_QUERY_FAILED",
+    }
+    assert any("no usable status" in record.getMessage() for record in records)
