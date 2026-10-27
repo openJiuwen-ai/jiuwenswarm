@@ -112,6 +112,20 @@ _ASK_USER_COMMAND_NAMESPACE = "ToolExecute"
 _ASK_USER_COMMAND_NAME = "Invoke"
 _ASK_USER_ANSWER_COMMAND_NAME = "InvokeRsp"
 
+# 演进审批 source 集合（与 interrupt_helpers.EVOLUTION_INTERRUPT_METADATA_SOURCES
+# 同源；gateway 进程不 import harness 模块，字面量内联）。演进审批的授权语义由
+# interface.py 演进分支自行映射（label→allow_once/allow_always/reject），与
+# permission/confirm 的四选项白名单不同源——用户点「接收」必须放行，不能套用
+# permission 白名单 fail-closed 反转成拒绝。
+_EVOLUTION_ANSWER_SOURCES = frozenset({"evolution_interrupt", "skill_evolution_approval"})
+# 演进审批合法选项（与 interface.py 演进分支 action_by_value 同源，精确相等）
+_EVOLUTION_ANSWER_LABELS = frozenset({
+    "accept", "接收", "接受",
+    "allow_once", "本次允许", "Allow Once",
+    "allow_always", "总是允许", "Always Allow",
+    "reject", "拒绝", "Reject",
+})
+
 
 def _build_ask_user_command_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """chat.ask_user_question 事件载荷 → 出站 ToolExecute/Invoke 指令 payload。
@@ -3273,15 +3287,18 @@ class XiaoyiChannel(BaseChannel):
         if ask_user_answer is None:
             ask_user_answer = _parse_invoke_rsp_agent_event(message)
         if ask_user_answer is not None:
-            pending = self._pop_pending_approval_for_answer(logical_session)
+            pending = self._peek_pending_approval_for_answer(logical_session)
             if pending is not None:
                 # InvokeRsp 应答补全上下文（source 回填 + question_id → question
                 # 文本 + user_cancel 空答案合成），后续白名单校验/透传逻辑不变。
+                # 先读后删：校验命中才消费待答记录，校验不过时保留（文本回退/
+                # 超时兜底仍可达），避免任务永久挂起。
                 self._attach_ask_user_answer_context(ask_user_answer, pending)
                 routed = self._build_answer_from_ask_user(
                     ask_user_answer, pending
                 )
                 if routed is not None:
+                    self._pending_approvals.pop(logical_session, None)
                     answer, log_note = routed
                     resume_answers = self._resume_answers_from_ask_user(
                         ask_user_answer, answer
@@ -3309,8 +3326,8 @@ class XiaoyiChannel(BaseChannel):
                     )
                     return
                 logger.warning(
-                    "XiaoYi: askUserAnswer 结构化应答未构成有效回答，按普通消息处理 "
-                    "session=%s request_id=%s",
+                    "XiaoYi: askUserAnswer 结构化应答未构成有效回答，按普通消息处理"
+                    "（待答审批保留，文本回退/超时兜底可达） session=%s request_id=%s",
                     logical_session,
                     pending.get("request_id"),
                 )
@@ -3577,10 +3594,15 @@ class XiaoyiChannel(BaseChannel):
         # 其他意见：拒绝并把原文作为反馈（对齐 Web 端 custom_input 语义）
         return {"selected_options": [], "custom_input": feedback}
 
-    def _pop_pending_approval_for_answer(
+    def _peek_pending_approval_for_answer(
         self, logical_session: str
     ) -> dict[str, Any] | None:
-        """取走会话的待答复审批（过期视为无待答复，不消费）。"""
+        """读取会话的待答复审批（不消费；过期记录就地清除）。
+
+        消费时机在调用方：应答经白名单校验命中后才 pop——校验不过时保留
+        待答记录，文本回退路径与超时兜底仍可达，任务不会因一次无效应答
+        永久挂起。
+        """
         pending = self._pending_approvals.get(logical_session)
         if not pending:
             return None
@@ -3590,7 +3612,6 @@ class XiaoyiChannel(BaseChannel):
                 f"XiaoYi: 待答复审批已过期，结构化应答按普通消息处理 session={logical_session}"
             )
             return None
-        self._pending_approvals.pop(logical_session, None)
         return pending
 
     @staticmethod
@@ -3637,11 +3658,14 @@ class XiaoyiChannel(BaseChannel):
         """AskUser 结构化应答（InvokeRsp / 旧 askUserAnswer）→ resume answers。
 
         ask_user_interrupt：answers 原样透传（问题对齐 + 自由文本兜底）。
-        权限类中断（permission/confirm/evolution）：selected_options 必须**精确命中**
+        演进审批（evolution_interrupt/skill_evolution_approval）：首选项命中演进
+        白名单即原样透传（interface.py 演进分支自行 label→action 映射），
+        命不中 fail-closed 按拒绝。
+        权限/确认中断（permission/confirm）：selected_options 必须**精确命中**
         interface.py 的授权白名单（字符串相等，非模糊匹配）——映射不中一律按拒绝
         处理（fail-closed），custom_input 只能作拒绝理由、不能授权。
         user_cancel：ask_user → 空答案续跑（= 跳过该问题）；
-        权限类 → fail-closed 按拒绝，取消本身即拒绝理由。
+        权限/演进类 → fail-closed 按拒绝，取消本身即拒绝理由。
         answers 缺失首条时用空答案（= 拒绝 + 未知选项反馈），不猜测放行。
         """
         answers = ask_user_answer.get("answers") or []
@@ -3679,6 +3703,26 @@ class XiaoyiChannel(BaseChannel):
         selected = answer.get("selected_options") or []
         custom_input = str(answer.get("custom_input") or "").strip()
         first = str(selected[0]).strip() if selected else ""
+
+        if source in _EVOLUTION_ANSWER_SOURCES or answer_source in _EVOLUTION_ANSWER_SOURCES:
+            # 演进审批：首选项原样透传（interface.py 演进分支自带 label→action
+            # 白名单映射），不做 permission 系 canonical 重映射——「总是允许」映射
+            # 成「永久记住」会被演进分支判 unknown 反转成拒绝。命不中白名单
+            # fail-closed 按拒绝，custom_input 作拒绝理由。
+            if first in _EVOLUTION_ANSWER_LABELS:
+                return (
+                    {"selected_options": [first], "custom_input": custom_input},
+                    "演进:透传",
+                )
+            feedback = custom_input or (
+                f"用户拒绝（选项卡应答未命中演进白名单: {first}）"
+                if first
+                else "用户拒绝（选项卡应答未选择任何选项）"
+            )
+            return (
+                {"selected_options": ["拒绝"], "custom_input": feedback},
+                "演进:fail-closed拒绝",
+            )
 
         # 授权白名单（与 interface.py _build_interactive_input_from_answers 同源）：
         # 允许一次 / 会话内记住 / 永久记住 / 拒绝。

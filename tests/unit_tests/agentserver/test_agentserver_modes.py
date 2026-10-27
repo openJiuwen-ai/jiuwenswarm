@@ -1383,8 +1383,7 @@ def test_deep_adapter_build_agent_rails_adds_ask_user_for_agent_modes(monkeypatc
     assert ask_user_rail in fast_rails
 
 
-def test_deep_adapter_keeps_interactive_and_permission_rails_for_xiaoyi(monkeypatch):
-    """2026-09-20 AskUser 选项卡上线：xiaoyi 渠道不再摘除 ask_user/permission rails。"""
+def test_deep_adapter_includes_interactive_and_permission_rails_for_xiaoyi(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
     class FakeHooksConfig:
@@ -1415,6 +1414,8 @@ def test_deep_adapter_keeps_interactive_and_permission_rails_for_xiaoyi(monkeypa
 
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
 
+    # xiaoyi 渠道已恢复交互：ask_user_rail / permission_rail 无条件装配
+    # （手机端已能渲染审批卡并回传结构化应答），不再跳过。
     assert ask_user_rail in rails
     assert permission_rail in rails
 

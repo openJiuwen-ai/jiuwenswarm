@@ -240,11 +240,19 @@ def test_xiaoyi_receives_split_command_prompt_and_one_pending_approval():
     assert channel._pending_approvals["conversation"]["source"] == "permission_interrupt"
     assert len(sent) == 1
     prompt, flags = sent[0]
-    assert "助手想要在你的设备上运行程序指令" in prompt
+    # 结构化选项卡形态：text part 只放问题正文（与卡片 question 原文一致），
+    # 标题/可选项/回复约定话术由 data part 的 ToolExecute/Invoke 卡承载。
     assert "cd .. &&\ndir" in prompt
     assert "本次授权适用于整组指令" in prompt
-    assert "检测到受保护的文件路径访问" in prompt
-    assert "本次允许 / 会话内记住 / 永久记住 / 拒绝" in prompt
+    assert "本次允许 / 会话内记住 / 永久记住 / 拒绝" not in prompt
+    card = flags["extra_part"]["data"]["commands"][0]
+    assert card["header"] == {"namespace": "ToolExecute", "name": "Invoke"}
+    question = card["payload"]["questions"][0]
+    assert prompt == question["question"]
+    assert question["question_id"] == "chain-request"
+    assert [option["label"] for option in question["options"]] == [
+        "本次允许", "会话内记住", "永久记住", "拒绝",
+    ]
     assert flags["is_final"] is False
 
 

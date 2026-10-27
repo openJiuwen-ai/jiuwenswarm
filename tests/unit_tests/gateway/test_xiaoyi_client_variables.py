@@ -1191,6 +1191,114 @@ def test_build_answer_from_ask_user_empty_answers_returns_none():
     )
 
 
+@pytest.mark.asyncio
+async def test_ask_user_answer_evolution_labels_passthrough(cfg_file):
+    """演进审批白名单分流：合法演进选项原样透传，不做 permission 系重映射。
+
+    用户点「接收」必须放行（此前套用 permission 白名单 fail-closed 反转成
+    拒绝）；「总是允许」不得映射成「永久记住」（interface.py 演进分支无此
+    值，会被判 unknown 再次反转成拒绝）。命不中演进白名单 fail-closed 按拒绝。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        # 「接收」放行且原样透传
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-ev1",
+            "source": "evolution_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{"question": "是否接收该技能演进？", "selectedOptions": ["接收"], "customInput": ""}],
+            "evolution_interrupt",
+            task="task-ev1",
+        ))
+        m = captured[-1]
+        assert m.params["answers"][0]["selected_options"] == ["接收"]
+        assert "conv-1" not in ch._pending_approvals  # 命中后消费
+
+        # 「总是允许」原样透传（不重映射成「永久记住」）
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-ev2",
+            "source": "evolution_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{"question": "q", "selectedOptions": ["总是允许"], "customInput": ""}],
+            "evolution_interrupt",
+            task="task-ev2",
+        ))
+        m = captured[-1]
+        assert m.params["answers"][0]["selected_options"] == ["总是允许"]
+
+        # 旧 source（skill_evolution_approval）同待遇；英文别名 accept 放行
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-ev3",
+            "source": "skill_evolution_approval",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{"question": "q", "selectedOptions": ["accept"], "customInput": ""}],
+            "skill_evolution_approval",
+            task="task-ev3",
+        ))
+        m = captured[-1]
+        assert m.params["answers"][0]["selected_options"] == ["accept"]
+
+        # 命不中演进白名单（permission 系专有选项）：fail-closed 按拒绝
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-ev4",
+            "source": "evolution_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{"question": "q", "selectedOptions": ["会话内记住"], "customInput": ""}],
+            "evolution_interrupt",
+            task="task-ev4",
+        ))
+        m = captured[-1]
+        assert m.params["answers"][0]["selected_options"] == ["拒绝"]
+        assert "会话内记住" in m.params["answers"][0]["custom_input"]
+    finally:
+        _cleanup_tasks(ch)
+
+
+def test_peek_pending_approval_keeps_record_for_retry(cfg_file):
+    """先读后删：peek 不消费待答记录（校验不过时文本回退/超时兜底仍可达）；
+    过期记录就地清除。"""
+    ch = _make_channel([], [])
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-peek",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        pending = ch._peek_pending_approval_for_answer("conv-1")
+        assert pending is not None
+        assert pending["request_id"] == "req-peek"
+        assert "conv-1" in ch._pending_approvals  # 未消费
+
+        # 过期记录：就地清除并返回 None（超时兜底不再重复处理）
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-stale",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time() - 4000,
+        }
+        assert ch._peek_pending_approval_for_answer("conv-1") is None
+        assert "conv-1" not in ch._pending_approvals
+
+        # 空表：None
+        assert ch._peek_pending_approval_for_answer("conv-none") is None
+    finally:
+        _cleanup_tasks(ch)
+
+
 def test_build_ask_user_command_payload_shape():
     """出站 ToolExecute/Invoke 指令 payload 形状（端侧契约）。
 
