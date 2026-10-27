@@ -678,7 +678,6 @@
         "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
         "aliasRequired": "模型展示名称为必填项",
         "aliasConflict": "模型展示名称必须全局唯一，不能与其他模型的展示名称重复",
-        "modelNameConflict": "模型 ID 不能与其他配置的模型展示名称相同",
         "modelGroupNameConflict": "模型组名称必须全局唯一，不能与其他模型组名称重复"
       },
       "testConnection": "测试连接",
