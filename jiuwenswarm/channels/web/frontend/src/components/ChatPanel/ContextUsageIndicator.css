@@ -245,8 +245,8 @@
 
 .context-usage-token-totals__table {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  column-gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto auto auto;
+  column-gap: 6px;
   row-gap: 8px;
   align-items: center;
 }
@@ -254,6 +254,10 @@
 .context-usage-token-totals__table > span:not(:first-child) {
   color: var(--color-text-secondary);
   text-align: right;
+}
+
+.context-usage-token-totals__separator {
+  color: var(--color-text-secondary);
 }
 
 .context-usage-token-category {
