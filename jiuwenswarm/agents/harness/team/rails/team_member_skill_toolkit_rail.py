@@ -19,6 +19,9 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    apply_discovery_metadata,
+)
 from jiuwenswarm.agents.harness.team.rails.team_skill_library_reload_rail import (
     reload_agent_skill_views,
 )
@@ -79,6 +82,7 @@ class MemberSkillToolkitRail(DeepAgentRail):
         # deterministically wins over the declarative skill-toolkit tool element
         # carrying the same name.
         for tool in tools:
+            apply_discovery_metadata(tool.card)
             agent.ability_manager.add_ability(tool.card, tool)
 
         self._tools = tools
