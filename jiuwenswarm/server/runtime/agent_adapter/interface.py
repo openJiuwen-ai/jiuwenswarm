@@ -138,7 +138,8 @@ def _is_a2ui_client_event_request(request: AgentRequest) -> bool:
     """True when this request carries an A2UI client event in params.content.
 
     此类请求的 inputs["query"] 已由 build_user_prompt 转成可读 a2ui prompt；
-    team 分支若再用 raw_query 覆写会把成品打回原始 dict（max评审#2）。
+    team 分支若再用 raw_query 覆写，raw_query = query if isinstance(query, str)
+    else "" 为空字符串——用空串覆写转换后成品 prompt（检视 CR-5/CR-7）。
     """
     params = request.params if isinstance(request.params, dict) else {}
     return is_a2ui_client_event(params.get("content"))
