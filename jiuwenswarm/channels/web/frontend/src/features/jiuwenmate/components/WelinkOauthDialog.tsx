@@ -16,7 +16,7 @@ function bothScansDone(done: WelinkScanKind[]): boolean {
 }
 
 interface WelinkOauthDialogProps {
-  agentId: string;
+  configId: string;
   onSkip: () => void;
   onBound: () => void;
 }
@@ -35,6 +35,7 @@ interface LoginSnapshot {
   assistant_ready?: boolean;
   assistant_credential_id?: string;
   assistant_secret?: string;
+  assistant_account?: string;
 }
 
 interface CreatedCredential {
@@ -42,12 +43,13 @@ interface CreatedCredential {
   secret: string;
 }
 
-export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialogProps) {
+export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDialogProps) {
   const { t } = useTranslation();
   const [account, setAccount] = useState('');
   const [assistantMode, setAssistantMode] = useState<'scan' | 'existing'>('scan');
   const [credentialId, setCredentialId] = useState('');
   const [assistantSecret, setAssistantSecret] = useState('');
+  const [assistantAccount, setAssistantAccount] = useState('');
   const [created, setCreated] = useState<CreatedCredential | null>(null);
   const [copied, setCopied] = useState<'ak' | 'sk' | ''>('');
   const [done, setDone] = useState<WelinkScanKind[]>([]);
@@ -63,7 +65,6 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
   const finished = useRef(false);
   const qrUrlRef = useRef('');
   const startLock = useRef(false);
-  const booted = useRef(false);
   const doneRef = useRef<WelinkScanKind[]>([]);
 
   const finish = () => {
@@ -81,7 +82,9 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
     const poll = async () => {
       try {
         const method = kind === 'assistant' ? 'channel.welink.assistant_login_status' : 'channel.welink.login_status';
-        const next = await webRequest<LoginSnapshot>(method, { session_id: sessionId }, { timeoutMs: 45000 });
+        const next = await webRequest<LoginSnapshot>(method, {
+          session_id: sessionId, assistant_account: assistantAccount.trim(),
+        }, { timeoutMs: 45000 });
         if (cancelled) return;
         seenQr.current = Boolean(next.qr_url || next.qr_payload);
         const nextUrl = next.qr_url || next.qr_payload || '';
@@ -94,7 +97,9 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
         if (next.account) setAccount(next.account);
         if (next.status === 'success') {
           setError('');
-          const updated = rememberScan(doneRef.current, kind);
+          let updated = rememberScan(doneRef.current, kind);
+          if (next.cli_ready) updated = rememberScan(updated, 'cli');
+          if (next.assistant_ready) updated = rememberScan(updated, 'assistant');
           doneRef.current = updated;
           setDone(updated);
           if (kind === 'assistant') {
@@ -123,7 +128,7 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [sessionId, activeKind, created, t]);
+  }, [sessionId, activeKind, created, assistantAccount, t]);
 
   const saveExistingAssistant = async () => {
     const value = account.trim();
@@ -136,9 +141,10 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
     try {
       await webRequest<LoginSnapshot>('channel.welink.assistant_credential_save', {
         account: value,
-        persistent_agent_id: agentId,
+        config_id: configId,
         assistant_credential_id: credential,
         assistant_secret: secret,
+        assistant_account: assistantAccount.trim(),
       }, { timeoutMs: 45000 });
       setAssistantSecret('');
       setCredentialId('');
@@ -174,7 +180,7 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
       const method = kind === 'assistant' ? 'channel.welink.assistant_login_start' : 'channel.welink.login_start';
       const started = await webRequest<LoginSnapshot>(method, {
         account: kind === 'cli' ? '' : value,
-        persistent_agent_id: agentId,
+        config_id: configId,
       }, { timeoutMs: 45000 });
       setSessionId(started.session_id || '');
       setSnapshot(started);
@@ -191,10 +197,23 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
   const startRef = useRef(start);
   startRef.current = start;
   useEffect(() => {
-    if (booted.current) return;
-    booted.current = true;
-    void startRef.current('cli');
-  }, []);
+    let cancelled = false;
+    void webRequest<LoginSnapshot>('channel.welink.get_bindings', { config_id: configId }).then((status) => {
+      if (cancelled) return;
+      if (status.account) setAccount(status.account);
+      if (status.assistant_account) setAssistantAccount(status.assistant_account);
+      const ready: WelinkScanKind[] = [];
+      if (status.cli_ready) ready.push('cli');
+      if (status.assistant_ready) ready.push('assistant');
+      doneRef.current = ready;
+      setDone(ready);
+      if (bothScansDone(ready)) finish();
+      else if (!status.cli_ready) void startRef.current('cli');
+    }).catch((cause) => {
+      if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause));
+    });
+    return () => { cancelled = true; };
+  }, [configId]);
 
   const copyValue = async (field: 'ak' | 'sk', value: string) => {
     try {
@@ -237,9 +256,35 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
   const showPrimary = Boolean(created || showChoice || showRetry);
   const primaryDisabled = starting || (saveExisting && (!credentialId.trim() || !assistantSecret.trim())) || (showChoice && !saveExisting && !account.trim() && !showRetry);
 
+  const confirmCreated = async () => {
+    if (!created || startLock.current) return;
+    if (!assistantAccount.trim()) {
+      finish();
+      return;
+    }
+    startLock.current = true;
+    setStarting(true);
+    setError('');
+    try {
+      await webRequest<LoginSnapshot>('channel.welink.assistant_credential_save', {
+        config_id: configId,
+        account,
+        assistant_credential_id: created.id,
+        assistant_secret: created.secret,
+        assistant_account: assistantAccount.trim(),
+      }, { timeoutMs: 45000 });
+      finish();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      startLock.current = false;
+      setStarting(false);
+    }
+  };
+
   const runPrimary = () => {
     if (created) {
-      finish();
+      void confirmCreated();
       return;
     }
     if (showRetry && !cliDone) {
@@ -322,6 +367,19 @@ export function WelinkOauthDialog({ agentId, onSkip, onBound }: WelinkOauthDialo
               {t('jiuwenmate.im.welinkAssistantExisting')}
             </label>
           </fieldset>
+        ) : null}
+        {showChoice || created ? (
+            <label className="jiuwenmate-field" data-testid="jiuwenmate-welink-assistant-account-field">
+              <span data-testid="jiuwenmate-welink-assistant-account-label">{t('jiuwenmate.im.welinkAssistantAccount')}</span>
+              <input
+                value={assistantAccount}
+                onChange={(event) => setAssistantAccount(event.target.value)}
+                placeholder={t('jiuwenmate.im.welinkAssistantAccountHint')}
+                autoComplete="off"
+                spellCheck={false}
+                data-testid="jiuwenmate-welink-assistant-account"
+              />
+            </label>
         ) : null}
         {saveExisting ? (
           <>
