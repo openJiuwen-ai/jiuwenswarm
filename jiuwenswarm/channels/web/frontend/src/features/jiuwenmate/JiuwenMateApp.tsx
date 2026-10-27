@@ -190,7 +190,10 @@ export function JiuwenMateApp({
     try {
       const [colleagues, welinkResult] = await Promise.all([
         api.loadColleagues(),
-        webRequest<{ agent_ids?: string[] }>('channel.welink.get_bindings').then(
+        webRequest<{
+          agent_ids?: string[];
+          bindings?: Array<{ config_id?: string; persistent_agent_id?: string; channel_enabled?: boolean }>;
+        }>('channel.welink.get_bindings').then(
           (value) => ({ ok: true as const, value }),
           () => ({ ok: false as const, value: null }),
         ),
@@ -202,7 +205,10 @@ export function JiuwenMateApp({
             const feishuConfigured = colleague.connections.some((connection) => connection.channel === 'feishu');
             const dingtalkConfigured = colleague.connections.some((connection) => connection.channel === 'dingtalk');
             const welinkConfigured = welinkResult.ok
-              ? (welinkResult.value?.agent_ids ?? []).includes(colleague.configId ?? colleague.id)
+              ? (welinkResult.value?.bindings ?? []).some((binding) =>
+                  binding.channel_enabled !== false &&
+                  (binding.config_id === colleague.configId || binding.persistent_agent_id === colleague.id),
+                ) || (welinkResult.value?.agent_ids ?? []).includes(colleague.id)
               : colleague.welinkConfigured === true;
             return {
               ...colleague,
@@ -876,7 +882,10 @@ export function JiuwenMateApp({
             }}
             onRevokeChannel={(platform) => {
               const method = platform === 'welink' ? 'channel.welink.revoke' : 'channel.feishu.revoke';
-              return webRequest(method, { persistent_agent_id: selectedColleague.id })
+              return webRequest(method, {
+                [platform === 'welink' ? 'config_id' : 'persistent_agent_id']:
+                  platform === 'welink' ? selectedColleague.configId : selectedColleague.id,
+              })
                 .then(() => {
                   setState((current) => revokeColleagueAuthorization(current, selectedColleague.id, platform));
                 })
@@ -1029,7 +1038,7 @@ export function JiuwenMateApp({
       ) : null}
       {authorizeColleague && state.authorizePlatform === 'welink' && !existingPage ? (
         <WelinkOauthDialog
-          agentId={authorizeColleague.id}
+          configId={authorizeColleague.configId}
           onSkip={() => setState((current) => finishColleagueAuthorization(current, false))}
           onBound={() => {
             setState((current) => finishColleagueAuthorization(current, true));

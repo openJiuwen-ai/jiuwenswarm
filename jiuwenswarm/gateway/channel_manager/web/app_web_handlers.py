@@ -4381,6 +4381,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 logger.warning("[channel.feishu] CLI preparation deferred; binding saved")
 
     colleague_operation_locks: dict[str, asyncio.Lock] = {}
+    welink_authorization_lock = asyncio.Lock()
 
     def _serialize_colleague_operation(handler, id_param: str):
         """Keep one colleague's binding and deletion in order through the final response."""
@@ -4905,6 +4906,35 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await _remove_feishu_apps(
                 cm, lambda app: app.get("persistent_agent_id") in agents, "jiuwenmate.colleague.delete",
             )
+            async with welink_authorization_lock:
+                from jiuwenswarm.common.config import update_config
+
+                from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
+                    normalize_welink_section, revoke_welink_authorization,
+                )
+                reload_welink = any(
+                    item["persistent_agent_id"] in agents or item.get("config_id") in agents
+                    for item in normalize_welink_section(cm.get_conf("welink"))["bindings"]
+                )
+
+                def remove_welink_binding(data):
+                    nonlocal reload_welink
+                    welink_conf = normalize_welink_section((data.get("channels") or {}).get("welink"))
+                    if not any(
+                        item["persistent_agent_id"] in agents or item.get("config_id") in agents
+                        for item in welink_conf["bindings"]
+                    ):
+                        return None
+                    reload_welink = True
+                    for agent in agents:
+                        welink_conf = revoke_welink_authorization(welink_conf, agent)
+                    data["channels"]["welink"] = welink_conf
+                    return data
+
+                stored = update_config(remove_welink_binding)
+                if reload_welink:
+                    # Forced: a retry can find the YAML cleared and Gateway already holding the same snapshot.
+                    await cm.set_conf("welink", dict((stored.get("channels") or {}).get("welink") or {}))
             section = _remove_dingtalk_apps(cm, lambda app: app["persistent_agent_id"] in agents)
             method = "jiuwenmate.colleague.delete"
             if section is not None and not await _apply_dingtalk(ws, req_id, cm, section, method):
@@ -5999,13 +6029,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("heartbeat.set_conf", _health_check_set_conf)
     async def _channel_welink_get_bindings(ws, req_id, params, session_id):
         try:
-            from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_agent_ids
-
+            from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
+                load_welink_section, public_welink_authorization,
+            )
+            cm = _resolve(channel_manager)
+            conf = cm.get_conf("welink") if cm is not None else load_welink_section()
+            selected = str((params or {}).get("config_id") or (params or {}).get("persistent_agent_id") or "") or None
             await channel.send_response(
                 ws,
                 req_id,
                 ok=True,
-                payload={"agent_ids": configured_welink_agent_ids()},
+                payload=public_welink_authorization(conf, selected),
             )
         except Exception as e:  # noqa: BLE001
             logger.exception("[channel.welink.get_bindings] 异常, req_id=%s: %s", req_id, e)
@@ -6016,7 +6050,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         account = str(params.get("account") or "").strip()
-        agent_id = str(params.get("persistent_agent_id") or "").strip()
+        agent_id = str(params.get("config_id") or params.get("persistent_agent_id") or "").strip()
         if not agent_id:
             await channel.send_response(
                 ws,
@@ -6063,44 +6097,95 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload = login_session.snapshot()
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
-    async def _persist_welink_login_step(login_session, kind: str) -> dict:
+    async def _save_welink_connection(config_id, account, patch, *, credential_source=None):
+        """Commit either authorization step to the account's own agent, in order with deletion."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
         from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import save_welink_authorization
 
-        reveal: dict[str, str] = {}
-        if kind == "assistant":
-            from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
-                reveal_new_assistant_credential,
-            )
+        from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for, welink_connection_key
 
+        from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
+            apply_welink_authorization, load_welink_section, normalize_welink_section,
+        )
+
+        lock = colleague_operation_locks.setdefault(config_id, asyncio.Lock())
+        async with lock:
+            legacy_connections = []
+            if any(not item.get("config_id") for item in normalize_welink_section(load_welink_section())["bindings"]):
+                listed, failure = await _connection_request(
+                    ReqMethod.JIUWENMATE_COLLEAGUE_CONNECTIONS, {"config_id": config_id},
+                )
+                if failure is not None:
+                    raise PersistentAgentError(failure[1], code=failure[0])
+                legacy_connections = [item for item in listed.get("connections", []) if item.get("channel") == "welink"]
+            async with welink_authorization_lock:
+                # Validate before creating a connection, moving credentials or applying config.
+                current = load_welink_section()
+                existing = next((item for item in normalize_welink_section(current)["bindings"]
+                                 if item.get("config_id") == config_id or item["persistent_agent_id"] == config_id
+                                 or any(connection.get("agent_id") == item["persistent_agent_id"]
+                                        for connection in legacy_connections)), None)
+                validation_agent = existing["persistent_agent_id"] if existing else config_id
+                apply_welink_authorization(current, {**patch, "account": account,
+                                                     "persistent_agent_id": validation_agent})
+            connection_key = next((item["connection_key"] for item in legacy_connections
+                                   if existing and item.get("agent_id") == existing["persistent_agent_id"]),
+                                  welink_connection_key(account, config_id))
+            connected, failure = await _connection_request(
+                ReqMethod.JIUWENMATE_CONNECTION_ATTACH,
+                {"config_id": config_id, "channel": "welink", "connection_key": connection_key},
+            )
+            if failure is not None:
+                raise PersistentAgentError(failure[1], code=failure[0])
+            async with welink_authorization_lock:
+                agent_id = connected["agent_id"]
+                stored_patch = {**patch, "account": account, "persistent_agent_id": agent_id, "config_id": config_id}
+                stored_patch.setdefault("credential_dir", str((existing or {}).get("credential_dir") or credential_dir_for(agent_id)))
+                apply_welink_authorization(load_welink_section(), stored_patch)
+                if credential_source is not None:
+                    import shutil
+
+                    destination = credential_dir_for("shared-reader")
+                    if credential_source.exists() or not destination.exists():
+                        shutil.copytree(credential_source, destination, dirs_exist_ok=True)
+                        shutil.rmtree(credential_source)
+                    stored_patch["reader_credential_dir"] = str(destination)
+                view, stored = save_welink_authorization(stored_patch)
+                cm = _resolve(channel_manager)
+                if cm is not None:
+                    await cm.set_conf("welink", stored)
+                return view
+
+    async def _persist_welink_login_step(login_session, kind: str, assistant_account: str = "") -> dict:
+        from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import reveal_new_assistant_credential
+
+        reveal: dict[str, str] = {}
+        credential_source = None
+        if kind == "assistant":
             credential_id, secret = login_session.credentials()
             if not credential_id or not secret:
                 login_session.status = "failed"
                 login_session.error = "扫码成功，但没有拿到助手凭证"
                 return login_session.snapshot()
+            account = login_session.account
             reveal = reveal_new_assistant_credential(credential_id, secret)
-            patch = {
-                "persistent_agent_id": login_session.agent_id,
-                "account": login_session.account,
-                "assistant_credential_id": credential_id,
-                "assistant_secret": secret,
-            }
+            patch = {"assistant_credential_id": credential_id, "assistant_secret": secret}
+            if assistant_account:
+                patch["assistant_account"] = assistant_account.strip()
         else:
-            from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for
-
+            account = login_session.resolved_account or login_session.account
+            credential_source = login_session.credential_dir
             patch = {
-                "account": login_session.resolved_account or login_session.account,
-                "persistent_agent_id": login_session.agent_id,
-                "cli_path": "welink-cli",
-                "env": "pro",
-                "credential_dir": str(credential_dir_for(login_session.agent_id, str(login_session.credential_dir))),
+                "cli_path": login_session.cli_path or "welink-cli",
+                "env": login_session.env_name or "pro",
                 "poll_interval_seconds": 4,
                 "cli_authorized": True,
             }
-        view, stored = await asyncio.to_thread(save_welink_authorization, patch)
+        view = await _save_welink_connection(
+            login_session.agent_id, account, patch, credential_source=credential_source,
+        )
         login_session.saved = True
-        cm = _resolve(channel_manager)
-        if cm is not None:
-            await cm.set_conf("welink", stored)
         snapshot = login_session.snapshot()
         snapshot.update(view)
         snapshot.update(reveal)
@@ -6111,7 +6196,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
         account = str(params.get("account") or "").strip()
-        agent_id = str(params.get("persistent_agent_id") or "").strip()
+        agent_id = str(params.get("config_id") or params.get("persistent_agent_id") or "").strip()
         if not account or not agent_id:
             await channel.send_response(
                 ws,
@@ -6144,7 +6229,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         payload = await asyncio.to_thread(ASSISTANT_LOGIN_MANAGER.refresh, login_session)
         if payload.get("status") == "success" and not login_session.saved:
             try:
-                payload = await _persist_welink_login_step(login_session, "assistant")
+                payload = await _persist_welink_login_step(
+                    login_session, "assistant", str(params.get("assistant_account") or ""),
+                )
             except Exception as e:  # noqa: BLE001
                 logger.exception("[channel.welink.assistant_login_status] 保存助手凭证失败, req_id=%s: %s", req_id, e)
                 login_session.status = "failed"
@@ -6159,12 +6246,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
             manual_assistant_patch,
-            save_welink_authorization,
         )
 
         try:
             patch = manual_assistant_patch(
-                agent_id=str(params.get("persistent_agent_id") or ""),
+                agent_id=str(params.get("config_id") or params.get("persistent_agent_id") or ""),
                 account=str(params.get("account") or ""),
                 credential_id=str(params.get("assistant_credential_id") or ""),
                 secret=str(params.get("assistant_secret") or ""),
@@ -6173,13 +6259,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
             return
         try:
-            view, stored = await asyncio.to_thread(save_welink_authorization, patch)
-            cm = _resolve(channel_manager)
-            if cm is not None:
-                await cm.set_conf("welink", stored)
+            if "assistant_account" in params:
+                patch["assistant_account"] = str(params.get("assistant_account") or "").strip()
+            view = await _save_welink_connection(patch["persistent_agent_id"], patch["account"], patch)
         except Exception as exc:  # noqa: BLE001
+            from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
+
             logger.warning("[channel.welink.assistant_credential_save] 保存失败: %s", type(exc).__name__)
-            await channel.send_response(ws, req_id, ok=False, error="保存助手凭证失败", code="INTERNAL_ERROR")
+            code = exc.code if isinstance(exc, PersistentAgentError) else "BAD_REQUEST" if isinstance(exc, ValueError) else "INTERNAL_ERROR"
+            error = str(exc) if isinstance(exc, ValueError) else "保存助手凭证失败"
+            await channel.send_response(ws, req_id, ok=False, error=error, code=code)
             return
         payload = {"status": "success", "kind": "assistant"}
         payload.update(view)
@@ -6187,15 +6276,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _channel_welink_revoke(ws, req_id, params, session_id):
-        """Stop polling and replying for the colleague bound to the single WeLink slot."""
+        """Remove one colleague's WeLink assistant while retaining the shared reader login."""
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
-        agent_id = str(params.get("persistent_agent_id") or "").strip()
-        if not agent_id:
-            await channel.send_response(
-                ws, req_id, ok=False, error="persistent_agent_id is required", code="BAD_REQUEST",
-            )
+        selected_id = str(params.get("config_id") or params.get("persistent_agent_id") or "").strip()
+        if not selected_id:
+            await channel.send_response(ws, req_id, ok=False, error="config_id is required", code="BAD_REQUEST")
             return
         cm = _resolve(channel_manager)
         if cm is None:
@@ -6204,25 +6291,32 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         try:
-            from jiuwenswarm.common.config import update_channel_in_config
-
-            current = cm.get_conf("welink")
-            bound = str(current.get("persistent_agent_id") or current.get("agent_id") or "").strip()
-            if bound != agent_id:
-                await channel.send_response(
-                    ws, req_id, ok=False, error="colleague is not bound to WeLink", code="NOT_FOUND",
+            async with welink_authorization_lock:
+                from jiuwenswarm.common.config import update_config
+                from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
+                    normalize_welink_section, revoke_welink_authorization,
                 )
-                return
-            if current.get("enabled", True) is False:
+                current = normalize_welink_section(cm.get_conf("welink"))
+                binding = next((item for item in current["bindings"]
+                                if item["persistent_agent_id"] == selected_id or item.get("config_id") == selected_id), None)
+                if binding is None:
+                    await channel.send_response(
+                        ws, req_id, ok=False, error="colleague is not bound to WeLink", code="NOT_FOUND",
+                    )
+                    return
+                runtime_agent_id = binding["persistent_agent_id"]
+
+                def remove_binding(data):
+                    channels = data.setdefault("channels", {})
+                    channels["welink"] = revoke_welink_authorization(channels.get("welink"), runtime_agent_id)
+                    return data
+
+                stored = update_config(remove_binding)
+                await cm.set_conf("welink", dict(stored["channels"]["welink"]))
                 await channel.send_response(ws, req_id, ok=True, payload={"revoked": True})
-                return
-            new_conf = {**current, "enabled": False}
-            update_channel_in_config("welink", {"enabled": False})
-            await cm.set_conf("welink", new_conf)
-            await channel.send_response(ws, req_id, ok=True, payload={"revoked": True})
-        except Exception as e:  # noqa: BLE001
-            logger.exception("[channel.welink.revoke] 取消授权失败, req_id=%s: %s", req_id, e)
-            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[channel.welink.revoke] 取消授权失败, req_id=%s: %s", req_id, exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
 
     channel.register_method("channel.welink.get_bindings", _channel_welink_get_bindings)
     channel.register_method("channel.welink.login_start", _channel_welink_login_start)

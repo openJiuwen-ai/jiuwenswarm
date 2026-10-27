@@ -89,7 +89,7 @@ def test_either_authorization_order_stays_disabled_until_both_exist():
         },
     )
     assert both["enabled"] is True
-    assert both["assistant_secret"] == "hidden"
+    assert both["bindings"][0]["assistant_secret"] == "hidden"
 
     cli_first = apply_welink_authorization(
         {},
@@ -140,7 +140,10 @@ def test_cancelled_expired_and_incomplete_qr_do_not_store_a_secret():
     assert failed.status == "failed"
     assert failed.credentials() == ("", "")
 
-    with patch("jiuwenswarm.common.config.update_channel_in_config") as update:
+    with patch(
+        "jiuwenswarm.common.config.update_config",
+        side_effect=lambda mutate: mutate({"channels": {}}),
+    ) as update:
         view, stored = save_welink_authorization(
             {
                 "persistent_agent_id": "mate_1",
@@ -151,7 +154,6 @@ def test_cancelled_expired_and_incomplete_qr_do_not_store_a_secret():
             current={},
         )
     update.assert_called_once()
-    assert update.call_args.args[0] == "welink"
     assert stored["enabled"] is False
     assert "assistant_secret" not in view
     assert "hidden" not in str(view)
@@ -178,24 +180,74 @@ def test_typed_assistant_credential_stays_disabled_until_cli_and_hides_the_secre
     )
     stored = apply_welink_authorization({}, patch)
     assert stored["enabled"] is False
-    assert stored["assistant_credential_id"] == "2026"
+    assert stored["bindings"][0]["assistant_credential_id"] == "2026"
     public = public_welink_authorization(stored)
     assert public["assistant_ready"] is True
     assert "hidden" not in str(public)
 
 
-def test_switching_colleague_drops_the_previous_half():
-    merged = apply_welink_authorization(
-        {
-            "persistent_agent_id": "mate_old",
-            "assistant_credential_id": "old-id",
-            "assistant_secret": "old-secret",
-            "cli_authorized": True,
-            "credential_dir": "C:/old",
-            "account": "h00557917",
-        },
-        {"persistent_agent_id": "mate_new", "account": "p_openjiuwenbot1"},
-    )
-    assert merged["assistant_secret"] == ""
-    assert merged["cli_authorized"] is False
-    assert merged["enabled"] is False
+def test_another_reader_account_is_rejected_without_dropping_existing_binding():
+    import pytest
+
+    with pytest.raises(ValueError, match="shared reader account"):
+        apply_welink_authorization(
+            {
+                "persistent_agent_id": "mate_old",
+                "assistant_credential_id": "old-id",
+                "assistant_secret": "old-secret",
+                "cli_authorized": True,
+                "credential_dir": "C:/old",
+                "account": "h00557917",
+            },
+            {"persistent_agent_id": "mate_new", "account": "p_openjiuwenbot1"},
+        )
+
+
+def test_welink_save_keeps_another_channel_write_when_they_overlap(tmp_path, monkeypatch):
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+    from jiuwenswarm.common import config
+    from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import save_welink_authorization
+
+    path = tmp_path / "config.yaml"
+    monkeypatch.setattr(config, "CONFIG_YAML_PATH", path)
+    config.dump_yaml_round_trip(path, {"channels": {"dingtalk": {"apps": []}}})
+    original_dump = config.dump_yaml_round_trip
+    welink_writing, release, other_started, other_writing = (threading.Event() for _ in range(4))
+
+    def dump(file, data):
+        channels = data["channels"]
+        if channels.get("welink", {}).get("bindings") and not welink_writing.is_set():
+            welink_writing.set()
+            assert release.wait(timeout=3)
+        elif channels["dingtalk"].get("apps"):
+            other_writing.set()
+        return original_dump(file, data)
+
+    def other_write():
+        other_started.set()
+
+        def update(data):
+            data["channels"]["dingtalk"]["apps"] = [{"client_id": "other-app"}]
+            return data
+
+        return config.update_config(update)
+
+    monkeypatch.setattr(config, "dump_yaml_round_trip", dump)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(save_welink_authorization, {
+            "persistent_agent_id": "welink-agent", "account": "account-a",
+            "assistant_credential_id": "fake-id", "assistant_secret": "fake",
+        })
+        assert welink_writing.wait(timeout=3)
+        second = pool.submit(other_write)
+        try:
+            assert other_started.wait(timeout=3)
+            assert not other_writing.wait(timeout=0.1)
+        finally:
+            release.set()
+        first.result(timeout=3)
+        second.result(timeout=3)
+    stored = config.load_yaml_round_trip(path)["channels"]
+    assert stored["welink"]["bindings"][0]["persistent_agent_id"] == "welink-agent"
+    assert stored["dingtalk"]["apps"] == [{"client_id": "other-app"}]

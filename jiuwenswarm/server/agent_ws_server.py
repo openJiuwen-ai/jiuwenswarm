@@ -2186,23 +2186,14 @@ class AgentWebSocketServer:
             )
 
             from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
-            from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_binding
+            from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_bindings
 
             feishu_bindings = configured_feishu_bindings()
             dingtalk_bindings = configured_dingtalk_bindings()
-            welink_binding = configured_welink_binding()
+            welink_bindings = configured_welink_bindings()
             bindings = (*feishu_bindings, *dingtalk_bindings)
-            if not bindings and welink_binding is None:
+            if not bindings and not welink_bindings:
                 return None
-            channels = frozenset(
-                name
-                for name, enabled in (
-                    ("feishu", bool(feishu_bindings)),
-                    ("dingtalk", bool(dingtalk_bindings)),
-                    ("welink", welink_binding is not None),
-                )
-                if enabled
-            )
             fanout, manager = create_default_persistent_group_fanout(
                 send_delivery=self._send_result_delivery,
                 thinking_notice_sender=self._send_thinking_notice,
@@ -2212,9 +2203,15 @@ class AgentWebSocketServer:
                 await manager.start()
                 from jiuwenswarm.server.jiuwenmate.web_adapter import WEB_NAMESPACE
 
+                channels = frozenset(
+                    name for name, enabled in (
+                        ("feishu", bool(feishu_bindings)),
+                        ("dingtalk", bool(dingtalk_bindings)),
+                        ("welink", bool(welink_bindings)),
+                    ) if enabled
+                )
                 namespaces = {item.namespace_id for item in bindings}
-                if welink_binding is not None and welink_binding.namespace_id:
-                    namespaces.add(welink_binding.namespace_id)
+                namespaces.update(item.namespace_id for item in welink_bindings)
                 for namespace_id in sorted(namespaces or {WEB_NAMESPACE}):
                     await manager.recover(
                         namespace_id, channels=channels, include_unrouted=False,
@@ -2906,6 +2903,53 @@ class AgentWebSocketServer:
             channel_id=request.channel_id,
             ok=ok,
             payload=payload,
+            metadata=request.metadata,
+        )
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_welink_inbound(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Accept one polled WeLink group message for the bound colleague."""
+        from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import InboundDisposition
+        from jiuwenswarm.server.jiuwenmate.welink_inbound import (
+            WelinkInboundEvent, accept_welink_message, welink_binding_for_agent,
+        )
+
+        disposition = InboundDisposition.RETRYABLE
+        event = None
+        try:
+            params = request.params if isinstance(request.params, dict) else {}
+            event = WelinkInboundEvent.from_payload(params.get("event"))
+        except (TypeError, ValueError):
+            disposition = InboundDisposition.REJECTED
+        if event is not None:
+            try:
+                binding = welink_binding_for_agent(event.expected_agent_id)
+                if binding is None or (binding.account, binding.assistant_credential_id) != (
+                    event.account.strip(), event.assistant_credential_id.strip(),
+                ):
+                    disposition = InboundDisposition.REJECTED
+                else:
+                    fanout = await self._ensure_persistent_group_fanout()
+                    if fanout is not None:
+                        disposition = await accept_welink_message(fanout, event)
+            except Exception as exc:
+                logger.warning(
+                    "[AgentWebSocketServer] WeLink inbound temporarily unavailable: error_type=%s",
+                    type(exc).__name__,
+                )
+
+        response = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"disposition": disposition.value},
             metadata=request.metadata,
         )
         wire = encode_agent_response_for_wire(response, response_id=request.request_id)

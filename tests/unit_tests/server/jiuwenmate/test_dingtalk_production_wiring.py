@@ -781,3 +781,29 @@ def test_restart_only_fences_the_selected_channel_and_never_requeues_unknown(tmp
     assert repository.recover_sending_result_deliveries(NS, channels=frozenset({"dingtalk"}), now=NOW) == 1
     assert repository.result_deliveries(NS, state.record.request_id)[0]["status"] == "unknown"
     assert repository.claim_pending_result_deliveries(NS, channels=frozenset({"dingtalk"}), now=NOW) == []
+
+async def test_welink_membership_validation_ack_preserves_operation_and_evidence():
+    handler = object.__new__(MessageHandler)
+    handler._result_delivery_handler = AsyncMock(return_value={'outcome': 'unknown', 'handoff_target_valid': True})
+    handler.agent_client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True)))
+    await handler._handle_result_delivery_push({'delivery_id': 'delivery-test', 'stage': 'send',
+        'channel': 'welink', 'operation': 'validate_handoff'})
+    envelope = handler.agent_client.send_request.await_args.args[0]
+    assert envelope.params['operation'] == 'validate_handoff'
+    assert envelope.params['handoff_target_valid'] is True
+
+
+async def test_multiple_welink_bindings_start_and_recover_shared_runtime(monkeypatch):
+    from jiuwenswarm.server import agent_ws_server as server_module
+    from jiuwenswarm.server.jiuwenmate import feishu_group_fanout as fanout_module, welink_inbound
+    from jiuwenswarm.common import config as config_module
+    monkeypatch.setattr(config_module, 'get_config', lambda: {})
+    monkeypatch.setattr(welink_inbound, 'configured_welink_bindings', lambda config=None: (
+        SimpleNamespace(namespace_id='local', agent_id='a'), SimpleNamespace(namespace_id='local', agent_id='b')))
+    manager = SimpleNamespace(start=AsyncMock(), recover=AsyncMock(), aclose=AsyncMock())
+    fanout = SimpleNamespace()
+    monkeypatch.setattr(fanout_module, 'create_default_persistent_group_fanout', lambda **kwargs: (fanout, manager))
+    server = object.__new__(server_module.AgentWebSocketServer)
+    assert await server._ensure_persistent_group_fanout() is fanout
+    manager.recover.assert_awaited_once_with('local', channels=frozenset({'welink'}), include_unrouted=False)
+    await server._close_persistent_group_fanout()

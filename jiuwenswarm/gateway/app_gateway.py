@@ -2847,41 +2847,13 @@ async def _run(
                     )
 
         if "welink" in changed_channels:
-            for ch in channel_manager.pop_channels_by_id("welink"):
-                await _stop_channel(ch, getattr(ch, "start_task", None), "welink")
-            welink_conf = conf.get("welink") if isinstance(conf, dict) else {}
-            if not isinstance(welink_conf, dict):
-                welink_conf = {}
-            account = str(welink_conf.get("account") or "").strip()
-            agent_id = str(welink_conf.get("persistent_agent_id") or "").strip()
-            credential_dir = str(welink_conf.get("credential_dir") or "").strip()
-            if welink_conf.get("enabled") and account and agent_id and credential_dir:
-                from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_connect import (
-                    WelinkChannel,
-                    WelinkConfig,
-                )
+            from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_runtime import WelinkRuntime
 
-                channel = WelinkChannel(
-                    WelinkConfig(
-                        enabled=True,
-                        account=account,
-                        agent_id=agent_id,
-                        cli_path=str(welink_conf.get("cli_path") or "welink-cli").strip() or "welink-cli",
-                        env_name=str(welink_conf.get("env") or "pro").strip() or "pro",
-                        credential_dir=credential_dir,
-                        poll_interval_seconds=float(welink_conf.get("poll_interval_seconds") or 4),
-                        assistant_credential_id=str(welink_conf.get("assistant_credential_id") or "").strip(),
-                        assistant_secret=str(welink_conf.get("assistant_secret") or "").strip(),
-                    ),
-                    _DummyBus(),
-                )
-                channel.set_inbound_handler(message_handler.handle_persistent_welink_event)
-                channel_manager.register_channel(channel)
-                task = asyncio.create_task(channel.start(), name=f"welink-{account}")
-                channel.start_task = task
-                logger.info("[App] WelinkChannel(account=%s) registered", account)
-            else:
-                logger.info("[App] channels.welink incomplete, WelinkChannel disabled")
+            runtime = getattr(channel_manager, "_welink_runtime", None)
+            if runtime is None:
+                runtime = WelinkRuntime(channel_manager, _DummyBus(), message_handler.handle_persistent_welink_event)
+                channel_manager._welink_runtime = runtime
+            await runtime.apply(conf.get("welink") or {})
 
         if "xiaoyi" in changed_channels:
             xiaoyi_conf = conf.get("xiaoyi") if isinstance(conf, dict) else {}
@@ -3513,7 +3485,11 @@ async def _run(
                 pass
             await xiaoyi_channel.stop()
         # ---- 从 channel_manager 清理所有动态注册的 channel 实例 ----
-        for _cid in ("feishu", "xiaoyi", "dingtalk"):
+        for _cid in ("feishu", "xiaoyi", "dingtalk", "welink"):
+            if _cid == "welink":
+                runtime = getattr(channel_manager, "_welink_runtime", None)
+                if runtime is not None:
+                    await runtime.stop()
             for ch in channel_manager.pop_channels_by_id(_cid):
                 task = getattr(ch, "start_task", None)
                 if task is not None:

@@ -1,4 +1,4 @@
-"""Message-mediated collaboration helpers for Feishu group conversations."""
+"""Message-mediated collaboration helpers for group conversations."""
 
 from __future__ import annotations
 
@@ -101,7 +101,7 @@ def build_group_collaboration_guidance(roster: Iterable[Mapping[str, Any]]) -> s
         "是，就使用该同事的交接标记；名单中没有这个人，就不要编造标记。"
         "下一位会在看到这条公开消息后再继续，不要替对方完成后一步。"
         "没有这种先后安排时，最终回复里不得出现交接标记。"
-        "接力只能通过当前飞书群的公开消息完成；不要声称已经在后台调用了其他 Agent，"
+        "接力只能通过当前群的公开消息完成；不要声称已经在后台调用了其他 Agent，"
         "也不要使用名单以外的员工。每条回复最多交接给一位同事，"
         "接到交接的同事不要再交接回去。\n"
         f"当前群内可用同事：\n{roster_lines}"

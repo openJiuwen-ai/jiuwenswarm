@@ -1024,8 +1024,6 @@ async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkey
         return True
     transport = SimpleNamespace(send_push=AsyncMock(side_effect=send))
     launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=transport)
-    monkeypatch.setattr(launcher, "_flush_expert_history", AsyncMock())
-    monkeypatch.setattr(launcher, "_persist_expert_history", AsyncMock())
     assert await launcher.run_organization_turn("expert", "session", {}, source=source) is not failed
     assert active_turns("session") == []
     ids = [call.args[0]["request_id"] for call in transport.send_push.call_args_list]

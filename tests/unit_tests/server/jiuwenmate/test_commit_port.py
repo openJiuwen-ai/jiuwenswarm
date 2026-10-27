@@ -1032,3 +1032,94 @@ async def test_welink_worker_failure_isolated_and_shutdown_cancels_wait(host):
     finally:
         await asyncio.wait_for(service.aclose(), timeout=1)
     assert cancelled.is_set()
+
+
+async def test_welink_confirmed_handoff_survives_restart_without_resending(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel='welink', app_id='sender-ak', target_id='g', source_message_id='10')
+    execution = accept_and_start(repository, 'handoff-conv', 'handoff-msg', route_snapshot=route)
+    await port.record(execution, candidate(execution, 1, text='请继续 [[agent:peer]]'))
+    await port.record(execution, final(execution, 2))
+    sent = []
+    handed = []
+    async def gateway(job):
+        sent.append(dict(job))
+        ack = {'delivery_id': job['delivery_id'], 'stage': 'send', 'outcome': 'unknown'}
+        if job.get('operation') == 'reconcile':
+            ack.update(outcome='delivered', external_message_id='11')
+        if job.get('operation') == 'validate_handoff':
+            ack['handoff_target_valid'] = True
+        return ack
+    async def handoff(job, mentions, message_id):
+        handed.append((job, mentions, message_id))
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
+        mention_roster=lambda job: [{'agent_id': 'peer', 'name': '小九', 'app_ids': ['peer-ak']}],
+        handoff_handler=handoff)
+    await service.dispatch_pending()
+    assert sent[0]['text'] == '请继续 小九'
+    assert handed == []
+    unknown = repository.unknown_welink_result_deliveries(NS)[0]
+    assert unknown['agent_id'] == AGENT
+    assert unknown['mention_targets'][0]['agent_id'] == 'peer'
+    assert unknown['text'] == '请继续 小九'
+    # The first restarted process confirms delivery before the handoff consumer is assembled.
+    restarted = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW)
+    await restarted.reconcile_welink_deliveries()
+    assert handed == []
+    resumed = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
+        handoff_handler=handoff)
+    await resumed.reconcile_welink_deliveries()
+    assert len(handed) == 1
+    assert handed[0][2] == '11'
+    assert handed[0][0]['agent_id'] == AGENT
+    again = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
+        handoff_handler=handoff)
+    await again.reconcile_welink_deliveries()
+    assert len(handed) == 1
+    assert len([job for job in sent if not job.get('operation')]) == 1
+
+
+async def test_welink_validation_ack_does_not_change_delivered_receipt(host):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+    repository, _, port = host
+    route = RequestRouteSnapshot(channel='welink', app_id='ak', target_id='g', source_message_id='10')
+    execution = accept_and_start(repository, 'validation-conv', 'validation-msg', route_snapshot=route)
+    await port.record(execution, candidate(execution, 1))
+    await port.record(execution, final(execution, 2))
+    job = repository.claim_pending_result_deliveries(NS, now=NOW)[0]
+    repository.update_result_delivery(NS, job['delivery_id'], outcome='delivered',
+        external_message_id='11', error_code=None, now=NOW)
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=AsyncMock(), clock=lambda: NOW)
+    await service.apply_ack({'delivery_id': job['delivery_id'], 'stage': 'send', 'outcome': 'unknown',
+        'operation': 'validate_handoff', 'handoff_target_valid': True})
+    row = repository.result_deliveries(NS, execution.request_id)[0]
+    assert row['status'] == 'delivered'
+    assert row['external_message_id'] == '11'
+
+
+@pytest.mark.parametrize('outcome,valid', [('unknown', True), ('failed', True), ('delivered', False)])
+async def test_welink_unconfirmed_or_absent_target_never_hands_off(host, outcome, valid):
+    from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+    repository, _, port = host
+    execution = accept_and_start(repository, 'guard-conv', 'guard-msg',
+        route_snapshot=RequestRouteSnapshot(channel='welink', app_id='ak', target_id='g', source_message_id='10'))
+    await port.record(execution, candidate(execution, 1, text='请继续 [[agent:peer]]'))
+    await port.record(execution, final(execution, 2))
+    handed = []
+    async def handoff(*args):
+        handed.append(args)
+    async def gateway(job):
+        ack = {'delivery_id': job['delivery_id'], 'stage': 'send', 'outcome': 'unknown'}
+        if job.get('operation') == 'reconcile':
+            ack.update(outcome=outcome, external_message_id='11' if outcome == 'delivered' else None)
+        if job.get('operation') == 'validate_handoff':
+            ack['handoff_target_valid'] = valid
+        return ack
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
+        mention_roster=lambda job: [{'agent_id': 'peer', 'name': '小九'}], handoff_handler=handoff)
+    await service.dispatch_pending()
+    await service.reconcile_welink_deliveries()
+    assert handed == []
+    assert repository.result_deliveries(NS, execution.request_id)[0]['status'] == outcome

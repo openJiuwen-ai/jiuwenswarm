@@ -184,9 +184,21 @@ export function revokeColleagueAuthorization(
     colleagues: state.colleagues.map((item) => {
       if (item.id !== colleagueId) return item;
       if (platform === 'welink') {
-        return { ...item, welinkConfigured: false, imConfigured: item.feishuConfigured === true };
+        const imConfigured = item.feishuConfigured === true || item.dingtalkConfigured === true;
+        return {
+          ...item,
+          welinkConfigured: false,
+          imConfigured,
+          imPlatform: item.dingtalkConfigured ? 'dingtalk' : item.feishuConfigured ? 'feishu' : undefined,
+        };
       }
-      return { ...item, feishuConfigured: false, imConfigured: item.welinkConfigured === true };
+      const imConfigured = item.welinkConfigured === true || item.dingtalkConfigured === true;
+      return {
+        ...item,
+        feishuConfigured: false,
+        imConfigured,
+        imPlatform: item.dingtalkConfigured ? 'dingtalk' : undefined,
+      };
     }),
   };
 }

@@ -75,23 +75,28 @@ def test_transient_inbound_failure_is_not_a_permanent_rejection(monkeypatch):
     from datetime import datetime, timezone
     from jiuwenswarm.server.jiuwenmate import welink_inbound
     from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
-    binding = welink_inbound.WelinkBinding(account='reader', agent_id='mate')
-    monkeypatch.setattr(welink_inbound, 'configured_welink_binding', lambda: binding)
+    binding = welink_inbound.WelinkBinding(account='reader', agent_id='mate', assistant_credential_id='ak')
+    monkeypatch.setattr(welink_inbound, 'welink_binding_for_agent', lambda agent: binding)
     from unittest.mock import AsyncMock
     now = datetime.now(timezone.utc)
+    from openjiuwen.harness.persistent_agent import GroupMessage
+    source = GroupMessage(message_id="12", sender_id="human", sender_name="Human", sender_kind="human",
+                          received_at=now, text="hello")
     scheduler = SimpleNamespace(accept=AsyncMock(side_effect=PersistentAgentError('queue full', code='QUEUE_FULL')))
     fanout = SimpleNamespace(
         _clock=lambda: now,
-        _service=SimpleNamespace(get_colleague=lambda *args: SimpleNamespace(enabled=True),
-                                 current_snapshot=lambda *args: SimpleNamespace(agent_id='mate')),
+        _service=SimpleNamespace(connection_of=lambda *args: SimpleNamespace(channel="welink", connection_key="reader"), get_colleague=lambda *args: SimpleNamespace(enabled=True),
+                                 current_snapshot=lambda *args: SimpleNamespace(agent_id='mate'),
+                                 read_settings=lambda *args: SimpleNamespace(group_reply_mode='adaptive')),
         _groups=SimpleNamespace(resolve=lambda *args, **kwargs: SimpleNamespace(group_chat_id='group'),
-                                observe_access=lambda *args, **kwargs: None),
+                                observe_access=lambda *args, **kwargs: None,
+                                access_for=lambda *args: SimpleNamespace(status="active", visible_from=now)),
         _sessions=SimpleNamespace(resolve_session=lambda *args, **kwargs: SimpleNamespace(session_id='session')),
         _agent_manager=SimpleNamespace(scheduler=scheduler,
-            group_archive=SimpleNamespace(append=lambda *args, **kwargs: None),
+            group_archive=SimpleNamespace(append=lambda *args, **kwargs: None, current_messages=lambda *args: (source,)),
             group_participant_roster=lambda *args: ()),
     )
-    event = welink_inbound.WelinkInboundEvent(account='reader', expected_agent_id='mate', message_id='12',
+    event = welink_inbound.WelinkInboundEvent(account='reader', expected_agent_id='mate', assistant_credential_id='ak', message_id='12',
         chat_id='g', sender_id='human', sender_name='Human', text='hello', received_at=now)
     assert asyncio.run(welink_inbound.accept_welink_message(fanout, event)).value == 'retryable'
     assert scheduler.accept.await_count == 1

@@ -120,7 +120,11 @@ def _bound_apps() -> dict[str, set[tuple[str, str]]]:
     """The ``(app, agent)`` pairs the owner's channel configuration binds now, per platform."""
     from jiuwenswarm.server.jiuwenmate.dingtalk_inbound import configured_dingtalk_bindings
 
+    from jiuwenswarm.server.jiuwenmate.welink_inbound import configured_welink_bindings, welink_connection_key
+
+    welink = configured_welink_bindings()
     return {
+        "welink": {(welink_connection_key(item.account, item.config_id), item.agent_id) for item in welink},
         "feishu": {(binding.app_id, binding.agent_id) for binding in configured_feishu_bindings()},
         "dingtalk": {(binding.app_id, binding.agent_id) for binding in configured_dingtalk_bindings()},
     }

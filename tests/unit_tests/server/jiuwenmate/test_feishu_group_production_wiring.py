@@ -705,8 +705,8 @@ async def test_agent_server_recovers_a_left_welink_request(monkeypatch):
     monkeypatch.setattr(dingtalk_inbound, "configured_dingtalk_bindings", lambda: ())
     monkeypatch.setattr(
         welink_inbound,
-        "configured_welink_binding",
-        lambda: SimpleNamespace(namespace_id="local"),
+        "configured_welink_bindings",
+        lambda: (SimpleNamespace(namespace_id="local"),),
     )
     monkeypatch.setattr(module, "create_default_persistent_group_fanout", MagicMock(return_value=(fanout, manager)))
 

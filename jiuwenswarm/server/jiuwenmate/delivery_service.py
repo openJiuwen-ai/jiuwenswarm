@@ -58,6 +58,7 @@ class ResultDeliveryService:
         self._send_delivery = send_delivery
         self._archive_delivery = archive_delivery
         self._archive_after: tuple[str, str] | None = None
+        self._welink_handoff_after = ""
         self._welink_reconcile_after = ""
         self._next_welink_reconcile: datetime | None = None
         self._clock = clock
@@ -151,9 +152,14 @@ class ResultDeliveryService:
                     roster,
                     sender_agent_id=str(job.get("agent_id") or ""),
                 )
+                if job.get("channel") == "welink":
+                    for target in mentions:
+                        cleaned_text = cleaned_text.replace(f"[[agent:{target['agent_id']}]]", target["name"])
                 job["text"] = cleaned_text
                 if mentions:
                     job["mention_targets"] = mentions
+            if job.get("channel") == "welink":
+                await asyncio.to_thread(self._repository.save_result_delivery_job, self._namespace_id, job)
             timeout = self._file_send_timeout if "file" in job else self._send_timeout
             try:
                 gateway_job = dict(job)
@@ -184,7 +190,8 @@ class ResultDeliveryService:
                 file_key=self._file_key(job, ack),
             )
             dispatched += 1
-            if outcome == "delivered" and job.get("mention_targets") and self._handoff_handler is not None:
+            if (outcome == "delivered" and job.get("channel") != "welink"
+                    and job.get("mention_targets") and self._handoff_handler is not None):
                 try:
                     await self._handoff_handler(
                         job,
@@ -228,6 +235,39 @@ class ResultDeliveryService:
             except Exception:
                 logger.warning("[JiuwenMate] WeLink delivery still unconfirmed: delivery_id=%s", job["delivery_id"])
 
+        await self._reconcile_welink_handoffs()
+
+    async def _reconcile_welink_handoffs(self) -> None:
+        if self._handoff_handler is None:
+            return
+        jobs = await asyncio.to_thread(
+            self._repository.pending_welink_handoffs, self._namespace_id, after=self._welink_handoff_after,
+        )
+        if not jobs and self._welink_handoff_after:
+            self._welink_handoff_after = ""
+            jobs = await asyncio.to_thread(self._repository.pending_welink_handoffs, self._namespace_id)
+        for job in jobs:
+            self._welink_handoff_after = str(job["delivery_id"])
+            try:
+                validation = await asyncio.wait_for(
+                    self._send_delivery(dict(job, operation="validate_handoff")), timeout=self._send_timeout,
+                )
+                if (not isinstance(validation, Mapping) or validation.get("delivery_id") != job["delivery_id"]
+                        or validation.get("stage") != "send"):
+                    continue
+                valid = validation.get("handoff_target_valid")
+                if valid is True:
+                    await self._handoff_handler(job, job["mention_targets"], job["external_message_id"])
+                elif valid is not False:
+                    continue
+                else:
+                    logger.info("[JiuwenMate] WeLink handoff target unavailable: delivery_id=%s", job["delivery_id"])
+                await asyncio.to_thread(self._repository.mark_welink_handoff_done, self._namespace_id, job["delivery_id"])
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning("[JiuwenMate] WeLink confirmed handoff pending: delivery_id=%s", job["delivery_id"])
+
     async def reconcile_archives(self) -> None:
         """Retry only public-record persistence after a durable send ACK; never resend the message."""
         if self._archive_delivery is None:
@@ -255,6 +295,8 @@ class ResultDeliveryService:
             or ack.get("stage") != "send"
         ):
             raise ValueError("invalid result delivery ACK")
+        if ack.get("operation") == "validate_handoff":
+            return {"delivery_id": delivery_id, "status": "validation"}
         outcome = ack.get("outcome")
         external_message_id = ack.get("external_message_id")
         error_code = ack.get("error_code")

@@ -3676,6 +3676,10 @@ class MessageHandler(ABC):
             "external_message_id": external_message_id if outcome == "delivered" else None,
             "error_code": result.get("error_code") if outcome != "delivered" else None,
         }
+        if payload.get("operation") == "validate_handoff":
+            ack["operation"] = "validate_handoff"
+            if isinstance(result.get("handoff_target_valid"), bool):
+                ack["handoff_target_valid"] = result["handoff_target_valid"]
         file_key = result.get("file_key")
         if isinstance(file_key, str) and file_key.strip():
             ack["file_key"] = file_key

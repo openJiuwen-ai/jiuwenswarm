@@ -1218,3 +1218,27 @@ def test_group_reply_mode_defaults_and_validation():
     assert ColleagueSettings.from_dict({"name": "Test"}).group_reply_mode == "adaptive"
     with pytest.raises(PersistentAgentError, match="group_reply_mode"):
         ColleagueSettings.from_dict({"name": "Test", "group_reply_mode": "invalid"})
+
+
+async def test_welink_handoff_creates_one_mentioned_request_with_confirmed_history_id(host, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate import welink_inbound
+    sender = host.colleague('教练')
+    peer = host.service.attach_connection(NS, host.colleague('小九'), 'welink', 'reader')
+    binding = welink_inbound.WelinkBinding(account='reader', agent_id=peer,
+        assistant_credential_id='peer-ak', namespace_id=NS)
+    monkeypatch.setattr(welink_inbound, 'configured_welink_bindings', lambda config=None: (binding,))
+    fanout = host.fanout([])
+    job = {'channel': 'welink', 'namespace_id': NS, 'agent_id': sender, 'target_id': 'wg',
+        'app_id': 'sender-ak', 'text': '请继续 小九'}
+    for _ in range(2):
+        await fanout.continue_handoff(job, [{'agent_id': peer, 'name': '小九'}], 'history-11')
+    group = host.groups.resolve(NS, 'welink', 'wg', now=NOW)
+    session = host.sessions.resolve_session(NS, peer, ConversationRef.group(group.group_chat_id), now=NOW)
+    requests = host.sessions.session_requests(NS, session.session_id)
+    assert len(requests) == 1
+    source = requests[0].record.request_input.source
+    assert source.message_id == 'history-11'
+    assert source.sender_id == sender
+    assert source.sender_kind == 'agent'
+    assert peer in source.mention_ids
+    assert source.text == '请继续 小九'

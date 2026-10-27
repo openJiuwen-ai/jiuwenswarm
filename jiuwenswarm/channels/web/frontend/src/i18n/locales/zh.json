@@ -268,6 +268,8 @@
       "welinkAssistantExisting": "填写已有 AK/SK",
       "welinkAssistantCredentialId": "AK",
       "welinkAssistantCredentialPlaceholder": "已有助手的 AK",
+      "welinkAssistantAccount": "助手群成员账号（可选）",
+      "welinkAssistantAccountHint": "填写群成员中的助手 memberAccount，用于匹配这位同事",
       "welinkAssistantSecret": "SK",
       "welinkAssistantSecretPlaceholder": "已有助手的 SK",
       "welinkSaveCredential": "保存",

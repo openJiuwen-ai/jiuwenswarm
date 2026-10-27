@@ -24,6 +24,7 @@
     "test:jiuwenmate-create-install-ui": "node tests/jiuwenmateCreateInstallUi.test.mjs",
     "test:jiuwenmate-capabilities": "esbuild src/features/jiuwenmate/colleagueCapabilities.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/jiuwenmate-capabilities/colleagueCapabilities.js && node --test tests/jiuwenmateCapabilities.test.mjs",
     "test:jiuwenmate-api": "esbuild src/features/jiuwenmate/jiuwenmateApi.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js && node --test tests/jiuwenmateApi.test.mjs",
+    "test:welink-oauth": "node tests/welinkOauth.test.mjs",
     "test:jiuwenmate-profile": "node tests/buildJiuwenmateProfile.mjs && node --test tests/jiuwenmateProfile.test.mjs tests/jiuwenmateWorkspacePage.test.mjs",
     "test:jiuwenmate-workspace": "esbuild src/features/jiuwenmate/workspaceState.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/jiuwenmate-workspace/workspaceState.js && node --test tests/jiuwenmateWorkspace.test.mjs",
     "test:jiuwenmate-office": "esbuild src/features/jiuwenmate/officeState.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/jiuwenmate-office/officeState.js && node --test tests/jiuwenmateOffice.test.mjs",

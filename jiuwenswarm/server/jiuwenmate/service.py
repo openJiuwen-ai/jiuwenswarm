@@ -799,6 +799,25 @@ class PersistentAgentService:
         # Its IM agents go first; the repository refuses again if one was added meanwhile.
         if self._repository.connections(namespace_id, agent_id):
             raise PersistentAgentError("colleague still has connections", code="CONFLICT")
+        connection = self._repository.connection_of(namespace_id, agent_id)
+        if connection is not None and connection.channel == "welink":
+            import shutil
+            from jiuwenswarm.server.jiuwenmate.welink_inbound import credential_dir_for
+
+            from jiuwenswarm.gateway.channel_manager.im_platforms.welink.welink_binding import (
+                load_welink_section, normalize_welink_section,
+            )
+
+            credentials = credential_dir_for(agent_id)
+            section = normalize_welink_section(load_welink_section())
+            reader_dir = str(section.get("reader_credential_dir") or "").strip()
+            # Legacy installs share this directory with the reader. Removing the
+            # colleague must not sign every remaining assistant out.
+            shared_reader = Path(reader_dir).expanduser().resolve() if reader_dir else None
+            if shared_reader is None or (credentials.resolve() != shared_reader and credentials.resolve() not in shared_reader.parents):
+                shutil.rmtree(credentials, ignore_errors=True)
+                if credentials.exists():
+                    raise PersistentAgentError("WeLink credentials could not be removed", code="CLEANUP_FAILED")
         self._templates.remove(agent_id)
         self._workspaces.remove(namespace_id, agent_id)
         if self._windows is not None:

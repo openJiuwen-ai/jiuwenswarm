@@ -4343,8 +4343,8 @@ async def test_channel_welink_revoke_disables_polling_and_keeps_the_account(monk
     saved = config_module.load_yaml_round_trip(config_path)["channels"]["welink"]
     assert saved["enabled"] is False
     assert saved["account"] == "h00557917"
-    assert saved["persistent_agent_id"] == "mate_xiaojiu"
-    assert saved["credential_dir"] == "C:/welink/mate_xiaojiu"
+    assert saved["bindings"] == []
+    assert saved["reader_credential_dir"] == "C:/welink/mate_xiaojiu"
     assert cm.configs["welink"]["enabled"] is False
     assert cm.configs["welink"]["account"] == "h00557917"
 
@@ -5095,3 +5095,35 @@ async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling
     assert calls == [("config", [{"cli_agent": "claude"}]), ("remove", "acme")]
     assert missing["ok"] is False
     assert missing["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_welink_multi_binding_status_and_revoke_preserve_shared_reader(monkeypatch, tmp_path):
+    from jiuwenswarm.common import config as config_module
+
+    channel, cm = FakeWebChannel(), FakeChannelManager()
+    cm.configs['welink'] = {
+        'account': 'reader', 'reader_credential_dir': '/reader', 'cli_authorized': True,
+        'bindings': [
+            {'persistent_agent_id': 'mate_1', 'config_id': 'config_1', 'assistant_credential_id': 'ak1', 'assistant_secret': 'secret1', 'credential_dir': '/assistant1'},
+            {'persistent_agent_id': 'mate_2', 'config_id': 'config_2', 'assistant_credential_id': 'ak2', 'assistant_secret': 'secret2', 'credential_dir': '/assistant2'},
+        ],
+    }
+    path = tmp_path / 'config.yaml'
+    config_module.dump_yaml_round_trip(path, {'channels': cm.configs})
+    monkeypatch.setattr(config_module, 'CONFIG_YAML_PATH', path)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm))
+    await channel.methods['channel.welink.get_bindings'](object(), 'status', {'config_id': 'config_2'}, 'session')
+    response = channel.responses[-1]
+    assert response['ok'] is True
+    assert response['payload']['persistent_agent_id'] == 'mate_2'
+    assert response['payload']['config_id'] == 'config_2'
+    assert len(response['payload']['bindings']) == 2
+    assert 'secret1' not in str(response)
+    await channel.methods['channel.welink.revoke'](object(), 'revoke', {'config_id': 'config_2'}, 'session')
+    assert channel.responses[-1]['ok'] is True
+    saved = config_module.load_yaml_round_trip(path)['channels']['welink']
+    assert saved['cli_authorized'] is True
+    assert saved['reader_credential_dir'] == '/reader'
+    assert [b['persistent_agent_id'] for b in saved['bindings']] == ['mate_1']
+    assert saved['bindings'][0]['enabled'] is True

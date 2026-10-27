@@ -59,6 +59,10 @@ class WelinkConfig:
     channel_id: str = "welink"
     assistant_credential_id: str = ""
     assistant_secret: str = field(default="", repr=False)
+    reader_credential_dir: str = ""
+    assistant_account: str = ""
+    shared_reader: bool = False
+    legacy_identity_fallback: bool = False
 
 
 class WelinkChannel(BaseChannel):
@@ -71,7 +75,7 @@ class WelinkChannel(BaseChannel):
         self._journal = None
         self._preflight_retry_at = 0.0
         self._inbound_handler: WelinkInboundHandler | None = None
-        self._cli = WelinkCli(config.cli_path, Path(config.credential_dir), env_name=config.env_name)
+        self._cli = WelinkCli(config.cli_path, Path(config.reader_credential_dir or config.credential_dir), env_name=config.env_name)
         self._link: AssistantLink | None = None
 
     @property
@@ -80,7 +84,7 @@ class WelinkChannel(BaseChannel):
 
     @property
     def app_id(self) -> str:
-        return self.config.account
+        return self.config.assistant_credential_id
 
     def set_inbound_handler(self, handler: WelinkInboundHandler | None) -> None:
         self._inbound_handler = handler
@@ -98,11 +102,9 @@ class WelinkChannel(BaseChannel):
             return
         self._running = True
         self._auth_ok_at = 0.0
-        cursors = CursorStore(Path(self.config.credential_dir) / "cursors.json")
-        poller = WelinkPoller(self._cli, self.config.account, cursors)
         assistant_ready = bool(self.config.assistant_credential_id.strip() and self.config.assistant_secret.strip())
         logger.info(
-            "[Welink] polling account=%s agent=%s assistant_reply=%s",
+            "[Welink] channel account=%s agent=%s assistant_reply=%s",
             self.config.account,
             self.config.agent_id,
             assistant_ready,
@@ -114,7 +116,11 @@ class WelinkChannel(BaseChannel):
             )
             self._link.start(asyncio.get_running_loop(), self._on_mention)
         try:
-            await self._poll_loop(poller)
+            if self.config.shared_reader:
+                await asyncio.Event().wait()
+            else:
+                cursors = CursorStore(Path(self.config.credential_dir) / "cursors.json")
+                await self._poll_loop(WelinkPoller(self._cli, self.config.account, cursors))
         finally:
             link = self._link
             self._link = None
@@ -180,8 +186,11 @@ class WelinkChannel(BaseChannel):
         text: str,
         idempotency_key: str,
         source_message_id: str = "",
+        mention_targets: list[dict] | None = None,
     ) -> dict[str, Any]:
         """Reply as the assistant. The logged-in employee account is never the sender."""
+        for target in mention_targets or ():
+            text = text.replace("[[agent:" + str(target.get("agent_id", "")) + "]]", str(target.get("display_name") or target.get("name") or target.get("agent_id") or ""))
         if not chat_id or not text or not idempotency_key:
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_ROUTE"}
         async with self._delivery_lock:
@@ -231,22 +240,34 @@ class WelinkChannel(BaseChannel):
             self._journal = DeliveryJournal(Path(self.config.credential_dir) / f"deliveries-{identity}.sqlite3")
         return self._journal
 
-    def _allowed_assistants(self, chat_id: str) -> set[str]:
-        membership = MembershipStore(Path(self.config.credential_dir) / "membership.json")
+    def _allowed_assistants(self, chat_id: str, *, force_refresh: bool = False) -> set[str]:
+        membership = MembershipStore(Path(self.config.reader_credential_dir or self.config.credential_dir) / "membership.json")
         record = membership.get(chat_id)
         age = time.time() - membership.checked_at(chat_id)
-        if record is not None and 0 <= age < MEMBERSHIP_TTL_SECONDS:
-            return set(record[1]) if record[0] else set()
+        if not force_refresh and record is not None and 0 <= age < MEMBERSHIP_TTL_SECONDS:
+            return self._own_assistants(set(record[1])) if record[0] else set()
         result = self._cli.query_group_members(chat_id)
         if not result.ok:
-            return set()
+            raise ValueError("membership query unavailable")
         payload = parse_cli_json(result.stdout)
+        if not isinstance(payload, (dict, list)):
+            raise ValueError("invalid membership response")
         if isinstance(payload, dict) and payload.get("resultCode") not in (None, 0, "0"):
-            return set()
+            raise ValueError("membership query rejected")
         members = parse_group_members(payload)
         if not any(member.account == self.config.account for member in members):
             return set()
-        return reader_assistant_accounts(members, self.config.account)
+        return self._own_assistants(reader_assistant_accounts(members, self.config.account))
+
+    def _own_assistants(self, accounts: set[str]) -> set[str]:
+        identity = self.config.assistant_account or self.config.assistant_credential_id
+        if identity in accounts:
+            return {identity}
+        # Legacy standalone channels had no explicit member identity.
+        if (not self.config.shared_reader or (self.config.legacy_identity_fallback
+                and getattr(self, "_shared_binding_count", 0) == 1)) and len(accounts) == 1:
+            return accounts
+        return set()
 
     def _history(self, chat_id: str) -> list[WelinkHistoryMessage]:
         result = self._cli.query_history(chat_id, None)
@@ -294,7 +315,8 @@ class WelinkChannel(BaseChannel):
         )
         return await self._deliver(message, from_mention=True)
 
-    async def _deliver(self, message: Any, *, from_mention: bool = False) -> bool:
+    async def _deliver(self, message: Any, *, from_mention: bool = False,
+                       first_observation: bool = False, visible_from: str = "") -> bool:
         link = self._link
         if (
             not from_mention
@@ -310,13 +332,17 @@ class WelinkChannel(BaseChannel):
         event = {
             "account": self.config.account,
             "expected_agent_id": self.config.agent_id,
+            "assistant_credential_id": self.config.assistant_credential_id,
+            "mentioned": from_mention,
+            "first_observation": first_observation,
+            "visible_from": visible_from or None,
             "message_id": (link.canonical_message_id(message.group_id, message.message_id)
                            if link is not None else message.message_id),
             "chat_id": message.group_id,
             "chat_type": "group",
             "sender_id": message.sender_id,
             "sender_name": message.sender_name or message.sender_id,
-            "received_at": datetime.now(timezone.utc).isoformat(),
+            "received_at": getattr(message, "received_at", "") or datetime.now(timezone.utc).isoformat(),
         }
         text, local_files = self._text_with_local_media(message)
         event["text"] = text

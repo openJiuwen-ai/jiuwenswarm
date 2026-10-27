@@ -36,6 +36,7 @@ class WelinkHistoryMessage:
     text: str
     group_id: str
     media: tuple[WelinkMedia, ...] = ()
+    received_at: str = ""
 
 
 _MESSAGE_ID_KEYS = ("messageId", "message_id", "msgId", "msg_id", "id")
@@ -232,9 +233,29 @@ def parse_history_messages(payload: Any, *, group_id: str) -> list[WelinkHistory
                 text=text,
                 group_id=group_id,
                 media=media,
+                received_at=_history_time(item),
             )
         )
     return messages
+
+
+def _history_time(item: dict[str, Any]) -> str:
+    for key in ("sendTime", "send_time", "sentAt", "timestamp", "createTime", "created_at"):
+        value = item.get(key)
+        if value is None:
+            continue
+        try:
+            if isinstance(value, (int, float)) or str(value).isdigit():
+                number = float(value)
+                parsed = datetime.fromtimestamp(number / 1000 if number > 10**11 else number, timezone.utc)
+            else:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    continue
+            return parsed.astimezone(timezone.utc).isoformat()
+        except (ValueError, TypeError, OverflowError, OSError):
+            continue
+    return ""
 
 
 def select_new_messages(
