@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiPathInvalid,
     RsiTaskNotFound,
 )
+from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
 
 
 _MAX_PREVIEW_BYTES = 10 * 1024 * 1024
@@ -113,6 +114,14 @@ class RsiArtifactFilesService:
         else:
             content = base64.b64encode(content_bytes).decode("ascii")
             encoding = "base64"
+        download_info = build_file_download_info(
+            str(target),
+            target.name,
+            session_id=str(params.get("session_id") or "").strip(),
+            user_id=str(
+                params.get("_download_user_id") or params.get("user_id") or ""
+            ).strip(),
+        )
         return {
             "path": str(target),
             "name": target.name,
@@ -120,6 +129,7 @@ class RsiArtifactFilesService:
             "type": self._mime_type(target),
             "encoding": encoding,
             "content": content,
+            "download_url": str(download_info["download_url"]),
         }
 
     def _resolve_path(self, raw_path: Any, task_id: str) -> Path:
