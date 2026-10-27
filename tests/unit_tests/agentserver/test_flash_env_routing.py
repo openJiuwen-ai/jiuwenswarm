@@ -53,13 +53,14 @@ def test_standalone_dotenv_reaches_yaml_configuration(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("method", [ReqMethod.SESSION_CREATE, ReqMethod.CHAT_SEND])
+@pytest.mark.parametrize("channel", ["web", "officeclaw"])
 @pytest.mark.parametrize("mode", [None, "agent", "agent.work.normal"])
-def test_standalone_creation_and_chat_use_resolved_configuration(monkeypatch, mode, method):
+def test_standalone_creation_and_chat_use_resolved_configuration(monkeypatch, mode, method, channel):
     monkeypatch.setenv(FLASH_ENV, "true")
     params = {"work_mode": "work"}
     if mode is not None:
         params["mode"] = mode
-    resolved = _shared.resolve_request_runtime_mode(make_request(params, method=method))
+    resolved = _shared.resolve_request_runtime_mode(make_request(params, method=method, channel=channel))
     assert resolved.manager_mode == resolved.adapter_mode == "flash"
     assert resolved.canonical_mode in {"agent", "agent.work.normal"}
 
@@ -79,10 +80,46 @@ def test_environment_keeps_code_team_and_plan_routes(monkeypatch, params, expect
 
 @pytest.mark.parametrize("enabled", ["true", "false"])
 @pytest.mark.parametrize("mode,expected", [(None, "agent"), ("agent.plan", "agent"), ("flash", "flash")])
-def test_pc_foreground_still_uses_explicit_mode(monkeypatch, enabled, mode, expected):
+def test_officeclaw_defaults_follow_environment_and_explicit_flash_wins(monkeypatch, enabled, mode, expected):
     monkeypatch.setenv(FLASH_ENV, enabled)
+    if enabled == "true":
+        expected = "flash"
     request = make_request({"mode": mode, "work_mode": "work"}, channel="officeclaw")
     assert _shared.resolve_request_runtime_mode(request).adapter_mode == expected
+
+
+@pytest.mark.parametrize("source", ["permission_interrupt", "confirm_interrupt", "ask_user_interrupt"])
+@pytest.mark.parametrize("mode,expected", [("agent", "agent"), ("flash", "flash")])
+def test_officeclaw_interrupt_resume_keeps_restored_mode(monkeypatch, source, mode, expected):
+    monkeypatch.setenv(FLASH_ENV, "true")
+    incoming = make_request({
+        "mode": mode, "source": source, "answers": [], "request_id": "paused-request",
+    }, channel="officeclaw")
+    assert _shared.resolve_request_runtime_mode(incoming).adapter_mode == expected
+
+
+@pytest.mark.parametrize("missing", ["source", "answers", "request_id"])
+def test_incomplete_interrupt_marker_does_not_disable_officeclaw_default(monkeypatch, missing):
+    monkeypatch.setenv(FLASH_ENV, "true")
+    params = {
+        "mode": "agent", "source": "permission_interrupt", "answers": [], "request_id": "paused-request",
+    }
+    params.pop(missing)
+    assert _shared.resolve_request_runtime_mode(make_request(params, channel="officeclaw")).adapter_mode == "flash"
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("code.normal", "code"), ("team", "team"), ("agent.plan", "agent"),
+    ("agent.work.plan", "agent"), ("team.work.plan", "team"),
+])
+def test_officeclaw_environment_preserves_code_team_and_explicit_plan(monkeypatch, mode, expected):
+    monkeypatch.setenv(FLASH_ENV, "true")
+    incoming = make_request({
+        "mode": mode, "work_mode": "work", "plan_entry_source": "e2a",
+    }, channel="officeclaw")
+    resolved = _shared.resolve_request_runtime_mode(incoming)
+    assert resolved.manager_mode == expected
+    assert resolved.is_plan is mode.endswith(".plan")
 
 
 @pytest.mark.parametrize("enabled", ["true", "false"])
@@ -108,14 +145,15 @@ def test_explicit_flash_is_not_disabled_by_environment(monkeypatch, channel):
 
 @pytest.mark.parametrize("flash", [False, True])
 @pytest.mark.parametrize("selection", [False, True])
+@pytest.mark.parametrize("channel", ["web", "officeclaw"])
 def test_flash_and_skill_selection_switches_are_independent(
-    isolated_configuration, monkeypatch, flash, selection,
+    isolated_configuration, monkeypatch, flash, selection, channel,
 ):
     monkeypatch.setenv(FLASH_ENV, str(flash).lower())
     monkeypatch.setenv(SKILL_ENV, str(selection).lower())
     raw = {"flash": {"enabled": not flash, "skill_selection": {"enabled": not selection}}}
     isolated_configuration.write_text(yaml.safe_dump(raw), encoding="utf-8")
     config = config_module.get_config()
-    resolved = _shared.resolve_request_runtime_mode(make_request({"work_mode": "work"}))
+    resolved = _shared.resolve_request_runtime_mode(make_request({"work_mode": "work"}, channel=channel))
     assert resolved.adapter_mode == ("flash" if flash else "agent")
     assert SelectionSettings.from_config(config).enabled is selection

@@ -428,17 +428,24 @@ def standalone_yaml_configuration(monkeypatch, tmp_path):
 @pytest.mark.parametrize("env_value,config_enabled,expected", [
     ("true", False, "flash"), ("false", True, "agent"),
 ])
-async def test_standalone_flash_environment_reaches_stream_and_keeps_session_binding(
+@pytest.mark.parametrize("channel,mode", [
+    ("web", "agent.work.normal"), ("officeclaw", None),
+    ("officeclaw", "agent.plan"), ("officeclaw", "agent.work.normal"),
+])
+@pytest.mark.parametrize("stream", [True, False])
+async def test_flash_environment_reaches_chat_and_keeps_session_binding(
     resume_routes, standalone_yaml_configuration, monkeypatch, tmp_path, env_value, config_enabled, expected,
+    channel, mode, stream,
 ):
     routes = resume_routes
     session_metadata.init_session_metadata(
-        session_id="standalone-env", channel_id="web", mode="agent", work_mode="work",
+        session_id="standalone-env", channel_id=channel, mode="agent", work_mode="work",
         adapter_mode="agent", project_dir=str(tmp_path), sessions_root=tmp_path,
     )
     deep = await routes.add("agent")
     flash = await routes.add("flash")
-    routes.manager.agents["web"] = routes.manager.agents.pop("officeclaw")
+    if channel == "web":
+        routes.manager.agents["web"] = routes.manager.agents.pop("officeclaw")
     config_module, config_file = standalone_yaml_configuration
     config_file.write_text(f"flash:\n  enabled: {str(config_enabled).lower()}\n", encoding="utf-8")
     monkeypatch.setattr(_shared, "get_config", config_module.get_config)
@@ -447,15 +454,19 @@ async def test_standalone_flash_environment_reaches_stream_and_keeps_session_bin
     async def send(request_id):
         config_module.clear_config_cache()
         incoming = make_request(
-            "agent.work.normal", session_id="standalone-env", query="hello",
+            mode, session_id="standalone-env", query="hello",
             work_mode="work", project_dir=str(tmp_path),
         )
         incoming.request_id = request_id
-        incoming.channel_id = "web"
-        _, _, prepared = await _default._prepare_code_mode_chat_turn(routes.ctx, incoming, "web")
-        chunks = await _collect(routes.manager.process_message_stream(incoming))
-        assert chunks[-1].is_complete
-        assert not any((c.payload or {}).get("event_type") == "chat.error" for c in chunks)
+        incoming.channel_id = channel
+        _, _, prepared = await _default._prepare_code_mode_chat_turn(routes.ctx, incoming, channel)
+        target = routes.pool if channel == "officeclaw" else routes.manager
+        if stream:
+            chunks = await _collect(target.process_message_stream(incoming))
+            assert chunks[-1].is_complete
+            assert not any((c.payload or {}).get("event_type") == "chat.error" for c in chunks)
+        else:
+            assert (await target.process_message(incoming)).ok
         assert prepared is (flash if expected == "flash" else deep)
         assert incoming.resolved_adapter_mode == expected
         metadata = session_metadata.get_session_metadata(
