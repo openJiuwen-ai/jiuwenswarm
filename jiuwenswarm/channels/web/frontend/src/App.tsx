@@ -277,6 +277,14 @@ function restoreSessionModelSelection(
   const store = useSessionStore.getState();
   const restoredSelection = parseModelSelection(modelSelection);
   if (restoredSelection) {
+    // 页面刷新时 session.get_metadata 往往先于 models.list 返回：目录还没加载时
+    // resolveAvailableModelSelection 只能回退到默认模型/清空，会把会话实际绑定的模型
+    // 覆盖成默认值（执行中刷新尤其明显）。此时先保留服务端下发的选择，等目录到达后
+    // 由 ChatModelSelector 的可用性兜底决定是否需要修复。
+    if (store.chatAvailableModels.length === 0) {
+      store.setSelectedModelSelection(sessionId, restoredSelection);
+      return;
+    }
     const resolved = resolveAvailableModelSelection(
       restoredSelection,
       store.chatAvailableModels,
