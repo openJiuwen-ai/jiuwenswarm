@@ -1025,6 +1025,35 @@ class JiuWenSwarmDeepAdapter:
     - Deep interrupt / user_answer 处理
     """
 
+    def _install_file_soft_delete(self) -> None:
+        """开关为真时把软删除 DLL 装进当前进程。失败只记日志，下次创建会再试。"""
+        if sys.platform != "win32":
+            return
+        try:
+            from jiuwenswarm.common.config import get_config, get_file_soft_delete_settings
+
+            enabled, archive = get_file_soft_delete_settings(
+                get_config(),
+                workspace_dir=getattr(self, "_workspace_dir", None),
+            )
+            if not enabled:
+                return
+            from jiuwenbox.supervisor.win_softdelete import (
+                dll_path as jiuwenbox_soft_delete_dll_path,
+                install_win_soft_delete,
+            )
+
+            os.environ.setdefault(
+                "JIUWENBOX_SOFT_DELETE_DLL",
+                str(jiuwenbox_soft_delete_dll_path()),
+            )
+            install_win_soft_delete(archive)
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] soft-delete DLL was not installed; deletes stay physical",
+                exc_info=True,
+            )
+
     def __init__(
         self,
         workspace_dir: str | None = None,
@@ -5605,6 +5634,8 @@ class JiuWenSwarmDeepAdapter:
         if same_card_as_local and prior_local_retain:
             to_release.append(local_keep_id)
         self._release_sys_operations(to_release)
+        if sys_operation is not None:
+            self._install_file_soft_delete()
         return sys_operation
 
     def _retain_sys_operation(self, sys_operation_id: str) -> None:
@@ -9686,6 +9717,7 @@ class JiuWenSwarmDeepAdapter:
         self._refresh_multimodal_configs(config_base)
 
         self._config_cache = config_base.get("react", {}).copy()
+        self._install_file_soft_delete()
         return config_base
 
     async def _fan_out_reload_to_session_adapters(
