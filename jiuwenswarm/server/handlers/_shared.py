@@ -36,6 +36,7 @@ from jiuwenswarm.common.mode_matrix import (
     canonicalize_mode_text,
     resolve_request_mode,
 )
+from jiuwenswarm.server.runtime.agent_manager import _is_interrupt_resume_request
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 from jiuwenswarm.telemetry.request_context import refresh_incoming_mode_binding
 
@@ -189,7 +190,7 @@ def resolve_agent_request_mode(
     ``mode=flash``。注入由函数最前面的 guard 完成，只命中 agent 类请求（agent /
     plan / fast / 空，且 work_mode 非 code）；``code`` / ``team`` / 显式 flash 等
     其余路径不受影响，下面走原归一化逻辑。置 false（默认）时维持原 ``agent`` 行为。
-    OfficeClaw 前台入口传入 ``allow_flash_default=False``，仅接受显式选型。
+    OfficeClaw 普通请求也应用默认开关；审批、确认和问答续跑由调用方关闭默认选型。
 
     注：cron / heartbeat / proactive 等后台流水线若发 agent 类 mode，同样会被
     归到 flash——flash 保留 filesystem / bash / skill / 子代理能力，仅裁掉
@@ -293,7 +294,7 @@ def _request_allows_plan_entry(request: AgentRequest, params: dict) -> bool:
 
 
 def _uses_explicit_officeclaw_mode(request: AgentRequest) -> bool:
-    """OfficeClaw 前台入口由 Relay 显式选型，后台与其它渠道保留旧策略。"""
+    """识别 OfficeClaw 前台入口，应用其显式模式与恢复规则。"""
     if str(getattr(request, "channel_id", "") or "").strip().lower() != "officeclaw":
         return False
     if getattr(request, "req_method", None) not in _CODE_MODE_SYNC_METHODS | {ReqMethod.SESSION_CREATE}:
@@ -318,6 +319,7 @@ def resolve_request_runtime_mode(
     mode_text = canonicalize_mode_text(params.get("mode"))
     explicit_officeclaw = _uses_explicit_officeclaw_mode(request)
     if explicit_officeclaw and mode_text.startswith("flash."):
+        # Bare mode=flash is supported; Flash submodes are not implemented.
         raise ValueError(f"unsupported OfficeClaw mode: {mode_text}")
     if explicit_officeclaw and mode_text.startswith("code."):
         # 审批恢复的具体 Code 模式不能被旧会话 work_mode=work 再次改成 Agent。
@@ -336,8 +338,10 @@ def resolve_request_runtime_mode(
     if mode_text in _PLAN_MODE_TOKENS and not restoring_plan:
         if not _request_allows_plan_entry(request, params):
             params = {**params, "mode": mode_text.split(".", 1)[0]}
+    # OfficeClaw permission/confirm/ask_user replies keep the restored implementation.
+    allow_flash_default = not (explicit_officeclaw and _is_interrupt_resume_request(request))
     legacy_resolver = partial(
-        resolve_agent_request_mode, allow_flash_default=True,
+        resolve_agent_request_mode, allow_flash_default=allow_flash_default,
     )
     resolved = resolve_request_mode(params, legacy_resolver, work_mode=work_mode)
     # Web composition and new canonical modes bypass the legacy Flash guard.
@@ -346,7 +350,7 @@ def resolve_request_runtime_mode(
     if resolved.canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}:
         default_mode, _, _ = resolve_agent_request_mode(
             "agent", work_mode=resolved.work_mode,
-            allow_flash_default=True,
+            allow_flash_default=allow_flash_default,
         )
         if default_mode == "flash":
             resolved = replace(
