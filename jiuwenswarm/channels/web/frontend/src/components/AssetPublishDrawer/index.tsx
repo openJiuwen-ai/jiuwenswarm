@@ -303,14 +303,19 @@ function AssetPublishDrawer({
   };
   const panel = useRef<HTMLElement | null>(null);
   const [review, setReview] = useState(false);
-  // Whether the result card was opened explicitly (after a commit or by picking a history record).
-  // Default false so that opening the drawer lands on the form instead of the previous result.
-  const [resultOpen, setResultOpen] = useState(false);
-  // Keep the card open once a submission was seen in flight, so it does not vanish and expose the
-  // form while the same submission is still being polled to completion.
+  // Whether the user is looking at the result view. Only an explicit action opens it (picking a
+  // history record, or a submission that starts), so opening the drawer still lands on the form.
+  const [viewingResult, setViewingResult] = useState(false);
+  // A submission in flight must stay visible, and must not shrink back to the form once the poll
+  // settles, so take the result view as soon as one is locked.
   useEffect(() => {
-    if (state.submissionLocked) setResultOpen(true);
-  }, [state.submissionLocked]);
+    if (state.submissionLocked && state.record) setViewingResult(true);
+  }, [state.submissionLocked, state.record]);
+  // Leave the result view when the record goes away (a new package check, sign-out, ...), otherwise
+  // the flag survives and the next record that arrives would cover the form unasked.
+  useEffect(() => {
+    if (!state.record) setViewingResult(false);
+  }, [state.record]);
   const [switchingAccount, setSwitchingAccount] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
@@ -421,9 +426,18 @@ function AssetPublishDrawer({
     tags: 'tagsHelp',
   };
   const recordState = state.record ? localRecordState(state.record) : null;
-  // A record that was selected in the background (locked submission) must stay visible, otherwise
-  // the form would offer a second submission while the previous one is still uploading.
-  const showResult = Boolean(recordState) && (resultOpen || state.submissionLocked);
+  // The result view is shown when the user opened it, while a submission is in flight, or after a
+  // submission this session started (`attempted` is reset by a definitive rejection, by
+  // invalidate() (edit) and by prepare(), so a failed attempt cannot leave the card armed).
+  const showResult =
+    Boolean(state.record) && (viewingResult || state.submissionLocked || state.attempted);
+  // Both "back to editing" buttons must leave the same way; when only one of them reset the state,
+  // the card could pop back over the form on the next record update.
+  const backToForm = () => {
+    state.edit({});
+    setViewingResult(false);
+    setReview(false);
+  };
   const ResultIcon =
     recordState === 'failed'
       ? CircleAlert
@@ -525,16 +539,13 @@ function AssetPublishDrawer({
               </button>
             </>
           )}
-          {review && !state.record && (
+          {review && !showResult && (
             <>
               <button
                 type="button"
                 data-testid="asset-publish-edit"
                 disabled={state.busy || state.attempted}
-                onClick={() => {
-                  state.edit({});
-                  setReview(false);
-                }}
+                onClick={backToForm}
               >
                 {text('edit')}
               </button>
@@ -544,7 +555,6 @@ function AssetPublishDrawer({
                 data-testid="asset-publish-commit"
                 disabled={state.busy || !state.draft?.can_submit || !!state.draft?.errors?.length || !state.loggedIn}
                 onClick={() => {
-                  setResultOpen(true);
                   void state.commit();
                 }}
               >
@@ -558,13 +568,7 @@ function AssetPublishDrawer({
                 type="button"
                 data-testid="asset-publish-result-edit"
                 disabled={state.submissionLocked || state.busy}
-                onClick={() => {
-                  // edit({}) clears the draft and the record so the next commit is allowed again;
-                  // the form keeps the values the user just typed.
-                  state.edit({});
-                  setResultOpen(false);
-                  setReview(false);
-                }}
+                onClick={backToForm}
               >
                 {text('edit')}
               </button>
@@ -807,7 +811,7 @@ function AssetPublishDrawer({
           ))}
         </form>
       )}
-      {review && !state.record && (
+      {review && !showResult && (
         <section data-testid="asset-publish-review">
           <h3 data-testid="asset-publish-review-title">{text('check')}</h3>
           <p data-testid="asset-publish-review-visibility">
@@ -919,7 +923,7 @@ function AssetPublishDrawer({
                 data-variant={record.operation_id}
                 onClick={() => {
                   state.setRecord(record);
-                  setResultOpen(true);
+                  setViewingResult(true);
                 }}
               >
                 <span className="asset-publish-record-main">

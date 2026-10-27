@@ -464,6 +464,105 @@ test('opening the drawer with history lands on the form and the result card reop
   assert.equal(find('asset-publish-version').value, '1.0.0');
   await act(async () => find('asset-publish-close').click());
 });
+test('refreshing from the review panel keeps the checked package on screen', async () => {
+  const record = {
+    operation_id: 'review-refresh',
+    execution_status: 'completed',
+    result: { publish_result: 'published', version: '2.0.0' },
+    error: null,
+  };
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.prepare = async () => draft;
+  assetPublishApi.records = async () => ({ records: [record] });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'review-refresh' }));
+  await tick();
+  assert.ok(find('asset-publish-form'));
+
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  assert.ok(find('asset-publish-review'));
+
+  // The history record written by the refresh must not hide the checked package nor empty the
+  // action bar: the review panel, the form and the result card all follow the same condition.
+  await act(async () => find('asset-publish-refresh').click());
+  await tick();
+  assert.ok(find('asset-publish-review'));
+  assert.ok(find('asset-publish-commit'));
+  assert.equal(!!find('asset-publish-form'), false);
+  assert.equal(!!find('asset-publish-result'), false);
+  await act(async () => find('asset-publish-close').click());
+});
+test('a definitively rejected submission does not arm the result card for the next refresh', async () => {
+  const historical = {
+    operation_id: 'kept-history',
+    execution_status: 'completed',
+    result: { publish_result: 'published', version: '2.0.0' },
+    error: null,
+  };
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  assetPublishApi.describe = async () => ({ ...description, records: [historical] });
+  assetPublishApi.prepare = async () => draft;
+  assetPublishApi.commit = async () => {
+    throw Object.assign(new Error('Rejected'), { code: 'DRAFT_EXPIRED' });
+  };
+  assetPublishApi.records = async () => ({ records: [historical] });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'rejected-refresh' }));
+  await tick();
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  await act(async () => find('asset-publish-commit').click());
+  await tick();
+
+  // A definitive rejection never writes a record; going back must clear any "result view" state.
+  await act(async () => find('asset-publish-edit').click());
+  await tick();
+  assert.ok(find('asset-publish-form'));
+  await act(async () => find('asset-publish-refresh').click());
+  await tick();
+  assert.equal(!!find('asset-publish-result'), false);
+  assert.ok(find('asset-publish-form'));
+  assert.equal(find('asset-publish-version').value, '1.0.0');
+  await act(async () => find('asset-publish-close').click());
+});
+test('changing the account from the result view keeps the form for the next account', async (t) => {
+  const record = {
+    operation_id: 'account-switch',
+    execution_status: 'completed',
+    result: { publish_result: 'published', version: '2.0.0' },
+    error: null,
+  };
+  sessionStorage.setItem('marketplace_oauth_access_token', 'first-account');
+  sessionStorage.setItem('marketplace_oauth_provider', 'gitcode');
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  const originalConfirm = dom.window.confirm;
+  t.after(() => {
+    dom.window.confirm = originalConfirm;
+  });
+  dom.window.confirm = () => true;
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'account-switch' }));
+  await tick();
+  await act(async () => find('asset-publish-record').click());
+  assert.ok(find('asset-publish-result'));
+
+  await act(async () => find('asset-publish-sign-out').click());
+  await tick();
+  // Signing back in replays the mount effect, which selects the newest record again; that must not
+  // reopen the card over the form the user is about to fill in.
+  await act(async () => {
+    sessionStorage.setItem('marketplace_oauth_access_token', 'second-account');
+    window.dispatchEvent(new dom.window.Event('oauth-callback-complete'));
+  });
+  await tick();
+  assert.equal(!!find('asset-publish-result'), false);
+  assert.ok(find('asset-publish-form'));
+  await act(async () => find('asset-publish-close').click());
+});
 test('logged-out publishing loads local names for all five kinds and preserves edits after login', async () => {
   for (const kind of ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp']) {
     sessionStorage.removeItem('marketplace_oauth_access_token');
