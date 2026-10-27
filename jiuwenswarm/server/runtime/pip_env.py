@@ -157,7 +157,8 @@ def resolve_python_base(executable: Path) -> Path:
                 values[key.strip().lower()] = value.strip()
         candidates = [Path(values[key]) for key in ("base-executable", "executable") if values.get(key)]
         if values.get("home"):
-            candidates.append(Path(values["home"]) / ("python.exe" if os.name == "nt" else "python"))
+            names = ("python.exe",) if os.name == "nt" else ("python", "python3")
+            candidates.extend(Path(values["home"]) / name for name in names)
         next_candidate = next(
             (path for path in candidates if path.is_absolute() and path.is_file() and path not in seen), None,
         )
@@ -168,15 +169,15 @@ def resolve_python_base(executable: Path) -> Path:
 
 
 def verified_runtime_python_base(venv_dir: Path, *, trusted_base: Path | None = None) -> Path:
-    """Only a host pin may turn writable venv metadata into an ACL root."""
+    """Validate against a host selection or pin before publishing writable venv metadata."""
     try:
         actual = resolve_python_base(_venv_scripts_dir(venv_dir) / "python.exe")
         pinned = read_python_base_pin(venv_dir)
-        expected = pinned if pinned is not None else trusted_base
+        expected = trusted_base if trusted_base is not None else pinned
         if expected is None or actual != expected.resolve() or actual.is_relative_to(venv_dir.resolve()):
             raise RuntimePythonTrustError(f"Managed venv base does not match host Python pin: {venv_dir}")
-        if pinned is None:
-            write_python_base_pin(venv_dir, actual)
+        if pinned != actual:
+            write_python_base_pin(venv_dir, actual, replace=trusted_base is not None)
         return actual
     except (OSError, RuntimeError, ValueError) as exc:
         raise RuntimePythonTrustError(f"Managed venv base validation failed for {venv_dir}: {exc}") from exc
@@ -185,10 +186,6 @@ def verified_runtime_python_base(venv_dir: Path, *, trusted_base: Path | None = 
 def resolve_base_python() -> Path:
     """Interpreter used as the base for isolation_venv creation."""
     managed = get_runtime_venv_dir()
-    if os.name == "nt" and (managed / "pyvenv.cfg").is_file():
-        pinned = read_python_base_pin(managed)
-        if pinned is not None:
-            return verified_runtime_python_base(managed)
 
     def trusted_host_base(candidate: Path) -> Path:
         base = resolve_python_base(candidate)
@@ -204,10 +201,23 @@ def resolve_base_python() -> Path:
             return trusted_host_base(candidate)
         raise RuntimeError(f"JIUWENCLAW_BASE_PYTHON does not exist: {candidate}")
 
+    if os.name == "nt" and (managed / "pyvenv.cfg").is_file():
+        pinned = read_python_base_pin(managed)
+        if pinned is not None and pinned.is_file():
+            try:
+                return verified_runtime_python_base(managed)
+            except RuntimePythonTrustError:
+                # A host-rebuilt venv may use the current host interpreter. Its
+                # metadata must still match that independent selection below.
+                logger.info("[pip_env] Rechecking managed venv against host Python selection: %s", managed)
+
     if os.name != "nt":
         existing = _venv_scripts_dir(managed) / "python"
         if existing.is_file():
-            return resolve_python_base(existing)
+            try:
+                return resolve_python_base(existing)
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.warning("[pip_env] Cannot resolve existing venv base; trying host Python: %s", exc)
 
     claw_home = (os.environ.get("CLAW_PYTHON_HOME") or "").strip()
     if claw_home:
@@ -277,20 +287,20 @@ def ensure_runtime_venv() -> Path:
     global _venv_ready
     venv_dir = get_runtime_venv_dir()
     pyvenv_cfg = venv_dir / "pyvenv.cfg"
-    if _venv_ready is not None and _venv_ready == venv_dir and pyvenv_cfg.is_file():
-        if os.name == "nt":
-            verified_runtime_python_base(venv_dir)
-        return venv_dir
-
     with _venv_lock:
-        if _venv_ready is not None and _venv_ready == venv_dir and pyvenv_cfg.is_file():
+        trusted_base = resolve_base_python() if os.name == "nt" else None
+        pinned = read_python_base_pin(venv_dir) if os.name == "nt" else None
+        refresh = pinned is not None and (
+            not pinned.is_file()
+            or (bool(os.environ.get("JIUWENCLAW_BASE_PYTHON", "").strip()) and pinned != trusted_base)
+        )
+        if _venv_ready == venv_dir and pyvenv_cfg.is_file() and not refresh:
             if os.name == "nt":
-                verified_runtime_python_base(venv_dir)
+                verified_runtime_python_base(venv_dir, trusted_base=trusted_base)
             return venv_dir
 
         venv_dir.parent.mkdir(parents=True, exist_ok=True)
-        trusted_base = resolve_base_python() if os.name == "nt" else None
-        if not pyvenv_cfg.is_file():
+        if not pyvenv_cfg.is_file() or refresh:
             _create_runtime_venv_dir(venv_dir)
 
         if os.name == "nt":

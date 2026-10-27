@@ -76,6 +76,33 @@ def test_persist_cli_trusted_directory_writes_file_guard(config_yaml, tmp_path):
     assert not overlay.is_file()
 
 
+@pytest.mark.parametrize("composed", [False, True])
+@pytest.mark.parametrize("session", [False, True])
+def test_empty_approval_batch_skips_config_and_overlay(config_yaml, monkeypatch, composed, session):
+    from unittest.mock import Mock
+
+    import yaml
+
+    from jiuwenswarm.common import config
+
+    pp = _load_permissions_persist()
+    saved = {"approval_overrides": [{"id": "saved"}], "file_guard": {"paths": [{"path": "saved"}]}}
+    if composed:
+        saved["composition"] = {"schema_version": 1}
+    config_yaml.write_text(yaml.safe_dump({"permissions": saved}), encoding="utf-8")
+    disk = config_yaml.read_bytes()
+    # Empty batches must return before any config/overlay access, including composition discovery.
+    monkeypatch.setattr(config, "get_config", Mock(side_effect=AssertionError("unexpected config read")))
+    monkeypatch.setattr(config, "update_config", Mock(side_effect=AssertionError("unexpected config write")))
+    monkeypatch.setattr(pp, "load_session_permissions_overlay", Mock(side_effect=AssertionError("overlay read")))
+    snapshot = {**saved, "file_guard": {"paths": [{"path": "unrelated-session-path"}]}}
+    if session:
+        assert pp.persist_session_allow_rule(snapshot, session_id="batch", approval_grants=[])
+    else:
+        assert pp.persist_merged_allow_rule_snapshot(snapshot, approval_grants=[])
+    assert config_yaml.read_bytes() == disk
+
+
 def test_persist_cli_trusted_directory_with_overrides_keeps_shell_only(config_yaml, tmp_path):
     pp = _load_permissions_persist()
     from jiuwenswarm.common.config import _load_yaml_round_trip

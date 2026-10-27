@@ -508,7 +508,9 @@ async def _build_sandbox_env() -> dict[str, str] | None:
     from jiuwenswarm.server.runtime.python_base_pin import RuntimePythonTrustError
     try:
         from jiuwenswarm.server.runtime.pip_env import (
-            ensure_runtime_venv, verified_runtime_python_base,
+            ensure_runtime_venv,
+            resolve_base_python,
+            verified_runtime_python_base,
         )
         try:
             venv_dir = ensure_runtime_venv()
@@ -525,6 +527,10 @@ async def _build_sandbox_env() -> dict[str, str] | None:
                 "[AgentWebSocketServer] provision isolation venv failed: %s",
                 exc,
             )
+            # Provisioning is optional; the host-selected base remains usable.
+            actual_base = resolve_base_python()
+            sandbox_env["JIUWENBOX_BUNDLED_PYTHON"] = str(actual_base.parent)
+            sandbox_env["JIUWENCLAW_BASE_PYTHON"] = str(actual_base)
         # skills 目录注入：policy 基底 allow_read 用 %JIUWENBOX_SKILLS_DIR%
         # 占位（os.path.expandvars 语义），不注入则展不开 → apply_sandbox_acl
         # 跳过 → 沙箱受限 token 读技能文件 Errno 13（skill_tool 读取失败）。

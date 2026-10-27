@@ -42,6 +42,7 @@ def test_host_pin_roundtrip_and_protected_registry_dacl(tmp_path, pin_registry):
     assert pins.read_python_base_pin(managed) is None
     pins.write_python_base_pin(managed, base)
     assert pins.read_python_base_pin(managed) == base
+
     with pins._open_pin_key(managed) as key:
         descriptor = win32security.GetSecurityInfo(int(key), win32security.SE_REGISTRY_KEY,
                                                  win32security.DACL_SECURITY_INFORMATION)
@@ -52,6 +53,13 @@ def test_host_pin_roundtrip_and_protected_registry_dacl(tmp_path, pin_registry):
     other.touch()
     with pytest.raises(pins.RuntimePythonTrustError, match="already differs"):
         pins.write_python_base_pin(managed, other)
+    assert pins.read_python_base_pin(managed) == base
+    pins.write_python_base_pin(managed, other, replace=True)
+    assert pins.read_python_base_pin(managed) == other
+    other.unlink()
+    # Retain the old identity so provisioning can detect and repair a removed runtime.
+    assert pins.read_python_base_pin(managed) == other
+    pins.write_python_base_pin(managed, base, replace=True)
     assert pins.read_python_base_pin(managed) == base
 
 

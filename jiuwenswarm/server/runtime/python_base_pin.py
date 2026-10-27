@@ -59,18 +59,19 @@ def read_python_base_pin(venv_dir: Path) -> Path | None:
         base = Path(value["base_python"])
         if (value["venv_root"] != os.path.normcase(str(venv_dir.resolve()))
                 or not base.is_absolute() or base.name.lower() not in {"python.exe", "pythonw.exe"}
-                or not base.is_file() or base.resolve() != base):
+                or base.resolve() != base):
             raise ValueError("invalid interpreter identity")
         return base
     except Exception as exc:
         raise RuntimePythonTrustError(f"Cannot read host Python pin for {venv_dir}: {exc}") from exc
 
 
-def write_python_base_pin(venv_dir: Path, base: Path) -> None:
+def write_python_base_pin(venv_dir: Path, base: Path, *, replace: bool = False) -> None:
+    """Record a verified base; only trusted host provisioning may replace an old pin."""
     import winreg
 
     existing = read_python_base_pin(venv_dir)
-    if existing is not None:
+    if existing is not None and not replace:
         if existing != base:
             raise RuntimePythonTrustError(f"Host Python pin already differs for {venv_dir}")
         return

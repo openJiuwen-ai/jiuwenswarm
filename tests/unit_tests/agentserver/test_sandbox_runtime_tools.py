@@ -17,7 +17,7 @@ pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Windows runtime
 def host_pins(monkeypatch):
     pins = {}
     monkeypatch.setattr(pip_env, "read_python_base_pin", lambda root: pins.get(root))
-    monkeypatch.setattr(pip_env, "write_python_base_pin", lambda root, base: pins.__setitem__(root, base))
+    monkeypatch.setattr(pip_env, "write_python_base_pin", lambda root, base, **kwargs: pins.__setitem__(root, base))
     monkeypatch.setattr(pip_env, "_venv_ready", None)
     for key in list(os.environ):
         if key.startswith(("JIUWENBOX_", "JIUWENCLAW_")) or key == "CLAW_PYTHON_HOME":
@@ -349,3 +349,70 @@ async def test_bootstrap_refuses_tampered_venv_before_publishing_environment(tmp
         await server._build_sandbox_env()
     select.assert_not_awaited()
     assert "JIUWENBOX_BUNDLED_PYTHON" not in os.environ
+
+
+@pytest.mark.parametrize("recovery", ["override", "removed_base", "recreated_venv", "rebuilt_venv"])
+def test_host_can_recover_runtime_pin(tmp_path, monkeypatch, host_pins, recovery):
+    old = python(tmp_path / "old")
+    new = python(tmp_path / "new")
+    managed = tmp_path / "managed"
+    host_pins[managed] = old
+    if recovery != "recreated_venv":
+        venv(managed, new if recovery == "rebuilt_venv" else old)
+    if recovery == "override":
+        monkeypatch.setenv("JIUWENCLAW_BASE_PYTHON", str(new))
+        monkeypatch.setattr(pip_env, "_venv_ready", managed)  # Explicit selection bypasses the ready cache.
+    elif recovery == "removed_base":
+        old.unlink()
+    monkeypatch.setattr(sys, "executable", str(new))
+    monkeypatch.setattr(pip_env, "get_runtime_venv_dir", lambda: managed)
+    monkeypatch.setattr(pip_env, "_create_runtime_venv_dir", lambda root: venv(root, new))
+
+    def check_pip(path):
+        assert host_pins[managed] == new
+        assert pip_env.verified_runtime_python_base(managed) == new
+
+    monkeypatch.setattr(pip_env, "_ensure_runtime_pip", check_pip)
+    assert pip_env.ensure_runtime_venv() == managed
+    assert pip_env.verified_runtime_python_base(managed) == new
+    env = {"JIUWENBOX_VENV_DIR": str(managed)}
+    runtime_tools.declare_windows_runtime_tools(env)
+    roots = json.loads(env["JIUWENBOX_TOOL_PATHS"])["read_roots"]
+    assert str(new.parent) in roots
+    assert str(old.parent) not in roots
+
+
+def test_recovery_rejects_venv_that_does_not_match_host_selection(tmp_path, monkeypatch, host_pins):
+    old = python(tmp_path / "old")
+    new = python(tmp_path / "new")
+    forged = python(tmp_path / "forged")
+    managed = tmp_path / "managed"
+    host_pins[managed] = old
+    monkeypatch.setattr(sys, "executable", str(new))
+    monkeypatch.setattr(pip_env, "get_runtime_venv_dir", lambda: managed)
+    monkeypatch.setattr(pip_env, "_create_runtime_venv_dir", lambda root: venv(root, forged))
+    monkeypatch.setattr(pip_env, "_ensure_runtime_pip", lambda path: pytest.fail("unverified Python executed"))
+    with pytest.raises(pip_env.RuntimePythonTrustError):
+        pip_env.ensure_runtime_venv()
+    assert host_pins[managed] == old
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [OSError("disk full"), PermissionError("venv is read-only")])
+async def test_bootstrap_keeps_host_base_on_provisioning_failure(tmp_path, monkeypatch, failure):
+    from unittest.mock import AsyncMock, Mock
+
+    from jiuwenswarm.server import agent_ws_server as server
+
+    base = python(tmp_path / "host-base")
+    monkeypatch.setattr(pip_env, "ensure_runtime_venv", Mock(side_effect=failure))
+    monkeypatch.setattr(pip_env, "resolve_base_python", lambda: base)
+    monkeypatch.setattr(server, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(server, "_select_runner_python", AsyncMock(return_value=str(base)))
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    result = await server._build_sandbox_env()
+    assert result["JIUWENBOX_BUNDLED_PYTHON"] == str(base.parent)
+    assert result["JIUWENCLAW_BASE_PYTHON"] == str(base)
+    assert "JIUWENBOX_VENV_DIR" not in result
+    runtime_tools.declare_windows_runtime_tools(result)
+    assert str(base.parent) in json.loads(result["JIUWENBOX_TOOL_PATHS"])["read_roots"]

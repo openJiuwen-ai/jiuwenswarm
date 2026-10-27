@@ -533,6 +533,8 @@ def persist_session_allow_rule(
     Prefer the explicit ``session_id`` from the rail (``ctx.session``). The
     request ContextVar is often empty on interrupt resume.
     """
+    if approval_grants == []:
+        return True
     sid = _overlay_session_id(session_id)
     if not sid:
         logger.warning(
@@ -584,6 +586,8 @@ def persist_merged_allow_rule_snapshot(
     permissions: dict[str, Any], *, approval_grants: list[dict] | None = None,
 ) -> bool:
     """HITL「永久记住」：把相对模板多出的场景 list 写入 config.yaml。"""
+    if approval_grants == []:
+        return True
     if not isinstance(permissions, dict):
         return False
     from jiuwenswarm.common.config import get_config
