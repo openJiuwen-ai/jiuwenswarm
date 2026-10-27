@@ -471,7 +471,16 @@ async def test_each_callback_loads_shared_layers_once_including_owner_scene(stor
 
 
 @pytest.mark.parametrize("permanent", [False, True])
-async def test_native_read_remember_reloads_exact_file_axis(storage, native, permanent):
+async def test_native_read_remember_reloads_exact_file_axis(storage, native, permanent, monkeypatch):
+    from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
+        REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY,
+    )
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_metadata._configured_reviewer_display_language",
+        lambda: "en",
+    )
     _, global_path = storage
     config.dump_yaml_round_trip(global_path, {"permissions": native.permissions})
     external = native.root.parent / "approved.txt"
@@ -488,8 +497,58 @@ async def test_native_read_remember_reloads_exact_file_axis(storage, native, per
     first.session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: {}})
     following = context("native-session", "read_file", {"file_path": str(external)}, "next")
     following.agent, following.session = first.agent, first.session
+    native.rail._maybe_run_reviewer = AsyncMock(wraps=native.rail._maybe_run_reviewer)
     await native.rail.before_tool_call(following)
     assert not following.extra.get("_skip_tool")
+    assert native.rail._maybe_run_reviewer.await_count == 0
+    metadata = following.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY]["next"]
+    assert metadata["decision_source"] == "policy_evaluator"
+    assert metadata["reviewer_status"] == metadata["final_reviewer_status"] == "approved"
+    assert metadata["evidence_summary"] == (
+        "Your permission settings already allow this action. No approval needed."
+    )
+    assert "reviewer_called" not in metadata
+
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    following.session.write_stream = capture
+    following.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY]["other-call"] = {"reviewer_status": "denied"}
+    stream = JiuSwarmStreamEventRail()
+    await stream.before_tool_call(following)
+    tool_args = following.inputs.tool_args
+    if isinstance(tool_args, str):
+        tool_args = json.loads(tool_args)
+    following.inputs.tool_result = await native.tools["read_file"].invoke(tool_args)
+    assert following.inputs.tool_result.success
+    await stream.after_tool_call(following)
+    progress = [
+        event.payload["tool_update"] for event in events
+        if event.type == "tool_update" and "reviewer_metadata" in event.payload["tool_update"]
+    ]
+    terminal = [event.payload["tool_result"] for event in events if event.type == "tool_result"]
+    assert progress[0]["tool_call_id"] == terminal[0]["tool_call_id"] == "next"
+    assert progress[0]["reviewer_metadata"] == terminal[0]["reviewer_metadata"] == metadata
+    assert terminal[0]["success"] is True
+    assert following.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY] == {
+        "other-call": {"reviewer_status": "denied"},
+    }
+
+    rebuilt = build(native.permissions, native.root, "other-session", True)
+    rebuilt._maybe_run_reviewer = AsyncMock(wraps=rebuilt._maybe_run_reviewer)
+    cross = context("other-session", "read_file", {"file_path": str(external)}, "cross")
+    cross.agent = first.agent
+    if permanent:
+        await rebuilt.before_tool_call(cross)
+        assert not cross.extra.get("_skip_tool")
+        assert (cross.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY]["cross"]["evidence_summary"]
+                == metadata["evidence_summary"])
+        assert rebuilt._maybe_run_reviewer.await_count == 0
+    else:
+        with pytest.raises(AbortError):
+            await rebuilt.before_tool_call(cross)
     other = native.root.parent / "other.txt"
     other.write_text("other")
     changed = context("native-session", "read_file", {"file_path": str(other)}, "other")
