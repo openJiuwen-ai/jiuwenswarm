@@ -21,7 +21,7 @@ dependencies = [
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable",
     # Gateway/AgentServer share the reviewed Runtime foundation implementation.
     "openjiuwen-runtime-foundation[link-mtls] @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",
-    "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev#subdirectory=deepsearch",
+    "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable#subdirectory=deepsearch",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "websockets>=12.0",
@@ -196,11 +196,6 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
-# DeepSearch dev pins release 0.1.17, while Swarm requires newer dev-stable
-# harness APIs (including LLMRetryRail); that branch still declares 0.1.16.
-override-dependencies = [
-    "openjiuwen[observability,postgres,zmq] @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable",
-]
 
 [tool.uv.sources]
 jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }

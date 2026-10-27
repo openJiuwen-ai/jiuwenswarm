@@ -13,9 +13,6 @@ resolution-markers = [
     "python_full_version < '3.12' and sys_platform != 'emscripten' and sys_platform != 'win32'",
 ]
 
-[manifest]
-overrides = [{ name = "openjiuwen", extras = ["observability", "postgres", "zmq"], git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable" }]
-
 [[package]]
 name = "a2a-sdk"
 version = "1.0.0"
@@ -2183,7 +2180,7 @@ dependencies = [
     { name = "mutagen" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "openjiuwen", extra = ["observability", "postgres", "zmq"] },
+    { name = "openjiuwen" },
     { name = "openjiuwen-deepsearch" },
     { name = "openjiuwen-runtime-foundation", extra = ["link-mtls"] },
     { name = "opentelemetry-api" },
@@ -2226,7 +2223,7 @@ dev = [
     { name = "pywebview" },
 ]
 distribute = [
-    { name = "openjiuwen", extra = ["observability", "postgres", "zmq"] },
+    { name = "openjiuwen", extra = ["postgres", "zmq"] },
 ]
 harmony = [
     { name = "a2ui-agent-sdk" },
@@ -2244,7 +2241,7 @@ harmony = [
     { name = "loguru" },
     { name = "lxml" },
     { name = "mutagen" },
-    { name = "openjiuwen", extra = ["observability", "postgres", "zmq"] },
+    { name = "openjiuwen" },
     { name = "opentelemetry-api" },
     { name = "opentelemetry-exporter-otlp-proto-grpc" },
     { name = "opentelemetry-exporter-otlp-proto-http" },
@@ -2372,7 +2369,7 @@ requires-dist = [
     { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable" },
     { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=dev-stable" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
-    { name = "openjiuwen-deepsearch", git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev" },
+    { name = "openjiuwen-deepsearch", git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable" },
     { name = "openjiuwen-runtime-foundation", extras = ["link-mtls"], git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&rev=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -3576,7 +3573,7 @@ zmq = [
 [[package]]
 name = "openjiuwen-deepsearch"
 version = "0.1.11"
-source = { git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev#f6f4b3a59347ff4a569f4facd8ed7710e1853d2a" }
+source = { git = "https://gitcode.com/openJiuwen/deepsearch.git?subdirectory=deepsearch&rev=dev-stable#09cf56a20254206ba7afa62a74998f05fc3501ad" }
 dependencies = [
     { name = "aiolimiter" },
     { name = "beautifulsoup4" },
@@ -3590,7 +3587,7 @@ dependencies = [
     { name = "networkx" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
-    { name = "openjiuwen", extra = ["observability", "postgres", "zmq"] },
+    { name = "openjiuwen", extra = ["observability"] },
     { name = "pypdfium2" },
     { name = "python-docx" },
     { name = "pyvis" },
