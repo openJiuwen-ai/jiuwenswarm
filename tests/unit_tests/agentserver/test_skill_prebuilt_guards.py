@@ -568,8 +568,14 @@ def test_enterprise_startup_removes_only_builtin_installations(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """企业升级清理 builtin 时必须保留 prebuilt/user/未登记本地技能。"""
+    """企业升级清理非白名单 builtin 时必须保留 prebuilt/user/未登记本地技能。"""
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    # 空内置目录：避免同步阶段把白名单技能装进来干扰本用例。
+    empty_builtin = tmp_path / "empty_builtin"
+    empty_builtin.mkdir()
+    monkeypatch.setattr(sm, "get_builtin_skills_dir", lambda: empty_builtin)
 
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     workspace = tmp_path / "tenant_ws"
@@ -606,7 +612,86 @@ def test_enterprise_startup_removes_only_builtin_installations(
     assert (workspace / "skills" / "managed-skill" / "SKILL.md").is_file()
     assert (workspace / "skills" / "user-skill" / "SKILL.md").is_file()
     payload = asyncio.run(reloaded.handle_skills_list({}))
-    assert all(item.get("source") != "builtin" for item in payload["skills"])
+    assert all(
+        item.get("source_type") != "builtin" and item.get("source") != "builtin"
+        for item in payload["skills"]
+    )
+
+
+def test_enterprise_startup_installs_whitelist_builtins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业启动时将自动安装名单内置复制进租户工作区，且不覆盖 prebuilt 同名技能。"""
+    from jiuwenswarm.server.runtime.skill import skill_manager as sm
+    from jiuwenswarm.server.runtime.skill.skill_manager import (
+        SkillManager,
+        _ENTERPRISE_BUILTIN_AUTO_INSTALL,
+        _ENTERPRISE_CREATOR_BUILTIN_SKILLS,
+        _ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS,
+        _ENTERPRISE_OFFICE_BUILTIN_SKILLS,
+    )
+
+    creator_name = next(iter(_ENTERPRISE_CREATOR_BUILTIN_SKILLS))
+    office_name = next(iter(_ENTERPRISE_OFFICE_BUILTIN_SKILLS))
+    knowledge_name = next(iter(_ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS))
+    other_auto = next(
+        name
+        for name in _ENTERPRISE_BUILTIN_AUTO_INSTALL
+        if name not in {creator_name, office_name, knowledge_name}
+    )
+    builtin_root = tmp_path / "builtin_repo"
+    for name in (
+        creator_name,
+        office_name,
+        knowledge_name,
+        other_auto,
+        "not-whitelisted",
+    ):
+        skill_dir = builtin_root / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: builtin copy\n---\n# {name}\n",
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(sm, "get_builtin_skills_dir", lambda: builtin_root)
+
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    workspace = tmp_path / "tenant_ws"
+    manager = SkillManager(workspace_dir=str(workspace))
+    _write_managed_skill(workspace, creator_name)
+    manager.record_skill_installation(
+        name=creator_name,
+        source_type="prebuilt",
+        origin="https://example.com/prebuilt.zip",
+        source="customer-skillhub",
+    )
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    reloaded = SkillManager(workspace_dir=str(workspace))
+
+    records = {
+        row["name"]: row["source_type"]
+        for row in reloaded.list_skill_installations()
+    }
+    assert records[creator_name] == "prebuilt"
+    assert records[office_name] == "builtin"
+    assert records[knowledge_name] == "builtin"
+    assert records[other_auto] == "builtin"
+    assert "not-whitelisted" not in records
+    assert (workspace / "skills" / office_name / "SKILL.md").is_file()
+    assert "builtin copy" in (
+        workspace / "skills" / office_name / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    assert "description: managed" in (
+        workspace / "skills" / creator_name / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    payload = asyncio.run(reloaded.handle_skills_list({}))
+    by_name = {item["name"]: item for item in payload["skills"]}
+    assert by_name[office_name]["source_type"] == "builtin"
+    assert by_name[knowledge_name]["source_type"] == "builtin"
+    assert by_name[creator_name]["source_type"] == "prebuilt"
 
 
 def test_workspace_state_cleanup_removes_only_prebuilt(tmp_path: Path) -> None:

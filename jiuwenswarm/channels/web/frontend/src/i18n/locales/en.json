@@ -3135,14 +3135,17 @@
       "enabled": "Enabled",
       "disabled": "Disabled",
       "builtin": "Builtin",
-      "prebuilt": "Enterprise prebuilt",
+      "prebuilt": "Prebuilt",
       "user": "User-installed"
     },
     "mySkillsGroups": {
       "added": "Added Skills",
+      "prebuilt": "Prebuilt Skills",
       "builtin": "Built-in Skills",
       "skillPack": "Skill Packs"
     },
+    "noPrebuiltSkills": "No prebuilt skills",
+    "noUserSkills": "No user-installed skills",
     "skillTypes": {
       "skill": "Skill Pack",
       "skillpack": "Skill Pack",
@@ -3302,7 +3305,7 @@
       "cancel": "Cancel"
     },
     "builtIn": "Built-in",
-    "enterprisePrebuilt": "Enterprise Prebuilt",
+    "enterprisePrebuilt": "Prebuilt",
     "status": {
       "installed": "Installed",
       "notInstalled": "Not installed",
