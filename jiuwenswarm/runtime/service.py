@@ -556,6 +556,50 @@ class AgentRuntime:
         if callable(clearer):
             await clearer(session_id, request_id)
 
+    def _pending_interaction_ids(self, session_id: str) -> frozenset[str]:
+        reader = getattr(self._admission_controller, "pending_interactions", None)
+        return frozenset(reader(session_id)) if callable(reader) else frozenset()
+
+    def _answered_interaction_ids(self, request: AgentRequest) -> set[str]:
+        params = request.params if isinstance(request.params, dict) else {}
+        answered = {
+            str(params.get("request_id") or params.get("interaction_id") or "").strip(),
+            self._control_request_id(request).strip(),
+        }
+        answered.discard("")
+        return answered
+
+    async def _clear_answered_interactions(self, request: AgentRequest) -> list[str]:
+        """Clear what this answer resolves, returning those that were pending."""
+        session_id = request.session_id or "default"
+        answered = self._answered_interaction_ids(request)
+        cleared = sorted(answered & self._pending_interaction_ids(session_id))
+        for request_id in answered:
+            await self._clear_pending_interaction(session_id, request_id)
+        return cleared
+
+    async def _restore_answered_interactions(
+        self, session_id: str, cleared: list[str]
+    ) -> None:
+        for request_id in cleared:
+            await self._mark_pending_interaction_id(session_id, request_id)
+
+    async def _drop_superseded_interactions(self, request: AgentRequest) -> None:
+        """Release the questions of a pause this user turn superseded.
+
+        The coordinator has already cancelled a waiting chat turn, so nobody
+        can answer its questions; a pause that still waits keeps its own.
+        """
+        if self.session_work_kind(request) not in {
+            SessionWorkKind.CHAT_STREAM,
+            SessionWorkKind.CHAT_UNARY,
+        }:
+            return
+        session_id = request.session_id or "default"
+        for request_id in self._pending_interaction_ids(session_id):
+            if not self._session_coordinator.has_control_target(session_id, request_id):
+                await self._clear_pending_interaction(session_id, request_id)
+
     @property
     def session_message_service(self) -> Any | None:
         """Return the optional AgentServer-owned cross-Session mailbox."""
@@ -1671,6 +1715,8 @@ class AgentRuntime:
                     request.session_id or "default",
                     str(params.get("request_id") or params.get("interaction_id") or ""),
                 )
+            else:
+                await self._drop_superseded_interactions(request)
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
             else:
@@ -2355,6 +2401,8 @@ class AgentRuntime:
                     request.session_id or "default",
                     str(params.get("request_id") or params.get("interaction_id") or ""),
                 )
+            else:
+                await self._drop_superseded_interactions(request)
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
             else:
@@ -2616,10 +2664,6 @@ class AgentRuntime:
                         await on_control_event(event)
                     else:
                         yield event
-        except BaseException:
-            if self._session_coordinator.has_control_target(session_id, request_id):
-                await self._mark_pending_interaction_id(session_id, request_id)
-            raise
         finally:
             if admitted:
                 await end_control(session_id)
@@ -2644,12 +2688,13 @@ class AgentRuntime:
         admitted = callable(begin_control) and callable(end_control)
         if admitted:
             await begin_control(session_id)
+        cleared: list[str] = []
         try:
             events = await self._session_coordinator.deliver_control(
                 session_id,
                 request_id,
                 lambda: self._deliver_control_started(
-                    request, on_control_event=on_control_event,
+                    request, on_control_event=on_control_event, cleared=cleared,
                 ),
                 suspension_key=self._waiting_control_id,
             )
@@ -2668,7 +2713,7 @@ class AgentRuntime:
                     session_id, request_id
                 )
             ):
-                await self._mark_pending_interaction_id(session_id, request_id)
+                await self._restore_answered_interactions(session_id, cleared)
             raise
         finally:
             if admitted:
@@ -2679,16 +2724,14 @@ class AgentRuntime:
         request: AgentRequest,
         *,
         on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
+        cleared: list[str],
     ) -> list[RuntimeEvent]:
         """Inject control input without opening another Session work turn."""
         from jiuwenswarm.runtime.events import RuntimeEvent
 
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
-        await self._clear_pending_interaction(
-            request.session_id or "default",
-            self._control_request_id(request),
-        )
+        cleared.extend(await self._clear_answered_interactions(request))
         lookup = getattr(manager, "get_agent_for_session_nowait", None)
         agent = (
             lookup(channel_id, request.session_id or "") if callable(lookup) else None
@@ -2751,10 +2794,7 @@ class AgentRuntime:
 
         manager = await self._get_request_manager(request)
         channel_id = request.channel_id or "default"
-        await self._clear_pending_interaction(
-            request.session_id or "default",
-            self._control_request_id(request),
-        )
+        session_id = request.session_id or "default"
         lookup = getattr(manager, "get_agent_for_session_nowait", None)
         agent = lookup(channel_id, request.session_id or "") if callable(lookup) else None
         if agent is None:
@@ -2762,6 +2802,7 @@ class AgentRuntime:
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
+        cleared = await self._clear_answered_interactions(request)
         response_stream = deliver(request)
         try:
             async for chunk in response_stream:
@@ -2774,6 +2815,12 @@ class AgentRuntime:
                 )
                 await self._mark_pending_interaction(event)
                 yield event
+        except BaseException:
+            if self._session_coordinator.has_control_target(
+                session_id, self._control_request_id(request)
+            ):
+                await self._restore_answered_interactions(session_id, cleared)
+            raise
         finally:
             close_stream = getattr(response_stream, "aclose", None)
             if callable(close_stream):
