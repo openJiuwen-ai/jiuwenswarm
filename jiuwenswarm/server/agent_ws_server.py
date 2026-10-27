@@ -9617,15 +9617,33 @@ class AgentWebSocketServer:
             payload={"error": f"unknown internal action: {action}", "code": "MCP_BAD_REQUEST"},
         )
 
-    async def _command_mcp_oauth_callback(self, request: AgentRequest) -> AgentResponse:
-        """``oauth_callback`` 的异步形态：换码经 to_thread 执行（见分发处注释）。"""
-        if str(getattr(request, "channel_id", "") or "") != "gateway":
+    async def _command_mcp_oauth_callback(self, ws: Any, request: AgentRequest) -> AgentResponse:
+        """``oauth_callback`` 的异步形态：换码经 to_thread 执行（见分发处注释）。
+
+        门控为**连接级身份**（P1 修正）：``X-Jiuwen-Gateway-Internal`` 握手
+        头部须携带与 ``JIUWENSWARM_GATEWAY_INTERNAL_TOKEN`` 一致的共享密
+        钥——头部在 WS 握手时绑定到连接，浏览器/任意客户端无法经请求
+        载荷伪造（channel_id 是载荷字段，不能作权限判据）。密钥未配置
+        时 fail-closed（内部 action 一律拒绝并给出运维指引）。
+        """
+        expected = os.getenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN", "").strip()
+        headers = getattr(ws, "request_headers", None) or {}
+        provided = ""
+        try:
+            provided = str(headers.get("X-Jiuwen-Gateway-Internal", "") or "").strip()
+        except Exception:
+            provided = ""
+        if not expected or not provided or provided != expected:
+            logger.warning(
+                "[AgentWebSocketServer] oauth_callback rejected: gateway internal token mismatch"
+            )
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
                 payload={
-                    "error": "internal MCP state actions are gateway-only",
+                    "error": "gateway internal actions require a connection-level token "
+                    "(set JIUWENSWARM_GATEWAY_INTERNAL_TOKEN on both Gateway and AgentServer)",
                     "code": "PERMISSION",
                 },
             )
@@ -9660,18 +9678,7 @@ class AgentWebSocketServer:
                 # 换码含外部 HTTP 往返（IdP 最长 20s），必须经异步孪生走
                 # to_thread，不得在事件循环上同步执行（否则冻结本进程
                 # 全部通道的流式帧与心跳）
-                resp = await self._command_mcp_oauth_callback(request)
-            elif action in {
-                "state_config_view",
-                "state_list",
-                "state_get_record",
-                "state_upsert",
-                "state_set_enabled",
-                "state_remove",
-                "credential_get_all",
-                "credential_resolve",
-            }:
-                resp = self._command_mcp_internal_state(request)
+                resp = await self._command_mcp_oauth_callback(ws, request)
             elif action == "list":
                 items = [self._mask_sensitive_fields(item) for item in get_mcp_servers()]
                 resp = AgentResponse(

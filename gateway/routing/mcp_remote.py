@@ -11,7 +11,7 @@ web 通道的 oauth 回调（``mcp_oauth_http`` → ``common.mcp_oauth`` →
 ``ExternalProviderUnregistered``，注入点原生降级）。
 
 远端调用经既有 Gateway ↔ AgentServer WebSocket 通道上的 ``command.mcp``
-扩展 action（``oauth_callback``）。该 action 族在 server 侧按
+扩展 action（``oauth_callback``，服务端按握手绑定的连接级共享密钥放行）。该 action 族在 server 侧按
 ``channel_id == "gateway"`` 门控（``agent_ws_server._command_mcp_internal_state``），
 不脱敏的原始数据不会暴露给 web/TUI 通道。
 
@@ -32,9 +32,11 @@ from gateway.routing.e2a_proxy import fetch_agent_unary
 
 logger = logging.getLogger(__name__)
 
-#: oauth 回调远端执行的 unary 超时（秒）。回调是浏览器重定向后的等待页，
-#: 5s 上限与 session_metadata 远端读一致（超时按失败降级，不悬挂页面）。
-MCP_OAUTH_CALLBACK_TIMEOUT_SECONDS = 5.0
+#: oauth 回调远端执行的 unary 超时（秒）。换码含 IdP 外部 HTTP 往返
+#: （服务端 ``_HTTP_TIMEOUT_S=20s``）：预算来源与 session_metadata 的
+#: 控制路径短等待完全不同，须覆盖服务端满额换码再加余量，否则用户看到
+#: 失败落地页而凭据实际写入生效（状态与 UI 不一致）。
+MCP_OAUTH_CALLBACK_TIMEOUT_SECONDS = 25.0
 
 #: 内部调用通道标识；server 侧对 command.mcp 的内部 action 族按此门控。
 _MCP_INTERNAL_CHANNEL_ID = "gateway"

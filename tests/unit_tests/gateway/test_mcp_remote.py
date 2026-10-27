@@ -62,7 +62,8 @@ async def test_remote_callback_returns_result_and_shapes_request(fake_unary) -> 
     }
     # 内部通道标识：server 侧按 channel_id == "gateway" 门控原始数据 action 族
     assert fake_unary.captured["channel_id"] == "gateway"
-    assert fake_unary.captured["timeout_seconds"] <= 5.0
+    # 换码含 IdP 20s 外部往返：超时须覆盖服务端满额再加余量（P2-2）
+    assert fake_unary.captured["timeout_seconds"] >= 25.0
 
 
 @pytest.mark.asyncio
@@ -172,7 +173,7 @@ def test_install_registers_only_the_registry_domain(reset_registry) -> None:
 
 @pytest.mark.asyncio
 async def test_server_oauth_callback_branch_is_async(monkeypatch) -> None:
-    """oauth_callback 经异步孪生执行（to_thread），不阻塞 AgentServer 事件循环。"""
+    """oauth_callback 经异步孪生执行（to_thread），门控为连接级共享密钥。"""
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
 
@@ -183,17 +184,35 @@ async def test_server_oauth_callback_branch_is_async(monkeypatch) -> None:
         return True
 
     monkeypatch.setattr(mcp_registry, "complete_oauth_callback_async", _async_twin)
+    monkeypatch.setenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN", "secret-1")
     srv = object.__new__(AgentWebSocketServer)
 
-    # 非 gateway 通道拒绝（与同步 action 族同门控）
-    denied = await srv._command_mcp_oauth_callback(
-        SimpleNamespace(request_id="r1", channel_id="web", params={"query": {"code": "c"}})
-    )
-    assert denied.ok is False and denied.payload["code"] == "PERMISSION"
-    assert called == {}
+    def _ws(token: str) -> SimpleNamespace:
+        headers = {"X-Jiuwen-Gateway-Internal": token} if token else {}
+        return SimpleNamespace(request_headers=headers)
 
+    # 连接级令牌缺失/不匹配：拒绝——载荷 channel_id 可伪造，不作判据
+    for bad_ws in (_ws(""), _ws("wrong")):
+        denied = await srv._command_mcp_oauth_callback(
+            bad_ws,
+            SimpleNamespace(request_id="r1", channel_id="gateway", params={"query": {"code": "c"}}),
+        )
+        assert denied.ok is False and denied.payload["code"] == "PERMISSION"
+        assert called == {}
+
+    # 密钥未配置：fail-closed
+    monkeypatch.delenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN")
+    unconfigured = await srv._command_mcp_oauth_callback(
+        _ws("whatever"),
+        SimpleNamespace(request_id="r3", channel_id="gateway", params={}),
+    )
+    assert unconfigured.ok is False and unconfigured.payload["code"] == "PERMISSION"
+
+    # 密钥匹配：经异步孪生执行（与载荷 channel_id 无关）
+    monkeypatch.setenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN", "secret-1")
     ok_resp = await srv._command_mcp_oauth_callback(
-        SimpleNamespace(request_id="r2", channel_id="gateway", params={"query": {"code": "c"}})
+        _ws("secret-1"),
+        SimpleNamespace(request_id="r2", channel_id="anything", params={"query": {"code": "c"}}),
     )
     assert ok_resp.ok is True and ok_resp.payload == {"completed": True}
     assert called == {"query": {"code": "c"}}
