@@ -266,6 +266,14 @@ test('the node label keeps gaps and collapses only adjacent steps', () => {
   );
   assert.equal(evidenceNodeLabel({ evidence: [ref('1', 'main:14')] }), 'main:14');
   assert.equal(evidenceNodeLabel({ evidence: [] }), '');
+  const team = 'team-member:web_1:jiuwen_team_web_1:team-leader';
+  assert.equal(evidenceNodeLabel({ evidence: [ref('1', `${team}:14`)] }), 'team-leader:14');
+  assert.equal(
+    evidenceNodeLabel({
+      evidence: [ref('1', `${team}:16`), ref('2', `${team}:14`), ref('3', `${team}:15`)],
+    }),
+    'team-leader:14 → team-leader:16',
+  );
 });
 
 test('findingCounts separates reward causes, skill suggestions and experience verdicts', () => {

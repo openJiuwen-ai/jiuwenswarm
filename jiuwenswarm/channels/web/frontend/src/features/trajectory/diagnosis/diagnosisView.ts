@@ -235,6 +235,8 @@ export function stripLeadingHeading(text: string): string {
 /**
  * Cited steps in trajectory order. A run of adjacent steps is one span
  * ("main:18 → main:20"); a gap starts another segment ("main:15; main:18 → main:20").
+ * A team subject id repeats the session and member path, so the label keeps only the
+ * agent short name ("team-leader:14").
  */
 function nodeSpanLabel(ids: readonly string[]): string {
   const groups = new Map<string, { seq: number; id: string }[]>();
@@ -254,19 +256,21 @@ function nodeSpanLabel(ids: readonly string[]): string {
     }
     if (!group.some(item => item.id === id)) group.push({ seq: split.seq, id });
   }
-  const spans = subjects.map(subject => contiguousSpanLabel(groups.get(subject) ?? []));
+  const spans = subjects.map(subject => contiguousSpanLabel(subject, groups.get(subject) ?? []));
   return [...spans, ...loose].filter(item => item !== '').join('; ');
 }
 
 /** Adjacent steps collapse to their ends; a break in the sequence starts a new segment. */
-function contiguousSpanLabel(group: { seq: number; id: string }[]): string {
+function contiguousSpanLabel(subject: string, group: { seq: number; id: string }[]): string {
+  const shortName = subject.slice(subject.lastIndexOf(':') + 1);
+  const token = (seq: number) => `${shortName}:${seq}`;
   const sorted = [...group].sort((left, right) => left.seq - right.seq);
   const parts: string[] = [];
   let index = 0;
   while (index < sorted.length) {
     let end = index;
     while (end + 1 < sorted.length && sorted[end + 1].seq === sorted[end].seq + 1) end += 1;
-    parts.push(end === index ? sorted[index].id : `${sorted[index].id} → ${sorted[end].id}`);
+    parts.push(end === index ? token(sorted[index].seq) : `${token(sorted[index].seq)} → ${token(sorted[end].seq)}`);
     index = end + 1;
   }
   return parts.join('; ');
