@@ -41,6 +41,13 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
+from gateway.common.work_mode import (
+    DEFAULT_PROJECT_ID_CODE,
+    DEFAULT_TUI_WORK_MODE,
+    DEFAULT_WEB_WORK_MODE,
+    SUPPORTED_WORK_MODES,
+    is_default_project_id,
+)
 from jiuwenswarm.common.config import (
     get_config,
     get_config_raw,
