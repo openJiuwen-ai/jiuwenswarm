@@ -1,0 +1,20 @@
+{
+  "package_type": "agent_group",
+  "name": "designer",
+  "display_name": {
+    "zh": "设计专家团",
+    "en": "Design Experts"
+  },
+  "description": "JiuwenDesign 画布节点使用的专家团。团长不执行节点。",
+  "instruction": "这是设计画布的专家团。每个画布节点只由同名成员执行一次。团长负责看整张图，不代替成员交节点产物。",
+  "agents": [
+    "leader",
+    "brief",
+    "character",
+    "scene",
+    "storyboard",
+    "clip",
+    "compose"
+  ],
+  "skills": []
+}

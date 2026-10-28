@@ -23,7 +23,11 @@ import { getTotalTaskVisualProgressPercent } from './taskProgress';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { SwarmflowTreeView } from './SwarmflowTreeView';
 import { SwarmflowGraphView } from './SwarmflowGraphView';
-import type { WorkflowRun } from './workflowTypes';
+import type { WorkflowAgent, WorkflowRun } from './workflowTypes';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers } from './workflowTypes';
+import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
+import { groupByWorkflowRun } from './runGrouping';
+import { RunGroupHeader } from './RunGroupHeader';
 
 type TaskPlanningPanelProps = {
   variant: 'compact' | 'expanded';
@@ -155,6 +159,7 @@ export function ProgressSection({
 }) {
   const { t } = useTranslation();
   const emptyIllustrationSize = displayMode === 'count' ? 48 : 72;
+  useEnsurePhaseAgents(tasks, workflowRuns);
 
   if (tasks.length === 0) {
     return (
@@ -180,7 +185,10 @@ export function ProgressSection({
   const progressPercent = getTotalTaskVisualProgressPercent(progressTasks ?? tasks, now ?? Date.now());
 
   if (displayMode === 'count') {
-    const hasWorkflow = Boolean(workflowRuns && workflowRuns.length > 0);
+    // 镜像 worker 的任务卡按 run 分组展示，组头用共享 RunGroupHeader；
+    // 无 workflow_run_id 的普通任务保持平铺（旧实现会在有 workflow 时把它们整个丢掉）。
+    const { ungrouped, groups } = groupByWorkflowRun(tasks, workflowRuns ?? []);
+    const maxPerRun = 4;
     return (
       <div className="flex flex-col flex-1 min-h-0" data-testid="team-area-task-planning-progress-section">
         <div className="shrink-0" data-testid="team-area-task-planning-progress">
@@ -212,36 +220,9 @@ export function ProgressSection({
           </div>
         </div>
         <div className="flex-1 overflow-y-auto">
-          {hasWorkflow && workflowRuns ? (
-            workflowRuns.map((run) => {
-              const runTasks = tasks.filter((t) => t.workflow_run_id === run.id);
-              if (runTasks.length === 0) return null;
-              const maxPerRun = 4;
-              const visible = expanded ? runTasks : runTasks.slice(0, maxPerRun);
-              const remaining = expanded ? 0 : runTasks.length - visible.length;
-              return (
-                <div key={run.id} className="border-b border-border last:border-b-0">
-                  <div className="px-2 py-1.5 text-xs text-text-muted font-medium">{run.name ?? run.id}</div>
-                  <CompactTaskList
-                    tasks={visible}
-                    members={members}
-                    hideAssignee={hideAssignee ?? false}
-                    statusIconAtEnd={statusIconAtEnd}
-                    renderTaskIcon={renderTaskIcon}
-                    maxCollapsedCount={maxCollapsedCount}
-                    expanded={expanded}
-                    emptyText={t('team.noTasks')}
-                    emptyIllustration={emptyIllustration}
-                  />
-                  {remaining > 0 && (
-                    <div className="px-2 py-1 text-xs text-text-muted">{t('team.moreTasks', { count: remaining })}</div>
-                  )}
-                </div>
-              );
-            })
-          ) : (
+          {ungrouped.length > 0 && (
             <CompactTaskList
-              tasks={tasks}
+              tasks={ungrouped}
               members={members}
               hideAssignee={hideAssignee ?? false}
               statusIconAtEnd={statusIconAtEnd}
@@ -250,8 +231,33 @@ export function ProgressSection({
               expanded={expanded}
               emptyText={t('team.noTasks')}
               emptyIllustration={emptyIllustration}
+              workflowRuns={workflowRuns}
             />
           )}
+          {groups.map((group) => {
+            const visible = expanded ? group.items : group.items.slice(0, maxPerRun);
+            const remaining = expanded ? 0 : group.items.length - visible.length;
+            return (
+              <div key={group.runId} className="border-b border-border last:border-b-0">
+                <RunGroupHeader name={group.name} shortId={group.shortId} status={group.status} runId={group.runId} />
+                <CompactTaskList
+                  tasks={visible}
+                  members={members}
+                  hideAssignee={hideAssignee ?? false}
+                  statusIconAtEnd={statusIconAtEnd}
+                  renderTaskIcon={renderTaskIcon}
+                  maxCollapsedCount={maxCollapsedCount}
+                  expanded={expanded}
+                  emptyText={t('team.noTasks')}
+                  emptyIllustration={emptyIllustration}
+                  workflowRuns={workflowRuns}
+                />
+                {remaining > 0 && (
+                  <div className="px-2 py-1 text-xs text-text-muted">{t('team.moreTasks', { count: remaining })}</div>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
     );
@@ -271,6 +277,7 @@ export function ProgressSection({
           expanded={expanded}
           emptyText={t('team.noTasks')}
           emptyIllustration={emptyIllustration}
+          workflowRuns={workflowRuns}
         />
       </div>
     </div>
@@ -497,6 +504,7 @@ export function TaskPlanningPanel({
                   tasks={groupedTasks[column.key]}
                   members={members}
                   hideAssignee={hideAssignee}
+                  workflowRuns={workflowRuns}
                 />
               ))}
             </div>
@@ -512,11 +520,13 @@ function BoardColumn({
   tasks,
   members,
   hideAssignee,
+  workflowRuns,
 }: {
   column: (typeof BOARD_COLUMNS)[number];
   tasks: SessionTeamTask[];
   members: TeamMember[];
   hideAssignee: boolean;
+  workflowRuns: WorkflowRun[];
 }) {
   const { t } = useTranslation();
 
@@ -531,7 +541,7 @@ function BoardColumn({
       </div>
       <div className="space-y-3" data-testid="team-area-task-planning-board-column-task-list">
         {tasks.map((task) => {
-          return <BoardTaskCard key={task.task_id} task={task} members={members} hideAssignee={hideAssignee} />;
+          return <BoardTaskCard key={task.task_id} task={task} members={members} hideAssignee={hideAssignee} workflowRuns={workflowRuns} />;
         })}
       </div>
     </section>
@@ -542,15 +552,19 @@ function BoardTaskCard({
   task,
   members,
   hideAssignee,
+  workflowRuns,
 }: {
   task: SessionTeamTask;
   members: TeamMember[];
   hideAssignee: boolean;
+  workflowRuns: WorkflowRun[];
 }) {
   const assigneeExists = Boolean(task.assignee && members.some((member) => member.member_id === task.assignee));
   const assigneeName = getMemberDisplayName(task.assignee || '');
   const title = getBoardTaskTitle(task);
   const content = getBoardTaskContent(task);
+  // 镜像的 workflow phase 任务无 assignee：按 run 的 phase agents 渲染色块头像栈。
+  const workers = task.workflow_run_id ? workflowPhaseWorkers(task, workflowRuns) : [];
 
   return (
     <article
@@ -582,7 +596,9 @@ function BoardTaskCard({
         data-testid="team-area-task-planning-board-task-footer"
       >
         {!hideAssignee &&
-          (assigneeExists ? (
+          (workers.length > 0 ? (
+            <WorkflowWorkerAvatarStack workers={workers} />
+          ) : assigneeExists ? (
             <div title={assigneeName}>
               <TeamMemberAvatar
                 member={task.assignee}
@@ -596,6 +612,41 @@ function BoardTaskCard({
           ))}
       </div>
     </article>
+  );
+}
+
+/**
+ * 一叠重叠头像（最多 3 个 + "+N" 芯片），与 workflow 树视图同一套身份映射：
+ * 三方节点认 CLI 品牌脸、人类节点认人类脸、native 按名字哈希取插画。
+ * 整个栈的 title 列出全部 worker 名（含被 +N 折叠的）。
+ */
+function WorkflowWorkerAvatarStack({ workers }: { workers: WorkflowAgent[] }) {
+  const visible = workers.slice(0, 3);
+  const extra = workers.length - visible.length;
+  const names = workers.map((worker) => workflowAgentDisplayName(worker)).join(', ');
+  return (
+    <div
+      className="flex items-center"
+      title={names}
+      data-testid="team-area-task-planning-board-worker-stack"
+    >
+      {visible.map((worker, index) => (
+        <div key={worker.id} className={index > 0 ? '-ml-2 rounded-full ring-2 ring-[var(--color-task-card-surface)]' : 'rounded-full'}>
+          <TeamMemberAvatar
+            member={workflowAgentAvatarName(worker)}
+            identity={workflowAgentIdentity(worker)}
+            alt={workflowAgentAvatarName(worker)}
+            className="h-8 w-8 rounded-full"
+            imageClassName="rounded-full"
+          />
+        </div>
+      ))}
+      {extra > 0 && (
+        <span className="-ml-2 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-secondary text-xs text-text-muted ring-2 ring-[var(--color-task-card-surface)]">
+          +{extra}
+        </span>
+      )}
+    </div>
   );
 }
 

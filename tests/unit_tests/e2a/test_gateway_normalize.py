@@ -24,7 +24,7 @@ from jiuwenswarm.common.schema.message import Message, ReqMethod
 def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     chunk = AgentResponseChunk(
         request_id="request-A", channel_id="web", is_complete=event_type == "chat.final",
@@ -48,7 +48,7 @@ def test_execution_binding_survives_agent_wire_and_web_payload(event_type):
 def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, is_complete):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {
         "turn_request_id": "turn-A",
@@ -74,7 +74,7 @@ def test_cross_session_identity_survives_agent_wire_and_web_payload(event_type, 
 def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {"output_phase_id": "phase-1", "output_suppressed": True,
               "output_order": {"request_id": "original", "sequence": 42}, "timestamp": 1800000000042}
@@ -94,7 +94,7 @@ def test_phase_boundary_and_order_survive_both_wire_conversions(event_type):
 def test_proactive_markers_survive_chat_delta_wire_and_web_payload():
     from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_from_agent_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     fields = {
         "source": "proactive_recommendation",
@@ -282,3 +282,34 @@ def test_e2a_response_to_agent_chunk_plan_approval_required():
     assert chunk.payload["plan_content"] == "## Plan\nDo the thing"
     assert chunk.payload["plan_slug"] == "bright-otter"
     assert chunk.is_complete is True
+
+
+@pytest.mark.parametrize("entrypoint", ["normalize", "wire", "public"])
+@pytest.mark.parametrize("event_type", ["chat.delta", "chat.reasoning", "chat.final"])
+@pytest.mark.parametrize("source", ["org_expert_background", "org_summary_background", "org_root_delivery"])
+def test_organization_identity_survives_protocol_package_roundtrip(entrypoint, event_type, source):
+    from jiuwenswarm.common import e2a
+    from jiuwenswarm.common.e2a import gateway_normalize, wire_codec
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
+
+    payload = {
+        "event_type": event_type, "content": "report",
+        "team_id": "expert", "team_name": "expert", "source": source,
+        "request_id": "org-round", "rid": "org-round", "member_name": "analyst",
+    }
+    chunk = AgentResponseChunk(
+        request_id="org-round:3", channel_id="web", payload=payload,
+        is_complete=event_type == "chat.final",
+    )
+    if entrypoint == "normalize":
+        response = gateway_normalize.e2a_response_from_agent_chunk(
+            chunk, response_id="org-round:3", sequence=3,
+        )
+        restored = gateway_normalize.e2a_response_to_agent_chunk(response)
+    else:
+        codec = e2a if entrypoint == "public" else wire_codec
+        wire = codec.encode_agent_chunk_for_wire(chunk, response_id="org-round:3", sequence=3)
+        restored = codec.parse_agent_server_wire_chunk(wire)
+    assert restored.request_id == "org-round:3"
+    for key in ("team_id", "team_name", "source", "request_id", "rid", "member_name", "content"):
+        assert restored.payload.get(key) == payload.get(key)

@@ -18,11 +18,19 @@ function isValidCronField(value: string, min: number, max: number, allowQuestion
   const parts = value.split(',');
   for (const part of parts) {
     if (part.includes('/')) {
-      const [range, stepStr] = part.split('/');
-      const step = parseInt(stepStr, 10);
-      if (isNaN(step) || step <= 0) return { valid: false, error: getFieldError(min, max) };
+      const stepMatch = part.match(/^([^/]+)\/(\d+)$/);
+      if (!stepMatch) return { valid: false, error: getFieldError(min, max) };
+      const [, range, stepStr] = stepMatch;
+      const step = Number(stepStr);
+      if (!Number.isInteger(step) || step <= 0) return { valid: false, error: getFieldError(min, max) };
       if (range === '*') continue;
-      const rangeValid = isValidCronRange(range, min, max);
+      // "起点/步长"(如 0/30 ≡ 0-59/30)是标准 cron 写法、croniter 支持；单个数字的起点没有
+      // "-"端点，不能交给只认"start-end"区间形状的 isValidCronRange（issue #5138：手动创建
+      // 定时任务时 0 0/30 9-18 * * ? * 这类正常表达式被误判非法、确定按钮置灰）
+      const start = parseInt(range, 10);
+      const rangeValid = /^\d+$/.test(range)
+        ? start >= min && start <= max
+        : isValidCronRange(range, min, max);
       if (!rangeValid) return { valid: false, error: getFieldError(min, max) };
     } else if (part.includes('-')) {
       if (!isValidCronRange(part, min, max)) return { valid: false, error: getFieldError(min, max) };

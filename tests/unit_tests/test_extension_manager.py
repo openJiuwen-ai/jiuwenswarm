@@ -7,11 +7,12 @@ import pytest
 
 import jiuwenswarm.extensions as extensions
 import jiuwenswarm.extensions.sdk as extension_sdk
-from jiuwenswarm.extensions.manager import (
+from gateway.extensions.manager import (
     ExtensionManager,
+    _enabled_extension_filter,
     _extension_dir_paths_from_config,
 )
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.registry import ExtensionRegistry
 
 
 def test_extension_dirs_default_to_builtin_when_empty_string() -> None:
@@ -19,13 +20,13 @@ def test_extension_dirs_default_to_builtin_when_empty_string() -> None:
         {"extensions": {"extension_dirs": ""}}
     )
 
-    assert paths == ["jiuwenswarm/extensions"]
+    assert paths == ["gateway/extensions"]
 
 
 def test_extension_dirs_default_to_builtin_when_missing() -> None:
-    assert _extension_dir_paths_from_config({}) == ["jiuwenswarm/extensions"]
+    assert _extension_dir_paths_from_config({}) == ["gateway/extensions"]
     assert _extension_dir_paths_from_config({"extensions": {}}) == [
-        "jiuwenswarm/extensions"
+        "gateway/extensions"
     ]
 
 
@@ -34,19 +35,19 @@ def test_extension_dirs_append_builtin_after_custom_paths() -> None:
         {"extensions": {"extension_dirs": "custom/a; custom/b "}}
     )
 
-    assert paths == ["custom/a", "custom/b", "jiuwenswarm/extensions"]
+    assert paths == ["custom/a", "custom/b", "gateway/extensions"]
 
 
 def test_extension_dirs_do_not_duplicate_builtin_path() -> None:
     paths = _extension_dir_paths_from_config(
         {
             "extensions": {
-                "extension_dirs": "custom/a;jiuwenswarm/extensions;custom/a"
+                "extension_dirs": "custom/a;gateway/extensions;custom/a"
             }
         }
     )
 
-    assert paths == ["custom/a", "jiuwenswarm/extensions"]
+    assert paths == ["custom/a", "gateway/extensions"]
 
 
 def test_lazy_extension_exports_are_discoverable() -> None:
@@ -101,3 +102,32 @@ async def test_transport_manifest_flag_requires_a_real_boolean() -> None:
     await remote_manager.load_all_extensions(include_transport_extensions=True)
 
     assert remote_manager._loaded_extensions == list(manifests)
+
+
+def test_include_package_extensions_false_drops_builtin_dir() -> None:
+    """include_package_extensions=false 时不再追加包内默认目录（拆仓形态）。"""
+    paths = _extension_dir_paths_from_config(
+        {"extensions": {"include_package_extensions": False, "extension_dirs": "/opt/exts"}}
+    )
+    assert paths == ["/opt/exts"]
+    assert all("gateway/extensions" not in p for p in paths)
+
+
+def test_include_package_extensions_true_keeps_builtin_dir() -> None:
+    """默认与显式 true 均保持包内目录（向后兼容）。"""
+    for cfg in ({}, {"extensions": {"include_package_extensions": True}}):
+        paths = _extension_dir_paths_from_config(cfg)
+        assert any(p.endswith("gateway/extensions") for p in paths)
+
+
+def test_enabled_extension_filter_defaults_to_none() -> None:
+    """extensions.enabled 缺省/非列表时不过滤（全量加载）。"""
+    assert _enabled_extension_filter({}) is None
+    assert _enabled_extension_filter({"extensions": {}}) is None
+    assert _enabled_extension_filter({"extensions": {"enabled": "agentos"}}) is None
+
+
+def test_enabled_extension_filter_reads_manifest_names() -> None:
+    assert _enabled_extension_filter(
+        {"extensions": {"enabled": [" agentos ", "video_duplex", ""]}}
+    ) == {"agentos", "video_duplex"}

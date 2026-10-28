@@ -99,6 +99,11 @@ export function LoginDialog({ open, onClose }: LoginDialogProps) {
     onClose?.();
   }, [onClose]);
 
+  const handleLogout = useCallback(async () => {
+    await logout();
+    close();
+  }, [close, logout]);
+
   if (!enabled) return null;
 
   const busy = phase !== 'idle';
@@ -200,14 +205,15 @@ export function LoginDialog({ open, onClose }: LoginDialogProps) {
               )}
 
               <div className="flex gap-2 justify-end">
-                <button type="button" className="btn !px-4 !py-2" onClick={() => void logout()}>
-                  {t('auth.huawei.logout')}
-                </button>
                 <button type="button" className="btn !px-4 !py-2" onClick={() => void switchAccount()}>
                   {t('auth.huawei.switchAccount')}
                 </button>
-                <button type="button" className="btn primary !px-4 !py-2" onClick={close}>
-                  {t('auth.huawei.done')}
+                <button
+                  type="button"
+                  className="btn primary login-dialog__logout-btn !px-4 !py-2"
+                  onClick={() => void handleLogout()}
+                >
+                  {t('auth.huawei.logout')}
                 </button>
               </div>
             </div>

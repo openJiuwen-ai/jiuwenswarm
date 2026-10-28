@@ -79,6 +79,10 @@ CODE_NAME_CONFLICT = "MCP_NAME_CONFLICT"
 # token-schema env var; the CLI's auth status rejected the stored token at
 # connect time. Frontend maps this to a "token invalid, re-enter" hint.
 CODE_CREDENTIALS_INVALID = "MCP_CREDENTIALS_INVALID"
+# CLI install script could not find PowerShell (npm postinstall spawn
+# powershell.exe ENOENT); frontend shows a friendly hint instead of the
+# misleading "version too low".
+CODE_INSTALL_SCRIPT_DEP = "MCP_INSTALL_SCRIPT_DEP"
 
 # Network-failure substrings matched (case-insensitively) against init command
 # stderr. Covers npm's common registry/connectivity errors; the token codes are
@@ -216,6 +220,7 @@ def _load_index_entry(name: str) -> dict[str, Any]:
     examples = raw.get("examples") if isinstance(raw.get("examples"), dict) else {}
     return {
         **raw,
+        "display_name_i18n": display_name,
         "display_name": display_name.get("zh") or package.name,
         "display_name_en": display_name.get("en") or package.name,
         "name": display_name.get("zh") or package.name,
@@ -347,6 +352,7 @@ def _build_summary(
         "name": name,
         # 中文名优先：display_name > name(中文) > name_zh > 包名
         "display_name": meta.get("display_name") or meta.get("name") or meta.get("name_zh") or name,
+        "display_name_i18n": meta.get("display_name_i18n", {}),
         # 中文描述优先（索引里 description_zh 是干净中文，description 是英文）
         "description": meta.get("description_zh") or meta.get("description", ""),
         "category": meta.get("category", ""),
@@ -668,7 +674,16 @@ def get_mcp_tools(name: str) -> list[dict[str, Any]]:
 def _marketplace_mcp_cfg(name: str) -> dict[str, Any] | None:
     """Return the manifest-declared MCP server configuration."""
     package = _resolve_package(name)
-    return dict(package.server_config) if package and package.server_config else None
+    if package is None or not package.server_config:
+        return None
+    config = dict(package.server_config)
+    if package.credentials_type == "oauth" and package.integration_type == "remote-mcp":
+        # OAuth belongs to the host; distributable packages need no token field.
+        headers = dict(config["headers"]) if isinstance(config.get("headers"), dict) else {}
+        if not any(str(key).lower() == "authorization" for key in headers):
+            headers["Authorization"] = "Bearer ${OAUTH_ACCESS_TOKEN}"
+        config["headers"] = headers
+    return config
 
 
 def _normalize_transport(raw: str, cfg: dict[str, Any]) -> str:
@@ -842,6 +857,7 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
         entry = build_config_entry(n)
         from jiuwenswarm.server.runtime.mcp.credential import (
             CredentialStore,
+            KIND_OAUTH,
             detect_credential_kind,
             required_tokens_from_schema,
         )
@@ -899,6 +915,26 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
                 "installed_skills": skills,
                 "mcp_entry": None,
             }
+        # Host-managed OAuth (Canva): return the auth_required sentinel before
+        # writing any server entry. mcp.wait_auth holds the request while the
+        # user completes the browser flow; only token completion registers it.
+        if kind == KIND_OAUTH:
+            from jiuwenswarm.server.runtime.mcp.oauth_flow import (
+                is_host_oauth_mcp,
+                load_oauth_credentials,
+            )
+            if is_host_oauth_mcp(n) and load_oauth_credentials(n) is None:
+                return {
+                    "name": n,
+                    "integration_type": itype,
+                    "auth_required": True,
+                    "auth_pending": True,
+                    "host_oauth": True,
+                    "step_index": 0,
+                    "steps_total": 1,
+                    "auth_url": None,
+                    "credential_kind": "oauth",
+                }
         # Form B (mcp.json with ${VAR}): resolve placeholders from the store; if
         # any token is not yet provisioned, return credentials_required.
         if kind == "token":
@@ -1047,17 +1083,34 @@ def _cli_cred_tokens_stored(name: str) -> bool:
 
 
 def _classify_install_failure(n: str, inst: Any) -> CliConnectError:
-    """Map a failed CliDriver.install() onto a CliConnectError by cause:
-    binary_not_found → MCP_RUNTIME_MISSING, network stderr → MCP_INSTALL_NETWORK,
-    else → MCP_CLI_INCOMPLETE. ``runtime``/``install_cmd`` are surfaced so the
-    frontend hint can name the dependency / show the upgrade command.
+    """Map a failed CliDriver.install() onto a CliConnectError by cause.
+
+    CLI binary missing → MCP_CLI_INCOMPLETE, runtime/package-manager missing →
+    MCP_RUNTIME_MISSING, install_script_dep → MCP_INSTALL_SCRIPT_DEP, network
+    stderr → MCP_INSTALL_NETWORK, else → MCP_CLI_INCOMPLETE.
     """
     runtime = inst.runtime or ""
     install_cmd = inst.install_cmd or ""
     if inst.error_kind == "binary_not_found":
+        if getattr(inst, "cli_binary_missing", False):
+            # The CLI's own versionCheck binary is absent: the CLI itself is
+            # not installed. The actionable hint is the install command, not
+            # "node is missing" (the runtime may be perfectly fine).
+            return CliConnectError(
+                CODE_CLI_INCOMPLETE,
+                f"mcp '{n}' CLI binary not found on PATH; {inst.error}",
+                runtime=runtime, install_cmd=install_cmd,
+            )
         return CliConnectError(
             CODE_RUNTIME_MISSING,
             f"mcp '{n}' CLI runtime '{runtime or 'unknown'}' not found on PATH; {inst.error}",
+            runtime=runtime, install_cmd=install_cmd,
+        )
+    if inst.error_kind == "install_script_dep":
+        # Structured CliDriver signal; outranks the network-text heuristic.
+        return CliConnectError(
+            CODE_INSTALL_SCRIPT_DEP,
+            f"mcp '{n}' CLI install script requires PowerShell but none was found; {inst.error}",
             runtime=runtime, install_cmd=install_cmd,
         )
     err_lower = (inst.error or "").lower()
@@ -1294,6 +1347,53 @@ def complete_cli_auth(name: str, step_index: int, *, install_only: bool = False)
     return _connect_cli(n, idx + 1, install_only=install_only)
 
 
+def complete_oauth_callback(query: dict[str, Any]) -> bool:
+    """Expose callback completion through the existing registered MCP facade."""
+    from jiuwenswarm.server.runtime.mcp.oauth_flow import complete_oauth_flow
+
+    return complete_oauth_flow(query)
+
+
+async def complete_oauth_callback_async(query: dict[str, Any]) -> bool:
+    """Async twin of :func:`complete_oauth_callback`.
+
+    统一异步入口（``common.mcp_oauth.complete_oauth_flow_async`` 经本注入点
+    取用）：本地实现经 ``to_thread`` 包装，避免在事件循环内做文件 IO；与
+    gateway 侧 WS 远端实现（``gateway/routing/mcp_remote``）同签名互换。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(complete_oauth_callback, query)
+
+
+def complete_host_oauth_auth(name: str) -> dict[str, Any]:
+    """Finish a host-managed OAuth MCP connect after the callback succeeded.
+
+    Reuses ``connect_mcp``'s marketplace tail: install bundled skills, persist
+    the remote entry as ``connecting``, and return it for the live-connect probe.
+    """
+    n = str(name or "").strip()
+    if not n:
+        raise ValueError("mcp name is required")
+    package = _resolve_package(n)
+    if package is None or package.integration_type == "cli":
+        raise ValueError(f"mcp '{n}' is not a host OAuth MCP")
+    entry = build_config_entry(n)
+    if entry is None:
+        raise ValueError(f"mcp '{n}' has no usable mcp.json")
+    skills = _install_bundled_skills_safe(n)
+    from jiuwenswarm.server.runtime.mcp.state_store import (
+        upsert_mcp_record,
+    )
+    upsert_mcp_record(
+        n, entry, state="connecting",
+        integration_type=package.integration_type, skills=skills or None,
+    )
+    result = dict(entry)
+    result["installed_skills"] = skills
+    return result
+
+
 def _wipe_stored_credentials(n: str) -> None:
     """Delete the local CredentialStore token file for MCP ``n``.
 
@@ -1510,6 +1610,8 @@ __all__ = [
     "connect_mcp",
     "disconnect_mcp",
     "complete_cli_auth",
+    "complete_oauth_callback",
+    "complete_host_oauth_auth",
     "register_custom_mcp",
     "delete_custom_mcp",
     "save_mcp_credentials",
@@ -1521,4 +1623,20 @@ __all__ = [
     "CODE_CLI_INCOMPLETE",
     "CODE_NAME_CONFLICT",
     "CODE_CREDENTIALS_INVALID",
+    "CODE_INSTALL_SCRIPT_DEP",
 ]
+
+
+# --------------------------------------------------------------------------- #
+# common 注入点自注册：import 即注册，供 common 经
+# ``common.external_providers.provider("mcp_registry")`` 反向取用（分层规则 R1）。
+# --------------------------------------------------------------------------- #
+def _register_common_provider() -> None:
+    import sys
+
+    from jiuwenswarm.common.external_providers import register
+
+    register("mcp_registry", sys.modules[__name__])
+
+
+_register_common_provider()

@@ -9,10 +9,13 @@ r"""JiuwenSwarm PyInstaller 打包配置。
 """
 
 import glob
+import hashlib
+import json
 import os
 import runpy
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
@@ -146,6 +149,23 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
+# A controlled package embeds its immutable Runtime build identity. Computing
+# it belongs to the build, so frozen Front/Worker startup only reads this small
+# payload. Source execution still validates dirty code and dependency locks.
+_identity_helper = runpy.run_path(os.path.join(
+    project_root, "jiuwenswarm", "server", "supervisor", "identity_cache.py"))
+_source_identity = _identity_helper["full_source_fingerprint"](Path(project_root, "jiuwenswarm"))
+_build_recipe = hashlib.sha256()
+_build_recipe.update(_source_identity.encode())
+for _build_source in ("scripts/jiuwenswarm.spec", "scripts/jiuwenswarm_exe_entry.py"):
+    _build_recipe.update(Path(project_root, _build_source).read_bytes())
+_identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
+_identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
+_identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
+datas.append((str(_identity_file), "jiuwenswarm"))
+_build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
+build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
+datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
 _playwright_mcp_resource_dir = os.path.join(
     project_root,
     "jiuwenswarm",
@@ -235,6 +255,18 @@ symphony_submodules = collect_submodules("jiuwenswarm.symphony")
 gateway_adapter_submodules = collect_submodules(
     "jiuwenswarm.server.runtime.gateway_adapter"
 )
+# The Runtime Worker is launched by module name through the frozen entrypoint's
+# runpy dispatcher. PyInstaller cannot infer this subprocess entrypoint from
+# the string passed to ``-m``, so bundle the package and all of its modules.
+runtime_worker_submodules = collect_submodules(
+    "jiuwenswarm.server.worker"
+)
+# The CLI channel is launched the same way (``-m jiuwenswarm.channels.cli.main``).
+# PyInstaller cannot infer this entrypoint from the string passed to ``-m``,
+# so bundle the package and all of its modules as well.
+cli_channel_submodules = collect_submodules(
+    "jiuwenswarm.channels.cli"
+)
 # TeamManager imports this lifecycle hook while its parent package is being
 # initialized.  Keep it explicit because PyInstaller cannot reliably infer
 # this package-attribute import from the frozen entry point.
@@ -249,7 +281,17 @@ http2_submodules = [
 ]
 
 # 部分包需要显式声明隐藏导入
-hiddenimports = webview_hiddenimports + http2_submodules + [
+lazy_runtime_submodules = []
+for lazy_package in (
+    "jiuwenswarm.agents.harness.common.auto_harness",
+    "jiuwenswarm.agents.harness.common.tools",
+    "jiuwenswarm.agents.harness.common.rails",
+    "jiuwenswarm.common.auth",
+    "jiuwenswarm.agents.swarm",
+):
+    lazy_runtime_submodules += collect_submodules(lazy_package)
+
+hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
@@ -281,7 +323,7 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
-] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + team_kv_cache_hiddenimports + dispatch_submodules
+] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
@@ -486,6 +528,20 @@ mcp_a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# A venv backed by Conda can have another Conda installation earlier on PATH.
+# Dependency discovery then finds an OpenSSL DLL without the symbols required
+# by the interpreter's _ssl.pyd. Keep the interpreter's own DLL pair together.
+if os.name == "nt":
+    _python_ssl_dir = Path(sys.base_prefix) / "Library" / "bin"
+    for _ssl_dll in ("libssl-3-x64.dll", "libcrypto-3-x64.dll"):
+        _ssl_source = _python_ssl_dir / _ssl_dll
+        if _ssl_source.is_file():
+            for _analysis in (a, mcp_a):
+                _analysis.binaries = [
+                    item for item in _analysis.binaries
+                    if os.path.normcase(item[0]) != os.path.normcase(_ssl_dll)
+                ] + [(_ssl_dll, str(_ssl_source), "BINARY")]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 mcp_pyz = PYZ(mcp_a.pure, mcp_a.zipped_data, cipher=block_cipher)

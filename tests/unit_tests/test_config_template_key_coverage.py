@@ -108,6 +108,11 @@ _ACCEPTED_SUBTREES: dict[tuple[str, ...], str] = {
         "yuanrong-only: the sandbox section describes the YuanRong instance "
         "the gateway runs inside, not an option of this process."
     ),
+    ("code_graph",): (
+        "AgentOS deployment-only capability (profile default off). Personal "
+        "installations never load a code graph, so the default template "
+        "intentionally ships no section to merge."
+    ),
     ("models", "default"): (
         "A typo in the leader file for `models.defaults`, which the template "
         "does ship. Fixing it belongs to that file, not to this template."

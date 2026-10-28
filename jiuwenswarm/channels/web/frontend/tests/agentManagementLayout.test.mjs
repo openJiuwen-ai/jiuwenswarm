@@ -1,10 +1,19 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import test, { after } from 'node:test';
+import { JSDOM } from 'jsdom';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
+
+const previousDocument = globalThis.document;
+const renderDom = new JSDOM('<!doctype html><html><body></body></html>');
+globalThis.document = renderDom.window.document;
+after(() => {
+  globalThis.document = previousDocument;
+  renderDom.window.close();
+});
 
 const panelSource = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
 const groupCatalogSource = readFileSync(
@@ -236,7 +245,107 @@ test('Expert Team loading keeps the back bar outside the centered content', asyn
   assert.equal(content.contains(back), false);
   assert.equal(content.getAttribute('role'), 'status');
   assert.equal(shell.querySelector('[data-testid="agent-management-detail-name"]').textContent, 'Slow Team');
-  assert.match(shell.textContent, /Summary remains visible while details load\./);
+  assert.equal(shell.querySelector('[data-testid="agent-management-detail-ability"]'), null);
+  assert.doesNotMatch(shell.textContent, /Summary remains visible while details load\./);
+});
+
+test('Expert and Expert Team details render independent capability and content in both languages', async () => {
+  const { DefinitionDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+  const { AgentGroupDetailPage } =
+    await import('../node_modules/.cache/agent-management-layout/AgentGroupDetailPage.mjs');
+  const { normalizeAgentTemplateDetail, normalizeAgentGroupDetail } =
+    await import('../node_modules/.cache/agent-management/adapter.js');
+  const { JSDOM } = await import('jsdom');
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+  try {
+    for (const [locale, resources] of [['zh', zhLocale], ['en', enLocale]]) {
+      await i18next.changeLanguage(locale);
+      for (const [Page, normalize, contentTestId, emptyContent] of [
+        [
+          DefinitionDetailPage,
+          normalizeAgentTemplateDetail,
+          'agent-management-detail-content',
+          resources.skills.noContent,
+        ],
+        [
+          AgentGroupDetailPage,
+          normalizeAgentGroupDetail,
+          'agent-group-detail-content',
+          resources.agentManagement.group.detail.noDetails,
+        ],
+      ]) {
+        for (const [description, details] of [['', 'Content only'], ['Capability only', ''], ['Capability', 'Content']]) {
+          const detail = normalize({
+            id: 'expert',
+            displayDescription: { [locale]: description },
+            details,
+          }, locale);
+          const document = new JSDOM(renderToStaticMarkup(React.createElement(Page, {
+            detail,
+            detailStatus: 'success',
+            detailTab: 'content',
+            onBack() {},
+          }))).window.document;
+          assert.equal(
+            document.querySelector('[data-testid="agent-management-detail-ability"] p').textContent,
+            description || resources.agentManagement.unknownDescription,
+          );
+          assert.equal(document.querySelector(`[data-testid="${contentTestId}"]`).textContent, details || emptyContent);
+        }
+      }
+    }
+  } finally {
+    await i18next.changeLanguage('zh');
+  }
+});
+
+test('My Experts renders an empty capability without borrowing the marketplace description', async () => {
+  const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+  const { normalizeAgentTemplateListItem } = await import('../node_modules/.cache/agent-management/adapter.js');
+  const { agentManagementReducer, createInitialAgentManagementState } =
+    await import('../node_modules/.cache/agent-management/state.js');
+  i18next.addResourceBundle('zh', 'translation', zhLocale, true, true);
+  i18next.addResourceBundle('en', 'translation', enLocale, true, true);
+  try {
+    for (const [locale, resources] of [['zh', zhLocale], ['en', enLocale]]) {
+      await i18next.changeLanguage(locale);
+      const item = {
+        id: 'hub-expert',
+        displayName: { zh: '测试专家', en: 'Test Expert' },
+        source: 'hub',
+        installed: true,
+      };
+      const marketplaceDescription = 'Marketplace capability';
+      const state = agentManagementReducer(createInitialAgentManagementState(), {
+        type: 'catalog.loaded',
+        catalog: [normalizeAgentTemplateListItem({
+          ...item,
+          displayDescription: { [locale]: marketplaceDescription },
+        }, locale)],
+        mineCatalog: [normalizeAgentTemplateListItem(item, locale)],
+      });
+      for (const [scope, items, expected] of [
+        ['mine', state.mineCatalog, resources.agentManagement.unknownDescription],
+        ['catalog', state.catalog, marketplaceDescription],
+      ]) {
+        const document = new JSDOM(renderToStaticMarkup(React.createElement(CatalogPage, {
+          scope,
+          items,
+          totalItems: items.length,
+          query: '',
+          category: '',
+          status: 'success',
+          error: null,
+          busyIds: new Set(),
+        }))).window.document;
+        assert.equal(document.querySelector('[data-testid="agent-card"] .page-card__body').textContent, expected);
+      }
+    }
+  } finally {
+    await i18next.changeLanguage('zh');
+  }
 });
 
 test('publish actions require an installed runtime asset', () => {
@@ -654,6 +763,11 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   );
   assert.match(groupCardSource, /import \{ PageCard, type PageCardDefaultButton \} from '\.\.\/ui';/);
   assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
+  assert.match(
+    groupCardSource,
+    /const avatar = \{ name: item\.displayName, iconUrl: item\.avatarUrl, testId: 'agent-management-group-card-avatar' \}/,
+  );
+  assert.doesNotMatch(groupCardSource, /<GroupAvatar/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
   assert.match(groupCardSource, /<PageCard[\s\S]*interactive/);
   assert.match(groupCardSource, /variant: 'use'[\s\S]*variant: 'install'/);
@@ -681,7 +795,7 @@ test('Expert Team cards and details reuse the Expert visual primitives', () => {
   assert.doesNotMatch(groupDetailSource, /detail-back mb-\[35px\]/);
   assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
   assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
-  assert.match(groupDetailSource, /<PublicationDetailStatus kind="agent_group"/);
+  assert.doesNotMatch(groupDetailSource, /<PublicationDetailStatus/);
   assert.match(groupDetailSource, /openAssetPublish\(\{\s*kind: 'agent_group',\s*local_id: detail\.id/);
 });
 
@@ -708,6 +822,10 @@ test('installed Expert Team cards offer use while uninstall stays in detail', as
     }),
   );
   const card = new JSDOM(markup).window.document;
+  const avatar = card.querySelector('[data-testid="agent-management-group-card-avatar"]');
+  assert.ok(avatar);
+  assert.equal(avatar.getAttribute('data-variant'), 'letter');
+  assert.equal(card.querySelector('.agent-group-avatar'), null);
   assert.equal(card.querySelectorAll('[data-testid="agent-group-card-action"]').length, 1);
   assert.equal(card.querySelector('[data-testid="agent-group-card-action"]').getAttribute('data-variant'), 'use');
   assert.equal(card.querySelector('[data-variant="uninstall"]'), null);

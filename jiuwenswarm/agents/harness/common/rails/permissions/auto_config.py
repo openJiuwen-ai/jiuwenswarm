@@ -10,7 +10,15 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import supports_single_agent_permission_profile
+from jiuwenswarm.common.permission_mode import (
+    AUTO_PERMISSION_MODE,
+    MANUAL_PERMISSION_MODE,  # noqa: F401
+    is_auto_permission_enabled,  # noqa: F401
+    is_auto_permission_mode,
+    is_permission_boundary_enabled,  # noqa: F401
+    resolve_permission_runtime_mode,  # noqa: F401
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.protected_paths import (
     JIUWENCLAW_PROTECTED_WRITE_PATHS,
     merge_protected_write_paths,
@@ -25,9 +33,6 @@ from jiuwenswarm.common.permission_tools import (
 
 logger = logging.getLogger(__name__)
 
-MANUAL_PERMISSION_MODE = "manual"
-AUTO_PERMISSION_MODE = "auto"
-_VALID_RUNTIME_MODES = {MANUAL_PERMISSION_MODE}
 _STRUCTURED_PERMISSION_RULE_MAP_KEYS = frozenset({"paths", "commands", "patterns"})
 AUTO_PERMISSION_DEFAULT_OPTIONS = {
     "reviewer_timeout_ms": 60000,
@@ -62,44 +67,12 @@ def resolve_declared_auto_workspace(
 
 
 def supports_phase_auto_root(params: Mapping[str, Any]) -> bool:
-    """Return whether the request belongs to the supported independent Deep root."""
-
-    runtime_mode = str(params.get("mode") or "agent").strip().lower()
-    work_mode = str(params.get("work_mode") or "").strip().lower()
+    """Return whether the request belongs to a supported independent root."""
     return bool(
         not params.get("team")
-        and not is_team_mode(runtime_mode)
-        and runtime_mode != "auto_harness"
-        and runtime_mode.split(".", 1)[0] == "agent"
-        and work_mode in {"", "work"}
-    )
-
-
-def resolve_permission_runtime_mode(permission_config: Mapping[str, Any]) -> str:
-    """Return the task permission runtime mode."""
-    raw_mode = (
-        str(permission_config.get("mode") or MANUAL_PERMISSION_MODE).strip().lower()
-    )
-    if raw_mode in _VALID_RUNTIME_MODES:
-        return raw_mode
-    logger.warning("Unknown permissions.mode %r; falling back to manual", raw_mode)
-    return MANUAL_PERMISSION_MODE
-
-
-def is_auto_permission_mode(permission_config: Mapping[str, Any]) -> bool:
-    """Return whether task-level auto permission mode is selected."""
-    return resolve_permission_runtime_mode(permission_config) == AUTO_PERMISSION_MODE
-
-
-def is_permission_boundary_enabled(permission_config: Mapping[str, Any]) -> bool:
-    """Return whether the permission boundary is explicitly enabled."""
-    return permission_config.get("enabled") is True
-
-
-def is_auto_permission_enabled(permission_config: Mapping[str, Any]) -> bool:
-    """Return whether task-level auto permission is eligible to activate."""
-    return is_permission_boundary_enabled(permission_config) and is_auto_permission_mode(
-        permission_config
+        and supports_single_agent_permission_profile(
+            params.get("mode") or "agent", work_mode=params.get("work_mode"),
+        )
     )
 
 

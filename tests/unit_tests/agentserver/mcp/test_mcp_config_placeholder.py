@@ -220,7 +220,7 @@ def test_build_mcp_credential_resolver_returns_stored_value(monkeypatch) -> None
     """Resolver returns the stored credential for a known key."""
     from jiuwenswarm.common.mcp_config import build_mcp_credential_resolver
     monkeypatch.setattr(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         lambda self, name: {"GITHUB_TOKEN": "ghp_stored"} if name == "github" else {},
     )
     resolver = build_mcp_credential_resolver("github")
@@ -232,7 +232,7 @@ def test_build_mcp_credential_resolver_falls_back_to_environ(monkeypatch) -> Non
     """Key not in store falls back to os.environ."""
     from jiuwenswarm.common.mcp_config import build_mcp_credential_resolver
     monkeypatch.setattr(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         lambda self, name: {"OTHER": "x"} if name == "gmail" else {},
     )
     monkeypatch.setenv("GMAIL_PASS", "env-pass-123")
@@ -245,7 +245,7 @@ def test_build_mcp_credential_resolver_none_when_no_store_entry(monkeypatch) -> 
     """Returns None when no credentials stored → placeholders stay literal."""
     from jiuwenswarm.common.mcp_config import build_mcp_credential_resolver
     monkeypatch.setattr(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         lambda self, name: {},
     )
     assert build_mcp_credential_resolver("unknown") is None

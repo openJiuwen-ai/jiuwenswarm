@@ -8,7 +8,6 @@ import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useSta
 import { createPortal } from 'react-dom';
 import {
   Activity,
-  ArrowRight,
   CheckCircle2,
   ClipboardList,
   Copy,
@@ -18,6 +17,7 @@ import {
   Image as ImageIcon,
   Info,
   LoaderCircle,
+  Megaphone,
   PanelBottomClose,
   PanelBottomOpen,
   Presentation,
@@ -28,10 +28,11 @@ import {
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
+import { useChatStore, useHarnessStore, useSessionStore, useTodoStore, useWorkspaceStore } from '../../stores';
 import {
   AgentMode,
   MediaItem,
+  type ChatInputProvenance,
   type ChatSendOptions,
   Message,
   UserAnswer,
@@ -41,6 +42,7 @@ import {
 } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
+import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -85,8 +87,32 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
-import { ApplicationPluginTaskRuntimes } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { ApplicationPluginTaskRuntimes, flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
 import { generateUuidV4 } from '../../utils/uuid';
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
+import { requestLogin, useAuthStore } from '../../stores/authStore';
+import type { PromptSuggestionBox } from '../../hooks/usePromptSuggestionBox';
+import { webClient, webRequest } from '../../services/webClient';
+import {
+  buildDynamicTopicStarterSlate,
+  buildDirectInputEvent,
+  buildExposureEvent,
+  buildNotInterestedEvent,
+  buildPageLeftEvent,
+  buildSessionBoundEvent,
+  buildTopicClickEvent,
+  buildTopicStarterRequest,
+  topicStarterShowsProviderRefusal,
+  topicStarterShowsRetryAction,
+  topicStarterShowsSettingsAction,
+  topicStarterShowsStatus,
+  topicStarterStatusMessageKey,
+  type TopicStarterEvent,
+  type TopicStarterResponse,
+  type TopicStarterTopic,
+  type TopicStarterVisibleSlate,
+} from '../../features/topicStarterVisibility';
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -99,7 +125,13 @@ export interface ChatHistoryPagerProps {
 }
 
 interface ChatPanelProps {
-  onSendMessage: (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => void;
+  promptSuggestionBox: PromptSuggestionBox;
+  onOpenRecommendationSettings?: () => void;
+  onSendMessage: (
+    content: string,
+    mediaItems?: MediaItem[],
+    options?: ChatSendOptions | ChatInputProvenance,
+  ) => void | Promise<string | void>;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
   onForkSession: (
     sourceSessionId: string,
@@ -131,6 +163,7 @@ interface ChatPanelProps {
   onCancel: () => void;
   onSwitchMode: (mode: AgentMode) => void;
   isProcessing: boolean;
+  isConnected: boolean;
   onUserAnswer: (
     requestId: string,
     answers: UserAnswer[],
@@ -138,10 +171,14 @@ interface ChatPanelProps {
   ) => Promise<boolean>;
   onExportShare?: () => void | Promise<void>;
   isExportingShare?: boolean;
+  shareExportProgress?: string;
+  isWaitingShareExportTab?: boolean;
   canExportShare?: boolean;
   sessionTitle?: string;
   sessionProjectName?: string;
   sessionProject?: ProjectInfo | null;
+  /** Explicit project selected before a new session exists; null means global new chat. */
+  topicStarterProjectId?: string | null;
   /** 自会话管理恢复历史后出现；支持分页加载更早消息 */
   historyPager?: ChatHistoryPagerProps | null;
   /** 历史会话首屏恢复中：保持聊天布局，避免短暂退回欢迎态 */
@@ -183,30 +220,141 @@ interface ChatPanelProps {
   composerCollapsed?: boolean;
   /** 切换停靠模式下的输入区收起状态；缺省时不渲染收起按钮。 */
   onToggleComposerCollapsed?: () => void;
+  /** 诊断选区或诊断页打开时，输入区保持收起且不能点开。 */
+  composerToggleDisabled?: boolean;
   /**
    * 上报输入区实测高度，供轨迹视图留出底部空白，避免末尾记录被输入区遮住。
    * 仅在停靠模式下回调；收起时上报 0。
    */
   onComposerHeightChange?: (height: number) => void;
+  /** 是否显示头部的“轨迹分析”入口（诊断视图）。 */
+  diagnosisEntryAvailable?: boolean;
+  /** 诊断视图当前是否打开，决定入口按钮的选中态。 */
+  diagnosisActive?: boolean;
+  /** 点击“轨迹分析”入口：打开诊断视图，再次点击回到对话。 */
+  onToggleDiagnosis?: () => void;
 }
 
 // 邀请指令只对 human_agent 成员存在（见 upsertHumanShareCommandFromEvent 的
 // mode === 'human' 闸门），所以这两处直接断言身份，不依赖成员名册是否已到齐。
 const HUMAN_SHARE_IDENTITY: TeamMemberIdentity = { role: 'human_agent' };
 
-function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }) {
+function SuggestionCard({
+  topic,
+  onClick,
+  onNotInterested,
+  dislikeLabel,
+  disabled = false,
+}: {
+  topic: TopicStarterTopic;
+  onClick: () => void;
+  onNotInterested?: () => void;
+  dislikeLabel: string;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation();
+  // Reports open their original page; hot-list entries preview the frozen source and offer news search.
+  const source = topic.evidence?.[0];
+  // Only absolute http(s) URLs may reach an href: a javascript:/data: value from the
+  // backend must not become a clickable script.
+  const safeHttpUrl = (value: string) => (/^https?:\/\//i.test(value) ? value : '');
+  const sourceUrl = safeHttpUrl(typeof source?.source_url === 'string' ? source.source_url : '');
+  const datePageUrl = typeof source?.date_page_url === 'string' ? source.date_page_url : '';
+  const separateDatePage = /^https?:\/\//i.test(datePageUrl) && datePageUrl !== sourceUrl;
+  const sourceSite = /^https?:\/\/(?:www\.)?([^/?#:]+)/i.exec(sourceUrl)?.[1];
+  const hotList = source?.source_kind === 'hot_list_entry' && typeof source.hot_list_rank === 'number';
+  const sourceText = typeof source?.source_text === 'string' ? source.source_text : '';
+  const searchUrl = safeHttpUrl(typeof source?.search_url === 'string' ? source.search_url : sourceUrl);
+  const listedAt = typeof source?.listed_at === 'string' ? new Date(source.listed_at) : null;
+  const sourceBadge = !sourceSite
+    ? null
+    : hotList
+      ? [
+          t(source?.publisher === 'weibo.com' ? 'chat.topicStarter.weiboHotList' : 'chat.topicStarter.baiduHotList'),
+          t('chat.topicStarter.hotListRank', { rank: source?.hot_list_rank }),
+          listedAt && !Number.isNaN(listedAt.getTime())
+            ? t('chat.topicStarter.hotListListedAt', {
+                time: `${String(listedAt.getHours()).padStart(2, '0')}:${String(listedAt.getMinutes()).padStart(2, '0')}`,
+              })
+            : '',
+        ].filter(Boolean).join(' · ')
+      : [
+          source?.source_kind === 'news_report' ? '资讯' : '近期',
+          sourceSite,
+          typeof source?.published_at === 'string' ? source.published_at.slice(5, 10).replace('-', '/') : '',
+        ].filter(Boolean).join(' · ');
   return (
-    <button
-      className="chat-suggestion-card"
+    <div
+      className={`chat-suggestion-card${sourceBadge ? ' chat-suggestion-card--sourced' : ''}${hotList ? ' chat-suggestion-card--hot-list' : ''}`}
       data-testid="chat-panel-welcome-suggestion"
-      data-variant={text}
-      onClick={onClick}
+      data-variant={topic.title}
     >
-      <Sparkles className="chat-suggestion-card__icon" strokeWidth={2} />
-      <span className="chat-suggestion-card__text">{text}</span>
-      <ArrowRight className="chat-suggestion-card__arrow" strokeWidth={2} />
-    </button>
+      {sourceBadge && (
+        <div data-testid="chat-panel-topic-sources" data-variant={topic.title} className="chat-suggestion-card__sources">
+          {hotList ? (
+            <details data-testid="chat-panel-topic-source-preview" data-variant={topic.title}>
+              <summary
+                data-testid="chat-panel-topic-source"
+                data-variant={topic.title}
+                className="chat-suggestion-card__source"
+                aria-label={t('chat.topicStarter.viewHotListEntry', { source: sourceBadge })}
+              >
+                {sourceBadge}
+              </summary>
+              <div className="chat-suggestion-card__source-preview">
+                <span data-testid="chat-panel-topic-source-label">{t('chat.topicStarter.hotListEntry')}</span>
+                <p data-testid="chat-panel-topic-source-text">{sourceText}</p>
+                <a
+                  data-testid="chat-panel-topic-news-search"
+                  data-variant={topic.title}
+                  className="chat-suggestion-card__source"
+                  href={searchUrl || '#'}
+                  target="_blank"
+                  rel="noreferrer"
+                  aria-label={t('chat.topicStarter.openNewsSearch')}
+                >
+                  {t('chat.topicStarter.searchRelatedNews')} <span aria-hidden="true">↗</span>
+                </a>
+              </div>
+            </details>
+          ) : (
+            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={`打开原文：${sourceBadge}`}>
+              {sourceBadge} <span aria-hidden="true">↗</span>
+            </a>
+          )}
+          {separateDatePage && (
+            <a data-testid="chat-panel-topic-date-source" data-variant={topic.title} className="chat-suggestion-card__source chat-suggestion-card__date-source" href={datePageUrl} target="_blank" rel="noreferrer" aria-label={t('chat.topicStarter.openDateAndVersion')}>
+              {t('chat.topicStarter.dateAndVersion')} <span aria-hidden="true">↗</span>
+            </a>
+          )}
+        </div>
+      )}
+      <button data-testid="chat-panel-topic-open" data-variant={topic.title} className="chat-suggestion-card__main" type="button" onClick={onClick} disabled={disabled}>
+        <span className="chat-suggestion-card__text">{topic.title}</span>
+      </button>
+      {onNotInterested && (
+        <button
+          className="chat-suggestion-card__dismiss"
+          data-testid="chat-panel-topic-dismiss"
+          data-variant={topic.title}
+          type="button"
+          aria-label={dislikeLabel}
+          title={dislikeLabel}
+          onClick={onNotInterested}
+          disabled={disabled}
+        >
+          <X size={15} strokeWidth={2} />
+        </button>
+      )}
+    </div>
   );
+}
+
+let topicStarterVisitSequence = 0;
+
+function newTopicStarterVisitId(): string {
+  topicStarterVisitSequence += 1;
+  return `topic-visit-${Date.now()}-${topicStarterVisitSequence}`;
 }
 
 function InterruptResultBubble() {
@@ -289,6 +437,9 @@ export function AgentActivityCard({
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const taskQueue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.taskQueue ?? []);
   const queuedSessionMessages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuedSessionMessages ?? []);
+  const canContinueQueuedSessionMessages = useChatStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.canContinueQueuedSessionMessages ?? false
+  );
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
   const removeFromTaskQueue = useChatStore((s) => s.removeFromTaskQueue);
   const reorderTaskQueue = useChatStore((s) => s.reorderTaskQueue);
@@ -296,6 +447,7 @@ export function AgentActivityCard({
   const setInputValue = useChatStore((s) => s.setInputValue);
 
   const isAgentMode = mode === 'agent';
+  const visibleTaskQueue = isAgentMode ? taskQueue : [];
 
   // 有等待任务时自动展开
   useEffect(() => {
@@ -319,7 +471,7 @@ export function AgentActivityCard({
     };
   }, [dragIndex]);
 
-  if (!isAgentMode || (taskQueue.length === 0 && queuedSessionMessages.length === 0)) {
+  if (visibleTaskQueue.length === 0 && queuedSessionMessages.length === 0) {
     return null;
   }
 
@@ -481,14 +633,16 @@ export function AgentActivityCard({
             {queuedSessionMessages.length > 0 && (
               <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-cross-session-queue-section">
                 <span>{t('chatUi.crossSessionMessageQueue')}</span>
-                <button
-                  type="button"
-                  data-testid="chat-panel-cross-session-queue-resume"
-                  onClick={handleContinueQueuedSessionMessages}
-                  style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}
-                >
-                  {t('chat.resume')}
-                </button>
+                {canContinueQueuedSessionMessages && (
+                  <button
+                    type="button"
+                    data-testid="chat-panel-cross-session-queue-resume"
+                    onClick={handleContinueQueuedSessionMessages}
+                    style={{ marginLeft: 'auto', border: 0, background: 'transparent', color: 'var(--color-text-primary)', cursor: 'pointer' }}
+                  >
+                    {t('chat.resume')}
+                  </button>
+                )}
               </div>
             )}
             {queuedSessionMessages.map((message) => (
@@ -515,7 +669,7 @@ export function AgentActivityCard({
                 </span>
               </div>
             ))}
-            {queuedSessionMessages.length > 0 && taskQueue.length > 0 && (
+            {queuedSessionMessages.length > 0 && visibleTaskQueue.length > 0 && (
               <div className="team-event-group-row team-event-group-row--activity" data-testid="chat-panel-task-queue-local-section" style={{ alignItems: 'center' }}>
                 <span>{t('chatUi.localMessageQueue')}</span>
                 {queuePaused && (
@@ -528,7 +682,7 @@ export function AgentActivityCard({
                 )}
               </div>
             )}
-            {taskQueue.map((task, index) => (
+            {visibleTaskQueue.map((task, index) => (
               <div
                 key={task.id}
                 className="team-event-group-row team-event-group-row--activity"
@@ -665,21 +819,16 @@ function getTeamMessageIdentity(message: Message): string {
 
 function WelcomeHeading() {
   const { i18n } = useTranslation();
+  const workMode = useWorkspaceStore((state) => state.workMode);
   const isZh = i18n.language.startsWith('zh');
-
-  if (isZh) {
-    return (
-      <>
-        <span className="chat-welcome__heading-highlight">WorkSwarm</span>
-        <span>轻松解决工作每个问题！</span>
-      </>
-    );
-  }
+  const suffix = workMode === 'design'
+    ? (isZh ? '轻松解决每个设计问题！' : 'solves every design problem!')
+    : (isZh ? '轻松解决工作每个问题！' : 'makes work easier!');
 
   return (
     <>
       <span className="chat-welcome__heading-highlight">WorkSwarm</span>
-      <span>makes work easier!</span>
+      <span>{suffix}</span>
     </>
   );
 }
@@ -967,6 +1116,12 @@ function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; 
   );
 }
 
+// The dismissal notice stays long enough to use its buttons, fades out over its last second
+// (ChatPanel.css) and then leaves the page.
+const DISMISS_NOTICE_MS = 8000;
+// An open global new page asks for the hot-list check every 30 minutes. The gateway runs one only
+// 30 minutes after the last one ended, so the page asks a minute later to land past that mark.
+const NEWS_CHECK_INTERVAL_MS = 31 * 60 * 1000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const LOAD_OLDER_THRESHOLD_PX = 8;
 const VISIBILITY_RESTORE_SCROLL_SUPPRESS_MS = 300;
@@ -1032,6 +1187,8 @@ function BeeBanner({
  * rebuild a potentially very large message timeline and composer subtree.
  */
 export const ChatPanel = React.memo(function ChatPanel({
+  promptSuggestionBox,
+  onOpenRecommendationSettings,
   onSendMessage,
   onEnsureSession,
   onForkSession,
@@ -1044,14 +1201,18 @@ export const ChatPanel = React.memo(function ChatPanel({
   onInterrupt,
   onCancel,
   onSwitchMode,
-  isProcessing,
+  isProcessing: sessionIsProcessing,
+  isConnected,
   onUserAnswer,
   onExportShare,
   isExportingShare = false,
+  shareExportProgress,
+  isWaitingShareExportTab = false,
   canExportShare = false,
   sessionTitle,
   sessionProjectName,
   sessionProject = null,
+  topicStarterProjectId = null,
   historyPager = null,
   isHistoryRestoring = false,
   teamAreaExpanded = false,
@@ -1075,24 +1236,45 @@ export const ChatPanel = React.memo(function ChatPanel({
   composerDocked = false,
   composerCollapsed = false,
   onToggleComposerCollapsed,
+  composerToggleDisabled = false,
   onComposerHeightChange,
+  diagnosisEntryAvailable = false,
+  diagnosisActive = false,
+  onToggleDiagnosis,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const conversationId = useOrganizationConversationKey(activeSessionId);
+  const expertIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
+  const organizationIsProcessing = useOrganizationProcessing(activeSessionId);
+  const isProcessing = conversationId === activeSessionId
+    ? sessionIsProcessing || organizationIsProcessing
+    : expertIsProcessing;
   const agentGroupUnavailable = useChatStore(
     (s) => s.runtimes[activeSessionId ?? '']?.agentGroupUnavailable ?? false,
   );
-  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
-  const isThinking = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isThinking ?? false);
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
+  const messages = useChatStore((s) => s.runtimes[conversationId]?.messages ?? []);
+  const isThinking = useChatStore((s) => s.runtimes[conversationId]?.isThinking ?? false);
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[conversationId]?.toolExecutionOrder ?? []);
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
-  const [teamGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  const storedTeamGroupIdentity = useSessionStore(
+    (s) => s.runtimes[conversationId]?.teamGroupIdentity ?? null,
+  );
+  const setTeamGroupIdentity = useSessionStore((s) => s.setTeamGroupIdentity);
+  const handleTeamGroupIdentityChange = useCallback(
+    (identity: AgentGroupIdentity | null) => {
+      if (conversationId) setTeamGroupIdentity(conversationId, identity);
+    },
+    [conversationId, setTeamGroupIdentity],
+  );
+  // 输入框的专家团列表是异步的，切会话后到达前 Leader 头像会退成首字母；已绑定的会话
+  // 直接用缓存的专家团身份兜底，列表到了再以它为准。
+  const boundGroupId = useSessionStore((s) => s.runtimes[conversationId]?.agentGroupBinding ?? null);
+  const boundGroupIdentity = useAgentGroupVisualIdentity(boundGroupId)?.identity ?? null;
+  const teamGroupIdentity = storedTeamGroupIdentity ?? boundGroupIdentity;
   const [agentGroupDeletedNoticeOpen, setAgentGroupDeletedNoticeOpen] = useState(false);
-  useEffect(() => {
-    setTeamGroupIdentity(null);
-  }, [activeSessionId]);
   useEffect(() => {
     setAgentGroupDeletedNoticeOpen(agentGroupUnavailable);
   }, [agentGroupUnavailable, activeSessionId]);
@@ -1145,7 +1327,75 @@ export const ChatPanel = React.memo(function ChatPanel({
   const chatContentClassName = hasConversation
     ? `chat-content${mode === 'team' ? ' chat-content--team' : ''}`
     : 'chat-content chat-content--welcome';
-  const suggestions = [t('chat.welcomeSuggestions.journey'), t('chat.welcomeSuggestions.skills')];
+  const topicStarterVisitId = useMemo(
+    () => newTopicStarterVisitId(),
+    [activeSessionId, autoFocusKey, topicStarterProjectId],
+  );
+  const [dynamicSlate, setDynamicSlate] = useState<{
+    visitId: string;
+    slate: TopicStarterVisibleSlate;
+    exposureAcknowledged: boolean;
+  } | null>(null);
+  const [recommendationState, setRecommendationState] = useState("");
+  const [recommendationRefresh, setRecommendationRefresh] = useState(0);
+  const manualRecommendationRetry = useRef(false);
+  const keepSlateOnRefreshRef = useRef(false);
+  // The switch event lands before the re-read. Hold that state across the refresh so the
+  // prompt changes at once and the effect does not blank it while the request is in flight.
+  const recommendationSwitchStateRef = useRef<string | null>(null);
+  const refillSlateIdRef = useRef<string | null>(null);
+  // Exposure is recorded only while the page is in the foreground; a ready pool reaches a page in the background when it is back.
+  const [pageVisible, setPageVisible] = useState(() => document.visibilityState === 'visible');
+  const readyWhileHiddenRef = useRef(false);
+  const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
+  // The notice after a dismissal or a pause keeps the shown card it is about, so pausing and undoing name it.
+  const [topicStarterDismissNotice, setTopicStarterDismissNotice] = useState<{
+    id: number;
+    visitId: string;
+    text: string;
+    slate: TopicStarterVisibleSlate;
+    topicId: string;
+    pausable: boolean;
+    undo: 'not_interested_undone' | 'interest_pause_undone';
+  } | null>(null);
+  const topicStarterNoticeActionPendingRef = useRef(false);
+  const [topicStarterNoticeActionPending, setTopicStarterNoticeActionPending] = useState(false);
+  useEffect(() => {
+    if (!topicStarterDismissNotice) return;
+    const timer = window.setTimeout(() => setTopicStarterDismissNotice(null), DISMISS_NOTICE_MS);
+    return () => window.clearTimeout(timer);
+  }, [topicStarterDismissNotice]);
+  const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId ? dynamicSlate.slate : null;
+  const visibleTopicSlateId = visibleTopicSlate?.slateId;
+  const acceptingDynamicRef = useRef(false);
+  const interactedRecommendationVisitRef = useRef<string | null>(null);
+  const topicStarterClickLatchRef = useRef<string | null>(null);
+  const [topicStarterClickLatch, setTopicStarterClickLatch] = useState<string | null>(null);
+  const topicStarterDismissPendingRef = useRef(new Set<string>());
+  const [topicStarterDismissPending, setTopicStarterDismissPending] = useState(new Set<string>());
+  const topicStarterVisitIdRef = useRef(topicStarterVisitId);
+  const visibleTopicSlateRef = useRef<TopicStarterVisibleSlate | null>(null);
+  const topicStarterExposureAcknowledgementsRef = useRef(new Map<string, Promise<unknown>>());
+  topicStarterVisitIdRef.current = topicStarterVisitId;
+  visibleTopicSlateRef.current = hasConversation ? null : visibleTopicSlate;
+  const visibleTopicSlateInteractionKey = visibleTopicSlate ? `${topicStarterVisitId}\u0000${visibleTopicSlate.slateId}` : null;
+  const topicStarterSuggestionsDisabled = Boolean(
+    visibleTopicSlate &&
+    (dynamicSlate?.visitId !== topicStarterVisitId ||
+      dynamicSlate.slate.slateId !== visibleTopicSlate.slateId ||
+      !dynamicSlate.exposureAcknowledged ||
+      topicStarterClickLatch === visibleTopicSlateInteractionKey),
+  );
+  const {
+    text: nextInputSuggestion,
+    suggestions: nextInputSuggestions,
+    accept: acceptNextInputSuggestion,
+    acceptForSend: acceptSuggestionForSend,
+    dismiss: dismissNextInputSuggestion,
+    takeSubmission: takeNextInputSubmission,
+    markShown: markNextInputSuggestionShown,
+  } = promptSuggestionBox;
+  const nextInputSuggestionKey = nextInputSuggestions.map(item => item.suggestionId).join('\n');
   const shouldShowChatHeader = hasConversation;
   const composerDockVisible = composerDocked && hasConversation;
   // Report the composer's measured height so the docked trajectory view can
@@ -1173,19 +1423,23 @@ export const ChatPanel = React.memo(function ChatPanel({
       onComposerHeightChange(0);
     };
   }, [composerCollapsed, composerDockVisible, onComposerHeightChange]);
-  const shareExportTitle = getShareExportTitle(t, isExportingShare, canExportShare);
+  const shareExportTitle = isWaitingShareExportTab ? t('share.openExportTab') : isExportingShare && shareExportProgress
+    ? shareExportProgress : getShareExportTitle(t, isExportingShare, canExportShare);
   const shouldShowShareExport = Boolean(onExportShare);
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
+  const isAuthorized = useAuthStore((state) => state.islogin);
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  const [freeModelsPromptDismissed, setFreeModelsPromptDismissed] = useState(false);
   const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleBubbleShow = useCallback(() => {
+    if (!isAuthorized && freeModelsPromptDismissed) return;
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
       bubbleHideTimerRef.current = null;
     }
     setBubbleVisible(true);
-  }, []);
+  }, [freeModelsPromptDismissed, isAuthorized]);
   const handleBubbleLeave = useCallback(() => {
     if (bubbleHideTimerRef.current) {
       clearTimeout(bubbleHideTimerRef.current);
@@ -1194,6 +1448,14 @@ export const ChatPanel = React.memo(function ChatPanel({
       bubbleHideTimerRef.current = null;
       setBubbleVisible(false);
     }, WELCOME_BUBBLE_HIDE_DELAY);
+  }, []);
+  const handleFreeModelsPromptClose = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setFreeModelsPromptDismissed(true);
+    setBubbleVisible(false);
   }, []);
   useEffect(() => {
     return () => {
@@ -1362,40 +1624,126 @@ export const ChatPanel = React.memo(function ChatPanel({
     return null;
   }, [continuedFromSessionId, messages]);
 
+  // The reply the suggestion chip follows: the session's last assistant message in the timeline.
+  const latestAssistantMessageKey = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === 'assistant') return message.renderKey ?? message.id;
+    }
+    return null;
+  }, [messages]);
+
+  // Whether at least half of the suggestion chip is inside the timeline's scroll viewport. While it
+  // is not, the empty composer shows the suggestion as its placeholder, as src-raw shows every
+  // suggestion, so the suggestion is in view from the moment it appears.
+  const [promptSuggestionChipOnScreen, setPromptSuggestionChipOnScreen] = useState(false);
+  const promptSuggestionChipObserverRef = useRef<IntersectionObserver | null>(null);
+  const observePromptSuggestionChip = useCallback((row: HTMLDivElement | null) => {
+    promptSuggestionChipObserverRef.current?.disconnect();
+    promptSuggestionChipObserverRef.current = null;
+    if (!row) {
+      setPromptSuggestionChipOnScreen(false);
+      return;
+    }
+    const observer = new IntersectionObserver((entries) => {
+      // A chip a quarter in view still intersects; only the ratio says whether half of it is in view.
+      setPromptSuggestionChipOnScreen(entries[entries.length - 1].intersectionRatio >= 0.5);
+    }, { root: scrollContainerRef.current, threshold: 0.5 });
+    observer.observe(row);
+    promptSuggestionChipObserverRef.current = observer;
+  }, []);
+  const nextInputSuggestionPlaceholder = nextInputSuggestion && !promptSuggestionChipOnScreen
+    ? t('chat.promptSuggestionBox.placeholder', { label: t('chat.promptSuggestionBox.label'), text: nextInputSuggestion })
+    : null;
+  useEffect(() => {
+    if (nextInputSuggestions.length) markNextInputSuggestionShown();
+  }, [nextInputSuggestionKey, markNextInputSuggestionShown, nextInputSuggestions.length]);
+
+  // The chip's send and close live in a ref: they close over callbacks defined further down.
+  const promptSuggestionChipRef = useRef<{ send: (suggestionId?: string) => void; dismiss: (suggestionId?: string) => void }>({
+    send: () => {},
+    dismiss: () => {},
+  });
+
   const renderAfterMessage = useCallback(
     (message: Message) => {
       const codeChanges = renderCodeChangesAfterMessage(message);
       const messageKey = message.renderKey ?? message.id;
+      const showSuggestionChip =
+        nextInputSuggestion !== null &&
+        latestAssistantMessageKey !== null &&
+        messageKey === latestAssistantMessageKey;
       if (
-        !forkBoundaryMessageKey ||
-        messageKey !== forkBoundaryMessageKey ||
-        !continuedFromSessionId ||
-        !onOpenContinuedFromSession
+        !showSuggestionChip &&
+        (!forkBoundaryMessageKey ||
+          messageKey !== forkBoundaryMessageKey ||
+          !continuedFromSessionId ||
+          !onOpenContinuedFromSession)
       ) {
         return codeChanges;
       }
       return (
         <>
           {codeChanges}
-          <button
-            type="button"
-            className="chat-fork-origin"
-            data-testid="chat-panel-continued-from-chat"
-            title={t('chat.openSourceChat')}
-            aria-label={t('chat.openSourceChat')}
-            onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
-          >
-            <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
-              <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
-              {t('chat.continuedFromChat')}
-            </span>
-          </button>
+          {forkBoundaryMessageKey && messageKey === forkBoundaryMessageKey && continuedFromSessionId && onOpenContinuedFromSession ? (
+            <button
+              type="button"
+              className="chat-fork-origin"
+              data-testid="chat-panel-continued-from-chat"
+              title={t('chat.openSourceChat')}
+              aria-label={t('chat.openSourceChat')}
+              onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
+            >
+              <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
+                <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
+                {t('chat.continuedFromChat')}
+              </span>
+            </button>
+          ) : null}
+          {showSuggestionChip && nextInputSuggestions.length ? (
+            <div
+              ref={observePromptSuggestionChip}
+              className="chat-prompt-suggestion-chip-row"
+              data-testid="chat-panel-prompt-suggestion-chip"
+            >
+              {nextInputSuggestions.map((suggestion) => (
+                <div className="chat-prompt-suggestion-chip" key={suggestion.suggestionId}>
+                  <button
+                    type="button"
+                    className="chat-prompt-suggestion-chip__send"
+                    title={t('chat.promptSuggestionBox.sendHint')}
+                    onClick={() => promptSuggestionChipRef.current.send(suggestion.suggestionId)}
+                    data-testid="chat-panel-prompt-suggestion-chip-send"
+                    data-variant={suggestion.suggestionId}
+                  >
+                    <span className="chat-prompt-suggestion-chip__label">{t('chat.promptSuggestionBox.label')}</span>
+                    <span className="chat-prompt-suggestion-chip__text">{suggestion.text}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="chat-prompt-suggestion-chip__dismiss"
+                    aria-label={t('chat.promptSuggestionBox.dismiss', { text: suggestion.text })}
+                    title={t('chat.promptSuggestionBox.dismiss', { text: suggestion.text })}
+                    onClick={() => promptSuggestionChipRef.current.dismiss(suggestion.suggestionId)}
+                    data-testid="chat-panel-prompt-suggestion-chip-dismiss"
+                    data-variant={suggestion.suggestionId}
+                  >
+                    <X size={14} strokeWidth={2} aria-hidden="true" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </>
       );
     },
     [
       continuedFromSessionId,
       forkBoundaryMessageKey,
+      latestAssistantMessageKey,
+      nextInputSuggestion,
+      nextInputSuggestions,
+      observePromptSuggestionChip,
       onOpenContinuedFromSession,
       renderCodeChangesAfterMessage,
       t,
@@ -1557,6 +1905,44 @@ export const ChatPanel = React.memo(function ChatPanel({
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [activeSessionId, rememberSessionScrollTop, restoreSessionScrollTop]);
 
+  // 空白全局新建页回到前台、以及开在前台时每 30 分钟：让后台检查资讯，页面本身不等待结果。
+  useEffect(() => {
+    if (!isConnected || hasConversation || topicStarterProjectId) return;
+    const checkNews = () => {
+      if (document.hidden || !acceptingDynamicRef.current) return;
+      void webRequest('topic_starters.foreground', { context_scope: 'global_new_chat', visit_id: topicStarterVisitIdRef.current }).catch(() => undefined);
+    };
+    let timer: number | null = null;
+    const keepChecking = () => {
+      if (timer !== null) window.clearInterval(timer);
+      timer = document.hidden ? null : window.setInterval(checkNews, NEWS_CHECK_INTERVAL_MS);
+    };
+    const handleVisibility = () => {
+      checkNews();
+      keepChecking();
+    };
+    keepChecking();
+    document.addEventListener('visibilitychange', handleVisibility);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibility);
+      if (timer !== null) window.clearInterval(timer);
+    };
+  }, [hasConversation, isConnected, topicStarterProjectId]);
+
+  useEffect(() => {
+    const handleTopicPageVisibility = () => {
+      const visible = document.visibilityState === 'visible';
+      setPageVisible(visible);
+      if (!visible || !readyWhileHiddenRef.current) return;
+      readyWhileHiddenRef.current = false;
+      if (!acceptingDynamicRef.current) return;
+      if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      setRecommendationRefresh(value => value + 1);
+    };
+    document.addEventListener('visibilitychange', handleTopicPageVisibility);
+    return () => document.removeEventListener('visibilitychange', handleTopicPageVisibility);
+  }, []);
+
   useLayoutEffect(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
@@ -1617,7 +2003,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       return;
     }
 
-    // 只有当用户在底部时才自动滚动
+    // 只有当用户在底部时才自动滚动；回答末尾新出现的建议标签同样跟随到底部
     if (!userScrolledUpRef.current) {
       const el = scrollContainerRef.current;
       if (el) {
@@ -1635,18 +2021,268 @@ export const ChatPanel = React.memo(function ChatPanel({
     historyPublishedBatchSeq,
     historyLoadingMore,
     historyPrepending,
+    nextInputSuggestion,
     teamHumanShareCommands.length,
     updateHistoryLayoutSnapshot,
   ]);
 
   // 包装发送消息函数，添加滚动逻辑
-  const handleSendMessage = useCallback(
-    (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => {
-      setIsSending(true);
-      onSendMessage(content, mediaItems, options);
+  const sendTopicStarterEvent = useCallback(async (event: TopicStarterEvent) => {
+    const response = await webRequest<{ recorded?: boolean; pausable?: boolean }>('topic_starters.event', { ...event });
+    if (response.recorded !== true) {
+      throw new Error(`topic_starters.event was not recorded: ${event.event_type}`);
+    }
+    return response;
+  }, []);
+
+  const ensureTopicStarterExposureAcknowledged = useCallback(
+    (slate: TopicStarterVisibleSlate) => {
+      const acknowledgements = topicStarterExposureAcknowledgementsRef.current;
+      const slateKey = `${slate.sessionId}\u0000${slate.slateId}`;
+      const existing = acknowledgements.get(slateKey);
+      if (existing) return existing;
+      const acknowledgement = sendTopicStarterEvent(buildExposureEvent(slate));
+      acknowledgements.set(slateKey, acknowledgement);
+      void acknowledgement.catch(() => {
+        if (acknowledgements.get(slateKey) === acknowledgement) {
+          acknowledgements.delete(slateKey);
+        }
+      });
+      return acknowledgement;
     },
-    [onSendMessage],
+    [sendTopicStarterEvent],
   );
+
+  useEffect(() => useChatStore.subscribe((state, previous) => {
+    if (!activeSessionId || hasConversation || state.activeSessionId !== activeSessionId) return;
+    const input = state.runtimes[activeSessionId]?.inputValue;
+    const previousInput = previous.runtimes[activeSessionId]?.inputValue;
+    if (previousInput && !input && !visibleTopicSlateRef.current && !acceptingDynamicRef.current) {
+      interactedRecommendationVisitRef.current = null;
+      acceptingDynamicRef.current = true;
+      setRecommendationRefresh(value => value + 1);
+    }
+  }), [activeSessionId, hasConversation]);
+
+  // v6 展示只读预计算池，后台 Ark 配置与会话回答模型相互独立。因此新欢迎页
+  // WebChannel ready 后立即请求，不等待模型列表，也不把会话 model_name 传给 Topic Starter。
+  // 连接恢复会重新进入该 effect，避免页面先启动时的一次失败永久留下静态入口。
+  useEffect(() => {
+    acceptingDynamicRef.current = Boolean(activeSessionId && !hasConversation && interactedRecommendationVisitRef.current !== topicStarterVisitId);
+    if (!isConnected || !activeSessionId || hasConversation) {
+      return;
+    }
+    const requestSessionId = activeSessionId;
+    const requestParams = buildTopicStarterRequest(requestSessionId, topicStarterProjectId);
+    let active = true;
+    let receivedScopeState = false;
+    const unsubscribeReady = webClient.on<{ visit_id?: string; context_scope: string; state: string; pool_written?: boolean }>("topic_starters.ready", ({ payload }) => {
+      if (!active || (payload.visit_id && payload.visit_id !== topicStarterVisitId) || payload.context_scope !== requestParams.context_scope) return;
+      receivedScopeState = true;
+      setRecommendationState(payload.state);
+      // Preparation that wrote no pool leaves the cards on screen as the pool still serves them.
+      const poolUnchanged = payload.pool_written === false && Boolean(visibleTopicSlateRef.current);
+      if (acceptingDynamicRef.current && payload.state === "ready" && !poolUnchanged) {
+        if (document.visibilityState !== 'visible') {
+          readyWhileHiddenRef.current = true;
+        } else {
+          // Cards already on screen stay until the new pool answers.
+          if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+          setRecommendationRefresh(value => value + 1);
+        }
+      }
+      // A round without new cards does not retire cards the pool still serves.
+      if (acceptingDynamicRef.current && payload.state === "no_content" && !visibleTopicSlateRef.current) setDynamicSlate(null);
+    });
+    const unsubscribeControl = webClient.on<{ enabled: boolean }>("topic_starters.control_changed", ({ payload }) => {
+      if (hasConversation) {
+        if (!payload.enabled) {
+          setRecommendationState('disabled');
+          acceptingDynamicRef.current = false;
+        }
+        return;
+      }
+      acceptingDynamicRef.current = true;
+      if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true;
+      recommendationSwitchStateRef.current = payload.enabled ? 'preparing' : 'disabled';
+      setRecommendationState(recommendationSwitchStateRef.current);
+      setRecommendationRefresh(value => value + 1);
+    });
+    const manualRetry = manualRecommendationRetry.current;
+    manualRecommendationRetry.current = false;
+    const heldSwitchState = recommendationSwitchStateRef.current;
+    recommendationSwitchStateRef.current = null;
+    const refillSlateId = refillSlateIdRef.current;
+    refillSlateIdRef.current = null;
+    // A backfill re-read keeps the remaining cards on screen until the pool answers.
+    if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
+    keepSlateOnRefreshRef.current = false;
+    setTopicStarterErrorKey(null);
+    setRecommendationState(manualRetry ? "preparing" : (heldSwitchState ?? ""));
+    // This read also serves a pool that became ready while the page was in the background.
+    readyWhileHiddenRef.current = false;
+    void webRequest<TopicStarterResponse>('topic_starters.get', {
+      ...requestParams, visit_id: topicStarterVisitId, manual_retry: manualRetry,
+      ...(refillSlateId ? { slate_id: refillSlateId } : {}),
+    }, { timeoutMs: 60_000 })
+      .then(response => {
+        if (!active || !acceptingDynamicRef.current) {
+          return;
+        }
+        if (!receivedScopeState) {
+          setRecommendationState(response.preparation_state || (response.available ? "ready" : response.reason === "disabled" ? "disabled" : response.reason === "v6_pool_miss" ? "preparing" : "missing_configuration"));
+        }
+        const slate = buildDynamicTopicStarterSlate(response, requestParams);
+        if (!slate) {
+          if (response?.available !== false) {
+            setTopicStarterErrorKey('network.requestFailed');
+          } else {
+            // The pool now serves no card: those kept on screen for this re-read are gone too.
+            setDynamicSlate(null);
+          }
+          return;
+        }
+        setDynamicSlate({
+          visitId: topicStarterVisitId,
+          slate,
+          exposureAcknowledged: false,
+        });
+      })
+      .catch(error => {
+        if (active) {
+          setTopicStarterErrorKey('network.requestFailed');
+          setRecommendationState("failed");
+        }
+        console.error('topic_starters.get failed:', error);
+      });
+    return () => {
+      active = false;
+      unsubscribeReady();
+      unsubscribeControl();
+    };
+  }, [activeSessionId, hasConversation, isConnected, topicStarterProjectId, topicStarterVisitId, recommendationRefresh]);
+
+
+  useEffect(() => {
+    if (
+      hasConversation ||
+      !pageVisible ||
+      !dynamicSlate ||
+      !acceptingDynamicRef.current ||
+      dynamicSlate.visitId !== topicStarterVisitId ||
+      dynamicSlate.exposureAcknowledged ||
+      visibleTopicSlateRef.current?.slateId !== dynamicSlate.slate.slateId
+    ) {
+      return;
+    }
+    const displayedSlate = dynamicSlate.slate;
+    const displayedVisitId = dynamicSlate.visitId;
+    let active = true;
+    void ensureTopicStarterExposureAcknowledged(displayedSlate)
+      .then(() => {
+        if (
+          !active ||
+          !acceptingDynamicRef.current ||
+          topicStarterVisitIdRef.current !== displayedVisitId ||
+          visibleTopicSlateRef.current?.slateId !== displayedSlate.slateId
+        ) {
+          return;
+        }
+        setDynamicSlate(current =>
+          current?.visitId === displayedVisitId && current.slate.slateId === displayedSlate.slateId ? { ...current, exposureAcknowledged: true } : current,
+        );
+      })
+      .catch(error => {
+        if (active) {
+          setDynamicSlate(current => (current?.visitId === displayedVisitId && current.slate.slateId === displayedSlate.slateId ? null : current));
+          setTopicStarterErrorKey('network.requestFailed');
+        }
+        console.error('topic_starters exposure was not recorded:', error);
+      });
+    return () => {
+      active = false;
+    };
+  }, [dynamicSlate, ensureTopicStarterExposureAcknowledged, hasConversation, pageVisible, topicStarterVisitId]);
+
+  useEffect(() => {
+    if (hasConversation || !visibleTopicSlate || !dynamicSlate?.exposureAcknowledged) return;
+    const displayedSlate = visibleTopicSlate;
+    const displayedVisitId = topicStarterVisitId;
+    return () => {
+      if (!acceptingDynamicRef.current) return;
+      const replacement = visibleTopicSlateRef.current;
+      if (topicStarterVisitIdRef.current === displayedVisitId && replacement?.slateId !== displayedSlate.slateId) {
+        return;
+      }
+      void ensureTopicStarterExposureAcknowledged(displayedSlate)
+        .then(() => sendTopicStarterEvent(buildPageLeftEvent(displayedSlate)))
+        .catch(error => {
+          console.error('topic_starters page-left lineage was not recorded:', error);
+        });
+    };
+  }, [
+    ensureTopicStarterExposureAcknowledged,
+    dynamicSlate?.exposureAcknowledged,
+    hasConversation,
+    sendTopicStarterEvent,
+    topicStarterVisitId,
+    visibleTopicSlateId,
+  ]);
+
+  const handleInputIntent = useCallback(
+    (sessionId: string) => {
+      interactedRecommendationVisitRef.current = topicStarterVisitIdRef.current;
+      acceptingDynamicRef.current = false;
+      onInputIntent?.(sessionId);
+    },
+    [onInputIntent],
+  );
+
+  const handleSendMessage = useCallback(
+    async (content: string, mediaItems?: MediaItem[], options?: ChatSendOptions | ChatInputProvenance) => {
+      if (options && 'queuedTaskId' in options) {
+        if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+        setIsSending(true);
+        onSendMessage(content, mediaItems, options);
+        return;
+      }
+      // Capture before the composer clears the draft; InputArea submits then empties the store.
+      const nextInput = takeNextInputSubmission(content);
+      if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
+      const slate = visibleTopicSlateRef.current;
+      acceptingDynamicRef.current = false;
+      const directInputRecorded =
+        slate?.kind === 'dynamic'
+          ? ensureTopicStarterExposureAcknowledged(slate).then(() => sendTopicStarterEvent(buildDirectInputEvent(slate)))
+          : Promise.resolve();
+      setIsSending(true);
+      const sent = Promise.resolve(onSendMessage(content, mediaItems, nextInput.provenance)).then(
+        sessionId => nextInput.settle(Boolean(sessionId)),
+        error => {
+          nextInput.settle(false);
+          throw error;
+        },
+      );
+      void Promise.all([sent, directInputRecorded]).catch(error => {
+        setTopicStarterErrorKey('network.requestFailed');
+        console.error('topic_starters direct-input lineage was not recorded:', error);
+      });
+    },
+    [activeSessionId, ensureTopicStarterExposureAcknowledged, onSendMessage, sendTopicStarterEvent, takeNextInputSubmission],
+  );
+
+  const handleDismissNextInputSuggestion = useCallback((suggestionId?: string) => {
+    dismissNextInputSuggestion(suggestionId);
+    composeRef.current?.querySelector<HTMLElement>('[data-testid="chat-panel-input"]')?.focus();
+  }, [dismissNextInputSuggestion]);
+  const handleEmptyComposerTab = useCallback(() => acceptNextInputSuggestion('tab'), [acceptNextInputSuggestion]);
+  promptSuggestionChipRef.current = {
+    send: (suggestionId?: string) => {
+      const taken = acceptSuggestionForSend(suggestionId);
+      if (taken) void handleSendMessage(taken.text);
+    },
+    dismiss: handleDismissNextInputSuggestion,
+  };
 
   // 当发送消息时强制滚动到底部
   useEffect(() => {
@@ -1662,7 +2298,191 @@ export const ChatPanel = React.memo(function ChatPanel({
     }
   }, [activeSessionId, isSending, updateHistoryLayoutSnapshot]);
 
-  const handleSuggestion = useCallback((text: string) => handleSendMessage(text), [handleSendMessage]);
+  const handleSuggestion = useCallback(
+    (topic: TopicStarterTopic) => {
+      const slate = visibleTopicSlateRef.current;
+      if (!slate || !slate.manifestId || !slate.generationBatchId) return;
+      const visitId = topicStarterVisitIdRef.current;
+      const interactionKey = `${visitId}\u0000${slate.slateId}`;
+      if (topicStarterClickLatchRef.current === interactionKey) return;
+      topicStarterClickLatchRef.current = interactionKey;
+      setTopicStarterClickLatch(interactionKey);
+      acceptingDynamicRef.current = false;
+      const provenance: ChatInputProvenance = {
+        input_origin: 'starter_click',
+        assistance_origin: 'starter_click',
+        topic_starter: {
+          manifest_id: slate.manifestId,
+          generation_batch_id: slate.generationBatchId,
+          exposure_id: slate.slateId,
+          card_revision_id: topic.id,
+          context_scope: slate.contextScope,
+          project_id: slate.projectId,
+        },
+      };
+      let clickRecorded = false;
+      let messageAccepted = false;
+      const isCurrentClick = () =>
+        topicStarterVisitIdRef.current === visitId &&
+        visibleTopicSlateRef.current?.slateId === slate.slateId &&
+        visibleTopicSlateRef.current.contextScope === slate.contextScope &&
+        visibleTopicSlateRef.current.projectId === slate.projectId;
+      const releaseClickLatch = () => {
+        if (topicStarterClickLatchRef.current !== interactionKey) return;
+        topicStarterClickLatchRef.current = null;
+        setTopicStarterClickLatch(current => (current === interactionKey ? null : current));
+        if (topicStarterVisitIdRef.current === visitId && visibleTopicSlateRef.current?.slateId === slate.slateId) {
+          acceptingDynamicRef.current = true;
+        }
+      };
+      void (async () => {
+        await ensureTopicStarterExposureAcknowledged(slate);
+        if (!isCurrentClick()) {
+          releaseClickLatch();
+          return;
+        }
+        await sendTopicStarterEvent(buildTopicClickEvent(slate, topic.id));
+        clickRecorded = true;
+        if (!isCurrentClick()) {
+          releaseClickLatch();
+          return;
+        }
+        setIsSending(true);
+        const realSessionId = await onSendMessage(topic.prompt, undefined, provenance);
+        if (!realSessionId) {
+          if (isCurrentClick()) setTopicStarterErrorKey('network.sendMessageFailed');
+          releaseClickLatch();
+          return;
+        }
+        messageAccepted = true;
+        await sendTopicStarterEvent(buildSessionBoundEvent(slate, realSessionId, topic.id));
+      })().catch(error => {
+        // The click is over even when the message was accepted: a latch left set would disable
+        // every card of this slate for the rest of the visit.
+        releaseClickLatch();
+        if (!messageAccepted && !isCurrentClick()) return;
+        setTopicStarterErrorKey(!clickRecorded || messageAccepted ? 'network.requestFailed' : 'network.sendMessageFailed');
+        console.error('topic_starters click failed:', error);
+      });
+    },
+    [ensureTopicStarterExposureAcknowledged, onSendMessage, sendTopicStarterEvent],
+  );
+
+  // Keep only the shown cards of this slate that pass; an empty page falls back to the static entrances.
+  const keepShownCards = useCallback((slateId: string, keep: (item: TopicStarterTopic) => boolean) => setDynamicSlate(current => {
+    if (!current || current.slate.slateId !== slateId) return current;
+    const topics = current.slate.topics.filter(keep);
+    return topics.length === 0 ? null : { ...current, slate: { ...current.slate, topics } };
+  }), []);
+
+  // After a dismissal, a pause or an undo the page reads the pool again. The read keeps the
+  // cards of the issued slate it names, the one on screen unless the caller names another.
+  const rereadTopicStarterPool = useCallback((issuedSlateId?: string) => {
+    const shown = visibleTopicSlateRef.current;
+    if (acceptingDynamicRef.current) {
+      // The new read replaces the page and fills the freed places by rank.
+      if (shown) keepSlateOnRefreshRef.current = true;
+      refillSlateIdRef.current = issuedSlateId ?? shown?.slateId ?? null;
+      setRecommendationRefresh(value => value + 1);
+      return;
+    }
+    if (!shown) return;
+    // The user has started typing, so nothing new appears: the page only takes off the
+    // shown cards the pool no longer serves, keeping the order and lineage of the rest.
+    void webRequest<TopicStarterResponse>(
+      'topic_starters.get',
+      { ...buildTopicStarterRequest(shown.sessionId, shown.projectId), visit_id: topicStarterVisitIdRef.current },
+      { timeoutMs: 60_000 },
+    )
+      .then(response => {
+        // The read shows one window of the pool, possibly of a successor written while the user typed;
+        // a shown card stays while the pool still serves its card_id under any revision.
+        if (response?.available !== false && !Array.isArray(response?.served_card_ids)) return;
+        const served = new Set(response.served_card_ids ?? []);
+        keepShownCards(shown.slateId, item => served.has(item.card_id ?? ''));
+      })
+      .catch(error => console.error('topic_starters.get after typed-page feedback failed:', error));
+  }, [keepShownCards]);
+
+  const handleNotInterested = useCallback(
+    (topic: TopicStarterTopic) => {
+      const slate = visibleTopicSlateRef.current;
+      if (!slate) return;
+      const interactionKey = `${topicStarterVisitIdRef.current}\u0000${slate.slateId}\u0000${topic.id}`;
+      if (topicStarterDismissPendingRef.current.has(interactionKey)) return;
+      topicStarterDismissPendingRef.current.add(interactionKey);
+      setTopicStarterDismissPending(current => {
+        const next = new Set(current);
+        next.add(interactionKey);
+        return next;
+      });
+
+      const releaseDismissPending = () => {
+        topicStarterDismissPendingRef.current.delete(interactionKey);
+        setTopicStarterDismissPending(current => {
+          if (!current.has(interactionKey)) return current;
+          const next = new Set(current);
+          next.delete(interactionKey);
+          return next;
+        });
+      };
+      void ensureTopicStarterExposureAcknowledged(slate)
+        .then(() => sendTopicStarterEvent(buildNotInterestedEvent(slate, topic.id)))
+        .then(recorded => {
+          setTopicStarterDismissNotice({
+            id: Date.now(),
+            visitId: topicStarterVisitIdRef.current,
+            text: t('chat.topicStarter.cardRemoved'),
+            slate,
+            topicId: topic.id,
+            pausable: recorded.pausable === true,
+            undo: 'not_interested_undone',
+          });
+          // 先在本地移除，再重新读同一池补上空出的位置。
+          if (slate.policyId === 'topic-starter-mvp-v6' && visibleTopicSlateRef.current?.slateId === slate.slateId) {
+            rereadTopicStarterPool();
+          }
+          keepShownCards(slate.slateId, item => item.id !== topic.id);
+        })
+        .catch(error => {
+          setTopicStarterErrorKey('network.requestFailed');
+          console.error('topic_starters not-interested lineage was not recorded:', error);
+        })
+        .finally(releaseDismissPending);
+    },
+    [ensureTopicStarterExposureAcknowledged, keepShownCards, rereadTopicStarterPool, sendTopicStarterEvent, t],
+  );
+
+  // The notice's buttons pause the dismissed card's interest or undo the dismissal or the pause.
+  const handleDismissNoticeAction = useCallback(
+    (notice: NonNullable<typeof topicStarterDismissNotice>, action: 'pause' | 'undo') => {
+      if (topicStarterNoticeActionPendingRef.current) return;
+      topicStarterNoticeActionPendingRef.current = true;
+      setTopicStarterNoticeActionPending(true);
+      void sendTopicStarterEvent(buildNotInterestedEvent(notice.slate, notice.topicId, action === 'pause' ? 'interest_paused' : notice.undo))
+        .then(() => {
+          if (action === 'pause') {
+            setTopicStarterDismissNotice({
+              ...notice, id: Date.now(), text: t('chat.topicStarter.interestPaused'), pausable: false, undo: 'interest_pause_undone',
+            });
+          } else {
+            setTopicStarterDismissNotice(current => (current?.id === notice.id ? null : current));
+          }
+          // An undo reads the page back from the slate the card was dismissed on, so the restored
+          // card takes its place again instead of waiting behind the cards that filled it.
+          rereadTopicStarterPool(action === 'undo' ? notice.slate.slateId : undefined);
+        })
+        .catch(error => {
+          setTopicStarterErrorKey('network.requestFailed');
+          console.error(`topic_starters ${action} was not recorded:`, error);
+        })
+        .finally(() => {
+          topicStarterNoticeActionPendingRef.current = false;
+          setTopicStarterNoticeActionPending(false);
+        });
+    },
+    [rereadTopicStarterPool, sendTopicStarterEvent, t],
+  );
 
   const markDesktopFileDropZoneActive = useCallback(() => {
     desktopFileDropAcceptUntilRef.current = Date.now() + 1200;
@@ -1751,7 +2571,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     [canAcceptDesktopFileDrag, markDesktopFileDropZoneActive],
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    // Replace the consumer during the session commit, before pending native file
+    // reads can resolve. ChatPanel stays mounted when activeSessionId changes.
     // Durable bridge lives in localFilePicker; ChatPanel only registers a consumer.
     // Never delete window.__JIUWEN_INGEST_LOCAL_FILES__ — Python run_js requires it.
     const unregister = registerDesktopLocalFilesConsumer((detail, files) => {
@@ -1777,7 +2599,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       window.removeEventListener(DESKTOP_LOCAL_FILES_EVENT, onDesktopLocalFiles as EventListener);
       window.removeEventListener(DESKTOP_FILE_DRAG_EVENT, onDesktopFileDrag as EventListener);
     };
-  }, [ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
+  }, [activeSessionId, ingestDesktopLocalFiles, markDesktopFileDropZoneActive]);
 
   return (
     <div
@@ -1827,6 +2649,19 @@ export const ChatPanel = React.memo(function ChatPanel({
             )}
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
+            {diagnosisEntryAvailable && onToggleDiagnosis && (
+              <button
+                type="button"
+                className={`chat-header-icon-btn ${diagnosisActive ? 'chat-header-icon-btn--active' : ''}`}
+                data-testid="chat-panel-header-diagnosis-toggle"
+                aria-pressed={diagnosisActive}
+                title={t('trajectory.diagnosis.entry')}
+                aria-label={t('trajectory.diagnosis.entry')}
+                onClick={onToggleDiagnosis}
+              >
+                <ClipboardList size={16} strokeWidth={2} aria-hidden />
+              </button>
+            )}
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"
@@ -1834,8 +2669,13 @@ export const ChatPanel = React.memo(function ChatPanel({
                 data-testid="chat-panel-header-composer-toggle"
                 data-variant={composerCollapsed ? 'expand' : 'collapse'}
                 aria-expanded={!composerCollapsed}
-                title={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
-                aria-label={composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                title={composerToggleDisabled
+                  ? t('trajectory.composer.unavailable')
+                  : composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                aria-label={composerToggleDisabled
+                  ? t('trajectory.composer.unavailable')
+                  : composerCollapsed ? t('trajectory.composer.expand') : t('trajectory.composer.collapse')}
+                disabled={composerToggleDisabled}
                 onClick={onToggleComposerCollapsed}
               >
                 {composerCollapsed
@@ -1848,20 +2688,20 @@ export const ChatPanel = React.memo(function ChatPanel({
                 type="button"
                 className={`chat-header-icon-btn icon-btn share-export-btn ${isExportingShare ? 'share-export-btn--loading' : ''}`}
                 data-testid="chat-panel-share-export"
-                data-variant={isExportingShare ? 'exporting' : 'ready'}
+                data-variant={isWaitingShareExportTab ? 'waiting' : isExportingShare ? 'exporting' : 'ready'}
                 title={shareExportTitle}
                 aria-label={shareExportTitle}
-                aria-busy={isExportingShare}
-                disabled={!canExportShare || isExportingShare}
+                aria-busy={isExportingShare && !isWaitingShareExportTab}
+                disabled={!isWaitingShareExportTab && (!canExportShare || isExportingShare)}
                 onClick={() => {
                   void onExportShare?.();
                 }}
               >
                 {isExportingShare ? (
                   <>
-                    <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />
-                    <span className="share-export-btn__label" data-testid="chat-panel-share-export-loading-label">
-                      {t('share.generating')}
+                    {!isWaitingShareExportTab && <LoaderCircle className="share-export-btn__spinner" size={14} strokeWidth={2} />}
+                    <span className="share-export-btn__label" aria-live="polite" data-testid="chat-panel-share-export-loading-label">
+                      {isWaitingShareExportTab ? t('share.openExportTab') : shareExportProgress || t('share.generating')}
                     </span>
                   </>
                 ) : (
@@ -1997,10 +2837,41 @@ export const ChatPanel = React.memo(function ChatPanel({
                   <>
                     <div
                       ref={bubbleRef}
-                      className={`chat-welcome__banner chat-welcome__banner--bubble${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                      className={`chat-welcome__banner chat-welcome__banner--bubble${!isAuthorized ? ' chat-welcome__banner--bubble--campaign' : ''}${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
                       data-testid="chat-panel-welcome-banner-bubble"
+                      onMouseEnter={handleBubbleShow}
+                      onMouseLeave={handleBubbleLeave}
                     >
-                      {t('chat.welcomeBubbleText')}
+                      {isAuthorized ? (
+                        t('chat.welcomeBubbleText')
+                      ) : (
+                        <>
+                          <div className="chat-welcome__campaign-heading">
+                            <span>
+                              <Megaphone aria-hidden />
+                              {t('chat.freeModelsCampaign.title')}
+                            </span>
+                            <button
+                              type="button"
+                              className="chat-welcome__campaign-close"
+                              onClick={handleFreeModelsPromptClose}
+                              aria-label={t('common.close')}
+                              title={t('common.close')}
+                            >
+                              <X aria-hidden />
+                            </button>
+                          </div>
+                          <p>{t('chat.freeModelsCampaign.description')}</p>
+                          <button
+                            type="button"
+                            className="chat-welcome__campaign-claim"
+                            onClick={() => requestLogin()}
+                            data-testid="chat-panel-free-models-claim"
+                          >
+                            {t('chat.freeModelsCampaign.claim')}
+                          </button>
+                        </>
+                      )}
                     </div>
                     <BeeBanner
                       className="chat-welcome__banner chat-welcome__banner--bee"
@@ -2019,7 +2890,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
                   onForkSession={onForkSession}
-                  onInputIntent={onInputIntent}
+                  onInputIntent={handleInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
                   onDiscardMedia={onDiscardMedia}
@@ -2030,7 +2901,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
-                  onAgentGroupIdentityChange={setTeamGroupIdentity}
+                  onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
                   permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
@@ -2039,6 +2910,65 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
+              </div>
+              <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
+                <p className="chat-suggestions__label" data-testid="chat-panel-welcome-recommendation-label">
+                  {t('chat.topicStarter.recommendations')}
+                </p>
+                {topicStarterDismissNotice?.visitId === topicStarterVisitId && (
+                  <p
+                    key={topicStarterDismissNotice.id}
+                    className="chat-suggestions__notice text-sm text-text-muted"
+                    role="status"
+                    data-testid="chat-panel-topic-starter-dismiss-notice"
+                  >
+                    <span data-testid="chat-panel-topic-starter-dismiss-notice-text">{topicStarterDismissNotice.text}</span>
+                    {topicStarterDismissNotice.pausable && (
+                      <button
+                        type="button"
+                        className="ml-2 text-text-link underline"
+                        data-testid="chat-panel-topic-starter-dismiss-notice-pause"
+                        disabled={topicStarterNoticeActionPending}
+                        onClick={() => handleDismissNoticeAction(topicStarterDismissNotice, 'pause')}
+                      >
+                        {t('chat.topicStarter.pauseInterest')}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="ml-2 text-text-link underline"
+                      data-testid="chat-panel-topic-starter-dismiss-notice-undo"
+                      disabled={topicStarterNoticeActionPending}
+                      onClick={() => handleDismissNoticeAction(topicStarterDismissNotice, 'undo')}
+                    >
+                      {t('chat.topicStarter.undoDismissal')}
+                    </button>
+                  </p>
+                )}
+                {topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? <div className="text-sm text-text-muted" role="status" data-testid="chat-panel-recommendation-preparation-state">
+                  {t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate)))}
+                  {topicStarterShowsProviderRefusal(recommendationState) ? ` ${t('chat.topicStarter.providerRefusal')}` : null}
+                  {topicStarterShowsSettingsAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-settings" onClick={() => onOpenRecommendationSettings?.()} className="ml-2 text-text-link underline">{t('chat.topicStarter.openSettings')}</button> : null}
+                  {topicStarterShowsRetryAction(recommendationState) ? <button type="button" data-testid="chat-panel-topic-retry" onClick={() => { manualRecommendationRetry.current = true; if (visibleTopicSlateRef.current) keepSlateOnRefreshRef.current = true; setRecommendationRefresh(value => value + 1); }} className="ml-2 text-text-link underline">{t('chat.topicStarter.retryPreparation')}</button> : null}
+                </div> : null}
+                {topicStarterErrorKey && (
+                  <p role="alert" data-testid="chat-panel-welcome-topic-starter-error">
+                    {t(topicStarterErrorKey)}
+                  </p>
+                )}
+                {(visibleTopicSlate?.topics ?? []).map(topic => {
+                  const dismissInteractionKey = visibleTopicSlate ? `${topicStarterVisitId}\u0000${visibleTopicSlate.slateId}\u0000${topic.id}` : null;
+                  return (
+                    <SuggestionCard
+                      key={topic.id}
+                      topic={topic}
+                      onClick={() => handleSuggestion(topic)}
+                      onNotInterested={() => handleNotInterested(topic)}
+                      dislikeLabel={t('chat.topicStarter.notInterested')}
+                      disabled={topicStarterSuggestionsDisabled || Boolean(dismissInteractionKey && topicStarterDismissPending.has(dismissInteractionKey))}
+                    />
+                  );
+                })}
               </div>
               {isGroupCreateWelcome && (
                 <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
@@ -2064,11 +2994,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                   </span>
                 </div>
               )}
-              <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
-                {suggestions.map((text) => (
-                  <SuggestionCard key={text} text={text} onClick={() => handleSuggestion(text)} />
-                ))}
-              </div>
             </div>
           )}
           <div />
@@ -2094,7 +3019,9 @@ export const ChatPanel = React.memo(function ChatPanel({
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
             onForkSession={onForkSession}
-            onInputIntent={onInputIntent}
+            onInputIntent={handleInputIntent}
+            onEmptyComposerTab={handleEmptyComposerTab}
+            suggestionPlaceholder={nextInputSuggestionPlaceholder}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}
             onDiscardMedia={onDiscardMedia}
@@ -2105,7 +3032,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
-            onAgentGroupIdentityChange={setTeamGroupIdentity}
+            onAgentGroupIdentityChange={handleTeamGroupIdentityChange}
             permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}

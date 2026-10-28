@@ -31,6 +31,7 @@ class SessionKVCFacts:
     running_tasks: int = 0
     has_completed_inference: bool = False
     has_history: bool = False
+    has_requested_prefetch: bool = False
     last_prepare_intent_id: str | None = None
     deleted: bool = False
 
@@ -181,7 +182,13 @@ class SessionKVCacheTaskGuard:
             return None
         if facts.running_tasks > 0 or facts.foreground_view_ids:
             return None
-        if not facts.has_completed_inference:
+        # A historical Session can be prefetched from typing intent without
+        # running a new inference in this AgentServer process.  Once such a
+        # request has been issued, losing the final foreground view must still
+        # produce the matching best-effort offload.  Merely viewing history is
+        # intentionally insufficient, so navigation alone remains side-effect
+        # free.
+        if not (facts.has_completed_inference or facts.has_requested_prefetch):
             return None
         return self._request(facts, "offload")
 
@@ -190,6 +197,8 @@ class SessionKVCacheTaskGuard:
         facts: SessionKVCFacts,
         action: KVCGuardAction,
     ) -> KVCGuardActionRequest:
+        if action == "prefetch":
+            facts.has_requested_prefetch = True
         return KVCGuardActionRequest(
             action=action,
             session_id=facts.session_id,

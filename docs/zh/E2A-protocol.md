@@ -24,6 +24,12 @@
 - **`channel_context`**：可选；仅过渡或无法落入规范化字段的残余键；`from_dict` 可将旧 `metadata` 迁入以兼容历史。
 - E2A **不规定**传输层（WebSocket、HTTP 等）。
 
+`config.moa_status` 始终经 E2A 在目标 AgentServer 执行，包括单用户 WebSocket
+部署和 AgentOS 路由。Gateway 转发 `params.model_selection` 和已认证用户身份，
+不读取本地 MoA 配置。成功响应包含 `configured`，配置就绪时还包含
+`aggregator_model_name` 和 `aggregator_alias`，不包含凭据。AgentServer 客户端
+缺失或尚未就绪时，Gateway 返回 `SERVICE_UNAVAILABLE`，不在自身目录中回退执行配置检查。
+
 ---
 
 ## 2. 易混点：`method` 的两种含义（必读）

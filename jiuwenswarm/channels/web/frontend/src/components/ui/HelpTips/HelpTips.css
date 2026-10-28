@@ -11,7 +11,6 @@
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-full);
   background: var(--color-surface-card);
-  cursor: help;
 }
 .ui-help-tips:focus-visible {
   outline: none;

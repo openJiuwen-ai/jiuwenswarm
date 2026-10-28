@@ -483,6 +483,9 @@ class _CliClient:
     def policy_get(self, sandbox_id: str) -> dict[str, Any]:
         return dict(self._get(f"{_API_PREFIX}/policies/{sandbox_id}").json())
 
+    def policy_get_default(self) -> dict[str, Any]:
+        return dict(self._get(f"{_API_PREFIX}/policies").json())
+
     def policy_update(
         self,
         sandbox_id: str,
@@ -500,10 +503,17 @@ class _CliClient:
         *,
         policy: Any,
         policy_mode: str | None = None,
+        update_default_policy: bool = False,
+        update_existing_sandboxes: bool = True,
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"policy": policy}
+        body: dict[str, Any] = {
+            "policy": policy,
+            "update_existing_sandboxes": update_existing_sandboxes,
+        }
         if policy_mode is not None:
             body["policy_mode"] = policy_mode
+        if update_default_policy:
+            body["update_default_policy"] = True
         return dict(self._put(f"{_API_PREFIX}/policies", json=body).json())
 
     # ── /api/v1/proxies/* ──
@@ -926,6 +936,10 @@ def cmd_policy_get(args: argparse.Namespace, client: _CliClient) -> Any:
     return client.policy_get(args.sandbox_id)
 
 
+def cmd_policy_get_default(args: argparse.Namespace, client: _CliClient) -> Any:
+    return client.policy_get_default()
+
+
 def _resolve_policy_arg(args: argparse.Namespace) -> Any:
     if args.policy_file and args.policy:
         raise _CliError("pass only one of --policy / --policy-file")
@@ -951,6 +965,8 @@ def cmd_policy_update_all(args: argparse.Namespace, client: _CliClient) -> Any:
     return client.policy_update_all(
         policy=_resolve_policy_arg(args),
         policy_mode=args.policy_mode,
+        update_default_policy=args.update_default_policy,
+        update_existing_sandboxes=args.update_existing_sandboxes,
     )
 
 
@@ -1293,10 +1309,21 @@ def build_parser() -> argparse.ArgumentParser:
     _add_sandbox_id(p)
     p.set_defaults(_handler=cmd_policy_get)
 
+    p = policy_subs.add_parser(
+        "get-default",
+        help="get the default policy inherited by new sandboxes",
+    )
+    p.set_defaults(_handler=cmd_policy_get_default)
+
     def _add_policy_update_args(parser: argparse.ArgumentParser) -> None:
         parser.add_argument(
             "--policy",
-            help="policy JSON fragment (e.g. '{\"network\":{\"egress\":{\"default\":\"allow\"}}}')",
+            help=(
+                "policy JSON fragment for process sandboxes "
+                "('{\"network\":{\"egress\":{\"default\":\"allow\"}}}') "
+                "or Conch sandboxes "
+                "('{\"conch\":{\"network\":{\"egress\":{\"blocked_ips\":[\"192.0.2.10\"]}}}}')"
+            ),
         )
         parser.add_argument(
             "--policy-file",
@@ -1311,7 +1338,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = policy_subs.add_parser(
         "update",
-        help="update network ingress/egress for one sandbox",
+        help=(
+            "update network ingress/egress for one sandbox "
+            "(process: policy.network; conch: policy.conch.network)"
+        ),
     )
     _add_sandbox_id(p)
     _add_policy_update_args(p)
@@ -1319,9 +1349,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = policy_subs.add_parser(
         "update-all",
-        help="update network ingress/egress for all sandboxes",
+        help=(
+            "update default and/or all sandboxes "
+            "(full sandbox policy for default; network for existing sandboxes)"
+        ),
     )
     _add_policy_update_args(p)
+    p.add_argument(
+        "--update-default-policy",
+        action="store_true",
+        help=(
+            "rebase the server default policy and overwrite "
+            "update_policy.yaml with the merged result"
+        ),
+    )
+    p.add_argument(
+        "--update-existing-sandboxes",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "hot-update network rules on existing sandboxes "
+            "(default: true; use --no-update-existing-sandboxes to skip)"
+        ),
+    )
     p.set_defaults(_handler=cmd_policy_update_all)
 
     # ── proxy group ──

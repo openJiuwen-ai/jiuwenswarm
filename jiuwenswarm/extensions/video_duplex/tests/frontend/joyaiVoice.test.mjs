@@ -85,6 +85,11 @@ class FakeAudioContext {
     };
   }
 
+  createGain() {
+    this.outputGain = { gain: { value: 1 }, connect() {} };
+    return this.outputGain;
+  }
+
   createBufferSource() {
     const source = new FakeAudioBufferSource();
     this.sources.push(source);
@@ -247,4 +252,27 @@ test('interruptPlayback stops and resolves an active PCM stream', async () => {
 
   assert.equal(source.stopped, true);
   assert.deepEqual(states, ['speaking', 'listening']);
+});
+
+
+test('speaker mute applies to both encoded and PCM playback and restores volume', async () => {
+  const session = createSession([]);
+  session.setSpeakerMuted(true);
+  const encoded = session.speak('data:audio/wav;base64,AA==');
+  await Promise.resolve();
+  const audio = FakeAudio.instances.at(-1);
+  assert.equal(audio.muted, true);
+  session.setSpeakerMuted(false);
+  assert.equal(audio.muted, false);
+  audio.onended();
+  await encoded;
+  session.setSpeakerMuted(true);
+  const pcm = session.beginPcmStream('muted-pcm');
+  session.appendPcm16Chunk('muted-pcm', pcmBase64(6_000), 24_000);
+  const context = FakeAudioContext.instances.at(-1);
+  assert.equal(context.outputGain.gain.value, 0);
+  session.setSpeakerMuted(false);
+  assert.equal(context.outputGain.gain.value, 1);
+  session.interruptPlayback();
+  await pcm;
 });

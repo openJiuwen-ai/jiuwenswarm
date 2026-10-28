@@ -11,6 +11,10 @@ import {
   vendorSelectionKey,
   type ModelProtocol,
 } from './modelAdapters';
+import { getVendorLabel } from './modelVendorLabels';
+
+export type { ModelTranslate } from './modelTranslation';
+export { getPresetLabel, getVendorLabel } from './modelVendorLabels';
 
 type ProviderOption =
   | { kind: 'preset'; value: string; plan: ModelPlan; preset: VendorPreset }
@@ -29,34 +33,11 @@ function getPresetApiAddress(preset: VendorPreset, protocol: ModelProtocol): str
   return protocol === 'anthropic' ? (preset.anthropic_base ?? '') : preset.api_base;
 }
 
-const GROUPS: Array<ModelPlan | 'other'> = ['token_plan', 'coding_plan', 'custom_api', 'other'];
-const VENDOR_TRANSLATION_KEYS: Record<string, string> = {
-  alibaba: 'alibaba',
-  baidu: 'baidu',
-  deepseek: 'deepseek',
-  kimi: 'kimi',
-  maas: 'maas',
-  minimax: 'minimax',
-  mimo: 'mimo',
-  openrouter: 'openrouter',
-  volcengine: 'volcengine',
-  zhipu: 'zhipu',
-};
-
-export function getVendorLabel(vendorKey: string, t: ReturnType<typeof useTranslation>['t']): string {
-  const translationKey = VENDOR_TRANSLATION_KEYS[vendorKey];
-  return translationKey
-    ? t(`settingsPanel.models.vendors.${translationKey}`)
-    : t('settingsPanel.models.vendors.unrecognized', { vendor: vendorKey });
-}
+const DEFAULT_GROUPS: Array<ModelPlan | 'other'> = ['token_plan', 'coding_plan', 'custom_api', 'other'];
 
 function useVendorLabel() {
   const { t } = useTranslation();
   return useCallback((vendorKey: string) => getVendorLabel(vendorKey, t), [t]);
-}
-
-export function getPresetLabel(preset: VendorPreset, t: ReturnType<typeof useTranslation>['t']): string {
-  return getVendorLabel(preset.vendor_key, t);
 }
 
 export function ModelProviderSelect({
@@ -65,6 +46,7 @@ export function ModelProviderSelect({
   protocol,
   catalog,
   includeOpenAIAccount = true,
+  groups = DEFAULT_GROUPS,
   disabled,
   invalid,
   onChange,
@@ -75,6 +57,9 @@ export function ModelProviderSelect({
   protocol: ModelProtocol;
   catalog: VendorPresetMap;
   includeOpenAIAccount?: boolean;
+  /** 哪些厂商分组要出现在下拉里，以及顺序——默认全部分组;传入子集可以在某些
+   *  场景（比如视频/图像生成配置）只保留"API"和"其他"，隐藏套餐类分组。 */
+  groups?: Array<ModelPlan | 'other'>;
   disabled: boolean;
   invalid: boolean;
   onChange: (value: string) => void;
@@ -94,7 +79,7 @@ export function ModelProviderSelect({
   const [position, setPosition] = useState<ProviderMenuPosition | null>(null);
 
   const allOptions = useMemo<ProviderOption[]>(() => {
-    const presets = GROUPS.flatMap((group) =>
+    const presets = groups.flatMap((group) =>
       group === 'other'
         ? []
         : catalog[group]
@@ -113,7 +98,7 @@ export function ModelProviderSelect({
         : []),
       { kind: 'custom', value: CUSTOM_VENDOR_SELECTION, plan: 'other' },
     ];
-  }, [catalog, includeOpenAIAccount, protocol]);
+  }, [catalog, groups, includeOpenAIAccount, protocol]);
 
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const options = useMemo(
@@ -295,7 +280,7 @@ export function ModelProviderSelect({
               {options.length === 0 ? (
                 <p className="settings-model-provider-select__empty" data-testid="settings-model-provider-select-empty">{t('settingsPanel.models.noVendorResults')}</p>
               ) : (
-                GROUPS.map((group) => {
+                groups.map((group) => {
                   const groupOptions = options.filter((option) => option.plan === group);
                   if (groupOptions.length === 0) return null;
                   return (

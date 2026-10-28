@@ -72,3 +72,9 @@
   background: transparent;
   color: var(--color-chat-accent);
 }
+/* showSelectedCheck：行尾对勾（currentColor 随选项文字色），尺寸同旧版 chat-mode-select__check */
+.ui-select__option-check {
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+}

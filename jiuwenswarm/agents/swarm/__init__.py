@@ -1,28 +1,19 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Swarm assembly. Providers register at enrichment, before use."""
+from importlib import import_module
 
-"""Swarm provider-based team assembly package.
+_EXPORTS = {
+    "enrich_team_spec_for_swarm": ".assembly",
+    "preflight_team_mcps": ".assembly",
+    "SwarmBuildContext": ".context",
+    "register_swarm_providers": ".registry",
+}
+__all__ = list(_EXPORTS)
 
-Importing this package registers all swarm capability providers and rail types
-(idempotent) so a ``TeamAgentSpec`` can be enriched and built without inheriting
-from a pre-built single agent. The public surface is the enrichment entry point
-``enrich_team_spec_for_swarm`` plus the runtime build context
-``SwarmBuildContext``.
-"""
 
-from __future__ import annotations
-
-from jiuwenswarm.agents.swarm.assembly import (
-    enrich_team_spec_for_swarm,
-    preflight_team_mcps,
-)
-from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from jiuwenswarm.agents.swarm.registry import register_swarm_providers
-
-register_swarm_providers()
-
-__all__ = [
-    "enrich_team_spec_for_swarm",
-    "preflight_team_mcps",
-    "SwarmBuildContext",
-    "register_swarm_providers",
-]
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(name)
+    value = getattr(import_module(_EXPORTS[name], __name__), name)
+    globals()[name] = value
+    return value

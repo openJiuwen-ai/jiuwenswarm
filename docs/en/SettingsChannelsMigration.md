@@ -189,6 +189,8 @@ The previous SwarmFlow option corresponds to **SwarmFlow** in the current **Team
 
 Third-party agents are available only in **Team mode**. The two proactive recommendation limits are in the **Recommendation limits → Modify** dialog. Enable proactive recommendations before editing them. Both accept integers from 1 to 50.
 
+When enabling Claude or Codex without a previous executable choice, the app prefers a usable CLI from PATH and falls back to the built-in CLI. Installing or repairing SDK dependencies preserves the selected executable. The executable dropdown keeps the PATH candidate available after switching paths or reopening Settings.
+
 The current Experimental page also provides **RSI · Recursive self-improvement** and **Trajectory UI**. These are outside the previous-version configuration mappings listed in this guide.
 
 ![New Experimental settings](../assets/images/settings-channels-migration/en/experimental-settings.png)

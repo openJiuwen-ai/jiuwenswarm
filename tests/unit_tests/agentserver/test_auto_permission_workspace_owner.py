@@ -44,7 +44,7 @@ class _CapturingManager(AgentManager):
     async def get_agent(self, **kwargs):
         self.project_dirs.append(kwargs.get("project_dir"))
         self.selected_modes.append(kwargs.get("mode"))
-        self.agents.setdefault("web", {})["agent::captured"] = self.agent
+        self.agents.setdefault("web", {})[f"{kwargs.get('mode', 'agent')}::captured"] = self.agent
         return self.agent
 
     def _get_agent_create_lock(self, channel_key: str, cache_key: str):
@@ -118,7 +118,7 @@ class _SessionOwner:
 
 
 @pytest.fixture
-def auto_config(monkeypatch, internal_auto_mode):
+def auto_config(monkeypatch):
     monkeypatch.setattr(
         agent_manager_module,
         "get_config",
@@ -131,8 +131,8 @@ def auto_config(monkeypatch, internal_auto_mode):
     [
         ({"mode": "agent", "work_mode": "work"}, True),
         ({"mode": "agent.plan", "work_mode": "work"}, True),
-        ({"mode": "agent", "work_mode": "code"}, False),
-        ({"mode": "code.normal"}, False),
+        ({"mode": "agent", "work_mode": "code"}, True),
+        ({"mode": "code.normal"}, True),
         ({"mode": "team"}, False),
         ({"mode": "auto_harness"}, False),
     ],
@@ -544,7 +544,7 @@ def test_session_owner_accepts_equivalent_or_omitted_root(tmp_path) -> None:
     )
 
 
-@pytest.mark.parametrize("mode", ["team", "code.normal", "auto_harness"])
+@pytest.mark.parametrize("mode", ["team", "auto_harness"])
 def test_session_owner_ignores_workspace_changes_for_excluded_mode(
     tmp_path,
     mode: str,
@@ -580,3 +580,48 @@ def test_session_owner_rejects_workspace_change_before_runtime(
         adapter.validate_auto_permission_workspace_request(
             _request(tmp_path, **absolute)
         )
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("mode", ["agent", "code"])
+async def test_smart_profiles_choose_their_own_cached_owner(auto_config, tmp_path, reverse, mode):
+    manager = _CapturingManager()
+    work, code, team = _SessionOwner(auto=True), _SessionOwner(auto=True), _SessionOwner(auto=True)
+    items = [("code:team:original", team), ("agent::original", work), ("code:normal:original", code)]
+    manager.agents["web"] = dict(reversed(items) if reverse else items)
+    selected = await manager.get_agent_for_request(_request(tmp_path, mode=mode))
+    assert selected is (code if mode == "code" else work)
+    assert manager.project_dirs == []
+
+
+@pytest.mark.parametrize("params", [
+    {"mode": "agent.code.normal"}, {"mode": "agent.code.plan"}, {"mode": "agent.code"},
+    {"mode": "code.plan"}, {"mode": "agent", "work_mode": "code"},
+])
+async def test_code_aliases_reuse_code_owner(auto_config, tmp_path, params):
+    manager = _CapturingManager()
+    owner = _SessionOwner(auto=True)
+    manager.agents["web"] = {"code:normal:original": owner}
+    assert await manager.get_agent_for_request(_request(tmp_path, **params)) is owner
+
+
+@pytest.mark.parametrize("available", ["agent::original", "code:team:original", "auto_harness::original"])
+async def test_code_answer_never_falls_back_to_other_profile(auto_config, tmp_path, available):
+    manager = _CapturingManager()
+    manager.agents["web"] = {available: _SessionOwner(auto=True)}
+    admitted = []
+    request = _request(tmp_path, mode="code", project_dir=str(tmp_path), source="permission_interrupt",
+                       request_id="code-only-request", answers=[{"value": "allow_once"}])
+    with pytest.raises(RootPermissionQueueError, match="permission_resume_owner_missing"):
+        await manager.get_agent_for_request(request, admit_request=lambda: admitted.append(True))
+    assert manager.project_dirs == [] and admitted == []
+
+
+async def test_pending_code_manual_answer_reuses_original_code_owner(auto_config, tmp_path):
+    manager = _CapturingManager()
+    work, code = _SessionOwner(auto=True), _SessionOwner(auto=False)
+    manager.agents["web"] = {"agent::original": work, "code:normal:original": code}
+    request = _request(tmp_path, mode="code", project_dir=str(tmp_path), source="permission_interrupt",
+                       request_id="manual-code-request", answers=[{"value": "allow_once"}])
+    assert await manager.get_agent_for_request(request) is code
+    assert manager.project_dirs == []

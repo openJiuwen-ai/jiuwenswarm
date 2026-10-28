@@ -98,6 +98,32 @@ def main():
     if mode == "stderr":
         for _ in range(256):
             os.write(2, b"diagnostics" * 1024)
+    if mode == "permission_without_handler":
+        emit("event", event_type="interaction.requested", payload={
+            "interaction_id": "permission-card",
+            "interaction": {
+                "source": "permission_interrupt",
+                "questions": [{"options": [{"value": "allow"}, {"value": "reject"}]}],
+            },
+        })
+        control = json.loads(sys.stdin.buffer.readline())
+        if control["type"] != "answer" or control["answers"][0]["selected_options"] != ["reject"]:
+            raise ValueError("permission was not rejected")
+        mark()
+        finish()
+        return 0
+    if mode == "host_tool":
+        emit("event", event_type="host_tool.requested", payload={
+            "call_id": "tool-call-1", "name": "lookup", "arguments": {"key": "hello"},
+        })
+        control = json.loads(sys.stdin.buffer.readline())
+        if control["type"] != "tool_result" or control["call_id"] != "tool-call-1":
+            raise ValueError("host tool result was not correlated")
+        if control.get("result") != {"value": "world"}:
+            raise ValueError("host tool result was wrong")
+        mark()
+        finish()
+        return 0
     if mode in ("ask", "two_questions", "wait", "callback_wait"):
         count = 2 if mode == "two_questions" else 1
         for index in range(count):

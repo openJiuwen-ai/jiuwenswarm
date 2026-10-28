@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import functools
+import http.client
 import io
 import json
 import logging
 import shutil
+import socket
 import struct
 import sys
 import threading
@@ -14,6 +17,7 @@ import types
 import zipfile
 import zlib
 from dataclasses import dataclass
+from http.server import ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -33,13 +37,16 @@ def _png_chunk(chunk_type: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + chunk_type + data + struct.pack(">I", zlib.crc32(chunk_type + data))
 
 
-def _test_png(*, height: int = 1) -> bytes:
+def _test_png(*, height: int = 1, text_padding: int = 0) -> bytes:
     ihdr = struct.pack(">IIBBBBB", 2250, height, 8, 6, 0, 0, 0)
     pixels = b"\x00" + b"\x00\x00\x00\xff" * 2250
+    idat = zlib.compress(pixels)
+    padding = _png_chunk(b"tEXt", b"Padding\0" + b"x" * text_padding) if text_padding else b""
     return (
         b"\x89PNG\r\n\x1a\n"
         + _png_chunk(b"IHDR", ihdr)
-        + _png_chunk(b"IDAT", zlib.compress(pixels))
+        + padding
+        + _png_chunk(b"IDAT", idat)
         + _png_chunk(b"IEND", b"")
     )
 
@@ -164,6 +171,9 @@ def test_share_image_export_job_freezes_snapshot_and_publishes_result() -> None:
         "state": "completed",
         "phase": "completed",
         "error": None,
+        "renderer": "server",
+        "progress": None,
+        "locale": "en",
     }
     snapshot_path = manager.get_snapshot_path(created["job_id"])
     assert snapshot_path is not None
@@ -644,19 +654,14 @@ def test_render_page_error_during_init_fails_fast_and_stays_single_line(
 
 def test_render_runner_error_status_fails_immediately(monkeypatch, tmp_path: Path) -> None:
     page = _FakePage(states=[
-        {"status": "rendering", "heartbeat": 0},
+        {"status": "rendering"},
         {"status": "error", "error": "share_export_snapshot_http_404"},
     ])
     harness = _make_render_harness(monkeypatch, page, tmp_path)
 
     started = time.monotonic()
     with pytest.raises(RuntimeError, match="share_export_snapshot_http_404") as exc_info:
-        _call_render(
-            harness,
-            idle_timeout_seconds=30,
-            absolute_timeout_seconds=30,
-            poll_interval_seconds=0.05,
-        )
+        _call_render(harness, poll_interval_seconds=0.05)
     elapsed = time.monotonic() - started
 
     assert elapsed < 5
@@ -664,43 +669,23 @@ def test_render_runner_error_status_fails_immediately(monkeypatch, tmp_path: Pat
     assert "desktop-secret" not in str(exc_info.value)
 
 
-def test_render_idle_timeout_when_heartbeat_stops(monkeypatch, tmp_path: Path) -> None:
-    page = _FakePage(states=[{"status": "rendering", "heartbeat": 0}])
+def test_render_defaults_allow_long_generation_without_heartbeat(monkeypatch, tmp_path: Path) -> None:
+    clock = {"value": 0.0}
+    page = _FakePage(states=[
+        {"status": "rendering"},
+        {"status": "rendering"},
+        {"status": "ready", "filename": "share.zip"},
+    ], download_writer=_write_test_zip)
     harness = _make_render_harness(monkeypatch, page, tmp_path)
+    monkeypatch.setattr(share_image_export.time, "monotonic", lambda: clock["value"])
+    monkeypatch.setattr(page, "wait_for_timeout", lambda _ms: clock.update(value=clock["value"] + 86_400))
 
-    started = time.monotonic()
-    with pytest.raises(RuntimeError, match="share_export_render_stalled"):
-        _call_render(
-            harness,
-            idle_timeout_seconds=0.3,
-            absolute_timeout_seconds=30,
-            poll_interval_seconds=0.05,
-        )
-    assert time.monotonic() - started < 10
+    result = _call_render(harness)
 
-
-def test_render_absolute_timeout_bounds_live_heartbeat(monkeypatch, tmp_path: Path) -> None:
-    counter = {"value": 0}
-
-    def state_fn(_index: int) -> dict:
-        counter["value"] += 1
-        return {"status": "rendering", "heartbeat": counter["value"]}
-
-    page = _FakePage(state_fn=state_fn)
-    harness = _make_render_harness(monkeypatch, page, tmp_path)
-
-    started = time.monotonic()
-    with pytest.raises(RuntimeError, match="share_export_render_timeout") as exc_info:
-        _call_render(
-            harness,
-            idle_timeout_seconds=30,
-            absolute_timeout_seconds=0.5,
-            poll_interval_seconds=0.05,
-        )
-    elapsed = time.monotonic() - started
-
-    assert elapsed < 10
-    assert "share_export_render_stalled" not in str(exc_info.value)
+    assert clock["value"] == 2 * 86_400
+    assert result.is_file()
+    assert harness.context.closed
+    assert harness.browser.closed
 
 
 def test_share_image_render_auth_hides_cookie_value_in_repr() -> None:
@@ -773,7 +758,7 @@ class _FakeShareManager:
     def __init__(self) -> None:
         self.create_job_kwargs: dict | None = None
 
-    def get_active_status(self, session_id: str) -> None:
+    def get_active_status(self, session_id: str, *, include_client_token: bool = False) -> None:
         return None
 
     def create_job(self, **kwargs) -> dict:
@@ -860,3 +845,1073 @@ def test_share_api_post_web_mode_hands_no_render_auth(monkeypatch) -> None:
     status, payload = handler.responses[0]
     assert status == 202
     assert payload["state"] == "queued"
+
+
+@pytest.mark.parametrize("available", [None, {"headless": True, "executable_path": "/installed/chromium"}])
+def test_web_export_selects_renderer_before_starting_job(monkeypatch, available) -> None:
+    manager = _FakeShareManager()
+    _patch_share_dependencies(monkeypatch, manager)
+    monkeypatch.setattr(share_image_export, "available_share_browser", lambda: available)
+    handler = _SharePostHandlerStub(
+        body={"session_id": "remote-session", "allow_browser_render": True},
+        desktop_token="", cookie_name="", manager=manager,
+    )
+    handler._handle_share_api_post(urlparse("/share-api/jobs"))
+    assert manager.create_job_kwargs["renderer"] == ("server" if available else "browser")
+    assert manager.create_job_kwargs["browser_options"] == available
+
+
+def _browser_job():
+    def unexpected_renderer(**kwargs):
+        raise AssertionError("A browser-mode job must not launch a server browser")
+    manager = ShareImageExportManager(renderer=unexpected_renderer)
+    snapshot = {"session_id": "remote", "records": [{"content": "captured"}]}
+    created = manager.create_job(
+        session_id="remote", snapshot=snapshot, filename="share.png", locale="zh",
+        base_url="http://localhost", renderer="browser",
+    )
+    snapshot["records"].append({"content": "later"})
+    return manager, created
+
+
+def _claim_browser_download(manager, created) -> str:
+    claim = manager.update_browser_job(created['job_id'], {
+        'client_token': created['client_token'], 'claim_download': True,
+    })
+    assert claim['download_claimed'] is True
+    attempt_id = claim['download_attempt_id']
+    assert len(attempt_id) == 32 and all(char in '0123456789abcdef' for char in attempt_id)
+    return attempt_id
+
+
+def test_browser_export_owns_fixed_snapshot_and_authenticated_progress() -> None:
+    manager, created = _browser_job()
+    job_id, token = created["job_id"], created["client_token"]
+    try:
+        assert created["state"] == "queued"
+        assert created["renderer"] == "browser"
+        assert "client_token" not in manager.get_status(job_id)
+        saved = json.loads(manager.get_snapshot_path(job_id).read_text())
+        assert saved["snapshot"]["records"] == [{"content": "captured"}]
+        status = manager.update_browser_job(job_id, {
+            "client_token": token, "state": "running", "phase": "rendering", "progress": 40,
+        })
+        assert status["progress"] == 40
+        png = _test_png()
+        status = manager.store_browser_result(job_id, token, "share.png", io.BytesIO(png), len(png))
+        assert status["state"] == "completed"
+        assert manager.get_active_status("remote") is None
+        assert manager.get_result(job_id)[0].read_bytes() == png
+        late = manager.update_browser_job(job_id, {
+            "client_token": token, "state": "failed", "phase": "failed",
+        })
+        assert late["state"] == "completed"
+        assert manager.mark_browser_download_started(job_id, _claim_browser_download(manager, created)) is True
+        assert manager.get_status(job_id)["phase"] == "download_started"
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+@pytest.mark.parametrize("token", ["wrong", "中文", None])
+def test_browser_export_rejects_unauthenticated_updates(token) -> None:
+    manager, created = _browser_job()
+    try:
+        with pytest.raises(PermissionError):
+            manager.update_browser_job(created["job_id"], {
+                "client_token": token, "state": "completed", "phase": "completed",
+            })
+        assert manager.get_status(created["job_id"])["state"] == "queued"
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(created["job_id"]).parent)
+
+
+@pytest.mark.parametrize("update", [
+    {"state": {}, "phase": "rendering"},
+    {"state": "running", "phase": []},
+    {"state": "completed", "phase": "rendering"},
+    {"state": "running", "phase": "rendering", "progress": True},
+    {"state": "running", "phase": "rendering", "progress": 101},
+])
+def test_browser_export_validates_transition_payload(update) -> None:
+    manager, created = _browser_job()
+    try:
+        with pytest.raises(ValueError):
+            manager.update_browser_job(created["job_id"], {**update, "client_token": created["client_token"]})
+        assert manager.get_status(created["job_id"])["state"] == "queued"
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(created["job_id"]).parent)
+
+
+def test_browser_export_abandoned_snapshot_expires(monkeypatch) -> None:
+    manager, created = _browser_job()
+    snapshot = manager.get_snapshot_path(created["job_id"])
+    monkeypatch.setattr(share_image_export.time, "time", lambda: 10**12)
+    assert manager.get_status(created["job_id"]) is None
+    assert not snapshot.parent.exists()
+
+
+def test_missing_explicit_browser_does_not_install_or_probe_other_browsers(monkeypatch) -> None:
+    monkeypatch.setattr(share_image_export, "get_config", lambda: {"browser": {"chrome_path": "/missing-export-browser"}})
+    assert share_image_export.available_share_browser() is None
+
+
+def test_available_configured_browser_is_reused(monkeypatch, tmp_path) -> None:
+    executable = tmp_path / "chromium"
+    executable.touch()
+    executable.chmod(0o755)
+    monkeypatch.setattr(share_image_export, "get_config", lambda: {"browser": {"chrome_path": str(executable)}})
+    assert share_image_export.available_share_browser() == {"headless": True, "executable_path": str(executable)}
+
+
+@pytest.mark.parametrize("data, size", [(b"not a png", 9), (_test_png(), 10**10), (_test_png(), len(_test_png()) + 1)])
+def test_browser_result_upload_rejects_invalid_or_incomplete_files(data, size) -> None:
+    manager, created = _browser_job()
+    try:
+        with pytest.raises((ValueError, RuntimeError)):
+            manager.store_browser_result(created["job_id"], created["client_token"], "share.png", io.BytesIO(data), size)
+        assert manager.get_result(created["job_id"]) is None
+        assert not list(manager.get_snapshot_path(created["job_id"]).parent.glob('*.partial'))
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(created["job_id"]).parent)
+
+
+def test_duplicate_browser_upload_cannot_overwrite_completed_result() -> None:
+    manager, created = _browser_job()
+    data = _test_png()
+    try:
+        manager.store_browser_result(created["job_id"], created["client_token"], "share.png", io.BytesIO(data), len(data))
+        with pytest.raises(ValueError, match="already_finished"):
+            manager.store_browser_result(created["job_id"], created["client_token"], "share.png", io.BytesIO(b"corrupt"), 7)
+        assert manager.get_status(created["job_id"])["state"] == "completed"
+        assert manager.get_result(created["job_id"])[0].read_bytes() == data
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(created["job_id"]).parent)
+
+
+def test_browser_renderer_claim_is_atomic_and_duplicate_cannot_fail_the_owner() -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    claim = {'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True}
+    try:
+        assert manager.update_browser_job(job_id, claim)['state'] == 'running'
+        with pytest.raises(ValueError, match='already_started'):
+            manager.update_browser_job(job_id, claim)
+        assert manager.get_status(job_id)['state'] == 'running'
+        assert 'client_token' not in manager.get_active_status('remote')
+        resumed = manager.get_active_status('remote', include_client_token=True)
+        assert resumed['client_token'] == token
+        assert resumed['job_id'] == job_id
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+@pytest.mark.parametrize('claim_first', [False, True])
+def test_closing_browser_page_cancels_its_own_claim_in_either_request_order(claim_first: bool) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    claim_id = 'b' * 32
+    claim = {
+        'client_token': token, 'state': 'running', 'phase': 'loading_snapshot',
+        'claim': True, 'claim_id': claim_id,
+    }
+    try:
+        if claim_first:
+            manager.update_browser_job(job_id, claim)
+        ended = manager.update_browser_job(job_id, {
+            'client_token': token, 'state': 'failed', 'phase': 'failed',
+            'error': 'share_export_tab_closed', 'expected_claim_id': claim_id,
+        })
+        assert ended['state'] == 'failed'
+        assert ended['error'] == 'share_export_tab_closed'
+        assert manager.get_active_status('remote') is None
+        with pytest.raises(ValueError, match='already_started'):
+            manager.update_browser_job(job_id, claim)
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+def test_rejected_browser_page_cannot_cancel_or_fail_the_claim_owner() -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    claim = {'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True}
+    try:
+        owner = manager.update_browser_job(job_id, {**claim, 'claim_id': 'b' * 32})
+        with pytest.raises(ValueError, match='already_started'):
+            manager.update_browser_job(job_id, {**claim, 'claim_id': 'c' * 32})
+        for error in ['share_export_tab_closed', 'share_export_status_timeout']:
+            ignored = manager.update_browser_job(job_id, {
+                'client_token': token, 'state': 'failed', 'phase': 'failed',
+                'error': error, 'expected_claim_id': 'c' * 32,
+            })
+            assert ignored == owner
+        assert manager.get_active_status('remote')['job_id'] == job_id
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+def test_closing_browser_page_cannot_fail_its_published_artifact() -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    claim_id = 'b' * 32
+    try:
+        manager.update_browser_job(job_id, {
+            'client_token': token, 'state': 'running', 'phase': 'loading_snapshot',
+            'claim': True, 'claim_id': claim_id,
+        })
+        png = _test_png()
+        published = manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(png), len(png))
+        ended = manager.update_browser_job(job_id, {
+            'client_token': token, 'state': 'failed', 'phase': 'failed',
+            'error': 'share_export_tab_closed', 'expected_claim_id': claim_id,
+        })
+        assert ended == published
+        assert manager.get_result(job_id)[0].read_bytes() == png
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+@pytest.mark.parametrize('key', ['claim_id', 'expected_claim_id'])
+@pytest.mark.parametrize('value', [None, '', 'x' * 32, 'a' * 31, ['a' * 32]])
+def test_browser_claim_identity_rejects_invalid_values(key: str, value: object) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    try:
+        with pytest.raises(ValueError, match='client_state_invalid'):
+            manager.update_browser_job(job_id, {
+                'client_token': created['client_token'], 'state': 'failed', 'phase': 'failed', key: value,
+            })
+        assert manager.get_status(job_id)['state'] == 'queued'
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+def test_closing_unstarted_browser_job_allows_fresh_snapshot_and_rejects_late_results() -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directories = [manager.get_snapshot_path(job_id).parent]
+    try:
+        ended = manager.update_browser_job(job_id, {
+            'client_token': token, 'state': 'failed', 'phase': 'failed',
+            'error': 'share_export_tab_closed', 'expected_state': 'queued',
+        })
+        assert ended['state'] == 'failed'
+        assert manager.get_active_status('remote') is None
+        snapshot = {'session_id': 'remote', 'records': [{'content': 'latest conversation'}]}
+        fresh = manager.create_job(
+            session_id='remote', snapshot=snapshot, filename='fresh.png', locale='zh',
+            base_url='http://localhost', renderer='browser',
+        )
+        directories.append(manager.get_snapshot_path(fresh['job_id']).parent)
+        assert fresh['job_id'] != job_id
+        assert json.loads(manager.get_snapshot_path(fresh['job_id']).read_text())['snapshot'] == snapshot
+        late = manager.update_browser_job(job_id, {
+            'client_token': token, 'state': 'running', 'phase': 'rendering', 'progress': 50,
+        })
+        assert late['state'] == 'failed'
+        with pytest.raises(ValueError, match='already_finished'):
+            png = _test_png()
+            manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(png), len(png))
+        assert manager.get_active_status('remote')['job_id'] == fresh['job_id']
+    finally:
+        for directory in directories:
+            shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize('state', ['running', 'completed'])
+def test_queued_tab_cancellation_cannot_cancel_a_claimed_or_published_job(state) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    try:
+        manager.update_browser_job(job_id, {
+            'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True,
+        })
+        if state == 'completed':
+            png = _test_png()
+            manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(png), len(png))
+        result = manager.update_browser_job(job_id, {
+            'client_token': token, 'state': 'failed', 'phase': 'failed',
+            'error': 'share_export_tab_closed', 'expected_state': 'queued',
+        })
+        assert result['state'] == state
+        assert result['error'] is None
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+def test_running_browser_job_survives_while_heartbeat_reports_continue(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    now = share_image_export.time.time()
+    manager.update_browser_job(job_id, {
+        'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True,
+    })
+    try:
+        # A single render tile may hold the same progress for over a day; the
+        # 30s heartbeat reports keep refreshing updated_at so the job survives.
+        for elapsed in (43_200, 86_400):
+            monkeypatch.setattr(share_image_export.time, 'time', lambda elapsed=elapsed: now + elapsed)
+            manager.update_browser_job(job_id, {'client_token': token, 'state': 'running', 'phase': 'rendering', 'progress': 50})
+            assert manager.get_status(job_id)['state'] == 'running'
+            assert manager.get_status(job_id)['error'] is None
+        assert manager.get_active_status('remote')['job_id'] == job_id
+    finally:
+        shutil.rmtree(manager.get_snapshot_path(job_id).parent)
+
+
+def test_running_browser_job_without_heartbeat_expires_and_unlocks_session(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directory = manager.get_snapshot_path(job_id).parent
+    now = share_image_export.time.time()
+    manager.update_browser_job(job_id, {
+        'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True,
+    })
+    try:
+        # A renderer that crashed without a closing beacon stops reporting;
+        # after the TTL the stalled job is dropped and a new export can start.
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 3_601)
+        assert manager.get_status(job_id) is None
+        assert not directory.exists()
+        assert manager.get_active_status('remote') is None
+        restarted = manager.create_job(
+            session_id='remote', snapshot={'session_id': 'remote', 'records': []},
+            filename='share.png', locale='zh', base_url='http://localhost', renderer='browser',
+        )
+        assert restarted['reused'] is False
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.fixture
+def browser_upload_http(monkeypatch, tmp_path):
+    manager, created = _browser_job()
+    directory = manager.get_snapshot_path(created['job_id']).parent
+    _patch_share_dependencies(monkeypatch, manager)
+    finished = threading.Event()
+    request_threads = []
+
+    class UploadHandler(app_web._SpaStaticHandler):
+        _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 0.3
+
+        def log_message(self, format, *args):
+            pass
+
+        def finish(self):
+            try:
+                super().finish()
+            finally:
+                request_threads.append(threading.current_thread())
+                finished.set()
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), functools.partial(UploadHandler, directory=str(tmp_path)))
+    server_thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.01})
+    server_thread.start()
+    try:
+        yield SimpleNamespace(
+            manager=manager, created=created, directory=directory, address=server.server_address,
+            finished=finished, threads=request_threads,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        server_thread.join(timeout=3)
+        for job in list(manager._jobs.values()):
+            shutil.rmtree(job.directory, ignore_errors=True)
+
+
+def _start_http_upload(harness, size: int) -> socket.socket:
+    connection = socket.create_connection(harness.address, timeout=3)
+    created = harness.created
+    headers = (
+        f"POST /share-api/jobs/{created['job_id']}/browser-result?filename=share.png HTTP/1.1\r\n"
+        f"Host: localhost\r\nContent-Length: {size}\r\n"
+        f"X-Share-Export-Token: {created['client_token']}\r\nConnection: close\r\n\r\n"
+    )
+    connection.sendall(headers.encode('ascii'))
+    return connection
+
+
+def _read_http_upload(connection: socket.socket) -> tuple[int, dict]:
+    response = http.client.HTTPResponse(connection)
+    try:
+        response.begin()
+        return response.status, json.loads(response.read())
+    finally:
+        response.close()
+
+
+def _wait_until(predicate: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 3
+    while not predicate():
+        assert time.monotonic() < deadline, 'condition did not become true'
+        time.sleep(0.005)
+
+
+def test_browser_upload_reads_and_renews_each_network_chunk(browser_upload_http, monkeypatch) -> None:
+    harness = browser_upload_http
+    manager, job_id = harness.manager, harness.created['job_id']
+    data = _test_png(text_padding=2 * 1024 * 1024)
+    clock = {'now': share_image_export.time.time()}
+    monkeypatch.setattr(share_image_export.time, 'time', lambda: clock['now'])
+    with _start_http_upload(harness, len(data)) as connection:
+        _wait_until(lambda: manager._get_job(job_id).upload_in_progress)
+        for offset in range(0, len(data), 65536):
+            clock['now'] += 1800
+            chunk = data[offset:offset + 65536]
+            connection.sendall(chunk)
+            if offset + len(chunk) < len(data):
+                # Observe receipt, not file size: output buffering may defer
+                # disk writes after read1 has already returned a small packet.
+                _wait_until(lambda: manager._get_job(job_id).updated_at == clock['now'])
+                assert manager._get_job(job_id).upload_in_progress
+                assert manager.get_status(job_id) is not None
+                time.sleep(0.03)
+        status, result = _read_http_upload(connection)
+        assert status == 200
+        assert result['state'] == 'completed'
+    assert manager.get_result(job_id)[0].read_bytes() == data
+    assert not manager._get_job(job_id).upload_in_progress
+    assert not list(harness.directory.glob('*.partial'))
+
+
+@pytest.mark.parametrize('initial_bytes', [b'', b'partial upload'])
+def test_idle_http_upload_exits_and_releases_files_without_peer_close(browser_upload_http, initial_bytes) -> None:
+    harness = browser_upload_http
+    manager, job_id = harness.manager, harness.created['job_id']
+    with _start_http_upload(harness, 1024 * 1024) as connection:
+        if initial_bytes:
+            connection.sendall(initial_bytes)
+        _wait_until(lambda: manager._get_job(job_id).upload_in_progress)
+        with manager._lock:
+            manager._jobs[job_id].updated_at = 0
+        assert manager.get_status(job_id) is not None
+        status, result = _read_http_upload(connection)
+        assert status == 408
+        assert result['error'] == 'share_export_upload_failed'
+        assert harness.finished.wait(timeout=3)
+        for worker in harness.threads:
+            worker.join(timeout=3)
+            assert not worker.is_alive()
+        # The peer is still open here; the server released it on its own.
+        assert connection.recv(1) == b''
+        assert not manager._get_job(job_id).upload_in_progress
+        assert manager.get_status(job_id)['state'] == 'failed'
+        assert manager.get_active_status('remote') is None
+        assert not list(harness.directory.glob('*.partial'))
+        restarted = manager.create_job(
+            session_id='remote', snapshot={'records': []}, filename='share.png', locale='zh',
+            base_url='http://localhost', renderer='browser',
+        )
+        assert restarted['reused'] is False
+        assert restarted['job_id'] != job_id
+        # Expiry removes the old snapshot only, preserving the replacement.
+        with manager._lock:
+            manager._jobs[job_id].updated_at = 0
+        assert manager.get_status(job_id) is None
+        assert not harness.directory.exists()
+        assert manager.get_active_status('remote')['job_id'] == restarted['job_id']
+
+
+def test_disconnected_upload_removes_partial_and_unlocks_session(browser_upload_http) -> None:
+    harness = browser_upload_http
+    connection = _start_http_upload(harness, 1024 * 1024)
+    connection.sendall(b'partial upload')
+    connection.shutdown(socket.SHUT_WR)
+    try:
+        assert _read_http_upload(connection)[0] == 400
+        assert harness.finished.wait(timeout=3)
+        assert not list(harness.directory.glob('*.partial'))
+        assert harness.manager.get_status(harness.created['job_id'])['state'] == 'failed'
+        assert harness.manager.get_active_status('remote') is None
+    finally:
+        connection.close()
+
+
+@pytest.mark.parametrize('cancel', [False, True])
+def test_upload_validation_owns_files_until_it_finishes(browser_upload_http, monkeypatch, cancel) -> None:
+    harness = browser_upload_http
+    manager, created = harness.manager, harness.created
+    job_id, token = created['job_id'], created['client_token']
+    entered, release = threading.Event(), threading.Event()
+    real_validate = share_image_export._validate_png
+
+    def validate(path: Path) -> None:
+        entered.set()
+        assert release.wait(timeout=3)
+        real_validate(path)
+
+    monkeypatch.setattr(share_image_export, '_validate_png', validate)
+    data = _test_png()
+    with _start_http_upload(harness, len(data)) as connection:
+        connection.sendall(data)
+        try:
+            assert entered.wait(timeout=3)
+            if cancel:
+                manager.update_browser_job(job_id, {
+                    'client_token': token, 'state': 'failed', 'phase': 'failed', 'error': 'share_export_tab_closed',
+                })
+            with manager._lock:
+                manager._jobs[job_id].updated_at = 0
+            assert manager.get_status(job_id) is not None
+            assert list(harness.directory.glob('*.partial'))
+            with pytest.raises(ValueError, match='already_finished' if cancel else 'upload_in_progress'):
+                manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(data), len(data))
+        finally:
+            release.set()
+        status, _ = _read_http_upload(connection)
+        assert status == (400 if cancel else 200)
+    assert not list(harness.directory.glob('*.partial'))
+    assert not manager._get_job(job_id).upload_in_progress
+    if cancel:
+        assert manager.get_status(job_id)['error'] == 'share_export_tab_closed'
+        assert manager.get_result(job_id) is None
+    else:
+        assert manager.get_result(job_id)[0].read_bytes() == data
+
+
+def test_server_save_phase_survives_past_the_browser_ttl(monkeypatch, tmp_path: Path) -> None:
+    release = threading.Event()
+    clock = {'now': share_image_export.time.time()}
+    monkeypatch.setattr(share_image_export.time, 'time', lambda: clock['now'])
+
+    def slow_writer(path: Path) -> None:
+        assert release.wait(timeout=5)
+        _write_test_zip(path)
+
+    page = _FakePage(states=_READY_ZIP_STATE, download_writer=slow_writer)
+    _make_render_harness(monkeypatch, page, tmp_path)
+    manager = ShareImageExportManager()
+    created = manager.create_job(
+        session_id='remote', snapshot={'session_id': 'remote', 'records': []},
+        filename='share.png', locale='zh', base_url='http://localhost',
+    )
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            status = manager.get_status(job_id)
+            if status is not None and status['phase'] == 'saving':
+                break
+            time.sleep(0.01)
+        assert manager.get_status(job_id)['phase'] == 'saving'
+        # save_as stays blocked far past the TTL; status queries must not
+        # reclaim a server renderer that still owns its files.
+        clock['now'] += 2 * share_image_export._JOB_TTL_SECONDS
+        time.sleep(0.1)
+        assert manager.get_status(job_id) is not None
+        release.set()
+        assert _wait_for_terminal_state(manager, job_id)['state'] == 'completed'
+    finally:
+        release.set()
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+@pytest.mark.parametrize('state', ['completed', 'failed'])
+def test_long_running_browser_job_expires_only_after_generation_finishes(monkeypatch, state) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directory = manager.get_snapshot_path(job_id).parent
+    now = share_image_export.time.time()
+    manager.update_browser_job(job_id, {'client_token': token, 'state': 'running', 'phase': 'loading_snapshot', 'claim': True})
+    monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 86_400)
+    try:
+        if state == 'completed':
+            data = _test_png()
+            manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(data), len(data))
+        else:
+            manager.update_browser_job(job_id, {'client_token': token, 'state': 'failed', 'phase': 'failed'})
+        assert manager.get_status(job_id)['state'] == state
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 86_400 + 3_601)
+        assert manager.get_status(job_id) is None
+        assert not directory.exists()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_browser_download_claim_is_atomic_expires_and_does_not_extend_artifact_ttl(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    now = share_image_export.time.time()
+    monkeypatch.setattr(share_image_export.time, 'time', lambda: now)
+    manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(data), len(data))
+    barrier = threading.Barrier(3)
+    claimed: list[bool] = []
+    def claim() -> None:
+        barrier.wait()
+        claimed.append(manager.update_browser_job(job_id, {'client_token': token, 'claim_download': True})['download_claimed'])
+    threads = [threading.Thread(target=claim) for _ in range(2)]
+    try:
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+        assert sorted(claimed) == [False, True]
+        assert 'client_token' not in manager.get_status(job_id)
+        assert 'download_attempt_id' not in manager.get_status(job_id)
+        assert manager.get_status(job_id, include_client_token=True)['client_token'] == token
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 59)
+        assert manager.update_browser_job(job_id, {'client_token': token, 'claim_download': True})['download_claimed'] is False
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 60)
+        assert manager.update_browser_job(job_id, {'client_token': token, 'claim_download': True})['download_claimed'] is True
+        assert manager.get_result(job_id)[0].read_bytes() == data
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 3_601)
+        assert manager.get_status(job_id) is None
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+def test_download_started_cannot_be_claimed_again_after_claim_window(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    now = share_image_export.time.time()
+    try:
+        manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(data), len(data))
+        assert manager.mark_browser_download_started(job_id, _claim_browser_download(manager, created)) is True
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 61)
+        assert manager.update_browser_job(job_id, {'client_token': token, 'claim_download': True})['download_claimed'] is False
+        assert manager.get_status(job_id)['phase'] == 'download_started'
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_browser_failed_download_can_retry_once_immediately_without_regenerating() -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    claim = {'client_token': token, 'claim_download': True}
+    try:
+        manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(data), len(data))
+        attempt_id = _claim_browser_download(manager, created)
+        assert manager.mark_browser_download_started(job_id, attempt_id) is True
+        manager.mark_browser_download_finished(job_id, succeeded=False, attempt_id=attempt_id)
+        assert manager.get_status(job_id)['state'] == 'completed'
+        assert manager.get_status(job_id)['phase'] == 'download_failed'
+        assert manager.mark_browser_download_started(job_id, attempt_id) is False
+        retried = manager.update_browser_job(job_id, claim)
+        assert retried['download_claimed'] is True
+        assert retried['download_attempt_id'] != attempt_id
+        assert retried['phase'] == 'completed'
+        assert manager.update_browser_job(job_id, claim)['download_claimed'] is False
+        assert manager.get_result(job_id)[0].read_bytes() == data
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_browser_sent_download_cannot_be_claimed_again(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id, token = created['job_id'], created['client_token']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    now = share_image_export.time.time()
+    try:
+        manager.store_browser_result(job_id, token, 'share.png', io.BytesIO(data), len(data))
+        attempt_id = _claim_browser_download(manager, created)
+        assert manager.mark_browser_download_started(job_id, attempt_id) is True
+        manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=attempt_id)
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 61)
+        assert manager.update_browser_job(job_id, {'client_token': token, 'claim_download': True})['download_claimed'] is False
+        assert manager.get_status(job_id)['phase'] == 'download_sent'
+        assert manager.get_status(job_id)['state'] == 'completed'
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_browser_in_flight_download_has_no_transfer_deadline_or_ttl(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    now = share_image_export.time.time()
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        attempt_id = _claim_browser_download(manager, created)
+        assert manager.mark_browser_download_started(job_id, attempt_id) is True
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 86_400)
+        assert manager.get_status(job_id)['phase'] == 'download_started'
+        assert manager.get_result(job_id)[0].read_bytes() == data
+        manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=attempt_id)
+        assert manager.get_status(job_id)['phase'] == 'download_sent'
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 86_400 + 3_601)
+        assert manager.get_status(job_id) is None
+        assert not directory.exists()
+    finally:
+        shutil.rmtree(directory, ignore_errors=True)
+
+
+class _ShareGetHandlerStub:
+    """Run the real file-streaming handler with observable response writes."""
+
+    _handle_share_api_get = app_web._SpaStaticHandler._handle_share_api_get
+    _parse_query = staticmethod(app_web._SpaStaticHandler._parse_query)
+
+    def __init__(self, *, command: str, output) -> None:
+        self.command = command
+        self.wfile = output
+        self.responses: list[tuple[int, dict | None]] = []
+        self.response_status: int | None = None
+        self.response_headers: dict[str, str] = {}
+
+    def _write_json(self, status: int, payload: dict | None) -> None:
+        self.responses.append((status, payload))
+
+    def send_response(self, status: int) -> None:
+        self.response_status = status
+
+    def send_header(self, name: str, value: str) -> None:
+        self.response_headers[name] = value
+
+    def end_headers(self) -> None:
+        pass
+
+
+@pytest.mark.parametrize('command', ['GET', 'HEAD'])
+@pytest.mark.parametrize('target, expected', [
+    ('/share-api/jobs?session_id=idle-session', (200, None)),
+    ('/share-api/jobs', (400, {'error': 'missing_session_id'})),
+    ('/share-api/jobs/' + 'a' * 32, (404, {'error': 'job_not_found'})),
+])
+def test_share_job_lookup_empty_result_preserves_request_errors(monkeypatch, command, target, expected) -> None:
+    manager = SimpleNamespace(get_active_status=lambda session_id: None, get_status=lambda job_id: None)
+    _patch_share_dependencies(monkeypatch, manager)
+    handler = _ShareGetHandlerStub(command=command, output=io.BytesIO())
+    handler._handle_share_api_get(urlparse(target))
+    assert handler.responses == [expected]
+
+
+@pytest.mark.parametrize('failure_stage', ['manager', 'query'])
+def test_share_file_stream_closes_when_preparation_fails(monkeypatch, tmp_path: Path, failure_stage) -> None:
+    snapshot_path = tmp_path / 'snapshot.json'
+    snapshot_path.write_text('{}', encoding='utf-8')
+    stream = snapshot_path.open('rb')
+    file_path = SimpleNamespace(is_file=lambda: True, open=lambda mode: stream)
+    manager = SimpleNamespace(get_snapshot_path=lambda job_id: file_path)
+    _patch_share_dependencies(monkeypatch, manager)
+    handler = _ShareGetHandlerStub(command='GET', output=io.BytesIO())
+    error = RuntimeError('request preparation failed')
+    manager_calls = 0
+
+    def get_manager():
+        nonlocal manager_calls
+        manager_calls += 1
+        if failure_stage == 'manager' and manager_calls == 2:
+            raise error
+        return manager
+
+    def parse_query(query: str):
+        raise error
+
+    monkeypatch.setattr(app_web, '_get_share_image_export_manager', get_manager)
+    if failure_stage == 'query':
+        monkeypatch.setattr(handler, '_parse_query', parse_query)
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            handler._handle_share_api_get(urlparse('/share-api/jobs/' + 'a' * 32 + '/snapshot'))
+        assert caught.value is error
+        assert stream.closed
+        assert handler.response_status is None
+    finally:
+        stream.close()
+
+
+@pytest.mark.parametrize('failure_stage', ['write', 'flush'])
+def test_share_snapshot_stream_error_closes_file_and_propagates(monkeypatch, tmp_path: Path, failure_stage) -> None:
+    snapshot_path = tmp_path / 'snapshot.json'
+    snapshot_path.write_text('{}', encoding='utf-8')
+    stream = snapshot_path.open('rb')
+    file_path = SimpleNamespace(is_file=lambda: True, open=lambda mode: stream)
+    manager = SimpleNamespace(get_snapshot_path=lambda job_id: file_path)
+    _patch_share_dependencies(monkeypatch, manager)
+    error = OSError('snapshot stream interrupted')
+
+    class Output(io.BytesIO):
+        def write(self, chunk: bytes) -> int:
+            if failure_stage == 'write':
+                raise error
+            return super().write(chunk)
+
+        def flush(self) -> None:
+            if failure_stage == 'flush':
+                raise error
+            super().flush()
+
+    handler = _ShareGetHandlerStub(command='GET', output=Output())
+    try:
+        with pytest.raises(OSError) as caught:
+            handler._handle_share_api_get(urlparse('/share-api/jobs/' + 'a' * 32 + '/snapshot'))
+        assert caught.value is error
+        assert stream.closed
+        assert handler.responses == []
+    finally:
+        stream.close()
+
+
+def test_share_download_marks_sent_only_after_complete_write_and_flush(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    png = _test_png()
+    data = png[:-12] + _png_chunk(b'tEXt', b'Description\x00' + b'x' * (2 * 1024 * 1024)) + png[-12:]
+    phases: list[tuple[str, str]] = []
+    class Output(io.BytesIO):
+        def write(self, chunk: bytes) -> int:
+            phases.append(('write', manager.get_status(job_id)['phase']))
+            return super().write(chunk)
+
+        def flush(self) -> None:
+            phases.append(('flush', manager.get_status(job_id)['phase']))
+            super().flush()
+
+    output = Output()
+    _patch_share_dependencies(monkeypatch, manager)
+    handler = _ShareGetHandlerStub(command='GET', output=output)
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        attempt_id = _claim_browser_download(manager, created)
+        handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download?download_attempt_id={attempt_id}'))
+        assert handler.response_status == 200
+        assert handler.response_headers['Content-Length'] == str(len(data))
+        assert output.getvalue() == data
+        assert phases == [('write', 'download_started')] * 3 + [('flush', 'download_started')]
+        assert manager.get_status(job_id)['phase'] == 'download_sent'
+    finally:
+        shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize('error_type', [BrokenPipeError, ConnectionResetError, OSError])
+@pytest.mark.parametrize('failure_stage', ['write', 'flush'])
+def test_share_download_stream_error_preserves_generated_artifact(monkeypatch, error_type, failure_stage) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    class Output(io.BytesIO):
+        def write(self, chunk: bytes) -> int:
+            if failure_stage == 'write':
+                super().write(chunk[:len(chunk) // 2])
+                raise error_type('stream interrupted')
+            return super().write(chunk)
+
+        def flush(self) -> None:
+            if failure_stage == 'flush':
+                raise error_type('stream interrupted')
+            super().flush()
+
+    _patch_share_dependencies(monkeypatch, manager)
+    handler = _ShareGetHandlerStub(command='GET', output=Output())
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        attempt_id = _claim_browser_download(manager, created)
+        handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download?download_attempt_id={attempt_id}'))
+        assert manager.get_status(job_id)['state'] == 'completed'
+        assert manager.get_status(job_id)['phase'] == 'download_failed'
+        assert manager.get_result(job_id)[0].read_bytes() == data
+        assert manager.update_browser_job(job_id, {'client_token': created['client_token'], 'claim_download': True})['download_claimed'] is True
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_share_download_head_never_confirms_a_download(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    output = io.BytesIO()
+    _patch_share_dependencies(monkeypatch, manager)
+    handler = _ShareGetHandlerStub(command='HEAD', output=output)
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download'))
+        assert handler.response_status == 200
+        assert handler.response_headers['Content-Length'] == str(len(data))
+        assert output.getvalue() == b''
+        assert manager.get_status(job_id)['phase'] == 'completed'
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_share_download_cannot_be_confirmed_when_result_open_fails(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    _patch_share_dependencies(monkeypatch, manager)
+    handler = _ShareGetHandlerStub(command='GET', output=io.BytesIO())
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        result_path = manager.get_result(job_id)[0]
+        original_open = Path.open
+        def fail_result_open(path, *args, **kwargs):
+            if path == result_path:
+                raise PermissionError('result unavailable')
+            return original_open(path, *args, **kwargs)
+        monkeypatch.setattr(Path, 'open', fail_result_open)
+        handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download'))
+        assert handler.responses == [(404, {'error': 'job_file_not_found'})]
+        assert handler.response_status is None
+        assert manager.get_status(job_id)['phase'] == 'completed'
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_expired_download_claim_cannot_start_or_finish_a_new_attempt(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    now = share_image_export.time.time()
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        old_attempt = _claim_browser_download(manager, created)
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 61)
+        new_attempt = _claim_browser_download(manager, created)
+        assert new_attempt != old_attempt
+        assert manager.mark_browser_download_started(job_id, old_attempt) is False
+        assert manager.get_status(job_id)['phase'] == 'completed'
+        assert manager.mark_browser_download_started(job_id, new_attempt) is True
+        assert manager.mark_browser_download_started(job_id, new_attempt) is False
+        manager.mark_browser_download_finished(job_id, succeeded=False, attempt_id=old_attempt)
+        manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=old_attempt)
+        assert manager.get_status(job_id)['phase'] == 'download_started'
+        manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=new_attempt)
+        manager.mark_browser_download_finished(job_id, succeeded=False, attempt_id=old_attempt)
+        assert manager.get_status(job_id)['phase'] == 'download_sent'
+        assert manager.mark_browser_download_started(job_id, new_attempt) is False
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_share_download_rejects_late_old_get_without_streaming_or_changing_current_attempt(monkeypatch) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    now = share_image_export.time.time()
+    _patch_share_dependencies(monkeypatch, manager)
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        old_attempt = _claim_browser_download(manager, created)
+        monkeypatch.setattr(share_image_export.time, 'time', lambda: now + 61)
+        new_attempt = _claim_browser_download(manager, created)
+        stale_output = io.BytesIO()
+        stale_handler = _ShareGetHandlerStub(command='GET', output=stale_output)
+        stale_handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download?download_attempt_id={old_attempt}'))
+        assert stale_handler.responses == [(409, {'error': 'share_export_download_attempt_invalid'})]
+        assert stale_handler.response_status is None
+        assert stale_output.getvalue() == b''
+        assert manager.get_status(job_id)['phase'] == 'completed'
+        output = io.BytesIO()
+        handler = _ShareGetHandlerStub(command='GET', output=output)
+        handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download?download_attempt_id={new_attempt}'))
+        assert handler.response_status == 200
+        assert output.getvalue() == data
+        assert manager.get_status(job_id)['phase'] == 'download_sent'
+        duplicate_output = io.BytesIO()
+        duplicate_handler = _ShareGetHandlerStub(command='GET', output=duplicate_output)
+        duplicate_handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download?download_attempt_id={new_attempt}'))
+        assert duplicate_handler.responses == [(409, {'error': 'share_export_download_attempt_invalid'})]
+        assert duplicate_output.getvalue() == b''
+        assert manager.get_status(job_id)['phase'] == 'download_sent'
+    finally:
+        shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize('attempt_id', [None, '', 'wrong', '中文'])
+def test_browser_download_requires_current_claimed_attempt(attempt_id) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        _claim_browser_download(manager, created)
+        assert manager.mark_browser_download_started(job_id, attempt_id) is False
+        assert manager.get_status(job_id)['phase'] == 'completed'
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_server_rendered_download_does_not_require_browser_attempt(monkeypatch) -> None:
+    data = _test_png()
+    def renderer(**kwargs) -> Path:
+        kwargs['output_path'].write_bytes(data)
+        return kwargs['output_path']
+    manager = ShareImageExportManager(renderer=renderer)
+    created = manager.create_job(
+        session_id='server-download', snapshot={'records': []}, filename='share.png', locale='zh', base_url='http://localhost',
+    )
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    _wait_for_terminal_state(manager, job_id)
+    _patch_share_dependencies(monkeypatch, manager)
+    output = io.BytesIO()
+    handler = _ShareGetHandlerStub(command='GET', output=output)
+    try:
+        handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download'))
+        assert handler.response_status == 200
+        assert output.getvalue() == data
+        assert manager.get_status(job_id)['phase'] == 'completed'
+        assert manager.get_status(job_id)['renderer'] == 'server'
+    finally:
+        shutil.rmtree(directory)
+
+
+def test_same_download_attempt_can_start_only_one_concurrent_stream() -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    barrier = threading.Barrier(3)
+    started: list[bool] = []
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        attempt_id = _claim_browser_download(manager, created)
+        def start() -> None:
+            barrier.wait()
+            started.append(manager.mark_browser_download_started(job_id, attempt_id))
+        threads = [threading.Thread(target=start) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        barrier.wait()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+        assert sorted(started) == [False, True]
+        assert manager.get_status(job_id)['phase'] == 'download_started'
+        manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=attempt_id)
+    finally:
+        shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize('error_type', [BrokenPipeError, ConnectionResetError, OSError])
+def test_rejected_download_response_failure_cannot_finish_the_accepted_stream(monkeypatch, error_type) -> None:
+    manager, created = _browser_job()
+    job_id = created['job_id']
+    directory = manager.get_snapshot_path(job_id).parent
+    data = _test_png()
+    class DisconnectedHandler(_ShareGetHandlerStub):
+        def _write_json(self, status: int, payload: dict) -> None:
+            assert status == 409
+            assert payload == {'error': 'share_export_download_attempt_invalid'}
+            raise error_type('rejected client disconnected')
+    _patch_share_dependencies(monkeypatch, manager)
+    output = io.BytesIO()
+    handler = DisconnectedHandler(command='GET', output=output)
+    try:
+        manager.store_browser_result(job_id, created['client_token'], 'share.png', io.BytesIO(data), len(data))
+        attempt_id = _claim_browser_download(manager, created)
+        assert manager.mark_browser_download_started(job_id, attempt_id) is True
+        handler._handle_share_api_get(urlparse(f'/share-api/jobs/{job_id}/download?download_attempt_id={attempt_id}'))
+        assert output.getvalue() == b''
+        assert manager.get_status(job_id)['phase'] == 'download_started'
+        manager.mark_browser_download_finished(job_id, succeeded=True, attempt_id=attempt_id)
+        assert manager.get_status(job_id)['phase'] == 'download_sent'
+    finally:
+        shutil.rmtree(directory)

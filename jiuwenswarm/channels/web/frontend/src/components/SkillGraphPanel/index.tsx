@@ -27,6 +27,7 @@ import {
   seedPositions,
   stepSkillGraphLayout,
 } from './skillGraphLayout';
+import { shouldPollSkillGraph } from './skillGraphPolling';
 import './SkillGraphPanel.css';
 
 type RawRecord = Record<string, unknown>;
@@ -124,6 +125,8 @@ export type SkillGraphPanelHandle = {
 };
 
 type SkillGraphPanelProps = {
+  /** 页面是否处于激活状态；为 false 时停止后端轮询。 */
+  isActive?: boolean;
   onReadingChange?: (reading: boolean) => void;
   onBuildAccepted?: (mode: SymphonyBuildMode) => void;
 };
@@ -743,7 +746,7 @@ function buildLogSignature(entries?: BuildLogEntry[]): string {
 }
 
 export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanelProps>(function SkillGraphPanel(
-  { onReadingChange, onBuildAccepted },
+  { isActive = true, onReadingChange, onBuildAccepted },
   ref,
 ) {
   const { t } = useTranslation();
@@ -1222,7 +1225,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
   }, [loadGraph, restoreBuildStatus]);
 
   useEffect(() => {
-    if (!updating) return undefined;
+    if (!shouldPollSkillGraph({ isActive, updating, whenUpdating: true })) return undefined;
 
     let stopped = false;
     let timer: number | null = null;
@@ -1261,10 +1264,10 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, updating]);
+  }, [applyBuildLog, isActive, loadGraph, resetBuildUiOnTerminalStatus, updating]);
 
   useEffect(() => {
-    if (updating) return undefined;
+    if (!shouldPollSkillGraph({ isActive, updating, whenUpdating: false })) return undefined;
 
     let stopped = false;
     let timer: number | null = null;
@@ -1316,7 +1319,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         window.clearTimeout(timer);
       }
     };
-  }, [applyBuildLog, loadGraph, resetBuildUiOnTerminalStatus, updating]);
+  }, [applyBuildLog, isActive, loadGraph, resetBuildUiOnTerminalStatus, updating]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

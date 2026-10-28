@@ -239,7 +239,6 @@ def test_run_jsonl_dispatches_to_duplex_entry_without_legacy_arguments(
         ["--run-json=unused.json"],
         ["--mode", "code.normal"],
         ["--output", "human"],
-        ["--work-mode", "code"],
         ["--session", "existing"],
         ["--cwd", "."],
         ["--_interactive-worker"],

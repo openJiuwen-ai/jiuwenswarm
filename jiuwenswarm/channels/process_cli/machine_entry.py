@@ -163,9 +163,12 @@ async def _execute_document(source: str, writer: OneShotWriter) -> OneShotRunRes
     run_input = prepare_workspace(run_input)
     await asyncio.sleep(0)
     from jiuwenswarm.channels.process_cli.machine import run_with_signals
+    from jiuwenswarm.channels.process_cli.duplex_control import DuplexController
 
     await asyncio.sleep(0)
-    return await run_with_signals(run_input, writer)
+    return await run_with_signals(
+        run_input, writer, control=DuplexController(None, writer, unattended=True)
+    )
 
 
 def _run_async(
@@ -230,6 +233,14 @@ def execute_source(
         except MachineInputError as error:
             writer.request_id = error.request_id or writer.request_id
             result = _failure(writer, code=error.code, message=str(error), exit_code=2)
+            result = replace(
+                result,
+                error=RuntimeErrorInfo(
+                    code=error.code,
+                    message=str(error),
+                    details=error.details,
+                ),
+            )
         except (KeyboardInterrupt, asyncio.CancelledError):
             result = _failure(
                 writer, code="CANCELLED", message="Command interrupted.", exit_code=130

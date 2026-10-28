@@ -5,6 +5,7 @@ import type { WebConnectionState } from '../../../types';
 import type { SettingsRequest } from './settingsContract';
 import type {
   ExternalCliAgentKind,
+  ExternalCliDependencyInstallStatus,
   ExternalCliDetectResult,
   ExternalCliPendingChoice,
 } from '../../../components/ExternalCliAgentsSection';
@@ -18,12 +19,14 @@ export type SettingsServices = {
   request: SettingsRequest;
   saveQueue: SettingsSaveQueue;
   unsavedChanges: SettingsUnsavedChangesRegistry;
-  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string) => Promise<ExternalCliDetectResult>;
+  onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
-  externalCliInstallBusy?: boolean;
-  onOpenExternalCliInstallDialog?: () => void;
+  onGetExternalCliInstallStatus?: (
+    agent: ExternalCliAgentKind,
+  ) => Promise<ExternalCliDependencyInstallStatus>;
+  onExternalCliInstallStatusChange?: (agent: ExternalCliAgentKind, status: ExternalCliDependencyInstallStatus) => void;
   externalCliPendingChoices?: Partial<Record<ExternalCliAgentKind, ExternalCliPendingChoice>>;
   onExternalCliPendingChoicesChange?: (
     next:
@@ -34,8 +37,15 @@ export type SettingsServices = {
   ) => void;
   externalCliDetectResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
   onExternalCliDetectResultsChange?: (
-    next: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>,
+    next:
+      | Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>
+      | ((current: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>) => Partial<
+          Record<ExternalCliAgentKind, ExternalCliDetectResult>
+        >),
   ) => void;
+  recommendationFocus?: number | null;
+  onCorrectRecommendation?: (text: string) => void;
+  onRecommendationEnabledChange?: (enabled: boolean) => void;
 };
 
 const SettingsServicesContext = createContext<SettingsServices | null>(null);
@@ -56,16 +66,19 @@ export function SettingsServicesProvider({
     [
       services.connectionState,
       services.externalCliDetectResults,
-      services.externalCliInstallBusy,
       services.externalCliInstallStatuses,
       services.externalCliPendingChoices,
       services.isConnected,
       services.onDetectExternalCli,
       services.onExternalCliDetectResultsChange,
+      services.onExternalCliInstallStatusChange,
       services.onExternalCliPendingChoicesChange,
-      services.onOpenExternalCliInstallDialog,
+      services.onGetExternalCliInstallStatus,
       services.onSelectExternalCliPath,
       services.onTrackExternalCliDependencyInstalls,
+      services.recommendationFocus,
+      services.onCorrectRecommendation,
+      services.onRecommendationEnabledChange,
       services.request,
     ],
   );

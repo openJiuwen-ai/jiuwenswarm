@@ -13,6 +13,10 @@ export * from './contextUsage';
 export * from '../features/workspace/projectTypes';
 
 // 会话类型
+/** Stable selection DTO used by session/cron/runtime APIs. */
+export type ModelSelection =
+  { type: 'model'; id: string; route_id?: never } | { type: 'model_group'; id: string; route_id?: string | null };
+
 export interface Session {
   session_id: string;
   title: string;
@@ -30,6 +34,10 @@ export interface Session {
   /** Direct parent session when this conversation was created by fork. */
   forked_from?: string;
   model?: string;
+  /** Stable selection persisted via session.selection.set / metadata. */
+  model_selection?: ModelSelection | null;
+  /** Legacy server metadata; collaboration is derived from feature settings and model_selection. */
+  moa_enabled?: boolean;
   mode: AgentMode;
   status: SessionStatus;
   message_count: number;
@@ -45,6 +53,7 @@ export interface Session {
     content: string;
     status: string;
   }>;
+  can_continue_queued_session_messages?: boolean;
   current_task?: string;
   tools?: string[];
   team_name?: string;
@@ -52,12 +61,14 @@ export interface Session {
   agent_group_name?: string | null;
   /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
   team_leader_identity?: unknown;
+  /** 首次 AgentGroup 绑定时锁定的展示身份；旧 session 会在包仍存在时补齐。 */
+  team_group_identity?: unknown;
   // ---- session.list 扩展字段 ----
-  channel_id?: string;         // 渠道ID
-  user_id?: string;            // 创建人ID
-  last_message_at?: number;    // 最近对话时间(Unix时间戳)
+  channel_id?: string; // 渠道ID
+  user_id?: string; // 创建人ID
+  last_message_at?: number; // 最近对话时间(Unix时间戳)
   last_user_message_at?: number; // 最后一条用户消息时间(Unix时间戳)
-  cron_id?: string;            // 定时任务ID；非空表示 cron 触发的会话，侧栏仅归属定时任务分组
+  cron_id?: string; // 定时任务ID；非空表示 cron 触发的会话，侧栏仅归属定时任务分组
   /** 后端保存的会话级装备快照，用于刷新页面后恢复插件/MCP选择。 */
   session_equipment?: {
     agent_template_name?: string;
@@ -105,10 +116,32 @@ export type ModelReasoningCatalog = {
   model_fallbacks: ModelReasoningRule[];
 };
 
+export interface ChatInputProvenance {
+  input_origin: 'manual_free_text' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'pasted_or_unknown';
+  assistance_origin: 'none' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'unknown';
+  topic_starter?: {
+    manifest_id: string;
+    generation_batch_id: string;
+    exposure_id: string;
+    card_revision_id: string;
+    context_scope: string;
+    project_id: string | null;
+  };
+  // The in-conversation suggestion the user accepted, sent as it was or edited.
+  prompt_suggestion?: {
+    suggestion_id: string;
+    edited: boolean;
+  };
+}
+
 export interface ModelEntry {
+  /** Backend stable model ID. Zen free models may omit this field. */
+  model_id?: string;
   model_name: string;
   api_base: string;
   api_key: string;
+  /** The backend has a stored credential but intentionally does not return it. */
+  has_api_key?: boolean;
   model_provider: string;
   timeout?: number;
   temperature?: number;
@@ -142,6 +175,32 @@ export interface ModelEntry {
   read_only?: boolean;
 }
 
+export type ModelRoute = {
+  route_id?: string;
+  model_id: string;
+  enabled?: boolean;
+  request_overrides?: Record<string, unknown>;
+  tpm?: number;
+  rpm?: number;
+  timeout?: number;
+};
+
+export type ModelGroup = {
+  model_group_id?: string;
+  display_name?: string | null;
+  enabled?: boolean | null;
+  is_default?: boolean | null;
+  routes: ModelRoute[];
+  request_config?: Record<string, unknown> | null;
+};
+
+export type ModelSelectionReference = {
+  scope: string;
+  scope_id?: string;
+  /** User-facing label when the backend resolved a display name (#5477). */
+  label?: string;
+};
+
 export interface VendorPreset {
   vendor_key: string;
   display_name: string;
@@ -154,6 +213,8 @@ export interface VendorPreset {
   icon_key: string;
   models_endpoint: string | null;
   models_needs_key: boolean;
+  /** 仅用于图片/视频生成的厂商（如自部署 vLLM-Omni），不出现在对话 / 理解类模型选择中。 */
+  generation_only?: boolean;
   supports_anthropic: boolean;
   anthropic_base: string | null;
   anthropic_client_provider: string | null;
@@ -168,7 +229,7 @@ export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {
 
 export interface VendorFetchModelsResult {
   models: string[];
-  source: 'remote' | 'preset';
+  source: 'remote' | 'preset' | 'unavailable';
   reason?: string;
 }
 

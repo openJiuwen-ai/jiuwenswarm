@@ -20,6 +20,11 @@
   height: auto;
 }
 
+.root[data-display-mode='full'] {
+  /* Clip so the ledger scrolls under a fixed toolbar + swimlane overview. */
+  overflow: hidden;
+}
+
 .ledger {
   position: relative;
   z-index: 0;

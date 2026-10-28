@@ -21,8 +21,9 @@ from jiuwenswarm.runtime.cron.models import (
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from jiuwenswarm.common.utils import logger
-from jiuwenswarm.runtime.host_services import send_runtime_wake
+from jiuwenswarm.common.host_services import send_runtime_wake
 
 
 class _CronToolsCronBackend(CronToolBackend):
@@ -145,9 +146,11 @@ class _CronToolsCronBackend(CronToolBackend):
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
-            from jiuwenswarm.runtime.cron.models import validate_cron_model
+            from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
+                resolve_agent_cron_model,
+            )
 
-            canonical = validate_cron_model(inherited)
+            canonical = resolve_agent_cron_model(inherited)
             if canonical:
                 out = dict(payload)
                 out["model_name"] = canonical
@@ -263,6 +266,22 @@ class _CronToolsCronBackend(CronToolBackend):
         job = await self._with_route(None, self._cron_tools.get_job(job_id))
         if job is None:
             return None
+        return self._to_backend_job(job)
+
+    async def get_authoritative_job(
+        self, job_id: str, *, user_id: str, request_id: str = "", session_id: str = "",
+    ) -> dict[str, Any] | None:
+        """Query with explicit trusted ownership, independent of bound tool contexts."""
+        route = CronToolRoute(user_id=user_id, request_id=request_id, session_id=session_id, channel_id="")
+        route_token = self._cron_tools.push_cron_route(route)
+        try:
+            job = await self._cron_tools.get_authoritative_job(job_id)
+        finally:
+            self._cron_tools.reset_cron_route(route_token)
+        if job is None:
+            return None
+        if str(job.get("user_id") or "").strip() != user_id:
+            raise RuntimeError("authoritative cron job owner mismatch")
         return self._to_backend_job(job)
 
     async def create_job(
@@ -1035,7 +1054,11 @@ class CronRuntimeBridge:
         tools = create_cron_tools(
             effective_backend,
             context=context,
-            target_channels=[channel.value for channel in CronTargetChannel],
+            target_channels=[
+                channel.value
+                for channel in CronTargetChannel
+                if is_scheduled_task_supported(channel.value)
+            ],
             default_target_channel=None,
             agent_id=agent_id,
             language=language,
@@ -1073,3 +1096,13 @@ class CronRuntimeBridge:
                     allow_update,
                     [tool.card.name if hasattr(tool, 'card') else str(tool) for tool in tools])
         return tools
+
+
+async def query_authoritative_cron_job(
+    job_id: str, *, user_id: str, request_id: str = "", session_id: str = "",
+) -> dict[str, Any] | None:
+    """Query with explicit trusted ownership, independent of bound tool contexts."""
+    backend = _CronToolsCronBackend(CronTools())
+    return await backend.get_authoritative_job(
+        job_id, user_id=user_id, request_id=request_id, session_id=session_id,
+    )

@@ -105,6 +105,9 @@ export class JoyAIVoiceSession {
   private captureContext: AudioContext | null = null;
   private captureNode: AudioWorkletNode | null = null;
   private playback: HTMLAudioElement | null = null;
+  private playbackGain: GainNode | null = null;
+  private microphoneMuted = false;
+  private speakerMuted = false;
   private playbackFinished: (() => void) | null = null;
   private pcmPlaybackContext: AudioContext | null = null;
   private pcmStreamId: string | null = null;
@@ -185,6 +188,18 @@ export class JoyAIVoiceSession {
     this.callbacks.onState('listening');
   }
 
+  setMicrophoneMuted(muted: boolean): void {
+    this.microphoneMuted = muted;
+    this.microphone?.getAudioTracks().forEach((track) => { track.enabled = !muted; });
+    if (muted) this.resetTurn();
+  }
+
+  setSpeakerMuted(muted: boolean): void {
+    this.speakerMuted = muted;
+    if (this.playback) this.playback.muted = muted;
+    if (this.playbackGain) this.playbackGain.gain.value = muted ? 0 : 1;
+  }
+
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
@@ -207,6 +222,7 @@ export class JoyAIVoiceSession {
     if (this.stopped) return;
     this.interruptPlayback();
     const audio = new Audio(audioDataUrl);
+    audio.muted = this.speakerMuted;
     this.playback = audio;
     await new Promise<void>((resolve) => {
       let finished = false;
@@ -311,7 +327,12 @@ export class JoyAIVoiceSession {
 
   private schedulePendingPcm(): void {
     if (!this.pcmStreamId || this.pcmStreamPending.length === 0) return;
-    if (!this.pcmPlaybackContext) this.pcmPlaybackContext = new AudioContext();
+    if (!this.pcmPlaybackContext) {
+      this.pcmPlaybackContext = new AudioContext();
+      this.playbackGain = this.pcmPlaybackContext.createGain();
+      this.playbackGain.gain.value = this.speakerMuted ? 0 : 1;
+      this.playbackGain.connect(this.pcmPlaybackContext.destination);
+    }
     const context = this.pcmPlaybackContext;
     void context.resume().catch((error) => {
       const streamId = this.pcmStreamId;
@@ -332,7 +353,7 @@ export class JoyAIVoiceSession {
       }
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(context.destination);
+      source.connect(this.playbackGain || context.destination);
       const startAt = Math.max(this.pcmStreamNextTime, context.currentTime + 0.01);
       this.pcmStreamNextTime = startAt + buffer.duration;
       this.pcmStreamSources.add(source);
@@ -381,7 +402,7 @@ export class JoyAIVoiceSession {
   }
 
   private processAudio(pcm: Int16Array): void {
-    if (this.stopped || pcm.length === 0) return;
+    if (this.stopped || this.microphoneMuted || pcm.length === 0) return;
     if (this.speechActive) {
       this.pushUtterance(pcm);
       if (this.utteranceSamples >= TARGET_RATE * MAX_TURN_MS / 1_000) this.finishTurn();
@@ -392,6 +413,7 @@ export class JoyAIVoiceSession {
   }
 
   private handleSpeechDetection(detection: SpeechDetection): void {
+    if (this.microphoneMuted) return;
     if (this.stopped) return;
     if (detection.state === 'started' || detection.state === 'active') {
       if (!this.speechActive) {

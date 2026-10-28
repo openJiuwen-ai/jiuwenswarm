@@ -106,6 +106,47 @@ def _payload_events(chunks: list) -> list[dict]:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("permission_dispatched", [False, True])
+async def test_input_timestamp_precedes_notice_and_model_phase(monkeypatch, permission_dispatched):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    adapter = _adapter_ready(monkeypatch)
+    now = [1_800_000_000.0]
+    monkeypatch.setattr(interface_deep.time, "time", lambda: now[0])
+
+    async def update_runtime_config(_config):
+        now[0] += 10
+
+    monkeypatch.setattr(adapter, "_update_runtime_config", update_runtime_config)
+    monkeypatch.setattr(adapter, "_build_image_tool_fallback_notice", lambda *_args, **_kwargs: {
+        "event_type": "chat.notice", "notice_type": "image_tool_fallback",
+        "content": "Image is not supported", "timestamp": now[0] * 1000,
+    })
+
+    async def attach_and_send(*_args, **_kwargs):
+        now[0] += 10
+        return _FakeInteractionStream([
+            SimpleNamespace(type="session_output_phase", payload={
+                "output_phase_id": "phase", "applied_input_ids": [],
+            }),
+            SimpleNamespace(type="llm_output", payload={"content": "answer"}),
+            SimpleNamespace(type="answer", payload={"output": "answer", "result_type": "answer"}),
+        ]), permission_dispatched
+
+    monkeypatch.setattr(adapter, "_attach_and_send_inputs", attach_and_send)
+    events = _payload_events([
+        chunk async for chunk in adapter.process_message_stream_impl(_chat_request(), {"query": "你好"})
+    ])
+    notice = next(event for event in events if event["event_type"] == "chat.notice")
+    phase = next(event for event in events if event["event_type"] == "chat.output_phase")
+    assert phase["input_timestamp"] == 1_800_000_000_000
+    assert phase["input_timestamp"] < notice["timestamp"] < phase["timestamp"]
+    if permission_dispatched:
+        accepted = next(event for event in events if event["event_type"] == "runtime.accepted")
+        assert accepted["timestamp"] == phase["input_timestamp"]
+
+
+@pytest.mark.anyio
 async def test_empty_run_emits_chat_error_and_no_final(monkeypatch):
     """0-token round with no output must error loudly, not complete silently."""
     adapter = _adapter_ready(monkeypatch)

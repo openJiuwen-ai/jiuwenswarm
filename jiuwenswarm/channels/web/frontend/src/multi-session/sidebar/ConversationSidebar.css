@@ -64,6 +64,10 @@
   min-width: 0;
 }
 
+.conversation-sidebar.is-collapsed {
+  visibility: hidden;
+}
+
 .conversation-sidebar__title {
   display: flex;
   flex: 0 0 auto;

@@ -9,7 +9,7 @@
 # 使用方必须先定义 PROJECT_ROOT，再 source 本文件。
 
 # 任选 ≥ v18 的 LTS；v20/v22 为推荐版本。可用环境变量覆盖。
-NODE_VERSION="${NODE_VERSION:-v22.11.0}"
+NODE_VERSION="${NODE_VERSION:-${NODE_DEFAULT_VERSION:-v22.11.0}}"
 BUNDLE_NODE="${BUNDLE_NODE:-1}"   # 0=跳过内置 node
 
 # 返回构建机的 Node 架构名。M 系列(arm64) 优先；Intel 回退 x64。
@@ -24,12 +24,20 @@ resolve_node_arch() {
 # 比 [[ -x ... ]] 强：能挡住下载损坏 / 架构不匹配 / 只解压了一半的情况。
 node_runs() {
   local n="$1/bin/node"
-  [[ -x "$n" ]] && "$n" --version >/dev/null 2>&1
+  [[ -x "$n" ]] && "$n" --version >/dev/null 2>&1 || return 1
+  if [[ -n "${NODE_MINIMUM_VERSION:-}" ]]; then
+    [[ -f "$1/bin/npm" && -f "$1/bin/npx" ]] || return 1
+    "$n" -e 'const a=process.versions.node.split(".").map(Number); const b=process.argv[1].split(".").map(Number); let c=0; for(let i=0;i<3;i++){if(a[i]!==b[i]){c=a[i]>b[i]?1:-1;break;}} process.exit(c<0?1:0)' "$NODE_MINIMUM_VERSION" || return 1
+  fi
 }
 
 # 解析 Node 运行时来源，优先级：$NODE_DIR > vendor/node > nodejs.org 官方下载
 resolve_node_dir() {
-  if [[ -n "${NODE_DIR:-}" ]] && node_runs "$NODE_DIR"; then
+  if [[ -n "${NODE_DIR:-}" ]]; then
+    if ! node_runs "$NODE_DIR"; then
+      printf 'Error: NODE_DIR has no usable Node/npm/npx meeting the requested version: %s\n' "$NODE_DIR" >&2
+      return 1
+    fi
     echo "$NODE_DIR"; return
   fi
   local vendored="$PROJECT_ROOT/vendor/node"

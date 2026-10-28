@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.cron.controller import CronController
+from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     NEW_AGENT_CODE_NORMAL,
@@ -13,7 +14,7 @@ from jiuwenswarm.common.mode_matrix import (
     NEW_TEAM_CODE_PLAN,
     deprecate_mode,
 )
-from jiuwenswarm.gateway.cron.models import (
+from gateway.cron.models import (
     CRON_DEFAULT_TIMEOUT_SECONDS,
     CRON_JOB_DEFAULT_MODE,
     CRON_JOB_MODES,
@@ -131,6 +132,14 @@ def test_cron_job_metadata_matches_modes_and_default() -> None:
     assert meta["default_team_timeout_seconds"] == CRON_TEAM_DEFAULT_TIMEOUT_SECONDS
     assert meta["max_timeout_seconds"] == CRON_MAX_TIMEOUT_SECONDS
     assert meta["modes"] == sorted(meta["modes"])
+
+
+def test_cron_controller_rejects_xiaoyi_target() -> None:
+    controller = object.__new__(CronController)
+    controller._target_channel = None
+
+    with pytest.raises(ValueError, match="does not support scheduled tasks: xiaoyi"):
+        controller._normalize_targets("xiaoyi")
 
 
 def test_resolve_cron_job_timeout_seconds_defaults_by_mode() -> None:
@@ -288,7 +297,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.store import CronJobStore
 
 
 def _write_cron_jobs(path: Path, jobs: list[dict]) -> None:
@@ -382,58 +391,28 @@ class TestCronJobLazyMigration:
         assert jobs[0].work_mode == "work"
 
     @pytest.mark.asyncio
-    async def test_legacy_job_work_mode_inferred_from_project_id(self, tmp_path, monkeypatch):
-        """缺 work_mode 但有 project_id 的老 job,按 Project 反查继承 work_mode。"""
-        # 准备 project_store: 创建一个 code 模式项目
-        root = tmp_path / "agent"
-        root.mkdir()
-        monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.session.project_store.get_agent_root_dir",
-            lambda: root,
-        )
-        from jiuwenswarm.server.runtime.session import project_store
-        project_store.invalidate_cache()
-        proj = project_store.create_project("P", str(tmp_path / "app"), work_mode="code")
+    async def test_legacy_job_work_mode_inferred_from_targets_only(self, tmp_path):
+        """A3g：缺 work_mode 的老 job 仅按 targets 通道启发式推断。
 
+        原先经 project lister 查项目表继承精确 work_mode 的迁移路径已随
+        gateway 本地 project_store 反查删除（项目表权威在目标 AgentServer；
+        迁移一次性且结果落盘，存量部署早已完成）。"""
         store_path = tmp_path / "cron_jobs.json"
         _write_cron_jobs(store_path, [
-            _make_legacy_job("j1", project_id=proj.project_id, targets=[{"channel_id": "web"}]),
+            _make_legacy_job("j1", project_id="proj_x", targets=[{"channel_id": "web"}]),
+            _make_legacy_job("j2", project_id="proj_y", targets=[{"channel_id": "tui"}]),
         ])
 
         store = CronJobStore(path=store_path)
         jobs = await store.list_jobs()
 
-        # project_id 命中 code 项目,继承 work_mode="code"(而非按 web 通道推断为 work)
-        assert jobs[0].work_mode == "code"
-        assert _read_cron_jobs(store_path)[0]["work_mode"] == "code"
-
-    @pytest.mark.asyncio
-    async def test_legacy_job_project_id_preserves_mode_when_hidden(self, tmp_path, monkeypatch):
-        """隐藏项目的 cron 继续按项目 ID 继承 work_mode。"""
-        root = tmp_path / "agent"
-        root.mkdir()
-        monkeypatch.setattr(
-            "jiuwenswarm.server.runtime.session.project_store.get_agent_root_dir",
-            lambda: root,
-        )
-        from jiuwenswarm.server.runtime.session import project_store
-        project_store.invalidate_cache()
-        proj = project_store.create_project("P", str(tmp_path / "app"), work_mode="code")
-        records = json.loads((root / "projects.json").read_text(encoding="utf-8"))
-        records["projects"][0]["hidden"] = True
-        (root / "projects.json").write_text(json.dumps(records), encoding="utf-8")
-        project_store.invalidate_cache()
-
-        store_path = tmp_path / "cron_jobs.json"
-        _write_cron_jobs(store_path, [
-            _make_legacy_job("j1", project_id=proj.project_id, targets=[{"channel_id": "web"}]),
-        ])
-
-        store = CronJobStore(path=store_path)
-        jobs = await store.list_jobs()
-
-        # 隐藏项目仍命中,继承 work_mode="code"
-        assert jobs[0].work_mode == "code"
+        # 不再反查项目表：web → work，tui → code
+        by_id = {job.id: job for job in jobs}
+        assert by_id["j1"].work_mode == "work"
+        assert by_id["j2"].work_mode == "code"
+        disk = {j["id"]: j for j in _read_cron_jobs(store_path)}
+        assert disk["j1"]["work_mode"] == "work"
+        assert disk["j2"]["work_mode"] == "code"
 
     @pytest.mark.asyncio
     async def test_valid_work_mode_not_overwritten(self, tmp_path):
@@ -485,7 +464,7 @@ class TestCronJobLazyMigration:
         )
 
         with patch(
-            "jiuwenswarm.runtime.cron.cron_job_mutations.logger.warning"
+            "gateway.runtime.cron.cron_job_mutations.logger.warning"
         ) as warning_mock:
             jobs = await CronJobStore(path=store_path).list_jobs()
 
@@ -533,12 +512,8 @@ class TestCronJobLazyMigration:
 
         store = CronJobStore(path=store_path)
 
-        # mock _build_cron_project_lookup 验证不被调用
-        with patch(
-            "jiuwenswarm.runtime.cron.cron_job_mutations.build_cron_project_lookup"
-        ) as mock_lookup:
-            jobs = await store.list_jobs()
-            mock_lookup.assert_not_called()
+        jobs = await store.list_jobs()
+        assert all(job.work_mode in ("work", "code") for job in jobs)
 
         # 文件未被改写
         assert store_path.stat().st_mtime == original_mtime

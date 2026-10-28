@@ -396,7 +396,7 @@ agent_observability:
   file_retention_days: 7            # file exporter retention in days
 ```
 
-> **How the two blocks relate**: `debug_trace` governs Agent/Code local text dumps; `agent_observability` governs Agent/Code OTel spans. Both share the same `deploy/observability` backend stack. The single coupling point is `debug_trace.<mode>.otel_enabled` — it lets a `/debug` run temporarily pull up Agent/Code OTel.
+> **How the two blocks relate**: `debug_trace` governs Agent/Code local text dumps; `agent_observability` governs Agent/Code OTel spans. Both share the same `deploy/observability` backend stack. The OTel provider is not gated by `agent_observability.enabled` alone: `debug_trace.<mode>.otel_enabled` lets a `/debug` run temporarily pull up Agent/Code OTel, and `trajectory_ui.enabled=true` also acts as an extra demand that pulls up the OTel provider while fully reusing `agent_observability`'s exporter / endpoint / sampling settings (see the `trajectory_ui` section comments in `jiuwenswarm/resources/config.yaml`).
 
 ### 7.3 Resolution rules (debug_trace)
 

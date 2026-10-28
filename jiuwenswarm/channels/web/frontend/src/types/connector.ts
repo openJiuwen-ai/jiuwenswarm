@@ -65,7 +65,7 @@ export interface ConnectorInstallResponse {
 
 export interface ConnectorUninstallResponse {
   type: 'uninstalled';
-  item: { id: string; name: string; removed: boolean };
+  item: { id: string; name: string; removed: boolean; already_removed?: boolean };
   applied: boolean;
   error?: string;
 }
@@ -102,6 +102,8 @@ export type ConnectorConnectResponseType =
   | 'connected'
   | 'credentials_required'
   | 'auth_required'
+  // mcp.install 内联的 connect 步骤失败（下载成功但连不上）。mcp.connect 本身失败走 ok:false。
+  | 'connect_failed'
   // mcp.cancel_connect 收尾 hold-open 的 connect/wait_auth 时返回（用户中途放弃连接/授权）。
   | 'cancelled';
 
@@ -117,22 +119,35 @@ export interface ConnectorConnectResponse {
   name?: string;
   applied?: boolean;
   error?: string;
+  // connect_failed 分支专属字段：结构化错误码 + 缺失依赖/安装命令，
+  // 与 mcp.connect 失败时 WebError.code/payload 下发的字段同义。
+  code?: string;
+  runtime?: string;
+  installCmd?: string;
   item?: Record<string, unknown>;
   installedSkills?: string[];
   serverIdScope?: string;
   // credentials_required 分支专属字段
   credentialsRequired?: boolean;
   requiredTokens?: string[];
-  credentialKind?: 'token';
+  credentialKind?: 'token' | 'oauth';
   title?: string;
   description?: string;
   docUrl?: string | null;
   docLabel?: string;
+  // 连接器声明了隐式授权能力时下发：oauthDocUrl 是含当前授权链接的厂商文档页
+  // （不硬编码直链，跟随官方密钥轮换），桌面端抓取该页提取直链后开窗自动截取 token
+  // （一键授权）；Web 端忽略这两个字段、保持手动粘贴
+  oauthDocUrl?: string;
+  oauthSuccessPrefix?: string;
   fields?: Record<string, ConnectorCredentialField>;
   // auth_required 分支专属字段
   stepIndex?: number;
   stepsTotal?: number;
+  authPending?: boolean;
+  hostOAuth?: boolean;
   authUrl?: string | null;
   authDomain?: string;
   command?: string;
+  flow?: string;
 }

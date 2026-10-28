@@ -1,6 +1,6 @@
 import type { AgentMode } from './index';
 
-/** 后端 cron.job.* 系列 RPC 实际收发的字段，对齐 jiuwenswarm/gateway/cron/models.py 的 CronJob.to_dict() */
+/** 后端 cron.job.* 系列 RPC 实际收发的字段，对齐 gateway/cron/models.py 的 CronJob.to_dict() */
 export interface CronJobDTO {
   id: string;
   name: string;

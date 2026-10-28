@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jev 浏览器接入验收</title>
+  <style>
+    body { max-width: 650px; margin: 40px auto; padding: 0 24px; font: 16px/1.7 system-ui, sans-serif; color: #17233a; }
+    form { display: grid; gap: 18px; padding: 24px; border: 1px solid #cdd5df; border-radius: 12px; }
+    label { display: block; }
+    input[type=text], select { display: block; box-sizing: border-box; width: 100%; margin-top: 6px; padding: 9px; font: inherit; }
+    button { padding: 8px 18px; font: inherit; cursor: pointer; }
+    #result { padding: 18px; background: #eef4ff; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Jev 浏览器接入验收</h1>
+  <p>此页面只在浏览器内更新结果，不提交数据，也不请求外部服务。</p>
+  <form id="filters">
+    <label for="keyword">关键词
+      <input id="keyword" name="keyword" type="text" autocomplete="off">
+    </label>
+    <label for="region">地区
+      <select id="region" name="region">
+        <option value="all">全部地区</option>
+        <option value="cn">中国</option>
+        <option value="sg">新加坡</option>
+      </select>
+    </label>
+    <label for="stock"><input id="stock" name="stock" type="checkbox"> 仅显示有货</label>
+    <div>
+      <button type="submit">应用筛选</button>
+      <button type="reset">重置</button>
+    </div>
+  </form>
+  <h2>筛选结果</h2>
+  <p id="result" role="status" aria-live="polite">尚未应用筛选。</p>
+  <script>
+    const form = document.getElementById('filters');
+    const keyword = document.getElementById('keyword');
+    const region = document.getElementById('region');
+    const stock = document.getElementById('stock');
+    const result = document.getElementById('result');
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      result.textContent = `已应用筛选：关键词“${keyword.value}”；地区：${region.selectedOptions[0].textContent}；仅显示有货：${stock.checked ? '是' : '否'}。`;
+    });
+    form.addEventListener('reset', () => { result.textContent = '尚未应用筛选。'; });
+  </script>
+</body>
+</html>

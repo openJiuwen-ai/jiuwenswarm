@@ -43,6 +43,7 @@ from openjiuwen.agent_teams.schema.blueprint import (
 from openjiuwen.agent_teams.schema.deep_agent_spec import (
     BuiltinToolSpec,
     DeepAgentSpec,
+    ProgressiveToolSpec,
     RailSpec,
     TeamModelConfig,
     WorkspaceSpec,
@@ -69,6 +70,11 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
+    AUTHORIZATION_EXECUTION_CONTEXTS,
+    AuthorizationExecutionContext,
+    AuthorizerRoute,
+)
 from jiuwenswarm.agents.swarm import (
     SwarmBuildContext,
     enrich_team_spec_for_swarm,
@@ -83,6 +89,7 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
+from gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -172,6 +179,21 @@ def test_team_heartbeat_rail_skipped_for_cron_execution_session(ctx_kwargs: dict
     assert member_rails._build_heartbeat_rail({}, context) is None
 
 
+def test_team_heartbeat_rail_skipped_for_xiaoyi_channel() -> None:
+    """小艺渠道的成员不挂心跳工具（渠道没有可用的主动投递路径）。"""
+    context = SwarmBuildContext(
+        session_id="xiaoyi_1a13511901d_32eb921d481b",
+        channel_id="xiaoyi",
+        user_id="user-1",
+        request_metadata={"mode": "team.work.normal"},
+        mode="team.work.normal",
+        member_card_id="leader-card",
+        heartbeat_job_service=object(),
+    )
+
+    assert member_rails._build_heartbeat_rail({}, context) is None
+
+
 @pytest.mark.parametrize(
     "mode",
     [
@@ -209,6 +231,7 @@ def test_canonical_code_team_modes_use_code_profile(mode: str) -> None:
 # Sourced from the registry symbols so the test tracks renames automatically.
 _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
     {
+        registry.USER_HOOKS,
         registry.RUNTIME_PROMPT,
         registry.TEAM_SKILL_STORAGE_POLICY,
         registry.TEAM_SKILL_LIBRARY_RELOAD,
@@ -249,7 +272,6 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         # Skill retrieval is a separate self-gated tool provider.
         registry.SKILL_RETRIEVAL,
         registry.SYMPHONY_TOOLKIT,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,
@@ -613,12 +635,14 @@ def test_build_member_capability_specs_rail_names(
     rail_names = {spec.type for spec in rails_specs}
 
     expected = _TEAM_SHARED_RAIL_NAMES | extra_rails
+    if role == "leader":
+        expected = expected | {registry.SESSION_MESSAGING_ROUTE}
     if role == "teammate":
         expected = expected | {registry.TASK_PLANNING}
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 19
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 20
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -627,14 +651,81 @@ def test_build_member_capability_specs_rail_names(
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
 def test_build_member_capability_specs_tool_names(role: str) -> None:
-    """Both roles declare the common tool set (base / cron / send_file)."""
+    """Only the leader adds A4P and durable cross-Session messaging tools."""
     config = {"agents": {"leader": {"skills": []}, "teammate": {"skills": []}}}
 
     _, tool_specs = build_member_capability_specs(config, "team", role)
     tool_names = {spec.type for spec in tool_specs}
 
-    assert tool_names == _COMMON_TOOL_NAMES
+    expected = set(_COMMON_TOOL_NAMES)
+    if role == "leader":
+        expected.add(registry.A4P_INTENT_AUTHORIZATION)
+        expected.add(registry.SESSION_MESSAGING_TOOLS)
+    assert tool_names == expected
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.code"])
+def test_team_members_do_not_register_user_todos(mode: str, role: str) -> None:
+    _, tool_specs = build_member_capability_specs({}, mode, role)
+
+    assert registry.USER_TODOS not in {spec.type for spec in tool_specs}
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_design_profile_web_tools_are_leader_only(role: str) -> None:
+    _, tool_specs = build_member_capability_specs({}, NEW_TEAM_DESIGN, role)
+    tool_names = {spec.type for spec in tool_specs}
+
+    expected = {registry.VISION, registry.AUDIO}
+    if role == "leader":
+        expected |= {
+            registry.WEB_SEARCH,
+            registry.WEB_FETCH,
+            registry.WEB_PAID_SEARCH,
+            registry.DESIGNER_GRAPH_TOOLS,
+        }
+    assert tool_names == expected
+
+
+def test_a4p_intent_authorization_provider_is_interactive_web_leader_only() -> None:
+    enabled = SwarmBuildContext(
+        role="leader",
+        session_id="session-1",
+        config={"a4p": {"enabled": True}},
+    )
+    teammate = SwarmBuildContext(
+        role="teammate",
+        session_id="session-1",
+        config={"a4p": {"enabled": True}},
+    )
+
+    AUTHORIZATION_EXECUTION_CONTEXTS.clear()
+    assert tools.build_a4p_intent_authorization({}, enabled) == []
+    AUTHORIZATION_EXECUTION_CONTEXTS.activate(
+        AuthorizationExecutionContext(
+            request_id="request-1",
+            session_id="session-1",
+            channel_id="web",
+            agent_id="main_agent",
+            metadata={},
+            authorizer_route=AuthorizerRoute(
+                session_id="session-1",
+                app_id="default",
+                agent_ref_mode="team",
+                agent_ref_id="default",
+            ),
+        )
+    )
+    try:
+        built = tools.build_a4p_intent_authorization({}, enabled)
+        assert [tool.card.name for tool in built] == [
+            "request_a4p_intent_authorization"
+        ]
+        assert tools.build_a4p_intent_authorization({}, teammate) == []
+    finally:
+        AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
 
 def test_role_skills_seed_only_the_team_skill_rail() -> None:
@@ -891,6 +982,45 @@ def test_team_member_deep_agent_spec_keeps_core_skill_discovery_when_retrieval_d
     assert spec.enable_skill_discovery is True
 
 
+@pytest.mark.parametrize(
+    ("mode", "role"),
+    [
+        ("team", "leader"),
+        ("team", "teammate"),
+        ("team.plan", "leader"),
+        ("team.plan", "teammate"),
+    ],
+)
+def test_team_member_deep_agent_spec_follows_progressive_tool_switch(mode: str, role: str) -> None:
+    """The top-level single-agent switch mounts tool_search on every team member."""
+    spec = build_member_deep_agent_spec(
+        {"progressive_tool_enabled": True}, mode, role, DeepAgentSpec()
+    )
+
+    assert spec.progressive_tool is not None
+    assert spec.progressive_tool.enabled is True
+    logger.info("%s/%s progressive_tool: %s", mode, role, spec.progressive_tool)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_team_member_deep_agent_spec_keeps_base_progressive_tool_when_switch_off(role: str) -> None:
+    """A disabled switch leaves the base spec's progressive_tool byte-identical."""
+    config = {"progressive_tool_enabled": False}
+
+    plain = build_member_deep_agent_spec(config, "team", role, DeepAgentSpec())
+    declared = build_member_deep_agent_spec(
+        config,
+        "team",
+        role,
+        DeepAgentSpec(progressive_tool=ProgressiveToolSpec(enabled=True, search_limit=7)),
+    )
+
+    assert plain.progressive_tool is None
+    assert declared.progressive_tool is not None
+    assert declared.progressive_tool.enabled is True
+    assert declared.progressive_tool.search_limit == 7
+
+
 @pytest.mark.parametrize("mode", ["code.team", "team.plan.code"])
 def test_code_member_deep_agent_spec_keeps_skill_use_rail_when_retrieval_enabled(mode: str) -> None:
     """Code profiles keep skill_tool access without all-mode skill injection."""
@@ -992,6 +1122,7 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
         "channel_id",
         "request_metadata",
         "agent_group_name",
+        "agent_group_package",
     }
 
 
@@ -1023,6 +1154,57 @@ def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     # The parent-free contract: openjiuwen removed the imperative customizer
     # hook entirely, so the field no longer exists on the spec.
     assert not hasattr(spec, "agent_customizer")
+
+
+@pytest.mark.parametrize(
+    ("mode", "kept_rail", "dropped_rails"),
+    [
+        ("team", registry.RUNTIME_PROMPT, (registry.TASK_PLANNING, registry.CODE_LSP)),
+        ("code.team", registry.CODE_LSP, (registry.CODE_TASK_PLANNING, registry.CODE_AGENT_MODE)),
+    ],
+)
+def test_enrich_team_spec_for_swarm_builds_a_narrow_reviewer_spec(
+    mode: str,
+    kept_rail: str,
+    dropped_rails: tuple[str, ...],
+) -> None:
+    """Temp reviewers get a read-only, inspection-only slice of the teammate spec."""
+    spec = _make_team_spec()
+    spec.enable_permissions = True
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    teammate = spec.agents["teammate"]
+    reviewer = spec.reviewer_agent
+    assert reviewer is not None
+    rail_types = [rail.type for rail in reviewer.rails or []]
+    assert kept_rail in rail_types
+    assert TEAM_SKILL_USE in rail_types
+    sys_rails = [rail for rail in reviewer.rails if rail.type == registry.SYS_OPERATION]
+    assert len(sys_rails) == 1 and sys_rails[0].params["read_only"] is True
+    for dropped in (
+        *dropped_rails,
+        registry.HEARTBEAT,
+        registry.MEMBER_SKILL_TOOLKIT,
+        registry.MEMBER_SKILL_EVOLUTION,
+        registry.TEAM_PERMISSION,
+        registry.PLUGIN_RAILS,
+    ):
+        assert dropped not in rail_types
+    # The teammate keeps what the reviewer drops.
+    teammate_rail_types = {rail.type for rail in teammate.rails or []}
+    assert registry.TEAM_PERMISSION in teammate_rail_types
+    assert registry.HEARTBEAT in teammate_rail_types
+
+    tool_types = {tool.type for tool in reviewer.tools or [] if isinstance(tool, BuiltinToolSpec)}
+    assert registry.WEB_FETCH in tool_types
+    assert registry.VISION in tool_types
+    assert not tool_types & {registry.CRON_TOOLS, registry.SEND_FILE, registry.USER_TODOS, registry.IMAGE_GEN}
+
+    assert reviewer.subagents is None
+    assert reviewer.enable_task_planning is False
+    assert reviewer.mcps == teammate.mcps
+    assert reviewer.cwd == teammate.cwd
 
 
 @pytest.mark.parametrize(
@@ -1428,6 +1610,7 @@ def _write_agent_group_assembly_fixture(root: Path) -> Path:
                 "name": "sample-expert-group",
                 "package_type": "agent_group",
                 "instruction": "Leader 负责理解用户目标",
+                "tags": [{"id": "analysis", "zh": "分析", "en": "Analysis"}],
                 "agents": list(manifests),
                 "skills": ["skill_name_1"],
             }
@@ -1466,8 +1649,9 @@ def _write_agent_group_assembly_fixture(root: Path) -> Path:
     return package_dir
 
 
+@pytest.mark.parametrize("organization_enabled", [False, True])
 def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, organization_enabled: bool
 ) -> None:
     """AgentGroup prompts stay Team-owned while capabilities use snapshots."""
     from jiuwenswarm.server.runtime import extension_package_manager as package_manager
@@ -1489,6 +1673,7 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
     )
     spec = _make_team_spec()
     spec.leader.prompt = "existing leader agreement"
+    spec.enable_organization = organization_enabled
 
     enrich_team_spec_for_swarm(
         spec,
@@ -1499,6 +1684,9 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(
     )
 
     assert spec.team_mode == "hybrid"
+    assert spec.metadata["agent_group_name"] == "sample-expert-group"
+    assert spec.metadata["capabilities"] == ["analysis"]
+    assert spec.enable_organization is organization_enabled
     assert [member.member_name for member in spec.predefined_members] == [
         "member1",
         "member2",
@@ -1611,6 +1799,14 @@ def test_send_file_gating_defaults_by_channel() -> None:
     # Explicit config switch overrides the default.
     disabled = {"channels": {"web": {"send_file_allowed": False}}}
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
+
+
+def test_xiaoyi_send_file_is_disabled_even_when_config_enabled() -> None:
+    """Xiaoyi's missing delivery path is enforced regardless of stale config."""
+    enabled = {"channels": {"xiaoyi": {"send_file_allowed": True}}}
+
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi")
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi:app")
 
 
 def test_team_send_file_does_not_enable_auto_authorization(
@@ -2337,6 +2533,7 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
     if mode == "team.plan.code":
         expected_rails = expected_rails - {registry.CODE_CONFIRM_INTERRUPT}
     assert expected_rails <= rail_names
+    assert registry.SESSION_MESSAGING_ROUTE in rail_names
     assert registry.CODE_TASK_PLANNING not in rail_names
     assert registry.TEAM_SKILL_EVOLUTION in rail_names
     assert registry.STRUCTURED_ASK_USER in rail_names
@@ -2360,16 +2557,17 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.AUDIO,
         # SKILL_TOOLKIT moved to the MEMBER_SKILL_TOOLKIT rail (see common set).
         registry.SKILL_RETRIEVAL,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,
         registry.VISUAL_GEN,
         registry.XIAOYI_PHONE,
         registry.SYMPHONY_TOOLKIT,
+        registry.A4P_INTENT_AUTHORIZATION,
         registry.CODE_EXTRA_TOOLS,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
+        registry.SESSION_MESSAGING_TOOLS,
     }
 
 
@@ -2514,6 +2712,54 @@ def test_leader_deep_agent_spec_forces_enable_task_planning_off(mode: str) -> No
     assert teammate_spec.enable_task_planning is True
 
 
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
+def test_leader_deep_agent_spec_pins_subagents_empty(mode: str) -> None:
+    """Leaders carry no sub-agents: an empty list keeps SubagentRail (task_tool) unmounted."""
+    register_swarm_providers()
+    from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
+    from openjiuwen.core.single_agent import AgentCard
+
+    # Every subagent source is enabled at once: the member set (statusline /
+    # explore / plan / code), the per-member browser_agent, and a browser_agent
+    # declared directly on the YAML base spec.
+    config = {
+        "react": {
+            "subagents": {
+                "browser_agent": {"enabled": True},
+                "code_agent": {"enabled": True},
+            }
+        }
+    }
+    base = DeepAgentSpec(
+        subagents=[
+            SubAgentSpec(
+                agent_card=AgentCard(name="browser_agent"),
+                system_prompt="",
+                subagent_type="browser_agent",
+            )
+        ]
+    )
+
+    leader_spec = build_member_deep_agent_spec(config, mode, "leader", base)
+
+    assert leader_spec.subagents == []
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+def test_teammate_deep_agent_spec_keeps_member_subagents(mode: str) -> None:
+    """Teammates keep the member sub-agent set that the leader is pinned without."""
+    register_swarm_providers()
+    config = {"react": {"subagents": {"browser_agent": {"enabled": True}}}}
+
+    teammate_spec = build_member_deep_agent_spec(config, mode, "teammate", DeepAgentSpec())
+
+    teammate_factories = {sub.factory_name for sub in teammate_spec.subagents or []}
+    assert SWARM_BROWSER_AGENT in teammate_factories
+    if mode == "code.team":
+        assert registry.EXPLORE_AGENT in teammate_factories
+        assert registry.PLAN_AGENT in teammate_factories
+
+
 def test_code_subagent_specs_use_factory_names() -> None:
     """Code modes declare explore/plan (+ gated code) sub-agents via factory_name."""
     register_swarm_providers()
@@ -2545,7 +2791,7 @@ def test_code_member_deep_spec_dedupes_base_explore_agent() -> None:
         ]
     )
 
-    spec = build_member_deep_agent_spec({}, "code.team", "leader", base)
+    spec = build_member_deep_agent_spec({}, "code.team", "teammate", base)
     names = [sub.agent_card.name for sub in spec.subagents or []]
 
     assert names == ["statusline-setup", "explore_agent", "plan_agent"]
@@ -3297,11 +3543,13 @@ def test_rebuilt_member_spec_keeps_provider_declarations() -> None:
     assert registry.CODE_RUNTIME_PROMPT in rail_types
     assert registry.RUNTIME_PROMPT not in rail_types
     # Sub-agents are declared by ``factory_name`` and survive serialization.
-    leader_factory_names = {
-        sub.factory_name for sub in rebuilt.agents["leader"].subagents
+    # The leader is pinned subagent-free; the teammate keeps the code profile set.
+    assert rebuilt.agents["leader"].subagents == []
+    teammate_factory_names = {
+        sub.factory_name for sub in teammate.subagents or []
     }
-    assert registry.EXPLORE_AGENT in leader_factory_names
-    assert registry.PLAN_AGENT in leader_factory_names
+    assert registry.EXPLORE_AGENT in teammate_factory_names
+    assert registry.PLAN_AGENT in teammate_factory_names
     # The code system prompt is carried declaratively on the spec.
     assert teammate.system_prompt
 
@@ -3329,6 +3577,42 @@ def test_swarm_assembly_hint_from_seed_and_legacy() -> None:
     assert rmb._swarm_assembly_hint(legacy) == {}
     # Defensive: a team agent without a spec yields no hint.
     assert rmb._swarm_assembly_hint(types.SimpleNamespace()) == {}
+
+
+def test_swarm_assembly_hint_carries_cron_marker() -> None:
+    """Team cron runs keep their cron marker across the bootstrap boundary.
+
+    Without the marker the remote teammate rebuilds its spec from mode /
+    project_dir alone, and its members re-expose cron tools inside a cron
+    execution session — nested cron creation (issue #5116).
+    """
+    from jiuwenswarm.agents.harness.team import remote_member_bootstrap as rmb
+
+    cron_meta = {"job_id": "job-1", "run_id": "job-1:1900"}
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="__cron___19abc_rand12",
+        mode="team",
+        request_metadata={"mode": "team", "cron": cron_meta},
+    )
+    leader = types.SimpleNamespace(spec=spec)
+    assert rmb._swarm_assembly_hint(leader) == {
+        "mode": "team",
+        "cron": cron_meta,
+    }
+
+    # Ordinary sessions carry no cron marker, so the hint stays minimal.
+    plain = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        plain,
+        session_id="web_19abc",
+        mode="team",
+        request_metadata={"mode": "team"},
+    )
+    assert rmb._swarm_assembly_hint(types.SimpleNamespace(spec=plain)) == {
+        "mode": "team",
+    }
 
 
 def test_browser_key_derivation() -> None:
@@ -3484,7 +3768,7 @@ def test_browser_subagent_teammates_get_distinct_keys(
 
 
 def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
-    """shared browser_agent is replaced by SWARM_BROWSER_AGENT for each member."""
+    """shared browser_agent is replaced by SWARM_BROWSER_AGENT for each teammate."""
     register_swarm_providers()
     from openjiuwen.agent_teams.schema.deep_agent_spec import SubAgentSpec
     from openjiuwen.core.single_agent import AgentCard
@@ -3499,7 +3783,7 @@ def test_team_mode_deep_spec_replaces_shared_browser_agent() -> None:
         workspace=WorkspaceSpec(root_path="/tmp/ws"),
     )
     config = {"react": {"subagents": {"browser_agent": {"enabled": True}}}}
-    spec = build_member_deep_agent_spec(config, "team", "leader", base)
+    spec = build_member_deep_agent_spec(config, "team", "teammate", base)
 
     # The shared entry must be gone and exactly one SWARM_BROWSER_AGENT present.
     subagent_factories = [

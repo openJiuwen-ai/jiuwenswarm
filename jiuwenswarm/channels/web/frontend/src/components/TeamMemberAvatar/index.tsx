@@ -1,7 +1,10 @@
+import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import clsx from 'clsx';
 import { useMemo } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
+import { resolveAgentGroupMember } from '../../utils/agentGroupAvatars';
 import { resolveTeamMemberAvatar, type TeamMemberIdentity } from '../../utils/teamMemberAvatar';
 
 interface TeamMemberAvatarProps {
@@ -18,21 +21,35 @@ interface TeamMemberAvatarProps {
 }
 
 /**
- * 从当前会话的成员名册里取该成员的身份（人类 / 外部 CLI / 普通队友）。
+ * 从当前会话的成员名册里取该成员的身份（人类 / 外部 CLI / 专家团成员）。
  *
  * 调用方手上只有 member_id，身份信息在名册里；在组件里订阅而不是让工具函数直接
  * 读 store，是为了名册更新时头像能跟着重渲染——成员刚建出来时 cli_agent 可能还没到。
  */
 function useTeamMemberIdentity(member?: string): TeamMemberIdentity | undefined {
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
   return useMemo(() => {
     const id = member?.trim();
     if (!id || !teamMembers) return undefined;
     const known = teamMembers.find((item) => item.member_id === id);
     if (!known) return undefined;
-    return { role: known.role, mode: known.mode, cliAgent: known.cli_agent };
+    return { role: known.role, mode: known.mode, cliAgent: known.cli_agent, agentTemplate: known.agent_template };
   }, [member, teamMembers]);
+}
+
+/**
+ * 会话绑定了专家团时，判断这个成员是否来自该包：专家节点按 agent_template，
+ * 预定义成员按 member_id。是包成员 → 带 ★ 的插画外观。
+ */
+function useIsAgentGroupMember(
+  member: string | undefined,
+  identity: TeamMemberIdentity | undefined,
+): boolean {
+  const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
+  const groupId = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
+  const group = useAgentGroupVisualIdentity(groupId);
+  return resolveAgentGroupMember(group, { agentTemplate: identity?.agentTemplate, memberId: member?.trim() });
 }
 
 export function TeamMemberAvatar({
@@ -43,21 +60,28 @@ export function TeamMemberAvatar({
   identity,
 }: TeamMemberAvatarProps): JSX.Element {
   const rosterIdentity = useTeamMemberIdentity(member);
-  const avatar = resolveTeamMemberAvatar(member, identity ?? rosterIdentity);
+  const effectiveIdentity = identity ?? rosterIdentity;
+  const packageMember = useIsAgentGroupMember(member, effectiveIdentity);
+  const avatar = resolveTeamMemberAvatar(
+    member,
+    packageMember ? { ...effectiveIdentity, packageMember: true } : effectiveIdentity,
+  );
   const defaultImageRadius = avatar.kind === 'user' ? 'rounded-xl' : 'rounded-2xl';
+  const label = alt ?? `${member || 'Unknown'} avatar`;
 
-  return (
+  const face = (
     <div
       className={clsx(
         className ? null : 'h-8 w-8',
-        'shrink-0 overflow-hidden rounded-xl bg-transparent',
+        'relative shrink-0 overflow-hidden rounded-xl bg-transparent',
         className
       )}
       style={avatar.backgroundColor ? { backgroundColor: avatar.backgroundColor } : undefined}
+      data-avatar-kind={avatar.kind}
     >
       <img
         src={avatar.src}
-        alt={alt ?? `${member || 'Unknown'} avatar`}
+        alt={label}
         className={clsx(
           'h-full w-full object-cover',
           defaultImageRadius,
@@ -67,5 +91,20 @@ export function TeamMemberAvatar({
         )}
       />
     </div>
+  );
+
+  if (avatar.badge !== 'expert') return face;
+  // 角标挂在裁切圆的外层：圆形容器 overflow-hidden 会把贴角的角标切掉大半。
+  return (
+    <span className="relative inline-flex shrink-0" data-testid="team-member-avatar-expert">
+      {face}
+      <span
+        aria-hidden="true"
+        data-testid="team-member-avatar-expert-badge"
+        className="pointer-events-none absolute -bottom-0.5 -right-0.5 flex h-[11px] w-[11px] items-center justify-center rounded-full bg-amber-400 text-[7px] leading-none text-white ring-1 ring-card"
+      >
+        ★
+      </span>
+    </span>
   );
 }

@@ -98,6 +98,23 @@ async def test_warmup_swallows_probe_failures():
 
     with patch.object(image_modality_warmup, "probe_image_support", _failing_probe):
         await warm_image_modality_cache(config, reason="test")
+        assert await warm_image_modality_cache(config, reason="test", report_status=True) is False
+
+
+@pytest.mark.asyncio
+async def test_negative_vision_verdict_is_ready_but_unknown_verdict_is_not():
+    config = {"models": {"defaults": [_model_entry("model-a")]}}
+
+    async def negative(_model):
+        return False
+
+    async def unknown(_model):
+        return None
+
+    with patch.object(image_modality_warmup, "probe_image_support", negative):
+        assert await warm_image_modality_cache(config, reason="test", report_status=True) is True
+    with patch.object(image_modality_warmup, "probe_image_support", unknown):
+        assert await warm_image_modality_cache(config, reason="test", report_status=True) is False
 
 
 @pytest.mark.asyncio

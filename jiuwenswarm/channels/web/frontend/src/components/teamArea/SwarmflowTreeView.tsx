@@ -46,6 +46,8 @@ import {
   computeLoopStatus,
   computeSessionStatus,
   findActiveIterationIndex,
+  workflowAgentIdentity,
+  workflowAgentAvatarName,
   isForkSessionNode,
   forkParentDisplay,
   parseVerifyOutcome,
@@ -68,6 +70,7 @@ import {
   type AgentModalState,
   type DetailSection,
 } from './AgentDetailModal';
+import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { Toast } from '../ConnectorMarket/Toast';
 
 // ── 状态图标映射 ──────────────────────────────────────────
@@ -226,7 +229,7 @@ function AgentLoopNode({
           <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
-        <span className="text-sm font-medium text-text break-words">{name}</span>
+        <span className="text-sm font-medium text-text break-words" title={name}>{name}</span>
         <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
@@ -321,7 +324,7 @@ function PhaseLoopNode({
           <ChevronRight className="w-4 h-4 text-text-muted shrink-0" />
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
-        <span className="text-sm font-medium text-text break-words">{baseName}</span>
+        <span className="text-sm font-medium text-text break-words" title={baseName}>{baseName}</span>
         <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
@@ -403,6 +406,10 @@ function detailChipBadge(
     const n = agent.output_token_count;
     return { value: n != null && n > 0 ? compactTokenLabel(n) : '', unit: 'tok', cache: null };
   }
+  if (sec.key === 'activity') {
+    // 工具活动对没有文本内容——徽章显示条目数。
+    return { value: String(sec.activity?.length ?? 0), unit: '', cache: null };
+  }
   return { value: formatCharCount(sec.content), unit: '', cache: null };
 }
 
@@ -433,6 +440,7 @@ function AgentNode({
   roleTag,
   voteBadge,
   workflow,
+  avatarName,
 }: {
   agent: WorkflowAgent;
   phaseAgents: WorkflowAgent[];
@@ -446,6 +454,9 @@ function AgentNode({
   /** 整个 run（跨 phase）：session 节点的跨轮聚合按 member_name 在全 run 收集，
    *  否则 analyst 分属基线/综合/裁决三个 phase 时每张卡只聚到本 phase 的轮次。 */
   workflow?: WorkflowRun;
+  /** 头像键：展示名可被调用方裁剪（verify 面板剥前缀），但头像哈希必须用
+   *  原名才能与成员列表同源，缺省即 workflowAgentAvatarName(agent)。 */
+  avatarName?: string;
 }) {
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(agent.status === 'running');
@@ -454,6 +465,16 @@ function AgentNode({
 
   // 汇总当前 agent 可用的详情 section（标签与弹窗共用同一数据源）
   const detailSections = useMemo(() => buildDetailSections(t, agent), [t, agent]);
+
+  // 行内工具提示：运行中的节点显示最近一条工具活动名；无活动的运行中节点保持原样。
+  const latestToolName = useMemo(() => {
+    if (agent.status !== 'running') return null;
+    const acts = agent.activity ?? [];
+    for (let i = acts.length - 1; i >= 0; i--) {
+      if (acts[i].tool_name) return acts[i].tool_name;
+    }
+    return null;
+  }, [agent.status, agent.activity]);
 
   const isSession = agent.node_type === 'agent_session'
     || agent.node_type === 'agent_session_fork'
@@ -621,6 +642,13 @@ function AgentNode({
             >
               fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
             </span>
+            <TeamMemberAvatar
+              member={avatarName ?? workflowAgentAvatarName(agent)}
+              identity={workflowAgentIdentity(agent)}
+              className="w-5 h-5 shrink-0 rounded-full"
+              imageClassName="rounded-full"
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
+            />
           </>
         ) : (
           <>
@@ -635,9 +663,30 @@ function AgentNode({
                 {roleTag}
               </span>
             )}
+            <TeamMemberAvatar
+              member={avatarName ?? workflowAgentAvatarName(agent)}
+              identity={workflowAgentIdentity(agent)}
+              className="w-5 h-5 shrink-0 rounded-full"
+              imageClassName="rounded-full"
+              alt={avatarName ?? workflowAgentAvatarName(agent)}
+            />
           </>
         )}
-        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{agent.name}</span>
+        {/* 主文字永远是脚本给节点的 label（同一专家被多次调用时唯一可区分）；
+            专家身份靠头像 ★ 与悬浮提示"专家：展示名（成员名）"，不占行内空间。 */}
+        <span
+          className="text-sm text-text break-words flex-1 inline-flex items-baseline gap-1.5 min-w-0"
+          data-testid="team-area-swarmflow-agent-name"
+          data-variant={agent.id}
+          title={agent.agent_template
+            ? `${agent.name}\n${t('swarmflow.expertIdentity', {
+                name: agent.display_name ?? agent.agent_template,
+                template: agent.agent_template,
+              })}`
+            : agent.name}
+        >
+          {agent.name}
+        </span>
         {verdict && (
           <span className={`shrink-0 text-[11px] font-medium px-1.5 py-0.5 rounded-full ${
             verdict.type === 'pass'
@@ -651,6 +700,16 @@ function AgentNode({
         )}
         {agent.model && (
           <span className="text-xs text-text-muted shrink-0">{agent.model}</span>
+        )}
+        {latestToolName && (
+          <span
+            className="text-[10px] text-text-muted/60 shrink-0 max-w-[14ch] truncate"
+            title={latestToolName}
+            data-testid="team-area-swarmflow-agent-tool-hint"
+            data-variant={agent.id}
+          >
+            {latestToolName}
+          </span>
         )}
         {/* 展开 input/output 详情：完整体已就绪（有 prompt/outcome/error）或仅为摘要待拉取时均显示 */}
         {(agent.prompt || agent.outcome || agent.error || agentDetailPending) && (
@@ -734,6 +793,7 @@ function AgentNode({
         agentName={agent.name}
         onClose={() => setModalState(null)}
         onTabChange={(key) => setModalState((prev) => (prev ? { ...prev, activeKey: key } : prev))}
+        callRecordsSource={{ sessionId, memberId: `${runId}:${agent.id}` }}
       />
 
       {/* Outcome 副文本（详情展开时隐藏） */}
@@ -966,7 +1026,7 @@ function VerifyPanel({
           <ChevronRight className="w-3.5 h-3.5 text-text-muted shrink-0" />
         )}
         <span className="text-sm text-cyan-600 dark:text-cyan-300 shrink-0">▦</span>
-        <span className="text-sm font-medium text-text">{group.label}</span>
+        <span className="text-sm font-medium text-text" title={group.label}>{group.label}</span>
         {group.threshold != null && (
           <span className="text-xs text-text-muted shrink-0">{t('swarmflow.verifyThreshold', { count: group.threshold })}</span>
         )}
@@ -1060,6 +1120,7 @@ function VerifyPanel({
                 <AgentNode
                   key={agent.id}
                   agent={shortName === agent.name ? agent : { ...agent, name: shortName }}
+                  avatarName={workflowAgentAvatarName(agent)}
                   phaseAgents={phaseAgents}
                   depth={0}
                   runId={runId}
@@ -1269,7 +1330,7 @@ function PhaseNode({
           <div className="w-4 shrink-0" />
         )}
         <StatusIcon status={phase.status} />
-        <span className="text-sm font-medium text-text break-words flex-1" data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
+        <span className="text-sm font-medium text-text break-words flex-1" title={phase.name} data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
           {phase.name}
         </span>
         {phase.phase_type === 'child' && (
@@ -1447,7 +1508,7 @@ function RunNode({
         <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text-strong truncate" data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
+            <span className="text-sm font-semibold text-text-strong truncate" title={run.name} data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
               {run.name}
             </span>
             <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>

@@ -45,7 +45,11 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
 )
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+    SessionMessagingRouteRail,
+)
 from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
+from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import is_heartbeat_supported
 from jiuwenswarm.agents.harness.team.rails.team_skill_storage_policy_rail import (
     TeamSkillStoragePolicyRail,
 )
@@ -73,12 +77,59 @@ TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 # spec carries the old element name.
 TEAM_SKILL_LIBRARY_RELOAD = "swarm.team_skill_library_reload"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
+ORGANIZATION_AVAILABILITY = "swarm.organization_availability"
+ORGANIZATION_MODEL = "swarm.organization_model"
+ORGANIZATION_OWNER_INBOX = "swarm.organization_owner_inbox"
+
+
+@harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_OWNER_INBOX,
+                 description="Inject ordered durable results on the Owner's next model call.")
+def _build_organization_owner_inbox_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    from jiuwenswarm.agents.harness.team.rails.organization_owner_inbox_rail import OrganizationOwnerInboxRail
+
+    if str(context.role) != "leader":
+        return None
+    return OrganizationOwnerInboxRail(context.team_id, context.session_id)
+
+
+@harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_MODEL,
+                 description="Apply the persistent model selection of an organization expert Team.")
+def _build_organization_model_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    from jiuwenswarm.agents.harness.team.rails.organization_model_rail import OrganizationModelRail
+
+    return OrganizationModelRail(context.team_id, context.session_id, str(context.role))
+
+
+@harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_AVAILABILITY,
+                 description="Expose current AgentGroup availability to organization leaders.")
+def _build_organization_availability_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    from jiuwenswarm.agents.harness.team.rails.organization_availability_rail import OrganizationAvailabilityRail
+
+    return OrganizationAvailabilityRail(context.team_id, context.session_id)
+
 CONTEXT_PROCESSOR = "swarm.context_processor"
 MODEL_ANOMALY_DETECTION = "swarm.model_anomaly_detection"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
 HEARTBEAT = "swarm.heartbeat"
+SESSION_MESSAGING_ROUTE = "swarm.session_messaging_route"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=SESSION_MESSAGING_ROUTE,
+    description="Leader-only invocation-scoped Session messaging route rail.",
+)
+def _build_session_messaging_route_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> SessionMessagingRouteRail | None:
+    """Mount Session messaging routing only on the Team leader."""
+    _ = params
+    if str(getattr(context, "role", "") or "") != "leader":
+        return None
+    return SessionMessagingRouteRail()
 
 
 @harness_element(
@@ -113,6 +164,16 @@ def _build_heartbeat_rail(
     ):
         logger.info(
             "[swarm.heartbeat] skip HeartbeatRail for cron execution session %s",
+            session_id,
+        )
+        return None
+    # 小艺等渠道没有可用的主动投递路径（见 heartbeat_policy），不挂心跳工具，
+    # 否则成员会回答"心跳已创建"而结果永远送不到手机。
+    if not is_heartbeat_supported(getattr(context, "channel_id", None)):
+        logger.info(
+            "[swarm.heartbeat] skip HeartbeatRail for channel without heartbeat "
+            "support channel=%s session=%s",
+            getattr(context, "channel_id", None),
             session_id,
         )
         return None
@@ -625,6 +686,7 @@ __all__ = [
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",
     "HEARTBEAT",
+    "SESSION_MESSAGING_ROUTE",
     "TEAM_PERMISSION",
     "TEAM_PERMISSION_POLICY",
 ]

@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.runtime.harmonyos import harmonyos_project
-from jiuwenswarm.server.runtime.harmonyos.harmonyos_project import (
+from gateway.channel_manager.tui.harmonyos import harmonyos_project
+from gateway.channel_manager.tui.harmonyos.harmonyos_project import (
     HarmonyOSProjectError,
     inspect_harmonyos_project,
     load_harmonyos_project_context,

@@ -1,17 +1,96 @@
-.task-full-duplex-action {
+.chat-input-btn.task-full-duplex-action {
   border: 1px solid var(--color-border-default);
-  background: var(--color-surface-elevated);
-  color: var(--color-text-link);
+  background: var(--color-text-primary);
+  color: var(--color-text-inverse);
 }
 
 .task-full-duplex-action:hover:not(:disabled) {
-  background: var(--color-icon-btn-hover-surface);
+  opacity: 0.85;
 }
 
 .task-full-duplex-action.is-active {
-  border-color: var(--color-feedback-danger);
-  background: var(--color-feedback-danger);
+  border-color: var(--color-text-primary);
+  background: var(--color-text-primary);
   color: var(--color-text-inverse);
+}
+
+.task-full-duplex-orb {
+  position: absolute;
+  bottom: calc(100% + 12px);
+  left: 50%;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  transform: translateX(-50%);
+}
+
+.task-full-duplex-orb__sphere {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: linear-gradient(145deg, var(--color-duplex-orb-start), var(--color-duplex-orb-end));
+  box-shadow: 0 4px 16px var(--color-duplex-orb-shadow);
+  animation: task-full-duplex-breathe 2.4s ease-in-out infinite;
+}
+
+.task-full-duplex-orb__controls {
+  display: flex;
+  gap: 8px;
+  padding-top: 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 150ms;
+}
+
+.task-full-duplex-orb:hover .task-full-duplex-orb__controls,
+.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.task-full-duplex-orb__controls button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 5px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 50%;
+  color: var(--color-text-secondary);
+  background: var(--color-surface-elevated);
+  cursor: pointer;
+}
+
+.task-full-duplex-orb__controls button:hover,
+.task-full-duplex-orb__controls button[aria-pressed='true'] {
+  color: var(--color-text-link);
+  background: var(--color-icon-btn-hover-surface);
+}
+
+.task-full-duplex-orb__controls svg {
+  width: 16px;
+  height: 16px;
+}
+
+@keyframes task-full-duplex-breathe {
+  50% {
+    transform: scale(0.95);
+  }
+}
+
+@media (hover: none) {
+  .task-full-duplex-orb__controls {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .task-full-duplex-orb__sphere,
+  .task-full-duplex-action__spinner {
+    animation: none;
+  }
 }
 
 .task-full-duplex-action__spinner {
@@ -22,4 +101,72 @@
   to {
     transform: rotate(360deg);
   }
+}
+
+.task-full-duplex-anchor {
+  display: none;
+}
+
+.task-full-duplex-sharing {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: calc(100vw - 32px);
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  background: var(--color-surface-elevated);
+  box-shadow: 0 4px 16px var(--color-duplex-orb-shadow);
+  font-size: 12px;
+}
+
+.task-full-duplex-sharing__dot {
+  flex: 0 0 6px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-feedback-success);
+}
+
+.task-full-duplex-sharing button {
+  flex-shrink: 0;
+  padding: 3px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  color: inherit;
+  background: var(--color-surface-card);
+  cursor: pointer;
+}
+
+.task-full-duplex-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.task-full-duplex-sources button {
+  display: flex;
+  flex: 1 1 180px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 120px;
+  padding: 16px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  color: var(--color-text-primary);
+  background: var(--color-surface-card);
+  font: inherit;
+  cursor: pointer;
+}
+
+.task-full-duplex-sources button[aria-checked='true'] {
+  border-color: var(--color-text-link);
+  background: var(--color-icon-btn-hover-surface);
 }

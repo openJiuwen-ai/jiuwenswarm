@@ -8,11 +8,13 @@ import logging
 from typing import Any
 
 from jiuwenswarm.common.cron_session import cron_session_matches_job
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
+    DESIGN_WORK_MODE,
+    SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
 from jiuwenswarm.server.runtime.session import project_store
@@ -239,6 +241,21 @@ def _last_user_message_ts(session: dict[str, Any]) -> float:
     return 0.0
 
 
+def _session_matches_requested_work_mode(session: dict[str, Any], raw_work_mode: Any) -> bool:
+    """Keep project session lists inside the caller's work mode.
+
+    The default project is shared. Design canvases and work conversations both
+    use its id, so a list that does not filter would mix them.
+    """
+    if not isinstance(raw_work_mode, str) or not raw_work_mode.strip():
+        return True
+    requested = raw_work_mode.strip().lower()
+    if requested not in SUPPORTED_WORK_MODES:
+        return True
+    actual = str(session.get("work_mode") or DEFAULT_WEB_WORK_MODE).strip().lower()
+    return actual == requested
+
+
 def load_project_sessions(
     params: dict[str, Any], _user_id: str
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
@@ -260,6 +277,8 @@ def load_project_sessions(
         if attribute_session_project(
             session, visible_project_ids, removed_project_ids
         ) != project_id:
+            continue
+        if not _session_matches_requested_work_mode(session, params.get("work_mode")):
             continue
         matched.append(session)
     matched.sort(key=_last_user_message_ts, reverse=True)
@@ -359,12 +378,18 @@ def load_project_list(
     work_mode: str | None = None
     if isinstance(raw_work_mode, str) and raw_work_mode.strip():
         candidate = raw_work_mode.strip().lower()
-        if candidate not in {DEFAULT_WEB_WORK_MODE, DEFAULT_TUI_WORK_MODE}:
-            return None, f"invalid work_mode: {candidate!r}, must be 'code' or 'work'", "BAD_REQUEST"
+        if candidate not in SUPPORTED_WORK_MODES:
+            return None, f"invalid work_mode: {candidate!r}", "BAD_REQUEST"
         work_mode = candidate
 
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
     projects = [p for p in all_projects if work_mode is None or (p.work_mode or DEFAULT_WEB_WORK_MODE) == work_mode]
+    if work_mode == DESIGN_WORK_MODE:
+        from jiuwenswarm.server.runtime.gateway_adapter.designer_adapter import (
+            sync_design_display_names,
+        )
+
+        projects = sync_design_display_names(projects)
     visible_project_ids, removed_project_ids = split_project_ids(all_projects)
     stats: dict[str, dict[str, Any]] = {}
 
@@ -401,7 +426,7 @@ def load_project_list(
         )
 
     default_ids: list[str] = []
-    if work_mode in (None, DEFAULT_WEB_WORK_MODE):
+    if work_mode in (None, DEFAULT_WEB_WORK_MODE, DESIGN_WORK_MODE):
         default_ids.append(DEFAULT_PROJECT_ID_WORK)
     if work_mode in (None, DEFAULT_TUI_WORK_MODE):
         default_ids.append(DEFAULT_PROJECT_ID_CODE)

@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import {
   canShowAssetPublish,
   publishOutcome,
+  localRecordState,
+  isSubmissionLocked,
+  canStartNewVersion,
   validateMetadata,
   createCommitAttempt,
 } from '../node_modules/.cache/asset-publish/assetPublishState.js';
@@ -161,4 +164,29 @@ test('exhausted refresh stops loading and exposes an error notice', (context) =>
       assert.equal(pending.refreshing, true);
     },
   );
+});
+
+test('only in-flight operations lock the form; an unverified outcome can start again', () => {
+  for (const execution_status of ['queued', 'uploading']) {
+    const record = { execution_status };
+    assert.equal(isSubmissionLocked(record), true);
+    assert.equal(canStartNewVersion(record), false);
+  }
+  // #4749: 'unknown' is terminal, not an operation still owned by the backend.
+  for (const execution_status of ['completed', 'failed', 'unknown']) {
+    const record = { execution_status };
+    assert.equal(isSubmissionLocked(record), false);
+    assert.equal(canStartNewVersion(record), true);
+  }
+});
+
+test('records expose only locally confirmed states', () => {
+  assert.equal(localRecordState({ execution_status: 'queued' }), 'queued');
+  assert.equal(localRecordState({ execution_status: 'uploading' }), 'uploading');
+  assert.equal(localRecordState({ execution_status: 'failed' }), 'failed');
+  assert.equal(localRecordState({ execution_status: 'completed' }), 'submitted');
+  // 远端态（pending_moderation / published）不再上屏
+  assert.equal(localRecordState({ execution_status: 'completed', result: { publish_result: 'pending_moderation' } }), 'submitted');
+  assert.equal(localRecordState({ execution_status: 'completed', result: { publish_result: 'published' } }), 'submitted');
+  assert.equal(localRecordState({ execution_status: 'unknown' }), 'unconfirmed');
 });

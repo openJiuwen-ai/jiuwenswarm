@@ -403,6 +403,7 @@ export function PersonalContextSettingsPanel({
                   const idx = availableModels.findIndex((m) => m.model_name === modelName);
                   if (idx >= 0) handleModel(idx);
                 }}
+                includeModelGroups={false}
                 disabled={!isConnected || !!pendingWrites.model_index || visibleModels.length === 0}
               />
             </SettingRow>

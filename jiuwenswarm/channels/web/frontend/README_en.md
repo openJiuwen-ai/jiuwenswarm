@@ -6,6 +6,12 @@ AI coding assistant web UI built with React + TypeScript + Tailwind CSS, with de
 
 ### Implemented
 
+#### 🎬 Design
+- **Workflow canvas**: user prompt → Brief → Storyboard → character and scene specs →
+  R2V clips → compose, with per-node editing and re-runs
+- **Agents**: one Director, plus leaf DeepAgents per node
+- **Docs**: [`docs/en/Design.md`](../../../../docs/en/Design.md)
+
 #### 💬 Chat
 - **Real-time conversation**: WebSocket bidirectional communication with streaming output
 - **Markdown rendering**: Code highlighting, lists, links, etc.

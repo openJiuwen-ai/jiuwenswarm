@@ -1,7 +1,24 @@
+import { createElement } from 'react';
 import { settingsNavigationIcons } from '../../../../assets/settings';
-import type { SettingsModuleDefinition } from '../../registry/types';
-import { FreeModelsSettings } from './FreeModelsSettings';
-import { ModelsSettings } from './ModelsSettings';
+import type { SettingsTabDefinition } from '../../components';
+import type { SettingsCustomItemProps, SettingsModuleDefinition } from '../../registry/types';
+import { ModelsSettings, type ModelSettingsTabId } from './ModelsSettings';
+
+export const modelSettingsTabs = [
+  { id: 'models', labelKey: 'settingsPanel.models.modelsTab' },
+  { id: 'groups', labelKey: 'settingsPanel.models.modelGroups' },
+  { id: 'jev', labelKey: 'settingsPanel.models.jevTab' },
+] as const satisfies readonly SettingsTabDefinition<ModelSettingsTabId>[];
+
+export const defaultModelSettingsTab: ModelSettingsTabId = 'models';
+
+function ModelsSettingsModule({ disabled }: SettingsCustomItemProps) {
+  return createElement(ModelsSettings, {
+    tabs: modelSettingsTabs,
+    defaultTab: defaultModelSettingsTab,
+    disabled,
+  });
+}
 
 export const modelsModule: SettingsModuleDefinition = {
   id: 'models',
@@ -10,14 +27,9 @@ export const modelsModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'limited-free-models',
-      separatedRows: true,
-      items: [{ id: 'limited-free-models', component: 'custom', render: FreeModelsSettings }],
-    },
-    {
       id: 'model-manager',
       separatedRows: true,
-      items: [{ id: 'model-manager', component: 'custom', render: ModelsSettings }],
+      items: [{ id: 'model-manager', component: 'custom', render: ModelsSettingsModule }],
     },
   ],
 };

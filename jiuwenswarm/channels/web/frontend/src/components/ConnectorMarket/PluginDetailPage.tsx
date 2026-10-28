@@ -1,4 +1,3 @@
-import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
 import { useEffect, useState } from 'react';
@@ -184,7 +183,6 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
 
       <div className="detail-body relative flex-1 min-h-0 overflow-y-auto pb-6">
         {/* 头部：与 skill/agent 详情共用的 EntityHeader（头像/标题 20px/30px/标签行/操作区） */}
-        <PublicationDetailStatus kind="plugin" localId={id} />
         <EntityHeader
           testId="connector-market-plugin-detail-header"
           avatar={{ name: title, iconUrl: detail.avatar, testId: 'connector-market-plugin-detail-avatar' }}

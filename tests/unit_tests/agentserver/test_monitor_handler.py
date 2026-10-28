@@ -29,10 +29,12 @@ class _FakeMessage:
         message_id: str,
         content: str,
         protocol: str = "plain",
+        meta: dict | None = None,
     ) -> None:
         self.message_id = message_id
         self.content = content
         self.protocol = protocol
+        self.meta = meta
 
 
 class _FakeMember:
@@ -464,6 +466,97 @@ async def test_convert_plain_protocol_message_keeps_json_like_text_unchanged() -
         await handler.stop()
 
 
+async def _convert_single_message(message: _FakeMessage, task_dao: _FakeTaskDao | None = None) -> dict:
+    event = MonitorEvent(
+        event_type=MonitorEventType.MESSAGE,
+        team_name="team-1",
+        timestamp=123,
+        message_id=message.message_id,
+        from_member_name="team-leader",
+        to_member_name="worker-1",
+    )
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[],
+            leader_member_name=None,
+            events=[event],
+            messages=[message],
+            task_dao=task_dao,
+        ),
+        "sess-monitor",
+    )
+    await handler.start()
+    try:
+        return (await anext(handler.events()))["event"]
+    finally:
+        await handler.stop()
+
+
+@pytest.mark.anyio
+async def test_scheduler_task_start_message_carries_handoff_with_task_title() -> None:
+    message = _FakeMessage(
+        message_id="msg-start",
+        content="",
+        meta={"template": "scheduler_task_start", "refs": {"task": "bless-1"}},
+    )
+    task_dao = _FakeTaskDao(_FakeTask(task_id="bless-1", title="写下第 1 句祝福语"))
+
+    converted = await _convert_single_message(message, task_dao)
+
+    assert converted["content"] == ""
+    assert converted["handoff"] == {
+        "kind": "task_start",
+        "template": "scheduler_task_start",
+        "task_id": "bless-1",
+        "task_title": "写下第 1 句祝福语",
+    }
+
+
+@pytest.mark.anyio
+async def test_scheduler_rework_message_carries_max_rounds() -> None:
+    message = _FakeMessage(
+        message_id="msg-rework",
+        content="",
+        meta={
+            "template": "scheduler_rework",
+            "refs": {"task": "t-1"},
+            "params": {"max_rounds": "3", "feedback": "缺测试"},
+        },
+    )
+
+    converted = await _convert_single_message(message, _FakeTaskDao(_FakeTask(task_id="t-1", title="写接口")))
+
+    assert converted["handoff"]["kind"] == "rework"
+    assert converted["handoff"]["max_rounds"] == "3"
+    assert converted["handoff"]["task_title"] == "写接口"
+    assert "feedback" not in converted["handoff"]
+
+
+@pytest.mark.anyio
+async def test_unknown_template_message_degrades_to_other_without_title_when_lookup_fails() -> None:
+    message = _FakeMessage(
+        message_id="msg-x",
+        content="",
+        meta={"template": "scheduler_future_thing", "refs": {"task": "t-9"}},
+    )
+
+    converted = await _convert_single_message(message)
+
+    assert converted["handoff"] == {
+        "kind": "other",
+        "template": "scheduler_future_thing",
+        "task_id": "t-9",
+    }
+
+
+@pytest.mark.anyio
+async def test_plain_message_has_no_handoff() -> None:
+    converted = await _convert_single_message(_FakeMessage(message_id="msg-plain", content="hi"))
+
+    assert converted["content"] == "hi"
+    assert "handoff" not in converted
+
+
 @pytest.mark.anyio
 async def test_member_spawned_event_includes_mode_for_human_agent() -> None:
     """验证 member_spawned 事件对 human_agent 成员返回 mode="human"."""
@@ -596,6 +689,39 @@ async def test_member_spawned_event_omits_blank_display_name() -> None:
         converted = await anext(handler.events())
 
         assert "name" not in converted["event"]
+    finally:
+        await handler.stop()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("target_status", ["shut_down", "dormant"])
+async def test_member_shutdown_event_carries_target_status(target_status: str) -> None:
+    """member_shutdown 事件透传退场终态，前端据此区分离队与休眠。"""
+    event = MonitorEvent(
+        event_type=MonitorEventType.MEMBER_SHUTDOWN,
+        team_name="team-1",
+        timestamp=123,
+        member_name="writer-1",
+        force=False,
+        target_status=target_status,
+    )
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[],
+            leader_member_name=None,
+            events=[event],
+        ),
+        "sess-monitor",
+    )
+
+    await handler.start()
+    try:
+        converted = await anext(handler.events())
+
+        assert converted["event"]["type"] == "team.member.shutdown"
+        assert converted["event"]["member_id"] == "writer-1"
+        assert converted["event"]["force"] is False
+        assert converted["event"]["target_status"] == target_status
     finally:
         await handler.stop()
 
@@ -768,6 +894,69 @@ async def test_handle_task_updated_supplements_body_from_db() -> None:
     assert result["content"] == "updated content"
     assert result["status"] == "in_progress"
     assert task_dao.get_task_call_count == 1
+
+
+@pytest.mark.anyio
+async def test_handle_task_updated_without_payload_status_uses_db_status() -> None:
+    """TASK_UPDATED with no payload status carries the task's current DB status (#5189)."""
+    task_dao = _FakeTaskDao(
+        _FakeTask(task_id="task-2", title="t", content="c", status="in_progress")
+    )
+    handler = _make_handler(task_dao)
+    base = {"type": "team.task.updated", "team_id": "team-1"}
+    event = MonitorEvent(
+        event_type=MonitorEventType.TASK_UPDATED,
+        team_name="team-1",
+        timestamp=123,
+        task_id="task-2",
+        status=None,
+    )
+
+    result = await handler._handle_task(base, event)
+
+    assert result["status"] == "in_progress"
+    assert result["title"] == "t"
+    assert task_dao.get_task_call_count == 1
+
+
+@pytest.mark.anyio
+async def test_handle_task_updated_payload_status_wins_over_db_status() -> None:
+    """An explicit payload status on TASK_UPDATED is not overridden by the DB status."""
+    task_dao = _FakeTaskDao(_FakeTask(task_id="task-2", status="pending"))
+    handler = _make_handler(task_dao)
+    base = {"type": "team.task.updated", "team_id": "team-1"}
+    event = MonitorEvent(
+        event_type=MonitorEventType.TASK_UPDATED,
+        team_name="team-1",
+        timestamp=123,
+        task_id="task-2",
+        status="completed",
+    )
+
+    result = await handler._handle_task(base, event)
+
+    assert result["status"] == "completed"
+
+
+@pytest.mark.anyio
+async def test_handle_task_updated_without_status_and_lookup_fails_omits_status() -> None:
+    """If TASK_UPDATED has no status and the DB lookup fails, status stays absent (no reset)."""
+    task_dao = _FakeTaskDao(get_task_mock=AsyncMock(side_effect=RuntimeError("db down")))
+    handler = _make_handler(task_dao)
+    base = {"type": "team.task.updated", "team_id": "team-1"}
+    event = MonitorEvent(
+        event_type=MonitorEventType.TASK_UPDATED,
+        team_name="team-1",
+        timestamp=123,
+        task_id="task-2",
+        status=None,
+    )
+
+    result = await handler._handle_task(base, event)
+
+    assert result["task_id"] == "task-2"
+    assert "status" not in result
+    assert "title" not in result
 
 
 @pytest.mark.anyio
@@ -1111,3 +1300,40 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     assert out["title"].startswith("T" * _TASK_TEXT_LIMIT)
     assert out["content"] == "body"
     assert "content_truncated" not in out
+
+
+class _EndingMonitor:
+    """Monitor whose event stream ends without the handler calling stop()."""
+
+    def __init__(self) -> None:
+        self.team_agent = object()
+        self.stopped = False
+        self.end_stream = asyncio.Event()
+
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def events(self):
+        await self.end_stream.wait()
+        if False:
+            yield None
+
+
+@pytest.mark.anyio
+async def test_handler_marks_stopped_when_monitor_stream_ends():
+    monitor = _EndingMonitor()
+    handler = TeamMonitorHandler(monitor, "sess-stream-ended")
+    await handler.start()
+    assert handler.is_running is True
+    assert handler.bound_team_agent is monitor.team_agent
+
+    monitor.end_stream.set()
+    await asyncio.wait_for(handler._collect_task, timeout=1.0)
+
+    assert handler.is_running is False
+    # stop() still releases the listener after the stream ended on its own.
+    await handler.stop()
+    assert monitor.stopped is True

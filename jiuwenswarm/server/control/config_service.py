@@ -18,11 +18,13 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from dotenv import dotenv_values
 
+from jiuwenswarm.common.browser_settings import project_browser_decision
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.utils import get_config_file
-from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.utils import get_config_file, get_env_file
+from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.symphony.config import (
@@ -33,6 +35,9 @@ from jiuwenswarm.symphony.config import (
 logger = logging.getLogger(__name__)
 
 _CONFIG_SET_ENV_MAP = {
+    "jev_openrouter_api_key": "OPENROUTER_API_KEY",
+    "jev_typesafe_api_key": "TYPESAFE_API_KEY",
+    "jev_custom_api_key": "JEV_CUSTOM_API_KEY",
     "model_provider": "MODEL_PROVIDER",
     "model": "MODEL_NAME",
     "api_base": "API_BASE",
@@ -108,7 +113,9 @@ _CONFIG_SET_ENV_MAP = {
 
 _SWARMFLOW_ENABLED_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
-_EXTERNAL_CLI_AGENTS_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
+_TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
+_TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+_TEAM_MEMBER_MESSAGING_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -193,32 +200,30 @@ def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
     }
 
 
+def _flatten_recommendation(raw: dict[str, Any]) -> dict[str, str]:
+    """The two switches as resolved, from the one implementation the rest of the app uses.
+
+    ``raw`` is passed in, so the import stays lazy and this module still never loads
+    ``jiuwenswarm.common.config`` (see the module docstring).
+    """
+
+    from jiuwenswarm.common.recommendation_switches import (
+        flatten_recommendation_for_config_panel,
+    )
+
+    return flatten_recommendation_for_config_panel(raw)
+
+
 def _flatten_external_cli(raw: dict[str, Any]) -> dict[str, str]:
-    agents = _nested(raw, _EXTERNAL_CLI_AGENTS_PATH, [])
-    configured: dict[str, dict[str, str]] = {}
-    if isinstance(agents, list):
-        for item in agents:
-            if isinstance(item, str):
-                cli_agent, cli_path = item.strip(), ""
-            elif isinstance(item, dict):
-                cli_agent = str(item.get("cli_agent") or "").strip()
-                cli_path = str(item.get("cli_path") or item.get("codex_bin") or "").strip()
-            else:
-                continue
-            if cli_agent:
-                configured[cli_agent] = {"cli_path": cli_path}
-    return {
-        "external_cli_agent_claude_enabled": "true" if "claude" in configured else "false",
-        "external_cli_agent_claude_use_builtin": (
-            "true" if "claude" in configured and not configured["claude"].get("cli_path") else "false"
-        ),
-        "external_cli_agent_claude_cli_path": configured.get("claude", {}).get("cli_path", ""),
-        "external_cli_agent_codex_enabled": "true" if "codex" in configured else "false",
-        "external_cli_agent_codex_use_builtin": (
-            "true" if "codex" in configured and not configured["codex"].get("cli_path") else "false"
-        ),
-        "external_cli_agent_codex_cli_path": configured.get("codex", {}).get("cli_path", ""),
-    }
+    from jiuwenswarm.common.config_panel.external_cli_read import (
+        EXTERNAL_CLI_CUSTOM_AGENTS_KEY,
+        custom_agents_config_value,
+        flatten_external_cli_agents_for_config_panel,
+    )
+
+    flat = flatten_external_cli_agents_for_config_panel(raw)
+    flat[EXTERNAL_CLI_CUSTOM_AGENTS_KEY] = custom_agents_config_value()
+    return flat
 
 
 def _flatten_modes_team(raw: dict[str, Any]) -> dict[str, str]:
@@ -371,13 +376,30 @@ def _resolve_browser_path(browser: dict[str, Any]) -> str:
     return ""
 
 
+def _browser_credential_environment() -> dict[str, str]:
+    # Runtime writes credentials in another process; Front's startup env can be stale.
+    environment = dict(os.environ)
+    try:
+        for key, value in dotenv_values(get_env_file()).items():
+            if value is not None:
+                environment[key] = value
+    except OSError:
+        logger.warning("[config_service] could not read saved browser credentials")
+    return environment
+
+
 def get_panel() -> dict[str, Any]:
     """Return the Web/TUI config panel payload without Gateway handlers."""
+    # 保存过的 .env 优先于本进程的 os.environ。生成类配置槽是由另一个进程写入的，
+    # 这里的 os.environ 可能还停在修改之前——设置页因此一直显示旧的模型（火山方舟的
+    # 默认值），而工具实际已经跑在用户新选的模型上了（MiniMax）。JEV 密钥早就因为这
+    # 个跨进程时序问题改读文件；这个 map 里的每个字段其实都一样。
+    environment = _browser_credential_environment()
     payload: dict[str, Any] = {
-        param_key: (os.getenv(env_key) or "")
+        param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
-    payload["app_version"] = __version__
+    payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     )
@@ -412,14 +434,37 @@ def get_panel() -> dict[str, Any]:
             payload["a2ui_enabled"] = "false"
         trajectory_cfg = raw.get("trajectory_ui") or {}
         payload["trajectory_ui_enabled"] = _bool_text(trajectory_cfg.get("enabled"), False)
+        payload["trajectory_ui_diagnosis_enabled"] = _bool_text(
+            trajectory_cfg.get("diagnosis_enabled"), False
+        )
+        experimental_cfg = raw.get("experimental") or {}
+        payload["team_organization_ui_enabled"] = _bool_text(
+            experimental_cfg.get("team_organization_ui_enabled"), False
+        )
+        payload["comfyui_workflow_enabled"] = _bool_text(
+            experimental_cfg.get("comfyui_workflow_enabled"), False
+        )
+        payload["progressive_tool_optimize"] = _bool_text(
+            raw.get("progressive_tool_optimize"), False
+        )
         payload["swarmflow_enabled"] = _bool_text(
             _nested(raw, _SWARMFLOW_ENABLED_PATH, False)
+        )
+        payload["team_scheduled_dispatch_enabled"] = (
+            "true" if str(_nested(raw, _TEAM_DISPATCH_MODE_PATH, "autonomous")).strip() == "scheduled" else "false"
+        )
+        payload["team_task_verification_enabled"] = _bool_text(
+            _nested(raw, _TEAM_TASK_VERIFICATION_PATH, False)
+        )
+        payload["team_member_messaging_enabled"] = _bool_text(
+            _nested(raw, _TEAM_MEMBER_MESSAGING_PATH, False)
         )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
         payload.update(_flatten_external_cli(raw))
         payload.update(_flatten_symphony(raw))
+        payload.update(_flatten_recommendation(raw))
         if not payload.get("free_search_ddg_enabled"):
             payload["free_search_ddg_enabled"] = "false"
         if not payload.get("free_search_bing_enabled"):
@@ -450,10 +495,19 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("a2ui_enabled", "false")
         payload.setdefault("trajectory_ui_enabled", "false")
+        payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
+        payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("comfyui_workflow_enabled", "false")
+        payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("swarmflow_enabled", "false")
+        payload.setdefault("team_scheduled_dispatch_enabled", "false")
+        payload.setdefault("team_task_verification_enabled", "false")
+        payload.setdefault("team_member_messaging_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")
+        payload.setdefault("topic_recommendation_enabled", "false")
+        payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "true")
@@ -486,6 +540,8 @@ async def handle_config_request(request: AgentRequest) -> AgentResponse:
         browser = raw.get("browser") or {}
         if not isinstance(browser, dict):
             browser = {}
+        decision = browser.get("decision")
+        decision = _resolve_env_vars(decision) if isinstance(decision, dict) else {}
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -495,6 +551,7 @@ async def handle_config_request(request: AgentRequest) -> AgentResponse:
                 "headless": browser.get("headless")
                 if isinstance(browser.get("headless"), bool)
                 else True,
+                **project_browser_decision(decision, _browser_credential_environment()),
             },
             metadata=request.metadata,
         )

@@ -285,8 +285,7 @@ class SessionOperationClient(FakeClient):
 
     async def prepare_session_fork(self, provision_input):
         self.calls.append(
-            f"prepare:fork:{provision_input.source_session_id}:"
-            f"{provision_input.title}"
+            f"prepare:fork:{provision_input.source_session_id}:{provision_input.title}"
         )
         return _PreparedSession(
             "fork",
@@ -523,13 +522,10 @@ async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
+async def test_runtime_client_close_delegates_to_runtime_owner() -> None:
     calls: list[str] = []
 
     class RuntimeStub:
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            calls.append(f"team:{reason}")
-
         async def close(self):
             calls.append("close")
 
@@ -537,30 +533,24 @@ async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
 
     await client.close()
 
-    assert calls == [
-        "team:[process CLI close] ",
-        "close",
-    ]
+    assert calls == ["close"]
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_attempts_every_stage_after_cleanup_failure() -> None:
+async def test_runtime_client_close_propagates_runtime_failure() -> None:
     calls: list[str] = []
 
     class RuntimeStub:
-        async def cancel_all_team_stream_tasks(self, *, reason):
-            calls.append("team")
-            raise RuntimeError("team cleanup failed")
-
         async def close(self):
             calls.append("close")
+            raise RuntimeError("runtime cleanup failed")
 
     client = InProcessRuntimeClient(RuntimeStub())
 
-    with pytest.raises(RuntimeError, match="team cleanup failed"):
+    with pytest.raises(RuntimeError, match="runtime cleanup failed"):
         await client.close()
 
-    assert calls == ["team", "close"]
+    assert calls == ["close"]
 
 
 @pytest.mark.parametrize(
@@ -921,6 +911,30 @@ async def test_noninteractive_interaction_is_an_explicit_machine_failure(
 
 
 @pytest.mark.asyncio
+async def test_prompt_command_rejects_interaction_without_reading_tty(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    def unexpected_input(*_args):
+        pytest.fail("A standalone prompt command must not ask for input")
+
+    monkeypatch.setattr(app, "InProcessRuntimeClient", ConsecutiveInteractionClient)
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    monkeypatch.setattr(app, "_interaction_answer", unexpected_input)
+    output = io.StringIO()
+
+    result = await app.run(
+        _args(tmp_path, output="human"),
+        stdout=output,
+        stderr=output,
+    )
+
+    assert result == 4
+    assert ConsecutiveInteractionClient.latest.answer_count == 0
+    assert "无法接收交互输入" in output.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_answer_interaction_handles_consecutive_questions(
     monkeypatch,
     tmp_path: Path,
@@ -938,6 +952,80 @@ async def test_answer_interaction_handles_consecutive_questions(
     assert result == 0
     assert client is not None
     assert client.answer_count == 2
+
+
+@pytest.mark.asyncio
+async def test_interaction_displays_nested_questions_and_collects_each_answer(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class NestedQuestionsClient(FakeClient):
+        def __init__(self) -> None:
+            super().__init__()
+            self.answers: list[dict] = []
+
+        async def stream(self, request):
+            yield RuntimeEvent(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                session_id=request.session_id,
+                payload={
+                    "event_type": "chat.ask_user_question",
+                    "questions": [
+                        {
+                            "question": "Choose the color",
+                            "options": [
+                                {"label": "RED", "value": "color_red"},
+                                {"label": "BLUE", "value": "color_blue"},
+                            ],
+                        },
+                        {"question": "Provide the reason", "options": []},
+                    ],
+                },
+            )
+
+        async def answer_interaction(self, request):
+            self.answers = request.params["answers"]
+            return []
+
+    monkeypatch.setattr(app, "InProcessRuntimeClient", NestedQuestionsClient)
+    monkeypatch.setattr(app.sys, "stdin", io.StringIO("2\ncustom answer\n"))
+    output = io.StringIO()
+    result = await app.run(
+        _args(tmp_path, output="human", _interactive_worker=True),
+        stdout=output,
+        stderr=output,
+    )
+    assert result == 0
+    assert "Choose the color" in output.getvalue()
+    assert "2. BLUE" in output.getvalue()
+    assert "Provide the reason" in output.getvalue()
+    client = NestedQuestionsClient.latest
+    assert isinstance(client, NestedQuestionsClient)
+    assert client.answers == [
+        {"selected_options": ["color_blue"], "custom_input": "2"},
+        {"selected_options": ["custom answer"], "custom_input": "custom answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_interaction_eof_exits_without_submitting_empty_answer(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(app, "InProcessRuntimeClient", ConsecutiveInteractionClient)
+    monkeypatch.setattr(app.sys, "stdin", io.StringIO(""))
+    output = io.StringIO()
+    result = await app.run(
+        _args(tmp_path, output="human", _interactive_worker=True),
+        stdout=output,
+        stderr=output,
+    )
+    client = ConsecutiveInteractionClient.latest
+    assert result == 4
+    assert client.answer_count == 0
+    assert "无法接收交互输入" in output.getvalue()
+    assert client.calls[-2:] == ["cleanup:process_cli:runtime-session", "close"]
 
 
 @pytest.mark.asyncio
@@ -1273,7 +1361,9 @@ async def test_session_switch_uses_persisted_modes_not_current_cli_mode(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("commit_error", [RuntimeError("commit failed"), asyncio.CancelledError()])
+@pytest.mark.parametrize(
+    "commit_error", [RuntimeError("commit failed"), asyncio.CancelledError()]
+)
 async def test_session_create_post_delivery_failure_aborts_only_prepared_lease(
     monkeypatch,
     tmp_path: Path,
@@ -1594,8 +1684,7 @@ async def test_session_operations_reject_foreign_owned_metadata(
     assert result == 1
     assert document["events"][0]["metadata"] == {"code": "NOT_FOUND"}
     assert not any(
-        call.startswith(("prepare:", "commit:", "delete:"))
-        for call in client.calls
+        call.startswith(("prepare:", "commit:", "delete:")) for call in client.calls
     )
 
 
@@ -1611,17 +1700,42 @@ def test_interactive_worker_enables_runtime_interactions(tmp_path: Path) -> None
     )
 
     assert request.params["supports_user_interaction"] is True
+    assert request.params["supports_permission_approval"] is True
+
+
+def test_prompt_command_denies_permission_requests_even_with_a_tty(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(app.sys, "stdin", type("Tty", (), {"isatty": lambda self: True})())
+    request = app._build_request(
+        _args(tmp_path, output="human"),
+        session_id="runtime-session", request_id="runtime-request",
+    )
+    assert request.params["supports_user_interaction"] is False
+    assert request.params["supports_permission_approval"] is False
+    interaction = RuntimeEvent(
+        request_id=request.request_id, channel_id="process_cli", session_id=request.session_id,
+        payload={"event_type": "chat.ask_user_question", "source": "ask_user_interrupt", "request_id": "question"},
+    )
+    answer, _ = app._answer_request(request, interaction, [{"answer": "continue"}])
+    assert answer.params["supports_user_interaction"] is False
+    assert answer.params["supports_permission_approval"] is False
 
 
 def test_process_cli_has_no_server_or_transport_dependencies() -> None:
     package = Path(app.__file__).resolve().parent
     forbidden = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server.agent_ws_server",
         "jiuwenswarm.channels.tui",
         "websockets",
         "http.server",
     )
+
+    def _forbidden(module: str) -> bool:
+        # gateway.common 是无状态纯组件的唯一真源，进程内 CLI 允许引用。
+        if module == "gateway.common" or module.startswith("gateway.common."):
+            return False
+        return module.startswith(forbidden)
+
     violations: list[str] = []
     for source in package.glob("*.py"):
         tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -1631,9 +1745,9 @@ def test_process_cli_has_no_server_or_transport_dependencies() -> None:
                 module = node.module or ""
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith(forbidden):
+                    if _forbidden(alias.name):
                         violations.append(f"{source.name}:{node.lineno}:{alias.name}")
-            if module.startswith(forbidden):
+            if _forbidden(module):
                 violations.append(f"{source.name}:{node.lineno}:{module}")
     assert violations == []
 
@@ -1651,9 +1765,7 @@ def test_runtime_has_no_process_cli_dependency() -> None:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.startswith("jiuwenswarm.channels.process_cli"):
-                        violations.append(
-                            f"{source.name}:{node.lineno}:{alias.name}"
-                        )
+                        violations.append(f"{source.name}:{node.lineno}:{alias.name}")
     assert violations == []
 
 

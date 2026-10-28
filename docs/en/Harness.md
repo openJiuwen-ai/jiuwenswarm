@@ -241,12 +241,20 @@ Audio tools are driven by `AudioModelConfig`:
 - `audio_metadata`: identify audio duration and, when ACR is configured, song metadata.
 - Local audio paths and HTTP(S) audio URLs are supported, with `max_audio_bytes` limiting download size.
 
-Video tools are driven by the vision model:
+JiuwenSwarm video tools use the separate `models.video` model configuration:
 
 - `video_understanding`: accept a local video or HTTP(S) video URL and answer questions about the video content.
 - Local videos are encoded as data URLs; calls can limit `max_tokens`, `temperature`, and `timeout_seconds`.
 
 Multimodal model configuration can be passed explicitly or constructed from environment variables. `VisionModelConfig.from_env()` reads variables such as `VISION_API_KEY`, `VISION_BASE_URL`, and `VISION_MODEL`; `AudioModelConfig.from_env()` reads variables such as `AUDIO_API_KEY`, `AUDIO_BASE_URL`, `AUDIO_TRANSCRIPTION_MODEL`, and `AUDIO_QUESTION_ANSWERING_MODEL`. When `enable_read_image_multimodal=True`, reading an image through `read_file` can include native multimodal input. When it is disabled, `read_file` returns only image metadata and suggests using vision tools.
+
+In JiuwenSwarm, Work and default Code share multimodal configuration resolution, tool construction, registration, and hot reload:
+
+- Vision, audio, and video understanding read `models.vision/audio/video` from `config.yaml`, accepting either `model_config` or `model_client_config`. Configuration must include an API key, endpoint, model name, and provider. The `VISION_ENABLED`, `AUDIO_ENABLED`, and `VIDEO_ENABLED` environment switches take precedence over the corresponding model block's `enabled` field. Complete legacy configurations without an explicit switch remain enabled.
+- Enabling and configuring a capability automatically loads its entire tool group. Individual entries in `modes.code.tools` are unnecessary. That list still selects ordinary Code tools; legacy multimodal entries do not cause duplicate registration. Image generation (`generate_image`), video generation (`generate_video` / `check_video_status`), and visual generation (`generate_visual`) also follow Work's existing capability configuration rules.
+- Default Code includes these tools in its generated `DeepAgentSpec`; model parameters still come from application configuration. A caller-supplied custom Spec controls its own tool set and is not expanded by default loading or configuration hot reload.
+- Hot reload updates model parameters on live vision/audio tools and adds or removes tools as capabilities are enabled or disabled. Existing Agent tool permissions still apply.
+- If a tool group fails to build during a scoped multimodal reload, its existing tools remain available while other groups continue updating. If multimodal construction or registration fails during a full default Code Spec replacement, the previous instances and registrations are restored.
 
 ### 3.10 Web & External Resources: Web and External Resource Access
 

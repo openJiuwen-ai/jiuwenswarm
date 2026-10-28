@@ -9,7 +9,7 @@ from jiuwenswarm.common.reasoning_config import (
     reasoning_config_for_level,
     resolve_sampling_override,
 )
-from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+from jiuwenswarm.common.llm_provider_compat_patch import apply_provider_compat_patches
 
 
 def core_has_context_window_field() -> bool:

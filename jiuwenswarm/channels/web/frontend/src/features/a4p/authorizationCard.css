@@ -1,0 +1,204 @@
+.a4p-authorization-panel {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-height: min(460px, var(--a4p-card-max-height, 65vh));
+  max-width: var(--a4p-card-max-width, 100%);
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: 20px;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.a4p-authorization-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--color-surface-highlight);
+}
+.a4p-authorization-header,
+.a4p-authorization-footer {
+  flex: 0 0 auto;
+}
+.a4p-authorization-body {
+  min-height: 0;
+  padding: 14px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior-y: contain;
+  scrollbar-gutter: stable;
+}
+.a4p-authorization-reason {
+  margin-bottom: 16px;
+}
+.a4p-authorization-reason-title {
+  margin-bottom: 5px;
+}
+.a4p-authorization-reason-content {
+  padding: 3px 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 5px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.a4p-permission-options {
+  min-inline-size: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.a4p-permission-heading {
+  padding: 0;
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.a4p-permission-count,
+.a4p-permission-status {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+}
+.a4p-permission-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.a4p-permission-option {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 0 4px;
+  min-width: 0;
+}
+.a4p-permission-label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  max-width: calc(100% - 28px);
+  cursor: pointer;
+}
+.a4p-permission-label input {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  margin: 3px 0 0;
+  accent-color: var(--color-action-primary);
+  cursor: inherit;
+}
+.a4p-permission-title {
+  font-size: 13px;
+  line-height: 22px;
+  overflow-wrap: anywhere;
+}
+.a4p-permission-title code {
+  font-family: inherit;
+}
+.a4p-permission-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  cursor: pointer;
+}
+.a4p-permission-toggle[aria-expanded='true'] svg {
+  transform: rotate(90deg);
+}
+.a4p-permission-toggle:hover {
+  background: var(--color-surface-highlight);
+}
+.a4p-permission-params {
+  display: flex;
+  flex-direction: column;
+  flex-basis: 100%;
+  min-width: 0;
+  gap: 8px;
+  padding-left: 23px;
+  margin-top: 2px;
+}
+.a4p-permission-params[hidden] {
+  display: none;
+}
+.a4p-permission-param {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.a4p-permission-param-name {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+.a4p-permission-param-value {
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.a4p-permission-status {
+  margin: 8px 0 0;
+}
+.a4p-authorization-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid var(--color-border-default);
+}
+.a4p-permission-count {
+  margin-right: auto;
+}
+.a4p-authorization-button {
+  min-width: 58px;
+  padding: 2px 15px;
+  border: 1px solid var(--color-text-secondary);
+  border-radius: 999px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  background: var(--color-surface-card);
+  cursor: pointer;
+}
+.a4p-authorization-button--approve {
+  color: var(--color-surface-card);
+  background: var(--color-text-strong);
+  border-color: var(--color-text-strong);
+}
+.a4p-authorization-button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+.a4p-authorization-button:disabled,
+.a4p-permission-option[data-disabled='true'] {
+  opacity: 0.55;
+}
+.a4p-authorization-button:disabled,
+.a4p-permission-option[data-disabled='true'] .a4p-permission-label,
+.a4p-permission-toggle:disabled {
+  cursor: default;
+}
+.a4p-authorization-body:focus-visible,
+.a4p-authorization-button:focus-visible,
+.a4p-permission-toggle:focus-visible,
+.a4p-permission-label input:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: -2px;
+}
+.a4p-authorization-error {
+  margin-top: 12px;
+  color: var(--color-feedback-danger);
+  overflow-wrap: anywhere;
+}

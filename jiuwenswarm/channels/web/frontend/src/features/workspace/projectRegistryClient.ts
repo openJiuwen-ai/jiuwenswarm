@@ -23,10 +23,11 @@ export const projectRegistryClient = {
       filter,
       ...(workMode ? { work_mode: workMode } : {}),
     }),
-  getSessions: (projectId: string, limit?: number) =>
+  getSessions: (projectId: string, limit?: number, workMode?: WorkMode) =>
     webRequest<{ sessions: Session[]; total: number }>('project.get_sessions', {
       project_id: projectId,
       ...(limit !== undefined ? { limit } : {}),
+      ...(workMode ? { work_mode: workMode } : {}),
     }),
   getCronSessions: (projectId: string, cronId?: string) =>
     webRequest<{ sessions: Session[]; total: number }>('project.get_cron_sessions', {

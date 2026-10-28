@@ -116,8 +116,6 @@ def _configured_tools(value: object) -> str | tuple[str, ...]:
         return "*"
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         tools = _string_tuple("tools", value)
-        if not tools:
-            raise _invalid("tools", "tools must not be empty; use '*' instead")
         if tools == ("*",):
             return "*"
         if "*" in tools:

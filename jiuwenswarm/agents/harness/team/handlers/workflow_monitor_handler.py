@@ -11,6 +11,7 @@ Lifecycle mirrors TeamMonitorHandler via BaseMonitorHandler.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Literal, Optional
 
@@ -36,6 +37,13 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
     to be read by ``_consume_workflow_events()`` in the gateway channel.
     """
 
+    # Activity-only deltas (agent_activity) coalesce per run in this window:
+    # the first delta of a run opens the window, later activity deltas merge
+    # into the pending buffer, and a non-activity delta for that run flushes
+    # it early. Keeps a burst of tool activity from spamming the frontend
+    # with one workflow.updated per tool call.
+    _ACTIVITY_BATCH_WINDOW_SEC = 0.3
+
     def __init__(
             self,
             monitor: TeamMonitor,
@@ -59,6 +67,16 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         self.seen_phase: dict[str, str] = {}
         self.seen_agent: dict[str, str] = {}
         self.spawned_members: set[str] = set()
+        # Mirrored activity rows per member (tool_call_id/type keys), owned by
+        # the consumer for the same replay-dedup reason as seen_agent.
+        self.seen_activity: dict[str, set[tuple[str, str]]] = {}
+        # Activity-only delta coalescing state, keyed by run id. A run whose
+        # first activity delta has been buffered sits in ``_activity_flush_tasks``
+        # (a flush task is scheduled); the merged workflow delta accumulates in
+        # ``_pending_activity_workflow``. A non-activity delta for the run flushes
+        # the buffer immediately (merged into its own push).
+        self._pending_activity_workflow: dict[str, dict[str, Any]] = {}
+        self._activity_flush_tasks: dict[str, asyncio.Task] = {}
 
     # ------------------------------------------------------------------
     # Properties
@@ -146,6 +164,15 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
             )
             return
 
+        # Activity-only deltas coalesce per run in a 300ms window: buffer the
+        # delta and let the first delta's flush task push the merged result.
+        # A non-activity delta for that run flushes the pending buffer early
+        # (merged into its own push) so status changes are never delayed.
+        if progress.kind == "agent_activity":
+            self._buffer_activity_delta(run_state.id, delta)
+            return
+        delta = self._flush_pending_activity(run_state.id, delta)
+
         updated_event = self._build_updated_event(delta)
 
         wf_delta = updated_event.get("workflow", {})
@@ -165,6 +192,98 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
 
         await self._event_queue.put(updated_event)
         self._persist()
+
+    # ------------------------------------------------------------------
+    # Activity-only delta batching (per run, 300ms window)
+    # ------------------------------------------------------------------
+
+    def _buffer_activity_delta(self, run_id: str, delta: dict[str, Any]) -> None:
+        """Buffer an activity-only delta for ``run_id``, scheduling the flush.
+
+        The first buffered delta of a run opens the window (an asyncio task
+        flushes 300ms later); later deltas just merge into the same buffer.
+        Deltas are merged by phase id — each activity delta serializes the
+        whole touched phase, so the newest phase dict is complete.
+        """
+        if run_id not in self._activity_flush_tasks:
+            self._activity_flush_tasks[run_id] = asyncio.get_running_loop().create_task(
+                self._flush_activity_delta(run_id)
+            )
+        self._pending_activity_workflow[run_id] = self._merge_workflow_delta(
+            self._pending_activity_workflow.get(run_id), delta,
+        )
+
+    def _flush_pending_activity(self, run_id: str, delta: dict[str, Any]) -> dict[str, Any]:
+        """Flush ``run_id``'s buffered activity, merged into ``delta``.
+
+        A non-activity delta for a run with a pending window flushes early so
+        status changes are not delayed by the window; the buffered activity
+        rides the same push. Returns the (possibly merged) delta.
+        """
+        flush_task = self._activity_flush_tasks.pop(run_id, None)
+        if flush_task is not None and not flush_task.done():
+            flush_task.cancel()
+        pending = self._pending_activity_workflow.pop(run_id, None)
+        if pending is not None:
+            return self._merge_workflow_delta(pending, delta)
+        return delta
+
+    @staticmethod
+    def _merge_workflow_delta(
+        base: Optional[dict[str, Any]], new: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Merge two workflow delta dicts: newer top-level fields win, phases union by id."""
+        if base is None:
+            return new
+        phases_by_id: dict[str, dict[str, Any]] = {}
+        for phase in base.get("phases", []) or []:
+            if isinstance(phase, dict) and phase.get("id"):
+                phases_by_id[phase["id"]] = phase
+        for phase in new.get("phases", []) or []:
+            if isinstance(phase, dict) and phase.get("id"):
+                phases_by_id[phase["id"]] = phase
+        merged = {**base, **new}
+        if phases_by_id:
+            merged["phases"] = list(phases_by_id.values())
+        return merged
+
+    async def _flush_activity_delta(self, run_id: str) -> None:
+        """Flush ``run_id``'s buffered activity after the window closes.
+
+        Runs as the scheduled asyncio task. Whichever of this task or a
+        status delta reaches the buffer first claims it; the other finds it
+        already gone and no-ops (both run on one event loop, and the buffer
+        read+clear below is synchronous, so no interleaving is possible).
+        """
+        await asyncio.sleep(self._ACTIVITY_BATCH_WINDOW_SEC)
+        self._activity_flush_tasks.pop(run_id, None)
+        workflow = self._pending_activity_workflow.pop(run_id, None)
+        if workflow is None:
+            return
+        updated_event = self._build_updated_event(workflow)
+        await self._event_queue.put(updated_event)
+        self._persist()
+
+    def _flush_all_pending_activity(self) -> None:
+        """Flush every pending activity buffer synchronously (handler teardown).
+
+        Pushes buffered activity before stop() so the last window of a run is
+        never lost on teardown. Used by stop(); status-delta early flushes
+        already emptied the buffers, so this is normally a no-op.
+        """
+        for run_id, task in list(self._activity_flush_tasks.items()):
+            if not task.done():
+                task.cancel()
+        self._activity_flush_tasks.clear()
+        for run_id, workflow in list(self._pending_activity_workflow.items()):
+            self._pending_activity_workflow.pop(run_id, None)
+            self._event_queue.put_nowait(self._build_updated_event(workflow))
+            self._persist()
+
+    async def stop(self) -> None:
+        """Stop monitoring, flushing any pending activity window first."""
+        self._flush_all_pending_activity()
+        await super().stop()
 
     # ------------------------------------------------------------------
     # Checkpoint persistence
@@ -281,7 +400,14 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 correlation_id=getattr(payload, "correlation_id", None),
                 node_type=getattr(payload, "node_type", None),
                 agent_id=getattr(payload, "agent_id", None),
+                agent_type=getattr(payload, "agent_type", None),
+                agent_template=getattr(payload, "agent_template", None),
+                display_name=getattr(payload, "display_name", None),
                 answer=getattr(payload, "answer", None),
+                activity_type=getattr(payload, "activity_type", None),
+                tool_call_id=getattr(payload, "tool_call_id", None),
+                tool_name=getattr(payload, "tool_name", None),
+                content=getattr(payload, "content", None),
                 tokens=getattr(payload, "tokens", None),
                 budget=getattr(payload, "budget", None),
                 workflow_budget=getattr(payload, "workflow_budget", None),

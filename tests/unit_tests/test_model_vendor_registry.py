@@ -2,7 +2,7 @@
 
 import pytest
 
-from jiuwenswarm.common.model_vendor_registry import PlanKind, get_preset, to_frontend_payload
+from gateway.common.model_vendor_registry import PlanKind, get_preset, to_frontend_payload
 
 
 def test_frontend_payload_contains_protocol_scoped_reasoning_capabilities() -> None:
@@ -25,7 +25,7 @@ def test_frontend_payload_isolates_single_model_capability_failure(
 ) -> None:
     # 单个模型的能力查询异常不能拖垮整个 vendors.list：该模型条目被跳过，
     # 其余模型与厂商卡片照常返回（前端回落到 reasoning_rules/model_fallbacks）。
-    import jiuwenswarm.common.model_vendor_registry as registry
+    import gateway.common.model_vendor_registry as registry
 
     real_capability = registry.get_reasoning_capability
 
@@ -99,6 +99,22 @@ def test_alibaba_custom_api_uses_curated_verified_model_allowlist() -> None:
     } <= set(preset.model_options)
     assert "qwen-turbo-0919" not in preset.model_options
     assert all("/" not in model_id for model_id in preset.model_options)
+
+
+def test_vllm_omni_is_a_generation_only_custom_api_preset() -> None:
+    payload = to_frontend_payload()
+    vllm = next(item for item in payload["custom_api"] if item["vendor_key"] == "vllm-omni")
+
+    assert vllm["generation_only"] is True
+    assert vllm["api_base"] == "http://127.0.0.1:8091/v1"
+    assert vllm["model_options"] == []
+    assert vllm["models_needs_key"] is False
+    assert all(
+        item["generation_only"] is False
+        for plan in PlanKind
+        for item in payload[plan.value]
+        if item["vendor_key"] != "vllm-omni"
+    )
 
 
 def test_only_zhipu_anthropic_is_disabled() -> None:

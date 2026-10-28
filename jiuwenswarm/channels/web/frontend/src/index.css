@@ -2305,6 +2305,10 @@ body.workspace-resize-active iframe {
     gap: 10px;
   }
 
+  .tool-tree-item__detail > .auto-reviewer-details {
+    margin-top: 0;
+  }
+
   /* 展开详情里的状态图标也统一为灰色，不用彩色区分。 */
   .tool-tree-item__detail-wrap .tool-status-icon {
     color: var(--color-text-secondary);

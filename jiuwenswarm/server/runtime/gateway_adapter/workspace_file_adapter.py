@@ -42,7 +42,10 @@ from jiuwenswarm.server.runtime.attachments.media_attachments import (
     discard_session_upload,
     normalize_chat_media_attachments,
 )
-from jiuwenswarm.server.runtime.attachments.upload_storage import unique_upload_path
+from jiuwenswarm.server.runtime.attachments.upload_storage import (
+    atomic_write_unique,
+    unique_upload_path,
+)
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,
@@ -377,9 +380,9 @@ class WorkspaceFileAdapter(GatewayAdapter):
         workspace = get_agent_workspace_dir()
         base_dir = workspace / f"{platform}_files" / "downloads" / category
         try:
-            base_dir.mkdir(parents=True, exist_ok=True)
-            target = unique_upload_path(base_dir / filename)
-            target.write_bytes(content)
+            # 独占创建（O_EXCL）完成同名去重：check-then-write 在并发同名请求
+            # 下会相互覆盖（atomic_write_unique 关闭该竞态窗口）。
+            target = atomic_write_unique(base_dir / filename, content)
         except OSError as exc:
             logger.exception("[WorkspaceFileAdapter] im.file_persist write failed: %s", exc)
             return build_error_response(request, f"failed to persist attachment: {exc}", code="INTERNAL_ERROR")
@@ -435,8 +438,12 @@ class WorkspaceFileAdapter(GatewayAdapter):
             return build_error_response(request, "path_outside_workspace", code="BAD_REQUEST")
         try:
             if not resolved_path:
-                target = unique_upload_path(target)
-            await asyncio.to_thread(_append_upload_chunk, target, chunk)
+                # 首块用独占创建（O_EXCL）认领同名去重槽位：并发首块
+                # check-then-write 会写进同一路径互相覆盖。后续块 append 到
+                # 本上传已认领的 resolved_path，无同名竞态。
+                target = await asyncio.to_thread(atomic_write_unique, target, chunk)
+            else:
+                await asyncio.to_thread(_append_upload_chunk, target, chunk)
             size = target.stat().st_size
         except OSError as exc:
             logger.warning("[WorkspaceFileAdapter] file.upload_chunk write failed: %s", exc)

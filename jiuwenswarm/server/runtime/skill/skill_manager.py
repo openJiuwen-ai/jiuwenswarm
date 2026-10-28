@@ -14,6 +14,7 @@ import re
 import sys
 import shutil
 import ssl
+import stat
 import tarfile
 import tempfile
 import uuid
@@ -42,6 +43,8 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.server.runtime.skill.archive_store import (
     ARCHIVE_DIRNAME,
+    CHECKSUM_ALGO_VERSION,
+    ERROR_VERSION_NOT_FOUND,
     SkillArchiveError,
     build_versions_list_payload,
     compute_content_checksum,
@@ -64,6 +67,7 @@ from jiuwenswarm.server.runtime.skill.skill_files import (
     resolve_skill_relative_file,
 )
 from jiuwenswarm.server.runtime.skill.skill_type import (
+    SKILL_TYPE_SKILL,
     SKILL_TYPE_SKILLPACK,
     SKILL_TYPE_SWARM,
     detect_skill_type,
@@ -137,6 +141,130 @@ _SKILL_ZIP_MAX_FILE_COUNT = 5000
 _SKILL_ZIP_MAX_SINGLE_FILE_BYTES = 32 * 1024 * 1024
 _SKILL_ZIP_MAX_PATH_DEPTH = 20
 
+# ---------------------------------------------------------------------------
+# 技能同步（Server / Client 分离部署）
+# ---------------------------------------------------------------------------
+
+ERROR_SKILL_SYNC_DISABLED = "SKILL_SYNC_DISABLED"
+ERROR_SKILL_SYNC_UNAUTHORIZED = "SKILL_SYNC_UNAUTHORIZED"
+ERROR_SKILL_SYNC_INVALID_PAYLOAD = "SKILL_SYNC_INVALID_PAYLOAD"
+ERROR_SKILL_SYNC_CHECKSUM_MISMATCH = "SKILL_SYNC_CHECKSUM_MISMATCH"
+ERROR_SKILL_SYNC_CHECKSUM_ALGO_MISMATCH = "SKILL_SYNC_CHECKSUM_ALGO_MISMATCH"
+ERROR_SKILL_SYNC_EMPTY_PACKAGE = "SKILL_SYNC_EMPTY_PACKAGE"
+ERROR_SKILL_SYNC_FILE_TOO_LARGE = "SKILL_SYNC_FILE_TOO_LARGE"
+ERROR_SKILL_SYNC_PACKAGE_TOO_LARGE = "SKILL_SYNC_PACKAGE_TOO_LARGE"
+ERROR_SKILL_SYNC_INSTALL_FAILED = "SKILL_SYNC_INSTALL_FAILED"
+ERROR_SKILL_SYNC_PACKAGE_FAILED = "SKILL_SYNC_PACKAGE_FAILED"
+
+# 归一化分类（原始来源串保留在 SkillDigest.source）
+CATEGORY_BUILTIN = "builtin"
+CATEGORY_LOCAL = "local"
+CATEGORY_MARKETPLACE = "marketplace"
+CATEGORY_ONLINE = "online"
+CATEGORY_PROJECT = "project"
+CATEGORY_UNKNOWN = "unknown"
+
+# 在线源（安装链路写入 local_skills.source 的固定值）
+_ONLINE_SYNC_SOURCES = frozenset({"skillnet", "clawhub", "teamskillshub"})
+
+STATUS_SERVER_ONLY = "server_only"
+STATUS_CLIENT_ONLY = "client_only"
+STATUS_IN_SYNC = "in_sync"
+STATUS_VERSION_MISMATCH = "version_mismatch"
+STATUS_CONTENT_MISMATCH = "content_mismatch"
+
+# 同步打包排除口径与 compute_content_checksum 一致（决策 6）
+_SYNC_PACKAGE_EXCLUDED_DIRNAMES = frozenset({"__pycache__"})
+_SYNC_PACKAGE_EXCLUDED_FILE_SUFFIXES = frozenset({".pyc"})
+
+# package 批量配额（设计 5.3）
+_SKILL_SYNC_MAX_SKILLS_PER_BATCH = 100
+_SKILL_SYNC_MAX_BATCH_FILE_COUNT = 5000
+_SKILL_SYNC_MAX_ZIP_BYTES = 50 * 1024 * 1024
+
+
+def normalize_sync_category(source: str) -> str:
+    """开放来源串归一化为同步分类枚举.
+
+    marketplace 安装的 source 为仓库名（任意串）；skillnet / clawhub /
+    teamskillshub 为在线源固定值；builtin / local / project 为本地语义，
+    其余未知串归入 marketplace 之外保留为 unknown（不误归 marketplace）。
+    """
+    text = str(source or "").strip()
+    if not text:
+        return CATEGORY_UNKNOWN
+    lowered = text.lower()
+    if text == "builtin" or lowered.startswith("builtin:"):
+        return CATEGORY_BUILTIN
+    if text in {"local", "project"}:
+        return CATEGORY_LOCAL if text == "local" else CATEGORY_PROJECT
+    if text in _ONLINE_SYNC_SOURCES:
+        return CATEGORY_ONLINE
+    # 其余非保留串：来源为 marketplace 仓库名（如 "baoyu"）
+    return CATEGORY_MARKETPLACE
+
+
+def compare_version(a: str, b: str) -> int | None:
+    """按 '.' 分段比较版本；任一段不可比较返回 None（降级人工决策）.
+
+    段内为纯数字时按整数值（忽略前导零）；非纯数字段按字符串字典序；
+    段数不等时短侧缺失段按 '0' 补齐。带预发布后缀（如 '1.0.0-rc1'）
+    的段非纯数字，按字典序比较仍可返回方向；无法判定语义的复杂段
+    返回 None。client SDK 需实现同一函数。
+    """
+    sa = str(a or "").strip()
+    sb = str(b or "").strip()
+    if not sa or not sb:
+        return None
+    parts_a = sa.split(".")
+    parts_b = sb.split(".")
+    length = max(len(parts_a), len(parts_b))
+    parts_a += ["0"] * (length - len(parts_a))
+    parts_b += ["0"] * (length - len(parts_b))
+    for pa, pb in zip(parts_a, parts_b):
+        result = _compare_version_segment(pa, pb)
+        if result is None:
+            return None
+        if result != 0:
+            return result
+    return 0
+
+
+def _compare_version_segment(pa: str, pb: str) -> int | None:
+    """比较单个版本段：纯数字按整数值，否则按字典序；无法比较返回 None."""
+    if pa == pb:
+        return 0
+    a_digit = pa.isdigit()
+    b_digit = pb.isdigit()
+    if a_digit and b_digit:
+        ia, ib = int(pa), int(pb)
+        return -1 if ia < ib else (1 if ia > ib else 0)
+    if a_digit or b_digit:
+        # 一侧数字一段非数字：含预发布后缀等复杂段，不自动决策
+        return None
+    if pa < pb:
+        return -1
+    if pa > pb:
+        return 1
+    return 0
+
+
+def compare_sync_status(
+    server: dict[str, Any], client: dict[str, Any]
+) -> str:
+    """diff 状态机：按 in_sync → version_mismatch → content_mismatch 判定."""
+    server_checksum = str(server.get("content_checksum") or "")
+    client_checksum = str(client.get("content_checksum") or "")
+    if server_checksum and server_checksum == client_checksum:
+        return STATUS_IN_SYNC
+    server_version = str(server.get("version") or "")
+    client_version = str(client.get("version") or "")
+    if server_version and client_version and server_version != client_version:
+        direction = compare_version(server_version, client_version)
+        if direction is not None:
+            return STATUS_VERSION_MISMATCH
+    return STATUS_CONTENT_MISMATCH
+
 
 class SkillRpcError(Exception):
     """Skill RPC 稳定业务错误（带 code，供前端/网关透传）."""
@@ -188,6 +316,24 @@ _ONLINE_SEARCH_SOURCE_ORDER = {"skillnet": 0, "teamskillshub": 1, "clawhub": 2}
 _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
 _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-skill"}
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
+
+_SKILL_DISPLAY_FILENAME = "skill_display.md"
+_BUILTIN_SKILL_UI_WHITELIST = frozenset(
+    {
+        "advanced-daily-report",
+        "gitcode-api",
+        "financial-document-parser",
+        "skill-gen-4-enterprise-doc",
+        "skill-creator",
+        "swarmskill-creator",
+    }
+)
+_SKILL_DISPLAY_KEYS = (
+    "display_name_zh",
+    "description_zh",
+    "display_name_en",
+    "description_en",
+)
 
 # 自研内置技能名单（内置技能目录下 _proprietary_skills.json）。名单内的内置技能标记
 # proprietary=true（自研），名单外的内置技能一律视为三方下载——不配置即默认三方。
@@ -286,6 +432,28 @@ def _get_marketplace_dir() -> "Path":
 
 def _get_state_file() -> "Path":
     return get_state_file()
+
+
+def _knowledge_skill_language() -> str:
+    """Return ``"en"`` or ``"zh"`` for Knowledge-to-Skill prompts and errors.
+
+    Follows the top-level ``preferred_language`` in config.yaml; anything that
+    is not English (or an unreadable config) keeps the historical Chinese text.
+    """
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        config = get_config() or {}
+    except Exception:  # noqa: BLE001 - language lookup must never break the flow
+        return "zh"
+    raw = config.get("preferred_language") if isinstance(config, dict) else None
+    return "en" if str(raw or "").strip().lower().startswith("en") else "zh"
+
+
+_KNOWLEDGE_SKILL_MISSING_SKILL_MD = {
+    "zh": "未在输出目录找到有效 Skill（缺少 SKILL.md）",
+    "en": "No valid Skill was found in the output directory (SKILL.md is missing)",
+}
 
 
 from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
@@ -615,7 +783,6 @@ def _safe_rmtree(path: Path) -> bool:
         return True
 
     import time
-    import stat
 
     max_retries = 3
     retry_delay = 0.2
@@ -973,6 +1140,8 @@ class SkillManager:
         meta["is_builtin"] = bool(base_meta.get("is_builtin", False))
         meta["is_builtin_source"] = bool(base_meta.get("is_builtin_source", False))
         meta["proprietary"] = bool(base_meta.get("proprietary", False))
+        if "installed" in base_meta:
+            meta["installed"] = bool(base_meta.get("installed"))
         if "marketplace" in base_meta:
             meta["marketplace"] = base_meta.get("marketplace")
         meta["has_evolutions"] = _has_effective_evolutions(
@@ -991,6 +1160,8 @@ class SkillManager:
                 )
             except SkillPackValidationError as exc:
                 raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+
+        self._apply_skill_display(meta, read_root)
 
         # 返回前改写本地相对图片为受控预览 URL（不改磁盘）
         session_id = str(params.get("_session_id") or params.get("session_id") or "").strip()
@@ -4934,6 +5105,15 @@ class SkillManager:
             prompt_parts.append(f"知识来源链接: {link}")
         else:
             prompt_parts.append(f"知识来源本地文档绝对路径: {file_path}")
+        if _knowledge_skill_language() == "en":
+            prompt_parts = self._knowledge_skill_prompt_parts_en(
+                output_dir=output_dir,
+                occupied=occupied,
+                preferred_name=preferred_name,
+                skill_description=skill_description,
+                link=link if has_link else "",
+                file_path=file_path if has_file else "",
+            )
 
         return {
             "success": True,
@@ -4948,6 +5128,58 @@ class SkillManager:
             "trusted_dirs": [str(output_dir)]
             + ([str(Path(file_path).parent)] if has_file else []),
         }
+
+    @staticmethod
+    def _knowledge_skill_prompt_parts_en(
+        *,
+        output_dir: Path,
+        occupied: set[str],
+        preferred_name: str,
+        skill_description: str,
+        link: str,
+        file_path: str,
+    ) -> list[str]:
+        """English counterpart of the Knowledge-to-Skill follow-up prompt."""
+        parts = [
+            "Generate a complete, installable Skill from the knowledge source below "
+            "and write it into the specified output directory.",
+            "Output directory (the Skill root containing SKILL.md must be created "
+            f"inside this directory): {output_dir}",
+            "Requirements:",
+            "1. SKILL.md must contain valid YAML front matter whose name and "
+            "description are both non-empty strings;",
+            "2. Do not create a root-level .archive/;",
+            "3. Do not call send_file_to_user; do not package or deliver anything to the user;",
+            "4. The final Skill root may only be written inside the output directory above; "
+            "never write to workspace/skills/<name> (the system installs it afterwards);",
+            "5. skill-omni-creation may only use scripts/work/<slug>/ as an intermediate "
+            "cache and must not copy the result into workspace/skills afterwards;",
+            "6. If the source is a document/example page that needs no executable scripts, "
+            "skip code-writer/code-verifier and write SKILL.md directly (references are "
+            "allowed) to save time;",
+            "7. After generation, make sure the Skill root can be located unambiguously "
+            "inside the output directory.",
+            "8. The Skill name must not duplicate an installed name; on conflict, pick an "
+            "unused name automatically (a suffix is fine).",
+        ]
+        if occupied:
+            preview = ", ".join(sorted(occupied)[:80])
+            more = "…" if len(occupied) > 80 else ""
+            parts.append(f"Installed Skill names (do not reuse): {preview}{more}")
+        if preferred_name:
+            parts.append(
+                f"Skill name requested by the user (must be used if not taken): {preferred_name}"
+            )
+        if skill_description:
+            parts.append(
+                "Additional user constraints for the target Skill (do not use them "
+                f"directly as the Skill name): {skill_description}"
+            )
+        if link:
+            parts.append(f"Knowledge source link: {link}")
+        else:
+            parts.append(f"Absolute path of the local knowledge document: {file_path}")
+        return parts
 
     @property
     def skills_dir(self) -> Path:
@@ -5063,7 +5295,7 @@ class SkillManager:
         if skill_dir is None:
             raise SkillRpcError(
                 ERROR_SKILL_INVALID_PACKAGE,
-                "未在输出目录找到有效 Skill（缺少 SKILL.md）",
+                _KNOWLEDGE_SKILL_MISSING_SKILL_MD[_knowledge_skill_language()],
             )
 
         meta = self._assert_skill_package_safe(skill_dir)
@@ -5938,6 +6170,22 @@ class SkillManager:
 
     @staticmethod
     def _parse_skill_md(path: Path) -> dict | None:
+        from jiuwenswarm.runtime.kernel import KernelIdentity, ResourceKey, identity_reference, process_kernel
+        try:
+            content = path.read_text(encoding="utf-8")
+        except OSError:
+            return SkillManager._parse_skill_md_uncached(path)
+        identity = KernelIdentity.for_agent(project_dir=str(path.parent), work_mode="skill-index",
+            definition="skill-frontmatter", capabilities="metadata-v1", configuration=content)
+        key = ResourceKey(identity, "skill-index", str(path.resolve()), "", "", identity_reference(content))
+        # Serialized immutable metadata is shared; callers retain independent
+        # mutable snapshots and the established session selection semantics.
+        encoded = process_kernel().recipe(key, lambda: json.dumps(
+            SkillManager._parse_skill_md_uncached(path, text=content), ensure_ascii=False, default=str))
+        return json.loads(encoded)
+
+    @staticmethod
+    def _parse_skill_md_uncached(path: Path, *, text: str | None = None) -> dict | None:
         """解析 SKILL.md，提取 YAML frontmatter 和正文.
 
         支持两种格式:
@@ -5945,7 +6193,8 @@ class SkillManager:
         2. 无 frontmatter（整个文件作为 body，name 从文件名推断）
         """
         try:
-            text = path.read_text(encoding="utf-8")
+            if text is None:
+                text = path.read_text(encoding="utf-8")
         except Exception:
             logger.warning("无法读取文件: %s", path)
             return None
@@ -6002,17 +6251,100 @@ class SkillManager:
         return meta
 
     @staticmethod
+    def _parse_skill_display_md(skill_dir: Path) -> dict[str, str]:
+        """解析 skill_display.md，提取展示用中英文字段.
+
+        Returns:
+            仅包含非空展示字段的 dict；文件不存在或解析失败时返回空 dict.
+        """
+        path = skill_dir / _SKILL_DISPLAY_FILENAME
+        if not path.is_file():
+            return {}
+        try:
+            text = path.read_text(encoding="utf-8")
+        except Exception:
+            logger.warning("无法读取文件: %s", path)
+            return {}
+
+        fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
+        if not fm_match:
+            return {}
+        try:
+            loaded = yaml.safe_load(fm_match.group(1))
+        except Exception:
+            logger.warning("无法解析 skill_display.md: %s", path)
+            return {}
+        if not isinstance(loaded, dict):
+            return {}
+
+        out: dict[str, str] = {}
+        for key in _SKILL_DISPLAY_KEYS:
+            val = loaded.get(key)
+            if val is None:
+                continue
+            text_val = str(val).strip()
+            if text_val:
+                out[key] = text_val
+        return out
+
+    @staticmethod
+    def _apply_skill_display(meta: dict, skill_dir: Path) -> None:
+        """将 skill_display.md 展示字段合并进 meta（原地修改）.
+
+        - 始终填充 display_name_zh / description_zh（缺失时回退 SKILL.md 的 name / description）
+        - 英文字段可空
+        - 仅当 skill_display.md 提供了对应中文字段时，覆盖响应层的 display_name / description
+          （避免无展示文件时冲掉 ClawHub 等来源的 display_name）
+        - 本地已安装副本若缺少 skill_display.md，回退读取同名内置源中的展示文件
+        """
+        display = SkillManager._parse_skill_display_md(skill_dir)
+        if not display:
+            try:
+                builtin_dir = get_builtin_skills_dir()
+                builtin_skill = builtin_dir / skill_dir.name
+                if (
+                    builtin_skill.is_dir()
+                    and builtin_skill.resolve() != Path(skill_dir).resolve()
+                ):
+                    display = SkillManager._parse_skill_display_md(builtin_skill)
+            except OSError as exc:
+                logger.debug(
+                    "跳过内置 skill_display 回退 %s: %s",
+                    skill_dir,
+                    exc,
+                )
+
+        skill_name = str(meta.get("name") or "").strip()
+        skill_description = str(meta.get("description") or "").strip()
+
+        zh_name = display.get("display_name_zh", "")
+        zh_desc = display.get("description_zh", "")
+        meta["display_name_zh"] = zh_name or skill_name
+        meta["description_zh"] = zh_desc or skill_description
+        meta["display_name_en"] = display.get("display_name_en", "")
+        meta["description_en"] = display.get("description_en", "")
+
+        if zh_name:
+            meta["display_name"] = zh_name
+        if zh_desc:
+            meta["description"] = zh_desc
+
+    @staticmethod
     def _try_find_skill_file(directory: Path) -> Path | None:
         """在目录中查找 skill 文件.
 
-        优先查找 SKILL.md，其次查找任意 .md 文件.
+        优先查找 SKILL.md，其次查找任意 .md 文件（排除 skill_display.md）.
         """
         skill_md = directory / "SKILL.md"
         if skill_md.is_file():
             return skill_md
 
-        # 兼容：查找任意 .md 文件
-        md_files = list(directory.glob("*.md"))
+        # 兼容：查找任意 .md 文件（排除展示元数据文件）
+        md_files = [
+            p
+            for p in directory.glob("*.md")
+            if p.name.lower() != _SKILL_DISPLAY_FILENAME.lower()
+        ]
         if md_files:
             return md_files[0]
 
@@ -6188,6 +6520,7 @@ class SkillManager:
                 )
                 return None
             meta["has_evolutions"] = False
+        self._apply_skill_display(meta, child)
         # 不在列表中返回 body
         meta.pop("body", None)
         return meta
@@ -6246,6 +6579,7 @@ class SkillManager:
         """扫描内置技能目录中尚未安装到用户目录的技能.
 
         返回的技能列表仅包含那些存在于内置目录但尚未在用户目录中的技能。
+        仅白名单内的内置技能会展示。
         """
         results: list[dict] = []
         builtin_dir = get_builtin_skills_dir()
@@ -6272,6 +6606,8 @@ class SkillManager:
 
             # 设置内置技能的标记
             meta["name"] = self._resolve_skill_name(child, md, meta)
+            if meta["name"] not in _BUILTIN_SKILL_UI_WHITELIST:
+                continue
             meta["source"] = "builtin"
             meta["is_builtin"] = True
             meta["is_builtin_source"] = True
@@ -6281,6 +6617,7 @@ class SkillManager:
             meta["has_evolutions"] = False
             self._apply_enabled_config(meta, meta.get("name", ""))
             self.apply_archive_version_and_type(meta, child)
+            self._apply_skill_display(meta, child)
             # 不在列表中返回 body
             meta.pop("body", None)
             results.append(meta)
@@ -6816,6 +7153,33 @@ class SkillManager:
                             "is_builtin": False,
                             "is_builtin_source": False,
                         }
+
+        # 未安装的内置技能（白名单内）
+        builtin_dir = get_builtin_skills_dir()
+        if builtin_dir.exists() and builtin_dir.is_dir():
+            for child in builtin_dir.iterdir():
+                if not child.is_dir() or child.name.startswith("_"):
+                    continue
+                md = self._try_find_skill_file(child)
+                if md is None:
+                    continue
+                meta = self._parse_skill_md(md)
+                if meta is None:
+                    continue
+                resolved_name = self._resolve_skill_name(child, md, meta)
+                if resolved_name != name:
+                    continue
+                if resolved_name not in _BUILTIN_SKILL_UI_WHITELIST:
+                    continue
+                return child, {
+                    "name": resolved_name,
+                    "source": "builtin",
+                    "display_name": resolved_name,
+                    "is_builtin": True,
+                    "is_builtin_source": True,
+                    "proprietary": resolved_name in _load_proprietary_builtin_names(),
+                    "installed": False,
+                }
         return None, None
 
     def _get_skill_evolution_path(self, skill_name: str) -> Path | None:
@@ -6882,6 +7246,7 @@ class SkillManager:
                 meta["has_evolutions"] = False
                 self._apply_enabled_config(meta, meta.get("name", ""))
                 self.apply_archive_version_and_type(meta, plugin_dir)
+                self._apply_skill_display(meta, plugin_dir)
                 meta.pop("body", None)
                 results.append(meta)
 
@@ -8536,15 +8901,32 @@ class SkillManager:
         return default_state
 
     def _save_state(self) -> None:
-        """持久化状态到 skills_state.json."""
+        """持久化状态到 skills_state.json（唯一临时名 + ``os.replace`` 原子写）.
+
+        直接 ``write_text`` 会留下半写状态且并发写互相截断；原子替换保证
+        任一时刻磁盘上是完整版本。临时名带随机后缀避免并发写碰撞，失败时
+        清理残留。
+        """
+        tmp: Path | None = None
         try:
             self._state_file.parent.mkdir(parents=True, exist_ok=True)
-            self._state_file.write_text(
+            tmp = self._state_file.with_name(
+                f".{self._state_file.name}.{uuid.uuid4().hex[:8]}.tmp"
+            )
+            tmp.write_text(
                 json.dumps(self._state, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
+            os.replace(tmp, self._state_file)
+            tmp = None
         except Exception:
             logger.error("保存 skills_state.json 失败")
+        finally:
+            if tmp is not None:
+                try:
+                    tmp.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def _get_marketplaces(self) -> list[dict]:
         marketplaces = self._state.get("marketplaces", [])
@@ -8997,3 +9379,708 @@ class SkillManager:
         if len(token) <= 8:
             return "*" * len(token)
         return token[:4] + "*" * (len(token) - 8) + token[-4:]
+
+    # -----------------------------------------------------------------------
+    # 技能同步（Server / Client 分离部署，POST /skill-sync/*）
+    # -----------------------------------------------------------------------
+
+    def _scan_sync_local_skills(self) -> list[dict[str, Any]]:
+        """扫描参与同步的用户技能目录技能（不含 MCP 捆绑，决策 8/9）."""
+        results: list[dict] = []
+        if not self._skills_dir.exists():
+            return results
+        for child in self._skills_dir.iterdir():
+            if not child.is_dir() or child.name.startswith("_"):
+                continue
+            meta = self._scan_one_skill_dir(child)
+            if meta is not None:
+                results.append(meta)
+        return results
+
+    @staticmethod
+    def _sync_frontmatter_name_mismatches(skill_dir: Path) -> bool:
+        """目录名与 SKILL.md frontmatter name 是否不一致（apply 拒绝回推的同一口径）.
+
+        扫描身份以目录名为准（``_scan_one_skill_dir``），而 apply 预检要求
+        目录名 == frontmatter name——两者不一致的技能（如 skill-creator-normal
+        目录写 name: skill-creator）能 diff / package 拉下来，却永远推不回
+        （400）。diff 以本标记告知 client SDK 跳过推送。frontmatter 缺
+        name 时按 ``_resolve_skill_name`` 口径回退目录名，不视为不一致。
+        """
+        md = SkillManager._try_find_skill_file(skill_dir)
+        if md is None:
+            return False
+        meta = SkillManager._parse_skill_md(md)
+        if meta is None:
+            return False
+        parsed = str(meta.get("name") or "").strip()
+        if not parsed or parsed == md.stem:
+            return False
+        return parsed != skill_dir.name
+
+    @staticmethod
+    def _build_skill_digest(meta: dict[str, Any], skill_dir: Path) -> dict[str, Any]:
+        """由扫描 meta 组装 SkillDigest（version 口径见决策 5：仅 .archive，缺失为 ""）."""
+        # get_current_version 索引损坏时抛错——同步对比需要稳定口径，按缺失处理
+        try:
+            version = get_current_version(skill_dir) or ""
+        except SkillArchiveError:
+            version = ""
+        try:
+            checksum = compute_content_checksum(skill_dir)
+        except OSError:
+            checksum = ""
+        try:
+            updated_at = datetime.fromtimestamp(
+                skill_dir.stat().st_mtime, tz=timezone.utc
+            ).isoformat()
+        except OSError:
+            updated_at = ""
+        return {
+            "name": str(meta.get("name") or skill_dir.name),
+            "category": normalize_sync_category(str(meta.get("source") or "")),
+            "source": str(meta.get("source") or ""),
+            "skill_type": str(meta.get("skill_type") or SKILL_TYPE_SKILL),
+            "version": version,
+            "content_checksum": checksum,
+            "description": str(meta.get("description") or ""),
+            "updated_at": updated_at,
+            "builtin": bool(meta.get("is_builtin") or meta.get("is_builtin_source")),
+            "name_mismatch": SkillManager._sync_frontmatter_name_mismatches(skill_dir),
+        }
+
+    @staticmethod
+    def _resolve_sync_package_root(
+        meta: dict[str, Any], skill_dir: Path, version: str
+    ) -> Path:
+        """解析打包根：缺省取 workspace 当前内容，指定版本取 .archive 副本."""
+        target = str(version or "").strip()
+        if not target:
+            return skill_dir
+        current = meta.get("version")
+        if isinstance(current, str) and current == target:
+            return skill_dir
+        # resolve_version_content_root 缺失/损坏统一抛 SKILL_VERSION_NOT_FOUND
+        return resolve_version_content_root(skill_dir, target)
+
+    def _write_sync_skill_zip(
+        self,
+        zf: zipfile.ZipFile,
+        *,
+        name: str,
+        root: Path,
+        include_archive: bool,
+        state: dict[str, int],
+    ) -> None:
+        """把单个技能目录写入同步 zip（排除派生产物与符号链接，路径经 ``name`` 前缀）."""
+        base = _safe_path_name(name, "skill")
+        for abs_path in self._iter_sync_package_files(root, include_archive=include_archive):
+            rel = abs_path.relative_to(root)
+            arcname = "/".join((base, *rel.parts))
+            if "\\" in arcname or arcname.startswith("/"):
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, f"打包路径非法: {arcname}")
+            if len(PurePosixPath(arcname).parts) > _SKILL_ZIP_MAX_PATH_DEPTH + 1:
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, f"打包路径过深: {arcname}")
+            info = zipfile.ZipInfo(arcname)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            mode = abs_path.stat().st_mode
+            info.external_attr = (stat.S_IFREG | (0o755 if mode & 0o111 else 0o644)) << 16
+            with abs_path.open("rb") as src, zf.open(info, "w") as dst:
+                shutil.copyfileobj(src, dst, 1024 * 1024)
+            state["file_count"] += 1
+            state["total_bytes"] += abs_path.stat().st_size
+
+    @staticmethod
+    def _iter_sync_package_files(
+        root: Path, *, include_archive: bool
+    ) -> list[Path]:
+        """遍历参与打包的文件：排除 ``__pycache__``/``*.pyc``/符号链接，非 regular file 拒绝."""
+        files: list[Path] = []
+        for current_root, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames.sort()
+            keep: list[str] = []
+            for dirname in dirnames:
+                path = Path(current_root) / dirname
+                if path.is_symlink():
+                    continue
+                if dirname in _SYNC_PACKAGE_EXCLUDED_DIRNAMES:
+                    continue
+                if dirname == ARCHIVE_DIRNAME and not include_archive:
+                    continue
+                keep.append(dirname)
+            dirnames[:] = keep
+            for filename in sorted(filenames):
+                path = Path(current_root) / filename
+                if path.is_symlink():
+                    continue
+                # 大小写不敏感与 compute_content_checksum 的 suffix.lower()
+                # 口径一致（决策 6）：X.PYC 两端都排除，只是多传字节也会
+                # 造成打包/校验排除面漂移。
+                if filename.lower().endswith(
+                    tuple(_SYNC_PACKAGE_EXCLUDED_FILE_SUFFIXES)
+                ):
+                    continue
+                if not stat.S_ISREG(path.lstat().st_mode):
+                    raise SkillRpcError(
+                        ERROR_SKILL_UNSAFE_PATH,
+                        f"打包路径不是常规文件: {path}",
+                    )
+                files.append(path)
+        files.sort(key=lambda p: p.relative_to(root).as_posix())
+        return files
+
+    def _precheck_sync_apply_package(
+        self, extract_root: Path, *, overwrite: bool
+    ) -> list[dict[str, Any]]:
+        """apply 阶段 1：根结构 + 逐技能包校验 + 名称一致 + 冲突/builtin 预检."""
+        first_level = sorted(
+            (p for p in extract_root.iterdir() if p.name != "."),
+            key=lambda p: p.name,
+        )
+        if not first_level:
+            raise SkillRpcError(ERROR_SKILL_SYNC_EMPTY_PACKAGE, "包内无有效技能目录")
+        for entry in first_level:
+            if not entry.is_dir():
+                raise SkillRpcError(
+                    ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                    f"根级不允许文件条目: {entry.name}",
+                )
+            if entry.name == ARCHIVE_DIRNAME:
+                raise SkillRpcError(
+                    ERROR_SKILL_RESERVED_PATH,
+                    "Skill 包不得包含根级 .archive/",
+                )
+
+        entries: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        for entry in first_level:
+            # 目录名必须是合法技能名（与 _install_imported_skill_dir 的落盘名一致）
+            try:
+                safe_name = _safe_path_name(entry.name, "skill")
+            except ValueError as exc:
+                raise SkillRpcError(
+                    ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                    f"非法技能目录名: {entry.name}",
+                ) from exc
+            # 关键约束：目录名与 frontmatter name 必须一致（设计 5.4），
+            # 不能沿用单包导入由 _locate_skill_dir 自动定位的宽松行为。
+            meta = self._assert_skill_package_safe(entry)
+            frontmatter_name = str(meta.get("name") or "").strip()
+            if frontmatter_name != safe_name:
+                raise SkillRpcError(
+                    ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                    f"技能目录名 {safe_name} 与 SKILL.md name {frontmatter_name} 不一致",
+                )
+            if safe_name in seen_names:
+                raise SkillRpcError(
+                    ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                    f"包内重复技能: {safe_name}",
+                )
+            seen_names.add(safe_name)
+            dest = _safe_child_path(self._skills_dir, safe_name, "skill")
+            # builtin 判定用 is_builtin_source（builtin 目录存在同名技能），
+            # 不用 _is_builtin_skill：自动登记会把用户目录副本补进
+            # local_skills，使后者恒为 False（见 _register_unmanaged_local_skills）。
+            builtin_source = False
+            builtin_dir = get_builtin_skills_dir()
+            if builtin_dir.exists():
+                builtin_source = (builtin_dir / safe_name).is_dir()
+            entries.append(
+                {
+                    "name": safe_name,
+                    "src": entry,
+                    "dest": dest,
+                    "existing": dest.exists(),
+                    "builtin": bool(builtin_source),
+                }
+            )
+        for item in entries:
+            if item["existing"] and not overwrite:
+                raise SkillRpcError(
+                    ERROR_SKILL_ALREADY_EXISTS,
+                    f"skill {item['name']} 已存在，需确认覆盖",
+                )
+            if item["builtin"]:
+                raise SkillRpcError(
+                    ERROR_SKILL_BUILTIN_READ_ONLY,
+                    f"内置 Skill 不可覆盖: {item['name']}",
+                )
+        return entries
+
+    def _precheck_sync_apply_one(
+        self, item: dict[str, Any], *, overwrite: bool
+    ) -> str | None:
+        """best_effort 模式单条预检：返回跳过原因 code，通过返回 None."""
+        try:
+            meta = self._assert_skill_package_safe(item["src"])
+        except SkillRpcError as exc:
+            return exc.code
+        frontmatter_name = str(meta.get("name") or "").strip()
+        if frontmatter_name != item["name"]:
+            return ERROR_SKILL_SYNC_INVALID_PAYLOAD
+        if item["builtin"]:
+            return ERROR_SKILL_BUILTIN_READ_ONLY
+        if item["existing"] and not overwrite:
+            return ERROR_SKILL_ALREADY_EXISTS
+        return None
+
+    async def handle_skill_sync_diff(self, params: dict) -> dict:
+        """POST /skill-sync/diff：client 上报清单，server 对比输出分类 diff."""
+        params = params or {}
+        client_id = str(params.get("client_id") or "").strip()
+        # checksum 算法版本对齐：client 上报的 content_checksum 只有与 server
+        # 同版本算法计算才可比。版本不符拒绝比对——显式失败优于全量误报
+        # （算法失配会让所有含派生产物的技能被误判 content_mismatch）。
+        # 缺省视为当前版本，向后兼容不带该字段的旧 client。
+        algo_raw = params.get("checksum_algo_version")
+        try:
+            client_algo = int(algo_raw) if algo_raw is not None else CHECKSUM_ALGO_VERSION
+        except (TypeError, ValueError) as exc:
+            raise SkillRpcError(
+                ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                f"checksum_algo_version 必须为整数，收到: {algo_raw!r}",
+            ) from exc
+        if client_algo != CHECKSUM_ALGO_VERSION:
+            raise SkillRpcError(
+                ERROR_SKILL_SYNC_CHECKSUM_ALGO_MISMATCH,
+                f"checksum 算法版本不一致: client=v{client_algo} server=v{CHECKSUM_ALGO_VERSION}，"
+                f"请将 client SDK 升级到与 server 一致的版本后重试",
+            )
+        raw_skills = params.get("client_skills")
+        if not isinstance(raw_skills, list):
+            raise SkillRpcError(
+                ERROR_SKILL_SYNC_INVALID_PAYLOAD, "client_skills 必须为 JSON 数组"
+            )
+        client_skills: dict[str, dict[str, Any]] = {}
+        for item in raw_skills:
+            if not isinstance(item, dict):
+                raise SkillRpcError(
+                    ERROR_SKILL_SYNC_INVALID_PAYLOAD, "client_skills 条目必须是对象"
+                )
+            # MCP 捆绑技能不参与 diff（决策 8），须在 name/checksum 必填与
+            # 重名校验之前跳过：MCP 目录与用户技能目录可同名，且 MCP 条目
+            # 不保证携带 content_checksum，前置可避免整单 400。
+            if str(item.get("source") or "") == "mcp":
+                continue
+            name = str(item.get("name") or "").strip()
+            checksum = str(item.get("content_checksum") or "").strip()
+            if not name or not checksum:
+                raise SkillRpcError(
+                    ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                    "client_skills 条目缺少 name / content_checksum",
+                )
+            if name in client_skills:
+                raise SkillRpcError(
+                    ERROR_SKILL_SYNC_INVALID_PAYLOAD, f"重复的技能名: {name}"
+                )
+            client_skills[name] = {
+                "name": name,
+                "category": str(item.get("category") or CATEGORY_UNKNOWN),
+                "source": str(item.get("source") or ""),
+                "skill_type": str(item.get("skill_type") or SKILL_TYPE_SKILL),
+                "version": str(item.get("version") or ""),
+                "content_checksum": checksum,
+                "description": str(item.get("description") or ""),
+                "updated_at": str(item.get("updated_at") or ""),
+                "builtin": bool(item.get("builtin")),
+            }
+
+        raw_options = params.get("options")
+        options = raw_options if isinstance(raw_options, dict) else {}
+        include_builtin = bool(options.get("include_builtin", True))
+        include_disabled = bool(options.get("include_disabled", True))
+        categories_filter_raw = options.get("categories")
+        categories_filter: set[str] | None = None
+        if isinstance(categories_filter_raw, list):
+            categories_filter = {
+                str(c).strip() for c in categories_filter_raw if str(c).strip()
+            }
+
+        def _client_digest_accepted(digest: dict[str, Any]) -> bool:
+            if not include_builtin and digest["builtin"]:
+                return False
+            if categories_filter is not None and digest["category"] not in categories_filter:
+                return False
+            return True
+
+        # server 侧仅扫描用户技能目录（_scan_local_skills 口径，决策 9），
+        # MCP 捆绑（source=mcp）不纳入。
+        server_skills: dict[str, dict[str, Any]] = {}
+        for meta in self._scan_sync_local_skills():
+            if not include_disabled and not meta.get("enabled", True):
+                continue
+            skill_dir = self._skills_dir / str(meta.get("name") or "")
+            digest = self._build_skill_digest(meta, skill_dir)
+            if not include_builtin and digest["builtin"]:
+                continue
+            if categories_filter is not None and digest["category"] not in categories_filter:
+                continue
+            server_skills[digest["name"]] = digest
+
+        categories: dict[str, dict[str, Any]] = {}
+
+        def _category_group(category: str) -> dict[str, Any]:
+            group = categories.setdefault(
+                category,
+                {
+                    "category": category,
+                    "summary": {
+                        "server_only": 0,
+                        "client_only": 0,
+                        "in_sync": 0,
+                        "version_mismatch": 0,
+                        "content_mismatch": 0,
+                        "total": 0,
+                    },
+                    "items": {
+                        "server_only": [],
+                        "client_only": [],
+                        "in_sync": [],
+                        "version_mismatch": [],
+                        "content_mismatch": [],
+                    },
+                },
+            )
+            return group
+
+        def _add_entry(
+            category: str, status: str, entry: dict[str, Any]
+        ) -> None:
+            group = _category_group(category)
+            group["summary"][status] += 1
+            group["summary"]["total"] += 1
+            group["items"][status].append(entry)
+
+        for name in sorted(set(server_skills) | set(client_skills)):
+            server = server_skills.get(name)
+            client = client_skills.get(name)
+            if server is not None and client is None:
+                status = STATUS_SERVER_ONLY
+            elif server is None and client is not None:
+                if not _client_digest_accepted(client):
+                    continue
+                status = STATUS_CLIENT_ONLY
+            else:
+                status = compare_sync_status(server or {}, client or {})
+            category = (
+                server["category"] if server is not None else (client or {}).get("category", CATEGORY_UNKNOWN)
+            )
+            _add_entry(category, status, {
+                "name": name,
+                "category": category,
+                "skill_type": (server or client or {}).get("skill_type", SKILL_TYPE_SKILL),
+                "status": status,
+                "server": server,
+                "client": client,
+            })
+
+        summary = {
+            "server_only": 0,
+            "client_only": 0,
+            "in_sync": 0,
+            "version_mismatch": 0,
+            "content_mismatch": 0,
+            "total": 0,
+        }
+        for group in categories.values():
+            for key in ("server_only", "client_only", "in_sync", "version_mismatch", "content_mismatch"):
+                summary[key] += group["summary"][key]
+            summary["total"] += group["summary"]["total"]
+
+        result: dict[str, Any] = {
+            "success": True,
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "summary": summary,
+            "categories": [categories[key] for key in sorted(categories)],
+        }
+        if client_id:
+            result["client_id"] = client_id
+        return result
+
+    async def handle_skill_sync_package(self, params: dict) -> dict:
+        """POST /skill-sync/package：批量打 zip（fail-fast，整包落临时文件）.
+
+        返回 ``{"success": True, "zip_path", "sha256", "size"}``，由 HTTP 层
+        写响应头后流式发送并负责清理。
+        """
+        params = params or {}
+        raw_skills = params.get("skills")
+        if not isinstance(raw_skills, list) or not raw_skills:
+            raise SkillRpcError(ERROR_SKILL_SYNC_EMPTY_PACKAGE, "skills 不能为空")
+        if len(raw_skills) > _SKILL_SYNC_MAX_SKILLS_PER_BATCH:
+            raise SkillRpcError(
+                ERROR_SKILL_SYNC_PACKAGE_TOO_LARGE,
+                f"批量技能数超过限制（{_SKILL_SYNC_MAX_SKILLS_PER_BATCH}）",
+            )
+        include_archive = bool(params.get("include_archive", False))
+
+        # 先完成全部解析与 fail-fast 校验，再进入 zip 构建（设计 5.3）
+        requested: dict[str, str] = {}
+        metas: dict[str, dict[str, Any]] = {}
+        roots: dict[str, Path] = {}
+        for item in raw_skills:
+            if not isinstance(item, dict):
+                raise SkillRpcError(ERROR_SKILL_SYNC_INVALID_PAYLOAD, "skills 条目必须是对象")
+            name = str(item.get("name") or "").strip()
+            if not name:
+                raise SkillRpcError(ERROR_SKILL_SYNC_INVALID_PAYLOAD, "skills 条目缺少 name")
+            if name in requested:
+                raise SkillRpcError(ERROR_SKILL_SYNC_INVALID_PAYLOAD, f"重复的技能名: {name}")
+            try:
+                safe_name = _safe_path_name(name, "skill")
+            except ValueError as exc:
+                raise SkillRpcError(
+                    ERROR_SKILL_NOT_FOUND, f"未找到技能: {name}"
+                ) from exc
+            meta = self._scan_one_skill_dir(self._skills_dir / safe_name)
+            if meta is None:
+                raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到技能: {name}")
+            version = str(item.get("version") or "").strip()
+            version_label = f"{safe_name}@{version}" if version else safe_name
+            try:
+                root = self._resolve_sync_package_root(meta, self._skills_dir / safe_name, version)
+            except SkillArchiveError as exc:
+                raise SkillRpcError(ERROR_VERSION_NOT_FOUND, f"未找到本地版本: {version_label}") from exc
+            requested[safe_name] = version
+            metas[safe_name] = meta
+            roots[safe_name] = root
+
+        # 配额预检查（技能数已在入口限制）
+        total_files = 0
+        total_bytes = 0
+        for safe_name, root in roots.items():
+            for path in self._iter_sync_package_files(root, include_archive=include_archive):
+                total_files += 1
+                total_bytes += path.stat().st_size
+                if total_files > _SKILL_SYNC_MAX_BATCH_FILE_COUNT:
+                    raise SkillRpcError(
+                        ERROR_SKILL_SYNC_PACKAGE_TOO_LARGE,
+                        f"批量文件数超过限制（{_SKILL_SYNC_MAX_BATCH_FILE_COUNT}）",
+                    )
+                if total_bytes > _SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES:
+                    raise SkillRpcError(
+                        ERROR_SKILL_SYNC_PACKAGE_TOO_LARGE,
+                        f"批量内容总量超过限制（{_SKILL_ZIP_MAX_TOTAL_UNCOMPRESSED_BYTES} 字节）",
+                    )
+        if total_files == 0:
+            raise SkillRpcError(ERROR_SKILL_SYNC_EMPTY_PACKAGE, "打包内容为空")
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        tmpdir = tempfile.mkdtemp(prefix="jiuwenswarm_skill_sync_pkg_")
+        zip_path = Path(tmpdir) / f"skills_sync_{stamp}.zip"
+        state = {"file_count": 0, "total_bytes": 0}
+        try:
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                for safe_name in sorted(roots):
+                    self._write_sync_skill_zip(
+                        zf,
+                        name=safe_name,
+                        root=roots[safe_name],
+                        include_archive=include_archive,
+                        state=state,
+                    )
+                    if zip_path.stat().st_size > _SKILL_SYNC_MAX_ZIP_BYTES:
+                        raise SkillRpcError(
+                            ERROR_SKILL_SYNC_PACKAGE_TOO_LARGE,
+                            f"响应 zip 超过限制（{_SKILL_SYNC_MAX_ZIP_BYTES} 字节）",
+                        )
+            digest = hashlib.sha256()
+            with zip_path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return {
+                "success": True,
+                "zip_path": str(zip_path),
+                "filename": zip_path.name,
+                "sha256": digest.hexdigest(),
+                "size": zip_path.stat().st_size,
+            }
+        except BaseException:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise
+
+    async def handle_skill_sync_apply(self, params: dict) -> dict:
+        """POST /skill-sync/apply：批量上传安装（strict 预检闭环 / best_effort 分组）.
+
+        params 由 HTTP 层组装：``zip_bytes``（已校验 sha256 的包内容）、
+        ``overwrite``、``mode``、``origin``。
+        """
+        params = params or {}
+        zip_bytes = params.get("zip_bytes")
+        if not isinstance(zip_bytes, (bytes, bytearray)) or not zip_bytes:
+            raise SkillRpcError(ERROR_SKILL_SYNC_INVALID_PAYLOAD, "缺少 zip 包内容")
+        overwrite = self._parse_overwrite(params.get("overwrite", False))
+        mode = str(params.get("mode") or "strict").strip().lower()
+        if mode not in {"strict", "best_effort"}:
+            raise SkillRpcError(ERROR_SKILL_SYNC_INVALID_PAYLOAD, f"未知 mode: {mode}")
+        origin = str(params.get("origin") or "sync_client").strip() or "sync_client"
+
+        with tempfile.TemporaryDirectory(prefix="jiuwenswarm_skill_sync_apply_") as tmpdir:
+            extract_root = Path(tmpdir) / "extracted"
+            try:
+                self._safe_extract_zip_bytes_to_dir(bytes(zip_bytes), extract_root)
+            except zipfile.BadZipFile as exc:
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE, "不是有效的 zip 包"
+                ) from exc
+            except RuntimeError as exc:
+                # _safe_extract_zip_members_into 对 Zip-Slip / 非法路径 /
+                # 非法文件名抛 RuntimeError（永久性坏包），须与 BadZipFile
+                # 同样按 400 拒绝；置之不理会穿透为 500，客户端按服务端
+                # 故障语义无限重试。
+                raise SkillRpcError(
+                    ERROR_SKILL_INVALID_PACKAGE, f"zip 包含非法路径: {exc}"
+                ) from exc
+
+            if mode == "strict":
+                # strict：全部预检通过后才允许首个安装动作
+                entries = self._precheck_sync_apply_package(
+                    extract_root, overwrite=overwrite
+                )
+                applied: list[dict[str, Any]] = []
+                skipped: list[dict[str, Any]] = []
+                failed: list[dict[str, Any]] = []
+                for item in entries:
+                    result = self._install_imported_skill_dir(
+                        item["src"],
+                        force=overwrite,
+                        origin=origin,
+                        conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+                    )
+                    skill = result.get("skill") if isinstance(result, dict) else None
+                    if result.get("success") and isinstance(skill, dict):
+                        applied.append(
+                            {
+                                "name": skill.get("name"),
+                                "action": "overwritten" if item["existing"] else "installed",
+                                "version": skill.get("version"),
+                            }
+                        )
+                    else:
+                        failed.append(
+                            {
+                                "name": item["name"],
+                                "reason": ERROR_SKILL_SYNC_INSTALL_FAILED,
+                                "detail": str(result.get("detail") or "磁盘写入失败"),
+                            }
+                        )
+                return {
+                    "success": not failed,
+                    "applied": applied,
+                    "skipped": skipped,
+                    "failed": failed,
+                }
+
+            # best_effort：预检失败项跳过，安装阶段失败项落 failed，其余继续
+            first_level = sorted(
+                (p for p in extract_root.iterdir() if p.name != "."),
+                key=lambda p: p.name,
+            )
+            if not first_level:
+                raise SkillRpcError(ERROR_SKILL_SYNC_EMPTY_PACKAGE, "包内无有效技能目录")
+            applied = []
+            skipped = []
+            failed = []
+            seen_names: set[str] = set()
+            for entry in first_level:
+                if not entry.is_dir() or entry.name == ARCHIVE_DIRNAME:
+                    skipped.append(
+                        {
+                            "name": entry.name,
+                            "reason": ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                            "detail": "根级条目必须为技能目录（不得为文件或根级 .archive）",
+                        }
+                    )
+                    continue
+                try:
+                    safe_name = _safe_path_name(entry.name, "skill")
+                except ValueError:
+                    skipped.append(
+                        {
+                            "name": entry.name,
+                            "reason": ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                            "detail": f"非法技能目录名: {entry.name}",
+                        }
+                    )
+                    continue
+                if safe_name in seen_names:
+                    skipped.append(
+                        {
+                            "name": safe_name,
+                            "reason": ERROR_SKILL_SYNC_INVALID_PAYLOAD,
+                            "detail": "包内重复技能",
+                        }
+                    )
+                    continue
+                seen_names.add(safe_name)
+                dest = _safe_child_path(self._skills_dir, safe_name, "skill")
+                builtin_source = False
+                builtin_dir = get_builtin_skills_dir()
+                if builtin_dir.exists():
+                    builtin_source = (builtin_dir / safe_name).is_dir()
+                item = {
+                    "name": safe_name,
+                    "src": entry,
+                    "dest": dest,
+                    "existing": dest.exists(),
+                    "builtin": bool(builtin_source),
+                }
+                skip_reason = self._precheck_sync_apply_one(item, overwrite=overwrite)
+                if skip_reason is not None:
+                    detail = {
+                        ERROR_SKILL_ALREADY_EXISTS: "同名技能已存在且 overwrite=false",
+                        ERROR_SKILL_BUILTIN_READ_ONLY: "内置 Skill 不可覆盖",
+                        ERROR_SKILL_OPERATION_UNSUPPORTED: "暂不支持导入 SkillPack",
+                    }.get(skip_reason, "包校验未通过")
+                    skipped.append(
+                        {"name": safe_name, "reason": skip_reason, "detail": detail}
+                    )
+                    continue
+                result = self._install_imported_skill_dir(
+                    item["src"],
+                    force=overwrite,
+                    origin=origin,
+                    conflict_code=ERROR_SKILL_ALREADY_EXISTS,
+                )
+                skill = result.get("skill") if isinstance(result, dict) else None
+                if result.get("success") and isinstance(skill, dict):
+                    applied.append(
+                        {
+                            "name": skill.get("name"),
+                            "action": "overwritten" if item["existing"] else "installed",
+                            "version": skill.get("version"),
+                        }
+                    )
+                else:
+                    failed.append(
+                        {
+                            "name": safe_name,
+                            "reason": ERROR_SKILL_SYNC_INSTALL_FAILED,
+                            "detail": str(result.get("detail") or "磁盘写入失败"),
+                        }
+                    )
+            return {
+                "success": not failed,
+                "applied": applied,
+                "skipped": skipped,
+                "failed": failed,
+            }
+
+    async def handle_skill_sync_reload(self, params: dict) -> dict:
+        """WS ``skills.sync.reload``：HTTP apply 落盘后的进程间通知.
+
+        web server 进程执行 ``/skill-sync/apply`` 落盘后经 AgentServer WS
+        发来本通知；本 handler 在 AgentServer 进程内执行，返回的
+        ``applied`` 非空时由 ``_handle_skills_request`` 的既有
+        ``_reload_after_skills`` 分支重建 agent 实例。不做任何磁盘操作，
+        仅校验并回显落盘清单。
+        """
+        params = params or {}
+        raw = params.get("applied")
+        if raw is None:
+            raw = []
+        if not isinstance(raw, list) or any(not isinstance(n, str) for n in raw):
+            raise SkillRpcError(
+                ERROR_SKILL_SYNC_INVALID_PAYLOAD, "applied 必须为字符串数组"
+            )
+        return {"success": True, "applied": [n for n in raw if n.strip()]}

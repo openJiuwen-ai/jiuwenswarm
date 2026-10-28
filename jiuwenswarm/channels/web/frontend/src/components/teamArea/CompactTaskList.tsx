@@ -30,11 +30,15 @@ import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import CancelledIcon from '../../assets/work-mode/已取消.svg?react';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
 import { getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TeamMember } from './shared';
+import { workflowAgentAvatarName, workflowAgentDisplayName, workflowAgentIdentity, workflowPhaseWorkers, type WorkflowAgent, type WorkflowRun } from './workflowTypes';
+import { useEnsurePhaseAgents } from './useEnsurePhaseAgents';
 
 export interface CompactTaskListProps {
   tasks: SessionTeamTask[];
   members: TeamMember[];
   hideAssignee: boolean;
+  /** 镜像 workflow 任务的 run 数据：带 workflow_run_id 的任务据此渲染 worker 头像栈。 */
+  workflowRuns?: WorkflowRun[];
   renderTaskIcon?: (task: SessionTeamTask) => ReactNode;
   renderStatusIcon?: (task: SessionTeamTask) => ReactNode;
   statusIconAtEnd?: boolean;
@@ -49,6 +53,7 @@ export function CompactTaskList({
   tasks,
   members,
   hideAssignee,
+  workflowRuns,
   renderTaskIcon,
   renderStatusIcon,
   statusIconAtEnd = false,
@@ -59,6 +64,9 @@ export function CompactTaskList({
   onTaskClick,
 }: CompactTaskListProps) {
   const { t } = useTranslation();
+  const visibleTasks = maxCollapsedCount !== undefined && !expanded ? tasks.slice(0, maxCollapsedCount) : tasks;
+  // 必须在早退之前：空列表 ↔ 非空切换时 hook 数量变化会炸整棵树（React #310）
+  useEnsurePhaseAgents(visibleTasks, workflowRuns);
 
   if (tasks.length === 0) {
     return (
@@ -73,8 +81,6 @@ export function CompactTaskList({
     );
   }
 
-  const visibleTasks = maxCollapsedCount !== undefined && !expanded ? tasks.slice(0, maxCollapsedCount) : tasks;
-
   return (
     <div className="flex flex-col gap-1">
       {visibleTasks.map(task => {
@@ -82,6 +88,8 @@ export function CompactTaskList({
         const assigneeName = getMemberDisplayName(task.assignee || '');
         const title = getBoardTaskTitle(task);
         const columnKey = getTaskColumnKey(task);
+        // 镜像的 workflow phase 任务无 assignee：按 run 的 phase agents 渲染色块头像栈。
+        const workers = task.workflow_run_id ? workflowPhaseWorkers(task, workflowRuns ?? []) : [];
         const statusIcon = renderStatusIcon ? (
           renderStatusIcon(task)
         ) : columnKey === 'running' ? (
@@ -137,13 +145,19 @@ export function CompactTaskList({
             {renderTaskIcon
               ? renderTaskIcon(task)
               : !hideAssignee &&
-                (assigneeExists ? (
+                (workers.length > 0 ? (
+                  <CompactWorkerStack workers={workers} />
+                ) : assigneeExists ? (
                   <TeamMemberAvatar member={task.assignee} alt={assigneeName} className="h-4 w-4 rounded-full shrink-0" imageClassName="rounded-full" />
                 ) : (
                   <UnassignedTeamAvatar className="h-4 w-4 rounded-full shrink-0" />
                 ))}
             <ApplicationTaskControls taskId={task.task_id}>
-              <span className="min-w-0 flex-1 text-sm leading-[22px] text-text truncate" data-testid="team-area-task-planning-task-title">
+              <span
+                className="min-w-0 flex-1 text-sm leading-[22px] text-text truncate"
+                data-testid="team-area-task-planning-task-title"
+                title={title}
+              >
                 {title}
               </span>
             </ApplicationTaskControls>
@@ -151,6 +165,44 @@ export function CompactTaskList({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * 紧凑行内的重叠 worker 头像栈（最多 3 个 + "+N" 芯片），与工作流树视图同一套
+ * 身份映射：三方节点认 CLI 品牌脸、人类节点认人类脸、native 按名字哈希取插画。
+ * 栈的 title 列出全部 worker 名（含被 +N 折叠的）。
+ */
+function CompactWorkerStack({ workers }: { workers: WorkflowAgent[] }) {
+  const visible = workers.slice(0, 3);
+  const extra = workers.length - visible.length;
+  const names = workers.map((worker) => workflowAgentDisplayName(worker)).join(', ');
+  return (
+    <div
+      className="flex items-center shrink-0"
+      title={names}
+      data-testid="team-area-task-planning-task-worker-stack"
+    >
+      {visible.map((worker, index) => (
+        <div
+          key={worker.id}
+          className={index > 0 ? '-ml-1.5 rounded-full ring-2 ring-[var(--color-surface-card)]' : 'rounded-full'}
+        >
+          <TeamMemberAvatar
+            member={workflowAgentAvatarName(worker)}
+            identity={workflowAgentIdentity(worker)}
+            alt={workflowAgentAvatarName(worker)}
+            className="h-4 w-4 rounded-full"
+            imageClassName="rounded-full"
+          />
+        </div>
+      ))}
+      {extra > 0 && (
+        <span className="-ml-1.5 flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-secondary text-[9px] leading-none text-text-muted ring-2 ring-[var(--color-surface-card)]">
+          +{extra}
+        </span>
+      )}
     </div>
   );
 }

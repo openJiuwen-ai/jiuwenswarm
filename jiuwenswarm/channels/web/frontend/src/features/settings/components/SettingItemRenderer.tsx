@@ -124,12 +124,21 @@ function SimpleSettingItem({
 
   if (item.component === 'switch') {
     const checked = parseConfigBoolean(source.values[item.key]);
+    const buildSwitchUpdates = (next: boolean): Record<string, boolean> => {
+      const updates: Record<string, boolean> = { [item.key]: next };
+      if (!next && item.subItems?.uncheckWithParent) {
+        item.subItems.items.forEach((subItem) => {
+          if (subItem.component === 'switch') updates[subItem.key] = false;
+        });
+      }
+      return updates;
+    };
     control = (
       <Switch
         aria-label={title}
         checked={checked}
         disabled={controlDisabled || editingSubItems.size > 0}
-        onChange={(next) => void source.save({ [item.key]: next }, item.id).catch(() => undefined)}
+        onChange={(next) => void source.save(buildSwitchUpdates(next), item.id).catch(() => undefined)}
         data-testid="settings-switch"
         data-variant={item.id}
       />
@@ -195,9 +204,15 @@ export function SettingItemRenderer({
   disabled?: boolean;
   onEditingChange?: EditingChange;
 }) {
+  const reportCustomEditing = useCallback(
+    (editing: boolean) => {
+      onEditingChange?.(item.id, editing);
+    },
+    [item.id, onEditingChange],
+  );
   if (item.component === 'custom') {
     const CustomItem = item.render;
-    return <CustomItem disabled={disabled} />;
+    return <CustomItem disabled={disabled} onEditingChange={reportCustomEditing} />;
   }
   return <SimpleSettingItem item={item} disabled={disabled} onEditingChange={onEditingChange} />;
 }

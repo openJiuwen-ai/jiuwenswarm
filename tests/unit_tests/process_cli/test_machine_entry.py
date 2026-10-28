@@ -59,7 +59,7 @@ import types
 
 from jiuwenswarm.channels.process_cli.protocol import OneShotRunResult
 
-async def run_with_signals(run_input, writer):
+async def run_with_signals(run_input, writer, *, control=None):
     writer.session_id = 'resolved-session'
     if os.environ.get('MACHINE_TEST_DIAGNOSTICS') == '1':
         print('PYTHON_DIAGNOSTIC', flush=True)
@@ -178,7 +178,6 @@ def test_machine_option_dispatches_directly_without_legacy_execution(
         ["--project-dir", "."],
         ["--trusted-dir", "."],
         ["--mode", "code.normal"],
-        ["--work-mode", "code"],
         ["--output", "human"],
         ["--timeout", "10"],
         ["--show-tools"],
@@ -216,9 +215,11 @@ def test_machine_option_does_not_change_legacy_parser_defaults_or_help() -> None
     assert defaults.trusted_dir == []
     assert defaults.timeout is None
     help_text = parser.format_help()
-    for option in ("--run-json", "--session", "--cwd", "--output", "--show-tools"):
+    for option in ("--run-json", "--session", "--cwd", "--show-tools"):
         assert option in help_text
+    assert "--output" not in help_text
     assert "--_interactive-worker" not in help_text
+    assert "--work-mode" not in help_text
 
 
 def test_help_exits_without_machine_or_runtime_imports() -> None:
@@ -226,7 +227,7 @@ def test_help_exits_without_machine_or_runtime_imports() -> None:
 
     assert result.returncode == 0, result.stderr
     assert "--run-json" in result.stdout
-    assert "--output" in result.stdout
+    assert "--output" not in result.stdout
     assert result.stderr == ""
 
 
@@ -265,14 +266,32 @@ def test_legacy_prompt_still_calls_the_existing_app(
     module.run = run
     monkeypatch.setitem(sys.modules, module.__name__, module)
     output = _isolated_stdio(monkeypatch, "")
-    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-process", "hello", "--output=json"])
+    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-process", "hello"])
 
     with pytest.raises(SystemExit) as caught:
         cli_main.main()
 
     assert caught.value.code == 4
-    assert calls == [("hello", "json")]
+    assert calls == [("hello", "human")]
     assert output.getvalue() == "legacy-output"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [["hello"]],
+)
+@pytest.mark.parametrize("output", ("human", "json", "jsonl"))
+@pytest.mark.parametrize("equals_form", (False, True))
+def test_output_option_is_rejected_before_runtime_import(
+    arguments: list[str], output: str, equals_form: bool
+) -> None:
+    option = [f"--output={output}"] if equals_form else ["--output", output]
+    result = _run_main(_GUARDED_MAIN, [*arguments, *option])
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "--output" in result.stderr
+    assert "Traceback" not in result.stderr
 
 
 @pytest.mark.parametrize("source_kind", ["stdin", "file"])
@@ -282,7 +301,7 @@ def test_execute_source_reads_one_request_and_runs_once(
     requests: list[OneShotRunInput] = []
 
     async def run(
-        run_input: OneShotRunInput, writer: OneShotWriter
+        run_input: OneShotRunInput, writer: OneShotWriter, *, control: Any = None
     ) -> OneShotRunResult:
         requests.append(run_input)
         return _success(writer)
@@ -385,7 +404,7 @@ def test_cwd_is_applied_before_importing_or_starting_runtime(
     expected_cwd = tmp_path / "working"
 
     async def run(
-        run_input: OneShotRunInput, writer: OneShotWriter
+        run_input: OneShotRunInput, writer: OneShotWriter, *, control: Any = None
     ) -> OneShotRunResult:
         calls.append("run")
         assert Path.cwd() == expected_cwd
@@ -453,7 +472,7 @@ def test_final_result_is_written_after_asyncio_shutdown(
             lifecycle.append("generator-closed")
 
     async def run(
-        run_input: OneShotRunInput, writer: OneShotWriter
+        run_input: OneShotRunInput, writer: OneShotWriter, *, control: Any = None
     ) -> OneShotRunResult:
         asyncio.create_task(background())
         await asyncio.sleep(0)

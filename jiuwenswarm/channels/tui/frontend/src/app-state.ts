@@ -3180,7 +3180,9 @@ export class CliPiAppState {
   }
 
   private applyTodoCreateArgs(args: Record<string, unknown>): void {
-    const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+    // Sessions recorded before todo_create's input was renamed carry `tasks`.
+    const rawTodos = args.todos ?? args.tasks;
+    const tasks = Array.isArray(rawTodos) ? rawTodos : [];
     const nowIso = new Date().toISOString();
     const nextTodos = tasks
       .filter((task): task is Record<string, unknown> => {

@@ -24,6 +24,11 @@ from openjiuwen.symphony.discovery import SkillPromptBranch, SkillPromptSnapshot
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.a4p.execution_context import (
+    AUTHORIZATION_EXECUTION_CONTEXTS,
+    AuthorizationExecutionContext,
+    AuthorizerRoute,
+)
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
 )
@@ -213,6 +218,58 @@ async def test_response_prompt_rail_splits_input_and_output_rules():
     assert builder.has_section("input")
     assert builder.has_section("output")
     assert not builder.has_section("response")
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_omits_send_file_for_xiaoyi(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"channels": {"xiaoyi": {"send_file_allowed": True}}},
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+    assert "生成并投递文件" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_fails_closed_without_config(monkeypatch):
+    def unavailable_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        unavailable_config,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
 
 
 @pytest.mark.asyncio
@@ -1046,6 +1103,212 @@ async def test_runtime_dynamic_sections_go_to_prompt_attachment_when_manager_ava
     assert "## Browser Capability Routing Rules" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("language", "heading", "required", "forbidden"),
+    [
+        (
+            "en", "# A4P Intent Authorization",
+            (
+                "FIRST: before reading, listing, searching, writing",
+                "call `request_a4p_intent_authorization`",
+                "Read-only operations also require this preparation",
+                "Do not read or explore first",
+                "A user-supplied path is not permission",
+                "Inspect permittedActions, unapprovedActions and deniedActions",
+                "Execute only permittedActions", "authorizationRequired=false",
+                "policy-allowed and valid-token-covered", "Session authorization may be staged",
+                "complete exact commands", "must not absorb whitespace",
+                "a filename glob under a fixed directory", "explicit absolute paths without '..'",
+                "Filename discovery does not authorize read_file",
+                "Choose a feasible plan once and proceed", "never placeholders",
+                "create disabled", "complete future scope using the returned cronJobId",
+                "every planned action is permitted", "Cron authorization cannot be staged",
+                "do not trial-run now",
+            ),
+            ("## Planning and convergence", "may use normal permission approval"),
+        ),
+        (
+            "cn", "# A4P 意图授权",
+            (
+                "第一步", "必须先调用", "`request_a4p_intent_authorization`",
+                "只读操作也必须先提交", "不得先读取或搜索文件来准备授权",
+                "用户提供路径不等于已授权", "只有列表外的工具可先用于获取必要信息",
+                "检查 permittedActions、unapprovedActions 和 deniedActions",
+                "只能执行 permittedActions 中的操作", "authorizationRequired=false",
+                "后端过滤规则允许", "会话允许分阶段授权", "默认授权完整精确命令",
+                "固定目录下的文件名 glob", "不得使用裸 *", "显式使用绝对路径且不含 '..'",
+                "文件名搜索不包含 read_file 权限", "选定可行计划后执行",
+                "真实值而非占位符", "create disabled", "一次性授权完整未来范围",
+                "计划内全部操作获准后 enable", "Cron 不能分阶段授权", "不额外试运行",
+            ),
+            ("## 规划与收敛", "可使用普通权限审批"),
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a4p_guidance_is_a_runtime_attachment_not_cached_system_prompt(
+    monkeypatch,
+    language,
+    heading,
+    required,
+    forbidden,
+):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"a4p": {"enabled": True}},
+    )
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language=language, channel="web")
+    rail.init(agent)
+    rail.set_a4p_authorizer_available(True)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    assert "A4P Intent Authorization" not in builder.build()
+    rendered = agent.prompt_attachment_manager.render(
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
+    )
+    assert heading in rendered
+    for text in required:
+        assert text in rendered
+    for text in forbidden:
+        assert text not in rendered
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("permissions", [
+    None,
+    {"enabled": True, "mode": "auto"},
+    {"enabled": False, "mode": "manual"},
+])
+async def test_a4p_guidance_is_cleared_without_interactive_authorizer(monkeypatch, permissions):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"a4p": {"enabled": True}},
+    )
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language="en", channel="web")
+    rail.init(agent)
+    rail.set_a4p_authorizer_available(True)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+    await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    if permissions is None:
+        rail.set_a4p_authorizer_available(False)
+    else:
+        monkeypatch.setattr(
+            "jiuwenswarm.common.config.get_config",
+            lambda: {"a4p": {"enabled": True}, "permissions": permissions},
+        )
+    await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    rendered = agent.prompt_attachment_manager.render(
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
+    )
+    assert "A4P Intent Authorization" not in rendered
+
+
+@pytest.mark.parametrize("channel,permissions", [
+    ("tui", {}),
+    ("web", {"enabled": True, "mode": "auto"}),
+    ("web", {"enabled": False, "mode": "manual"}),
+])
+def test_deep_adapter_exposes_a4p_tool_only_for_interactive_web(monkeypatch, channel, permissions):
+    fake_resource = _FakeResourceManager()
+    fake_instance = _FakeRuntimeInstance()
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = fake_instance
+    adapter._tool_cards = []
+    adapter._a4p_tools = []
+    adapter._a4p_tools_registered = False
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = "session-1"
+    monkeypatch.setattr(interface_module.Runner, "resource_mgr", fake_resource)
+    AUTHORIZATION_EXECUTION_CONTEXTS.clear()
+    AUTHORIZATION_EXECUTION_CONTEXTS.activate(
+        AuthorizationExecutionContext(
+            request_id="request-1",
+            session_id="session-1",
+            channel_id="web",
+            agent_id="main_agent",
+            metadata={},
+            authorizer_route=AuthorizerRoute(
+                session_id="session-1",
+                app_id="default",
+                agent_ref_mode="agent",
+                agent_ref_id="default",
+            ),
+        )
+    )
+    try:
+        adapter._sync_a4p_tools_for_runtime(
+            {"a4p": {"enabled": True}},
+            "web",
+            "session-1",
+        )
+        assert adapter._a4p_tools_registered is True
+        assert [card.name for card in adapter._tool_cards] == [
+            "request_a4p_intent_authorization"
+        ]
+
+        adapter._sync_a4p_tools_for_runtime(
+            {"a4p": {"enabled": True}, "permissions": permissions},
+            channel,
+            "session-1",
+        )
+        assert adapter._a4p_tools == []
+        assert adapter._a4p_tools_registered is False
+        assert adapter._tool_cards == []
+    finally:
+        AUTHORIZATION_EXECUTION_CONTEXTS.clear()
+
+
+@pytest.mark.asyncio
+async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch):
+    class _Runtime:
+        @staticmethod
+        def cron_intent_authorization_summary(job_id):
+            assert job_id == "job-1"
+            return {
+                "cronJobId": job_id,
+                "actions": [
+                    {
+                        "name": "write_file",
+                        "params": {"file_path": "/workspace/reports/*.md"},
+                    }
+                ],
+                "expireAt": "2099-01-01T00:00:00Z",
+            }
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"a4p": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.a4p.runtime.get_a4p_runtime",
+        lambda: _Runtime(),
+    )
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language="en", channel="__cron__")
+    rail.init(agent)
+    rail.set_request_metadata({"cron": {"job_id": "job-1"}})
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    await rail._sync_a4p_cron_authorization_scope_attachment(ctx)
+
+    assert "A4P Cron Authorization Scope" not in builder.build()
+    rendered = agent.prompt_attachment_manager.render(
+        await agent.prompt_attachment_manager.collect_for_session("sess1")
+    )
+    assert "# A4P Cron Authorization Scope" in rendered
+    assert '"name": "write_file"' in rendered
+    assert "/workspace/reports/*.md" in rendered
+
+
 @pytest.mark.asyncio
 async def test_runtime_attachment_request_mode_wins_over_localized_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
@@ -1137,13 +1400,13 @@ async def test_browser_policy_is_injected_only_when_browser_agent_is_loaded():
     assert "genuinely unanswered requirements" in task_section.content["en"]
     assert "a partial label or unmapped field alone does not justify" in task_section.content["en"]
     assert "Do not use `subagent_spawn` for browser_agent" in task_section.content["en"]
-    assert "Delegate only the original goal and necessary constraints" in task_section.content["en"]
+    assert "Preserve the original goal, budget, dates and object constraints" in task_section.content["en"]
     assert "top AI/knowledge/weather answers with attribution" in task_section.content["en"]
     assert "preserve explicit natural-result/detail-visit requests" in task_section.content["en"]
     assert not rail.system_prompt_builder.has_section("browser_tool_policy")
     assert "浏览器能力路由规则" in build_browser_task_prompt("cn")
     assert "不因 partial 标签或字段未结构化而重跑浏览器或交叉验证" in build_browser_task_prompt("cn")
-    assert "派发描述只保留原始目标和必要约束" in build_browser_task_prompt("cn")
+    assert "派发描述保留原始目标、预算、时间和对象约束" in build_browser_task_prompt("cn")
     assert "用户明确要求自然结果或进入详情时仍须执行" in build_browser_task_prompt("cn")
 
     agent.deep_config.subagents = [
@@ -1675,15 +1938,17 @@ async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
 @pytest.mark.asyncio
 async def test_runtime_prompt_reports_powershell_and_removes_generic_shell_rules(monkeypatch):
     import jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail as runtime_module
+    from jiuwenswarm.agents.harness.common.prompt.shell_environment import ShellCapabilities
+
+    async def get_capabilities(os_type):
+        assert os_type == "win32"
+        return ShellCapabilities(
+            detected=True,
+            powershell=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        )
 
     monkeypatch.setattr(runtime_module.sys, "platform", "win32")
-    monkeypatch.setattr(
-        runtime_module.shutil,
-        "which",
-        lambda command: r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
-        if command == "powershell"
-        else None,
-    )
+    monkeypatch.setattr(runtime_module, "get_shell_capabilities", get_capabilities)
 
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -2213,3 +2478,76 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
         language="cn",
         max_iterations=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("case", "reason", "injected"),
+    [
+        ("success", "attachment_registered", True),
+        ("non_web", "non_web_channel", False),
+        ("no_authorizer", "authorizer_unavailable", False),
+        ("disabled", "a4p_disabled", False),
+        ("config_error", "config_error", False),
+        ("no_manager", "attachment_unavailable", False),
+        ("write_error", "attachment_unavailable", False),
+        ("unexpected_error", "attachment_error", False),
+    ],
+)
+async def test_a4p_prompt_injection_observation(monkeypatch, case, reason, injected):
+    import hashlib
+    import json
+
+    from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import A4P_PROMPT_VERSION
+
+    def config():
+        if case == "config_error":
+            raise RuntimeError("configuration unavailable")
+        return {"a4p": {"enabled": case != "disabled"}}
+
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config", config)
+    log_info = Mock()
+    monkeypatch.setattr(_utils_mod.logger, "info", log_info)
+    agent = _FakeAgent(SystemPromptBuilder(language="en"))
+    rail = RuntimePromptRail(language="en", channel="cli" if case == "non_web" else "web")
+    rail.init(agent)
+    rail.set_a4p_authorizer_available(case != "no_authorizer")
+    rail.set_model_name("test-model")
+    if case == "no_manager":
+        rail.attachment_manager = None
+    elif case in {"write_error", "unexpected_error"}:
+        rail.attachment_manager = SimpleNamespace(
+            bind_context=Mock(side_effect=(
+                ValueError("invalid attachment context") if case == "write_error"
+                else RuntimeError("attachment storage failed")
+            )),
+        )
+    ctx = AgentCallbackContext(
+        agent=agent, inputs=None, session=_FakeSession(), extra={"request_id": "observation-request"},
+    )
+
+    if case == "unexpected_error":
+        with pytest.raises(RuntimeError, match="attachment storage failed"):
+            await rail._sync_a4p_intent_authorization_attachment(ctx)
+    else:
+        await rail._sync_a4p_intent_authorization_attachment(ctx)
+
+    records = [call for call in log_info.call_args_list if call.args[0] == "[RuntimePromptRail] %s"]
+    assert len(records) == 1
+    event = json.loads(records[0].args[1])
+    assert event["version"] == A4P_PROMPT_VERSION
+    assert event["session_id"] == "sess1"
+    assert event["request_id"] == "observation-request"
+    assert event["model"] == "test-model"
+    assert event["language"] == "en"
+    assert event["injected"] is injected
+    assert event["reason"] == reason
+    assert "content" not in event
+    items = await agent.prompt_attachment_manager.collect_for_session("sess1")
+    if injected:
+        attachment = next(item for item in items if item.id.endswith("a4p.intent_authorization"))
+        assert event["content_chars"] == len(attachment.content)
+        assert event["content_sha256"] == hashlib.sha256(attachment.content.encode("utf-8")).hexdigest()
+        assert len(attachment.content) < 4000
+    else:
+        assert not items

@@ -15,13 +15,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.errors import (
+from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
 
 
 def _feishu_service(tmp_path) -> object:
-    from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
+    from gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
         FeishuFileService,
     )
 
@@ -81,7 +81,7 @@ class _FakeMessageHandlerWithClient:
 @pytest.fixture
 def persist_hook():
     """构造一个已注入 IM 附件落盘钩子的通道 hook（三平台 file_service 共用）。"""
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     channel = _FakePersistChannel()
     manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=object()))
@@ -91,33 +91,58 @@ def persist_hook():
 
 
 @pytest.mark.asyncio
-async def test_persist_hook_large_attachment_uses_http_bridge(monkeypatch, persist_hook):
-    """大附件（>4MB）改走受认证 HTTP bridge 上传，不走 base64 E2A
-    （避免超过内部 WS 8MB 帧限制击穿 Gateway↔AgentServer 连接）。"""
-    from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+async def test_persist_hook_large_attachment_uses_e2a_chunks(monkeypatch, persist_hook):
+    """大附件（>4MB）走 E2A 分块上传（2MB/块，FILE_UPLOAD_CHUNK）。
 
-    uploads = []
+    不再依赖 HTTP bridge（resolve_agent_upload_base 的 ws_port+1 推导仅对
+    已启动独立上传监听器的部署有效，单机模式不监听该端口——legacy 单机
+    下大附件必然连接拒绝）。仅 mock E2A 传输层（fetch_agent_unary），
+    upload_file_bytes_via_e2a 的分块循环真实运行。
+    """
+    import base64 as _b64
 
-    def fake_upload(content, rel_path):
-        uploads.append((bytes(content), rel_path))
+    from openjiuwen_protocol.message import ReqMethod
+    from gateway.routing.agent_http_bridge import (
+        _E2A_UPLOAD_CHUNK_BYTES,
+        E2A_PAYLOAD_MAX_BYTES,
+    )
+
+    chunks: list[tuple[ReqMethod, dict]] = []
+    total = 0
+
+    async def fake_fetch_agent_unary(*, req_method, params, **_kwargs):
+        nonlocal total
+        chunks.append((req_method, params))
+        total += len(_b64.b64decode(params["data"]))
+        resolved = str(params.get("resolved_path") or "").strip()
         return True, {
-            "path": f"/tmp/workspace/feishu_files/downloads/files/{len(uploads)}.pdf",
-            "size": len(content),
+            "path": resolved or f"/ws/{params['target_rel_path']}",
+            "size": total,
+            "upload_id": params["upload_id"],
+            "final": params["final"],
         }
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_http_bridge.upload_file_bytes",
-        fake_upload,
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
+        fake_fetch_agent_unary,
     )
 
     big = b"B" * (E2A_PAYLOAD_MAX_BYTES + 1)
     result = await persist_hook(big, "files", "report.pdf")
 
-    assert len(uploads) == 1
-    assert uploads[0][0] == big
-    assert uploads[0][1] == "agent/workspace/feishu_files/downloads/files/report.pdf"
-    assert result["path"].endswith(".pdf")
-    assert result["name"]
+    rel_path = "agent/workspace/feishu_files/downloads/files/report.pdf"
+    expected_chunks = -(-len(big) // _E2A_UPLOAD_CHUNK_BYTES)  # ceil
+    assert len(chunks) == expected_chunks
+    assert [method for method, _ in chunks] == [ReqMethod.FILE_UPLOAD_CHUNK] * expected_chunks
+    assert all(params["target_rel_path"] == rel_path for _, params in chunks)
+    # 首块无 resolved_path，后续块沿用前块响应路径
+    assert chunks[0][1]["resolved_path"] == ""
+    assert chunks[1][1]["resolved_path"] == f"/ws/{rel_path}"
+    assert [params["final"] for _, params in chunks] == [False] * (expected_chunks - 1) + [True]
+    # 分块重组等于原文
+    assert b"".join(_b64.b64decode(params["data"]) for _, params in chunks) == big
+    assert result["path"] == f"/ws/{rel_path}"
+    assert result["name"] == "report.pdf"
     assert result["size"] == len(big)
     assert result["mime_type"]
 
@@ -125,7 +150,7 @@ async def test_persist_hook_large_attachment_uses_http_bridge(monkeypatch, persi
 @pytest.mark.asyncio
 async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persist_hook):
     """小附件（≤4MB）保持 base64 E2A 落盘（IM_FILE_PERSIST）。"""
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.message import ReqMethod
 
     calls = []
 
@@ -140,7 +165,7 @@ async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persis
         }
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary",
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
         fake_fetch_agent_unary,
     )
 
@@ -159,7 +184,7 @@ async def test_persist_hook_small_attachment_uses_base64_e2a(monkeypatch, persis
 @pytest.mark.asyncio
 async def test_enterprise_feishu_bot_uses_safe_attachment_storage_platform(monkeypatch):
     """企业飞书多 Bot 的 channel_id 可安全映射到附件目录标识。"""
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     captured = {}
 
@@ -168,7 +193,7 @@ async def test_enterprise_feishu_bot_uses_safe_attachment_storage_platform(monke
         return True, {"path": "/tmp/x.png"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.fetch_agent_unary",
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
         fake_fetch_agent_unary,
     )
     channel = _FakePersistChannel()
@@ -182,16 +207,17 @@ async def test_enterprise_feishu_bot_uses_safe_attachment_storage_platform(monke
 
 
 @pytest.mark.asyncio
-async def test_persist_hook_http_upload_failure_raises(monkeypatch, persist_hook):
-    """大附件 HTTP 上传失败按决策 D6 抛错（整条消息按可重试错误失败）。"""
-    from jiuwenswarm.gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
+async def test_persist_hook_e2a_upload_failure_raises(monkeypatch, persist_hook):
+    """E2A 分块上传失败按决策 D6 抛错（整条消息按可重试错误失败）。"""
+    from gateway.routing.agent_http_bridge import E2A_PAYLOAD_MAX_BYTES
 
-    def fake_upload(content, rel_path):
+    async def fake_fetch_agent_unary(*, req_method, params, **_kwargs):
+        del req_method, params
         return False, {"error": "AgentServer is unavailable", "code": "SERVICE_UNAVAILABLE"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.agent_http_bridge.upload_file_bytes",
-        fake_upload,
+        "gateway.routing.e2a_proxy.fetch_agent_unary",
+        fake_fetch_agent_unary,
     )
 
     big = b"C" * (E2A_PAYLOAD_MAX_BYTES + 1)
@@ -199,31 +225,29 @@ async def test_persist_hook_http_upload_failure_raises(monkeypatch, persist_hook
         await persist_hook(big, "files", "report.pdf")
 
 
-@pytest.mark.asyncio
-async def test_legacy_single_user_keeps_file_service_local_persistence(
-    monkeypatch,
-):
-    """本地单用户保留 FileService 的历史目录与自定义目录语义。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.is_legacy_shared_directory_client",
-        lambda _client: True,
-    )
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+def test_legacy_single_user_keeps_file_service_local_persistence():
+    """A1g 后 legacy 单用户也装真 hook（E2A IM_FILE_PERSIST），不再本地写盘。"""
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     channel = _FakePersistChannel()
     manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=object()))
     manager._try_wire_file_persist_hook(channel)
-    assert channel.hook is None
+    # legacy 单用户现在也注入 hook（AgentOS 态改为明确失败的 stub）
+    assert channel.hook is not None
 
 
 @pytest.mark.asyncio
 async def test_agentos_attachment_never_falls_back_to_gateway_workspace(monkeypatch):
-    """缺少 IM user_id 路由键时必须失败，不能写 Gateway 本地目录。"""
+    """缺少 IM user_id 路由键时必须失败，不能写 Gateway 本地目录。
+
+    AgentOS 态安装的是明确失败的 stub hook（等 IM 多用户路由）——
+    该安全路径在 A1g 中保留，此处防止回归。
+    """
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.routing.e2a_proxy.is_agentos_routing_client",
+        "gateway.routing.e2a_proxy.is_agentos_routing_client",
         lambda _client: True,
     )
-    from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
+    from gateway.channel_manager.channel_manager import ChannelManager
 
     channel = _FakePersistChannel()
     manager = ChannelManager(_FakeMessageHandlerWithClient(agent_client=object()))
@@ -232,3 +256,4 @@ async def test_agentos_attachment_never_falls_back_to_gateway_workspace(monkeypa
     assert channel.hook is not None
     with pytest.raises(RuntimeError, match="authenticated AgentOS user_id"):
         await channel.hook(b"x", "images", "a.png")
+

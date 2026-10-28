@@ -97,7 +97,10 @@ def build_a2ui_browser_workflow_instruction() -> str:
         "the value 'run_browser_agent', must_confirm_before_payment with true, "
         "and all form values using path references. After this action is "
         "submitted, combine the original request and submitted values, then call "
-        "the synchronous task_tool once with subagent_type 'browser_agent'. Never buy, book, "
+        "the synchronous task_tool once with subagent_type 'browser_agent'. Preserve the original constraints "
+        "and authorized stopping point in that concise delegation; do not add candidate-count quotas or "
+        "comparative research the user did not request. A step explicitly reserved for the user is not "
+        "unfinished browser-agent work. Never buy, book, "
         "pay, or place an order without a final explicit user confirmation."
     )
     mandatory_account_action_rule_en = (

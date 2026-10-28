@@ -79,6 +79,8 @@ class TestForkSessionChannelMetadata:
             "title": "My Test Session",
             "message_count": 5,
             "mode": "code.normal",
+            "moa_enabled": True,
+            "model_selection": {"type": "model_group", "id": "ordinary-pool", "route_id": "primary"},
             "channel_metadata": {
                 "project_dir": "/Users/test/my-project",
                 "cwd": "/Users/test/my-project",
@@ -108,6 +110,8 @@ class TestForkSessionChannelMetadata:
         assert result["source_session_id"] == source_id
 
         target_meta = _read_target_meta(sessions_dir, target_id)
+        assert target_meta["moa_enabled"] is True
+        assert target_meta["model_selection"] == source_meta["model_selection"]
         assert "channel_metadata" in target_meta, (
             "fork_session should copy channel_metadata from source"
         )

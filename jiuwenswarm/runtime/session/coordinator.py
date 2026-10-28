@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Product-level Session lifecycle and execution coordinator."""
 
 from __future__ import annotations
@@ -20,13 +22,23 @@ from jiuwenswarm.runtime.session.model import (
     SessionExecutionHandle,
     SessionExecutionSnapshot,
     SessionExecutionState,
+    SessionLifecycleContext,
     SessionPersistencePolicy,
     SessionWorkKind,
+    TeamExecutionContext,
+    TeamExecutionDetails,
+    TeamWaiterKind,
 )
 from jiuwenswarm.runtime.session.work_scheduler import SessionWorkScheduler
 from jiuwenswarm.runtime.session_input import SessionInputRejectedError, SessionInputTargetError
 
 T = TypeVar("T")
+
+_TEAM_WORK_KINDS = {
+    SessionWorkKind.TEAM_REQUEST,
+    SessionWorkKind.TEAM_CONTROL,
+    SessionWorkKind.TEAM_BACKGROUND,
+}
 
 
 @dataclass(slots=True)
@@ -110,9 +122,10 @@ class RuntimeSessionCoordinator:
         wait_for_terminal: bool = False,
         timeout_scope: asyncio.Timeout | None = None,
         timeout_error: str = "execution deadline exceeded",
+        team: TeamExecutionDetails | None = None,
     ) -> T:
         record = self._require_open_session(session_id)
-        handle = self._new_execution(record, request_id, work_kind)
+        handle = self._new_execution(record, request_id, work_kind, team=team)
         handle.retain_owner_task = wait_for_terminal
         return await self._run_unary(
             record,
@@ -291,7 +304,10 @@ class RuntimeSessionCoordinator:
     ) -> T:
         """Deliver input to the running Session work without joining its lane."""
         record = self._require_open_session(session_id)
-        if self._is_control_claimed(record, request_id):
+        if (
+            self._is_control_claimed(record, request_id)
+            or request_id in record.stream_control_claims
+        ):
             raise RuntimeError("control input is already being delivered")
         parent = self._control_parent(record, request_id)
         if parent is None:
@@ -474,7 +490,10 @@ class RuntimeSessionCoordinator:
         self, record: _SessionRecord, request_id: str
     ) -> SessionExecutionHandle:
         """Claim only an existing matching interaction, never a fresh turn."""
-        if request_id in record.stream_control_claims:
+        if (
+            request_id in record.stream_control_claims
+            or self._is_control_claimed(record, request_id)
+        ):
             raise RuntimeError("interaction answer is already in progress")
         parents: list[SessionExecutionHandle] = []
         active = self._registry.select(
@@ -557,10 +576,95 @@ class RuntimeSessionCoordinator:
         *,
         suspension_key: Callable[[T], str | None] | None = None,
         parent_execution_id: str | None = None,
+        channel_id: str = "default",
     ) -> AsyncIterator[T]:
+        """Run a transport-neutral stream with a parameterless operation."""
+        if work_kind in _TEAM_WORK_KINDS:
+            raise ValueError("Team work must use run_team_stream")
+        stream = self._run_stream(
+            session_id,
+            request_id,
+            work_kind,
+            lambda _handle: operation(),
+            suspension_key=suspension_key,
+            parent_execution_id=parent_execution_id,
+            channel_id=channel_id,
+        )
+        async with aclosing(stream):
+            async for item in stream:
+                yield item
+
+    async def run_team_stream(
+        self,
+        session_id: str,
+        request_id: str,
+        work_kind: SessionWorkKind,
+        operation: Callable[
+            [TeamExecutionContext],
+            AsyncIterator[T] | Awaitable[AsyncIterator[T]],
+        ],
+        *,
+        details: TeamExecutionDetails,
+        suspension_key: Callable[[T], str | None] | None = None,
+        channel_id: str = "default",
+    ) -> AsyncIterator[T]:
+        """Run a Team stream with explicit Team execution ownership."""
+        if work_kind not in _TEAM_WORK_KINDS:
+            raise ValueError("non-Team work must use run_stream")
+
+        def contextual_operation(
+            handle: SessionExecutionHandle,
+        ) -> AsyncIterator[T] | Awaitable[AsyncIterator[T]]:
+            context = TeamExecutionContext(
+                session=SessionLifecycleContext(
+                    session_id=handle.session_id,
+                    generation=handle.generation,
+                ),
+                execution_id=handle.execution_id,
+                request_id=handle.request_id,
+                work_kind=handle.work_kind,
+                channel_id=handle.channel_id,
+                details=details,
+            )
+            return operation(context)
+
+        stream = self._run_stream(
+            session_id,
+            request_id,
+            work_kind,
+            contextual_operation,
+            suspension_key=suspension_key,
+            channel_id=channel_id,
+            team=details,
+        )
+        async with aclosing(stream):
+            async for item in stream:
+                yield item
+
+    async def _run_stream(
+        self,
+        session_id: str,
+        request_id: str,
+        work_kind: SessionWorkKind,
+        operation: Callable[
+            [SessionExecutionHandle],
+            AsyncIterator[T] | Awaitable[AsyncIterator[T]],
+        ],
+        *,
+        suspension_key: Callable[[T], str | None] | None = None,
+        parent_execution_id: str | None = None,
+        channel_id: str = "default",
+        team: TeamExecutionDetails | None = None,
+    ) -> AsyncIterator[T]:
+        """Run the shared stream lifecycle for generic and Team entry points."""
         record = self._require_open_session(session_id)
         handle = self._new_execution(
-            record, request_id, work_kind, parent_execution_id=parent_execution_id,
+            record,
+            request_id,
+            work_kind,
+            parent_execution_id=parent_execution_id,
+            channel_id=channel_id,
+            team=team,
         )
         queue: asyncio.Queue[_StreamItem] = asyncio.Queue(self._stream_buffer_size)
 
@@ -570,7 +674,7 @@ class RuntimeSessionCoordinator:
             stream: AsyncIterator[T] | None = None
             terminal_item: _StreamItem | None = None
             try:
-                candidate = operation()
+                candidate = operation(handle)
                 stream = await candidate if inspect.isawaitable(candidate) else candidate
                 async for item in stream:
                     control_id = (
@@ -752,6 +856,71 @@ class RuntimeSessionCoordinator:
             record.state = RuntimeSessionState.CLOSED
         return CloseSessionResult(session_id, target_generation, True)
 
+    async def quiesce_session(
+        self,
+        session_id: str,
+        *,
+        generation: int | None = None,
+    ) -> SessionLifecycleContext | None:
+        """Fence one Session generation without cancelling its executions."""
+        record = self._sessions.get(session_id)
+        if record is None or (generation is not None and record.generation != generation):
+            return None
+        if record.state is RuntimeSessionState.CLOSED:
+            return None
+        record.state = RuntimeSessionState.QUIESCING
+        return SessionLifecycleContext(
+            session_id=record.session_id,
+            generation=record.generation,
+        )
+
+    def mark_waiting_for_input(self, execution_id: str) -> bool:
+        """Park a persistent Team response owner between active rounds."""
+        handle = self._registry.get(execution_id)
+        if handle is None or handle.state.terminal:
+            return False
+        if handle.team is None or handle.team.waiter_kind is not TeamWaiterKind.PERSISTENT:
+            return False
+        handle.state = SessionExecutionState.WAITING_FOR_INPUT
+        record = self._sessions.get(handle.session_id)
+        if record is not None and record.generation == handle.generation:
+            self._refresh_session_state(record)
+        return True
+
+    def mark_session_waiting_for_input(
+        self,
+        session_id: str,
+        generation: int,
+    ) -> None:
+        """Park every persistent response owner for one idle Team generation."""
+        for handle in self._registry.select(
+            session_id=session_id,
+            generation=generation,
+            active_only=True,
+        ):
+            if (
+                handle.team is not None
+                and handle.team.waiter_kind is TeamWaiterKind.PERSISTENT
+                and handle.state is SessionExecutionState.RUNNING
+            ):
+                handle.state = SessionExecutionState.WAITING_FOR_INPUT
+        record = self._sessions.get(session_id)
+        if record is not None and record.generation == generation:
+            self._refresh_session_state(record)
+
+    def resume_waiting_for_input(self, session_id: str, generation: int) -> None:
+        """Mark persistent Team response owners running for a new input."""
+        for handle in self._registry.select(
+            session_id=session_id,
+            generation=generation,
+            active_only=True,
+        ):
+            if handle.state is SessionExecutionState.WAITING_FOR_INPUT:
+                handle.state = SessionExecutionState.RUNNING
+        record = self._sessions.get(session_id)
+        if record is not None and record.generation == generation:
+            self._refresh_session_state(record)
+
     def get_execution(self, execution_id: str) -> SessionExecutionSnapshot | None:
         handle = self._registry.get(execution_id)
         return None if handle is None else handle.snapshot()
@@ -759,6 +928,10 @@ class RuntimeSessionCoordinator:
     def snapshot_session(self, session_id: str) -> RuntimeSessionSnapshot | None:
         record = self._sessions.get(session_id)
         return None if record is None else self._snapshot(record)
+
+    def snapshot_sessions(self) -> tuple[RuntimeSessionSnapshot, ...]:
+        """Return all Session generations currently known to this coordinator."""
+        return tuple(self._snapshot(record) for record in self._sessions.values())
 
     async def close(self) -> None:
         async with self._lock:
@@ -807,7 +980,12 @@ class RuntimeSessionCoordinator:
         work_kind: SessionWorkKind,
         *,
         parent_execution_id: str | None = None,
+        channel_id: str = "default",
+        team: TeamExecutionDetails | None = None,
     ) -> SessionExecutionHandle:
+        is_team_work = work_kind in _TEAM_WORK_KINDS
+        if is_team_work != (team is not None):
+            raise ValueError("Team execution details must match the work kind")
         superseded_kinds: set[SessionWorkKind] = set()
         if work_kind in {SessionWorkKind.CHAT_UNARY, SessionWorkKind.CHAT_STREAM}:
             superseded_kinds = {
@@ -841,6 +1019,8 @@ class RuntimeSessionCoordinator:
             request_id=str(request_id or ""),
             generation=record.generation,
             work_kind=work_kind,
+            channel_id=channel_id,
+            team=team,
             parent_execution_id=parent_execution_id,
             root_work_kind=(parent.root_work_kind or parent.work_kind) if parent else None,
             root_request_id=(parent.root_request_id or parent.request_id) if parent else None,

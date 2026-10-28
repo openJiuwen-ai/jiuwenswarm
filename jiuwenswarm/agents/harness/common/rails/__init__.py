@@ -5,23 +5,30 @@
 注意：工具权限护栏已切换为 openjiuwen 实现；此处保留同名导出以维持兼容。
 """
 
-from openjiuwen.harness.rails.security import PermissionInterruptRail
-from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
-from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
-    BrowserTaskPromptRail,
-)
-from jiuwenswarm.agents.harness.common.rails.project_memory_rail import ProjectMemoryRail
-from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
-from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
-from jiuwenswarm.agents.harness.common.rails.symphony import (
-    SymphonyOrchestrationRail,
-)
-from jiuwenswarm.agents.harness.team.rails.team_member_skill_toolkit_rail import (
-    MemberSkillToolkitRail,
-)
-from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
-from jiuwenswarm.agents.harness.common.rails.multimodal_image_rail import MultimodalImageRail
-from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+from importlib import import_module
+
+# Importing a permission submodule must not prepare every unrelated rail or
+# Team toolkit. Preserve the public classes and resolve their real modules on
+# explicit use; mutable rail instances remain owned by individual sessions.
+_EXPORTS = {
+    "PermissionInterruptRail": (
+        "openjiuwen.harness.rails.security",
+        "PermissionInterruptRail",
+    ),
+    "AvatarPromptRail": (".avatar_rail", "AvatarPromptRail"),
+    "BrowserTaskPromptRail": (".browser_task_prompt_rail", "BrowserTaskPromptRail"),
+    "ProjectMemoryRail": (".project_memory_rail", "ProjectMemoryRail"),
+    "ResponsePromptRail": (".response_prompt_rail", "ResponsePromptRail"),
+    "RuntimePromptRail": (".runtime_prompt_rail", "RuntimePromptRail"),
+    "SymphonyOrchestrationRail": (".symphony", "SymphonyOrchestrationRail"),
+    "MemberSkillToolkitRail": (
+        "jiuwenswarm.agents.harness.team.rails.team_member_skill_toolkit_rail",
+        "MemberSkillToolkitRail",
+    ),
+    "StructuredAskUserRail": (".ask_user_rail", "StructuredAskUserRail"),
+    "MultimodalImageRail": (".multimodal_image_rail", "MultimodalImageRail"),
+    "JiuSwarmStreamEventRail": (".stream_event_rail", "JiuSwarmStreamEventRail"),
+}
 
 __all__ = [
     "JiuSwarmStreamEventRail",
@@ -36,3 +43,12 @@ __all__ = [
     "MemberSkillToolkitRail",
     "StructuredAskUserRail",
 ]
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module, symbol = _EXPORTS[name]
+    value = getattr(import_module(module, __name__), symbol)
+    globals()[name] = value
+    return value

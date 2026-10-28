@@ -3,7 +3,7 @@
 import os
 import tempfile
 
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.message_handler.message_handler import MessageHandler
 
 
 class TestResolveAtFileReferences:

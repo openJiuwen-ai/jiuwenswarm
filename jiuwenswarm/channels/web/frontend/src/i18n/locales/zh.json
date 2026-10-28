@@ -1,5 +1,6 @@
 {
   "common": {
+    "searchName": "搜索名称",
     "noData": "暂无数据",
     "confirm": "确认",
     "cancel": "取消",
@@ -16,6 +17,8 @@
     "and": "和",
     "modify": "修改",
     "collapse": "收起",
+    "expand": "展开",
+    "expandAndPin": "展开并固定",
     "delete": "删除",
     "hide": "隐藏",
     "show": "显示",
@@ -43,6 +46,7 @@
     "chat": "对话",
     "work": "任务",
     "agent": "专家",
+    "design": "设计",
     "experiments": "实验",
     "sessions": "会话",
     "cron": "定时任务",
@@ -64,30 +68,339 @@
     "empty": "尚未发现应用插件",
     "noSettings": "此插件未提供设置页面。"
   },
+  "designer": {
+    "loading": "正在加载设计工作流…",
+    "emptyTitle": "还没有设计工作流",
+    "emptyDescription": "描述你的项目，创建独立的设计工作区与工作流。",
+    "loadErrorTitle": "加载失败",
+    "loadErrorFallback": "无法读取设计工作流，请稍后重试。",
+    "attachmentsBlocked": "设计模式暂不支持附件，请先移除附件后再发送。",
+    "models": {
+      "chatMissing": "对话模型未配置，请先在「设置」中配置模型后再使用设计。",
+      "videoOff": "视频生成已在「设置 > Agent」中关闭。",
+      "videoMissing": "视频生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
+      "imageOff": "图像生成已在「设置 > Agent」中关闭。",
+      "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。"
+    },
+    "activity": {
+      "thinking": "思考中",
+      "toolCall": "正在调用 {{tool}}",
+      "stage": "执行中",
+      "progress": "节点 Agent 进度"
+    },
+    "chat": {
+      "title": "设计助手",
+      "emptyHint": "需要帮你设计些什么？",
+      "inputPlaceholder": "描述你想创作的内容…",
+      "collapse": "收起聊天",
+      "expand": "展开聊天",
+      "thinking": "正在思考如何搭建设计工作流…",
+      "updating": "正在根据你的要求改图…",
+      "updateError": "改图失败，请稍后重试。",
+      "bootstrapDone": "已为你搭建初始设计工作流。",
+      "bootstrapError": "搭建工作流失败，请稍后重试。",
+      "notImplemented": "未实现",
+      "send": "发送",
+      "running": "设计团长正在执行…",
+      "attach": "添加参考素材",
+      "removeAttachment": "移除参考素材",
+      "attachHint": "支持图片、视频、音频。最多 5 张图、1 个视频、1 段音频。",
+      "limitImages": "最多只能附 5 张参考图。",
+      "limitVideo": "最多只能附 1 个参考视频。",
+      "limitAudio": "最多只能附 1 段参考音频。",
+      "tooLarge": "文件超过 6MB，请改用更小的文件，或从本机路径添加。",
+      "unsupported": "仅支持图片、视频或音频作为参考素材。"
+    },
+    "run": {
+      "moderationBlocked": "生成内容被模型的内容安全审核拦截。请把该节点提示词中的暴力、血腥等描写改为含蓄、象征性的画面后重新生成。",
+      "controlLabel": "执行控制",
+      "execute": "执行",
+      "continue": "继续",
+      "retryFailed": "重试失败节点",
+      "running": "执行中…",
+      "moreActions": "更多执行动作",
+      "restart": "重跑工作流",
+      "cancel": "取消"
+    },
+    "subtitle": "从想法到设计的多模态创作",
+    "toolbar": {
+      "modeLabel": "节点模式",
+      "minimap": "小地图",
+      "openChat": "打开AI对话",
+      "showEdges": "显示节点连线",
+      "hideEdges": "隐藏节点连线",
+      "layoutNodes": "整理节点",
+      "zoomMenu": "视图比例",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "zoomFit": "适配画布",
+      "zoomTo": "缩放至{{percent}}%",
+      "yesterday": "昨天",
+      "upload": "上传",
+      "edit": "编辑",
+      "generate": "生成",
+      "material": "素材",
+      "removeMaterial": "移除素材",
+      "promptPlaceholder": "本片段画面描述，将与上方参考图一起发给模型",
+      "promptHint": "发给该节点子代理的提示词。生成前可选编辑；子代理仍可能根据项目情况微调细节。",
+      "editPlaceholder": "编辑文本内容…",
+      "aspectRatio": "长宽比",
+      "resolution": "分辨率",
+      "duration": "时长",
+      "count": "生成数量",
+      "browseFiles": "浏览文件",
+      "dropHint": "或者拖拽到区域内",
+      "generateAction": "生成",
+      "uploadAction": "确认上传",
+      "uploadMissing": "选中的文件没有成功上传，请重新选择一次。",
+      "editAction": "保存",
+      "actionNotImplemented": "该功能尚未实现",
+      "inspect": "查看物料",
+      "regenerate": "重新生成",
+      "rerun": "重新生成",
+      "rerunHint": "用当前上游产物只重跑这一节点"
+    },
+    "mediaSettings": {
+      "videoTitle": "视频参数",
+      "imageTitle": "图片参数",
+      "durationValue": "{{seconds}} 秒",
+      "loading": "正在读取生成参数…",
+      "loadError": "无法读取生成参数：{{message}}",
+      "saveError": "参数未保存：{{message}}"
+    },
+    "sidebar": {
+      "tabsLabel": "侧栏",
+      "assistant": "助手",
+      "conversation": "对话",
+      "assets": "素材",
+      "canvas": "当前画布",
+      "project": "项目素材",
+      "create": "新建"
+    },
+    "sessions": {
+      "label": "画布",
+      "new": "新画布",
+      "create": "新建会话",
+      "project": "所属项目",
+      "pickProject": "请选择项目",
+      "needProject": "请先新建一个项目，再在其中新建会话。",
+      "createFailed": "新建会话失败，请稍后重试。"
+    },
+    "assets": {
+      "empty": "这个画布还没有素材。上传或生成后会显示在这里。",
+      "emptyProject": "这个项目还没有共用素材。任意画布上传或生成后，都会出现在这里。",
+      "onCanvas": "画布中",
+      "libraryOnly": "仅素材库",
+      "delete": "删除素材",
+      "sourceUploaded": "上传",
+      "sourceGenerated": "生成"
+    },
+    "dock": {
+      "label": "画布工具",
+      "add": "添加节点",
+      "addTitle": "添加到画布",
+      "select": "选择 / 移动",
+      "selectHint": "选择并移动节点。快捷键 V；按住空格可临时平移。",
+      "hand": "平移画布",
+      "handHint": "拖动画布。快捷键 H。",
+      "layout": "整理",
+      "assets": "素材库",
+      "assetsTitle": "当前画布",
+      "assetsHint": "打开当前画布素材列表。",
+      "upload": "上传",
+      "uploadHint": "上传图片、视频或音频文件，作为新节点添加到画布。",
+      "uploadTooLarge": "文件过大：图片、视频和音频不能超过 32MB。",
+      "comfyuiHint": "导入 ComfyUI 工作流（.json）。仅添加 vLLM-Omni 的 Generate Image / Generate Video 节点。",
+      "group": {
+        "image": "图片",
+        "video": "视频",
+        "audio": "音频",
+        "text": "文本"
+      },
+      "node": {
+        "image": "图片",
+        "video": "视频",
+        "audio": "音频",
+        "comfyui": "ComfyUI"
+      }
+    },
+    "nodeActions": {
+      "add": "添加后续节点",
+      "addPredecessor": "添加前序节点",
+      "successorMenuTitle": "引用该节点生成",
+      "predecessorMenuTitle": "添加上下文",
+      "actionBarLabel": "节点操作",
+      "preview": "预览",
+      "previewOrEdit": "预览或编辑",
+      "download": "下载",
+      "downloadFailed": "“{{name}}”下载失败，请检查网络和保存位置后重试。",
+      "delete": "删除",
+      "replace": "上传替换",
+      "replaceHint": "上传新文件替换此节点的内容。",
+      "deleteHint": "删除此节点及其连线。也可选中后按 Delete / Backspace。",
+      "deleteConfirmTitle": "删除节点",
+      "deleteConfirmMessage": "该节点包含已生成的内容，删除后不可恢复。是否确定删除？",
+      "deleteConfirmCancel": "取消",
+      "deleteConfirmOk": "确定",
+      "resize": "调整大小",
+      "resizeHint": "拖动右下角调整节点大小"
+    },
+    "edge": {
+      "delete": "删除连线"
+    },
+    "materials": {
+      "title": "产出物料",
+      "hint": "Brief 和分镜表可手动编辑。保存后重跑下游节点会读到新内容。",
+      "ready": "可预览",
+      "editable": "可编辑",
+      "edit": "编辑",
+      "save": "保存",
+      "saving": "保存中…",
+      "externalChange": "文件已更新。你的草稿已保留，保存将覆盖最新内容。",
+      "overwriteWithDraft": "用草稿覆盖",
+      "cancelEdit": "取消",
+      "saveFailed": "保存失败",
+      "placeholder": "占位",
+      "empty": "还没有可查看的产物",
+      "placeholderHint": "这个节点还是占位产物，没有真实文件。",
+      "openFile": "打开文件",
+      "textError": "无法读取文本",
+      "addTableRow": "添加行",
+      "deleteTableRow": "删除第 {{row}} 行",
+      "frameCount": "{{count}} 张关键帧",
+      "collapse": "收起物料",
+      "expand": "展开物料",
+      "viewLarge": "看大图",
+      "closeViewer": "关闭",
+      "previous": "上一张",
+      "next": "下一张",
+      "viewerIndex": "{{current}} / {{total}}"
+    },
+    "storyboard": {
+      "columns": {
+        "clip_no": "镜号",
+        "timeline": "时间",
+        "camera": "景别/机位",
+        "move": "运镜",
+        "on_screen": "出镜角色",
+        "character_action": "角色动作",
+        "speech": "台词"
+      }
+    },
+    "errors": {
+      "runFailed": "启动运行失败",
+      "rerunFailed": "重新生成失败",
+      "chooseFailed": "选择版本失败"
+    },
+    "comfyui": {
+      "badgeHint": "从 ComfyUI 导入。始终使用这些参数通过 vLLM-Omni 生成。",
+      "promptHint": "连同下方 ComfyUI 参数原样发送给 vLLM-Omni，不经 Agent 改写。",
+      "samplingTitle": "采样参数",
+      "field": {
+        "url": "服务地址",
+        "model": "模型",
+        "negative_prompt": "负向提示词",
+        "width": "宽度",
+        "height": "高度",
+        "fps": "帧率",
+        "duration": "时长（秒）",
+        "num_inference_steps": "步数",
+        "guidance_scale": "引导系数",
+        "true_cfg_scale": "True CFG 系数",
+        "vae_use_slicing": "VAE 切片",
+        "vae_use_tiling": "VAE 分块",
+        "seed": "种子（-1 为随机）"
+      },
+      "warning": "已导入 {{file}}，但有内容被省略：{{items}}",
+      "warningItem": {
+        "skipped_input": "节点 {{node}} 的输入 \"{{detail}}\" 不受支持，已跳过",
+        "multi_stage_sampling": "节点 {{node}} 使用多阶段采样列表，已跳过采样参数",
+        "unsupported_sampling": "节点 {{node}} 的采样来源 {{detail}} 不是 Diffusion Sampling，已跳过",
+        "unsupported_model_params": "节点 {{node}} 的模型参数 {{detail}} 不受支持，已跳过",
+        "unsupported_reference": "节点 {{node}} 的参考 {{detail}} 与输入类型不符，已跳过"
+      },
+      "error": {
+        "invalid_json": "{{file}} 不是有效的 JSON：{{detail}}",
+        "unrecognized_format": "{{file}} 不是 ComfyUI 工作流导出文件。",
+        "no_supported_nodes": "{{file}} 中没有 vLLM-Omni Generate Image / Generate Video 节点。",
+        "read_failed": "无法导入 {{file}}：{{detail}}"
+      }
+    }
+  },
   "videoLive": {
     "modelFallback": "视频模型",
     "subtitle": "实时多屏音视频问答",
     "status": { "connecting": "正在连接 Full-duplex 模型并申请麦克风权限…", "speaking": "模型正在回答…" },
-    "coreAgent": { "startFailed": "Jiuwen Core Agent 未能启动任务：{{message}}", "startFailedSummary": "任务未能启动，错误信息已经显示在界面中。" },
-    "errors": { "startFailed": "Full-duplex 会话启动失败。", "joyaiTextNotAccepted": "文字输入未进入 JoyAI 会话", "qwenTextNotAccepted": "文字输入未进入千问 Realtime 会话", "textSendFailed": "文字输入发送失败" },
-    "empty": { "title": "打开一个实时画面", "description": "使用摄像头、本地视频，或添加多个屏幕", "listening": "正在持续听取", "waiting": "等待开启 Full-duplex", "hint": "开启后直接说话，无需逐句点击" },
-    "sources": { "camera": "摄像头", "localVideo": "本地视频", "addScreen": "添加屏幕", "shareScreen": "共享屏幕", "stopCamera": "停止摄像头", "stopScreens": "停止全部屏幕" },
-    "actions": { "closeVideo": "关闭视频", "starting": "正在启动 Full-duplex 会话", "stopSession": "结束 Full-duplex 会话", "startSession": "开启 Full-duplex 会话" },
+    "coreAgent": {
+      "startFailed": "Jiuwen Core Agent 未能启动任务：{{message}}",
+      "startFailedSummary": "任务未能启动，错误信息已经显示在界面中。"
+    },
+    "errors": {
+      "startFailed": "Full-duplex 会话启动失败。",
+      "joyaiTextNotAccepted": "文字输入未进入 JoyAI 会话",
+      "qwenTextNotAccepted": "文字输入未进入千问 Realtime 会话",
+      "textSendFailed": "文字输入发送失败"
+    },
+    "empty": {
+      "title": "打开一个实时画面",
+      "description": "使用摄像头、本地视频，或添加多个屏幕",
+      "listening": "正在持续听取",
+      "waiting": "等待开启 Full-duplex",
+      "hint": "开启后直接说话，无需逐句点击"
+    },
+    "sources": {
+      "camera": "摄像头",
+      "localVideo": "本地视频",
+      "addScreen": "添加屏幕",
+      "shareScreen": "共享屏幕",
+      "stopCamera": "停止摄像头",
+      "stopScreens": "停止全部屏幕"
+    },
+    "actions": {
+      "closeVideo": "关闭视频",
+      "starting": "正在启动 Full-duplex 会话",
+      "stopSession": "结束 Full-duplex 会话",
+      "startSession": "开启 Full-duplex 会话"
+    },
     "frameWindow": "滚动窗口：{{count}}/{{max}} 帧",
     "audioOnly": "纯语音不发送画面",
-    "chat": { "coreResult": "工具结果 · Jiuwen Core Agent", "user": "你", "search": "九问搜索", "assistant": "助手", "searchCompleted": "九问搜索 Agent 搜索完成" },
+    "chat": {
+      "coreResult": "工具结果 · Jiuwen Core Agent",
+      "user": "你",
+      "search": "九问搜索",
+      "assistant": "助手",
+      "searchCompleted": "九问搜索 Agent 搜索完成"
+    },
     "search": { "ready": "准备搜索", "selectHistory": "选择搜索记录", "latest": "最新搜索（自动）" },
-    "input": { "activePlaceholder": "也可以在当前会话中输入文字……", "inactivePlaceholder": "先开启 Full-duplex……", "send": "发送问题" }
+    "input": {
+      "activePlaceholder": "也可以在当前会话中输入文字……",
+      "inactivePlaceholder": "先开启 Full-duplex……",
+      "send": "发送问题"
+    }
   },
   "settingsPanel": {
+    "voice": {
+      "connectionFailed": "连接失败，请检查接口地址、API Key 和模型后重试。",
+      "connectionSuccess": "模型连接验证成功",
+      "testConnection": "测试模型连接",
+      "requiredFields": "保存前请填写模型接口地址、模型名称和 API Key。",
+      "description": "配置麦克风、全双工实时语音及屏幕共享。",
+      "screenSharing": "屏幕共享",
+      "screenSharingDescription": "启动全双工时可选择屏幕、窗口或摄像头，每次均需浏览器授权。关闭后仅进行语音对话。"
+    },
     "title": "设置",
     "freeModels": {
-      "title": "限时免费模型",
+      "title": "免费模型",
+      "bannerDescription": "使用华为账号登录，获取九问限时免费限量模型",
+      "goAuthorize": "去授权",
       "loginTitle": "华为账号登录",
       "loginDescription": "使用华为账号登录，获取九问限时免费限量模型",
       "quotaTitle": "免费积分",
       "quotaLoggedOut": "登录后查看",
       "signedIn": "已登录",
+      "enabled": "已开启",
+      "quotaLabel": "额度",
+      "weeklyQuotaDescription": "每周一8点刷新额度，包含多个模型",
       "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用",
       "endedTitle": "活动已结束",
       "endedDescription": "本期限时免费模型活动已结束，感谢参与",
@@ -95,12 +408,14 @@
       "configDescription": "为限时免费模型单独设置上下文窗口等参数"
     },
     "categories": {
+      "voice": "语音",
       "general": "常规",
       "models": "模型",
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
       "personalContext": "知识",
+      "recommendation": "推荐",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
@@ -186,28 +501,74 @@
       }
     },
     "models": {
-      "primaryModels": "对话模型",
+      "customModels": "自定义模型",
+      "tabsLabel": "模型设置分类",
+      "modelsTab": "模型",
+      "jevTab": "Jev",
+      "modelGroups": "模型组",
+      "modelGroupsManagement": "模型组管理",
       "empty": "尚未配置模型",
-      "emptyDescription": "添加模型后，可在这里测试连接并管理主模型。",
-      "primary": "主模型",
-      "groupMeta": "模型组 · {{count}} 个配置",
-      "groupAriaLabel": "模型组 {{model}}，共 {{count}} 个配置",
-      "expandGroup": "展开模型组 {{model}} 的其他配置",
-      "collapseGroup": "收起模型组 {{model}} 的其他配置",
-      "groupDefault": "组内默认",
-      "setPrimary": "设为主模型",
-      "setGroupDefault": "设为组内默认",
-      "setGroupDefaultConfirm": "设为组内默认后，直接使用模型名称“{{model}}”且未指定别名时，将使用此配置；同组原默认配置会被取消。确定继续吗？",
-      "setPrimaryGroupDefaultConfirm": "“{{model}}”当前是主模型。设为组内默认后，此配置会同时成为主模型；直接使用该模型名称且未指定别名时也会使用此配置。同组原默认配置会被取消。确定继续吗？",
+      "emptyDescription": "添加模型后，可在这里测试连接并管理自定义模型。",
+      "modelGroupsEmpty": "尚未配置模型组",
+      "modelGroupsEmptyDescription": "添加模型组后，可在这里管理多模型主备路由。",
       "addModel": "添加模型",
+      "addModelGroup": "添加模型组",
+      "addModelGroupTitle": "添加模型组",
+      "editModelGroupTitle": "编辑模型组",
+      "editModelGroup": "编辑模型组",
+      "savingModelGroup": "正在保存模型组…",
+      "modelGroupName": "模型组名称",
+      "modelGroupNamePlaceholder": "请输入模型组名称",
+      "modelGroupEnabled": "启用模型组",
+      "modelGroupEnabledDescription": "允许在对话中选择并使用该模型组",
+      "modelGroupDefaultDescription": "将该模型组设为默认模型组",
+      "modelGroupRequestConfig": "组公共请求参数（JSON）",
+      "modelGroupRequestConfigPlaceholder": "例如：{\"temperature\": 0.3}",
+      "modelGroupRouteEnabled": "启用成员",
+      "modelGroupRouteOverrides": "成员请求参数覆盖（JSON）",
+      "modelGroupRouteOverridesPlaceholder": "例如：{\"temperature\": 0.2}",
+      "modelGroupNeedsEnabledRoute": "模型组至少需要一个已启用成员",
+      "modelGroupRequestConfigInvalid": "请输入有效的 JSON 对象，且不要包含凭据、地址、上下文窗口或路由策略字段",
+      "modelGroupForbiddenRequestKeys": "请求参数包含禁止字段：{{keys}}",
+      "disabledGroupCannotBeDefault": "禁用的模型组不能设为默认模型组",
+      "selectConfiguredModels": "选择已配置模型",
+      "modelGroupModels": "模型",
+      "modelGroupTableModel": "模型",
+      "modelGroupTableActions": "操作",
+      "selectConfiguredModelsEmpty": "暂无可用的已配置模型（免费模型不支持加入模型组）",
+      "modelGroupMeta": "{{count}} 个路由 · {{routes}}",
+      "modelGroupCardHeader": "模型组：{{name}} · {{count}}个模型",
+      "modelGroupLabel": "模型组：",
+      "modelGroupCount": "{{count}}个模型",
+      "modelGroupNoRoutes": "暂无路由",
+      "modelGroupRouteOrderHint": "支持拖拽排序，此处排序会影响调用顺序",
+      "moveRouteUp": "上移",
+      "moveRouteDown": "下移",
+      "modelGroupDefault": "默认组",
+      "modelGroupRouteDefault": "组内默认",
+      "setModelGroupRouteDefault": "组内默认",
+      "expandModelGroup": "展开模型组",
+      "collapseModelGroup": "收起模型组",
+      "copyModelName": "复制模型名称",
+      "modelNameCopied": "已复制模型名称",
+      "copyModelNameFailed": "复制失败",
+      "removeModelFromGroup": "从模型组中移除",
+      "removeModelFromGroupConfirm": "确定将“{{name}}”从模型组中移除吗？",
+      "removeModelFromGroupConfirmTitle": "移除模型",
+      "keepOneGroupRoute": "模型组至少保留一个模型",
+      "missingConfiguredModel": "模型不可用",
+      "modelGroupDisabled": "已禁用",
+      "modelGroupReferenced": "该模型组仍被 {{count}} 处引用（{{scopes}}），请先解除引用后再删除。",
+      "modelReferenced": "该模型仍被 {{count}} 处引用（{{scopes}}），请先解除引用后再删除。",
+      "deleteModelGroupConfirm": "确定删除模型组“{{name}}”吗？",
+      "deleteModelGroupConfirmTitle": "删除模型组",
       "add": "添加",
       "editModel": "编辑模型",
       "deleteConfirm": "确定删除“{{alias}}”（{{model}}）吗？",
       "deleteConfirmTitle": "删除模型",
-      "groupDefaultConfirmTitle": "设置组内默认模型",
       "loadFailed": "模型列表获取失败，请重试。",
-      "customName": "自定义名称",
-      "customNamePlaceholder": "请输入唯一的自定义名称",
+      "customName": "模型展示名称",
+      "customNamePlaceholder": "请输入唯一的模型展示名称",
       "protocol": "协议",
       "vendor": "模型提供商",
       "model": "模型",
@@ -232,6 +593,7 @@
       "noPresetModelsNoEndpoint": "该提供商未提供模型列表接口",
       "fetchModelsLoading": "获取中...",
       "fetchModelsRemote": "已从提供商获取 {{count}} 个模型",
+      "fetchGenerationModelsRemote": "已获取 {{count}} 个生成模型；列表不代表当前账号已开通",
       "fetchModelsFailed": "模型列表拉取失败",
       "fetchModelsFailedUsingPreset": "模型列表拉取失败：{{error}}。当前展示提供商预设模型",
       "fetchModelsInvalidResponse": "提供商模型列表响应格式不正确",
@@ -258,6 +620,7 @@
         "minimax": "MiniMax",
         "mimo": "小米 MiMo",
         "openrouter": "OpenRouter",
+        "vllm-omni": "vLLM-Omni",
         "volcengine": "火山引擎",
         "zhipu": "智谱 GLM",
         "unrecognized": "未识别提供商（{{vendor}}）"
@@ -313,8 +676,9 @@
         "reasoningUnsupported": "当前推理选项“{{value}}”不受支持，请重新选择或使用默认值",
         "reasoningUnavailable": "推理选项尚未加载，请重试后保存",
         "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
-        "aliasConflict": "自定义名称必须全局唯一，且不能与其他模型 ID 相同",
-        "modelNameConflict": "模型 ID 不能与其他配置的自定义名称相同"
+        "aliasRequired": "模型展示名称为必填项",
+        "aliasConflict": "模型展示名称必须全局唯一，不能与其他模型的展示名称重复",
+        "modelGroupNameConflict": "模型组名称必须全局唯一，不能与其他模型组名称重复"
       },
       "testConnection": "测试连接",
       "test": "测试"
@@ -323,6 +687,7 @@
       "skills": "技能",
       "webSearch": "网页搜索",
       "mediaTools": "工具",
+      "externalCliAgents": "三方 Agent",
       "vision": "图片处理",
       "visionDescription": "启用后可处理图片内容；关闭后保留已有模型配置。",
       "visionConfigTitle": "配置图片处理模型",
@@ -338,10 +703,51 @@
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
       "regionalBaseHint": "密钥分区域：国际版密钥用 https://api.minimax.io/v1，国内版密钥用 https://api.minimaxi.com/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
-      "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型需要先在 Ark 控制台开通，否则会提示 ModelNotOpen。",
+      "regionalBaseHintModelark": "密钥和模型开通都分区域：国际版（BytePlus ModelArk）用 https://ark.ap-southeast.bytepluses.com/api/v3，国内版（火山引擎）用 https://ark.cn-beijing.volces.com/api/v3。模型查询和生成使用所填区域，不自动切换区域。模型需在对应控制台开通。",
+      "arkGenerationBaseInvalid": "请填写火山方舟或 BytePlus 的官方区域 /api/v3 地址；生图和视频生成不支持 Coding Plan 地址。",
+      "regionalBaseHintDashscope": "生成走百炼原生接口 /api/v1（不是对话用的 compatible-mode）。密钥分区域：国内版用 https://dashscope.aliyuncs.com/api/v1，国际版用 https://dashscope-intl.aliyuncs.com/api/v1。地址与密钥的区域不一致时，会自动尝试另一个区域。",
+      "selfHostedBaseHintVllmOmni": "填写自部署 vLLM-Omni 服务的地址（如 http://127.0.0.1:8091/v1）。服务未开启鉴权时 API key 可留空；模型名留空时使用服务实际加载的模型。",
+      "servedModel": "服务当前加载的模型",
       "deleteModelTitle": "删除模型配置",
       "deleteModelConfirm": "将删除{{name}}已保存的模型配置；如果该能力当前已启用，将同步关闭。",
       "team": "智能体团队"
+    },
+    "recommendation": {
+      "title": "个性化推荐",
+      "description": "根据你的对话推荐话题和下一步提示词。",
+      "model": "话题推荐模型",
+      "modelDescription": "切换后会重新准备推荐。",
+      "followMainModel": "跟随主对话模型",
+      "modelIncompatible": "接口不兼容",
+      "modelLoginRequired": "需要登录",
+      "modelFree": "免费模型",
+      "unusableModelOption": "{{name}}（{{reason}}）",
+      "modelUnusable": "话题推荐模型无法使用：请换一个模型，或在「设置 → 模型」补全它的接口地址与密钥。",
+      "data": "推荐数据",
+      "dataDescription": "画像和推荐记录只保存在本机。",
+      "view": "查看",
+      "hide": "收起",
+      "enableTitle": "开启个性化推荐",
+      "enableMessage": "开启后，相关对话会发给模型服务商，用来准备话题推荐和下一步建议；联网检索只使用公开主题词。调用费用由你自己的 API 账户承担，推荐数据存放在本机。",
+      "includeHistory": "同时读取已有聊天历史",
+      "enable": "开启",
+      "deleteTitle": "删除推荐数据",
+      "deleteMessage": "删除画像、摘要、卡池和相关推荐记录，并关闭推荐。原始聊天保留；重新开启默认不会重建旧画像。个人备份及服务端数据不在本地删除范围内。",
+      "blockedDirections": "已不再推荐的方向",
+      "blockedSince": "{{date}} 起不再推荐",
+      "restore": "恢复",
+      "profileEmpty": "尚无可核对来源的推荐画像。",
+      "correctionLabel": "用自然语言纠正画像",
+      "correctionPlaceholder": "说明哪些偏好需要纠正、暂停或保留",
+      "correct": "在新对话中纠正",
+      "correctionNote": "发送并完成这条对话后，下一次推荐会读取你的纠正；关闭推荐期间不整理画像。",
+      "unreachable": "无法读取推荐设置，请检查应用连接。",
+      "invalidKey": "模型服务商拒绝了密钥，请更换密钥后重新准备话题。",
+      "accessDenied": "模型服务商拒绝访问，请核对账号权限后重新准备话题。",
+      "accountOverdue": "模型服务账号欠费，请在服务商控制台充值后重新准备话题。",
+      "modelUnavailable": "话题推荐模型不可用，请核对模型名称和访问权限。",
+      "lastFailure": "最近一次准备话题没有完成。",
+      "retry": "重新准备话题"
     },
     "browser": {
       "runtime": "浏览器运行配置",
@@ -354,7 +760,18 @@
       "headless": "无头模式",
       "headlessDescription": "不显示浏览器窗口运行自动化任务。",
       "chromePath": "Chrome 可执行文件路径",
-      "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "decisionLlm": "仅 LLM",
+      "decisionShadow": "Jev 影子模式（仅观察）",
+      "decisionHybrid": "Jev 混合模式",
+      "providerOpenrouter": "OpenRouter",
+      "providerTypesafe": "TypeSafe",
+      "providerCustom": "自定义",
+      "jevConfig": "Jev 模型配置",
+      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > Jev」配置。",
+      "clearSharedJevConfirm": "清除当前提供商的 Jev 密钥？浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
+      "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
+      "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
     "experimental": {
       "taskAsr": "语音转写",
@@ -363,13 +780,18 @@
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
-      "trajectoryUi": "轨迹界面",
+      "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
+      "teamOrganization": "Team Organization",
+      "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
-      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。"
+      "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
+      "multiModelCollaboration": "多模型协同",
+      "toolOptimize": "工具检索优化",
+      "designMode": "设计模式"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -425,6 +847,26 @@
         "title": "浏览器运行方式",
         "description": "选择在前台显示浏览器窗口或以无头模式运行。"
       },
+      "decision_mode": {
+        "title": "浏览器决策",
+        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > Jev」中的共享配置。"
+      },
+      "decision_provider": {
+        "title": "Jev 服务提供方",
+        "description": "通过 OpenRouter 调用 Jev，或直接调用 TypeSafe。各提供方的凭据独立配置。"
+      },
+      "jev_api_key": {
+        "title": "Jev API 密钥"
+      },
+      "jev_openrouter_api_key": {
+        "title": "OpenRouter API 密钥"
+      },
+      "jev_typesafe_api_key": {
+        "title": "TypeSafe API 密钥"
+      },
+      "jev_custom_api_key": {
+        "title": "自定义 Jev API 密钥"
+      },
       "model_name": { "title": "模型名称", "placeholder": "例如：glm-4.7" },
       "alias": { "title": "自定义别名", "placeholder": "例如：GLM-4.7 生产环境" },
       "api_base": { "title": "API 地址", "placeholder": "例如：https://api.openai.com/v1" },
@@ -462,9 +904,21 @@
         "title": "技能自动检索",
         "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
       },
+      "topic_recommendation_enabled": {
+        "title": "话题推荐",
+        "description": "根据对话兴趣准备首页话题卡片。未设置时跟随程序默认。"
+      },
+      "prompt_suggestion_enabled": {
+        "title": "提示词推荐",
+        "description": "在回复结束后给出下一步可点的输入建议。未设置时跟随程序默认。"
+      },
       "ttse_enabled": {
         "title": "本地环境事实与任务经验自动演进",
         "description": "控制智能体对于环境事实和任务经验学习"
+      },
+      "skill_retrieval_index_enabled": {
+        "title": "技能索引",
+        "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
       },
       "free_search_ddg_enabled": { "title": "DuckDuckGo 搜索", "description": "启用 DuckDuckGo 免费搜索来源。" },
       "free_search_bing_enabled": { "title": "Bing 搜索", "description": "启用 Bing 免费搜索来源。" },
@@ -509,13 +963,37 @@
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
-      "trajectory_ui_enabled": {
-        "title": "启用轨迹界面",
-        "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
+      "trajectory_ui_diagnosis_enabled": {
+        "title": "启用轨迹诊断",
+        "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
+      },
+      "team_organization_ui_enabled": {
+        "title": "启用 Team Organization",
+        "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI 工作流集成",
+        "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中"
+      },
+      "progressive_tool_optimize": {
+        "title": "启用工具检索优化",
+        "description": "开启后模型通过 tool_search 分类目录按需检索工具。"
+      },
+      "team_scheduled_dispatch_enabled": {
+        "title": "启用调度模式",
+        "description": "Leader 将每个任务分配给指定成员，成员按分配顺序依次执行。"
+      },
+      "team_task_verification_enabled": {
+        "title": "启用验证者",
+        "description": "任务完成后由验证者进行验收，未通过验收的任务将退回返工。"
+      },
+      "team_member_messaging_enabled": {
+        "title": "启用成员间通信",
+        "description": "允许成员之间直接发送消息（点对点、多播、广播），无需经 Leader 转达；任务指派与交接仍由 Leader 和调度框架负责。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
-        "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
+        "description": "全双工仅在单 Agent 模式下生效，集群/团队模式下不显示入口。输入框为空时显示全双工按钮；启动后持续进行语音对话，屏幕共享由下方开关控制。"
       },
       "kv_cache_affinity_enabled": {
         "title": "启用算力亲和",
@@ -556,11 +1034,48 @@
         "title": "每次检查对话轮数",
         "description": "每次检查时最多读取的近期对话轮数，用于推断推荐上下文。默认值：20。",
         "placeholder": "请输入 1–50 的整数"
+      },
+      "multi_model_collaboration_enabled": {
+        "title": "多模型协同",
+        "description": "单 Agent 对话选择模型组后，由组内默认模型聚合其他模型的建议。"
+      },
+      "moa_jev_enabled": {
+        "title": "JEV 决策",
+        "description": "使用「模型 > Jev」中配置的 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
+      },
+      "moa_verifier_interval": {
+        "title": "验证间隔（轮）",
+        "description": "每隔 N 个 Agent 执行轮次验证一次。一轮包含一次主模型决策及工具执行（如有），不是用户对话轮次。"
+      },
+      "moa_jev_api_base": {
+        "title": "API 地址",
+        "description": "独立的 JEV 服务地址。",
+        "placeholder": "https://api.typesafe.ai"
+      },
+      "moa_jev_model_name": {
+        "title": "模型名称",
+        "description": "JEV 验证模型。",
+        "placeholder": "jev-latest"
+      },
+      "moa_jev_api_key": {
+        "title": "API Key",
+        "description": "JEV 服务的密钥。",
+        "placeholder": "输入 API Key"
       }
     },
     "validation": {
       "required": "此字段为必填项",
       "integerRange": "请输入 {{min}}–{{max}} 之间的整数"
+    },
+    "multiModelCollaboration": {
+      "jevConfigTitle": "JEV 配置",
+      "jevConfigDescription": "仅用于多模型协同验证，不影响浏览器决策配置。",
+      "keepKey": "留空保留已保存的密钥。",
+      "clearKeyConfirm": "清除 JEV 密钥并关闭 JEV 决策？后续验证将使用模型组的组内默认模型。",
+      "errors": {
+        "apiBaseInvalid": "请输入有效的 HTTP 或 HTTPS 地址，且不包含登录凭据。",
+        "intervalInvalid": "请输入大于 0 的整数。"
+      }
     }
   },
   "trajectory": {
@@ -573,9 +1088,211 @@
       "memberLanes": "成员轨迹泳道",
       "members": "成员"
     },
+    "analysis": {
+      "back": "返回对话",
+      "diagnose": "诊断轨迹",
+      "selection": {
+        "fullScope": "全部轨迹",
+        "selectAll": "全选",
+        "clearSelectAll": "取消全选",
+        "selectAllAgent": "选中 {{name}} 的全部轨迹",
+        "clearSelectAllAgent": "取消选中 {{name}} 的全部轨迹",
+        "notePlaceholder": "对已选轨迹补充问题描述（可选）。例：答非所问；工具失败后未重试；未产出预期文件",
+        "cancel": "取消",
+        "start": "开始执行",
+        "starting": "启动中…",
+        "summary": "已选择 {{count}} 个 Agent · {{spans}} 个 OTel Span",
+        "emptyNodes": "选中范围内没有完整可诊断的 OTel Span（起止未都被覆盖的 Span 已被剔除）",
+        "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
+        "nodeLimit": "选中轨迹超过 {{limit}} 个 OTel Span（当前 {{count}} 个），请缩小选择范围",
+        "running": "已有诊断正在进行",
+        "noData": "当前没有可诊断的轨迹",
+        "replay": "只读复现中无法诊断，请先退出复现"
+      },
+      "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span",
+      "toolbar": {
+        "scale": "轨迹比例",
+        "time": "时间",
+        "equal": "等宽",
+        "tokens": "Tokens",
+        "duration": "时长",
+        "turns": "轮次",
+        "tools": "工具",
+        "folds": "轮次/工具",
+        "expandTurns": "展开所有轮次",
+        "collapseTurns": "折叠所有轮次",
+        "expandTools": "展开所有工具调用",
+        "collapseTools": "折叠所有工具调用",
+        "import": "导入",
+        "export": "导出",
+        "attribution": "开源声明",
+        "search": "搜索轨迹",
+        "searchPlaceholder": "请输入关键字搜索"
+      },
+      "tabs": {
+        "aria": "轨迹分析子页面",
+        "trajectory": "轨迹",
+        "diagnosis": "诊断"
+      }
+    },
+    "diagnosis": {
+      "entry": "轨迹分析",
+      "noteLabel": "用户反馈：描述已选轨迹中的问题（可选）",
+      "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
+      "cancel": "取消诊断",
+      "selectionHint": "在时间轴或任一泳道上拖选一段时间，并勾选要诊断的成员。",
+      "includeAgent": "诊断 {{name}}",
+      "timeAxis": "时间轴",
+      "records": "诊断记录",
+      "noRecords": "还没有诊断记录",
+      "delete": "删除",
+      "deleteConfirm": "确定删除该诊断记录吗？",
+      "scopeKind": {
+        "full": "完整轨迹",
+        "selection": "选中范围"
+      },
+      "status": {
+        "running": "进行中",
+        "completed": "已完成",
+        "failed": "失败",
+        "cancelled": "已取消",
+        "interrupted": "已中断"
+      },
+      "outletsPending": "诊断完成后在这里给出优化建议",
+      "stageStatus": {
+        "pending": "等待中",
+        "running": "进行中",
+        "completed": "完成",
+        "failed": "失败",
+        "skipped": "已跳过"
+      },
+      "rootCauses": "诊断发现",
+      "category": {
+        "skill_defect": "Skill 缺陷",
+        "ttse_success": "经验（任务成功）",
+        "ttse_partial": "经验（部分完成）",
+        "ttse_fail": "经验（任务失败）",
+        "tool_or_env": "工具或环境",
+        "model_capability": "模型能力",
+        "requirement_unclear": "需求不明确",
+        "other": "其他"
+      },
+      "confidence": "置信度 {{value}}%",
+      "highlight": "在轨迹中高亮",
+      "suggestions": "诊断建议",
+      "noSuggestions": "本次诊断没有可执行的优化建议",
+      "details": "诊断详情",
+      "dismiss": "关闭提示",
+      "note": "诊断说明",
+      "object": "诊断对象",
+      "objectAgents": "Agent",
+      "objectFull": "全部轨迹",
+      "objectTime": "时间",
+      "emptyHint": "还没有诊断记录。点击右上角的“诊断轨迹”开始。",
+      "loadingRecord": "正在加载诊断记录…",
+      "plannedStage": {
+        "task_parse": "任务解析",
+        "diagnose": "诊断分析",
+        "attribute": "归因分析"
+      },
+      "recordSelect": {
+        "aria": "诊断记录",
+        "history": "历史诊断列表",
+        "placeholder": "选择诊断记录",
+        "search": "搜索时间或关键词",
+        "noMatch": "没有匹配的诊断记录",
+        "confirmDelete": "确认删除",
+        "cancelDelete": "取消",
+        "deleteRunning": "诊断进行中，无法删除"
+      },
+      "rewardResult": "产物评估结果",
+      "rewardDimensions": "共 {{count}} 项评分维度，其中 {{perfect}} 项无需优化；点击类别查看各维度评分，需优化的在诊断发现中展开",
+      "rewardTotal": "总分 {{score}}",
+      "artifactFix": "产物修复建议",
+      "skills": "Skill 进化建议",
+      "ttse": "经验沉淀",
+      "fillInput": "填入输入框",
+      "filled": "已填入输入框",
+      "expandAll": "展开全文",
+      "collapse": "收起",
+      "signalTier": {
+        "perfect": "已达标",
+        "fair": "有待改进",
+        "weak": "未达标"
+      },
+      "signalSource": {
+        "keyword_tool": "工具输出",
+        "keyword_user": "用户消息",
+        "reward": "Reward",
+        "user": "用户补充"
+      },
+      "signalSourceLabel": "信号来源：{{source}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}：{{dimension}}",
+      "findingDimension": "维度",
+      "findingProblem": "问题",
+      "findingReason": "原因",
+      "attributionKind": {
+        "artifact": "产物",
+        "skill": "技能",
+        "experience": "经验"
+      },
+      "signalScore": "得分 {{score}}",
+      "signalSurfacedAt": "问题定位到 {{nodes}}",
+      "causeAt": "位于 {{nodes}}",
+      "evidence": "依据",
+      "dimension": "评分维度",
+      "requestCount": "模型请求 {{count}} 次",
+      "objectSteps": "范围",
+      "objectStepsCount": "{{count}} 个 OTel Span",
+      "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
+      "objectTask": "任务描述",
+      "objectSummary": "轨迹摘要",
+      "findingCauses": "{{count}} 条产物归因",
+      "findingSkill": "{{count}} 条技能归因",
+      "findingExperience": "{{count}} 条经验归因",
+      "findingJoin": "、",
+      "findingWithEvolution": "{{causes}}，另有 {{evolution}}",
+      "findingLegacyCauses": "{{count}} 处旧版归因",
+      "relatedSignals": "相关归因信号",
+      "suggestionsUnfinished": "诊断未完成，没有建议",
+      "process": "诊断过程",
+      "processSteps": "{{count}} 步",
+      "triggerTtse": "触发经验生成",
+      "triggeringTtse": "触发中…",
+      "ttseOutcome": {
+        "success": "任务完成",
+        "fail": "任务未完成",
+        "partial": "任务部分完成"
+      },
+      "ttseHint": "从这次轨迹中提取可复用的经验，由 TTSE 在后台生成并保存",
+      "ttseTriggeredNotice": "已触发TTSE，将在后台完成经验生成和保存",
+      "ttseReady": "可生成经验",
+      "skillFillPrefix": "根据以下优化建议对相应skill进行演进：",
+      "artifactFillPrefix": "请根据以下建议进行优化：",
+      "ttseResult": {
+        "triggered": "已触发",
+        "failed": "触发失败"
+      },
+      "blocked": "暂不可用：{{reason}}",
+      "errors": {
+        "FEATURE_DISABLED": "轨迹诊断未开启",
+        "UNSUPPORTED_SESSION_MODE": "当前会话模式不支持诊断",
+        "SESSION_NOT_FOUND": "会话不存在",
+        "DIAGNOSIS_ALREADY_RUNNING": "已有诊断正在进行",
+        "FULL_SCOPE_WHILE_BUSY": "会话运行中，无法诊断完整轨迹",
+        "EMPTY_SCOPE": "所选范围内没有可诊断的步骤",
+        "MODEL_UNAVAILABLE": "诊断模型不可用，请先配置模型",
+        "AGENT_UNAVAILABLE": "Agent 暂不可用",
+        "TTSE_NOT_SUPPORTED": "当前会话不支持 TTSE 经验生成",
+        "TTSE_UNAVAILABLE": "当前会话未启用 TTSE",
+        "default": "操作失败"
+      }
+    },
     "composer": {
       "collapse": "收起输入框",
-      "expand": "展开输入框"
+      "expand": "展开输入框",
+      "unavailable": "诊断时不能使用输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",
@@ -619,6 +1336,36 @@
     "groupChat": "群聊",
     "allMembers": "所有人",
     "noGroupMessages": "暂无群聊消息",
+    "groupChatTimeline": {
+      "scheduler": "调度",
+      "taskFallback": "任务 {{id}}",
+      "handoff": {
+        "task_start": "开工",
+        "task_start_plan": "开工（先提交执行计划）",
+        "review_request": "请验收",
+        "review_renudge": "催办验收",
+        "rework": "返工",
+        "rework_with_limit": "返工（最多 {{max}} 轮）",
+        "rework_summary": "请提交返工总结",
+        "task_assigned": "派发任务",
+        "other": "调度消息"
+      },
+      "taskEvents": {
+        "created": "创建了任务",
+        "createdMany": "创建了 {{count}} 个任务",
+        "claimed": "认领了任务",
+        "claimedPassive": "任务已被认领",
+        "submitted_for_review": "提交了任务，等待验收",
+        "submitted_for_reviewPassive": "任务已提交，等待验收",
+        "verified": "任务验收通过",
+        "revision_requested": "验收未通过，任务退回返工",
+        "completed": "完成了任务",
+        "completedPassive": "任务已完成",
+        "cancelled": "任务已取消",
+        "released": "任务已释放，等待重新认领",
+        "revoked": "任务已被收回"
+      }
+    },
     "memberTasksTitle": "{{member}} 执行的任务",
     "memberTasks": "Ta的任务",
     "noProcessData": "暂无该成员的执行过程数据",
@@ -633,6 +1380,7 @@
       "shutdown": "已关闭",
       "error": "异常",
       "unstarted": "未启动",
+      "dormant": "休眠",
       "unknown": "未知"
     },
     "taskStatus": {
@@ -733,7 +1481,54 @@
         "cancelled": "已取消",
         "failed": "任务失败"
       }
+    },
+    "org": {
+      "tab": "组织信息",
+      "title": "Task Pool 与组织",
+      "refresh": "刷新",
+      "loading": "加载中…",
+      "empty": "当前 Team 未绑定 organization",
+      "noOrganization": "未绑定组织",
+      "noTeam": "当前会话暂无可查询的 Team",
+      "loadFailed": "组织信息加载失败",
+      "organizationId": "Organization ID",
+      "displayName": "名称",
+      "description": "描述",
+      "ownerTeam": "Owner Team",
+      "teams": "Team 列表",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "元数据",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "任务池为空",
+      "taskId": "Task ID",
+      "taskTitle": "标题",
+      "taskStatus": "状态",
+      "taskAssignee": "执行者",
+      "taskTeam": "Team",
+      "taskType": "类型",
+      "taskUnclaimed": "待认领",
+      "taskParent": "父任务",
+      "pendingReviews": "待评审",
+      "pendingReviewsEmpty": "没有待评审的任务",
+      "reviewTask": "任务",
+      "reviewReviewer": "评审人",
+      "statsTotal": "任务总数",
+      "statsOpen": "进行中",
+      "statsUnclaimed": "待认领",
+      "statsPendingReviews": "待评审"
     }
+  },
+  "sessionAssets": {
+    "title": "素材",
+    "empty": "上传文件或生成内容后，会出现在这里；可以重命名，并在输入框里用 @名称 引用。",
+    "rename": "重命名",
+    "save": "保存",
+    "cancel": "取消",
+    "invalidName": "名称不能为空，最多 60 个字符，不能包含 @ 或换行",
+    "pickTitle": "选择素材",
+    "referHint": "输入框里输入 @ 引用",
+    "reference": "已引用"
   },
   "artifacts": {
     "title": "所有产物",
@@ -795,6 +1590,21 @@
     }
   },
   "chat": {
+    "recordingInProgress": "正在录音，点击停止后转写。",
+    "duplexControls": {
+      "sharingVideo": "WorkSwarm 正在接收共享画面",
+      "screenOrWindow": "屏幕或窗口",
+      "chooseSourceDescription": "下一步由浏览器请求所选来源的权限。取消可返回，不会启动会话。",
+      "chooseSource": "选择共享的内容",
+      "muteMic": "关闭麦克风",
+      "unmuteMic": "开启麦克风",
+      "muteSpeaker": "静音模型回应",
+      "unmuteSpeaker": "开启模型声音",
+      "stopSharing": "停止屏幕共享",
+      "listening": "正在聆听",
+      "connecting": "正在连接",
+      "exit": "退出全双工语音"
+    },
     "slashPicker": {
       "commands": "指令",
       "skills": "技能",
@@ -817,6 +1627,11 @@
     "placeholderVoice": "正在听取语音...",
     "welcomeLogoAlt": "WorkSwarm 标志",
     "welcomeBubbleText": "HI~我是你的专属桌面智能搭子，随时待命陪你摸鱼解闷~",
+    "freeModelsCampaign": {
+      "title": "活动",
+      "description": "小九特地为大家提供了限时免费的模型，请各位大佬笑纳",
+      "claim": "去领取"
+    },
     "welcomeHeading": "你好，我是WorkSwarm，很高兴认识你！",
     "groupCreateWelcomeBrand": "JiuwenSwarm",
     "groupCreateWelcomeSuffix": "轻松解决工作每个问题！",
@@ -830,7 +1645,42 @@
     },
     "welcomeSuggestions": {
       "journey": "让我们开启一段新的旅程吧！",
-      "skills": "能告诉我你有哪些技能吗？"
+      "skills": "能告诉我你有哪些技能吗？",
+      "explore": "今天有什么值得一起探索的话题？",
+      "nextStep": "帮我把一个想法变成可执行的下一步。"
+    },
+    "topicStarter": {
+      "heading": "今天想干点什么？",
+      "recommendations": "先从这些聊聊",
+      "notInterested": "先跳过",
+      "cardRemoved": "这条先不看了",
+      "pauseInterest": "这类先藏一周",
+      "interestPaused": "好，这类先少出现",
+      "undoDismissal": "撤销",
+      "dateAndVersion": "看看这一天",
+      "openDateAndVersion": "打开这一天的背景",
+      "weiboHotList": "微博热搜",
+      "baiduHotList": "百度热搜",
+      "hotListRank": "第 {{rank}}",
+      "hotListListedAt": "上榜 {{time}}",
+      "viewHotListEntry": "看看这条热搜：{{source}}",
+      "hotListEntry": "热搜",
+      "openNewsSearch": "打开相关新闻",
+      "searchRelatedNews": "看看相关新闻",
+      "statusPreparing": "正在准备话题，你也可以直接开始聊。",
+      "statusPreparingWithCards": "正在换一批更贴你的话题，这些还可以先点。",
+      "statusUpdateIncomplete": "新话题还没就绪，先用这些也行。",
+      "statusNeedsSettings": "想让话题更贴你，可以去设置里打开。",
+      "statusNoCards": "这会儿没有合适的话题，直接打字开始也行。",
+      "providerRefusal": "个性化这边暂时接不上，细节在设置里。",
+      "openSettings": "去设置看看",
+      "retryPreparation": "再试试"
+    },
+    "promptSuggestionBox": {
+      "label": "下一步：",
+      "sendHint": "点击发送这条建议",
+      "dismiss": "关闭建议「{{text}}」",
+      "placeholder": "{{label}}{{text}}（Tab 填入）"
     },
     "newSession": "新建会话",
     "sessionCreated": "已新建会话",
@@ -838,6 +1688,7 @@
     "modePlan": "规划模式",
     "modeAgent": "性能模式",
     "modeAgentTeam": "集群模式",
+    "videoGeneration": "视频生成",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
     "recording": "正在录音...（再次点击麦克风结束）",
@@ -872,17 +1723,22 @@
     "agentGroupDeletedDescription": "该会话绑定的专家团已被删除，无法继续对话。历史消息仍可查看。",
     "placeholderAgentGroupDeleted": "专家团已删除，无法继续对话",
     "stop": "停止",
-    "taskFullDuplexStart": "共享整个屏幕并开始全双工对话",
+    "taskFullDuplexStart": "开始全双工语音对话",
     "taskFullDuplexStarting": "正在启动全双工对话",
     "taskFullDuplexStop": "停止全双工对话和屏幕共享",
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
+      "configuredGroups": "模型组",
+      "followGroupDefault": "跟随组内默认",
       "configured": "已配置模型",
       "free": "限时免费模型",
       "getFreeModels": "获取限时免费模型",
-      "addModel": "添加自定义模型",
+      "addModel": "添加自定义模型/模型组",
+      "selectionFailed": "模型选择未能生效，请重新选择",
       "empty": "暂无可用模型，请先在设置中添加模型",
-      "placeholder": "选择模型"
+      "placeholder": "选择模型",
+      "selectOrdinaryModel": "请选择普通模型",
+      "collaborationDisabled": "多模型协同已关闭，请选择普通模型后发送。"
     },
     "contextUsage": {
       "title": "上下文用量",
@@ -900,6 +1756,13 @@
       "noBreakdown": "后端未返回分类明细"
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
+    "teamSelect": {
+      "unavailable": "不可用",
+      "unavailableHint": "该专家团已不可用，请重新安装专家团后继续；历史记录仍可查看。",
+      "tooltip": "切换当前查看的 Team",
+      "loadingLabel": "加载 Team…",
+      "fallbackLabel": "选择 Team"
+    },
     "configLockedHistory": "会话已有消息，请新建会话后更改配置",
     "modeSwitchTitle": "切换模式",
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",
@@ -927,9 +1790,14 @@
     "agentGroupRemove": "移除专家团",
     "agentGroupSkillsLocked": "已选择专家团，不能额外添加专家团技能",
     "teamSkillsGroupLocked": "已选择团队技能，不能额外选择专家团",
+    "agentGroupRuntimeDisabled": "该专家团包含三方专家，{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新选择专家团。",
+    "agentGroupRuntimeDisabledTitle": "请先启用三方 Agent",
+    "agentGroupRuntimeDisabledConfirm": "知道了",
     "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
+    "agentGroupNoDescription": "该专家团暂无描述",
     "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
     "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
+    "externalAgentRequiresNewSession": "三方专家需在新会话中使用，请新建会话后再选择",
     "agentGroupOnlyInTeamMode": "专家团仅支持在集群模式下选择",
     "extension": "扩展",
     "extensionSearchPlaceholder": "请输入关键字搜索",
@@ -988,6 +1856,8 @@
       "permission": {
         "default": "默认权限",
         "defaultDesc": "编辑外部文件和使用互联网时始终询问",
+        "automatic": "智能审批",
+        "automaticDesc": "结合当前任务和权限规则，帮你处理每次工具审批；不确定时仍会询问你",
         "fullAccess": "完全访问权限",
         "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
         "fullAccessWarning": {
@@ -1000,6 +1870,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "图片：单张最大 {{limit}}M",
+      "fileLimitTooltip": "文件：单个最大 {{limit}}M",
+      "countLimitTooltip": "每条消息最多 {{limit}} 个附件",
       "unnamedFile": "未命名文件",
       "unsupportedFileType": "文件类型不支持：{{name}}",
       "fileSizeExceeded": "文件大小超出限制：{{name}}（最大{{limit}}）",
@@ -1080,7 +1953,9 @@
     "approvalInputPlaceholder": "填写修改意见后点击「下一步」；留空点击「跳过」"
   },
   "persistSession": {
-    "textRequired": "请在 /persist 后输入任务内容"
+    "textRequired": "请在 /persist 后输入任务内容",
+    "toolbarTag": "永续会话",
+    "closeTag": "隐藏永续会话标记"
   },
   "crossSession": {
     "messageBadge": "来自会话：{{title}}"
@@ -1206,7 +2081,7 @@
     "status": {
       "label": "状态",
       "enabled": "已启用",
-      "disabled": "已禁用",
+      "disabled": "已关闭",
       "expired": "已过期"
     },
     "skillnet": {
@@ -1246,6 +2121,9 @@
       "discord": "是否启用 Discord 频道；关闭后停止接收和发送消息，但保留已有配置。",
       "slack": "是否启用 Slack 频道；关闭后保留已有配置。",
       "whatsapp": "是否启用 WhatsApp 频道；关闭后保留已有配置。"
+    },
+    "availability": {
+      "xiaoyi": "小艺暂不支持定时任务和文件发送。"
     },
     "configurationGuide": "配置方法",
     "addConfiguration": "添加配置",
@@ -1396,7 +2274,7 @@
       "apiBaseUrlInvalid": "API Base URL 必须以 http:// 或 https:// 开头",
       "modelNameRequired": "模型名称为必填项，请先选择模型后再保存",
       "modelNameTooLong": "模型名称过长，请控制在 100 字符以内",
-      "aliasTooLong": "别名过长，请控制在 100 字符以内",
+      "aliasTooLong": "模型展示名称过长，请控制在 100 字符以内",
       "apiBaseTooLong": "API Base URL 过长，请控制在 512 字符以内"
     },
     "booleanLabels": {
@@ -1404,13 +2282,29 @@
       "externalCliCodex": "启用 Codex"
     },
     "externalCli": {
+      "customHint": "由上传的 provider 包接入；勾选“使用内置 CLI”时由 provider 自行选择 CLI。",
+      "customHintWithCli": "由上传的 provider 包接入；勾选“使用内置 CLI”时使用随包上传的 CLI。",
+      "toggleCustom": "启用 {{agent}}",
+      "addCustomAgent": "添加三方 Agent",
+      "addCustomAgentHint": "上传 openjiuwen harness provider 安装包（.whl），可选附带它驱动的 CLI 可执行文件。同名 Agent 会被替换。",
+      "customAgentWheel": "Provider 包（.whl）",
+      "customAgentCli": "CLI 可执行文件（可选）",
+      "noFileSelected": "未选择文件",
+      "upload": "上传并安装",
+      "uploading": "正在安装",
+      "uploadFailed": "安装失败",
+      "removeCustomAgent": "删除此 Agent",
+      "removeCustomAgentConfirm": "确认删除",
       "claude": "Claude",
       "codex": "Codex",
       "claudeHint": "SDK 未安装时将自动安装；CLI 可使用内置版本、系统 PATH 或指定路径。",
       "codexHint": "SDK 未安装时将自动安装；CLI 可使用内置版本、系统 PATH 或指定路径。",
       "useBuiltin": "使用内置 CLI",
       "detect": "检测",
-      "detectHint": "未填写路径时从系统 PATH 查找；填写路径后检测指定的 CLI 可执行文件并校验版本",
+      "toggleEnable": "启用/禁用 {{agent}}",
+      "detectHint": "检测 CLI 可执行文件并校验版本；未填写路径时从系统 PATH 查找",
+      "redetectHint": "重新检测当前 CLI 可执行文件并校验版本",
+      "installSucceeded": "安装完成",
       "selectFile": "选择文件",
       "selectFileTitle": "选择 {{agent}} 命令",
       "selectFileFailed": "选择文件失败",
@@ -1424,13 +2318,26 @@
       "statusUnsupported": "路径不可用",
       "statusUnavailable": "不可用",
       "version": "版本 {{version}}",
-      "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或勾选“使用内置 CLI”，改用默认启动方式。",
-      "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或勾选“使用内置 CLI”，改用默认启动方式。",
-      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或勾选“使用内置 CLI”。",
-      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或勾选“使用内置 CLI”。",
-      "missingPath": "路径不存在：{{path}}。请检查路径，或勾选“使用内置 CLI”。",
-      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或勾选“使用内置 CLI”。",
-      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或勾选“使用内置 CLI”。",
+      "installed": "已安装",
+      "notInstalled": "未安装",
+      "disabled": "已关闭",
+      "detecting": "检测中…",
+      "executablePath": "可执行文件路径",
+      "builtinPathPlaceholder": "内置 CLI（自动管理）",
+      "installNow": "一键安装",
+      "notInstalledHint": "暂未检测到SDK，请点击",
+      "removePath": "从历史记录中删除该路径",
+      "savedHint": "已保存",
+      "detectSucceeded": "检测成功",
+      "editPath": "编辑",
+      "openFile": "打开文件",
+      "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或点击“一键安装”改用内置 CLI。",
+      "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或点击“一键安装”改用内置 CLI。",
+      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或取消后点击“一键安装”使用内置 CLI。",
+      "missingPath": "路径不存在：{{path}}。请检查路径，或取消后点击“一键安装”使用内置 CLI。",
+      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或取消后点击“一键安装”使用内置 CLI。",
+      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或取消后点击“一键安装”使用内置 CLI。",
+      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或取消后点击“一键安装”使用内置 CLI。",
       "autoSaved": "{{agents}} 依赖安装完成，已自动保存您的配置。",
       "installDialogTitle": "安装可选组件",
       "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，您的配置将自动保存。",
@@ -1441,8 +2348,6 @@
       "installRetry": "下载异常，正在重试（{{current}}/{{total}}）",
       "installSwitchingSource": "正在使用备用下载源",
       "installRunInBackground": "后台运行",
-      "installInProgress": "{{agents}} 正在安装，可随时查看进度。",
-      "installViewProgress": "查看进度",
       "claudeCodex": "Claude / Codex",
       "installPhase": {
         "idle": "等待安装",
@@ -1701,6 +2606,7 @@
       "web": "网页 (web)",
       "tui": "终端 (tui)",
       "xiaoyi": "小艺 (xiaoyi)",
+      "xiaoyiUnsupported": "小艺（暂不支持）",
       "feishu": "飞书 (feishu)",
       "dingtalk": "钉钉 (dingtalk)",
       "whatsapp": "WhatsApp (whatsapp)",
@@ -1763,7 +2669,28 @@
       "reload": "刷新",
       "stop": "停止",
       "addressPlaceholder": "输入网址或搜索",
-      "unavailable": "内置浏览器不可用"
+      "unavailable": "内置浏览器不可用",
+      "downloadContent": "下载内容"
+    },
+    "downloads": {
+      "recentTitle": "最近的下载记录",
+      "empty": "暂无下载记录",
+      "downloading": "正在下载",
+      "paused": "已暂停",
+      "cancelled": "已取消",
+      "failed": "下载失败",
+      "justNow": "刚刚",
+      "minutesAgo": "{{count}} 分钟前",
+      "hoursAgo": "{{count}} 小时前",
+      "daysAgo": "{{count}} 天前",
+      "close": "关闭下载记录",
+      "openFile": "打开",
+      "showInFolder": "在文件夹中显示",
+      "fileDeleted": "已删除",
+      "removeRecord": "从列表中移除",
+      "pauseDownload": "暂停下载",
+      "resumeDownload": "继续下载",
+      "cancelDownload": "取消下载"
     }
   },
   "logsPanel": {
@@ -2115,11 +3042,6 @@
       "added": "已添加技能",
       "builtin": "内置技能",
       "skillPack": "技能包"
-    },
-    "publishFilter": {
-      "all": "全部",
-      "published": "已发布",
-      "unpublished": "未发布"
     },
     "skillTypes": {
       "skill": "技能包",
@@ -2761,7 +3683,14 @@
     "title": "专家管理",
     "subtitle": "创建并管理专家，快速复用专家资产",
     "tabsLabel": "专家管理分类",
-    "tabs": { "catalog": "专家广场", "teams": "专家团广场", "mine": "我的专家", "mineAgent": "专家", "mineGroup": "专家团", "mineLabel": "我的资产类型" },
+    "tabs": {
+      "catalog": "专家广场",
+      "teams": "专家团广场",
+      "mine": "我的专家",
+      "mineAgent": "专家",
+      "mineGroup": "专家团",
+      "mineLabel": "我的资产类型"
+    },
     "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
     "categoryLabel": "专家分类",
     "categoryAll": "全部",
@@ -2813,7 +3742,8 @@
       "updating": "保存中…"
     },
     "confirm": {
-      "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。"
+      "deleteMessage": "确定要删除专家「{{name}}」吗？此操作不可恢复。",
+      "uninstallGroupMessage": "确定要卸载专家团「{{name}}」吗？"
     },
     "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作", "moreTagsTooltip": "更多标签：{{tags}}" },
     "states": {
@@ -2834,10 +3764,12 @@
       "connectionUnavailable": "依赖的连接器尚未连接，请先连接后再使用",
       "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
       "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
+      "uploadImportedInstallFailed": "专家包 {{id}} 已导入，但安装失败，请在我的专家中重试安装",
       "uploadError": "上传并导入专家失败，请检查文件后重试",
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",
       "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
+      "uploadSkillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径",
       "newVersion": "该专家有新版本，可更新",
       "teamUnavailable": "专家团管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
@@ -2891,6 +3823,9 @@
       "charCount": "{{count}}/{{max}}",
       "tagLabel": "领域标签（可选）",
       "tagPlaceholder": "请选择领域标签",
+      "useExternalHarness": "使用三方 Harness",
+      "useExternalHarnessHint": "支持创建以 Claude、Codex 为内核的第三方专家",
+      "externalHarnessProvider": "Harness 类型",
       "toggleTags": "展开或收起领域标签",
       "tagScrollPrev": "向左查看领域标签",
       "tagScrollNext": "向右查看领域标签",
@@ -2993,7 +3928,7 @@
         "membersInvalid": "专家团成员信息无效，请选择唯一的负责人和成员。",
         "memberUnavailable": "所选专家不可用或不兼容团队。",
         "packageValidationError": "专家团包校验失败：{{reason}}",
-        "createSuccess": "专家团包 {{id}} 已创建。",
+        "createSuccess": "专家团「{{name}}」已创建。",
         "uploadSuccess": "专家团包 {{id}} 已导入，请在我的专家团中查看。",
         "uploadError": "专家团包导入失败，请检查文件后重试。",
         "catalogEmpty": "暂无可展示的专家团",
@@ -3103,6 +4038,7 @@
     "messageQueue": "消息队列",
     "crossSessionMessageQueue": "跨会话消息",
     "localMessageQueue": "本地消息",
+    "turnStarting": "正在启动…",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",
@@ -3158,6 +4094,7 @@
       }
     },
     "toolResult": {
+      "answersInSummary": "请查看问题澄清卡片中的回答，敏感输入已隐藏。",
       "success": "完成",
       "failed": "失败",
       "timeout": "执行超时",
@@ -3242,7 +4179,7 @@
           "manual": "人工审批",
           "system": "系统权限检查"
         },
-        "risk": "风险",
+        "risk": "工具能力风险",
         "riskValues": {
           "critical": "严重",
           "high": "高",
@@ -3250,7 +4187,7 @@
           "low": "低",
           "unknown": "未知"
         },
-        "reason": "原因",
+        "reason": "本次审批依据",
         "reasonValues": {
           "approved": "权限审查已允许此操作。",
           "denied": "权限审查已拒绝此操作。",
@@ -3305,6 +4242,23 @@
     "export": "导出长图",
     "exporting": "正在导出长图...",
     "generating": "正在生成",
+    "preparing": "准备导出",
+    "preparingDocument": "正在排版",
+    "loadingHistory": "正在读取对话",
+    "openExportTab": "打开导出页",
+    "renderingProgress": "生成图片 {{percent}}%",
+    "saving": "准备下载",
+    "savingDesktop": "准备保存",
+    "downloadStartFailed": "浏览器未开始下载。图片已保留，请再次点击导出重试下载。",
+    "statusTimeout": "查询导出状态超时，请检查网络后重试。",
+    "statusReconnecting": "正在重新连接导出进度",
+    "downloading": "正在下载",
+    "downloadInterrupted": "下载中断。图片已保留，请再次点击导出重试下载。",
+    "desktopRestartRequired": "桌面导出功能已更新，请完整退出并重新启动应用后再导出。",
+    "browserExportNotice": "正在生成长图，请保持此页签打开。",
+    "popupBlocked": "无法打开导出页签，请允许弹出窗口后重试。",
+    "browserTabClosed": "导出页签已关闭，长图生成已取消。",
+    "exportStopped": "导出页已关闭，会话「{{sessionTitle}}」的导出已停止，可重新导出。",
     "exportUnavailable": "会话结束后可导出长图",
     "exportFailed": "导出长图失败",
     "mainConversation": "正文对话",
@@ -3340,6 +4294,7 @@
     "wsError": "WebSocket 连接异常",
     "connectionClosedWithCode": "连接已关闭 ({{code}})",
     "connectionClosed": "连接已关闭",
+    "workerExecutionInterrupted": "运行进程已重启，原任务已中断。请检查执行结果后重新发起。",
     "connectionUnavailable": "连接不可用",
     "requestTimeout": "请求超时",
     "requestAborted": "请求已取消",
@@ -3349,6 +4304,7 @@
     "pauseFailed": "暂停失败",
     "cancelFailed": "取消失败",
     "supplementFailed": "补充失败",
+    "supplementAttachmentsUnsupported": "带附件的消息无法插队发送，请先点击“编辑”移除附件后再发送。",
     "resumeFailed": "恢复失败",
     "submitAnswerFailed": "提交回答失败",
     "unknownError": "未知错误",
@@ -3386,6 +4342,7 @@
     "pipRestart": "立即重启",
     "restoreDefaults": "恢复默认更新源",
     "currentVersion": "当前版本",
+    "builtOn": "构建于",
     "latestVersion": "最新版本",
     "state": "更新状态",
     "publishedAt": "发布时间",
@@ -3581,7 +4538,9 @@
         "archiveFailed": "归档操作失败，请稍后重试",
         "projectNameConflict": "已有同名项目占用了该名称，无法恢复项目。请先重命名同名项目。",
         "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
-        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。"
+        "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。",
+        "archiveSessionFinalizing": "会话正在收尾，请稍后重试归档。",
+        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -3777,6 +4736,7 @@
       "runtimeMissing": "该连接器依赖的运行环境缺失，请先安装对应运行环境后再使用",
       "runtimeMissingNamed": "该连接器依赖 {{runtime}} 运行环境，请先安装 {{runtime}} 后再使用",
       "installNetwork": "依赖下载失败，请检查网络连接后重试",
+      "installScriptDep": "CLI 安装脚本需要 PowerShell 环境，请先启用或恢复 PowerShell 后重试",
       "cliIncomplete": "CLI 安装不完整或版本过低，请重新连接以重试",
       "cliIncompleteNamed": "CLI 安装不完整或版本过低，请手动执行以下命令安装或升级后重试：{{command}}"
     },
@@ -3869,7 +4829,8 @@
     "tokenModal": {
       "title": "连接 {{name}}",
       "placeholder": "粘贴你的{{name}}API Key",
-      "saveAndConnect": "保存并连接"
+      "saveAndConnect": "保存并连接",
+      "oauthAuthorize": "一键授权"
     },
     "cliAuth": {
       "title": "连接 {{name}}",
@@ -3913,7 +4874,8 @@
       "invalidType": "仅支持 .zip / .tar 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
-      "missingReadme": "插件包缺少 README.md 文件"
+      "missingReadme": "插件包缺少 README.md 文件",
+      "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
     },
     "common": {
       "back": "返回",
@@ -4129,6 +5091,7 @@
       "feature2Body": "把你的成品（论文 / 程序）交给 AI 反复打磨：生成多个优化候选，逐版检验评分，保留最好的一版继续迭代，直到产出最满意的那一版再交付给你。经过多轮打磨自动完成，质量稳步上升"
     },
     "list": {
+      "title": "RSI自进化实验",
       "loading": "加载中…",
       "error": "加载实验列表失败"
     },
@@ -4220,7 +5183,10 @@
       "nodeHint": "节点展示每轮候选、阶段和评测结果；点击节点查看完整信息",
       "harnessNodeHint": "节点代表一套 Harness 组合；点击节点查看本轮改动和评测结果",
       "paperNodeHint": "节点代表一个论文版本；点击节点查看改动、阶段和未采用原因",
-      "programNodeHint": "节点代表一个程序候选；并行候选会标注尝试序号",
+      "programNodeHint": "并行候选按完成顺序出现；候选达标后停止搜索，已在评测的候选可能稍后完成",
+      "prunedReason": "剪枝原因",
+      "skippedReason": "跳过原因",
+      "viewDetail": "查看详情",
       "estimatedCost": "实际估算成本：{{cost}} 元",
       "selectedNode": "当前选中",
       "inherit": "继承",
@@ -4303,6 +5269,16 @@
       "scoreSuffix": " · 得分 {{score}}"
     }
     },
+  "teamDispatch": {
+    "toggleLabel": "调度模式",
+    "toggleHint": "开启后 Leader 将每个任务指派给具名成员；关闭则由成员自主认领任务",
+    "readonlyHint": "团队已启动，调度模式不可修改"
+  },
+  "teamBootstrap": {
+    "toggleLabel": "启动即建队",
+    "toggleHint": "开启后会话一开始由系统建好一个通用团队，Leader 直接按任务创建成员，无需先调用 build_team",
+    "readonlyHint": "团队已启动，建队方式不可修改"
+  },
   "swarmflow": {
     "statusPlanned": "已规划",
     "statusPending": "等待中",
@@ -4349,6 +5325,7 @@
     "verifyReviewing": "评审中…",
     "verifyReviewingShort": "评审中",
     "verifyPass": "✓ 通过",
+    "expertIdentity": "专家：{{name}}（{{template}}）",
     "verifyFail": "✗ 不通过",
     "verifyUndecided": "? 未裁决",
     "verifyThreshold": "阈值 {{count}}",
@@ -4359,12 +5336,42 @@
     "verifyRound": "第{{count}}轮 · {{verdict}}",
     "verifyGroupTitle": "verify 组 · {{label}}",
     "verifyReviewersPending": "{{names}} 评审中…",
+    "sectionCallRecords": "活动",
+    "sectionToolCalls": "工具调用",
     "sectionInput": "输入",
     "sectionOutput": "输出",
     "sectionHumanPrompt": "人工提问",
     "sectionHumanReply": "人工回复",
     "sectionError": "错误",
     "charUnit": "字符",
-    "clickToViewDetail": "点击查看详情"
+    "clickToViewDetail": "点击查看详情",
+    "runIdTooltip": "运行 ID：{{id}}"
+  },
+  "a4pSettings": {
+    "title": "A4P 预授权",
+    "enableTitle": "启用 A4P 预授权",
+    "description": "允许批量预授权当前会话和定时任务所需的权限。开启后，定时任务运行时也接入权限审批。仅在“默认权限”模式下生效。"
+  },
+  "a4pAuthorization": {
+    "expandParams": "展开 {{name}} 的参数",
+    "collapseParams": "收起 {{name}} 的参数",
+    "permissionScope": "授权范围",
+    "selectedCount": "已选 {{selected}} / {{total}} 项",
+    "readyRange": "将按所选权限授权",
+    "emptySelection": "请至少选择一项权限，或拒绝本次授权",
+    "title": "A4P 预授权确认",
+    "reason": "授权原因",
+    "defaultReason": "为以下工具操作申请预授权。",
+    "tools": {
+      "bash": "执行 Shell 命令",
+      "mcpExecCommand": "执行命令",
+      "createTerminal": "创建终端",
+      "writeFile": "写入文件",
+      "editFile": "编辑文件",
+      "acpChat": "与 Agent 对话"
+    },
+    "reject": "拒绝",
+    "approve": "授权",
+    "waiting": "处理中..."
   }
 }

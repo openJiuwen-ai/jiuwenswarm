@@ -51,7 +51,7 @@
 | --- | --- |
 | 多智能体协作 | 复杂任务不再是一个 Agent 的战场：Leader 自动拆解任务、组建团队，多个 Agent 专业分工、动态协商 |
 | 分布式 Agent Swarm | 突破单机算力瓶颈：Leader/Teammate 跨进程、跨机器部署，多机协同处理大规模任务 |
-| Swarmflow | 用 Python 工作流脚本做确定性多阶段编排：Leader 驱动各阶段 Agent 衔接；支持 **HITL**（`human` / `human_session`）、**Team token 预算**与 TUI **`/swarmflows`** 运行树监控 |
+| Swarmflow | 用 Python 工作流脚本做确定性多阶段编排：Leader 驱动各阶段 Agent 衔接；支持 **HITL**（`human` / `human_session`）、**Team token 预算**、TUI **`/swarmflows`** 运行树监控，以及 worker 可选开启的**渐进式工具暴露**（`swarmflow_progressive_tool`） |
 | Skill 自演进 | 能力越用越强而非越跑越僵：执行出错或用户不满时自动检测信号、优化 Skill 定义 |
 | Skill Hub 流通 | 能力资产一次沉淀、处处复用：Skill 在开发者之间搜索、安装、组合与二次创作 |
 | Auto Harness | 评测驱动、端到端自动优化 Harness：不是训练模型权重，而是让 Harness 在实战中自动学习、自动优化 |

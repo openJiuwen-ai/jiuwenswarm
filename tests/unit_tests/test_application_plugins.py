@@ -8,20 +8,20 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jiuwenswarm.extensions.application_host import (
+from gateway.extensions.application_host import (
     application_plugin_manifest,
     iter_websocket_routes,
     mount_application_plugin_http_routes,
 )
-from jiuwenswarm.extensions.loader import ExtensionLoader
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.loader import ExtensionLoader
+from gateway.extensions.registry import ExtensionRegistry
+from gateway.extensions.types import ExtensionMetadata
 from jiuwenswarm.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
     FrontendContribution,
     WebSocketRouteContribution,
 )
-from jiuwenswarm.extensions.types import ExtensionMetadata
 
 
 class _FakeChannel:
@@ -114,26 +114,29 @@ def _registry() -> ExtensionRegistry:
     return ExtensionRegistry(MagicMock(), {}, MagicMock())
 
 
-def test_application_plugin_core_services_are_explicitly_injected() -> None:
+@pytest.mark.asyncio
+async def test_application_plugin_core_services_are_explicitly_injected() -> None:
     client = object()
     normalized: list[tuple[dict[str, Any], str | None]] = []
+
+    async def _normalizer(params, session_id):
+        normalized.append((params, session_id))
+
     services = ApplicationPluginServices(
         agent_client=client,
-        media_attachment_normalizer=lambda params, session_id: normalized.append(
-            (params, session_id)
-        ),
+        media_attachment_normalizer=_normalizer,
     )
 
     assert services.require_agent_client() is client
     params = {"media_items": []}
-    services.normalize_media_attachments(params, "session-1")
+    await services.normalize_media_attachments(params, "session-1")
     assert normalized == [(params, "session-1")]
 
     unavailable = ApplicationPluginServices()
     with pytest.raises(RuntimeError, match="Core Agent service"):
         unavailable.require_agent_client()
     with pytest.raises(RuntimeError, match="media attachment service"):
-        unavailable.normalize_media_attachments({}, "session-1")
+        await unavailable.normalize_media_attachments({}, "session-1")
 
 
 @pytest.mark.asyncio

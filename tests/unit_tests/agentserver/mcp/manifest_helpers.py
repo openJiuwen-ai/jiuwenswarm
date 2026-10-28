@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
@@ -38,3 +39,30 @@ def write_manifest(
             credentials["file"] = "token-schema.json"
         manifest["credentials"] = credentials
     (package / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def write_canva_oauth_package(package: Path, *, legacy_header: bool = False) -> Path:
+    """Create a synthetic OAuth fixture, not a distributable Canva connector."""
+    package.mkdir(parents=True)
+    server = {"type": "streamable-http", "url": "https://mcp.canva.cn/mcp", "timeout": 600}
+    if legacy_header:
+        server["headers"] = {"Authorization": "Bearer ${OAUTH_ACCESS_TOKEN}"}
+    (package / "mcp.json").write_text(
+        json.dumps({"mcpServers": {package.name: server}}), encoding="utf-8"
+    )
+    write_manifest(package, "remote-mcp", credentials_type="oauth")
+    path = package / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["icon"] = "icon.png"
+    manifest["skills"] = [{"dir": "skills/canva-guide", "mode": "all"}]
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    (package / "icon.png").write_bytes(base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAACklEQVR4nGMAAQAABQABDQottAAAAABJRU5ErkJggg=="
+    ))
+    skill = package / "skills/canva-guide/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "---\nname: mock-canva\ndescription: Synthetic OAuth test skill\n---\n# Mock Canva\n",
+        encoding="utf-8",
+    )
+    return package

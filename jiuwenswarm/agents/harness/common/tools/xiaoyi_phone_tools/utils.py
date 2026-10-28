@@ -16,7 +16,7 @@ from typing import Any, Dict, Optional
 
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.runtime.host_services import get_runtime_xiaoyi_channel
+from jiuwenswarm.common.host_services import get_runtime_xiaoyi_channel
 
 
 def _is_data_event_status_success(status: Any) -> bool:

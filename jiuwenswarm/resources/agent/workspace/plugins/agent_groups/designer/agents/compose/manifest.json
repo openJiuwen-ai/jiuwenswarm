@@ -1,0 +1,42 @@
+{
+  "package_type": "agent_template",
+  "name": "compose",
+  "display_name": {
+    "zh": "成片合成师",
+    "en": "Compose Editor"
+  },
+  "description": "按分镜顺序把镜头合成为成片，并交回视频产物。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/read_node_context.py",
+      "class": "ReadNodeContext"
+    },
+    {
+      "file": "tools/generate_compose.py",
+      "class": "GenerateCompose"
+    },
+    {
+      "file": "tools/submit_node_output.py",
+      "class": "SubmitNodeOutput"
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/node_guard.py",
+      "class": "NodeGuardRail"
+    }
+  ],
+  "skills": [
+    {
+      "dir": "skills/compose",
+      "mode": "all"
+    }
+  ],
+  "metadata": {
+    "node_type": "compose",
+    "output_kind": "video"
+  }
+}

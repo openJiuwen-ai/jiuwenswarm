@@ -110,11 +110,13 @@ def normalize_chat_media_attachments(params: dict[str, Any], session_id: str | N
         return
 
     stored: list[dict[str, Any]] = []
-    for index, item in enumerate(raw_items[:_MAX_IMAGE_COUNT]):
+    for index, item in enumerate(raw_items):
         if not isinstance(item, dict):
             continue
         if item.get("type") != "image":
             continue
+        if len(stored) >= _MAX_IMAGE_COUNT:
+            break
         stored_item = _store_image_item(item, session_id=session_id, index=index)
         if stored_item:
             stored.append(stored_item)

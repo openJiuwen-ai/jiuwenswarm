@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from jiuwenswarm.runtime.session.model import (
+    ExecutionLifecycleContext,
+    SessionLifecycleContext,
+)
+
 
 class SessionKind(str, Enum):
     """Stable business kind used by lifecycle participants."""
@@ -164,9 +169,46 @@ class RuntimeResourceLease(Protocol):
         ...
 
 
+class SessionRuntimeLifecyclePort(Protocol):
+    """Define Team-domain lifecycle actions orchestrated by AgentRuntime."""
+
+    async def remove_response_waiter(
+        self,
+        context: ExecutionLifecycleContext,
+        *,
+        reason: str,
+    ) -> None:
+        """Remove the response waiter owned by the current request."""
+        ...
+
+    async def pause_session(
+        self,
+        context: SessionLifecycleContext,
+        *,
+        reason: str,
+        channel_id: str | None = None,
+    ) -> None:
+        """Pause one Team Session generation."""
+        ...
+
+    async def stop_session(
+        self,
+        context: SessionLifecycleContext,
+        *,
+        reason: str,
+    ) -> None:
+        """Stop one Team Session generation."""
+        ...
+
+    def is_running(self, context: SessionLifecycleContext) -> bool:
+        """Return whether one Team generation owns active work."""
+        ...
+
+
 __all__ = [
     "RuntimeParticipantRegistry",
     "RuntimeResourceLease",
+    "SessionRuntimeLifecyclePort",
     "SessionActivityParticipant",
     "SessionDeleteParticipant",
     "SessionDescriptor",

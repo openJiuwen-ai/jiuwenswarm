@@ -20,6 +20,12 @@
 //   （image-01 → /v1/image_generation；MiniMax-H3 → /v2/video_generation），后端由
 //   gen_toolkits.py 处理。MiniMax 的密钥分区域（国际 api.minimax.io / 国内
 //   api.minimaxi.com），所以这个厂商的 API 地址需要用户能改。
+// - DashScope（阿里云百炼）：协议固定为 dashscope，走百炼原生的 /api/v1 接口
+//   （qwen-image → multimodal-generation；wan → video-synthesis 异步任务），后端由
+//   gen_toolkits.py 处理。对话预设的地址是 OpenAI 兼容的 compatible-mode，这里改用
+//   /api/v1；密钥分区域（国内 dashscope / 国际 dashscope-intl），地址需要能改。
+// - vLLM-Omni：协议固定为 vllm-omni，自部署的推理服务，没有固定地址；API key 和模型名
+//   都可以留空（模型名留空时后端用服务实际加载的模型）。
 
 export type GenerationSlot = 'video_gen' | 'visual_gen';
 
@@ -27,6 +33,10 @@ export type GenerationModel = { model: string; protocol: string };
 
 export const MINIMAX_PROTOCOL = 'minimax';
 export const MODELARK_PROTOCOL = 'modelark';
+export const DASHSCOPE_PROTOCOL = 'dashscope';
+export const VLLM_OMNI_PROTOCOL = 'vllm-omni';
+
+const DASHSCOPE_API_BASE = 'https://dashscope.aliyuncs.com/api/v1';
 
 const OPENROUTER_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: [
@@ -74,22 +84,20 @@ const MINIMAX_MODELS: Record<GenerationSlot, readonly string[]> = {
   visual_gen: ['image-01'],
 };
 
+// 供旧配置的协议识别及自定义目录使用；选择火山时的下拉列表从 Ark API 动态获取。
 const MODELARK_MODELS: Record<GenerationSlot, readonly string[]> = {
-  video_gen: [
-    'dreamina-seedance-2-5-260628',
-    'dreamina-seedance-2-0-260128',
-    'dreamina-seedance-2-0-fast-260128',
-    'dreamina-seedance-2-0-mini-260615',
-    'seedance-1-0-pro-250528',
-    'seedance-1-0-pro-fast-251015',
-  ],
-  visual_gen: [
-    'dola-seedream-5-0-pro-260628',
-    'dola-seedream-5-0-flash-260915',
-    'seedream-5-0-260128',
-    'seedream-4-5-251128',
-    'seedream-4-0-250828',
-  ],
+  video_gen: ['doubao-seedance-2-5-260628'],
+  visual_gen: ['doubao-seedream-5-0-flash-260915'],
+};
+
+const DASHSCOPE_MODELS: Record<GenerationSlot, readonly string[]> = {
+  video_gen: ['wan3.0-video', 'wan3.0-video-prime'],
+  visual_gen: ['qwen-image-3.0', 'qwen-image-3.0-pro'],
+};
+
+const VLLM_OMNI_MODELS: Record<GenerationSlot, readonly string[]> = {
+  video_gen: ['MiniMaxAI/MiniMax-H3'],
+  visual_gen: ['Qwen/Qwen-Image-2512', 'black-forest-labs/FLUX.2-dev'],
 };
 
 function openRouterModelProtocol(modelId: string): string {
@@ -97,19 +105,25 @@ function openRouterModelProtocol(modelId: string): string {
   return slash > 0 ? modelId.slice(0, slash) : '';
 }
 
-const CATALOG: Record<'openrouter' | 'minimax' | 'modelark', Record<GenerationSlot, readonly GenerationModel[]>> = {
+function withProtocol(models: Record<GenerationSlot, readonly string[]>, protocol: string) {
+  return {
+    video_gen: models.video_gen.map((model) => ({ model, protocol })),
+    visual_gen: models.visual_gen.map((model) => ({ model, protocol })),
+  };
+}
+
+const CATALOG: Record<
+  'openrouter' | 'minimax' | 'modelark' | 'dashscope' | 'vllm-omni',
+  Record<GenerationSlot, readonly GenerationModel[]>
+> = {
   openrouter: {
     video_gen: OPENROUTER_MODELS.video_gen.map((model) => ({ model, protocol: openRouterModelProtocol(model) })),
     visual_gen: OPENROUTER_MODELS.visual_gen.map((model) => ({ model, protocol: openRouterModelProtocol(model) })),
   },
-  minimax: {
-    video_gen: MINIMAX_MODELS.video_gen.map((model) => ({ model, protocol: MINIMAX_PROTOCOL })),
-    visual_gen: MINIMAX_MODELS.visual_gen.map((model) => ({ model, protocol: MINIMAX_PROTOCOL })),
-  },
-  modelark: {
-    video_gen: MODELARK_MODELS.video_gen.map((model) => ({ model, protocol: MODELARK_PROTOCOL })),
-    visual_gen: MODELARK_MODELS.visual_gen.map((model) => ({ model, protocol: MODELARK_PROTOCOL })),
-  },
+  minimax: withProtocol(MINIMAX_MODELS, MINIMAX_PROTOCOL),
+  modelark: withProtocol(MODELARK_MODELS, MODELARK_PROTOCOL),
+  dashscope: withProtocol(DASHSCOPE_MODELS, DASHSCOPE_PROTOCOL),
+  'vllm-omni': withProtocol(VLLM_OMNI_MODELS, VLLM_OMNI_PROTOCOL),
 };
 
 export type GenerationVendor = keyof typeof CATALOG;
@@ -117,14 +131,50 @@ export type GenerationVendor = keyof typeof CATALOG;
 export const DEFAULT_GENERATION_MODEL: Record<GenerationVendor, Record<GenerationSlot, string>> = {
   openrouter: { video_gen: 'bytedance/seedance-2.0-fast', visual_gen: 'google/gemini-3.1-flash-image' },
   minimax: { video_gen: 'MiniMax-H3', visual_gen: 'image-01' },
-  modelark: { video_gen: 'dreamina-seedance-2-5-260628', visual_gen: 'dola-seedream-5-0-pro-260628' },
+  modelark: { video_gen: 'doubao-seedance-2-5-260628', visual_gen: 'doubao-seedream-5-0-flash-260915' },
+  dashscope: { video_gen: 'wan3.0-video', visual_gen: 'qwen-image-3.0' },
+  // 模型名可空：默认留空，由后端使用服务实际加载的模型。
+  'vllm-omni': { video_gen: '', visual_gen: '' },
 };
 
 /** 这些厂商的密钥分区域，API 地址需要能改（选完厂商后填入预设地址，用户可改成另一区域）。 */
-const REGIONAL_VENDORS: readonly string[] = ['minimax', 'volcengine'];
+const REGIONAL_VENDORS: readonly string[] = ['minimax', 'volcengine', 'alibaba'];
+
+/** 自部署厂商：没有固定地址，预设地址只是默认值。 */
+const SELF_HOSTED_VENDORS: readonly string[] = ['vllm-omni'];
 
 export function isRegionalVendor(vendorKey: string | undefined): boolean {
   return !!vendorKey && REGIONAL_VENDORS.includes(vendorKey);
+}
+
+/** API 地址要让用户填/改的厂商：分区域的厂商和自部署厂商。 */
+export function isEditableBaseVendor(vendorKey: string | undefined): boolean {
+  return isRegionalVendor(vendorKey) || (!!vendorKey && SELF_HOSTED_VENDORS.includes(vendorKey));
+}
+
+/** 生成用的默认地址：百炼的对话预设是 compatible-mode（或 Token/Coding Plan 专属域名），生成走原生 /api/v1。 */
+export function generationApiBase(vendorKey: string | undefined, presetBase: string): string {
+  return vendorKey === 'alibaba' ? DASHSCOPE_API_BASE : presetBase;
+}
+
+/** Ark generation and discovery share the regular official regional API, excluding Coding Plan. */
+export function isArkGenerationApiBase(apiBase: string): boolean {
+  const match = /^https:\/\/ark\.[\w-]+\.(?:volces\.com|bytepluses\.com)(\/.*)?$/i.exec(
+    apiBase.trim().replace(/\/+$/, ''),
+  );
+  return Boolean(match && (!match[1] || match[1] === '/api/v3'));
+}
+
+/** vLLM-Omni 自部署服务可以不鉴权，模型名留空时用服务实际加载的模型。 */
+export function credentialsOptional(protocol: string): boolean {
+  return protocol.trim() === VLLM_OMNI_PROTOCOL;
+}
+
+/** 生成槽位是否配置完整：vLLM-Omni 只要求地址，其余还要求 API key 和模型名。 */
+export function isGenerationSlotConfigured(values: Readonly<Record<string, unknown>>, slot: GenerationSlot): boolean {
+  const read = (suffix: string) => String(values[`${slot}_${suffix}`] ?? '').trim();
+  if (!['provider', 'protocol', 'api_base'].every(read)) return false;
+  return credentialsOptional(read('protocol')) || Boolean(read('api_key') && read('model'));
 }
 
 // 后端只接受固定的 provider 名称（ProviderType，如 OpenAI / OpenRouter / MiniMax /
@@ -134,6 +184,7 @@ const PROVIDER_NAMES: Record<string, string> = {
   openrouter: 'OpenRouter',
   minimax: 'MiniMax',
   volcengine: 'VolcEngine',
+  alibaba: 'DashScope',
 };
 
 /** 保存到 *_provider 的值：已知厂商用对应的 ProviderType；其余用预设的 client_provider，
@@ -144,7 +195,10 @@ export function generationProviderName(vendorKey: string | undefined, clientProv
 
 /** 区域提示文案的 i18n key（不同厂商的区域地址不同）。 */
 export function regionalHintKey(vendorKey: string | undefined): string {
-  return vendorKey === 'volcengine' ? 'settingsPanel.agent.regionalBaseHintModelark' : 'settingsPanel.agent.regionalBaseHint';
+  if (vendorKey === 'volcengine') return 'settingsPanel.agent.regionalBaseHintModelark';
+  if (vendorKey === 'alibaba') return 'settingsPanel.agent.regionalBaseHintDashscope';
+  if (vendorKey === 'vllm-omni') return 'settingsPanel.agent.selfHostedBaseHintVllmOmni';
+  return 'settingsPanel.agent.regionalBaseHint';
 }
 
 const HOST = /^https?:\/\/([^/:]+)/i;
@@ -153,10 +207,13 @@ const HOST = /^https?:\/\/([^/:]+)/i;
 export function generationVendor(vendorKey: string | undefined, apiBase: string): GenerationVendor | undefined {
   if (vendorKey === 'openrouter' || vendorKey === 'minimax') return vendorKey;
   if (vendorKey === 'volcengine') return 'modelark';
+  if (vendorKey === 'alibaba') return 'dashscope';
+  if (vendorKey === 'vllm-omni') return 'vllm-omni';
   const host = (HOST.exec(apiBase.trim())?.[1] ?? '').toLowerCase();
   if (/(^|\.)openrouter\.ai$/.test(host)) return 'openrouter';
   if (/(^|\.)minimaxi?\.(io|com)$/.test(host)) return 'minimax';
   if (/^ark\.[\w-]+\.(bytepluses\.com|volces\.com)$/.test(host)) return 'modelark';
+  if (/^dashscope(-intl)?\.aliyuncs\.com$/.test(host)) return 'dashscope';
   return undefined;
 }
 
@@ -206,6 +263,8 @@ export function modelProtocol(
 }
 
 export function defaultGeneration(slot: GenerationSlot, vendor: GenerationVendor | undefined): { protocol: string; model: string } {
-  const model = DEFAULT_GENERATION_MODEL[vendor ?? 'openrouter'][slot];
-  return { protocol: modelProtocol(slot, vendor ?? 'openrouter', false, model), model: vendor ? model : '' };
+  const source = vendor ?? 'openrouter';
+  const model = DEFAULT_GENERATION_MODEL[source][slot];
+  const protocol = modelProtocol(slot, source, false, model) || (CATALOG[source][slot][0]?.protocol ?? '');
+  return { protocol, model: vendor ? model : '' };
 }

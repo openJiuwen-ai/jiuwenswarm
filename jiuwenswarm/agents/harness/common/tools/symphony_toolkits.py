@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
@@ -13,16 +13,20 @@ from jiuwenswarm.agents.harness.common.tool_progress_context import (
     current_tool_progress,
 )
 from jiuwenswarm.symphony.config import load_symphony_config
-from jiuwenswarm.symphony.service import (
-    SwarmSymphonyService,
-    get_swarm_symphony_service,
-)
+if TYPE_CHECKING:
+    from jiuwenswarm.symphony.service import SwarmSymphonyService
 from jiuwenswarm.symphony.llm import LLMConfig, current_request_llm_config
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_SERVICE_TIMEOUT_S = 1800.0
 _COMPOSE_SERVICE_TIMEOUT_S = 3300.0
+
+
+def get_swarm_symphony_service() -> SwarmSymphonyService:
+    """Resolve the optional service only when a real Symphony tool uses it."""
+    from jiuwenswarm.symphony.service import get_swarm_symphony_service as get_service
+    return get_service()
 
 
 def _coerce_compose_inputs(inputs: Any) -> Any:

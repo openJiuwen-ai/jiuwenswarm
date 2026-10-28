@@ -31,6 +31,12 @@ export interface AssistantMetricDetail {
   completedTime: number | null
   usageProvided: boolean
   outputTokens: number | null
+  /**
+   * False when the request itself was never observed: the harness rebuilt
+   * this inference from its reply alone, so the input is unknown and the
+   * output may be partial. Absent means observed.
+   */
+  inputObserved?: boolean
 }
 
 /** One source content block preserved in model order for the inspector. */

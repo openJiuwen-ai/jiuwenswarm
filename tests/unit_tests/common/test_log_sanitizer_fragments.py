@@ -1,0 +1,213 @@
+"""Regressions for wide logs containing many independent JSON fragments."""
+
+import json
+import logging
+import re
+import sys
+
+import pytest
+
+from jiuwenswarm.common import utils
+
+
+@pytest.mark.parametrize("fragment_count", [1100, 10000])
+def test_shallow_json_fragments_preserve_tail_without_recursion(fragment_count: int):
+    recursion_limit = sys.getrecursionlimit()
+    text = "[1, 2, 3] " * fragment_count + "完整末尾: finished"
+
+    sanitized = utils._sanitize_log_text(text)
+
+    assert sanitized == "[1,2,3] " * fragment_count + "完整末尾: finished"
+    assert sys.getrecursionlimit() == recursion_limit
+
+
+@pytest.mark.parametrize("failed_candidates", [31, 32])
+def test_candidate_limit_includes_the_32nd_start(failed_candidates: int):
+    prefix = "[invalid " * failed_candidates
+    fragment = '{"value": 42}'
+
+    sanitized = utils._sanitize_log_text(prefix + fragment)
+
+    expected = '{"value":42}' if failed_candidates == 31 else fragment
+    assert sanitized == prefix + expected
+
+
+def test_success_resets_candidate_limit():
+    segment = "[invalid " * 31 + '{"value": 42} '
+
+    sanitized = utils._sanitize_log_text(segment * 3 + "完整末尾")
+
+    assert sanitized == ("[invalid " * 31 + '{"value":42} ') * 3 + "完整末尾"
+
+
+def test_failed_candidates_preserve_prefix_and_absolute_unicode_offsets():
+    prefix = "中文前缀 {invalid [broken 继续 "
+    first = {"message": "括号 [ ] { }", "nested": [{"value": 17}]}
+    second = ["中文", {"value": 23}]
+    text = prefix + json.dumps(first, ensure_ascii=False) + " 中间 " + json.dumps(second) + " 完整末尾"
+
+    sanitized = utils._sanitize_log_text(text)
+
+    expected_first = {"message": "括号 [] {}", "nested": [{"value": 17}]}
+    assert sanitized == (
+        prefix + json.dumps(expected_first, ensure_ascii=False, separators=(",", ":"))
+        + " 中间 " + json.dumps(second, ensure_ascii=False, separators=(",", ":")) + " 完整末尾"
+    )
+
+
+def test_json_inside_string_keeps_nested_brackets_and_escaping():
+    inner = {"message": '中文 [括号] {以及} "引号"', "nested": [{"value": 42}]}
+    outer = {"message": "前缀 " + json.dumps(inner, ensure_ascii=False) + " 后缀"}
+
+    sanitized = json.loads(utils._sanitize_log_text(json.dumps(outer, ensure_ascii=False)))
+
+    assert sanitized == {
+        "message": "前缀 " + json.dumps(inner, ensure_ascii=False, separators=(",", ":")) + " 后缀"
+    }
+
+
+def _sdk_completion():
+    """Build the SDK response locally; no client or network is involved."""
+    from openai.types.chat import ChatCompletion
+
+    return ChatCompletion(
+        id="completion-fragment-regression",
+        created=1,
+        model="local-model",
+        object="chat.completion",
+        choices=[{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "完整回复末尾"},
+            "logprobs": {"content": [
+                {
+                    "token": f"piece-{index:03d}",
+                    "bytes": [65, index % 256],
+                    "logprob": -0.1,
+                    "top_logprobs": [
+                        {
+                            "token": f"alternative-{index:03d}-{alternative:02d}",
+                            "bytes": [66, index % 256, alternative],
+                            "logprob": -0.2,
+                        }
+                        for alternative in range(20)
+                    ],
+                }
+                for index in range(230)
+            ]},
+        }],
+    )
+
+
+def _assert_sdk_representation_complete(sanitized: str, original: str) -> None:
+    """Token strings follow existing masking rules; bytes arrays stay complete."""
+    arrays = re.findall(r"bytes=(\[[0-9, ]+\])", sanitized)
+    expected_arrays = re.findall(r"bytes=(\[[0-9, ]+\])", original)
+    assert len(arrays) == 230 * 21
+    assert [json.loads(array) for array in arrays] == [json.loads(array) for array in expected_arrays]
+    assert sanitized.count("ChatCompletionTokenLogprob(") == 230
+    assert sanitized.count("TopLogprob(") == 230 * 20
+    assert sanitized.count("logprob=-0.1") == original.count("logprob=-0.1") == 230
+    assert sanitized.count("logprob=-0.2") == original.count("logprob=-0.2") == 230 * 20
+    assert sanitized.endswith(original[original.rindex("]") + 1:])
+    expected_tokens = []
+    for index in range(230):
+        expected_tokens.append(utils._masked_with_fp(f"piece-{index:03d}"))
+        for alternative in range(20):
+            token = f"alternative-{index:03d}-{alternative:02d}"
+            expected_tokens.append(utils._masked_with_fp(token))
+    assert re.findall(r"token=(\*{6}\(fp:[0-9a-f]{8}\))", sanitized) == expected_tokens
+
+
+@pytest.mark.parametrize("outer_event", [False, True])
+def test_real_sdk_logprobs_representation_preserves_all_fragments(outer_event: bool):
+    representation = str(_sdk_completion())
+    secret = "local-only-credential"
+    message = representation + '\ncredentials=' + json.dumps({"api_key": secret})
+    if outer_event:
+        message = json.dumps({"event": "model_end", "output": message, "tail": "外层完整末尾"})
+
+    sanitized = utils._sanitize_log_text(message)
+
+    if outer_event:
+        event = json.loads(sanitized)
+        assert event["event"] == "model_end"
+        assert event["tail"] == "外层完整末尾"
+        sanitized = event["output"]
+    sdk_output, sensitive_json = sanitized.rsplit('\ncredentials=', 1)
+    _assert_sdk_representation_complete(sdk_output, representation)
+    assert json.loads(sensitive_json) == {"api_key": utils._masked_with_fp(secret)}
+    assert secret not in sanitized
+
+
+def test_source_record_factory_handles_shallow_fragments_and_restores_state():
+    fragment_count = 1100
+    secret = "source-local-only-credential"
+    message = json.dumps({
+        "event": "model_end",
+        "output": "[1, 2, 3] " * fragment_count + '\ncredentials=' + json.dumps({"api_key": secret}),
+        "tail": "外层完整末尾",
+    })
+    assert len(message) < 64 * 1024
+    recursion_limit = sys.getrecursionlimit()
+    factory = logging.getLogRecordFactory()
+    installed = utils._source_record_masking_installed
+    failures = utils._source_masking_failures
+    try:
+        logging.setLogRecordFactory(logging.LogRecord)
+        utils._source_record_masking_installed = False
+        utils.install_source_record_masking()
+
+        record = logging.getLogRecordFactory()(
+            "openai._base_client", logging.DEBUG, __file__, 1, "%s", (message,), None,
+        )
+
+        assert utils._source_masking_failures == failures
+        assert record.jiuwen_sensitive_sanitized is True
+        assert record.args == ()
+        event = json.loads(record.getMessage())
+        assert event["tail"] == "外层完整末尾"
+        fragments, sensitive_json = event["output"].rsplit('\ncredentials=', 1)
+        assert fragments == "[1,2,3] " * fragment_count
+        assert json.loads(sensitive_json) == {"api_key": utils._masked_with_fp(secret)}
+        assert secret not in record.getMessage()
+        assert sys.getrecursionlimit() == recursion_limit
+    finally:
+        logging.setLogRecordFactory(factory)
+        utils._source_record_masking_installed = installed
+        utils._source_masking_failures = failures
+
+
+def test_source_record_factory_omits_oversized_sdk_payload_and_restores_state():
+    secret = "oversized-source-local-only-credential"
+    message = json.dumps({
+        "event": "model_end",
+        "output": str(_sdk_completion()),
+        "credentials": {"api_key": secret},
+    })
+    assert len(message) > 64 * 1024
+    factory = logging.getLogRecordFactory()
+    installed = utils._source_record_masking_installed
+    failures = utils._source_masking_failures
+    try:
+        logging.setLogRecordFactory(logging.LogRecord)
+        utils._source_record_masking_installed = False
+        utils.install_source_record_masking()
+
+        record = logging.getLogRecordFactory()(
+            "openai._base_client", logging.DEBUG, __file__, 1, "%s", (message,), None,
+        )
+
+        assert utils._source_masking_failures == failures
+        assert record.jiuwen_sensitive_sanitized is True
+        assert record.args == ()
+        assert json.loads(record.getMessage()) == {
+            "log_payload_omitted": True,
+            "original_characters": len(message),
+            "character_limit": 64 * 1024,
+        }
+        assert secret not in record.getMessage()
+    finally:
+        logging.setLogRecordFactory(factory)
+        utils._source_record_masking_installed = installed
+        utils._source_masking_failures = failures

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.runtime import host_services
+from jiuwenswarm.common import host_services
 
 
 @pytest.fixture(autouse=True)

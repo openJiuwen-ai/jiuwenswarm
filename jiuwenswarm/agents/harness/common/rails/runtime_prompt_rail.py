@@ -8,8 +8,9 @@ Request date/time remains in the real user message's JSON envelope.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
-import shutil
 import sys
 from contextvars import ContextVar
 from pathlib import Path
@@ -28,13 +29,19 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
     SystemPromptPriority,
 )
-from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
+from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
+    build_shell_environment_prompt,
+    get_shell_capabilities,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_runtime_state_path,
     get_user_workspace_dir,
     logger,
 )
+
+
+A4P_PROMPT_VERSION = "2026-10-19.1"
 
 
 class RuntimePromptRail(DeepAgentRail):
@@ -73,6 +80,8 @@ class RuntimePromptRail(DeepAgentRail):
         self._mode: str = ""
         self._session_id: str | None = None
         self._force_english: bool = False
+        self._request_metadata: dict[str, Any] = {}
+        self._a4p_authorizer_available: bool = False
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -108,6 +117,10 @@ class RuntimePromptRail(DeepAgentRail):
     def set_channel(self, channel: str) -> None:
         """per-request 更新频道。"""
         self._channel = channel
+
+    def set_a4p_authorizer_available(self, available: bool) -> None:
+        """Record whether this request has an interactive Web authorizer route."""
+        self._a4p_authorizer_available = bool(available)
 
     def set_trusted_dirs(self, trusted_dirs: list[str] | None) -> None:
         """per-request 更新可信目录。"""
@@ -203,6 +216,10 @@ class RuntimePromptRail(DeepAgentRail):
             else None
         )
 
+    def set_request_metadata(self, metadata: dict[str, Any] | None) -> None:
+        """Store request metadata used by channel-specific attachments."""
+        self._request_metadata = dict(metadata or {})
+
     def set_force_english(self, force: bool) -> None:
         """Force English for runtime scaffolding in code mode."""
         self._force_english = force
@@ -273,6 +290,30 @@ class RuntimePromptRail(DeepAgentRail):
         except Exception as exc:
             logger.debug("Failed to read configured model names: %s", exc)
             return []
+
+    @staticmethod
+    def _agent_model_name(ctx: AgentCallbackContext) -> str:
+        """Read this callback's live model instead of the shared session model."""
+        agent = ctx.agent
+        config = getattr(agent, "config", None)
+        model = getattr(config, "model", None)
+        get_llm = getattr(agent, "get_llm", None)
+        if callable(get_llm):
+            try:
+                model = get_llm()
+            except Exception as exc:
+                logger.debug("Failed to read the current agent model: %s", exc)
+        # Model calls run on the inner ReActAgent; before_invoke can run on
+        # the outer DeepAgent, whose config holds the same Model directly.
+        for request_config in (
+            getattr(model, "model_config", None),
+            getattr(config, "model_config_obj", None),
+            config,
+        ):
+            name = getattr(request_config, "model_name", None)
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        return ""
 
     def _resolve_current_mode(
         self,
@@ -347,18 +388,21 @@ class RuntimePromptRail(DeepAgentRail):
 
         # ── Platform, shell, encoding, time-query and channel rules ──
         os_type = sys.platform
+        shell_capabilities = await get_shell_capabilities(os_type)
         shell_path = os.environ.get("SHELL", "")
         if os_type.startswith("win"):
             # Windows normally has no SHELL variable. Prefer the actual
             # PowerShell executable so the prompt does not report unknown.
-            shell_path = shutil.which("pwsh") or shutil.which("powershell") or ""
+            shell_path = shell_capabilities.powershell or ""
             shell_name = "PowerShell" if shell_path else "unknown"
         else:
             shell_name = os.path.basename(shell_path) if shell_path else "unknown"
         import platform as plat
         os_version = f"{plat.system()} {plat.release()}"
         env_language = "cn" if not self._force_english and self._language == "cn" else "en"
-        shell_env_prompt = build_shell_environment_prompt(env_language, os_type)
+        shell_env_prompt = build_shell_environment_prompt(
+            env_language, os_type, capabilities=shell_capabilities
+        )
 
         if not self._force_english and self._language == "cn":
             env_content = (
@@ -668,7 +712,8 @@ class RuntimePromptRail(DeepAgentRail):
             available_models = configured_models
         fallback_model = configured_models[0] if configured_models else ""
         model = str(
-            runtime_state.get("model")
+            self._agent_model_name(ctx)
+            or runtime_state.get("model")
             or self._model_name
             or fallback_model
             or "unknown"
@@ -710,8 +755,229 @@ class RuntimePromptRail(DeepAgentRail):
             kind=PromptAttachmentKind.RUNTIME,
             priority=95,
         )
+        await self._sync_a4p_intent_authorization_attachment(ctx)
+        await self._sync_a4p_cron_authorization_scope_attachment(ctx)
 
         return runtime_state
+
+    def _log_a4p_prompt_injection(
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        injected: bool,
+        reason: str,
+        content: str = "",
+    ) -> None:
+        """Record attachment registration, not proof of provider delivery or compliance."""
+        from jiuwenswarm.agents.harness.common.a4p.execution_context import (
+            AUTHORIZATION_EXECUTION_CONTEXTS,
+        )
+
+        session = getattr(ctx, "session", None)
+        session_getter = getattr(session, "get_session_id", None)
+        session_id = (session_getter() if callable(session_getter) else "") or self._session_id or ""
+        execution = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+        extra = ctx.extra if isinstance(ctx.extra, dict) else {}
+        event = {
+            "event": "a4p.prompt.injection",
+            "version": A4P_PROMPT_VERSION,
+            "session_id": session_id,
+            "request_id": execution.request_id if execution else extra.get("request_id", ""),
+            "model": self._model_name,
+            "channel": self._channel,
+            "language": "en" if self._force_english or self._language != "cn" else "cn",
+            "injected": injected,
+            "reason": reason,
+            "content_chars": len(content),
+            "content_sha256": hashlib.sha256(content.encode("utf-8")).hexdigest() if content else "",
+        }
+        logger.info("[RuntimePromptRail] %s", json.dumps(event, ensure_ascii=False))
+
+    async def _sync_a4p_intent_authorization_attachment(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        section = "a4p.intent_authorization"
+        if self._channel != "web" or not self._a4p_authorizer_available:
+            await self._clear_prompt_attachment(ctx, section=section)
+            self._log_a4p_prompt_injection(
+                ctx, injected=False,
+                reason="non_web_channel" if self._channel != "web" else "authorizer_unavailable",
+            )
+            return
+        resolution_error = False
+        try:
+            from jiuwenswarm.agents.harness.common.a4p.runtime import is_a4p_preauthorization_active
+            from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
+                get_a4p_supported_action_names,
+            )
+            from jiuwenswarm.common.config import get_config
+
+            enabled = is_a4p_preauthorization_active(get_config())
+            action_names = get_a4p_supported_action_names()
+        except Exception as exc:
+            logger.warning("Failed to resolve A4P intent authorization prompt: %s", exc)
+            resolution_error = True
+            enabled = False
+            action_names = []
+        if not enabled:
+            await self._clear_prompt_attachment(ctx, section=section)
+            self._log_a4p_prompt_injection(
+                ctx, injected=False, reason="config_error" if resolution_error else "a4p_disabled",
+            )
+            return
+
+        actions = "、".join(f"`{name}`" for name in action_names)
+        if self._force_english or self._language != "cn":
+            actions = ", ".join(f"`{name}`" for name in action_names)
+            content = (
+                "# A4P Intent Authorization\n\n"
+                "- FIRST: before reading, listing, searching, writing, or running Shell commands with "
+                f"{actions}, call `request_a4p_intent_authorization` with the known candidate scopes. "
+                "Read-only operations also require this preparation. Do not read or explore first to prepare "
+                "authorization. A user-supplied path is not permission. Only tools outside this list may be "
+                "used first to discover necessary information.\n"
+                "- Submit multiple actions together when input/output paths are known. The backend filters "
+                "policy-allowed and valid-token-covered concrete calls; do not guess which calls need approval. "
+                "Inspect permittedActions, unapprovedActions and deniedActions. Execute only permittedActions; "
+                "unapprovedActions still lack approval and deniedActions require revising the plan. "
+                "ok=true with authorizationRequired=false means no new approval was needed. Authorization "
+                "does not execute actions; actual calls still recheck permissions.\n"
+                "- Session authorization may be staged: authorize discovery first when needed, then newly "
+                "discovered read/write scopes. Reuse approved scopes; resolved runtime values alone do not "
+                "require another request. Do not repeat rejected or failed requests unchanged.\n"
+                "- Use real tool names and security-critical parameters. Shell scopes default to complete exact "
+                "commands; a narrow wildcard for one unknown argument must not absorb whitespace, Shell "
+                "operators, redirections, or extra arguments. File scopes use a concrete file or a filename "
+                "glob under a fixed directory; never a bare * or a directory in place of a file. Use dedicated "
+                "file tools for writes. Unknown/pattern scopes remain in the approval request.\n"
+                "- read_file/list_files/glob/grep require explicit absolute paths without '..' in requests and "
+                "execution. list_files/glob authorize an exact directory; grep an exact file or directory. "
+                "Filename discovery does not authorize read_file; reading does not authorize writing. "
+                "Search keywords and result limits may vary within the root.\n"
+                "- Choose a feasible plan once and proceed; revise only for new facts, changed requirements, "
+                "or actual errors. Ordinary parameters need not be known for authorization; express dynamic "
+                "values through bounded scopes, then execute with resolved values, never placeholders. "
+                "Do not broaden scopes or guess missing information.\n"
+                "- Cron: use the system-designated default creation tool: create disabled -> authorize the "
+                "complete future scope using the returned cronJobId -> enable after ok=true only if every "
+                "planned action is permitted. Keep the job disabled on failure, rejection, or insufficient "
+                "scope. Cron authorization cannot be staged or rely on interactive approval during execution; "
+                "current session permissions/tokens do not filter cron requests. Generate description and "
+                "actions from the same plan, including dynamic argument resolution. When only scheduling is "
+                "requested, put execution/preparation in the future plan; do not trial-run now unless setup "
+                "depends on its results or the user requests immediate execution.\n"
+            )
+        else:
+            content = (
+                "# A4P 意图授权\n\n"
+                f"- 第一步：使用 {actions} 读取、浏览、搜索、写入或执行命令前，必须先调用 "
+                "`request_a4p_intent_authorization` 提交已知候选范围。只读操作也必须先提交；"
+                "不得先读取或搜索文件来准备授权。用户提供路径不等于已授权。只有列表外的工具可先用于获取必要信息。\n"
+                "- 输入输出路径已知时，合并提交多个 actions。后端过滤规则允许或已有有效 token 覆盖的具体操作，"
+                "不要自行猜测哪些操作需要审批。检查 permittedActions、unapprovedActions 和 deniedActions；"
+                "只能执行 permittedActions 中的操作，unapprovedActions 仍缺授权，deniedActions 需要调整计划。"
+                "ok=true 且 authorizationRequired=false 表示无需新增授权。授权不执行操作，实际调用仍重新校验权限。\n"
+                "- 会话允许分阶段授权：必要时先授权浏览或搜索，再补充发现的读取和写入范围。复用已批准范围；"
+                "运行时值变为已知本身不要求重新授权。拒绝或失败后不要原样重复请求。\n"
+                "- 使用真实工具名和安全关键参数。Shell 默认授权完整精确命令；单个未知参数仅允许窄范围通配，"
+                "不得覆盖空白、Shell 运算符、重定向或额外参数。文件使用具体文件或固定目录下的文件名 glob，"
+                "不得使用裸 * 或用目录代替文件范围。使用专用文件工具写入。通配范围或无法预检的操作仍保留申请。\n"
+                "- read_file/list_files/glob/grep 在申请和执行时必须显式使用绝对路径且不含 '..'。"
+                "list_files/glob 授权具体目录，grep 授权具体文件或目录；文件名搜索不包含 read_file 权限，"
+                "读取不包含写入权限。范围内搜索词和结果条数可变化。\n"
+                "- 选定可行计划后执行，仅因新事实、需求变化或实际错误调整。无需提前确定普通参数；"
+                "动态参数用有界范围表达，实际执行使用真实值而非占位符。不扩大范围或猜测缺失信息。\n"
+                "- 定时任务：使用系统指定的默认创建工具，create disabled -> 使用返回的 cronJobId "
+                "一次性授权完整未来范围 -> ok=true 且计划内全部操作获准后 enable。失败、拒绝或范围不足时保持禁用。"
+                "Cron 不能分阶段授权或依赖执行时交互审批，也不按当前会话权限/token 过滤。"
+                "同一计划生成 description 和 actions，包含动态参数解析方式。用户仅要求定时时，准备和执行放入未来计划；"
+                "只有设置依赖当前执行结果或用户要求立即执行时才现在执行，不额外试运行。\n"
+            )
+        try:
+            injected = await self._upsert_prompt_attachment(
+                ctx,
+                section=section,
+                content=content,
+                kind=PromptAttachmentKind.RUNTIME,
+                priority=94,
+            )
+        except Exception:
+            self._log_a4p_prompt_injection(
+                ctx, injected=False, reason="attachment_error", content=content,
+            )
+            raise
+        self._log_a4p_prompt_injection(
+            ctx, injected=injected,
+            reason="attachment_registered" if injected else "attachment_unavailable",
+            content=content,
+        )
+
+    async def _sync_a4p_cron_authorization_scope_attachment(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        section = "a4p.cron_authorization_scope"
+        cron = self._request_metadata.get("cron")
+        cron = cron if isinstance(cron, dict) else {}
+        job_id = str(cron.get("job_id") or cron.get("jobId") or "").strip()
+        if self._channel not in {"cron", "__cron__"} or not job_id:
+            await self._clear_prompt_attachment(ctx, section=section)
+            return
+        try:
+            from jiuwenswarm.agents.harness.common.a4p.runtime import (
+                get_a4p_runtime,
+                is_a4p_preauthorization_active,
+            )
+            from jiuwenswarm.common.config import get_config
+
+            if not is_a4p_preauthorization_active(get_config()):
+                await self._clear_prompt_attachment(ctx, section=section)
+                return
+            summary = get_a4p_runtime().cron_intent_authorization_summary(job_id)
+        except Exception as exc:
+            logger.warning("Failed to resolve A4P cron authorization scope: %s", exc)
+            summary = None
+
+        english = self._force_english or self._language != "cn"
+        if summary is None:
+            content = (
+                f"# A4P Cron Authorization Scope\n\n- Current cron job: `{job_id}`.\n"
+                "- No active A4P intent authorization is available. Protected calls fail closed because cron "
+                "cannot approve interactively."
+                if english
+                else f"# A4P 定时任务授权范围\n\n- 当前定时任务：`{job_id}`。\n"
+                "- 当前任务没有可用的 A4P intent 授权。定时执行无法交互审批，受保护调用将 fail-closed。"
+            )
+        else:
+            display_actions = [
+                {key: value for key, value in action.items() if key != "allowExtraParams"}
+                for action in summary.get("actions") or []
+                if isinstance(action, dict)
+            ]
+            actions_json = json.dumps(display_actions, ensure_ascii=False, indent=2, sort_keys=True)
+            if english:
+                content = (
+                    f"# A4P Cron Authorization Scope\n\n- Current cron job: `{job_id}`.\n"
+                    f"- Expires at: `{summary.get('expireAt') or 'unknown'}`.\n"
+                    f"- Authorized actions:\n```json\n{actions_json}\n```\n"
+                    "Only invoke protected tools inside this scope; out-of-scope, expired, or identity-mismatched "
+                    "calls fail closed."
+                )
+            else:
+                content = (
+                    f"# A4P 定时任务授权范围\n\n- 当前定时任务：`{job_id}`。\n"
+                    f"- 到期时间：`{summary.get('expireAt') or 'unknown'}`。\n"
+                    f"- 已授权 actions：\n```json\n{actions_json}\n```\n"
+                    "仅调用 scope 内的受保护工具；scope 外、过期或 identity 不匹配时 fail-closed。"
+                )
+        await self._upsert_prompt_attachment(
+            ctx,
+            section=section,
+            content=content,
+            kind=PromptAttachmentKind.RUNTIME,
+            priority=94,
+        )
 
     async def _sync_git_system_context(
         self,
@@ -761,13 +1027,13 @@ class RuntimePromptRail(DeepAgentRail):
         content: str,
         kind: PromptAttachmentKind,
         priority: int,
-    ) -> None:
+    ) -> bool:
         if self.attachment_manager is None:
             logger.warning(
                 "[RuntimePromptRail] prompt attachment manager unavailable; skip dynamic section=%s",
                 section,
             )
-            return
+            return False
         try:
             writer = self.attachment_manager.bind_context(ctx)
             await writer.add_section(
@@ -778,8 +1044,10 @@ class RuntimePromptRail(DeepAgentRail):
                 priority=priority,
                 content_kind="text/markdown",
             )
+            return True
         except ValueError as exc:
             logger.warning("[RuntimePromptRail] skip prompt attachment section=%s: %s", section, exc)
+            return False
 
     async def _clear_prompt_attachment(
         self,

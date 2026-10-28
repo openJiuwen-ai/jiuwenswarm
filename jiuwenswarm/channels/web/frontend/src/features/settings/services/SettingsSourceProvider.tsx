@@ -5,11 +5,16 @@ import type { SettingValue, SettingsSource } from '../registry/types';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
+import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
 
 export type SettingsSourceController = {
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;
-  save: (updates: Record<string, SettingValue>, operation: string) => Promise<unknown>;
+  save: (
+    updates: Record<string, SettingValue>,
+    operation: string,
+    options?: { optimistic?: boolean },
+  ) => Promise<unknown>;
   patchLocal: (updates: Record<string, unknown>) => void;
 };
 
@@ -37,25 +42,31 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
   const [savingKeys, setSavingKeys] = useState<ReadonlySet<string>>(() => new Set());
 
   const save = useCallback(
-    async (updates: Record<string, SettingValue>, operation: string) => {
+    async (updates: Record<string, SettingValue>, operation: string, options?: { optimistic?: boolean }) => {
       const serialized = Object.fromEntries(
         Object.entries(updates).map(([key, value]) => [key, serializeConfigSettingValue(value)]),
       );
       const keys = Object.keys(serialized);
       const previous = Object.fromEntries(keys.map((key) => [key, config[key]]));
       setSavingKeys((current) => addSavingKeys(current, keys));
-      setConfig((current) => ({ ...current, ...serialized }));
+      const optimistic = options?.optimistic !== false;
+      const visible = { ...serialized };
+      delete visible.moa_jev_api_key;
+      delete visible.moa_jev_api_key_clear;
+      if (optimistic) setConfig((current) => ({ ...current, ...visible }));
       try {
         return await saveConfig(serialized, operation);
       } catch (saveError) {
-        setConfig((current) => {
-          const next = { ...current };
-          keys.forEach((key) => {
-            if (previous[key] === undefined) delete next[key];
-            else next[key] = previous[key];
+        if (optimistic) {
+          setConfig((current) => {
+            const next = { ...current };
+            Object.keys(visible).forEach((key) => {
+              if (previous[key] === undefined) delete next[key];
+              else next[key] = previous[key];
+            });
+            return next;
           });
-          return next;
-        });
+        }
         throw saveError;
       } finally {
         setSavingKeys((current) => removeSavingKeys(current, keys));
@@ -87,15 +98,36 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+type BrowserDecisionMode = 'llm' | 'shadow' | 'hybrid';
+type BrowserDecisionProvider = 'openrouter' | 'typesafe' | 'custom';
+
 type BrowserSettingsState = {
   chrome_path: string;
   headless: boolean;
+  decision_mode: BrowserDecisionMode;
+  decision_provider: BrowserDecisionProvider;
+  decision_model: string;
+  decision_api_base: string;
+  // Read-only: path.get reports whether the provider's key is set, never the key.
+  jev_key_configured: boolean;
 };
+
+const BROWSER_DECISION_MODES: readonly unknown[] = ['llm', 'shadow', 'hybrid'];
+const BROWSER_DECISION_PROVIDERS: readonly unknown[] = ['openrouter', 'typesafe', 'custom'];
 
 function normalizeBrowserState(value: Record<string, unknown> | undefined): BrowserSettingsState {
   return {
     chrome_path: typeof value?.chrome_path === 'string' ? value.chrome_path : '',
     headless: value?.headless === undefined ? true : value.headless === true,
+    decision_mode: BROWSER_DECISION_MODES.includes(value?.decision_mode)
+      ? (value?.decision_mode as BrowserDecisionMode)
+      : 'llm',
+    decision_provider: BROWSER_DECISION_PROVIDERS.includes(value?.decision_provider)
+      ? (value?.decision_provider as BrowserDecisionProvider)
+      : 'typesafe',
+    jev_key_configured: value?.jev_key_configured === true,
+    decision_model: typeof value?.decision_model === 'string' ? value.decision_model : '',
+    decision_api_base: typeof value?.decision_api_base === 'string' ? value.decision_api_base : '',
   };
 }
 
@@ -114,11 +146,15 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
       return undefined;
     }
     const id = ++requestId.current;
+    const displayRevision = browserDisplayRevision();
     setLoading(true);
     setError('');
     void request<Record<string, unknown>>('path.get')
       .then((payload) => {
-        if (id === requestId.current) setValues(normalizeBrowserState(payload));
+        if (id === requestId.current) {
+          setValues(normalizeBrowserState(payload));
+          void applyBrowserDisplaySettings(payload, displayRevision);
+        }
       })
       .catch((loadError) => {
         if (id === requestId.current)
@@ -142,9 +178,15 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
       setSavingKeys((current) => addSavingKeys(current, keys));
       try {
         const result = await saveQueue.enqueue(operation, () =>
-          request<Record<string, unknown>>('path.set', next, { timeoutMs: 600_000 }),
+          request<Record<string, unknown>>('path.set', {
+            ...next,
+            // Only the Jev dialog edits these fields; unrelated saves must not reset them.
+            decision_model: updates.decision_model,
+            decision_api_base: updates.decision_api_base,
+          }, { timeoutMs: 600_000 }),
         );
         setValues((current) => normalizeBrowserState({ ...current, ...result }));
+        await applyBrowserDisplaySettings(result);
         return result;
       } catch (saveError) {
         setValues((current) =>

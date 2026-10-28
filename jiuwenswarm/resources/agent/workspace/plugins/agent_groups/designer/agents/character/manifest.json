@@ -1,0 +1,42 @@
+{
+  "package_type": "agent_template",
+  "name": "character",
+  "display_name": {
+    "zh": "角色设计师",
+    "en": "Character Designer"
+  },
+  "description": "为单个角色制作可复用的角色设定图，并交回图像产物。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/read_node_context.py",
+      "class": "ReadNodeContext"
+    },
+    {
+      "file": "tools/generate_character.py",
+      "class": "GenerateCharacter"
+    },
+    {
+      "file": "tools/submit_node_output.py",
+      "class": "SubmitNodeOutput"
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/node_guard.py",
+      "class": "NodeGuardRail"
+    }
+  ],
+  "skills": [
+    {
+      "dir": "skills/character",
+      "mode": "all"
+    }
+  ],
+  "metadata": {
+    "node_type": "character",
+    "output_kind": "image"
+  }
+}

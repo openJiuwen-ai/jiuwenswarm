@@ -125,7 +125,7 @@ def test_crashed_child_is_respawned_until_the_budget_runs_out(monkeypatch, clock
     assert gateway.terminated
 
 
-@pytest.mark.parametrize("stop_code", [0, -15, -9, -2])
+@pytest.mark.parametrize("stop_code", [0, -15, -2])
 def test_stop_path_exits_tear_the_service_down(monkeypatch, clock, stop_code):
     spawned = _script_children(
         monkeypatch,
@@ -137,6 +137,37 @@ def test_stop_path_exits_tear_the_service_down(monkeypatch, clock, stop_code):
 
     assert [name for name, _ in spawned] == ["agentserver", "gateway"]
     assert spawned[0][1].terminated
+
+
+def test_sigkilled_child_is_respawned(monkeypatch, clock):
+    # A SIGKILL is ambiguous (stop paths escalate to it after SIGTERM), but the
+    # OOM killer / infra hard kills read the same way; treating it as a stop
+    # path tore the whole service down (issue #4946). It must respawn like a
+    # crash, under the same uptime/budget gates.
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(100, 0)], "gateway": [(60, -9), (None, 0)]},
+    )
+
+    assert supervise(_COMMANDS, {}) == 0
+
+    assert [name for name, _ in spawned] == ["agentserver", "gateway", "gateway"]
+    assert spawned[2][1].terminated  # the respawned gateway, on final teardown
+
+
+def test_sigkilled_child_below_min_uptime_is_not_respawned(monkeypatch, clock):
+    # A hard kill during startup (port taken, lock held) would only repeat; the
+    # uptime gate keeps it a one-shot teardown.
+    spawned = _script_children(
+        monkeypatch,
+        clock,
+        {"agentserver": [(None, 0)], "gateway": [(5, -9)]},
+    )
+
+    assert supervise(_COMMANDS, {}) == -9
+
+    assert len(spawned) == 2
 
 
 def test_startup_failures_are_not_respawned(monkeypatch, clock):

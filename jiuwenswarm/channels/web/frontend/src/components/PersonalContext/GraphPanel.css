@@ -209,6 +209,7 @@
 }
 
 /* 侧边面板：浮动于画布左上，r16 白底带阴影 */
+/* 左右不留白：水平 padding 下放到 header/content，滚动条才能贴住面板右缘（同 FilePreviewPanel） */
 .pc-graph__tree {
   position: absolute;
   left: 12px;
@@ -218,7 +219,7 @@
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
-  padding: 12px;
+  padding: 12px 0 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
@@ -237,9 +238,12 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  padding: 0 12px;
 }
 
-/* 可滚动内容区 */
+/* 可滚动内容区：padding 在滚动容器自身，内容内缩但滚动条贴边；
+   margin-right 6px 让滚动条离面板右缘 6px，右 padding 同步 12→6 抵消，
+   内容右缘与 header 的 12px 对齐保持不变（滚动条宽度计入 margin 与 padding 之间） */
 .pc-graph__tree-content {
   flex: 1;
   min-height: 0;
@@ -247,6 +251,8 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-right: 6px;
+  padding: 0 6px 12px;
 }
 
 /* 侧边面板页签 */
@@ -257,7 +263,7 @@
 
 .pc-graph__tab {
   display: inline-flex;
-  align-items: baseline;
+  align-items: center;
   gap: 4px;
   padding: 4px 10px;
   border: none;
@@ -280,26 +286,30 @@
 
 .pc-graph__tab-count {
   font-size: 18px;
+  line-height: 1;
   font-weight: 600;
   color: #191919;
 }
 
-/* 树内容展开/收起按钮：靠右 */
+/* 树内容展开/收起按钮：靠右，24px 圆形描边；图标默认即黑色，hover 仅背景变灰、颜色不变 */
 .pc-graph__tree-collapse {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  width: 24px;
+  height: 24px;
   margin-left: auto;
   padding: 0;
-  border: none;
+  border: 1px solid var(--color-surface-muted);
+  border-radius: 50%;
   background: transparent;
   cursor: pointer;
-  color: #808080;
+  color: var(--color-text-primary);
   flex-shrink: 0;
 }
 
 .pc-graph__tree-collapse:hover {
-  color: #191919;
+  background: var(--color-surface-hover);
 }
 
 .pc-graph__tree-collapse-icon {
@@ -480,6 +490,7 @@
 }
 
 /* 详情面板：浮动于画布右上 */
+/* 左右不留白：水平 padding 下放到子元素，滚动条才能贴住面板右缘（同 pc-graph__tree） */
 .pc-graph__detail {
   position: absolute;
   right: 12px;
@@ -489,7 +500,7 @@
   background: #ffffff;
   border-radius: 16px;
   overflow: hidden;
-  padding: 16px;
+  padding: 16px 0;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.06);
   display: flex;
   flex-direction: column;
@@ -521,13 +532,14 @@
 }
 
 /* 节点名称：16px semibold */
+/* padding-right 48 = 原面板水平 padding 16 + 预留右上角关闭按钮 32 */
 .pc-graph__detail-name {
   font-size: 16px;
   font-weight: 600;
   color: #191919;
   line-height: 24px;
   margin: 0;
-  padding-right: 32px;
+  padding: 0 48px 0 16px;
   word-break: break-word;
 }
 
@@ -548,6 +560,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  padding: 0 16px;
 }
 
 /* 分割线 */
@@ -555,14 +568,22 @@
   height: 0;
   border: none;
   border-top: 1px solid #dbdbdb;
-  margin: 4px 0;
+  margin: 4px 16px;
 }
 
-/* 详细内容：可滚动 */
+/* 加载中 spinner：面板左右 padding 已下沉，左间距在这里补回 */
+.pc-graph__detail-loading {
+  margin-left: 16px;
+}
+
+/* 详细内容：可滚动；margin-right 6px 让滚动条离面板右缘 6px，
+   右 padding 10 抵消 margin（6+10=16），内容右缘与标题等子元素的 16px 对齐保持不变 */
 .pc-graph__detail-content {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+  margin-right: 6px;
+  padding: 0 10px;
 }
 
 /* 详情 markdown 正文：复用 Tailwind prose 排版（行间距/标题/列表/代码），此处仅微调配色与链接 */
@@ -664,7 +685,7 @@
   gap: 4px;
 }
 
-.pc-graph__source-meta > div {
+.pc-graph__source-meta>div {
   display: flex;
   gap: 8px;
 }
@@ -695,7 +716,9 @@
 }
 
 @keyframes pc-spin {
-  to { transform: rotate(360deg); }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 
@@ -861,16 +884,19 @@
   list-style: none;
 }
 
-/* 树行基础：r8，左侧图标 + 名称，右侧收起按钮 */
+/* 树行基础：r8，左侧图标 + 名称，右侧收起按钮（对齐 FilePreviewPanel 文件树：14px 字号、行高 36px、间距 4px） */
 .pc-graph__tree-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 8px;
+  min-height: 36px;
+  margin-bottom: 4px;
+  padding: 6px 8px;
   border-radius: 8px;
   cursor: pointer;
   user-select: none;
-  font-size: 12px;
+  font-size: 14px;
+  line-height: 24px;
   color: #191919;
   transition: background 0.12s ease;
   border: none;
@@ -886,10 +912,14 @@
 .pc-graph__tree-row--active {
   background: #F0F7FF;
   font-weight: 500;
-  color:#1476FF;
+  color: #1476FF;
 }
 
-/* 文件夹行：semibold */
+/* 文件夹行：semibold（字重保持现状），行高对齐文件预览树的 38px */
+.pc-graph__tree-row--dir {
+  min-height: 38px;
+}
+
 .pc-graph__tree-row--dir .pc-graph__tree-name {
   font-weight: 600;
 }
@@ -899,14 +929,17 @@
   color: #1476ff;
 }
 
-/* 左侧图标容器 */
+/* 左侧图标容器：文件/文件夹图标统一 12px，对齐 FilePreviewPanel */
 .pc-graph__tree-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+.pc-graph__tree-icon>svg {
+  flex: 0 0 auto;
   width: 12px;
   height: 12px;
-  flex-shrink: 0;
 }
 
 .pc-graph__tree-name {
@@ -956,6 +989,7 @@
   text-align: center;
   padding: 4px 0 2px;
 }
+
 .pc-graph__tree-toggle-all-btn {
   border: none;
   background: transparent;
@@ -967,6 +1001,7 @@
   border-radius: 4px;
   transition: color 0.12s ease, background 0.12s ease;
 }
+
 .pc-graph__tree-toggle-all-btn:hover {
   color: #1476ff;
   background: #f5f8ff;

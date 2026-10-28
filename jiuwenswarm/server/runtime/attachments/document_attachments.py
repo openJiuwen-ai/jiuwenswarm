@@ -30,75 +30,22 @@ from jiuwenswarm.server.runtime.attachments.upload_storage import (
 logger = logging.getLogger(__name__)
 
 #: 浏览器上传文档的大小上限（base64 裸字节，base64 膨胀前）。
-_MAX_DOCUMENT_BYTES: int = 10 * 1024 * 1024
+_MAX_DOCUMENT_BYTES: int = 100 * 1024 * 1024
 #: 单次文档上传的最大条数（与图片 _MAX_IMAGE_COUNT 对齐）。
 _MAX_DOCUMENT_COUNT: int = 8
 
 
-def _strip_data_uri_prefix(raw_base64: str) -> str:
-    """剥离 ``data:...;base64,`` 前缀。
-
-    某些前端上传库（react-dropzone 配合 FileReader.readAsDataURL）会把文件
-    编码成 ``data:application/pdf;base64,JVBERi0xLjQK...`` 形式。``base64.b64decode``
-    在 ``validate=True`` 下会因前缀中的 ``:`` ``/`` ``;`` ``,`` 等非字母表字符
-    抛 ``binascii.Error`` 被上层 ``suppress`` 吞掉，导致合法文件被当作无效丢弃。
-    """
-    if raw_base64.startswith("data:"):
-        return raw_base64.split(",", 1)[-1]
-    return raw_base64
-
-# Executable / script / package types rejected by document upload.
-FORBIDDEN_DOCUMENT_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        ".exe",
-        ".dll",
-        ".msi",
-        ".scr",
-        ".bat",
-        ".cmd",
-        ".ps1",
-        ".vbs",
-        ".wsf",
-        ".hta",
-        ".jar",
-        ".lnk",
-        ".bin",
-        ".so",
-        ".dylib",
-        ".app",
-        ".dmg",
-        ".pkg",
-        ".command",
-        ".scpt",
-        ".scptd",
-        ".workflow",
-        ".xpc",
-        ".bundle",
-        ".framework",
-        ".kext",
-        ".prefpane",
-        ".saver",
-        ".component",
-    }
+from gateway.common.attachment_safety import (  # noqa: F401,E402
+    strip_data_uri_prefix as _strip_data_uri_prefix,
 )
 
-
-def forbidden_formats() -> list[str]:
-    """Return sorted list of forbidden upload extensions."""
-    return sorted(FORBIDDEN_DOCUMENT_EXTENSIONS)
-
-
-def _document_suffix(filename: str | None) -> str:
-    name = Path(str(filename or "")).name
-    return Path(name).suffix.lower()
-
-
-def is_forbidden_document(*, filename: str | None = None, suffix: str | None = None) -> bool:
-    """Return True when the file extension is on the upload blacklist."""
-    ext = (suffix or _document_suffix(filename) or "").lower()
-    if not ext.startswith(".") and ext:
-        ext = f".{ext}"
-    return ext in FORBIDDEN_DOCUMENT_EXTENSIONS
+# Executable / script / package types rejected by document upload.
+from gateway.common.attachment_safety import (  # noqa: F401
+    FORBIDDEN_DOCUMENT_EXTENSIONS,
+    _document_suffix,
+    forbidden_formats,
+    is_forbidden_document,
+)
 
 
 def is_supported_document(*, filename: str | None = None) -> bool:

@@ -57,6 +57,7 @@ import {
   AgentDetailModal,
   buildDetailSections,
   type AgentModalState,
+  type CallRecordsSource,
   type DetailSectionKey,
 } from './AgentDetailModal';
 
@@ -154,7 +155,7 @@ const RunGraphNode = ({ data }: NodeProps) => {
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1.5">
         <StatusIcon status={run.status} className="w-4 h-4 shrink-0 mt-0.5" />
-        <span className="text-xs font-semibold text-text-strong break-words min-w-0">{run.name}</span>
+        <span className="text-xs font-semibold text-text-strong break-words min-w-0" title={run.name}>{run.name}</span>
       </div>
       <div className="flex items-center gap-1.5 mt-1">
         <div className="flex-1 h-1 rounded-full bg-secondary overflow-hidden">
@@ -222,7 +223,7 @@ const PhaseGraphNode = ({ data }: NodeProps) => {
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1.5">
         <StatusIcon status={phase.status} className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-        <span className="text-xs font-medium text-text break-words min-w-0">{phase.name}</span>
+        <span className="text-xs font-medium text-text break-words min-w-0" title={phase.name}>{phase.name}</span>
       </div>
       <span className="text-[10px] text-text-muted tabular-nums">{completed}/{total}</span>
     </div>
@@ -249,7 +250,7 @@ const AgentGraphNode = ({ data }: NodeProps) => {
       )}
       <div className="flex items-start gap-1">
         <StatusIcon status={agent.status} className="w-3.5 h-3.5 shrink-0 mt-0.5" />
-        <span className="text-xs text-text break-words min-w-0">{agent.name}</span>
+        <span className="text-xs text-text break-words min-w-0" title={agent.name}>{agent.name}</span>
         {verdict && (
           <span className={`shrink-0 text-[10px] font-medium mt-0.5 ${
             verdict.type === 'pass' ? 'text-emerald-600 dark:text-emerald-400'
@@ -275,7 +276,7 @@ const LoopGraphNode = ({ data }: NodeProps) => {
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1">
         <RefreshCw className={`w-3 h-3 text-purple-500 shrink-0 mt-0.5 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
-        <span className="text-xs font-medium text-text break-words min-w-0">{loop.baseName}</span>
+        <span className="text-xs font-medium text-text break-words min-w-0" title={loop.baseName}>{loop.baseName}</span>
         <span className="text-[10px] text-text-muted shrink-0">×{loop.members.length}轮</span>
       </div>
       <div className="flex items-center gap-0.5 mt-0.5">
@@ -317,7 +318,7 @@ const SessionGraphNode = ({ data }: NodeProps) => {
         ) : (
           <StatusIcon status={agent.status} className="w-3.5 h-3.5 shrink-0 mt-0.5" />
         )}
-        <span className="text-xs font-medium text-text break-words min-w-0">{agent.name}</span>
+        <span className="text-xs font-medium text-text break-words min-w-0" title={agent.name}>{agent.name}</span>
         {isFork && (
           <span
             className="shrink-0 text-[9px] text-purple-500 mt-0.5"
@@ -369,7 +370,7 @@ const VerifyGroupGraphNode = ({ data }: NodeProps) => {
         ) : (
           <Loader2 className="w-3.5 h-3.5 text-cyan-500 shrink-0 mt-0.5 animate-spin" />
         )}
-        <span className="text-xs font-medium text-text break-words min-w-0">{group.label}</span>
+        <span className="text-xs font-medium text-text break-words min-w-0" title={group.label}>{group.label}</span>
         {group.threshold != null && (
           <span className="shrink-0 text-[9px] text-cyan-600 dark:text-cyan-300 border border-cyan-500/40 rounded-full px-1 mt-0.5">
             {t('swarmflow.verifyThreshold', { count: group.threshold })}
@@ -400,7 +401,7 @@ const VerifyGroupGraphNode = ({ data }: NodeProps) => {
             <span
               key={vote.name}
               className="text-[9px] px-1 rounded border border-border/60 bg-card text-text-muted truncate max-w-[80px]"
-              title={vote.feedback || vote.name}
+              title={vote.feedback ? `${vote.name}\n${vote.feedback}` : vote.name}
             >
               {vote.kind === 'verdict'
                 ? vote.decision === 'pass'
@@ -606,7 +607,9 @@ function addPhaseChildren(
       nodes.push({
         id: nodeId,
         type: 'sessionNode',
-        data: { agent: nodeAgent, members: session.members, run, sessionId },
+        // runId mirrors agentNode: onNodeClick reads it for the ask-user
+        // request id and the detail modal's call-record member key.
+        data: { agent: nodeAgent, members: session.members, run, runId: run.id, sessionId },
         position: { x: 0, y: 0 },
       });
       edges.push({
@@ -850,6 +853,7 @@ export function SwarmflowGraphView({
 
   const [modalState, setModalState] = useState<AgentModalState | null>(null);
   const [modalAgentName, setModalAgentName] = useState('');
+  const [callRecordsSource, setCallRecordsSource] = useState<CallRecordsSource | null>(null);
 
   // 统一处理节点点击：agent/session 节点 → waiting_for_human 打开 ask-user，否则打开详情弹窗
   const onNodeClick = useCallback((_evt: React.MouseEvent, node: Node) => {
@@ -884,7 +888,9 @@ export function SwarmflowGraphView({
     // 其它状态：若有输入/输出等内容则打开详情弹窗
     const sections = buildDetailSections(t, agent);
     if (sections.length > 0) {
+      const runId = (node.data?.runId as string) ?? '';
       setModalAgentName(agent.name);
+      setCallRecordsSource({ sessionId, memberId: `${runId}:${agent.id}` });
       setModalState({ sections, activeKey: sections[0].key });
     }
   }, [sessionId, t]);
@@ -912,10 +918,14 @@ export function SwarmflowGraphView({
       <AgentDetailModal
         state={modalState}
         agentName={modalAgentName}
-        onClose={() => setModalState(null)}
+        onClose={() => {
+          setModalState(null);
+          setCallRecordsSource(null);
+        }}
         onTabChange={(key: DetailSectionKey) =>
           setModalState((prev) => (prev ? { ...prev, activeKey: key } : prev))
         }
+        callRecordsSource={callRecordsSource}
       />
     </div>
   );

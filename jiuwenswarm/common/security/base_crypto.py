@@ -10,7 +10,7 @@ class CryptoProvider(Protocol):
         pass
 
 
-_default_provider: CryptoProvider = None
+_default_provider: Optional[CryptoProvider] = None
 
 
 def set_crypto_provider(provider: CryptoProvider) -> None:

@@ -18,6 +18,31 @@ from .protocol import ProtocolError, Records, SCHEMA_VERSION, encode
 
 EventHandler = Callable[[dict[str, Any]], Awaitable[None]]
 InteractionHandler = Callable[[dict[str, Any]], Awaitable[list[dict[str, Any]]]]
+ToolHandler = Callable[[dict[str, Any]], Awaitable[Any]]
+
+
+def _reject_unattended_permission(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Only an explicit reject option may be selected without a host handler."""
+    payload = record.get("payload")
+    interaction = payload.get("interaction") if isinstance(payload, dict) else None
+    if (
+        not isinstance(interaction, dict)
+        or interaction.get("source") != "permission_interrupt"
+    ):
+        raise InteractionRequired(
+            "host interaction handler required; no approval granted"
+        )
+    questions = interaction.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise InteractionRequired("permission card has no safe rejection option")
+    for question in questions:
+        options = question.get("options") if isinstance(question, dict) else None
+        if not isinstance(options, list) or not any(
+            isinstance(option, dict) and option.get("value") == "reject"
+            for option in options
+        ):
+            raise InteractionRequired("permission card has no safe rejection option")
+    return [{"selected_options": ["reject"]} for _ in questions]
 
 
 class TransportError(RuntimeError):
@@ -66,6 +91,7 @@ class Client:
         *,
         on_event: EventHandler | None = None,
         on_interaction: InteractionHandler | None = None,
+        on_tool_call: ToolHandler | None = None,
         cancel: asyncio.Event | None = None,
         deadline_seconds: float | None = None,
     ) -> dict[str, Any]:
@@ -75,6 +101,7 @@ class Client:
             query=False,
             on_event=on_event,
             on_interaction=on_interaction,
+            on_tool_call=on_tool_call,
             cancel=cancel,
             deadline_seconds=deadline_seconds,
         )
@@ -105,15 +132,19 @@ class Client:
         query: bool,
         on_event: EventHandler | None = None,
         on_interaction: InteractionHandler | None = None,
+        on_tool_call: ToolHandler | None = None,
         cancel: asyncio.Event | None = None,
         deadline_seconds: float | None = None,
     ) -> dict[str, Any]:
         if deadline_seconds is not None:
             if not math.isfinite(deadline_seconds) or deadline_seconds <= 0:
                 raise ValueError("host deadline must be positive and finite")
+        if not query and request.get("host_tools") and on_tool_call is None:
+            raise ValueError("host_tools require an on_tool_call callback")
         request.setdefault("schema_version", SCHEMA_VERSION)
         request.setdefault("type", "query" if query else "run")
-        request.setdefault("request_id", str(uuid.uuid4()))
+        if request.get("request_id") is None:
+            request["request_id"] = str(uuid.uuid4())
         request_id = request["request_id"]
         if not isinstance(request_id, str) or not request_id.strip():
             raise ValueError("request_id must be a nonempty string")
@@ -155,7 +186,9 @@ class Client:
                 await invocation.write(payload)
                 if query:
                     invocation.stdin.close()
-                result = await invocation.consume(on_event, on_interaction)
+                result = await invocation.consume(
+                    on_event, on_interaction, on_tool_call
+                )
                 exit_code = await process.wait()
                 await stderr_task
                 invocation.records.finish(exit_code)
@@ -233,7 +266,10 @@ class _Invocation:
             del self.stderr_tail[:-65536]
 
     async def consume(
-        self, on_event: EventHandler | None, on_interaction: InteractionHandler | None
+        self,
+        on_event: EventHandler | None,
+        on_interaction: InteractionHandler | None,
+        on_tool_call: ToolHandler | None,
     ) -> dict[str, Any]:
         while True:
             try:
@@ -251,12 +287,38 @@ class _Invocation:
                 continue
             if on_event is not None:
                 await self.callback(on_event(record))
-            if record["event_type"] == "interaction.requested" and not self.cancel_sent:
-                if on_interaction is None:
-                    raise InteractionRequired(
-                        "host interaction handler required; no approval granted"
+            if record["event_type"] == "host_tool.requested" and not self.cancel_sent:
+                payload = record.get("payload")
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("call_id"), str
+                ):
+                    raise ProtocolError("host tool request has no correlation identity")
+                if on_tool_call is None:
+                    raise ProtocolError("host tool callback is missing")
+                try:
+                    tool_result = await self.callback(on_tool_call(record))
+                    control = {"result": tool_result}
+                except Exception:  # noqa: BLE001 - tool failure is returned to the Agent
+                    control = {"error": "Host tool callback failed."}
+                if not self.cancel_sent:
+                    await self.write(
+                        encode(
+                            {
+                                "schema_version": SCHEMA_VERSION,
+                                "type": "tool_result",
+                                "request_id": self.records.request_id,
+                                "session_id": record["session_id"],
+                                "call_id": payload["call_id"],
+                                **control,
+                            }
+                        )
                     )
-                answers = await self.callback(on_interaction(record))
+            if record["event_type"] == "interaction.requested" and not self.cancel_sent:
+                answers = (
+                    _reject_unattended_permission(record)
+                    if on_interaction is None
+                    else await self.callback(on_interaction(record))
+                )
                 if self.cancel_sent:
                     continue
                 payload = record.get("payload")

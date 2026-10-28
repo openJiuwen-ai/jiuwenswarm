@@ -44,6 +44,16 @@
   overflow-y: auto;
 }
 
+/* Inline variant rendered inside the Settings page (no dialog chrome). */
+.external-cli-install-dialog__body--inline {
+  padding: 0;
+  overflow: visible;
+}
+
+.external-cli-install-dialog__body--inline .external-cli-install-dialog__progress {
+  margin-top: 0;
+}
+
 .external-cli-install-dialog__task {
   min-width: 0;
   padding: 16px;

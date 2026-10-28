@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "computer-use-toolkit"
+version = "0.0.1"
+description = "Programmatic desktop interaction for agents"
+requires-python = ">=3.12"
+dependencies = [
+    "regex>=2024.11.6",
+    "mcp>=1.30,<2",
+    "jsonschema>=4.25,<5",
+    "pillow>=12.3,<13",
+]
+
+[project.scripts]
+computer-use-mcp = "computer_use.mcp.server:cli"
+computer-use-build = "computer_use.scripts.native:build_cli"
+computer-use-permissions = "computer_use.scripts.native:permissions_cli"
+computer-use-pointer = "computer_use.scripts.pointer:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+namespaces = true
+
+[tool.setuptools.package-data]
+computer_use = ["*.pyi"]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true

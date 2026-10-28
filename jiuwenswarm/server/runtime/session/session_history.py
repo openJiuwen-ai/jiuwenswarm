@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import logging
+import math
 import os
 import queue
 import re
@@ -13,18 +14,19 @@ import tempfile
 import threading
 import time
 from concurrent.futures import Future, InvalidStateError
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from gateway.common.mode_matrix import is_team_mode
+from gateway.common.protocol_ids import is_valid_session_id
+from gateway.common.session_message import SESSION_MESSAGE_ORIGIN
+from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
-
 
 logger = logging.getLogger(__name__)
-_FILE_LOCK = threading.Lock()
-_WRITE_QUEUE: queue.Queue[
+FILE_LOCK = threading.Lock()
+WRITE_QUEUE: queue.Queue[
     tuple[str, dict[str, Any], str | None, Future[None] | None, int]
 ] = queue.Queue(maxsize=20000)
 _QUEUE_ENQUEUE_LOCK = threading.Lock()
@@ -34,7 +36,14 @@ _LEGACY_HISTORY_FILENAME = "history.json"
 _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
-SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
+SESSION_REQUEST_TERMINAL_STATUSES = frozenset({
+    "success",
+    "error",
+    "cancelled",
+    "failed",
+    "waiting_user",
+    "unknown",
+})
 # Gateway may inline @path as <file-content>...</file-content> before chat.send.
 # History should keep the short @path form so jsonl rows stay one physical line
 # and refresh UI does not load megabytes of file body.
@@ -52,6 +61,251 @@ class InvalidHistoryCursor(ValueError):
 
 class HistorySnapshotChanged(RuntimeError):
     """The history file was replaced or truncated after the snapshot began."""
+
+
+@dataclass(frozen=True, slots=True)
+class SessionCompletionBoundary:
+    """Exact durable history row that closes a completed session prefix."""
+
+    session_id: str
+    event_id: str
+    request_id: str
+    ordinal: int
+    completed_at: float
+    status: str
+
+    def __post_init__(self) -> None:
+        _rejected = (
+            not self.session_id
+            or not self.event_id
+            or not self.request_id
+            or type(self.ordinal) is not int
+            or self.ordinal < 0
+            or type(self.completed_at) not in (int, float)
+            or not math.isfinite(float(self.completed_at))
+            or self.completed_at < 0
+            or self.status not in SESSION_REQUEST_TERMINAL_STATUSES
+        )
+        if (
+            _rejected
+        ):
+            raise ValueError("invalid session completion boundary")
+
+    def as_payload(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "event_id": self.event_id,
+            "request_id": self.request_id,
+            "ordinal": self.ordinal,
+            "completed_at": self.completed_at,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> SessionCompletionBoundary:
+        if not isinstance(payload, dict) or set(payload) != {
+            "session_id",
+            "event_id",
+            "request_id",
+            "ordinal",
+            "completed_at",
+            "status",
+        }:
+            raise ValueError("invalid session completion boundary payload")
+        return cls(**payload)
+
+
+@dataclass(frozen=True, slots=True)
+class CompletedSessionPrefix:
+    """Contiguous request-complete user history for one session revision."""
+
+    boundary: SessionCompletionBoundary
+    completed_request_ids: tuple[str, ...]
+    completed_user_ordinals: tuple[int, ...]
+
+
+def is_agent_initiated_record(record: dict[str, Any]) -> bool:
+    """The row belongs to a turn another Session's Agent or a Heartbeat started.
+
+    Such a turn is stored with a ``user`` row, but the person did not type it.
+    """
+
+    metadata = record.get("metadata")
+    automation = metadata.get("automation") if isinstance(metadata, dict) else None
+    return record.get("message_origin") == SESSION_MESSAGE_ORIGIN or (
+        isinstance(automation, dict) and automation.get("kind") == "heartbeat"
+    )
+
+
+def _is_terminal_completion_row(
+    *,
+    request_id: str,
+    completion_ordinal: Any,
+    last_ordinal: Any,
+    completion: dict[str, Any],
+    event_id: str,
+    status: str,
+    completed_at: Any,
+) -> bool:
+    """The row closes its request only when it is the group's last, fully shaped one."""
+
+    return (
+        completion_ordinal == last_ordinal
+        and completion.get("role") == "assistant"
+        and completion.get("feedback_only") is True
+        and event_id == f"{request_id}:request_completed"
+        and status in SESSION_REQUEST_TERMINAL_STATUSES
+        and type(completed_at) in (int, float)
+        and math.isfinite(float(completed_at))
+        and completed_at >= 0
+    )
+
+
+def project_completed_session_prefix(
+    session_id: str,
+    records: list[dict[str, Any]],
+    *,
+    allow_gaps: bool = False,
+) -> CompletedSessionPrefix | None:
+    """Return the exact completed request prefix without inferring quiescence.
+
+    A request is complete only when its group ends in a valid
+    ``chat.request_completed`` row; a request closed more than once is judged
+    by its last such row in write order.  A later completed request cannot
+    leapfrog an earlier user request that has no durable completion row.
+    Recommendation consumers may explicitly allow gaps; invalid requests remain
+    excluded.
+    """
+
+    sid = str(session_id or "").strip()
+    if not sid:
+        return None
+
+    groups: dict[str, dict[str, Any]] = {}
+    for ordinal, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        request_id = str(record.get("request_id") or "").strip()
+        role = str(record.get("role") or "").strip().lower()
+        if not request_id:
+            if role not in {"user", "human"}:
+                continue
+            request_id = f"__missing_request_id__:{ordinal}"
+        group = groups.setdefault(
+            request_id,
+            {
+                "last_ordinal": ordinal,
+                "user_ordinals": [],
+                "completion_rows": [],
+            },
+        )
+        group["last_ordinal"] = ordinal
+        if role in {"user", "human"} and not record.get("is_goal_objective_message"):
+            group["user_ordinals"].append(ordinal)
+        if record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
+            group["completion_rows"].append((ordinal, record))
+
+    completed_request_ids: list[str] = []
+    completed_user_ordinals: list[int] = []
+    boundaries: list[SessionCompletionBoundary] = []
+    for request_id, group in groups.items():
+        user_ordinals = group["user_ordinals"]
+        if not user_ordinals:
+            continue
+        completion_rows = group["completion_rows"]
+        if not completion_rows:
+            if allow_gaps:
+                continue
+            break
+        completion_ordinal, completion = completion_rows[-1]
+        status = str(completion.get("status") or "").strip().lower()
+        event_id = str(completion.get("id") or "").strip()
+        completed_at = completion.get("timestamp")
+        _closes_request = _is_terminal_completion_row(
+            request_id=request_id,
+            completion_ordinal=completion_ordinal,
+            last_ordinal=group["last_ordinal"],
+            completion=completion,
+            event_id=event_id,
+            status=status,
+            completed_at=completed_at,
+        )
+        if not _closes_request:
+            if allow_gaps:
+                continue
+            break
+        completed_request_ids.append(request_id)
+        completed_user_ordinals.extend(user_ordinals)
+        boundaries.append(
+            SessionCompletionBoundary(
+                session_id=sid,
+                event_id=event_id,
+                request_id=request_id,
+                ordinal=completion_ordinal,
+                completed_at=float(completed_at),
+                status=status,
+            )
+        )
+
+    if not boundaries:
+        return None
+    boundary = max(boundaries, key=lambda item: item.ordinal)
+    return CompletedSessionPrefix(
+        boundary=boundary,
+        completed_request_ids=tuple(completed_request_ids),
+        completed_user_ordinals=tuple(completed_user_ordinals),
+    )
+
+
+def project_completed_session_prefixes(
+    session_id: str,
+    records: list[dict[str, Any]],
+    *,
+    allow_gaps: bool = False,
+) -> tuple[CompletedSessionPrefix, ...]:
+    """Return every immutable completed-prefix revision in physical row order.
+
+    A request closed again starts a revision of its own, ending on its later row.
+    """
+
+    revisions: list[CompletedSessionPrefix] = []
+    for ordinal, record in enumerate(records):
+        if (
+            not isinstance(record, dict)
+            or record.get("event_type") != SESSION_REQUEST_COMPLETED_EVENT
+        ):
+            continue
+        prefix = project_completed_session_prefix(session_id, records[: ordinal + 1], allow_gaps=allow_gaps)
+        if prefix is None or prefix.boundary.ordinal != ordinal:
+            continue
+        revisions.append(prefix)
+    return tuple(revisions)
+
+
+def project_completed_session_records(
+    session_id: str,
+    records: list[dict[str, Any]],
+    *,
+    allow_gaps: bool = False,
+) -> list[dict[str, Any]]:
+    """Preserve physical ordinals while hiding non-completed user requests."""
+
+    prefix = project_completed_session_prefix(session_id, records, allow_gaps=allow_gaps)
+    completed_ordinals = (
+        set(prefix.completed_user_ordinals) if prefix is not None else set()
+    )
+    projected: list[dict[str, Any]] = []
+    for ordinal, record in enumerate(records):
+        if not isinstance(record, dict):
+            continue
+        role = str(record.get("role") or "").strip().lower()
+        if role in {"user", "human"} and ordinal not in completed_ordinals:
+            hidden = dict(record)
+            hidden["role"] = "request_pending"
+            projected.append(hidden)
+        else:
+            projected.append(record)
+    return projected
 
 
 def collapse_file_content_blocks(content: str) -> str:
@@ -110,6 +364,72 @@ def resolve_subagent_history_path(
     return resolved / _JSONL_HISTORY_FILENAME, None
 
 
+def _peek_subagent_id_from_history_dir(sub_dir: Path) -> str | None:
+    """Best-effort read of ``subagent_id`` from a per-subagent history bucket."""
+    candidates: list[Path] = []
+    jsonl_path = sub_dir / _JSONL_HISTORY_FILENAME
+    legacy_path = sub_dir / _LEGACY_HISTORY_FILENAME
+    if jsonl_path.is_file():
+        candidates.append(jsonl_path)
+    if legacy_path.is_file():
+        candidates.append(legacy_path)
+    for path in candidates:
+        try:
+            records = (
+                _read_history_jsonl(path)
+                if path.suffix.lower() == ".jsonl"
+                else _read_history(path)
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            sid = str(record.get("subagent_id") or "").strip()
+            if sid:
+                return sid
+            nested = record.get("subagent_activity")
+            if isinstance(nested, dict):
+                sid = str(nested.get("subagent_id") or "").strip()
+                if sid:
+                    return sid
+    return None
+
+
+def list_session_subagent_ids(session_id: str) -> list[str]:
+    """Return durable subagent ids discovered under a parent session directory.
+
+    Per-subagent history lives in ``sessions/<parent>/subagents/<id|hash>/``.
+    Parent history often lacks roster frames (empty-shell filter historically
+    dropped ``chat.subtask_update``), so cold refresh must rediscover ids from
+    disk before it can call ``history.get`` with ``subagent_id``.
+    """
+    parent_dir, error = resolve_session_dir(session_id, create=False)
+    if error is not None or parent_dir is None:
+        return []
+    root = parent_dir / "subagents"
+    if not root.is_dir():
+        return []
+
+    discovered: list[str] = []
+    seen: set[str] = set()
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return []
+    for child in children:
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        sid = _peek_subagent_id_from_history_dir(child)
+        if not sid and is_valid_session_id(child.name):
+            sid = child.name
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        discovered.append(sid)
+    return discovered
+
+
 _TOOL_RESULT_TERMINAL_FIELDS = frozenset(
     {"result", "error", "status", "success", "is_error"}
 )
@@ -160,6 +480,16 @@ def _has_persistable_assistant_payload(
         return True
     if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
         return True
+    # chat.subtask_update carries roster identity in subagent_id / description
+    # (content is often empty). Without this exception the empty-shell rule drops
+    # parent-stream roster frames, so refresh cannot rediscover subagent ids
+    # (GitCode #4887).
+    if et == "chat.subtask_update":
+        if str(payload.get("subagent_id") or payload.get("subagentId") or "").strip():
+            return True
+        if str(payload.get("description") or "").strip():
+            return True
+        return False
     # chat.ask_user_question 的载荷在 questions[] 数组里（无 content），
     # 否则会被下面的「空 chat.* 壳」规则丢弃，导致问题澄清对话框刷新后无法恢复。
     if et == "chat.ask_user_question":
@@ -436,7 +766,7 @@ def load_history_records(session_id: str, *, subagent_id: str | None = None) -> 
 
 def flush_history_writes() -> None:
     """Wait until all history records queued before this call are durable."""
-    _WRITE_QUEUE.join()
+    WRITE_QUEUE.join()
 
 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
@@ -632,8 +962,8 @@ def read_history_cursor_page(
         queue_guard.acquire()
     try:
         if cursor_payload is None:
-            _WRITE_QUEUE.join()
-        with _FILE_LOCK:
+            WRITE_QUEUE.join()
+        with FILE_LOCK:
             path = _ensure_cursor_jsonl_path(
                 normalized_session_id,
                 subagent_id=normalized_subagent_id,
@@ -769,7 +1099,7 @@ def write_history_records(
         if preserve_existing_format
         else get_write_history_path(session_id)
     )
-    with _FILE_LOCK:
+    with FILE_LOCK:
         _write_records_to_path(path, records)
     return path
 
@@ -945,7 +1275,7 @@ def _write_item(
     *,
     subagent_id: str | None = None,
 ) -> None:
-    with _FILE_LOCK:
+    with FILE_LOCK:
         if subagent_id:
             target_path, error = resolve_subagent_history_path(
                 session_id,
@@ -989,7 +1319,7 @@ def _ensure_worker_started() -> None:
 
         def _worker() -> None:
             while True:
-                sid, item, subagent_id, receipt, generation = _WRITE_QUEUE.get()
+                sid, item, subagent_id, receipt, generation = WRITE_QUEUE.get()
                 try:
                     if sid is None:
                         item.set()
@@ -1004,7 +1334,7 @@ def _ensure_worker_started() -> None:
                 else:
                     _settle_history_receipt(receipt)
                 finally:
-                    _WRITE_QUEUE.task_done()
+                    WRITE_QUEUE.task_done()
 
         t = threading.Thread(target=_worker, name="session-history-writer", daemon=True)
         t.start()
@@ -1016,7 +1346,7 @@ def flush_pending_writes(timeout: float = 10) -> bool:
     deadline = time.monotonic() + timeout
     barrier = threading.Event()
     try:
-        _WRITE_QUEUE.put((None, barrier, None, None, 0), timeout=timeout)
+        WRITE_QUEUE.put((None, barrier, None, None, 0), timeout=timeout)
     except queue.Full:
         return False
     return barrier.wait(max(0, deadline - time.monotonic()))
@@ -1068,11 +1398,28 @@ def _enqueue_history_item(
     normalized_subagent_id = (subagent_id or "").strip() or None
     with _QUEUE_ENQUEUE_LOCK:
         try:
-            _WRITE_QUEUE.put_nowait((session_id, item, normalized_subagent_id, receipt, generation))
+            WRITE_QUEUE.put_nowait((session_id, item, normalized_subagent_id, receipt, generation))
         except queue.Full:
             # A synchronous disk-write fallback can overtake queued records.
             # Block only under backpressure so request boundaries remain FIFO.
-            _WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt, generation))
+            WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt, generation))
+
+
+def resolve_final_record_timestamp(
+    *,
+    event_type: str,
+    segment_started_at: float | None,
+    extra_fields: dict[str, Any] | None,
+) -> float:
+    """chat.final 落盘用「气泡出现的时刻」，收尾时刻另存 completed_at。"""
+    completed_at = time.time()
+    if event_type != "chat.final" or not segment_started_at:
+        return completed_at
+    if segment_started_at >= completed_at:
+        return completed_at
+    if isinstance(extra_fields, dict):
+        extra_fields.setdefault("completed_at", completed_at)
+    return segment_started_at
 
 
 def append_history_record(
@@ -1124,7 +1471,9 @@ def append_history_record(
     }
     if subagent_id:
         item["subagent_id"] = subagent_id.strip()
-    if role_norm == "assistant" and event_type:
+    if event_type and (
+        role_norm == "assistant" or event_type.startswith("design.")
+    ):
         item["event_type"] = event_type
     if isinstance(extra, dict) and extra:
         serialized_extra, extra_changed = _serialize_value_with_flag(extra)
@@ -1207,7 +1556,9 @@ def enqueue_history_request_completion(
     rid = str(request_id or "").strip()
     if not rid or _is_ephemeral_heartbeat_session(sid):
         return None
-    status = str(terminal_status or "success").strip().lower() or "success"
+    status = str(terminal_status or "").strip().lower()
+    if status not in SESSION_REQUEST_TERMINAL_STATUSES:
+        raise ValueError(f"unsupported request terminal status: {terminal_status!r}")
     receipt: Future[None] = Future()
     _enqueue_history_item(
         sid,
@@ -1286,10 +1637,10 @@ def truncate_history_records(*, session_id: str, cut_index: int) -> dict[str, An
     返回截断结果 dict，包含 remaining / removed 计数。
     """
     sid = (session_id or "default").strip() or "default"
-    _WRITE_QUEUE.join()
+    WRITE_QUEUE.join()
 
     fpath = get_read_history_path(sid)
-    with _FILE_LOCK:
+    with FILE_LOCK:
         if not fpath.exists():
             return {"remaining_records": 0, "removed_records": 0}
         history = load_history_records(sid)

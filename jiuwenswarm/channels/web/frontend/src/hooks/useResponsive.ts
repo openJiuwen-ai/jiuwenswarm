@@ -35,18 +35,7 @@ export function useResponsiveLayout() {
   // ≤1280px 时收起态工具浮层（tool-panel-collapsed）默认不自动打开：
   // 页面加载与窗口变窄跨过断点时隐藏，用户仍可手动展开
   const isToolPanelAutoHideViewport = useMaxWidth('toolPanelAutoHide');
-  const [conversationSidebarCollapsed, setConversationSidebarCollapsed] = useState(false);
-  const [conversationSidebarFloating, setConversationSidebarFloating] = useState(false);
   const [toolPanelHidden, setToolPanelHidden] = useState(false);
-
-  useEffect(() => {
-    if (isMobile) {
-      setConversationSidebarCollapsed(true);
-      setConversationSidebarFloating(true);
-    } else {
-      setConversationSidebarFloating(false);
-    }
-  }, [isMobile]);
 
   useEffect(() => {
     if (isToolPanelAutoHideViewport) {
@@ -57,10 +46,6 @@ export function useResponsiveLayout() {
   return {
     isMobile,
     isToolPanelAutoHideViewport,
-    conversationSidebarCollapsed,
-    setConversationSidebarCollapsed,
-    conversationSidebarFloating,
-    setConversationSidebarFloating,
     toolPanelHidden,
     setToolPanelHidden,
   };
@@ -71,7 +56,6 @@ export function useResponsiveLayout() {
 export interface ResponsivePanelResizeParams {
   isTeamAreaExpanded: boolean;
   conversationSidebarCollapsed: boolean;
-  setConversationSidebarCollapsed: (collapsed: boolean) => void;
   setSingleAgentPanelExpanded: (expanded: boolean) => void;
   setTeamAreaExpanded: (expanded: boolean) => void;
   mode: string;
@@ -80,12 +64,12 @@ export interface ResponsivePanelResizeParams {
 export function useResponsivePanelResize({
   isTeamAreaExpanded,
   conversationSidebarCollapsed,
-  setConversationSidebarCollapsed,
   setSingleAgentPanelExpanded,
   setTeamAreaExpanded,
   mode,
 }: ResponsivePanelResizeParams) {
   const [shouldFullscreen, setShouldFullscreen] = useState(false);
+  const [sidebarAutoCollapsed, setSidebarAutoCollapsed] = useState(false);
   const stateRef = useRef({ isTeamAreaExpanded, conversationSidebarCollapsed, mode });
   stateRef.current = { isTeamAreaExpanded, conversationSidebarCollapsed, mode };
   const prevRef = useRef({ isTeamAreaExpanded, conversationSidebarCollapsed });
@@ -93,6 +77,7 @@ export function useResponsivePanelResize({
   useLayoutEffect(() => {
     if (!isTeamAreaExpanded) {
       setShouldFullscreen(false);
+      setSidebarAutoCollapsed(false);
       prevRef.current = { isTeamAreaExpanded, conversationSidebarCollapsed };
       return;
     }
@@ -103,6 +88,7 @@ export function useResponsivePanelResize({
 
     const check = (isUserAction: boolean) => {
       const s = stateRef.current;
+      setSidebarAutoCollapsed(!canFitBoth());
       if (!canFitToolPanelOnly()) {
         if (isUserAction) {
           setShouldFullscreen(true);
@@ -116,16 +102,13 @@ export function useResponsivePanelResize({
         return;
       }
       setShouldFullscreen(false);
-      if (!canFitBoth() && !s.conversationSidebarCollapsed) {
-        setConversationSidebarCollapsed(true);
-      }
     };
 
     check(justExpanded);
     const onResize = () => check(false);
     window.addEventListener('resize', onResize);
     return () => window.removeEventListener('resize', onResize);
-  }, [isTeamAreaExpanded, shouldFullscreen, setConversationSidebarCollapsed, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [isTeamAreaExpanded, shouldFullscreen, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
 
   useEffect(() => {
     if (shouldFullscreen) {
@@ -138,12 +121,9 @@ export function useResponsivePanelResize({
     }
 
     const prev = prevRef.current;
-    const teamAreaJustExpanded = isTeamAreaExpanded && !prev.isTeamAreaExpanded;
     const sidebarJustExpanded = !conversationSidebarCollapsed && prev.conversationSidebarCollapsed;
 
-    if (teamAreaJustExpanded && !conversationSidebarCollapsed) {
-      setConversationSidebarCollapsed(true);
-    } else if (sidebarJustExpanded && isTeamAreaExpanded) {
+    if (sidebarJustExpanded && isTeamAreaExpanded) {
       if (mode === 'team') {
         setTeamAreaExpanded(false);
       } else {
@@ -152,9 +132,9 @@ export function useResponsivePanelResize({
     }
 
     prevRef.current = { isTeamAreaExpanded, conversationSidebarCollapsed };
-  }, [shouldFullscreen, isTeamAreaExpanded, conversationSidebarCollapsed, mode, setConversationSidebarCollapsed, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
+  }, [shouldFullscreen, isTeamAreaExpanded, conversationSidebarCollapsed, mode, setSingleAgentPanelExpanded, setTeamAreaExpanded]);
 
-  return { shouldFullscreen };
+  return { shouldFullscreen, sidebarAutoCollapsed };
 }
 
 /* ── 业务：Welcome 气泡定位 ── */

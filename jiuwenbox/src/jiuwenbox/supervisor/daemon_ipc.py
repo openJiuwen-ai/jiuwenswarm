@@ -44,6 +44,22 @@ SANDBOX_LAUNCHER_PATH = f"{SANDBOX_RESERVED_DIR}/landlock-launcher.py"
 # children with ``close_fds=True`` so the inherited fd is not exposed
 # either).
 LISTENER_FD_ENV = "JIUWENBOX_CONTROL_LISTENER_FD"
+SANDBOX_IP_ENV = "SANDBOX_IP"
+
+
+def apply_sandbox_ip_env(
+    env: dict[str, str],
+    sandbox_ip: str | None,
+) -> None:
+    """Force ``SANDBOX_IP`` to the lifecycle snapshot (or remove if unavailable).
+
+    Callers must not invent a value when discovery fails; strip any prior
+    entry first so policy / create / host env cannot leave a fabricated IP.
+    """
+    env.pop(SANDBOX_IP_ENV, None)
+    if sandbox_ip:
+        env[SANDBOX_IP_ENV] = sandbox_ip
+
 
 # Daemon argv vector. ``-S`` shaves the ``import site`` cost so the daemon
 # starts faster; the daemon is stdlib-only so ``site`` is unnecessary.

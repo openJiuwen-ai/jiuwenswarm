@@ -96,16 +96,17 @@ def test_personal_context_cancellation_handlers_do_not_raise_inside_except() -> 
 
 
 @pytest.mark.asyncio
-async def test_agentserver_constructs_one_host_at_fixed_home(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_agentserver_constructs_one_host_at_deployment_data_home(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("C:/users/tester")))
+    data_home = tmp_path / "agentos-data"
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data_home))
+    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", data_home)
     server = _server(monkeypatch)
 
     assert len(_FakePersonalContextHost.instances) == 1
-    assert _FakePersonalContextHost.instances[0].home == Path(
-        "C:/users/tester/.jiuwenswarm/.personal_context"
-    )
+    assert _FakePersonalContextHost.instances[0].home == data_home / ".personal_context"
     assert server._personal_context_host is _FakePersonalContextHost.instances[0]  # pylint: disable=protected-access
 
 

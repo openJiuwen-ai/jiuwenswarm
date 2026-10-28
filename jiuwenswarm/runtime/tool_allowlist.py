@@ -13,12 +13,25 @@ from collections.abc import Iterable
 from typing import Any
 
 
+def apply_tool_policy_prompt(
+    system_prompt: str, tool_names: Iterable[str] | str
+) -> str:
+    """Describe an explicitly empty ability set to the model as well as enforcing it."""
+    if tool_names:
+        return system_prompt
+    return system_prompt + (
+        "\n\nAll tools are disabled for this Agent. Do not call or claim access "
+        "to tools, files, shell commands, network resources, or delegates. "
+        "Answer using only the conversation and your knowledge."
+    )
+
+
 def install_tool_allowlist(manager: Any, tool_names: Iterable[str]) -> None:
     """Restrict one Agent's model-facing abilities and execution."""
 
     allowed = frozenset(tool_names)
-    if not allowed or "*" in allowed:
-        raise ValueError("an explicit tool allowlist must contain tool names")
+    if "*" in allowed:
+        raise ValueError("an explicit tool allowlist must not contain '*'")
     if getattr(manager, "jiuwenswarm_tool_allowlist", None) is not None:
         raise ValueError("tool allowlist is already installed")
 
@@ -33,8 +46,9 @@ def install_tool_allowlist(manager: Any, tool_names: Iterable[str]) -> None:
         infos = await original_list_tool_info(*args, **kwargs)
         return [info for info in infos if info.name in allowed]
 
-    async def limited_execute(ctx: Any, tool_call: Any, session: Any,
-                              *args: Any, **kwargs: Any) -> Any:
+    async def limited_execute(
+        ctx: Any, tool_call: Any, session: Any, *args: Any, **kwargs: Any
+    ) -> Any:
         calls = tool_call if isinstance(tool_call, list) else [tool_call]
         denied = [call.name for call in calls if call.name not in allowed]
         if denied:

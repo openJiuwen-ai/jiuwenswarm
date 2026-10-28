@@ -40,6 +40,10 @@ function blobBase64(blob: Blob): Promise<string> {
 export function useTaskAsr({ onTranscript, onError }: TaskAsrOptions) {
   const [isRecording, setIsRecording] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
+  const [audioLevel, setAudioLevel] = useState(0);
+  const analyserContextRef = useRef<AudioContext | null>(null);
+  const meterFrameRef = useRef<number | null>(null);
+  const startingRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
@@ -65,6 +69,11 @@ export function useTaskAsr({ onTranscript, onError }: TaskAsrOptions) {
   }, []);
 
   const releaseMicrophone = useCallback(() => {
+    if (meterFrameRef.current !== null) window.cancelAnimationFrame(meterFrameRef.current);
+    meterFrameRef.current = null;
+    void analyserContextRef.current?.close().catch(() => undefined);
+    analyserContextRef.current = null;
+    if (mountedRef.current) setAudioLevel(0);
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
   }, []);
@@ -105,7 +114,8 @@ export function useTaskAsr({ onTranscript, onError }: TaskAsrOptions) {
   }, [clearDurationTimer, releaseMicrophone]);
 
   const startRecording = useCallback(async () => {
-    if (!isSupported || isRecording || isTranscribing) return;
+    if (!isSupported || isRecording || isTranscribing || startingRef.current) return;
+    startingRef.current = true;
     discardRecordingRef.current = false;
     chunksRef.current = [];
     try {
@@ -147,6 +157,26 @@ export function useTaskAsr({ onTranscript, onError }: TaskAsrOptions) {
       };
       recorder.start(250);
       setIsRecording(true);
+      // Metering is optional; recording still works if Web Audio is unavailable.
+      try {
+        const audioContext = new AudioContext();
+        analyserContextRef.current = audioContext;
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        audioContext.createMediaStreamSource(stream).connect(analyser);
+        void audioContext.resume().catch(() => undefined);
+        const samples = new Uint8Array(analyser.fftSize);
+        const meter = () => {
+          if (!mountedRef.current || streamRef.current !== stream) return;
+          analyser.getByteTimeDomainData(samples);
+          const energy = samples.reduce((sum, sample) => sum + ((sample - 128) / 128) ** 2, 0);
+          setAudioLevel(Math.min(1, Math.sqrt(energy / samples.length) * 4));
+          meterFrameRef.current = window.requestAnimationFrame(meter);
+        };
+        meter();
+      } catch {
+        // The Stop control remains available without the optional audio meter.
+      }
       durationTimerRef.current = window.setTimeout(stopRecording, MAX_RECORDING_DURATION_MS);
     } catch (error) {
       releaseMicrophone();
@@ -154,6 +184,8 @@ export function useTaskAsr({ onTranscript, onError }: TaskAsrOptions) {
         setIsRecording(false);
         onErrorRef.current(error instanceof Error ? error.message : String(error));
       }
+    } finally {
+      startingRef.current = false;
     }
   }, [clearDurationTimer, isRecording, isSupported, isTranscribing, releaseMicrophone, stopRecording, transcribe]);
 
@@ -181,6 +213,7 @@ export function useTaskAsr({ onTranscript, onError }: TaskAsrOptions) {
     isRecording,
     isTranscribing,
     isSupported,
+    audioLevel,
     toggleRecording,
   };
 }

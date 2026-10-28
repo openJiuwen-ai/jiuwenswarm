@@ -2,6 +2,12 @@
   "schema_version": 1,
   "agents": {
     "claude": {
+      "required_modules": ["claude_agent_sdk"],
+      "executables": {
+        "windows-x86_64": "claude_agent_sdk/_bundled/claude.exe",
+        "macos-arm64": "claude_agent_sdk/_bundled/claude",
+        "macos-x86_64": "claude_agent_sdk/_bundled/claude"
+      },
       "platforms": {
         "windows-x86_64": [
           {"name": "claude-agent-sdk", "version": "0.2.115", "mirror_url": "https://mirrors.aliyun.com/pypi/packages/c0/64/efe0f2ad2e1ae39690c7345d6da651be6af1350ef25bc20209171896a4bf/claude_agent_sdk-0.2.115-py3-none-win_amd64.whl", "url": "https://files.pythonhosted.org/packages/c0/64/efe0f2ad2e1ae39690c7345d6da651be6af1350ef25bc20209171896a4bf/claude_agent_sdk-0.2.115-py3-none-win_amd64.whl", "sha256": "9bff5ef9932747ce41982a7c955fb144220ada80e6931bd5f5ee5da74f454990"}
@@ -15,6 +21,13 @@
       }
     },
     "codex": {
+      "required_modules": ["openai_codex", "codex_cli_bin"],
+      "executables": {
+        "windows-x86_64": "codex_cli_bin/bin/codex.exe",
+        "windows-arm64": "codex_cli_bin/bin/codex.exe",
+        "macos-arm64": "codex_cli_bin/bin/codex",
+        "macos-x86_64": "codex_cli_bin/bin/codex"
+      },
       "platforms": {
         "windows-x86_64": [
           {"name": "openai-codex", "version": "0.144.4", "mirror_url": "https://mirrors.aliyun.com/pypi/packages/17/35/5d2a13e38d91278019f18757ac10426d2649b7ec6f031818c792f64559e9/openai_codex-0.144.4-py3-none-any.whl", "url": "https://files.pythonhosted.org/packages/17/35/5d2a13e38d91278019f18757ac10426d2649b7ec6f031818c792f64559e9/openai_codex-0.144.4-py3-none-any.whl", "sha256": "de1513a6e94b9a8d7728a3b74298bc1469428ade10ba0ef2d5db47dd1cb606f5"},
@@ -34,5 +47,6 @@
         ]
       }
     }
-  }
+  },
+  "providers": {}
 }

@@ -277,7 +277,19 @@ def test_skill_creator_router_resource_exists() -> None:
 
     normal = get_builtin_skills_dir() / "skill-creator-normal" / "SKILL.md"
     assert normal.is_file()
-    assert "name: skill-creator-normal" in normal.read_text(encoding="utf-8")
+    normal_text = normal.read_text(encoding="utf-8")
+    assert "name: skill-creator-normal" in normal_text
+    assert "send_file_to_user" in normal_text
+    assert "workspace/skills" in normal_text
+    assert "Forced delivery rules" in normal_text
+
+    swarm = get_builtin_skills_dir() / "swarmskill-creator" / "SKILL.md"
+    assert swarm.is_file()
+    swarm_text = swarm.read_text(encoding="utf-8")
+    assert "send_file_to_user" in swarm_text
+    assert "workspace/skills" in swarm_text
+    assert "Stage 7" in swarm_text
+    assert "Forced delivery rules" in swarm_text
 
 
 def test_repair_skill_creator_normal_frontmatter_name(tmp_path) -> None:

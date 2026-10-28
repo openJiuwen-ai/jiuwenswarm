@@ -134,11 +134,11 @@ def test_cli_work_mode_follows_self_describing_mode(
 
 def test_invalid_choice_error_is_fully_chinese(capsys) -> None:
     with pytest.raises(SystemExit, match="2"):
-        build_parser().parse_args(["--work-mode", "invalid", "task"])
+        build_parser().parse_args(["--output", "invalid", "task"])
 
     error = capsys.readouterr().err
-    assert "参数 --work-mode 的值无效" in error
-    assert "可选值：'code', 'work'" in error
+    assert "参数 --output 的值无效" in error
+    assert "可选值：'human', 'json', 'jsonl'" in error
     assert "invalid choice" not in error
 
 
@@ -172,11 +172,38 @@ def test_worker_command_uses_a_fresh_process_entry_and_runtime_session() -> None
     assert "--_interactive-worker" in command
     assert "--_forwarded-live-input" in command
     assert command[command.index("--session") + 1] == "process_cli_session_1"
-    assert command[command.index("--mode") + 1] == "code.normal"
-    assert command[command.index("--work-mode") + 1] == "code"
+    assert command[command.index("--mode") + 1] == "agent.code.normal"
+    assert "--work-mode" not in command
     assert command[command.index("--_prompt-file") + 1] == "D:/temp/prompt.txt"
     assert "inspect this project" not in command
     assert "--_operation" not in command
+
+
+@pytest.mark.parametrize(
+    ("mode", "work_mode", "expected"),
+    [
+        ("agent", "work", "agent.work.normal"),
+        ("agent", "code", "agent.code.normal"),
+        ("agent.plan", "work", "agent.work.plan"),
+        ("team", "work", "team.work.normal"),
+        ("team", "code", "team.code.normal"),
+        ("agent.work.normal", "code", "agent.work.normal"),
+        ("code.normal", "work", "agent.code.normal"),
+    ],
+)
+def test_worker_mode_preserves_session_profile_without_work_mode_flag(
+    mode, work_mode, expected,
+) -> None:
+    command = repl._worker_command(
+        _args(mode=mode, work_mode=work_mode),
+        prompt_file="prompt.txt",
+        session_id="process_cli_session",
+        session_result_file="session.txt",
+    )
+    parsed = build_parser().parse_args(command[3:])
+    assert parsed.mode == expected
+    assert resolve_cli_work_mode(parsed.mode, parsed.work_mode) == expected.split(".")[1]
+    assert "--work-mode" not in command
 
 
 def test_worker_command_marks_runtime_invoke_operation() -> None:

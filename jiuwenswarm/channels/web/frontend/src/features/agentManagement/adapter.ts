@@ -181,6 +181,9 @@ export function normalizeAgentTemplateListItem(raw: RawAgentTemplateListItem, lo
           },
         }
       : {}),
+    ...(typeof raw.runtime?.provider_name === 'string' && raw.runtime.provider_name
+      ? { runtime: { provider_name: raw.runtime.provider_name } }
+      : {}),
   };
 }
 
@@ -201,6 +204,9 @@ export function normalizeAgentTemplateDetail(raw: RawAgentTemplateDetail, locale
     pendingConnectors: Array.isArray(raw.pending_connectors)
       ? raw.pending_connectors.filter((item) => typeof item === 'string' && item.length > 0)
       : [],
+    ...(typeof raw.runtime?.provider_name === 'string' && raw.runtime.provider_name
+      ? { runtime: { provider_name: raw.runtime.provider_name } }
+      : {}),
   };
 }
 

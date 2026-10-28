@@ -83,6 +83,45 @@ def test_append_history_skips_empty_chat_final_and_heartbeat(tmp_path, monkeypat
     assert session_history.load_history_records("health_check_abc") == []
 
 
+def test_append_history_limits_user_event_types_to_designer(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    session_history.append_history_record(
+        session_id="s-user-events",
+        request_id="assistant",
+        channel_id="web",
+        role="assistant",
+        event_type="chat.final",
+        content="assistant message",
+        timestamp=1.0,
+    )
+    session_history.append_history_record(
+        session_id="s-user-events",
+        request_id="designer-user",
+        channel_id="web",
+        role="user",
+        event_type="design.user",
+        content="designer message",
+        timestamp=2.0,
+    )
+    session_history.append_history_record(
+        session_id="s-user-events",
+        request_id="regular-user",
+        channel_id="web",
+        role="user",
+        event_type="chat.custom",
+        content="regular message",
+        timestamp=3.0,
+    )
+
+    data = _wait_history("s-user-events", min_count=3)
+    assert [item.get("event_type") for item in data] == [
+        "chat.final",
+        "design.user",
+        None,
+    ]
+
+
 def test_assistant_file_event_is_restored_for_team_history() -> None:
     assert session_history._is_team_relevant(
         {
@@ -144,6 +183,77 @@ def test_has_persistable_assistant_payload_subagent_activity():
             }
         },
     ) is True
+
+
+def test_has_persistable_assistant_payload_subtask_update():
+    # Parent-stream roster frames use description/subagent_id without content;
+    # dropping them prevents refresh from rediscovering the subagent panel (#4887).
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={
+            "subagent_id": "web_session_sub_general-purpose_1",
+            "parent_session_id": "web_session",
+            "description": "Agent A",
+            "status": "completed",
+        },
+    ) is True
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={"description": "Agent A"},
+    ) is True
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.subtask_update",
+        extra={},
+    ) is False
+
+
+def test_list_session_subagent_ids_discovers_on_disk_buckets(tmp_path, monkeypatch):
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    parent = "web_parent_session"
+    sub_a = "web_parent_session_sub_general-purpose_1"
+    sub_b = "web_parent_session_sub_general-purpose_2"
+
+    session_history.append_history_record(
+        session_id=parent,
+        subagent_id=sub_a,
+        request_id="roster-a",
+        channel_id="subagent",
+        role="assistant",
+        event_type="chat.subtask_update",
+        content="Agent A",
+        timestamp=1.0,
+        extra={
+            "subagent_id": sub_a,
+            "parent_session_id": parent,
+            "description": "Agent A",
+            "status": "completed",
+        },
+        mode="subagent",
+    )
+    session_history.append_history_record(
+        session_id=parent,
+        subagent_id=sub_b,
+        request_id="roster-b",
+        channel_id="subagent",
+        role="assistant",
+        event_type="chat.subtask_update",
+        content="Agent B",
+        timestamp=2.0,
+        extra={
+            "subagent_id": sub_b,
+            "parent_session_id": parent,
+            "description": "Agent B",
+            "status": "completed",
+        },
+        mode="subagent",
+    )
+    session_history.flush_history_writes()
+
+    assert session_history.list_session_subagent_ids(parent) == [sub_a, sub_b]
+    assert session_history.list_session_subagent_ids("missing-session") == []
 
 
 def test_has_persistable_assistant_payload_ask_user_question():

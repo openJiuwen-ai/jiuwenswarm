@@ -124,10 +124,11 @@ register([
 // 创建待办（todo_insert 也是新增待办；todo_complete/todo_remove/todo_list 无对应动作 → 扳手兜底）
 register(['todo_create', 'todo_insert'], { category: 'other', actionKey: 'chatUi.toolAction.todoCreate', iconKey: 'todo' });
 register(['skill_tool'], { category: 'other', actionKey: 'chatUi.toolAction.skill', iconKey: 'skill' });
-// 创建成员（各 spawn_* 变体都是创建成员）
+// 创建成员（各 spawn_* 变体都是创建成员）。spawn_external_cli 已并入 spawn_teammate，
+// 保留它只为让旧会话里的这类调用照常显示为"创建成员"
 register([
   'spawn_teammate', 'spawn_human_agent', 'spawn_passive_human',
-  'spawn_bridge_agent', 'spawn_external_cli', 'spawn_sub_agent',
+  'spawn_bridge_agent', 'spawn_external_cli', 'spawn_sub_agent', 'spawn_expert',
 ], { category: 'other', actionKey: 'chatUi.toolAction.spawnMember', iconKey: 'spawnMember' });
 register(['send_message', 'group_send_message', 'session_send_message'], { category: 'other', actionKey: 'chatUi.toolAction.sendMessage', iconKey: 'sendMessage' });
 register(['build_team'], { category: 'other', actionKey: 'chatUi.toolAction.buildTeam', iconKey: 'buildTeam' });

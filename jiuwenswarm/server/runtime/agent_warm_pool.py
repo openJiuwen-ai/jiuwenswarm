@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
 )
@@ -536,12 +536,16 @@ class AgentWarmPool:
                     await asyncio.sleep(0)
                     if keep_as_slot:
                         await self._foreground_idle.wait()
-                    await agent.prepare_session(
-                        session_id=session_id,
-                        channel_id=key.channel_id,
-                        mode=("code.normal" if key.work_mode == "code" else "agent"),
-                        project_dir=key.project_dir or None,
-                    )
+                    prepare_kernel = getattr(agent, "prepare_kernel", None)
+                    if keep_as_slot and callable(prepare_kernel):
+                        await prepare_kernel(mode=key.agent_mode)
+                    else:
+                        await agent.prepare_session(
+                            session_id=session_id,
+                            channel_id=key.channel_id,
+                            mode=("code.normal" if key.work_mode == "code" else "agent"),
+                            project_dir=key.project_dir or None,
+                        )
             logger.info(
                 "Agent prepare completed: session_id=%s foreground=%s duration_ms=%.1f",
                 session_id,

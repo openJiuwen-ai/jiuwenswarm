@@ -4,10 +4,13 @@ import asyncio
 import json
 import logging
 import time
+from typing import Any
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
+
+from .qwen_omni_tools import parse_qwen_omni_tool_call
 from .tasks.errors import QueueVersionConflict, TaskRevisionConflict
 from .tasks.prompts import (
     EMPTY_QUERY_INSTRUCTIONS,
@@ -16,16 +19,50 @@ from .tasks.prompts import (
     REVISION_CONFLICT_INSTRUCTIONS,
     task_query_instructions,
 )
-from .qwen_omni_tools import parse_qwen_omni_tool_call
 
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
 
 
+class AgentRequestTimeoutError(TimeoutError):
+    """AgentServer unary 请求超时（与 gateway.routing.agent_request_timeout 同契约的最小子集）."""
+
+    code = "AGENT_SERVER_TIMEOUT"
+
+
+async def send_agent_request_with_timeout(
+    agent_client: Any,
+    env: Any,
+    *,
+    label: str,
+    timeout_seconds: float,
+) -> Any:
+    """限时等待 AgentServer unary 响应（gateway 薄代理同语义的最小本地实现）。
+
+    task 查询始终显式传 timeout_seconds，不涉及 gateway 的 TUI 通道超时策略；
+    仅依赖注入的 AgentServerClient.send_request，不引用 gateway 树实现。
+    """
+    try:
+        return await asyncio.wait_for(
+            agent_client.send_request(env), timeout=timeout_seconds
+        )
+    except asyncio.TimeoutError as exc:
+        logger.warning(
+            "[%s] AgentServer unary request timed out: request_id=%s method=%s "
+            "channel=%s timeout=%ss",
+            label,
+            getattr(env, "request_id", ""),
+            getattr(env, "method", ""),
+            getattr(env, "channel", ""),
+            timeout_seconds,
+        )
+        raise AgentRequestTimeoutError() from exc
+
+
 def task_identity(ws, scope):
     """Use WebChannel's user scope; connection admission belongs to the gateway."""
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     if not isinstance(scope, str) or not scope:
         raise ValueError("Invalid task conversation")
@@ -49,7 +86,6 @@ def task_identity(ws, scope):
 async def task_agent_query(client, method, params, session, owner):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-    from jiuwenswarm.gateway.routing.e2a_proxy import send_agent_request_with_timeout
 
     client = client.get("value") if isinstance(client, dict) else client
     if client is None:
@@ -70,7 +106,9 @@ async def task_agent_query(client, method, params, session, owner):
 class AgentTaskExecutor:
     def __init__(self, client, store, normalize_media):
         self.client, self.store, self.normalize_media = client, store, normalize_media
-        from .tasks.bridge import GatewayTaskEndpoint
+        from gateway.extensions.video_duplex.backend.tasks.bridge import (
+            GatewayTaskEndpoint,
+        )
 
         self.endpoint = GatewayTaskEndpoint(store)
 
@@ -108,8 +146,8 @@ class AgentTaskExecutor:
                 }
             )
         from jiuwenswarm.extensions.video_duplex.backend.tasks.service import (
-            InteractionPending,
             ExecutionUncertain,
+            InteractionPending,
         )
 
         try:
@@ -151,7 +189,9 @@ class AgentTaskExecutor:
             raise
 
     async def wait_settled(self, task):
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import ExecutionUncertain
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import (
+            ExecutionUncertain,
+        )
 
         try:
             async with asyncio.timeout(20):
@@ -179,6 +219,11 @@ class AgentTaskExecutor:
                     "question": a["question"],
                     "custom_input": a.get("answer", ""),
                     "selected_options": a.get("selected_options", []),
+                    **(
+                        {"card_id": a["card_id"]}
+                        if isinstance(a.get("card_id"), str) and a["card_id"]
+                        else {}
+                    ),
                 }
                 for a in interaction["answers"]
             ),
@@ -535,7 +580,7 @@ class VideoSearchManager:
                 raise ValueError("Qwen Omni Realtime is not the active provider")
             call = parse_qwen_omni_tool_call(params)
             if call.name in {"jiuwen_delegate", "jiuwen_research"}:
-                from .video_search import _frame_media_item, MAX_FRAME_CHARS
+                from .video_search import MAX_FRAME_CHARS, _frame_media_item
 
                 frame = params.get("frame_data_url", "")
                 if frame and (

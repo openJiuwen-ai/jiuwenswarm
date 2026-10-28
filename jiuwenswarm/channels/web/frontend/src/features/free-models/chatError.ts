@@ -11,6 +11,7 @@ const LIFECYCLE_ERROR_KEYS: Record<string, string> = {
   SESSION_ARCHIVED: 'chat.sessionArchived',
   NOT_FOUND: 'chat.sessionDeleted',
   OPERATION_IN_PROGRESS: 'chat.sessionOperationInProgress',
+  SWARMFLOW_SESSION_BUDGET_EXHAUSTED: 'swarmflow.budgetExhaustedSession',
 };
 
 export function describeChatError(

@@ -93,3 +93,27 @@
     grid-column: auto;
   }
 }
+
+.video-duplex-model-settings__model-icon {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  color: var(--color-text-link);
+}
+
+.video-duplex-model-settings__model-icon--joyai {
+  flex-basis: 88px;
+  width: 88px;
+  height: 48px;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+
+.video-duplex-model-settings__model-copy {
+  flex: 1;
+}
+
+.video-duplex-model-settings__connected {
+  flex-shrink: 0;
+  color: var(--color-feedback-success);
+}

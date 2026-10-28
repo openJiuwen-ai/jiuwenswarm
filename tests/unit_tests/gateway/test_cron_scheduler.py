@@ -12,21 +12,21 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.cron.models import CronJob, CronRunState
-from jiuwenswarm.gateway.cron.scheduler import (
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.message import ReqMethod
+from gateway.cron.models import CronJob, CronRunState
+from gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
     CronSchedulerService,
     _Event,
 )
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.cron_team_completion import (
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
-from jiuwenswarm.gateway.cron import scheduler as cron_scheduler_module
-from jiuwenswarm.gateway.cron.store import CronJobStore
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.cron import scheduler as cron_scheduler_module
+from gateway.cron.store import CronJobStore
+from gateway.message_handler.message_handler import MessageHandler
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -445,6 +445,64 @@ class TestCronLastSessionId:
         assert stored.last_session_id == "cron_agentserver_allocated"
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "chunks, completed, expected_text",
+        [
+            pytest.param(
+                [(None, True)], True, "[cron] 任务执行完成但未返回结果内容",
+                id="empty-terminal",
+            ),
+            pytest.param(
+                [({"event_type": "chat.final", "content": ""}, False), ({"is_complete": True}, True)],
+                True, "[cron] 任务执行完成但未返回结果内容", id="empty-final",
+            ),
+            pytest.param(
+                [], False, "[cron] 任务执行流提前结束，未收到完成信号", id="eof",
+            ),
+            pytest.param(
+                [({"event_type": "chat.delta", "content": "partial"}, False)],
+                False, "[cron] 任务执行流提前结束，未收到完成信号", id="partial-eof",
+            ),
+            pytest.param(
+                [({"event_type": "chat.error", "error": "boom"}, True)],
+                False, "boom", id="chat-error",
+            ),
+            pytest.param(
+                [({"error": "boom"}, True)], False, "boom", id="legacy-error",
+            ),
+            pytest.param(
+                [({"event_type": "runtime.error", "error": "boom"}, True)],
+                False, "boom", id="runtime-error",
+            ),
+        ],
+    )
+    async def test_stream_completion_controls_last_session_id(self, tmp_path, chunks, completed, expected_text):
+        """#4980: text-less completion records the session; failure keeps the previous one."""
+        class StreamAgentClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                for payload, is_complete in chunks:
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=is_complete,
+                    )
+
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        await store.update_job(job.id, {"last_session_id": "previous-success"})
+        svc = _make_scheduler(store, agent_client=StreamAgentClient())
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        stored = await store.get_job(job.id)
+        assert stored is not None
+        assert stored.last_session_id == ("cron_agentserver_allocated" if completed else "previous-success")
+        assert svc.runs[run_id].status == "failed"
+        assert svc.runs[run_id].result_text == expected_text
+
+    @pytest.mark.asyncio
     async def test_run_now_info_returns_agentserver_execution_session_id(self, tmp_path):
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, user_id="run-now-owner")
@@ -469,6 +527,18 @@ class TestCronLastSessionId:
         await svc.on_wake(job, info["run_id"])
         await svc.run_tasks[info["run_id"]]
         assert [request.method for request in agent.unary_requests].count("session.create") == 1
+
+    @pytest.mark.asyncio
+    async def test_run_now_rejects_xiaoyi_target(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="xiaoyi")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        with pytest.raises(ValueError, match="not supported for target: xiaoyi"):
+            await svc.trigger_run_now_info(job.id)
+
+        assert not agent.unary_requests
 
     @pytest.mark.asyncio
     async def test_run_now_info_does_not_allocate_session_for_proactive_tick(self, tmp_path):
@@ -568,7 +638,7 @@ class TestCronFailureDelivery:
     ):
         class EmptyFailedResultScheduler(_TestableScheduler):
             async def _run_stream_cron_job(self, **_kwargs):
-                return "", False
+                return "", False, False
 
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="web")
@@ -1067,6 +1137,16 @@ class TestReloadKeepsDueUnconsumedEvents:
         await svc.reload()
 
         assert all(ev.run_id != stale_run_id for _, _, ev in svc.events)
+
+    @pytest.mark.asyncio
+    async def test_reload_does_not_schedule_xiaoyi_target(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="xiaoyi")
+        svc = _make_scheduler(store)
+
+        await svc.reload()
+
+        assert not [ev for _, _, ev in svc.events if ev.job_id == job.id]
 
     @pytest.mark.asyncio
     async def test_reload_drops_due_events_for_removed_job(self, tmp_path):
@@ -2259,7 +2339,7 @@ class TestUnaryCronJobTimeoutOverride:
 
     @pytest.mark.asyncio
     async def test_timeout_passed_through_and_cancel_invoked(self, tmp_path):
-        from jiuwenswarm.gateway.routing.agent_client import AgentServerUnaryTimeout
+        from gateway.routing.agent_client import AgentServerUnaryTimeout
 
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="web")
@@ -2421,12 +2501,13 @@ class TestSingleAgentCronStream:
             chat_type=None, timezone=job.timezone,
         )
 
-        text, ok = await svc.run_stream_cron_job(
+        text, ok, completed = await svc.run_stream_cron_job(
             envelope=envelope, timeout_seconds=30.0, state=state
         )
 
         assert ok is True
         assert text == "请记得开会。"
+        assert completed is True
 
     @pytest.mark.parametrize(
         "event_type",
@@ -2488,11 +2569,12 @@ class TestSingleAgentCronStream:
         state.exec_session_id = "cron_agentserver_allocated"
         state.exec_channel_id = "__cron__"
 
-        text, ok = await svc.run_stream_cron_job(
+        text, ok, completed = await svc.run_stream_cron_job(
             envelope=envelope, timeout_seconds=0.5, state=state
         )
 
         assert ok is False
+        assert completed is False
         assert text == CRON_INTERRUPT_RESULT_TEXT
         assert len(agent_client.cancel_requests) == 1
         assert agent_client.cancel_requests[0].method == ReqMethod.CHAT_CANCEL.value
@@ -2527,11 +2609,12 @@ class TestSingleAgentCronStream:
             chat_type=None, timezone=job.timezone,
         )
 
-        text, ok = await svc.run_stream_cron_job(
+        text, ok, completed = await svc.run_stream_cron_job(
             envelope=envelope, timeout_seconds=30.0, state=state
         )
 
         assert ok is False
+        assert completed is True
         assert text == "[cron] 任务执行完成但未返回结果内容"
 
 
@@ -2678,7 +2761,7 @@ class TestExtractTextFromAgentPayload:
 
     @staticmethod
     def _call(payload):
-        from jiuwenswarm.gateway.cron.scheduler import _extract_text_from_agent_payload
+        from gateway.cron.scheduler import _extract_text_from_agent_payload
         return _extract_text_from_agent_payload(payload)
 
     def test_error_payload_returns_raw_error(self):
@@ -3090,7 +3173,7 @@ async def test_disable_project_jobs_preserves_other_jobs(tmp_path):
 @pytest.mark.asyncio
 async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatch):
     import asyncio
-    from jiuwenswarm.gateway.routing import e2a_proxy
+    from gateway.routing import e2a_proxy
 
     svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
     entered, release = asyncio.Event(), asyncio.Event()
@@ -3123,7 +3206,7 @@ def _patch_login_credential_lookup(
     ``fresh`` 为 refreshed_credential_for_ref 的返回值（None=凭据已撤销/拿不到）。
     """
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref",
+        "gateway.auth.passthrough.refreshed_credential_for_ref",
         lambda ref: fresh
         if fresh is not None
         else {"credential_ref": ref, "revoked": True},

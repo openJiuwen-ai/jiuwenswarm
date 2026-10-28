@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.kv_cache_affinity_config import (
     build_kv_cache_affinity_config,
+    get_default_model_client_config,
+    get_kv_cache_control_model_client_config,
     is_affinity_enabled,
     model_provider,
     normalize_affinity_request,
@@ -44,16 +46,11 @@ def test_runtime_config_fails_closed_without_capability() -> None:
 
     config_module._normalize_config(config)
 
-    assert (
-        config["kv_cache_affinity_config"]["enable_kv_cache_affinity"]
-        is False
-    )
+    assert config["kv_cache_affinity_config"]["enable_kv_cache_affinity"] is False
 
 
 def test_affinity_invariant_reports_all_failures() -> None:
-    valid, failures = validate_affinity_invariant(
-        _config("OpenAI")
-    )
+    valid, failures = validate_affinity_invariant(_config("OpenAI"))
 
     assert valid is False
     assert failures == [
@@ -68,16 +65,11 @@ def test_openai_affinity_capability_survives_runtime_normalization() -> None:
 
     config_module._normalize_config(config)
 
-    assert (
-        config["kv_cache_affinity_config"]["enable_kv_cache_affinity"]
-        is True
-    )
+    assert config["kv_cache_affinity_config"]["enable_kv_cache_affinity"] is True
 
 
 def test_affinity_invariant_accepts_openai_affinity_capability() -> None:
-    valid, failures = validate_affinity_invariant(
-        _config("OpenAI", mode="affinity")
-    )
+    valid, failures = validate_affinity_invariant(_config("OpenAI", mode="affinity"))
 
     assert valid is True
     assert failures == []
@@ -90,10 +82,71 @@ def test_affinity_invariant_accepts_legacy_ascend_alias() -> None:
     assert failures == []
 
 
+def test_agentos_only_affinity_configuration_is_valid() -> None:
+    config = {
+        "models": {
+            "agentos": [
+                {
+                    "model_client_config": {
+                        "client_provider": "AscendAffinity",
+                        "model_name": "agentos-model",
+                    }
+                }
+            ]
+        },
+        "kv_cache_affinity_config": {"enable_kv_cache_affinity": True},
+    }
+
+    valid, failures = validate_affinity_invariant(config)
+
+    assert valid is True
+    assert failures == []
+
+
+def test_agentos_model_takes_precedence_over_affinity_default() -> None:
+    config = _config("AscendAffinity")
+    config["models"]["agentos"] = [
+        {
+            "model_client_config": {
+                "client_provider": "OpenAI",
+                "model_name": "agentos-model",
+            }
+        }
+    ]
+
+    valid, failures = validate_affinity_invariant(config)
+
+    assert valid is False
+    assert failures == [
+        "AgentOS model must declare extensions.kv_cache.mode=affinity "
+        "or use legacy provider AscendAffinity; "
+        "got provider=OpenAI mode=<empty>"
+    ]
+
+
+def test_kvc_control_falls_back_to_default_without_agentos() -> None:
+    config = _config("AscendAffinity")
+
+    selected = get_kv_cache_control_model_client_config(config)
+
+    assert selected is config["models"]["defaults"][0]["model_client_config"]
+
+
+def test_kvc_control_prefers_agentos_without_changing_normal_default() -> None:
+    config = _config("OpenAI", mode="affinity")
+    default_client = config["models"]["defaults"][0]["model_client_config"]
+    agentos_client = {
+        "client_provider": "AscendAffinity",
+        "model_name": "agentos-model",
+    }
+    config["models"]["agentos"] = [{"model_client_config": agentos_client}]
+
+    assert get_kv_cache_control_model_client_config(config) is agentos_client
+    assert get_default_model_client_config(config) is default_client
+
+
 def test_affinity_invariant_rejects_openai_mode_none() -> None:
-    valid, failures = validate_affinity_invariant(
-        _config("OpenAI", mode="none")
-    )
+    valid, failures = validate_affinity_invariant(_config("OpenAI", mode="none"))
 
     assert valid is False
     assert failures == [
@@ -135,7 +188,9 @@ def test_runtime_policy_preserves_ascend_affinity() -> None:
     assert result.enable_kv_cache_affinity is True
 
 
-def test_model_provider_prefers_original_provider_after_transport_normalization() -> None:
+def test_model_provider_prefers_original_provider_after_transport_normalization() -> (
+    None
+):
     model = SimpleNamespace(
         model_client_config=SimpleNamespace(
             client_provider="OpenAI",
@@ -148,9 +203,9 @@ def test_model_provider_prefers_original_provider_after_transport_normalization(
 
 def test_default_model_provider_prefers_original_provider_after_normalization() -> None:
     config = _config("OpenAI")
-    config["models"]["defaults"][0]["model_client_config"][
-        "legacy_client_provider"
-    ] = "DeepSeek"
+    config["models"]["defaults"][0]["model_client_config"]["legacy_client_provider"] = (
+        "DeepSeek"
+    )
 
     assert config_module.get_default_model_provider(config) == "DeepSeek"
 

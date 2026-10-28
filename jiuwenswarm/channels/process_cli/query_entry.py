@@ -46,12 +46,15 @@ async def _read_query(source: str) -> OneShotQueryInput:
     try:
         return OneShotQueryInput.from_dict(value)
     except (TypeError, ValueError, OverflowError, RecursionError):
+        from jiuwenswarm.channels.process_cli.protocol.schema import input_error_details
+
         request_id = value.get("request_id")
         raise MachineInputError(
             "Query input does not match the schema.",
             request_id=request_id.strip()
             if isinstance(request_id, str) and request_id.strip()
             else None,
+            details=input_error_details(value, "query"),
         ) from None
 
 
@@ -63,6 +66,19 @@ def execute_query_source(source: str, *, conflicting_arguments: bool = False) ->
         nonlocal request_id
         request = await _read_query(source)
         request_id = request.request_id or request_id
+        if request.operation in ("protocol.capabilities", "protocol.schema"):
+            from jiuwenswarm.channels.process_cli.protocol.capabilities import (
+                protocol_capabilities,
+            )
+            from jiuwenswarm.channels.process_cli.protocol.schema import protocol_schema
+
+            return OneShotQueryResult(
+                request_id=request_id,
+                operation=request.operation,
+                data=protocol_capabilities()
+                if request.operation == "protocol.capabilities"
+                else protocol_schema(),
+            )
         request = prepare_workspace(request)
         await asyncio.sleep(0)
         from jiuwenswarm.channels.process_cli.query import run_query
@@ -79,7 +95,9 @@ def execute_query_source(source: str, *, conflicting_arguments: bool = False) ->
                 request_id=error.request_id or request_id,
                 status=RunStatus.FAILED,
                 exit_code=2,
-                error=RuntimeErrorInfo(code=error.code, message=str(error)),
+                error=RuntimeErrorInfo(
+                    code=error.code, message=str(error), details=error.details
+                ),
             )
         except (KeyboardInterrupt, asyncio.CancelledError):
             result = OneShotQueryResult(

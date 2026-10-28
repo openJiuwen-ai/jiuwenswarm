@@ -25,6 +25,7 @@ from typing import Optional
 
 from jiuwenswarm.common.utils import get_user_home, init_user_workspace, get_user_workspace_dir
 from jiuwenswarm.instance_manager import (
+    InstancesYamlError,
     create_bootstrap_env,
     get_default_instance_status,
     get_instance_config,
@@ -73,7 +74,11 @@ def run_init(force: bool = False, name: Optional[str] = None) -> int:
     # 3. Check if instance is running (for named instances, always check)
     if name:
         # For named instance, check if it's running
-        config = get_instance_config(name)
+        try:
+            config = get_instance_config(name)
+        except InstancesYamlError as exc:
+            logging.info(f"[jiuwenswarm-init] ERROR: {exc}")
+            return 1
         if config is None:
             # Instance not in instances.yaml yet, use default config
             workspace_path = get_instance_workspace_path(name)

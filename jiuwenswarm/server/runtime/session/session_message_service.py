@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import deprecate_mode, is_plan_mode, is_single_agent_mode
+from gateway.common.mode_matrix import (
+    deprecate_mode,
+    is_plan_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
 from jiuwenswarm.runtime.session_input import (
     SessionInputQueueRequiredError,
     SessionInputRejectedError,
@@ -40,6 +45,7 @@ MAX_SESSION_MESSAGE_HOPS = 4
 _STORE_RETRY_ATTEMPTS = 3
 _STORE_RETRY_BASE_DELAY_SECONDS = 0.05
 _STATUS_PUSH_TIMEOUT_SECONDS = 5.0
+_TARGET_DELETE_STOP_TIMEOUT_SECONDS = 10.0
 # Deadlock breaker, not a task deadline: a normal cross-session turn may run
 # for a long time, but a wedged runtime stream must not hold the target's
 # admission forever.
@@ -226,7 +232,7 @@ class SessionMessageService:
         mode = deprecate_mode(metadata.get("mode"))
         channel_id = str(metadata.get("channel_id") or "").strip().lower()
         return bool(
-            is_single_agent_mode(mode)
+            (is_single_agent_mode(mode) or is_team_mode(mode))
             and channel_id in {"web", "tui"}
             and not str(metadata.get("cron_id") or "").strip()
         )
@@ -345,8 +351,15 @@ class SessionMessageService:
         )
         return {"queue_paused": bool(reason), "queue_pause_reason": reason}
 
-    async def _queue_summary(self, session_id: str, user_id: str) -> dict[str, Any]:
-        queued = await self.queued_for_target(session_id, user_id)
+    async def _queue_summary(
+        self,
+        session_id: str,
+        user_id: str,
+        *,
+        queued: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if queued is None:
+            queued = await self.queued_for_target(session_id, user_id)
         blocking = await self._store_call(self._store.blocking_states, [session_id])
         pause = self._queue_pause_state(session_id, blocking.get(session_id))
         return {
@@ -562,9 +575,13 @@ class SessionMessageService:
                     hop_count=hop_count,
                     input_mode=input_mode,
                     effective_input_mode=(
-                        "" if input_mode == "steer" and self._must_queue(
-                            target_session_id, current_target_metadata
-                        ) else input_mode
+                        ""
+                        if input_mode == "steer"
+                        and self._must_queue(
+                            target_session_id,
+                            current_target_metadata,
+                        )
+                        else input_mode
                     ),
                 )
             except SessionMessageLimitExceeded as exc:
@@ -648,6 +665,15 @@ class SessionMessageService:
             target_session_id=session_id,
         )
         return [self._message_projection(record) for record in records]
+
+    async def queue_state_for_target(
+        self, session_id: str, user_id: str,
+    ) -> dict[str, Any]:
+        """Return durable queue state for target-session UI recovery."""
+
+        queued = await self.queued_for_target(session_id, user_id)
+        summary = await self._queue_summary(session_id, user_id, queued=queued)
+        return {"messages": queued, **summary}
 
     async def continue_queued_for_target(
         self, session_id: str, user_id: str
@@ -872,6 +898,10 @@ class SessionMessageService:
     async def on_target_deleted(self, target_session_id: str) -> int:
         """Cancel durable work that can no longer run for a deleted Session."""
 
+        target_session_id = str(target_session_id or "").strip()
+        if not target_session_id:
+            return 0
+        self.block_target_delete(target_session_id)
         await self.start()
         await self.begin_target_delete(target_session_id)
         records = await self._store_call(
@@ -879,31 +909,66 @@ class SessionMessageService:
         )
         for record in records:
             await self._notify(record)
-        async with self._target_state_lock:
-            self._blocked_targets.discard(target_session_id)
+        try:
+            async with asyncio.timeout(_TARGET_DELETE_STOP_TIMEOUT_SECONDS):
+                async with self._target_state_lock:
+                    self._blocked_targets.discard(target_session_id)
+        except TimeoutError as exc:
+            raise SessionMessagingError(
+                "STOP_TIMEOUT", "session message delete barrier is still busy"
+            ) from exc
         return len(records)
 
+    def block_target_delete(self, target_session_id: str) -> None:
+        """Block new mailbox work without waiting for running workers.
+
+        The accept path only needs the barrier in place before it returns;
+        cancelling consumers can block on work that ignores cancellation, so
+        that part belongs to the background cleanup.
+        """
+        target_session_id = str(target_session_id or "").strip()
+        if target_session_id:
+            self._blocked_targets.add(target_session_id)
+
     async def begin_target_delete(self, target_session_id: str) -> None:
-        """Stop a target consumer before its Session directory is removed."""
+        """Stop target consumers within a bounded wait, retaining timed-out owners."""
 
         target_session_id = str(target_session_id or "").strip()
         if not target_session_id:
             return
-        async with self._target_state_lock:
-            self._blocked_targets.add(target_session_id)
-        tasks = []
-        for task, session_id in tuple(self._running_fallbacks.items()):
-            if session_id == target_session_id:
-                self._running_fallbacks.pop(task, None)
-                task.cancel()
-                tasks.append(task)
-        for mode in ("", "steer"):
-            task = self._workers.pop((target_session_id, mode), None)
-            if task is not None:
-                task.cancel()
-                tasks.append(task)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        # Add the barrier before the first await so a caller cancelled while
+        # consumers unwind still leaves the target blocked.
+        self.block_target_delete(target_session_id)
+        # send_message holds _target_state_lock across its durable enqueue.
+        # Wait for an in-flight enqueue to finish before cancelling persisted
+        # messages, otherwise a send that passed the blocked check can land
+        # after cancel_pending_for_target and stay queued with no consumer.
+        try:
+            async with asyncio.timeout(_TARGET_DELETE_STOP_TIMEOUT_SECONDS):
+                async with self._target_state_lock:
+                    pass
+                tasks = {
+                    task
+                    for task, session_id in self._running_fallbacks.items()
+                    if session_id == target_session_id
+                }
+                for mode in ("", "steer"):
+                    task = self._workers.get((target_session_id, mode))
+                    if task is not None:
+                        tasks.add(task)
+                for task in tasks:
+                    if not task.done() and not task.cancelling():
+                        task.cancel()
+                if tasks:
+                    # wait() can time out even when a consumer suppresses
+                    # cancellation. Keep it registered until it really exits,
+                    # so a retry cannot delete its directory while it runs.
+                    await asyncio.wait(tasks)
+                    await asyncio.gather(*tasks, return_exceptions=True)
+        except TimeoutError as exc:
+            raise SessionMessagingError(
+                "STOP_TIMEOUT", "session message consumers are still stopping"
+            ) from exc
 
     async def abort_target_delete(self, target_session_id: str) -> None:
         """Resume queued work when the surrounding Session deletion fails."""
@@ -911,8 +976,14 @@ class SessionMessageService:
         target_session_id = str(target_session_id or "").strip()
         if not target_session_id:
             return
-        async with self._target_state_lock:
-            self._blocked_targets.discard(target_session_id)
+        try:
+            async with asyncio.timeout(_TARGET_DELETE_STOP_TIMEOUT_SECONDS):
+                async with self._target_state_lock:
+                    self._blocked_targets.discard(target_session_id)
+        except TimeoutError as exc:
+            raise SessionMessagingError(
+                "STOP_TIMEOUT", "session message delete barrier is still busy"
+            ) from exc
         if self._store.exists():
             self._ensure_worker(target_session_id)
 
@@ -942,7 +1013,31 @@ class SessionMessageService:
             target_session_id in self._blocked_targets
             or target_session_id in self._restart_held_targets
         )
-        if self._stopping or target_blocked or worker_busy:
+        if self._stopping:
+            logger.debug(
+                "[SessionMessaging] delivery worker not started: service stopping; "
+                "session_id=%s input_mode=%s",
+                target_session_id,
+                input_mode or "task",
+            )
+            return
+        if target_blocked:
+            logger.debug(
+                "[SessionMessaging] delivery worker held: session_id=%s "
+                "input_mode=%s blocked=%s restart_held=%s",
+                target_session_id,
+                input_mode or "task",
+                target_session_id in self._blocked_targets,
+                target_session_id in self._restart_held_targets,
+            )
+            return
+        if worker_busy:
+            logger.debug(
+                "[SessionMessaging] delivery worker already running: "
+                "session_id=%s input_mode=%s",
+                target_session_id,
+                input_mode or "task",
+            )
             return
         worker = asyncio.create_task(
             self._consume_target(target_session_id, input_mode),
@@ -962,16 +1057,17 @@ class SessionMessageService:
         self._running_fallbacks.pop(task, None)
         if self._workers.get(key) is task:
             self._workers.pop(key, None)
-        if task.cancelled():
-            return
-        try:
-            task.result()
-        except Exception:
-            logger.exception(
-                "[SessionMessaging] target worker failed: session_id=%s",
-                target_session_id,
-            )
-        if not self._stopping:
+        if not task.cancelled():
+            try:
+                task.result()
+            except Exception:
+                logger.exception(
+                    "[SessionMessaging] target worker failed: session_id=%s",
+                    target_session_id,
+                )
+        # An aborted deletion can unblock the target before a cancelled
+        # consumer finishes unwinding. Re-arm its queue when it finally exits.
+        if not self._stopping and target_session_id not in self._blocked_targets:
             asyncio.create_task(self._restart_worker_if_queued(target_session_id, input_mode))
 
     async def _restart_worker_if_queued(

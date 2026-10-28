@@ -1,4 +1,5 @@
 import { Message } from '../../types';
+import { parseTeamHandoff, type TeamHandoff } from '../teamArea/groupChatTimeline';
 
 export interface ParsedTeamEvent {
   type: string;
@@ -10,6 +11,8 @@ export interface ParsedTeamEvent {
   isP2P: boolean;
   isBroadcast: boolean;
   isLeaderToUser: boolean;
+  /** 框架模板消息（调度器交接等）的展示描述；普通消息为 undefined。 */
+  handoff?: TeamHandoff;
 }
 
 export function formatTeamEventTime(ts: number | undefined): string {
@@ -55,6 +58,7 @@ export function parseTeamEventMessage(message: Message): ParsedTeamEvent | null 
       isP2P,
       isBroadcast,
       isLeaderToUser: fromMember === 'team_leader' && !isP2P && !isBroadcast,
+      handoff: parseTeamHandoff(event.handoff),
     };
   } catch {
     return null;

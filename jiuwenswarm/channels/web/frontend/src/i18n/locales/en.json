@@ -1,5 +1,6 @@
 {
   "common": {
+    "searchName": "Search names",
     "noData": "No data",
     "confirm": "Confirm",
     "cancel": "Cancel",
@@ -16,6 +17,8 @@
     "and": "and",
     "modify": "Modify",
     "collapse": "Collapse",
+    "expand": "Expand",
+    "expandAndPin": "Expand and pin",
     "delete": "Delete",
     "hide": "Hide",
     "show": "Show",
@@ -43,6 +46,7 @@
     "chat": "Chat",
     "work": "Tasks",
     "agent": "Experts",
+    "design": "Design",
     "experiments": "Experiments",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -64,30 +68,346 @@
     "empty": "No application plugins were found",
     "noSettings": "This plugin does not provide a settings page."
   },
+  "designer": {
+    "loading": "Loading design workflow…",
+    "emptyTitle": "No design workflow yet",
+    "emptyDescription": "Describe a project to create a dedicated Design workspace and workflow.",
+    "loadErrorTitle": "Failed to load",
+    "loadErrorFallback": "Could not load the design workflow. Please try again later.",
+    "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
+    "models": {
+      "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "videoOff": "Video generation is switched off in Settings > Agent.",
+      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageOff": "Image generation is switched off in Settings > Agent.",
+      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent."
+    },
+    "activity": {
+      "thinking": "Thinking",
+      "toolCall": "Using {{tool}}",
+      "stage": "Working",
+      "progress": "Node agent progress"
+    },
+    "chat": {
+      "title": "Design assistant",
+      "emptyHint": "What can I create for you?",
+      "inputPlaceholder": "Describe what you want to create…",
+      "collapse": "Collapse chat",
+      "expand": "Expand chat",
+      "thinking": "Thinking about how to build your design workflow…",
+      "updating": "Updating the workflow from your request…",
+      "updateError": "Could not update the workflow. Please try again later.",
+      "bootstrapDone": "Your initial design workflow is ready.",
+      "bootstrapError": "Failed to build the workflow. Please try again later.",
+      "notImplemented": "Not implemented",
+      "send": "Send",
+      "running": "The design leader is working…",
+      "attach": "Add reference media",
+      "removeAttachment": "Remove reference",
+      "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
+      "limitImages": "You can attach at most 5 reference images.",
+      "limitVideo": "You can attach at most 1 reference video.",
+      "limitAudio": "You can attach at most 1 reference audio file.",
+      "tooLarge": "File is larger than 6MB. Use a smaller file or a local path.",
+      "unsupported": "Only image, video, or audio files can be used as references."
+    },
+    "run": {
+      "moderationBlocked": "The model's content safety review blocked this generation. Tone down violent or graphic details in this node's prompt (imply them symbolically) and generate again.",
+      "controlLabel": "Run controls",
+      "execute": "Run",
+      "continue": "Continue",
+      "retryFailed": "Retry failed nodes",
+      "running": "Running…",
+      "moreActions": "More run actions",
+      "restart": "Rerun workflow",
+      "cancel": "Cancel"
+    },
+    "subtitle": "Multi-modal creation from idea to design",
+    "toolbar": {
+      "modeLabel": "Node mode",
+      "minimap": "Minimap",
+      "openChat": "Open AI chat",
+      "showEdges": "Show node connections",
+      "hideEdges": "Hide node connections",
+      "layoutNodes": "Arrange nodes",
+      "zoomMenu": "Zoom",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "zoomFit": "Fit canvas",
+      "zoomTo": "Zoom to {{percent}}%",
+      "yesterday": "Yesterday",
+      "upload": "Upload",
+      "edit": "Edit",
+      "generate": "Generate",
+      "material": "Asset",
+      "removeMaterial": "Remove asset",
+      "promptPlaceholder": "This clip's prompt; sent to the model with the reference images above",
+      "promptHint": "Prompt for this node's subagent. You can optionally edit it before generating; the subagent may still refine it based on the project.",
+      "editPlaceholder": "Edit text content…",
+      "aspectRatio": "Aspect ratio",
+      "resolution": "Resolution",
+      "duration": "Duration",
+      "count": "Count",
+      "browseFiles": "Browse files",
+      "dropHint": "Or drag into this area",
+      "generateAction": "Generate",
+      "uploadAction": "Confirm upload",
+      "uploadMissing": "That file was not successfully uploaded. Choose the file again.",
+      "editAction": "Save",
+      "actionNotImplemented": "This feature is not implemented yet",
+      "inspect": "Inspect",
+      "regenerate": "Regenerate",
+      "rerun": "Regenerate",
+      "rerunHint": "Rerun only this node with current upstream outputs"
+    },
+    "mediaSettings": {
+      "videoTitle": "Video settings",
+      "imageTitle": "Image settings",
+      "durationValue": "{{seconds}}s",
+      "loading": "Loading generation settings…",
+      "loadError": "Could not load generation settings: {{message}}",
+      "saveError": "Settings not saved: {{message}}"
+    },
+    "sidebar": {
+      "tabsLabel": "Sidebar",
+      "assistant": "Assistant",
+      "conversation": "Chat",
+      "assets": "Assets",
+      "canvas": "Current canvas",
+      "project": "Project assets",
+      "create": "New"
+    },
+    "sessions": {
+      "label": "Canvas",
+      "new": "New canvas",
+      "create": "New session",
+      "project": "Project",
+      "pickProject": "Select a project",
+      "needProject": "Create a project first, then add a session to it.",
+      "createFailed": "Could not create the session. Try again."
+    },
+    "assets": {
+      "empty": "This canvas has no assets yet. Upload or generate some and they will show up here.",
+      "emptyProject": "This project has no shared assets yet. Uploads and generations from any canvas appear here.",
+      "onCanvas": "On canvas",
+      "libraryOnly": "Library only",
+      "delete": "Delete asset",
+      "sourceUploaded": "Uploaded",
+      "sourceGenerated": "Generated"
+    },
+    "dock": {
+      "label": "Canvas tools",
+      "add": "Add node",
+      "addTitle": "Add to canvas",
+      "select": "Select / move",
+      "selectHint": "Select and move nodes. Shortcut V; hold Space to pan.",
+      "hand": "Pan canvas",
+      "handHint": "Drag to pan. Shortcut H.",
+      "layout": "Organize",
+      "assets": "Asset library",
+      "assetsTitle": "Current canvas",
+      "assetsHint": "Toggle the current-canvas asset list.",
+      "upload": "Upload",
+      "uploadHint": "Upload an image, video, or audio file as a new canvas node.",
+      "uploadTooLarge": "File too large: images, videos, and audio can be up to 32 MB.",
+      "comfyuiHint": "Import a ComfyUI workflow (.json). Only vLLM-Omni Generate Image / Generate Video nodes are added.",
+      "group": {
+        "image": "Image",
+        "video": "Video",
+        "audio": "Audio",
+        "text": "Text"
+      },
+      "node": {
+        "image": "Image",
+        "video": "Video",
+        "audio": "Audio",
+        "comfyui": "ComfyUI"
+      }
+    },
+    "nodeActions": {
+      "add": "Add successor node",
+      "addPredecessor": "Add predecessor node",
+      "successorMenuTitle": "Generate from this node",
+      "predecessorMenuTitle": "Add context",
+      "actionBarLabel": "Node actions",
+      "preview": "Preview",
+      "previewOrEdit": "Preview or edit",
+      "download": "Download",
+      "downloadFailed": "Could not download “{{name}}”. Check your connection and save location, then try again.",
+      "delete": "Delete",
+      "replace": "Upload & Replace",
+      "replaceHint": "Upload a new file to replace this node's content.",
+      "deleteHint": "Delete this node and its connections. You can also press Delete / Backspace.",
+      "deleteConfirmTitle": "Delete node",
+      "deleteConfirmMessage": "This node contains generated content. Deleting it cannot be undone. Are you sure you want to delete it?",
+      "deleteConfirmCancel": "Cancel",
+      "deleteConfirmOk": "Confirm",
+      "resize": "Resize",
+      "resizeHint": "Drag the bottom-right corner to resize this node"
+    },
+    "edge": {
+      "delete": "Delete connection"
+    },
+    "materials": {
+      "title": "Outputs",
+      "hint": "Brief and storyboard can be edited by hand. Rerun downstream nodes to pick up the new text.",
+      "ready": "Ready",
+      "editable": "Editable",
+      "edit": "Edit",
+      "save": "Save",
+      "saving": "Saving…",
+      "cancelEdit": "Cancel",
+      "externalChange": "The file has changed. Your draft is preserved; saving will overwrite the latest content.",
+      "overwriteWithDraft": "Overwrite with draft",
+      "saveFailed": "Save failed",
+      "placeholder": "Placeholder",
+      "empty": "No outputs to preview yet",
+      "placeholderHint": "This node still has a placeholder output.",
+      "openFile": "Open file",
+      "textError": "Could not read text",
+      "addTableRow": "Add row",
+      "deleteTableRow": "Delete row {{row}}",
+      "frameCount": "{{count}} frames",
+      "collapse": "Collapse outputs",
+      "expand": "Expand outputs",
+      "viewLarge": "View large",
+      "closeViewer": "Close",
+      "previous": "Previous",
+      "next": "Next",
+      "viewerIndex": "{{current}} / {{total}}"
+    },
+    "storyboard": {
+      "columns": {
+        "clip_no": "Shot",
+        "timeline": "Timeline",
+        "camera": "Camera",
+        "move": "Move",
+        "on_screen": "On screen",
+        "character_action": "Character action",
+        "speech": "Speech"
+      }
+    },
+    "errors": {
+      "runFailed": "Failed to start the run",
+      "rerunFailed": "Failed to regenerate this node",
+      "chooseFailed": "Failed to choose a version"
+    },
+    "comfyui": {
+      "badgeHint": "Imported from ComfyUI. Always generates with vLLM-Omni using these parameters.",
+      "promptHint": "Sent to vLLM-Omni as-is, together with the ComfyUI parameters below. No agent rewrites it.",
+      "samplingTitle": "Sampling",
+      "field": {
+        "url": "Server URL",
+        "model": "Model",
+        "negative_prompt": "Negative prompt",
+        "width": "Width",
+        "height": "Height",
+        "fps": "FPS",
+        "duration": "Duration (s)",
+        "num_inference_steps": "Steps",
+        "guidance_scale": "Guidance scale",
+        "true_cfg_scale": "True CFG scale",
+        "vae_use_slicing": "VAE slicing",
+        "vae_use_tiling": "VAE tiling",
+        "seed": "Seed (-1 = random)"
+      },
+      "warning": "Imported {{file}} with omissions: {{items}}",
+      "warningItem": {
+        "skipped_input": "node {{node}} input \"{{detail}}\" is not supported and was skipped",
+        "multi_stage_sampling": "node {{node}} uses a multi-stage sampling list; sampling params were skipped",
+        "unsupported_sampling": "node {{node}} sampling source {{detail}} is not Diffusion Sampling; skipped",
+        "unsupported_model_params": "node {{node}} model params {{detail}} are not supported; skipped",
+        "unsupported_reference": "node {{node}} reference {{detail}} does not match the input type; skipped"
+      },
+      "error": {
+        "invalid_json": "{{file}} is not valid JSON: {{detail}}",
+        "unrecognized_format": "{{file}} is not a ComfyUI workflow export.",
+        "no_supported_nodes": "{{file}} has no vLLM-Omni Generate Image / Generate Video node.",
+        "read_failed": "Could not import {{file}}: {{detail}}"
+      }
+    }
+  },
   "videoLive": {
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
-    "status": { "connecting": "Connecting to the Full-duplex model and requesting microphone access…", "speaking": "The model is responding…" },
-    "coreAgent": { "startFailed": "Jiuwen Core Agent could not start the task: {{message}}", "startFailedSummary": "The task could not start. The error is shown in the interface." },
-    "errors": { "startFailed": "Failed to start the Full-duplex session.", "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.", "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.", "textSendFailed": "Failed to send the text input." },
-    "empty": { "title": "Open a real-time view", "description": "Use a camera, local video, or add multiple screens", "listening": "Listening continuously", "waiting": "Waiting to start Full-duplex", "hint": "Speak after starting; no need to click for each sentence" },
-    "sources": { "camera": "Camera", "localVideo": "Local video", "addScreen": "Add screen", "shareScreen": "Share screen", "stopCamera": "Stop camera", "stopScreens": "Stop all screens" },
-    "actions": { "closeVideo": "Close video", "starting": "Starting Full-duplex session", "stopSession": "End Full-duplex session", "startSession": "Start Full-duplex session" },
+    "status": {
+      "connecting": "Connecting to the Full-duplex model and requesting microphone access…",
+      "speaking": "The model is responding…"
+    },
+    "coreAgent": {
+      "startFailed": "Jiuwen Core Agent could not start the task: {{message}}",
+      "startFailedSummary": "The task could not start. The error is shown in the interface."
+    },
+    "errors": {
+      "startFailed": "Failed to start the Full-duplex session.",
+      "joyaiTextNotAccepted": "The text input was not accepted by the JoyAI session.",
+      "qwenTextNotAccepted": "The text input was not accepted by the Qwen Realtime session.",
+      "textSendFailed": "Failed to send the text input."
+    },
+    "empty": {
+      "title": "Open a real-time view",
+      "description": "Use a camera, local video, or add multiple screens",
+      "listening": "Listening continuously",
+      "waiting": "Waiting to start Full-duplex",
+      "hint": "Speak after starting; no need to click for each sentence"
+    },
+    "sources": {
+      "camera": "Camera",
+      "localVideo": "Local video",
+      "addScreen": "Add screen",
+      "shareScreen": "Share screen",
+      "stopCamera": "Stop camera",
+      "stopScreens": "Stop all screens"
+    },
+    "actions": {
+      "closeVideo": "Close video",
+      "starting": "Starting Full-duplex session",
+      "stopSession": "End Full-duplex session",
+      "startSession": "Start Full-duplex session"
+    },
     "frameWindow": "Rolling window: {{count}}/{{max}} frames",
     "audioOnly": "Audio only; no video frames sent",
-    "chat": { "coreResult": "Tool result · Jiuwen Core Agent", "user": "You", "search": "Jiuwen Search", "assistant": "Assistant", "searchCompleted": "Jiuwen Search Agent completed" },
-    "search": { "ready": "Preparing search", "selectHistory": "Select search history", "latest": "Latest search (automatic)" },
-    "input": { "activePlaceholder": "You can also type in this session…", "inactivePlaceholder": "Start Full-duplex first…", "send": "Send question" }
+    "chat": {
+      "coreResult": "Tool result · Jiuwen Core Agent",
+      "user": "You",
+      "search": "Jiuwen Search",
+      "assistant": "Assistant",
+      "searchCompleted": "Jiuwen Search Agent completed"
+    },
+    "search": {
+      "ready": "Preparing search",
+      "selectHistory": "Select search history",
+      "latest": "Latest search (automatic)"
+    },
+    "input": {
+      "activePlaceholder": "You can also type in this session…",
+      "inactivePlaceholder": "Start Full-duplex first…",
+      "send": "Send question"
+    }
   },
   "settingsPanel": {
+    "voice": {
+      "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
+      "connectionSuccess": "Model connection verified",
+      "testConnection": "Test model connection",
+      "requiredFields": "Enter the provider endpoint, model and API key before saving.",
+      "description": "Configure microphone input, full-duplex voice and screen sharing.",
+      "screenSharing": "Screen sharing",
+      "screenSharingDescription": "Choose a screen, window or camera when starting full duplex. Your browser asks for permission each time. Turn off to use voice only."
+    },
     "title": "Settings",
     "freeModels": {
-      "title": "Limited-time free models",
+      "title": "Free models",
+      "bannerDescription": "Sign in with your Huawei Cloud account to get JiuwenSwarm's limited-time free models",
+      "goAuthorize": "Authorize",
       "loginTitle": "Sign in with Huawei Cloud",
       "loginDescription": "Sign in with your Huawei Cloud account to get JiuwenSwarm's limited-time free models",
       "quotaTitle": "Free credits",
       "quotaLoggedOut": "Sign in to view",
       "signedIn": "Signed in",
+      "enabled": "Enabled",
+      "quotaLabel": "Quota",
+      "weeklyQuotaDescription": "Quota refreshes every Monday at 8:00 and includes multiple models",
       "loggedInDescription": "Limited-time free models are now available in the chat model dropdown",
       "endedTitle": "Campaign ended",
       "endedDescription": "This round of limited-time free models has ended. Thanks for taking part.",
@@ -95,12 +415,14 @@
       "configDescription": "Set the context window and other options for the limited-time free models"
     },
     "categories": {
+      "voice": "Voice",
       "general": "General",
       "models": "Models",
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
       "personalContext": "Knowledge",
+      "recommendation": "Recommendations",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -186,28 +508,74 @@
       }
     },
     "models": {
-      "primaryModels": "Chat models",
+      "customModels": "Custom models",
+      "tabsLabel": "Model settings categories",
+      "modelsTab": "Models",
+      "jevTab": "Jev",
+      "modelGroups": "Model groups",
+      "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
-      "emptyDescription": "Add a model to test its connection and manage the primary model here.",
-      "primary": "Primary",
-      "groupMeta": "Model group · {{count}} configurations",
-      "groupAriaLabel": "Model group {{model}}, {{count}} configurations",
-      "expandGroup": "Expand other configurations in the {{model}} model group",
-      "collapseGroup": "Collapse other configurations in the {{model}} model group",
-      "groupDefault": "Group default",
-      "setPrimary": "Make primary",
-      "setGroupDefault": "Make group default",
-      "setGroupDefaultConfirm": "After this becomes the group default, requests using the model name “{{model}}” without an alias will use this configuration. The previous default in this group will be cleared. Continue?",
-      "setPrimaryGroupDefaultConfirm": "“{{model}}” is currently the primary model. Making this configuration the group default will also make it the primary configuration. Requests using this model name without an alias will use it, and the previous group default will be cleared. Continue?",
+      "emptyDescription": "Add a model to test its connection and manage custom models here.",
+      "modelGroupsEmpty": "No model groups configured",
+      "modelGroupsEmptyDescription": "Add a model group to manage ordered failover across models.",
       "addModel": "Add model",
+      "addModelGroup": "Add model group",
+      "addModelGroupTitle": "Add model group",
+      "editModelGroupTitle": "Edit model group",
+      "editModelGroup": "Edit model group",
+      "savingModelGroup": "Saving model group…",
+      "modelGroupName": "Model group name",
+      "modelGroupNamePlaceholder": "Enter a model group name",
+      "modelGroupEnabled": "Enable model group",
+      "modelGroupEnabledDescription": "Allow this model group to be selected and used in conversations",
+      "modelGroupDefaultDescription": "Use this as the default model group",
+      "modelGroupRequestConfig": "Shared request parameters (JSON)",
+      "modelGroupRequestConfigPlaceholder": "For example: {\"temperature\": 0.3}",
+      "modelGroupRouteEnabled": "Enable member",
+      "modelGroupRouteOverrides": "Member request overrides (JSON)",
+      "modelGroupRouteOverridesPlaceholder": "For example: {\"temperature\": 0.2}",
+      "modelGroupNeedsEnabledRoute": "A model group requires at least one enabled member",
+      "modelGroupRequestConfigInvalid": "Enter a valid JSON object without credentials, endpoints, context windows, or routing fields",
+      "modelGroupForbiddenRequestKeys": "Request parameters contain forbidden fields: {{keys}}",
+      "disabledGroupCannotBeDefault": "A disabled model group cannot be the default",
+      "selectConfiguredModels": "Select configured models",
+      "modelGroupModels": "Models",
+      "modelGroupTableModel": "Model",
+      "modelGroupTableActions": "Actions",
+      "selectConfiguredModelsEmpty": "No eligible configured models (free models cannot be added to a group).",
+      "modelGroupMeta": "{{count}} routes · {{routes}}",
+      "modelGroupCardHeader": "Group: {{name}} · {{count}} models",
+      "modelGroupLabel": "Group:",
+      "modelGroupCount": "{{count}} models",
+      "modelGroupNoRoutes": "No routes",
+      "modelGroupRouteOrderHint": "Drag to reorder. This order determines the invocation sequence.",
+      "moveRouteUp": "Up",
+      "moveRouteDown": "Down",
+      "modelGroupDefault": "Default group",
+      "modelGroupRouteDefault": "Group default",
+      "setModelGroupRouteDefault": "Make group default",
+      "expandModelGroup": "Expand model group",
+      "collapseModelGroup": "Collapse model group",
+      "copyModelName": "Copy model name",
+      "modelNameCopied": "Model name copied",
+      "copyModelNameFailed": "Copy failed",
+      "removeModelFromGroup": "Remove from group",
+      "removeModelFromGroupConfirm": "Remove “{{name}}” from this model group?",
+      "removeModelFromGroupConfirmTitle": "Remove model",
+      "keepOneGroupRoute": "A model group must keep at least one model",
+      "missingConfiguredModel": "Model unavailable",
+      "modelGroupDisabled": "Disabled",
+      "modelGroupReferenced": "This model group is still referenced in {{count}} place(s) ({{scopes}}). Remove the references before deleting it.",
+      "modelReferenced": "This model is still referenced in {{count}} place(s) ({{scopes}}). Remove the references before deleting it.",
+      "deleteModelGroupConfirm": "Delete model group “{{name}}”?",
+      "deleteModelGroupConfirmTitle": "Delete model group",
       "add": "Add",
       "editModel": "Edit model",
       "deleteConfirm": "Delete “{{alias}}” ({{model}})?",
       "deleteConfirmTitle": "Delete model",
-      "groupDefaultConfirmTitle": "Set group default model",
       "loadFailed": "Failed to load the model list. Please try again.",
-      "customName": "Custom name",
-      "customNamePlaceholder": "Enter a unique custom name",
+      "customName": "Model display name",
+      "customNamePlaceholder": "Enter a unique model display name",
       "protocol": "Protocol",
       "vendor": "Model provider",
       "model": "Model",
@@ -232,6 +600,7 @@
       "noPresetModelsNoEndpoint": "This provider does not expose a model-list endpoint",
       "fetchModelsLoading": "Fetching...",
       "fetchModelsRemote": "Fetched {{count}} models from the provider",
+      "fetchGenerationModelsRemote": "Fetched {{count}} generation models; listing does not confirm account access",
       "fetchModelsFailed": "Failed to fetch the model list",
       "fetchModelsFailedUsingPreset": "Failed to fetch the model list: {{error}}. Showing provider presets",
       "fetchModelsInvalidResponse": "The provider model-list response is invalid",
@@ -258,6 +627,7 @@
         "minimax": "MiniMax",
         "mimo": "Xiaomi MiMo",
         "openrouter": "OpenRouter",
+        "vllm-omni": "vLLM-Omni",
         "volcengine": "Volcengine",
         "zhipu": "Zhipu GLM",
         "unrecognized": "Unrecognized provider ({{vendor}})"
@@ -313,8 +683,9 @@
         "reasoningUnsupported": "The reasoning option “{{value}}” is unsupported. Select another option or use the default",
         "reasoningUnavailable": "Reasoning options have not loaded. Retry before saving",
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
-        "aliasConflict": "Custom name must be globally unique and cannot match another model ID",
-        "modelNameConflict": "Model ID cannot match another configuration's custom name"
+        "aliasRequired": "Model display name is required",
+        "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
+        "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
       "test": "Test"
@@ -323,6 +694,7 @@
       "skills": "Skills",
       "webSearch": "Web search",
       "mediaTools": "Tools",
+      "externalCliAgents": "Third-party agents",
       "vision": "Image processing",
       "visionDescription": "Enable image processing; disabling it keeps the saved model configuration.",
       "visionConfigTitle": "Configure image processing model",
@@ -338,10 +710,51 @@
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
       "regionalBaseHint": "Keys are region-bound: use https://api.minimax.io/v1 for a global key and https://api.minimaxi.com/v1 for a China key. If the address and the key's region differ, the other region is tried automatically.",
-      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Models must be activated in the Ark console first, otherwise calls fail with ModelNotOpen.",
+      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Discovery and generation use the configured region without switching. Activate models in the matching console.",
+      "arkGenerationBaseInvalid": "Use an official regional Volcengine Ark or BytePlus /api/v3 address. Coding Plan addresses do not support image or video generation.",
+      "regionalBaseHintDashscope": "Generation uses the native DashScope /api/v1 API, not the chat compatible-mode URL. Keys are region-bound: use https://dashscope.aliyuncs.com/api/v1 for a China key and https://dashscope-intl.aliyuncs.com/api/v1 for an international key. If the address and the key's region differ, the other region is tried automatically.",
+      "selfHostedBaseHintVllmOmni": "Enter the address of your self-hosted vLLM-Omni server (for example http://127.0.0.1:8091/v1). Leave the API key empty if the server has no auth; leave the model empty to use the model the server has loaded.",
+      "servedModel": "Model loaded by the server",
       "deleteModelTitle": "Delete model configuration",
       "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
+    },
+    "recommendation": {
+      "title": "Personalized recommendations",
+      "description": "Suggests topics and next prompts from your conversations.",
+      "model": "Topic recommendation model",
+      "modelDescription": "Recommendations are prepared again after a switch.",
+      "followMainModel": "Follow the chat model",
+      "modelIncompatible": "incompatible API",
+      "modelLoginRequired": "sign-in required",
+      "modelFree": "free model",
+      "unusableModelOption": "{{name}} ({{reason}})",
+      "modelUnusable": "The topic model cannot be used: choose another model, or complete its API address and key in Settings → Models.",
+      "data": "Recommendation data",
+      "dataDescription": "Your profile and recommendation records stay on this machine.",
+      "view": "View",
+      "hide": "Hide",
+      "enableTitle": "Turn on personalized recommendations",
+      "enableMessage": "Once on, related conversations are sent to the model provider to prepare topic recommendations and next-step suggestions; web searches use only public topic terms. Calls are billed to your own API account, and recommendation data stays on this machine.",
+      "includeHistory": "Also read existing chat history",
+      "enable": "Turn on",
+      "deleteTitle": "Delete recommendation data",
+      "deleteMessage": "Deletes the profile, summaries, card pools and related recommendation records, and turns recommendations off. Your chats are kept; turning recommendations back on does not rebuild the old profile by default. Personal backups and data held by the provider are outside this local deletion.",
+      "blockedDirections": "Directions no longer recommended",
+      "blockedSince": "Not recommended since {{date}}",
+      "restore": "Restore",
+      "profileEmpty": "No recommendation profile with verifiable sources yet.",
+      "correctionLabel": "Correct the profile in your own words",
+      "correctionPlaceholder": "Say which preferences to correct, pause or keep",
+      "correct": "Correct in a new chat",
+      "correctionNote": "After you send and finish that chat, the next recommendation reads your correction; the profile is not updated while recommendations are off.",
+      "unreachable": "Cannot read the recommendation settings. Check the app connection.",
+      "invalidKey": "The model provider rejected the API key. Replace the key, then prepare topics again.",
+      "accessDenied": "The model provider denied access. Check the account's permissions, then prepare topics again.",
+      "accountOverdue": "The model provider account is overdue. Top it up in the provider console, then prepare topics again.",
+      "modelUnavailable": "The topic recommendation model is unavailable. Check the model name and access.",
+      "lastFailure": "The latest topic preparation did not finish.",
+      "retry": "Prepare topics again"
     },
     "browser": {
       "runtime": "Browser runtime",
@@ -354,22 +767,38 @@
       "headless": "Headless mode",
       "headlessDescription": "Run browser automation without showing a browser window.",
       "chromePath": "Chrome executable path",
-      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+      "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "decisionLlm": "LLM only",
+      "decisionShadow": "Jev shadow (observe only)",
+      "decisionHybrid": "Jev hybrid",
+      "providerOpenrouter": "OpenRouter",
+      "providerTypesafe": "TypeSafe",
+      "providerCustom": "Custom",
+      "jevConfig": "Jev Model Configuration",
+      "jevKeyMissing": "Jev API key is not configured. Configure it under Models > Jev first.",
+      "clearSharedJevConfirm": "Clear this provider's Jev key? Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
+      "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
+      "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
     "experimental": {
       "taskAsr": "Speech transcription",
       "taskFullDuplex": "Task chat full duplex",
-      "externalCliAgents": "Third-Party Agents",
+      "externalCliAgents": "Third-party agents",
       "externalCliAgentsDescription": "For Team mode only.",
       "a2ui": "A2UI generation",
       "rsi": "RSI · Recursive self-improvement",
-      "trajectoryUi": "Trajectory UI",
+      "trajectoryUi": "Trajectory diagnosis",
       "kvCacheAffinity": "Compute affinity",
+      "teamOrganization": "Team Organization",
+      "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check."
+      "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
+      "multiModelCollaboration": "Multi-model collaboration",
+      "toolOptimize": "Tool retrieval optimization",
+      "designMode": "Design Mode"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -425,6 +854,26 @@
         "title": "Browser run mode",
         "description": "Show the browser window in the foreground or run in headless mode."
       },
+      "decision_mode": {
+        "title": "Browser decisions",
+        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Jev."
+      },
+      "decision_provider": {
+        "title": "Jev provider",
+        "description": "Call Jev through OpenRouter or TypeSafe directly. Configure each provider's credentials separately."
+      },
+      "jev_api_key": {
+        "title": "Jev API key"
+      },
+      "jev_openrouter_api_key": {
+        "title": "OpenRouter API key"
+      },
+      "jev_typesafe_api_key": {
+        "title": "TypeSafe API key"
+      },
+      "jev_custom_api_key": {
+        "title": "Custom Jev API key"
+      },
       "model_name": { "title": "Model name", "placeholder": "e.g. glm-4.7" },
       "alias": { "title": "Custom alias", "placeholder": "e.g. GLM-4.7 Production" },
       "api_base": { "title": "API URL", "placeholder": "e.g. https://api.openai.com/v1" },
@@ -465,9 +914,21 @@
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
       },
+      "topic_recommendation_enabled": {
+        "title": "Topic recommendations",
+        "description": "Prepare home-screen topic cards from conversation interests. Unset follows the code default."
+      },
+      "prompt_suggestion_enabled": {
+        "title": "Prompt suggestions",
+        "description": "Show tappable next-input chips after a reply. Unset follows the code default."
+      },
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
         "description": "Control the agent's learning of environment facts and task experience"
+      },
+      "skill_retrieval_index_enabled": {
+        "title": "Skill index",
+        "description": "Enable a tree of installed skills for structured skill discovery (may consume additional tokens)."
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
@@ -518,13 +979,37 @@
         "title": "Enable RSI",
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
-      "trajectory_ui_enabled": {
-        "title": "Enable trajectory UI",
-        "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
+      "trajectory_ui_diagnosis_enabled": {
+        "title": "Enable trajectory diagnosis",
+        "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
+      },
+      "team_organization_ui_enabled": {
+        "title": "Enable Team Organization",
+        "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI workflow integration",
+        "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
+      },
+      "progressive_tool_optimize": {
+        "title": "Enable tool retrieval optimization",
+        "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
+      },
+      "team_scheduled_dispatch_enabled": {
+        "title": "Enable scheduled dispatch",
+        "description": "The Leader assigns each task to a specific member, and members work through their assigned tasks in order."
+      },
+      "team_task_verification_enabled": {
+        "title": "Enable reviewers",
+        "description": "Completed tasks are reviewed by verifiers. Tasks that fail review are returned for rework."
+      },
+      "team_member_messaging_enabled": {
+        "title": "Enable member-to-member messaging",
+        "description": "Members can message each other directly (point-to-point, multicast, broadcast) instead of routing through the Leader. Task assignment and handoffs stay with the Leader and the scheduler."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
-        "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
+        "description": "Full-duplex is only available in single-Agent mode; its entry is hidden in swarm/team mode. Show a Full-duplex action when the composer is empty. Start a continuous voice conversation; the switch below controls optional screen sharing."
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
@@ -565,11 +1050,48 @@
         "title": "Conversation rounds per check",
         "description": "Maximum recent conversation rounds read on each check to infer recommendation context. Default: 20.",
         "placeholder": "Enter an integer from 1 to 50"
+      },
+      "multi_model_collaboration_enabled": {
+        "title": "Multi-model collaboration",
+        "description": "In a single-agent conversation, select a model group to let its default model combine suggestions from the other members."
+      },
+      "moa_jev_enabled": {
+        "title": "JEV decision",
+        "description": "Use JEV configured under Models > Jev to verify execution progress. When off, use the selected model group’s default model."
+      },
+      "moa_verifier_interval": {
+        "title": "Verification interval (rounds)",
+        "description": "Verify every N agent execution rounds. One round includes a primary model decision and any tool execution, rather than a user conversation turn."
+      },
+      "moa_jev_api_base": {
+        "title": "API URL",
+        "description": "The independent JEV service URL.",
+        "placeholder": "https://api.typesafe.ai"
+      },
+      "moa_jev_model_name": {
+        "title": "Model name",
+        "description": "The JEV verification model.",
+        "placeholder": "jev-latest"
+      },
+      "moa_jev_api_key": {
+        "title": "API Key",
+        "description": "The JEV service credential.",
+        "placeholder": "Enter API Key"
       }
     },
     "validation": {
       "required": "This field is required",
       "integerRange": "Enter an integer from {{min}} to {{max}}"
+    },
+    "multiModelCollaboration": {
+      "jevConfigTitle": "JEV configuration",
+      "jevConfigDescription": "Used only for multi-model collaboration verification. Browser decision settings are independent.",
+      "keepKey": "Leave blank to keep the saved key.",
+      "clearKeyConfirm": "Clear the JEV key and turn off JEV decision? Subsequent verification will use the model group’s default model.",
+      "errors": {
+        "apiBaseInvalid": "Enter a valid HTTP or HTTPS URL without login credentials.",
+        "intervalInvalid": "Enter an integer greater than 0."
+      }
     }
   },
   "trajectory": {
@@ -582,9 +1104,211 @@
       "memberLanes": "Member trajectory lanes",
       "members": "Members"
     },
+    "analysis": {
+      "back": "Back to chat",
+      "diagnose": "Diagnose trajectory",
+      "selection": {
+        "fullScope": "Entire trajectory",
+        "selectAll": "Select all",
+        "clearSelectAll": "Clear selection",
+        "selectAllAgent": "Select all of {{name}}'s trajectory",
+        "clearSelectAllAgent": "Clear all of {{name}}'s trajectory",
+        "notePlaceholder": "Describe issues in the selected range (optional). e.g. answer missed the point; tool failure not retried; expected file missing",
+        "cancel": "Cancel",
+        "start": "Start",
+        "starting": "Starting…",
+        "summary": "{{count}} Agent(s) selected · {{spans}} OTel span(s)",
+        "emptyNodes": "The selection has no complete OTel span to diagnose. Spans that are not fully covered (start and end) were left out.",
+        "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
+        "nodeLimit": "The selection contains {{count}} OTel spans, over the limit of {{limit}}. Narrow the range.",
+        "running": "A diagnosis is already in progress",
+        "noData": "There is no trajectory to diagnose yet",
+        "replay": "Read-only replay cannot be diagnosed; exit replay first"
+      },
+      "summary": "{{agents}} Agents · {{spans}} OTel spans",
+      "toolbar": {
+        "scale": "Trajectory scale",
+        "time": "Time",
+        "equal": "Equal width",
+        "tokens": "Tokens",
+        "duration": "Duration",
+        "turns": "Turns",
+        "tools": "Tools",
+        "folds": "Turns/Tools",
+        "expandTurns": "Expand all turns",
+        "collapseTurns": "Collapse all turns",
+        "expandTools": "Expand all tool calls",
+        "collapseTools": "Collapse all tool calls",
+        "import": "Import",
+        "export": "Export",
+        "attribution": "Open-source attribution",
+        "search": "Search trajectory",
+        "searchPlaceholder": "Search by keyword"
+      },
+      "tabs": {
+        "aria": "Trajectory analysis sub-pages",
+        "trajectory": "Trajectory",
+        "diagnosis": "Diagnosis"
+      }
+    },
+    "diagnosis": {
+      "entry": "Trajectory analysis",
+      "noteLabel": "User feedback: describe issues in the selected range (optional)",
+      "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
+      "cancel": "Cancel diagnosis",
+      "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
+      "includeAgent": "Diagnose {{name}}",
+      "timeAxis": "Time axis",
+      "records": "Diagnosis records",
+      "noRecords": "No diagnosis yet",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this diagnosis record?",
+      "scopeKind": {
+        "full": "Full trajectory",
+        "selection": "Selected range"
+      },
+      "status": {
+        "running": "Running",
+        "completed": "Completed",
+        "failed": "Failed",
+        "cancelled": "Cancelled",
+        "interrupted": "Interrupted"
+      },
+      "outletsPending": "Suggestions appear here once the diagnosis finishes",
+      "stageStatus": {
+        "pending": "Waiting",
+        "running": "Running",
+        "completed": "Done",
+        "failed": "Failed",
+        "skipped": "Skipped"
+      },
+      "rootCauses": "Findings",
+      "category": {
+        "skill_defect": "Skill defect",
+        "ttse_success": "Experience (succeeded)",
+        "ttse_partial": "Experience (partly done)",
+        "ttse_fail": "Experience (failed)",
+        "tool_or_env": "Tool or environment",
+        "model_capability": "Model capability",
+        "requirement_unclear": "Unclear requirement",
+        "other": "Other"
+      },
+      "confidence": "Confidence {{value}}%",
+      "highlight": "Highlight in trajectory",
+      "suggestions": "Diagnosis suggestions",
+      "noSuggestions": "This diagnosis has no actionable suggestions",
+      "details": "Diagnosis details",
+      "dismiss": "Dismiss",
+      "note": "Diagnosis note",
+      "object": "Diagnosis target",
+      "objectAgents": "Agents",
+      "objectFull": "Entire trajectory",
+      "objectTime": "Time",
+      "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
+      "loadingRecord": "Loading diagnosis…",
+      "plannedStage": {
+        "task_parse": "Parse task",
+        "diagnose": "Diagnose",
+        "attribute": "Attribute causes"
+      },
+      "recordSelect": {
+        "aria": "Diagnosis records",
+        "history": "Diagnosis history",
+        "placeholder": "Select a diagnosis",
+        "search": "Search by time or keyword",
+        "noMatch": "No matching diagnosis",
+        "confirmDelete": "Confirm delete",
+        "cancelDelete": "Cancel",
+        "deleteRunning": "A diagnosis in progress cannot be deleted"
+      },
+      "rewardResult": "Artifact evaluation",
+      "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
+      "rewardTotal": "Total {{score}}",
+      "artifactFix": "Artifact fix",
+      "skills": "Skill evolution",
+      "ttse": "Experience",
+      "fillInput": "Fill into composer",
+      "filled": "Filled into the composer",
+      "expandAll": "Show all",
+      "collapse": "Show less",
+      "signalTier": {
+        "perfect": "Met",
+        "fair": "Needs work",
+        "weak": "Not met"
+      },
+      "signalSource": {
+        "keyword_tool": "Tool output",
+        "keyword_user": "User message",
+        "reward": "Reward",
+        "user": "User note"
+      },
+      "signalSourceLabel": "Source: {{source}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}: {{dimension}}",
+      "findingDimension": "Dimension",
+      "findingProblem": "Problem",
+      "findingReason": "Cause",
+      "attributionKind": {
+        "artifact": "Artifact",
+        "skill": "Skill",
+        "experience": "Experience"
+      },
+      "signalScore": "Score {{score}}",
+      "signalSurfacedAt": "Surfaced at {{nodes}}",
+      "causeAt": "At {{nodes}}",
+      "evidence": "Based on",
+      "dimension": "Dimension",
+      "requestCount": "{{count}} model requests",
+      "objectSteps": "Scope",
+      "objectStepsCount": "{{count}} OTel spans",
+      "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
+      "objectTask": "Task",
+      "objectSummary": "Trajectory summary",
+      "findingCauses": "{{count}} artifact finding(s)",
+      "findingSkill": "{{count}} skill finding(s)",
+      "findingExperience": "{{count}} experience finding(s)",
+      "findingJoin": ", ",
+      "findingWithEvolution": "{{causes}}, plus {{evolution}}",
+      "findingLegacyCauses": "{{count}} legacy finding(s)",
+      "relatedSignals": "Related signals",
+      "suggestionsUnfinished": "The diagnosis did not finish, so there are no suggestions",
+      "process": "Diagnosis process",
+      "processSteps": "{{count}} steps",
+      "triggerTtse": "Trigger experience generation",
+      "triggeringTtse": "Triggering…",
+      "ttseOutcome": {
+        "success": "Task completed",
+        "fail": "Task not completed",
+        "partial": "Task partly completed"
+      },
+      "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
+      "ttseReady": "Experience available",
+      "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "artifactFillPrefix": "Optimize according to the following suggestions:",
+      "ttseResult": {
+        "triggered": "Triggered",
+        "failed": "Trigger failed"
+      },
+      "blocked": "Unavailable: {{reason}}",
+      "errors": {
+        "FEATURE_DISABLED": "Trajectory diagnosis is turned off",
+        "UNSUPPORTED_SESSION_MODE": "This session mode does not support diagnosis",
+        "SESSION_NOT_FOUND": "Session not found",
+        "DIAGNOSIS_ALREADY_RUNNING": "A diagnosis is already running",
+        "FULL_SCOPE_WHILE_BUSY": "The session is running; the full trajectory cannot be diagnosed",
+        "EMPTY_SCOPE": "No diagnosable steps in the selected range",
+        "MODEL_UNAVAILABLE": "Diagnosis model unavailable; configure a model first",
+        "AGENT_UNAVAILABLE": "Agent is unavailable",
+        "TTSE_NOT_SUPPORTED": "This session does not support TTSE experience generation",
+        "TTSE_UNAVAILABLE": "TTSE is not enabled for this session",
+        "default": "Operation failed"
+      }
+    },
     "composer": {
       "collapse": "Collapse composer",
-      "expand": "Expand composer"
+      "expand": "Expand composer",
+      "unavailable": "The composer is unavailable during diagnosis"
     },
     "layout": {
       "hideSessions": "Collapse sessions",
@@ -628,6 +1352,36 @@
     "groupChat": "Group Chat",
     "allMembers": "all",
     "noGroupMessages": "No group messages",
+    "groupChatTimeline": {
+      "scheduler": "Scheduler",
+      "taskFallback": "Task {{id}}",
+      "handoff": {
+        "task_start": "Start",
+        "task_start_plan": "Start (plan first)",
+        "review_request": "Review requested",
+        "review_renudge": "Review reminder",
+        "rework": "Rework",
+        "rework_with_limit": "Rework (up to {{max}} rounds)",
+        "rework_summary": "Rework summary requested",
+        "task_assigned": "Task assigned",
+        "other": "Scheduler message"
+      },
+      "taskEvents": {
+        "created": "created a task",
+        "createdMany": "created {{count}} tasks",
+        "claimed": "claimed the task",
+        "claimedPassive": "Task claimed",
+        "submitted_for_review": "submitted the task for review",
+        "submitted_for_reviewPassive": "Task submitted for review",
+        "verified": "Task passed review",
+        "revision_requested": "Review failed, task sent back for rework",
+        "completed": "completed the task",
+        "completedPassive": "Task completed",
+        "cancelled": "Task cancelled",
+        "released": "Task released, waiting to be claimed again",
+        "revoked": "Task revoked"
+      }
+    },
     "memberTasksTitle": "Tasks executed by {{member}}",
     "memberTasks": "Their tasks",
     "noProcessData": "No execution process data for this member",
@@ -642,6 +1396,7 @@
       "shutdown": "Shutdown",
       "error": "Error",
       "unstarted": "Unstarted",
+      "dormant": "Dormant",
       "unknown": "Unknown"
     },
     "taskStatus": {
@@ -742,7 +1497,54 @@
         "cancelled": "Cancelled",
         "failed": "Failed"
       }
+    },
+    "org": {
+      "tab": "Organization",
+      "title": "Task Pool & Organization",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "empty": "This Team is not bound to an organization",
+      "noOrganization": "No organization bound",
+      "noTeam": "No Team is available in this session",
+      "loadFailed": "Failed to load organization information",
+      "organizationId": "Organization ID",
+      "displayName": "Name",
+      "description": "Description",
+      "ownerTeam": "Owner Team",
+      "teams": "Teams",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "Metadata",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "Task pool is empty",
+      "taskId": "Task ID",
+      "taskTitle": "Title",
+      "taskStatus": "Status",
+      "taskAssignee": "Assignee",
+      "taskTeam": "Team",
+      "taskType": "Type",
+      "taskUnclaimed": "Unclaimed",
+      "taskParent": "Parent",
+      "pendingReviews": "Pending reviews",
+      "pendingReviewsEmpty": "No tasks pending review",
+      "reviewTask": "Task",
+      "reviewReviewer": "Reviewer",
+      "statsTotal": "Total tasks",
+      "statsOpen": "Open",
+      "statsUnclaimed": "Unclaimed",
+      "statsPendingReviews": "Pending review"
     }
+  },
+  "sessionAssets": {
+    "title": "Assets",
+    "empty": "Uploaded and generated files appear here. Rename them and reference them in the chat box with @name.",
+    "rename": "Rename",
+    "save": "Save",
+    "cancel": "Cancel",
+    "invalidName": "The name must not be empty, at most 60 characters, and cannot contain @ or line breaks",
+    "pickTitle": "Choose an asset",
+    "referHint": "Type @ in the chat box to reference",
+    "reference": "Referenced"
   },
   "artifacts": {
     "title": "Artifacts",
@@ -804,6 +1606,21 @@
     }
   },
   "chat": {
+    "recordingInProgress": "Recording. Select Stop to transcribe.",
+    "duplexControls": {
+      "sharingVideo": "WorkSwarm is receiving shared video",
+      "screenOrWindow": "Screen or window",
+      "chooseSourceDescription": "The next step requests browser permission for the selected source. Cancel to return without starting a session.",
+      "chooseSource": "Choose what to share",
+      "muteMic": "Mute microphone",
+      "unmuteMic": "Unmute microphone",
+      "muteSpeaker": "Mute model audio",
+      "unmuteSpeaker": "Unmute model audio",
+      "stopSharing": "Stop screen sharing",
+      "listening": "Listening",
+      "connecting": "Connecting",
+      "exit": "Exit full-duplex voice"
+    },
     "slashPicker": {
       "commands": "Commands",
       "skills": "Skills",
@@ -826,6 +1643,11 @@
     "placeholderVoice": "Listening...",
     "welcomeLogoAlt": "WorkSwarm logo",
     "welcomeBubbleText": "Hi~ I'm your personal desktop smart buddy.",
+    "freeModelsCampaign": {
+      "title": "Offer",
+      "description": "Xiaojiu has prepared limited-time free models for you.",
+      "claim": "Claim now"
+    },
     "welcomeHeading": "Hi, I'm WorkSwarm. Nice to meet you!",
     "groupCreateWelcomeBrand": "JiuwenSwarm",
     "groupCreateWelcomeSuffix": "makes every work problem easier!",
@@ -839,7 +1661,42 @@
     },
     "welcomeSuggestions": {
       "journey": "Let's begin a brand-new journey!",
-      "skills": "Can you tell me what skills you have?"
+      "skills": "Can you tell me what skills you have?",
+      "explore": "What would be useful to explore today?",
+      "nextStep": "Help me turn an idea into a practical next step."
+    },
+    "topicStarter": {
+      "heading": "What would you like to explore today?",
+      "recommendations": "Start with one of these",
+      "notInterested": "Skip for now",
+      "cardRemoved": "Skipped for now",
+      "pauseInterest": "Show this less for a week",
+      "interestPaused": "Okay, showing this less",
+      "undoDismissal": "Undo",
+      "dateAndVersion": "See this day",
+      "openDateAndVersion": "Open the background for this day",
+      "weiboHotList": "Weibo hot searches",
+      "baiduHotList": "Baidu hot searches",
+      "hotListRank": "No. {{rank}}",
+      "hotListListedAt": "Listed {{time}}",
+      "viewHotListEntry": "See this trending item: {{source}}",
+      "hotListEntry": "Trending",
+      "openNewsSearch": "Open related news",
+      "searchRelatedNews": "See related news",
+      "statusPreparing": "Getting a few topics ready. You can start chatting now.",
+      "statusPreparingWithCards": "Finding topics that fit you better. These are still good to tap.",
+      "statusUpdateIncomplete": "New topics are not ready yet. These still work.",
+      "statusNeedsSettings": "Want topics that fit you better? You can turn that on in Settings.",
+      "statusNoCards": "Nothing to show right now. You can just start typing.",
+      "providerRefusal": "Personalized topics are unavailable right now. Details are in Settings.",
+      "openSettings": "Check settings",
+      "retryPreparation": "Try again"
+    },
+    "promptSuggestionBox": {
+      "label": "Next: ",
+      "sendHint": "Click to send this suggestion",
+      "dismiss": "Dismiss suggestion “{{text}}”",
+      "placeholder": "{{label}}{{text}} (Tab to fill)"
     },
     "newSession": "New Session",
     "sessionCreated": "Session created",
@@ -847,6 +1704,7 @@
     "modePlan": "Planning Mode",
     "modeAgent": "Performance Mode",
     "modeAgentTeam": "Cluster Mode",
+    "videoGeneration": "Video generation",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
     "recording": "Recording... (click the microphone again to finish)",
@@ -881,17 +1739,22 @@
     "agentGroupDeletedDescription": "The Expert Team bound to this conversation has been deleted and can no longer be used. Chat history is still available.",
     "placeholderAgentGroupDeleted": "This Expert Team has been deleted",
     "stop": "Stop",
-    "taskFullDuplexStart": "Share the entire screen and start a Full-duplex conversation",
+    "taskFullDuplexStart": "Start full-duplex voice",
     "taskFullDuplexStarting": "Starting Full-duplex conversation",
     "taskFullDuplexStop": "Stop Full-duplex conversation and screen sharing",
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
+      "configuredGroups": "Model groups",
+      "followGroupDefault": "Follow group default",
       "configured": "Configured Models",
       "free": "Limited-time Free Models",
       "getFreeModels": "Get limited-time free models",
-      "addModel": "Add Custom Model",
+      "addModel": "Add Custom Model/Model Group",
+      "selectionFailed": "Model selection could not be applied. Please choose again.",
       "empty": "No models available. Add a model in Settings first.",
-      "placeholder": "Select Model"
+      "placeholder": "Select Model",
+      "selectOrdinaryModel": "Select an individual model",
+      "collaborationDisabled": "Multi-model collaboration is off. Select an individual model before sending."
     },
     "contextUsage": {
       "title": "Context usage",
@@ -910,6 +1773,13 @@
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
+    "teamSelect": {
+      "unavailable": "Unavailable",
+      "unavailableHint": "This Expert Team is unavailable. Reinstall its package to continue; history is preserved.",
+      "tooltip": "Switch the Team being viewed",
+      "loadingLabel": "Loading teams…",
+      "fallbackLabel": "Select Team"
+    },
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "skills": "Skills",
@@ -936,9 +1806,14 @@
     "agentGroupRemove": "Remove Expert Team",
     "agentGroupSkillsLocked": "An Expert Team is selected; additional Expert Team skills are unavailable",
     "teamSkillsGroupLocked": "Team skills are selected; an Expert Team cannot be selected",
+    "agentGroupRuntimeDisabled": "This Expert Team includes external experts. {{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then select the Expert Team again.",
+    "agentGroupRuntimeDisabledTitle": "Enable external agents first",
+    "agentGroupRuntimeDisabledConfirm": "Got it",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
+    "agentGroupNoDescription": "No description available for this expert team",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
+    "externalAgentRequiresNewSession": "External experts require a new conversation. Start a new session to use one.",
     "agentGroupOnlyInTeamMode": "Expert Teams can only be selected in Team mode",
     "extension": "Extensions",
     "extensionSearchPlaceholder": "Search by keyword",
@@ -997,6 +1872,8 @@
       "permission": {
         "default": "Default",
         "defaultDesc": "Always ask when editing external files or accessing the internet",
+        "automatic": "Smart Approval",
+        "automaticDesc": "Reviews tool requests against your task and permissions, asking you when needed",
         "fullAccess": "Full Access",
         "fullAccessDesc": "Unrestricted access to the internet and any files on your computer",
         "fullAccessWarning": {
@@ -1009,6 +1886,9 @@
       }
     },
     "inputAttachment": {
+      "imageLimitTooltip": "Images: up to {{limit}}M each",
+      "fileLimitTooltip": "Files: up to {{limit}}M each",
+      "countLimitTooltip": "Up to {{limit}} attachments per message",
       "unnamedFile": "Unnamed file",
       "unsupportedFileType": "Unsupported file type: {{name}}",
       "fileSizeExceeded": "File size exceeds limit: {{name}} (max {{limit}})",
@@ -1089,7 +1969,9 @@
     "approvalInputPlaceholder": "Add revision notes then click Next; leave empty and click Skip"
   },
   "persistSession": {
-    "textRequired": "Enter a task after /persist"
+    "textRequired": "Enter a task after /persist",
+    "toolbarTag": "Persist Session",
+    "closeTag": "Hide persist session tag"
   },
   "crossSession": {
     "messageBadge": "From session: {{title}}"
@@ -1256,6 +2138,9 @@
       "slack": "Enable the Slack channel. Disabling preserves existing settings.",
       "whatsapp": "Enable the WhatsApp channel. Disabling preserves existing settings."
     },
+    "availability": {
+      "xiaoyi": "Xiaoyi does not currently support scheduled tasks or file delivery."
+    },
     "configurationGuide": "Configuration guide",
     "addConfiguration": "Add configuration",
     "enable": "Enable",
@@ -1405,7 +2290,7 @@
       "apiBaseUrlInvalid": "API Base URL must start with http:// or https://",
       "modelNameRequired": "Model name is required. Select a model before saving",
       "modelNameTooLong": "Model name is too long. Use 100 characters or fewer",
-      "aliasTooLong": "Alias is too long. Use 100 characters or fewer",
+      "aliasTooLong": "Model display name is too long. Use 100 characters or fewer",
       "apiBaseTooLong": "API Base URL is too long. Use 512 characters or fewer"
     },
     "booleanLabels": {
@@ -1413,13 +2298,29 @@
       "externalCliCodex": "Enable Codex"
     },
     "externalCli": {
+      "customHint": "Provided by an uploaded provider package; with \"Use built-in CLI\" the provider picks its CLI itself.",
+      "customHintWithCli": "Provided by an uploaded provider package; with \"Use built-in CLI\" it runs the CLI uploaded with it.",
+      "toggleCustom": "Enable {{agent}}",
+      "addCustomAgent": "Add third-party agent",
+      "addCustomAgentHint": "Upload an openjiuwen harness provider package (.whl), optionally with the CLI executable it drives. An agent with the same name is replaced.",
+      "customAgentWheel": "Provider package (.whl)",
+      "customAgentCli": "CLI executable (optional)",
+      "noFileSelected": "No file selected",
+      "upload": "Upload and install",
+      "uploading": "Installing",
+      "uploadFailed": "Installation failed",
+      "removeCustomAgent": "Remove this agent",
+      "removeCustomAgentConfirm": "Confirm removal",
       "claude": "Claude",
       "codex": "Codex",
       "claudeHint": "The SDK is installed automatically when needed; use the built-in CLI, a CLI from PATH, or a specified path.",
       "codexHint": "The SDK is installed automatically when needed; use the built-in CLI, a CLI from PATH, or a specified path.",
       "useBuiltin": "Use built-in CLI",
       "detect": "Detect",
-      "detectHint": "Leave the path empty to search the system PATH, or enter a CLI executable path to validate it and check its version",
+      "toggleEnable": "Enable/disable {{agent}}",
+      "detectHint": "Validate the CLI executable and check its version; leave the path empty to search the system PATH",
+      "redetectHint": "Re-check the current CLI executable and validate its version",
+      "installSucceeded": "Install completed",
       "selectFile": "Choose file",
       "selectFileTitle": "Choose {{agent}} command",
       "selectFileFailed": "Failed to choose file",
@@ -1433,13 +2334,26 @@
       "statusUnsupported": "Unsupported path",
       "statusUnavailable": "Unavailable",
       "version": "Version {{version}}",
-      "compatibilityWarning": "The detected version may be incompatible. You can change the executable path, upgrade the version, or select \"Use built-in CLI\" to use the default startup mode.",
-      "compatibilityWarningWithVersion": "The detected version may be incompatible. You can change the executable path, upgrade to {{version}} or later, or select \"Use built-in CLI\" to use the default startup mode.",
-      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or select \"Use built-in CLI\".",
-      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or select \"Use built-in CLI\".",
-      "missingPath": "Path does not exist: {{path}}. Check the path, or select \"Use built-in CLI\".",
-      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or select \"Use built-in CLI\".",
-      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or select \"Use built-in CLI\".",
+      "installed": "Installed",
+      "notInstalled": "Not installed",
+      "disabled": "Off",
+      "detecting": "Detecting…",
+      "executablePath": "Executable path",
+      "builtinPathPlaceholder": "Built-in CLI (managed)",
+      "installNow": "Install",
+      "notInstalledHint": "No SDK detected yet. Click",
+      "removePath": "Remove this path from history",
+      "savedHint": "Saved",
+      "detectSucceeded": "Detection passed",
+      "editPath": "Edit",
+      "openFile": "Open file",
+      "compatibilityWarning": "The detected version may be incompatible. You can change the executable path, upgrade the version, or click \"Install\" to use the built-in CLI.",
+      "compatibilityWarningWithVersion": "The detected version may be incompatible. You can change the executable path, upgrade to {{version}} or later, or click \"Install\" to use the built-in CLI.",
+      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or cancel and click \"Install\" to use the built-in CLI.",
+      "missingPath": "Path does not exist: {{path}}. Check the path, or cancel and click \"Install\" to use the built-in CLI.",
+      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or cancel and click \"Install\" to use the built-in CLI.",
       "autoSaved": "{{agents}} dependencies finished installing. Your configuration has been saved automatically.",
       "installDialogTitle": "Install optional components",
       "installDialogDescription": "Closing this dialog does not interrupt installation. Your configuration will be saved automatically when installation finishes.",
@@ -1450,8 +2364,6 @@
       "installRetry": "Download interrupted. Retrying ({{current}}/{{total}})",
       "installSwitchingSource": "Using a fallback download source",
       "installRunInBackground": "Run in background",
-      "installInProgress": "{{agents}} installation is in progress. You can view its progress at any time.",
-      "installViewProgress": "View progress",
       "claudeCodex": "Claude / Codex",
       "installPhase": {
         "idle": "Waiting",
@@ -1710,6 +2622,7 @@
       "web": "Web (web)",
       "tui": "Terminal (tui)",
       "xiaoyi": "Xiaoyi (xiaoyi)",
+      "xiaoyiUnsupported": "Xiaoyi (unsupported)",
       "feishu": "Lark (feishu)",
       "dingtalk": "DingTalk (dingtalk)",
       "whatsapp": "WhatsApp (whatsapp)",
@@ -1772,7 +2685,31 @@
       "reload": "Reload",
       "stop": "Stop",
       "addressPlaceholder": "Enter URL or search",
-      "unavailable": "Built-in browser unavailable"
+      "unavailable": "Built-in browser unavailable",
+      "downloadContent": "Downloads"
+    },
+    "downloads": {
+      "recentTitle": "Recent downloads",
+      "empty": "No downloads yet",
+      "downloading": "Downloading",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "failed": "Failed",
+      "justNow": "Just now",
+      "minutesAgo_one": "{{count}} minute ago",
+      "minutesAgo_other": "{{count}} minutes ago",
+      "hoursAgo_one": "{{count}} hour ago",
+      "hoursAgo_other": "{{count}} hours ago",
+      "daysAgo_one": "{{count}} day ago",
+      "daysAgo_other": "{{count}} days ago",
+      "close": "Close downloads",
+      "openFile": "Open",
+      "showInFolder": "Show in folder",
+      "fileDeleted": "Deleted",
+      "removeRecord": "Remove from list",
+      "pauseDownload": "Pause download",
+      "resumeDownload": "Resume download",
+      "cancelDownload": "Cancel download"
     }
   },
   "logsPanel": {
@@ -2124,11 +3061,6 @@
       "added": "Added Skills",
       "builtin": "Built-in Skills",
       "skillPack": "Skill Packs"
-    },
-    "publishFilter": {
-      "all": "All",
-      "published": "Published",
-      "unpublished": "Unpublished"
     },
     "skillTypes": {
       "skill": "Skill Pack",
@@ -2770,7 +3702,14 @@
     "title": "Expert Management",
     "subtitle": "Create and manage reusable Expert assets",
     "tabsLabel": "Expert management categories",
-    "tabs": { "catalog": "Expert marketplace", "teams": "Expert Team marketplace", "mine": "My Experts", "mineAgent": "Experts", "mineGroup": "Expert Teams", "mineLabel": "My asset type" },
+    "tabs": {
+      "catalog": "Expert marketplace",
+      "teams": "Expert Team marketplace",
+      "mine": "My Experts",
+      "mineAgent": "Experts",
+      "mineGroup": "Expert Teams",
+      "mineLabel": "My asset type"
+    },
     "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
@@ -2822,7 +3761,8 @@
       "updating": "Saving…"
     },
     "confirm": {
-      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone."
+      "deleteMessage": "Delete the Expert “{{name}}”? This cannot be undone.",
+      "uninstallGroupMessage": "Uninstall the Expert Team “{{name}}”?"
     },
     "card": {
       "open": "Open {{name}} details",
@@ -2847,10 +3787,12 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
+      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
       "uploadMissingPersona": "The Expert package is missing the persona directory, or it contains no .md files.",
+      "uploadSkillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths.",
       "newVersion": "This Expert has a new version available",
       "teamUnavailable": "Expert Team management is not available yet",
       "featureUnavailable": "This feature is outside this milestone",
@@ -2904,6 +3846,9 @@
       "charCount": "{{count}}/{{max}}",
       "tagLabel": "Domain tags (optional)",
       "tagPlaceholder": "Choose strength tags",
+      "useExternalHarness": "Use a third-party harness",
+      "useExternalHarnessHint": "Create a third-party expert with Claude or Codex as the runtime",
+      "externalHarnessProvider": "Harness type",
       "toggleTags": "Expand or collapse domain tags",
       "tagScrollPrev": "View domain tags to the left",
       "tagScrollNext": "View domain tags to the right",
@@ -3006,7 +3951,7 @@
         "membersInvalid": "The Expert Team members are invalid. Choose a leader and distinct members.",
         "memberUnavailable": "A selected Expert is unavailable or not Team-compatible.",
         "packageValidationError": "Expert Team package validation failed: {{reason}}",
-        "createSuccess": "Expert Team package {{id}} was created.",
+        "createSuccess": "Expert Team \"{{name}}\" was created.",
         "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
         "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
         "catalogEmpty": "No Expert Teams to show",
@@ -3022,7 +3967,10 @@
         "noDetails": "No additional details",
         "filesUnavailable": "Install the Expert Team to view its files."
       },
-      "files": { "loadError": "Unable to load Expert Team files. Try again.", "readError": "Unable to read the Expert Team file. Try again." },
+      "files": {
+        "loadError": "Unable to load Expert Team files. Try again.",
+        "readError": "Unable to read the Expert Team file. Try again."
+      },
       "form": {
         "title": "Create manually",
         "createAgentTab": "Create Expert",
@@ -3116,6 +4064,7 @@
     "messageQueue": "Message Queue",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
+    "turnStarting": "Starting…",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",
@@ -3171,6 +4120,7 @@
       }
     },
     "toolResult": {
+      "answersInSummary": "See the answers in the clarification card. Sensitive input is hidden.",
       "success": "done",
       "failed": "failed",
       "timeout": "Execution timed out",
@@ -3255,7 +4205,7 @@
           "manual": "Manual approval",
           "system": "System permission check"
         },
-        "risk": "Risk",
+        "risk": "Tool capability risk",
         "riskValues": {
           "critical": "Critical",
           "high": "High",
@@ -3263,7 +4213,7 @@
           "low": "Low",
           "unknown": "Unknown"
         },
-        "reason": "Reason",
+        "reason": "Approval rationale",
         "reasonValues": {
           "approved": "Permission review allowed this operation.",
           "denied": "Permission review denied this operation.",
@@ -3318,6 +4268,23 @@
     "export": "Export PNG",
     "exporting": "Exporting PNG...",
     "generating": "Generating",
+    "preparing": "Preparing export",
+    "preparingDocument": "Preparing layout",
+    "loadingHistory": "Loading conversation",
+    "openExportTab": "Open export tab",
+    "renderingProgress": "Generating image {{percent}}%",
+    "saving": "Preparing download",
+    "savingDesktop": "Preparing to save",
+    "downloadStartFailed": "The browser did not start the download. Your image is retained; click Export again to retry the download.",
+    "statusTimeout": "The export status request timed out. Check your connection and try again.",
+    "statusReconnecting": "Reconnecting to export progress",
+    "downloading": "Downloading",
+    "downloadInterrupted": "The download was interrupted. Your image is retained; click Export again to retry the download.",
+    "desktopRestartRequired": "Desktop export has been updated. Quit and restart the application before exporting.",
+    "browserExportNotice": "Generating the image. Please keep this tab open.",
+    "popupBlocked": "Unable to open the export tab. Allow pop-ups and try again.",
+    "browserTabClosed": "The export tab was closed and image generation was cancelled.",
+    "exportStopped": "The export tab was closed. Export of “{{sessionTitle}}” has stopped. You can export again.",
     "exportUnavailable": "Export is available after the session ends",
     "exportFailed": "Failed to export PNG",
     "mainConversation": "Main conversation",
@@ -3353,6 +4320,7 @@
     "wsError": "WebSocket connection error",
     "connectionClosedWithCode": "Connection closed ({{code}})",
     "connectionClosed": "Connection closed",
+    "workerExecutionInterrupted": "The runtime restarted and interrupted this task. Check its results before starting another run.",
     "connectionUnavailable": "Connection unavailable",
     "requestTimeout": "Request timed out",
     "requestAborted": "Request aborted",
@@ -3362,6 +4330,7 @@
     "pauseFailed": "Pause failed",
     "cancelFailed": "Cancel failed",
     "supplementFailed": "Supplement failed",
+    "supplementAttachmentsUnsupported": "Messages with attachments cannot be sent immediately. Click \"Edit\" to remove the attachments, then send again.",
     "resumeFailed": "Resume failed",
     "submitAnswerFailed": "Failed to submit answer",
     "unknownError": "Unknown error",
@@ -3399,6 +4368,7 @@
     "pipRestart": "Restart now",
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
+    "builtOn": "Built on",
     "latestVersion": "Latest version",
     "state": "Update state",
     "publishedAt": "Published at",
@@ -3594,7 +4564,9 @@
         "archiveFailed": "The archive operation failed. Please try again later.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
-        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
+        "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -3790,6 +4762,7 @@
       "runtimeMissing": "This connector requires a runtime environment that isn't installed. Please install it before using this connector.",
       "runtimeMissingNamed": "This connector requires {{runtime}}. Please install {{runtime}} before using this connector.",
       "installNetwork": "Failed to download a dependency. Please check your network connection and retry.",
+      "installScriptDep": "The CLI install script requires PowerShell. Please enable or restore PowerShell and retry.",
       "cliIncomplete": "The CLI is incomplete or outdated. Please reconnect to retry.",
       "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
     },
@@ -3882,7 +4855,8 @@
     "tokenModal": {
       "title": "Connect {{name}}",
       "placeholder": "Paste your {{name}} API Key",
-      "saveAndConnect": "Save and connect"
+      "saveAndConnect": "Save and connect",
+      "oauthAuthorize": "Authorize"
     },
     "cliAuth": {
       "title": "Connect {{name}}",
@@ -3926,7 +4900,8 @@
       "invalidType": "Only .zip / .tar files are supported",
       "importSuccess": "Plugin imported successfully",
       "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
-      "missingReadme": "The plugin package is missing README.md."
+      "missingReadme": "The plugin package is missing README.md.",
+      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths."
     },
     "common": {
       "back": "Back",
@@ -4144,6 +5119,7 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
+      "title": "RSI experiments",
       "loading": "Loading…",
       "error": "Failed to load experiments"
     },
@@ -4235,7 +5211,10 @@
       "nodeHint": "Nodes show each candidate, stage, and evaluation result; select one for details",
       "harnessNodeHint": "Each node is a Harness combination; select one to inspect changes and evaluation",
       "paperNodeHint": "Each node is a paper version; select one to inspect changes and rejection reasons",
-      "programNodeHint": "Each node is a program candidate; parallel candidates show their attempt number",
+      "programNodeHint": "Parallel candidates appear as they finish. Search stops when a candidate reaches the target; evaluations already in progress may finish later.",
+      "prunedReason": "Pruned reason",
+      "skippedReason": "Skip reason",
+      "viewDetail": "View details",
       "estimatedCost": "Estimated cost: ¥ {{cost}}",
       "selectedNode": "Selected",
       "inherit": "inherits",
@@ -4318,6 +5297,16 @@
       "scoreSuffix": " · {{score}}"
     }
     },
+  "teamDispatch": {
+    "toggleLabel": "Scheduled Dispatch",
+    "toggleHint": "When on, the leader assigns every task to a named member; when off, members claim tasks on their own",
+    "readonlyHint": "The team has started; dispatch mode can no longer be changed"
+  },
+  "teamBootstrap": {
+    "toggleLabel": "Pre-built Team",
+    "toggleHint": "When on, the system builds a general-purpose team as the session starts; the leader creates members per task without a build_team step",
+    "readonlyHint": "The team has started; the bootstrap mode can no longer be changed"
+  },
   "swarmflow": {
     "statusPlanned": "Planned",
     "statusPending": "Pending",
@@ -4364,6 +5353,7 @@
     "verifyReviewing": "Reviewing…",
     "verifyReviewingShort": "Reviewing",
     "verifyPass": "✓ Pass",
+    "expertIdentity": "Expert: {{name}} ({{template}})",
     "verifyFail": "✗ Fail",
     "verifyUndecided": "? Undecided",
     "verifyThreshold": "Threshold {{count}}",
@@ -4374,12 +5364,42 @@
     "verifyRound": "Round {{count}} · {{verdict}}",
     "verifyGroupTitle": "verify · {{label}}",
     "verifyReviewersPending": "{{names}} reviewing…",
+    "sectionCallRecords": "Activity",
+    "sectionToolCalls": "Tool calls",
     "sectionInput": "Input",
     "sectionOutput": "Output",
     "sectionHumanPrompt": "Human question",
     "sectionHumanReply": "Human reply",
     "sectionError": "Error",
     "charUnit": "chars",
-    "clickToViewDetail": "Click to view details"
+    "clickToViewDetail": "Click to view details",
+    "runIdTooltip": "Run ID: {{id}}"
+  },
+  "a4pSettings": {
+    "title": "A4P pre-authorization",
+    "enableTitle": "Enable A4P pre-authorization",
+    "description": "Pre-authorize permissions needed for the current conversation and scheduled tasks in batches. When enabled, scheduled tasks also use permission approval during execution. Only applies in Default permissions mode."
+  },
+  "a4pAuthorization": {
+    "expandParams": "Expand parameters for {{name}}",
+    "collapseParams": "Collapse parameters for {{name}}",
+    "permissionScope": "Permission scope",
+    "selectedCount": "{{selected}} / {{total}} selected",
+    "readyRange": "Authorization will cover the selected permissions.",
+    "emptySelection": "Select at least one permission, or reject this request.",
+    "title": "A4P Pre-authorization Confirmation",
+    "reason": "Authorization reason",
+    "defaultReason": "Pre-authorize the following tool operations.",
+    "tools": {
+      "bash": "Run shell command",
+      "mcpExecCommand": "Run command",
+      "createTerminal": "Create terminal",
+      "writeFile": "Write file",
+      "editFile": "Edit file",
+      "acpChat": "Chat with agent"
+    },
+    "reject": "Reject",
+    "approve": "Authorize",
+    "waiting": "Processing..."
   }
 }

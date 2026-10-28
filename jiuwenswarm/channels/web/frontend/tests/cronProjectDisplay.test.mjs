@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   isDefaultLikeProject,
+  jobBelongsToProject,
   resolveCronJobProjectName,
 } from '../node_modules/.cache/cron-project-display/components/CronPanel/cronProjectDisplay.js';
 
@@ -46,4 +47,24 @@ test('resolveCronJobProjectName: real project keeps name; unknown id is unset', 
   const projects = [defaultWork, realProject];
   assert.equal(resolveCronJobProjectName('proj_real', projects), '真实项目');
   assert.equal(resolveCronJobProjectName('proj_missing', projects), null);
+});
+
+test('jobBelongsToProject: default ids match exactly, no cross-mode leak', () => {
+  assert.equal(jobBelongsToProject('default', 'default'), true);
+  assert.equal(jobBelongsToProject('default', 'default_code'), false);
+  assert.equal(jobBelongsToProject('default_code', 'default_code'), true);
+  assert.equal(jobBelongsToProject('default_code', 'default'), false);
+});
+
+test('jobBelongsToProject: legacy empty project id belongs to work default only', () => {
+  assert.equal(jobBelongsToProject('', 'default'), true);
+  assert.equal(jobBelongsToProject(null, 'default'), true);
+  assert.equal(jobBelongsToProject(undefined, 'default'), true);
+  assert.equal(jobBelongsToProject('', 'default_code'), false);
+});
+
+test('jobBelongsToProject: real project id matches only its own node', () => {
+  assert.equal(jobBelongsToProject('proj_real', 'proj_real'), true);
+  assert.equal(jobBelongsToProject('proj_real', 'default'), false);
+  assert.equal(jobBelongsToProject('proj_real', 'default_code'), false);
 });

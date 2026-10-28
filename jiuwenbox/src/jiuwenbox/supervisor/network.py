@@ -9,7 +9,10 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import logging
+import os
+import re
 import shutil
+import signal
 import socket
 import subprocess
 from dataclasses import dataclass, field
@@ -330,6 +333,11 @@ def _run_ip(
 
 
 NETNS_NAME_PREFIX = "jbx-"
+# Host/sandbox veth names are ``jwbH`` / ``jwbS`` plus sha256(sandbox_id)[:8].
+_JWB_VETH_RE = re.compile(r"^jwb[HS][0-9a-f]{8}$")
+# Set to a non-empty value to skip the startup/shutdown orphan sweep. Intended
+# for tests that must not touch the host network namespace.
+ENV_SKIP_ORPHAN_NET_CLEANUP = "JIUWENBOX_SKIP_ORPHAN_NET_CLEANUP"
 
 
 def netns_name_for_sandbox(sandbox_id: str) -> str:
@@ -827,6 +835,248 @@ def teardown_network_uplink(handle: UplinkHandle) -> None:
     for port in handle.management_ports:
         _release_management_port_block(handle.subnet, port)
     _run_ip(["link", "del", handle.host_if], check=False)
+
+
+def is_jiuwenbox_veth_name(name: str) -> bool:
+    """Return True for host-side ``jwbH********`` / ``jwbS********`` veth names."""
+    return bool(_JWB_VETH_RE.fullmatch(name))
+
+
+def parse_ip_o_link_names(stdout: str) -> list[str]:
+    """Parse ``ip -o link show`` names, stripping the ``@ifN`` veth peer suffix."""
+    names: list[str] = []
+    for line in stdout.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 2:
+            continue
+        raw = parts[1].strip()
+        if not raw:
+            continue
+        names.append(raw.split("@", 1)[0])
+    return names
+
+
+def parse_netns_list_names(stdout: str) -> list[str]:
+    """Parse ``ip netns list`` names (first token; ignores ``(id: N)``)."""
+    names: list[str] = []
+    for line in stdout.splitlines():
+        token = line.split(maxsplit=1)[0] if line.strip() else ""
+        if token:
+            names.append(token)
+    return names
+
+
+def parse_netns_pids(stdout: str) -> list[int]:
+    """Parse ``ip netns pids`` output into PIDs."""
+    pids: list[int] = []
+    for line in stdout.splitlines():
+        token = line.strip()
+        if token.isdigit():
+            pids.append(int(token))
+    return pids
+
+
+def parse_forward_rule_args(stdout: str, interfaces: set[str]) -> list[list[str]]:
+    """Extract ``iptables -S FORWARD`` rules that reference ``interfaces``."""
+    rules: list[list[str]] = []
+    if not interfaces:
+        return rules
+    for line in stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3 or parts[0] != "-A" or parts[1] != "FORWARD":
+            continue
+        if any(token in interfaces for token in parts[2:]):
+            rules.append(parts[1:])
+    return rules
+
+
+@dataclass
+class OrphanNetworkCleanupResult:
+    """Counts from a best-effort sweep of leftover jiuwenbox host network state."""
+
+    namespaces: list[str] = field(default_factory=list)
+    interfaces: list[str] = field(default_factory=list)
+    killed_pids: int = 0
+    deleted_namespaces: int = 0
+    deleted_interfaces: int = 0
+    deleted_forward_rules: int = 0
+    skipped: bool = False
+
+
+def cleanup_orphaned_uplinks(*, reason: str = "manual") -> OrphanNetworkCleanupResult:
+    """Remove leftover jiuwenbox veths / netns after a crash or SIGKILL.
+
+    Isolated sandboxes create kernel objects (``jwbH*`` / ``jwbS*`` veths and
+    ``jbx-*`` named netns) that survive the jiuwenbox-server process. Per-sandbox
+    ``teardown_network_uplink`` only runs if lifespan shutdown completes; this
+    sweep is the recovery path for ungraceful stops.
+
+    Assumes a single jiuwenbox instance per host network namespace. Safe to
+    call when nothing is leftover. Never raises: every step is best-effort.
+    """
+    result = OrphanNetworkCleanupResult()
+    if os.environ.get(ENV_SKIP_ORPHAN_NET_CLEANUP, "").strip():
+        result.skipped = True
+        logger.debug("Skipping orphan network cleanup (%s): %s is set", reason, ENV_SKIP_ORPHAN_NET_CLEANUP)
+        return result
+
+    try:
+        result.namespaces = [
+            name
+            for name in _list_named_namespace_names()
+            if name.startswith(NETNS_NAME_PREFIX)
+        ]
+        result.interfaces = [
+            name
+            for name in _list_host_link_names()
+            if is_jiuwenbox_veth_name(name)
+        ]
+    except FileNotFoundError:
+        logger.debug("Skipping orphan network cleanup (%s): ip binary is missing", reason)
+        return result
+    except Exception:
+        logger.warning("Failed to list leftover jiuwenbox network objects (%s)", reason, exc_info=True)
+        return result
+
+    if not result.namespaces and not result.interfaces:
+        logger.debug("Orphan network cleanup (%s): nothing leftover", reason)
+        return result
+
+    logger.info(
+        "Orphan network cleanup (%s): leftover netns=%s veth=%s",
+        reason,
+        result.namespaces,
+        result.interfaces,
+    )
+
+    for namespace in result.namespaces:
+        result.killed_pids += _kill_namespace_processes(namespace)
+
+    # Deleting the host veth removes both ends and is what clears ``ifconfig``.
+    for iface in result.interfaces:
+        if _delete_host_link(iface):
+            result.deleted_interfaces += 1
+
+    result.deleted_forward_rules = _delete_stale_forward_rules(set(result.interfaces))
+
+    for namespace in result.namespaces:
+        if _delete_named_namespace_best_effort(namespace):
+            result.deleted_namespaces += 1
+
+    leftover = [
+        name
+        for name in _list_host_link_names_best_effort()
+        if is_jiuwenbox_veth_name(name)
+    ]
+    for iface in leftover:
+        if _delete_host_link(iface):
+            result.deleted_interfaces += 1
+
+    logger.info(
+        "Orphan network cleanup (%s) finished: deleted_veth=%d deleted_netns=%d "
+        "killed_pids=%d deleted_forward_rules=%d",
+        reason,
+        result.deleted_interfaces,
+        result.deleted_namespaces,
+        result.killed_pids,
+        result.deleted_forward_rules,
+    )
+    return result
+
+
+def _list_named_namespace_names() -> list[str]:
+    result = subprocess.run(
+        [IP_BINARY, "netns", "list"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return []
+    return parse_netns_list_names(result.stdout)
+
+
+def _list_host_link_names() -> list[str]:
+    result = _run_ip(["-o", "link", "show"], check=False)
+    if result.returncode != 0:
+        return []
+    return parse_ip_o_link_names(result.stdout)
+
+
+def _list_host_link_names_best_effort() -> list[str]:
+    try:
+        return _list_host_link_names()
+    except Exception:
+        return []
+
+
+def _kill_namespace_processes(namespace: str) -> int:
+    try:
+        result = subprocess.run(
+            [IP_BINARY, "netns", "pids", namespace],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return 0
+    if result.returncode != 0:
+        return 0
+    killed = 0
+    for pid in parse_netns_pids(result.stdout):
+        try:
+            os.kill(pid, signal.SIGKILL)
+            killed += 1
+        except OSError:
+            continue
+    return killed
+
+
+def _delete_host_link(name: str) -> bool:
+    try:
+        result = _run_ip(["link", "del", name], check=False)
+    except FileNotFoundError:
+        return False
+    except Exception:
+        logger.debug("Failed to delete leftover veth %s", name, exc_info=True)
+        return False
+    return result.returncode == 0
+
+
+def _delete_named_namespace_best_effort(namespace: str) -> bool:
+    try:
+        result = subprocess.run(
+            [IP_BINARY, "netns", "delete", namespace],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return False
+    except Exception:
+        logger.debug("Failed to delete leftover netns %s", namespace, exc_info=True)
+        return False
+    return result.returncode == 0
+
+
+def _delete_stale_forward_rules(interfaces: set[str]) -> int:
+    if not interfaces:
+        return 0
+    deleted = 0
+    try:
+        listed = run_iptables(["-S", "FORWARD"], check=False)
+    except Exception:
+        logger.debug("Failed to list FORWARD rules during orphan cleanup", exc_info=True)
+        return 0
+    if listed.returncode != 0:
+        return 0
+    for rule in parse_forward_rule_args(listed.stdout, interfaces):
+        try:
+            _remove_iptables_rule(rule)
+            deleted += 1
+        except Exception:
+            logger.debug("Failed to drop stale FORWARD rule %s", rule, exc_info=True)
+    return deleted
 
 
 def _apply_egress_rules(rules: ResolvedNetworkRules, namespace: str | None = None) -> None:

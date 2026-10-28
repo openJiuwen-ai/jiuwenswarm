@@ -1,8 +1,12 @@
 import asyncio
 from copy import deepcopy
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
+import httpx
 import pytest
+from openai import BadRequestError
+from openai.types.chat import ChatCompletion
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import BaseError, build_error
@@ -11,8 +15,11 @@ from openjiuwen.core.foundation.llm import (
     ModelClientConfig,
     ModelRequestConfig,
 )
+from openjiuwen.core.foundation.llm.request_context import (
+    is_disabled_thinking_fallback_allowed,
+)
 
-from jiuwenswarm.symphony.adapter import llm_config_signature
+from jiuwenswarm.symphony.adapter import FingerprintLLMAdapter, llm_config_signature
 from jiuwenswarm.symphony.llm import (
     LLMConfig,
     create_llm_client,
@@ -470,6 +477,52 @@ async def test_probe_model_connection_uses_bounded_low_cost_request(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["probe", "fingerprint"])
+async def test_symphony_calls_retry_when_model_rejects_disabled_thinking(
+    monkeypatch, operation,
+):
+    config = LLMConfig.from_model_entry(_model_entry(request={
+        "max_tokens": 99,
+        "extra_body": {"routing": "keep"},
+    }))
+    original_config = deepcopy(config.model_config_obj)
+    rejection = BadRequestError(
+        "该模型始终思考，不支持关闭思考；请使用 low、high 或 max。",
+        response=httpx.Response(400, request=httpx.Request("POST", config.base_url)),
+        body=None,
+    )
+    completion = ChatCompletion(
+        id="test", created=0, model=config.model, object="chat.completion",
+        choices=[{
+            "index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "ok"},
+        }],
+    )
+    create = AsyncMock(side_effect=[rejection, completion])
+    monkeypatch.setattr(
+        "openai.resources.chat.completions.AsyncCompletions.create", create,
+    )
+
+    if operation == "probe":
+        await probe_model_connection(config)
+    else:
+        await FingerprintLLMAdapter(config).invoke(
+            [{"role": "user", "content": "fingerprint"}],
+            max_tokens=2048, timeout=30,
+        )
+
+    first, retry = [call.kwargs for call in create.call_args_list]
+    assert first["extra_body"] == original_config["extra_body"]
+    expected_retry = deepcopy(first)
+    expected_retry["extra_body"] = {"routing": "keep"}
+    assert retry == expected_retry
+    assert retry["max_tokens"] == (16 if operation == "probe" else 99)
+    assert retry["timeout"] == (25 if operation == "probe" else 30)
+    assert config.model_config_obj == original_config
+    assert is_disabled_thinking_fallback_allowed() is False
+
+
+@pytest.mark.asyncio
 async def test_probe_model_connection_preserves_framework_model_error(monkeypatch):
     expected = build_error(
         StatusCode.MODEL_CALL_FAILED,
@@ -487,6 +540,7 @@ async def test_probe_model_connection_preserves_framework_model_error(monkeypatc
         await probe_model_connection(_llm_config())
 
     assert exc_info.value is expected
+    assert is_disabled_thinking_fallback_allowed() is False
     assert (
         str(exc_info.value) == "[181001] model call failed, reason: model unavailable"
     )
@@ -533,6 +587,7 @@ async def test_probe_model_connection_enforces_coroutine_deadline(monkeypatch):
         "model connection test timed out after 0.01s"
     )
     assert isinstance(exc_info.value.cause, TimeoutError)
+    assert is_disabled_thinking_fallback_allowed() is False
 
 
 def test_model_response_observer_preserves_orchestration_usage_context():

@@ -216,8 +216,17 @@ def test_goal_delivery_is_runtime_control_work(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["agent.work.plan", "team.work.normal"])
-async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
+@pytest.mark.parametrize(
+    ("mode", "expected_work_kind"),
+    [
+        ("agent.work.plan", None),
+        ("team.work.normal", SessionWorkKind.TEAM_REQUEST),
+    ],
+)
+async def test_runtime_only_tracks_adapted_execution_modes(
+    mode: str,
+    expected_work_kind: SessionWorkKind | None,
+) -> None:
     runtime = _runtime()
     await runtime.start()
     await runtime.create_or_resume_session(channel_id="process", session_id="session")
@@ -236,7 +245,11 @@ async def test_unadapted_modes_keep_their_existing_executor(mode: str) -> None:
     assert await runtime.invoke(request) == [request.request_id]
     snapshot = runtime._session_coordinator.snapshot_session("session")
     assert snapshot is not None
-    assert snapshot.executions == ()
+    if expected_work_kind is None:
+        assert snapshot.executions == ()
+    else:
+        assert snapshot.executions[-1].work_kind is expected_work_kind
+        assert snapshot.executions[-1].state is SessionExecutionState.SUCCEEDED
     await runtime.close()
 
 
@@ -361,9 +374,13 @@ async def test_single_agent_runtime_owns_every_user_channel(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["agent.work.plan", "team.work.normal"])
-async def test_plan_and_team_work_keep_their_existing_owner(
+@pytest.mark.parametrize(
+    ("mode", "runtime_owned"),
+    [("agent.work.plan", False), ("team.work.normal", True)],
+)
+async def test_team_work_moves_to_runtime_while_plan_keeps_existing_owner(
     mode: str,
+    runtime_owned: bool,
 ) -> None:
     runtime = _runtime()
     await runtime.start()
@@ -381,7 +398,8 @@ async def test_plan_and_team_work_keep_their_existing_owner(
     )
 
     assert await runtime.invoke(request) == [request.request_id]
-    assert runtime._session_coordinator.snapshot_session(request.session_id) is None
+    snapshot = runtime._session_coordinator.snapshot_session(request.session_id)
+    assert (snapshot is not None) is runtime_owned
     await runtime.close()
 
 

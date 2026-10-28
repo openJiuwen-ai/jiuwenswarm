@@ -8,7 +8,9 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
+from jiuwenbox.server.runtime.errors import InvalidJobIdError, InvalidSandboxIdError
+from jiuwenbox.supervisor.daemon_ipc import SANDBOX_IP_ENV
 
 SANDBOX_ID_MIN_LEN = 4
 SANDBOX_ID_MAX_LEN = 40
@@ -23,8 +25,6 @@ SANDBOX_ID_FORMAT_MESSAGE = (
 )
 
 
-class InvalidSandboxIdError(Exception):
-    """Raised when a user-supplied sandbox_id fails format validation."""
 
 
 JOB_ID_MIN_LEN = 4
@@ -39,8 +39,6 @@ JOB_ID_FORMAT_MESSAGE = (
 )
 
 
-class InvalidJobIdError(Exception):
-    """Raised when a user-supplied job_id fails format validation."""
 
 
 def generate_sandbox_id() -> str:
@@ -83,6 +81,7 @@ class SandboxSpec(BaseModel):
 
     env: dict[str, str] = Field(default_factory=dict)
     sandbox_id: str | None = None
+    sandbox_runtime: str | None = None
 
 
 class SandboxRef(BaseModel):
@@ -90,7 +89,8 @@ class SandboxRef(BaseModel):
 
     id: str
     phase: SandboxPhase = SandboxPhase.PROVISIONING
-    runtime: str = "process"
+    runtime: str = Field(default="process", validation_alias=AliasChoices("runtime", "sandbox_runtime"))
+
     pid: int | None = None
     created_at: datetime = Field(default_factory=datetime.now)
     started_at: datetime | None = None
@@ -118,6 +118,16 @@ class BackgroundExecRequest(BaseModel):
     env: dict[str, str] | None = None
     stdin: str | None = None
     timeout_seconds: int | None = None
+
+    @field_validator("env")
+    @classmethod
+    def reject_reserved_environment(
+        cls,
+        value: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        if value is not None and SANDBOX_IP_ENV in value:
+            raise ValueError(f"{SANDBOX_IP_ENV} is reserved by the sandbox runtime")
+        return value
 
 
 class BackgroundExecResult(BaseModel):

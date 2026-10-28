@@ -195,6 +195,85 @@ async def test_send_failure_releases_new_output_and_preserves_error():
     assert adapter._interaction_output_handoff.drained.is_set()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "channel_id,session_id,round_active,expected_refresh",
+    [
+        ("web", "__cron__session", False, True),
+        ("web", "ordinary-session", False, False),
+        ("__cron__", "__cron__session", False, False),
+        ("web", "__cron__session", True, False),
+    ],
+)
+async def test_cron_context_refresh_only_on_first_idle_web_followup(
+    monkeypatch, channel_id, session_id, round_active, expected_refresh,
+):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    warmup = AsyncMock(return_value=True)
+    monkeypatch.setattr(session_ops_service, "warmup_session_context", warmup)
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *_args, **_kwargs: {})
+    core = LeaseCore()
+    core.active_round = object() if round_active else None
+    adapter = _adapter(core)
+    adapter._active_session_ids = {session_id: 2}
+    adapter._session_agent_tasks = {session_id: {asyncio.current_task()}}
+    adapter._resolve_interrupt_session_id = lambda sid: sid
+    adapter._is_deep_agent_executing_for_session = lambda _sid: False
+    request = _request(channel_id=channel_id)
+    request.session_id = session_id
+
+    for _ in range(2):
+        stream = None
+        try:
+            stream, _ = await adapter._attach_and_send_inputs(request, {}, send_without_output=False)
+        finally:
+            if stream is not None:
+                await stream.close(abort_active_round=False)
+
+    if expected_refresh:
+        warmup.assert_awaited_once_with(
+            deep_agent=core,
+            session_id=session_id,
+            history_before_request_id=request.request_id,
+            refresh_existing=True,
+        )
+    else:
+        warmup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, RuntimeError("refresh failed")])
+async def test_cron_refresh_failure_blocks_dispatch_and_allows_retry(monkeypatch, failure):
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    warmup = AsyncMock(side_effect=[failure, True])
+    monkeypatch.setattr(session_ops_service, "warmup_session_context", warmup)
+    core = LeaseCore()
+    core.active_round = None
+    adapter = _adapter(core)
+    adapter._is_deep_agent_executing_for_session = lambda _sid: False
+    request = _request(channel_id="web")
+    request.session_id = "__cron__session"
+
+    with pytest.raises(RuntimeError):
+        await adapter._attach_and_send_inputs(request, {}, send_without_output=False)
+    assert not core.sent
+    assert not core.output.has_consumer()
+    assert not getattr(adapter, "_cron_web_context_refreshed", False)
+
+    stream = None
+    try:
+        stream, _ = await adapter._attach_and_send_inputs(request, {}, send_without_output=False)
+        assert len(core.sent) == 1
+        assert adapter._cron_web_context_refreshed
+        assert warmup.await_count == 2
+    finally:
+        if stream is not None:
+            await stream.close(abort_active_round=False)
+
+
 @pytest.mark.parametrize("pending", [False, True])
 def test_runtime_outcome_comes_from_interruption_state_not_text(pending):
     adapter = _adapter(

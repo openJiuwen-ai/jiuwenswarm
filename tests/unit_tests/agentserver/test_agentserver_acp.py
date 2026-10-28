@@ -33,6 +33,7 @@ from jiuwenswarm.runtime.session_provisioner import (
 )
 from jiuwenswarm.observability.session_delete import trajectory_session_accepts_records
 from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStoreError
+from jiuwenswarm.server.runtime.session import lifecycle as session_lifecycle
 
 
 class FakeWebSocket:
@@ -88,6 +89,18 @@ class FakeAgentManager:
             {"channel_id": channel_id, "session_id": session_id}
         )
         return False
+
+    async def release_subagent_runtime_for_session(
+        self,
+        *,
+        channel_id: str | None = "",
+        session_id: str,
+        reason: str = "",
+    ) -> bool:
+        return False
+
+    async def cancel_session_tasks(self, *, channel_id: str = "", session_id: str) -> None:
+        return None
 
 
 class FakeTeamManager:
@@ -267,6 +280,26 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_update():
         "tool_call_id": "call-1",
         "tool_name": "read_file",
         "status": "in_progress",
+    }
+
+
+def test_parse_stream_chunk_converts_session_budget_exhaustion_to_chat_error():
+    parsed = parse_stream_chunk(
+        types.SimpleNamespace(
+            type="answer",
+            payload={
+                "reason": "swarmflow session token budget exhausted (101/100)",
+                "exhausted_ledger": "session",
+                "output": "",
+                "result_type": "",
+            },
+        )
+    )
+
+    assert parsed == {
+        "event_type": "chat.error",
+        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
+        "error": "Session budget exhausted",
     }
 
 
@@ -1028,6 +1061,7 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": True,
                 "prewarm_status": "ready",
             },
@@ -1177,7 +1211,9 @@ async def test_handle_tui_session_create_accepts_explicit_id_without_prewarm(
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code", hidden=False),
+        lambda project_id, cache_bust=True: types.SimpleNamespace(
+            work_mode="code", hidden=False, project_dir=project_dir,
+        ),
     )
 
     request = AgentRequest(
@@ -1244,7 +1280,9 @@ async def test_handle_tui_non_explicit_create_resolves_project_in_agentserver(
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: types.SimpleNamespace(work_mode="code", hidden=False),
+        lambda project_id, cache_bust=True: types.SimpleNamespace(
+            work_mode="code", hidden=False, project_dir=project_dir,
+        ),
     )
 
     request = AgentRequest(
@@ -1606,6 +1644,7 @@ async def test_handle_session_create_injected_default_work_mode_does_not_mismatc
                 "projectDir": code_project.project_dir,
                 "workMode": "code",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": True,
                 "prewarm_status": "ready",
             },
@@ -1692,6 +1731,7 @@ async def legacy_handle_session_create_acks_before_async_kvc(monkeypatch, tmp_pa
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": True,
                 "prewarm_status": "ready",
             },
@@ -1761,6 +1801,7 @@ async def test_handle_session_create_prepares_team_before_ack(monkeypatch, tmp_p
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": False,
                 "prewarm_status": "bypassed",
             },
@@ -2062,6 +2103,7 @@ async def test_handle_session_create_prewarm_miss_preserves_success_contract(
                 "projectDir": "",
                 "workMode": "work",
                 "persist_session": False,
+                "moa_enabled": False,
                 "prewarm_hit": False,
                 "prewarm_status": "warming",
             },
@@ -2714,6 +2756,7 @@ async def test_handle_session_switch_delegates_product_lifecycle(
         "payload": {
             "session_id": "sess_002",
             "mode": resolved_mode,
+            "moa_enabled": False,
             "switched": True,
         },
         "ok": True,
@@ -2808,6 +2851,7 @@ async def test_handle_session_switch_records_foreground_before_ack(monkeypatch):
             "payload": {
                 "session_id": "sess_002",
                 "mode": "agent.plan",
+                "moa_enabled": False,
                 "switched": True,
             },
             "ok": True,
@@ -3652,6 +3696,10 @@ async def test_handle_session_delete_initializes_persistent_checkpointer(monkeyp
 
     await server.handle_session_delete_for_test(fake_ws, request, asyncio.Lock())
 
+    await asyncio.wait_for(
+        asyncio.gather(*server._archive_service._finalizer_tasks),
+        timeout=5,
+    )
     assert ensure_calls == ["called"]
     assert release_calls == ["sess-agent-1"]
     assert cleared_metadata_cache == ["sess-agent-1"]
@@ -3663,7 +3711,13 @@ async def test_handle_session_delete_initializes_persistent_checkpointer(monkeyp
     assert fake_ws.sent == [
         {
             "response_id": "req-session-delete",
-            "payload": {"session_id": "sess-agent-1", "project_id": "default"},
+            "payload": {
+                "session_id": "sess-agent-1",
+                "project_id": "default",
+                "accepted": True,
+                "finalizing": True,
+                "stop_pending": True,
+            },
             "ok": True,
         }
     ]
@@ -3934,7 +3988,7 @@ async def legacy_handle_session_delete_unbinds_team_session(monkeypatch, tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_handle_session_delete_rejects_when_checkpointer_unavailable(monkeypatch, tmp_path):
+async def test_handle_session_delete_defers_when_checkpointer_unavailable(monkeypatch, tmp_path):
     server = AgentWebSocketServerHarness()
     fake_ws = FakeWebSocket()
     sessions_root = tmp_path / "sessions"
@@ -3976,16 +4030,28 @@ async def test_handle_session_delete_rejects_when_checkpointer_unavailable(monke
 
     await server.handle_session_delete_for_test(fake_ws, request, asyncio.Lock())
 
+    await asyncio.wait_for(
+        asyncio.gather(*server._archive_service._finalizer_tasks),
+        timeout=5,
+    )
     assert release_calls == []
     assert session_dir.exists()
+    operation = session_lifecycle.state("session", "sess-team-1")["operation"]
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is True
+    assert operation["cleanup_attempts"] == 1
+    assert operation["errors"] == ["persistent checkpointer is unavailable"]
     assert fake_ws.sent == [
         {
             "response_id": "req-session-delete-checkpoint",
             "payload": {
-                "error": "persistent checkpointer is unavailable",
-                "code": "CHECKPOINT_UNAVAILABLE",
+                "session_id": "sess-team-1",
+                "project_id": "default",
+                "accepted": True,
+                "finalizing": True,
+                "stop_pending": True,
             },
-            "ok": False,
+            "ok": True,
         }
     ]
 

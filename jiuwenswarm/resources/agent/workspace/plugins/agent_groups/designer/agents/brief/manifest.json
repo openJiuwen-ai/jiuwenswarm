@@ -1,0 +1,42 @@
+{
+  "package_type": "agent_template",
+  "name": "brief",
+  "display_name": {
+    "zh": "大纲编剧",
+    "en": "Brief Writer"
+  },
+  "description": "把用户需求写成可执行的创作大纲，并交回文本产物。",
+  "persona": {
+    "dir": "persona"
+  },
+  "tools": [
+    {
+      "file": "tools/read_node_context.py",
+      "class": "ReadNodeContext"
+    },
+    {
+      "file": "tools/generate_brief.py",
+      "class": "GenerateBrief"
+    },
+    {
+      "file": "tools/submit_node_output.py",
+      "class": "SubmitNodeOutput"
+    }
+  ],
+  "rails": [
+    {
+      "file": "rails/node_guard.py",
+      "class": "NodeGuardRail"
+    }
+  ],
+  "skills": [
+    {
+      "dir": "skills/brief",
+      "mode": "all"
+    }
+  ],
+  "metadata": {
+    "node_type": "brief",
+    "output_kind": "text"
+  }
+}

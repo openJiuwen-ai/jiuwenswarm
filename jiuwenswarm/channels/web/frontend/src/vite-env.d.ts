@@ -29,6 +29,14 @@ interface Window {
   pywebview?: {
     api?: {
       paste_clipboard?: () => Promise<void>;
+      /** pywebview 桌面壳的隐式授权一键授权（对齐 Electron captureOAuthToken）：
+       * 抓厂商文档页提取当前授权直链，开子窗截取 login_success 跳转里的 access_token；
+       * 失败/用户关窗 resolve null。旧壳没有此方法，调用前需判空。 */
+      capture_oauth_token?: (options: {
+        docPageUrl: string;
+        successUrlPrefix: string;
+        title?: string;
+      }) => Promise<{ accessToken?: string } | null> | { accessToken?: string } | null;
       open_external_url?: (url: string) => Promise<boolean> | boolean;
       download_file?: (url: string, filename: string) => Promise<DesktopSaveResult> | DesktopSaveResult;
       begin_blob_save?: (filename: string, mimeType: string, totalSize: number) => Promise<DesktopBlobSaveStartResult> | DesktopBlobSaveStartResult;

@@ -8,6 +8,7 @@ import {
   panTrajectoryTimelineViewport,
   resolveTimelineMode,
   trajectoryTimelineFocusIndexes,
+  withSharedWallClockDomain,
   zoomTrajectoryTimelineViewport,
 } from '../node_modules/.cache/trajectory-timeline/timeline.mjs';
 
@@ -245,6 +246,24 @@ test('zooming back to the complete domain clears the viewport', () => {
     ),
     null,
   );
+});
+
+test('withSharedWallClockDomain keeps span times and widens the domain', () => {
+  const model = deriveTrajectoryTimeline([
+    turn(1, [cell(0, 'message', { startedAt: 5_000, timeSeconds: 2 })]),
+  ], 'actual');
+  const shared = withSharedWallClockDomain(model, { start: 1_000, end: 20_000 });
+  assert.equal(shared.start, 1_000);
+  assert.equal(shared.end, 20_000);
+  assert.equal(shared.spans[0].start, 5_000);
+  assert.equal(shared.spans[0].end, 7_000);
+  assert.equal(withSharedWallClockDomain(model, null), model);
+  assert.equal(withSharedWallClockDomain(null, { start: 0, end: 1 }), null);
+  const mapped = withSharedWallClockDomain(model, { start: 0, end: 2_000 }, time => time - 5_000);
+  assert.equal(mapped.spans[0].start, 0);
+  assert.equal(mapped.spans[0].end, 2_000);
+  assert.equal(mapped.start, 0);
+  assert.equal(mapped.end, 2_000);
 });
 
 test('horizontal scrolling pans a zoomed viewport and clamps both edges', () => {

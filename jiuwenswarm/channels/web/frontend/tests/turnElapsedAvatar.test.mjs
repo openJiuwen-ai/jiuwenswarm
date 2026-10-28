@@ -1,10 +1,34 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { build } from 'esbuild';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { A2UIProvider } from '@a2ui/react';
 
-import { ChatTimelineList, TurnElapsed } from '../node_modules/.cache/chat-timeline-list/MessageList.mjs';
+await build({
+  entryPoints: ['src/components/ChatPanel/MessageList.tsx'],
+  bundle: true,
+  packages: 'external',
+  platform: 'node',
+  format: 'esm',
+  outfile: 'node_modules/.cache/chat-timeline-list/MessageList.mjs',
+  define: { 'import.meta.env.DEV': 'false' },
+  loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
+  plugins: [
+    {
+      name: 'ui-test-svg-components',
+      setup(builder) {
+        builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'svg-react-stub' }));
+        builder.onLoad({ filter: /.*/, namespace: 'svg-react-stub' }, () => ({
+          contents: 'export default function SvgStub() { return null; }',
+          loader: 'js',
+        }));
+      },
+    },
+  ],
+});
+
+const { ChatTimelineList, TurnElapsed } = await import('../node_modules/.cache/chat-timeline-list/MessageList.mjs');
 
 test('in-progress timeline summary uses the selected Agent identity', () => {
   const markup = renderToStaticMarkup(

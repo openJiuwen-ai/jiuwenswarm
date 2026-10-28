@@ -4,8 +4,19 @@
  * 管理 WebSocket 连接和消息处理
  */
 
+import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
+import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
+import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { readOutputOrder } from '../features/sessionOutput';
 import { handleTaskInputReceipt, sendQueuedTaskInput, handleSessionOutputBoundary, shouldIgnoreSessionOutput } from '../features/sessionInput';
+import {
+  assetKindFromMime,
+  findReferencedAssets,
+  normalizePath,
+  stemFilename,
+  useSessionAssetsStore,
+  type NamedAsset,
+} from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
@@ -33,6 +44,7 @@ import {
   GoalRecord,
   GoalAction,
   Message,
+  ChatInputProvenance,
 } from '../types';
 import {
   ensureSessionRuntimes,
@@ -116,6 +128,10 @@ import {
   withUploadDocumentBlock,
 } from '../utils/documentMessage';
 import { useSubagentStore } from '../stores/subagentStore';
+import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
+import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
+import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
+import { isOrganizationOwnerStopped, setOrganizationOwnerStopped } from '../features/teamOrganization/processing';
 import {
   normalizeSubagentActivityEvent,
   normalizeSubagentToolStatusUpdates,
@@ -125,11 +141,15 @@ import {
 import {
   buildAgentGroupSelectionPayloadForMode,
   buildDefinitionSelectionPayloadForMode,
+  isExternalHarnessCatalogItem,
   resolveSelectedSkillsForRequest,
 } from '../features/agentManagement/port';
+import { useAgentCatalogStore } from '../stores/agentCatalogStore';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
+import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 const TEAM_CONNECTION_GRACE_MS = 5000;
@@ -712,7 +732,13 @@ interface UseWebSocketReturn {
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   discardMedia: (sessionId: string, path: string) => Promise<{ deleted?: boolean }>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], options?: ChatSendOptions) => Promise<boolean>;
+  sendMessage: (
+    content: string,
+    sessionId: string,
+    mediaItems?: MediaItem[],
+    options?: ChatSendOptions,
+    provenance?: ChatInputProvenance,
+  ) => Promise<boolean>;
   sendStructuredChatContent: (content: unknown, sessionId: string) => Promise<void>;
   interrupt: (
     sessionId: string,
@@ -780,7 +806,7 @@ function slimPersistedMediaRecords(items: Record<string, unknown>[]): Record<str
   }));
 }
 
-function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unknown> {
+function buildPersistedMediaFiles(mediaItems: Record<string, unknown>[]): Record<string, unknown> {
   const files: Record<string, unknown> = {};
   const images = mediaItems.filter((item) => item.type === 'image');
   const documents = mediaItems.filter((item) => item.type === 'document');
@@ -788,7 +814,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_images = images.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -796,7 +822,7 @@ function buildPersistedMediaFiles(mediaItems: MediaItem[]): Record<string, unkno
     files.uploaded_documents = documents.map((item) => ({
       filename: item.filename,
       path: item.path,
-      mime_type: getMediaMimeType(item),
+      mime_type: item.mime_type ?? item.mimeType,
       size_bytes: item.size_bytes ?? item.sizeBytes,
     }));
   }
@@ -971,6 +997,7 @@ type ArchiveResourceEventPayload = {
 const ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS = 300;
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
+  useOrganizationEvents();
   const { t } = useTranslation();
   const {
     activeSessionId,
@@ -1014,6 +1041,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   // 用于区分"旧任务被打断的 false"和"任务正常结束的 false"——前者应跳过自动排空，
   // 因为新任务即将由后端启动（会紧跟一条 processing_status=true）。
   const localSendPendingRef = useRef<Set<string>>(new Set());
+  // sendMessage 登记的乐观 user 气泡（request_id -> 气泡）。乐观气泡只能盖浏览器钟，
+  // 与执行机钟有偏差时，本轮首个输出事件会按时间戳排到用户消息之前（「任务用时」行
+  // 插到时间线顶部）。runtime.accepted 由执行机在产出任何输出事件之前盖章，到达时
+  // 按单号用服务端权威时间回填气泡。steer/跨会话/心跳气泡自带服务端时间，不进本表。
+  const optimisticUserBubblesRef = useRef<Map<string, { sessionId: string; messageId: string }>>(new Map());
   const pendingAgentGroupBindingRef = useRef<Map<string, { id: string; timer: number }>>(new Map());
   const groupBindingReconcileRef = useRef<Map<string, Promise<void>>>(new Map());
   const reconcileAgentGroupBindingRef = useRef<((sessionId: string) => Promise<void>) | null>(null);
@@ -1138,9 +1170,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   } = useSessionStore.getState();
 
   const resolveEventSessionId = useCallback(
-    (payload: Record<string, unknown>): string | null => {
+    (payload: Record<string, unknown>, eventType?: string): string | null => {
       const payloadSessionId = getPayloadSessionId(payload);
       if (!payloadSessionId) return null;
+      const stoppedRootOutput = String(payload.source ?? '').startsWith('org_root_')
+        && isOrganizationOwnerStopped(payloadSessionId);
+      const incrementalOutput = ['chat.delta', 'chat.reasoning', 'chat.tool_call', 'chat.tool_result']
+        .includes(eventType ?? '');
+      if (stoppedRootOutput && incrementalOutput) return null;
+      if (expertTeamId(payload, payloadSessionId)) return null;
       ensureSessionRuntimes(payloadSessionId);
       if (typeof payload.execution_id === 'string' && payload.execution_id) {
         useChatStore.getState().setActiveExecutionId(payloadSessionId, payload.execution_id);
@@ -1186,6 +1224,37 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const streamId = useChatStore.getState().getRuntime(sessionId)?.currentStreamId;
     if (!streamId) return;
     streamDeltaBatcherRef.current?.flush(streamDeltaBatchKey(sessionId, streamId));
+  }, []);
+
+  // Confirm the optimistic user bubble against the server's input boundary for stable ordering.
+  // runtime.accepted.timestamp and chat.output_phase.input_timestamp confirm the server input boundary.
+  // Older events only carry timestamp, which retains its original meaning.
+  // 按发送时登记的单号回填；旧后端的 output_phase 则退回使用事件时间。
+  // 仅匹配 sendMessage 登记的乐观气泡——steer/跨会话/心跳气泡自带服务端时间，不进
+  // 登记表；帧无时间戳（旧后端）时保持现状不回填。
+  const backfillOptimisticBubbleTimestamp = useCallback((sessionId: string, payload: Record<string, unknown>) => {
+    const directRequestId = typeof payload.request_id === 'string' && payload.request_id ? payload.request_id : '';
+    const requestId = directRequestId || readOutputOrder(payload)?.requestId || '';
+    if (!requestId) return;
+    const optimisticBubble = optimisticUserBubblesRef.current.get(requestId);
+    if (!optimisticBubble || optimisticBubble.sessionId !== sessionId) return;
+    const acceptedIso =
+      timestampMsToIso(parseTimestampToMs(payload.input_timestamp)) ||
+      timestampMsToIso(parseTimestampToMs(payload.timestamp));
+    if (!acceptedIso) return;
+    const chatStore = useChatStore.getState();
+    chatStore.updateMessage(optimisticBubble.sessionId, optimisticBubble.messageId, {
+      timestamp: acceptedIso,
+      isTimestampPending: false,
+    });
+    // 图片提示可先于 ACK/phase 到达；旧后端不带时间戳，提示会盖浏览器钟。
+    // 将早于用户边界的同单提示移到边界上，避免落入上一轮；同刻按消息插入顺序排序。
+    const noticeId = `notice-image_tool_fallback-${requestId}`;
+    const notice = chatStore.getRuntime(sessionId)?.messages.find((message) => message.id === noticeId);
+    if (notice && !(parseTimestampToMs(notice.timestamp) >= Date.parse(acceptedIso))) {
+      chatStore.updateMessage(sessionId, noticeId, { timestamp: acceptedIso });
+    }
+    optimisticUserBubblesRef.current.delete(requestId);
   }, []);
 
   const handleTtsPlayback = useCallback(
@@ -1304,6 +1373,18 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             snapshotMember.cli_agent === null || typeof snapshotMember.cli_agent === 'string'
               ? snapshotMember.cli_agent
               : existing?.cli_agent,
+          workflow_run_id:
+            typeof snapshotMember.workflow_run_id === 'string'
+              ? snapshotMember.workflow_run_id
+              : existing?.workflow_run_id,
+          agent_template:
+            typeof snapshotMember.agent_template === 'string'
+              ? snapshotMember.agent_template
+              : existing?.agent_template,
+          display_name:
+            typeof snapshotMember.display_name === 'string'
+              ? snapshotMember.display_name
+              : existing?.display_name,
         }];
       });
       if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
@@ -1405,6 +1486,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           sessionId,
           Object.prototype.hasOwnProperty.call(session, 'team_leader_identity')
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
+            : null,
+        );
+        useSessionStore.getState().setTeamGroupIdentity(
+          sessionId,
+          Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
             : null,
         );
         useSessionStore.getState().setAgentGroupBinding(sessionId, groupId);
@@ -1751,13 +1838,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useGoalStore.getState().recordGoalObjectiveText(sessionId, objective);
         }
         try {
-          const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
           await sendGoalStreamCommand({
             sessionId,
             action,
             objective,
             mode,
-            modelName: selectedModel,
+            modelParams: useSessionStore.getState().getOutgoingModelParams(sessionId),
           });
         } catch (error) {
           // WS 层直接发送失败（未连接等）：这是能明确识别的失败，弹提示；set 不做进一步兜底
@@ -1855,6 +1941,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const runtime = useChatStore.getState().getRuntime(sessionId);
     if (runtime?.isProcessing || runtime?.queuePaused) return;
     if (!sendMessageRef.current) return;
+    const sessionState = useSessionStore.getState();
+    const sessionMetadata = sessionState.currentSession?.session_id === sessionId
+      ? sessionState.currentSession
+      : sessionState.sessions.find((session) => session.session_id === sessionId);
+    if (isConversationModelGroupBlocked({
+      mode: currentMode,
+      cronId: sessionMetadata?.cron_id,
+      selectedModelSelection: sessionState.getRuntime(sessionId)?.selectedModelSelection,
+      collaborationEnabled: isMultiModelCollaborationEnabled(),
+    })) return;
     const nextTask = useChatStore.getState().claimQueuedTask(sessionId);
     if (nextTask) {
       sendMessageRef.current(nextTask.content, sessionId, nextTask.mediaItems ?? []);
@@ -1863,14 +1959,67 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], options?: ChatSendOptions): Promise<boolean> => {
+    async (
+      content: string,
+      sessionId: string,
+      mediaItems: MediaItem[] = [],
+      options?: ChatSendOptions,
+      provenance: ChatInputProvenance = {
+        input_origin: 'manual_free_text',
+        assistance_origin: 'none',
+      },
+    ): Promise<boolean> => {
+      if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
+        if (!content.trim() && !mediaItems.length) return false;
+        try {
+          const attachments: Record<string, unknown> = {};
+          let query = content;
+          if (mediaItems.length) {
+            const imageItems = mediaItems.filter((item) => item.type !== 'document');
+            const documentItems = mediaItems.filter((item) => item.type === 'document');
+            const persisted: PersistMediaResponse = imageItems.length ? await persistMedia(content, sessionId, imageItems) : {};
+            const documents: PersistMediaResponse = documentItems.length ? await persistDocuments(content, sessionId, documentItems) : {};
+            const items = [...(persisted.media_items ?? []), ...(documents.media_items ?? [])];
+            attachments.media_items = items;
+            attachments.files = { ...persisted.files, ...documents.files };
+            query = withUploadDocumentBlock(persisted.content ?? persisted.query ?? content, toUploadDocumentHints(documents.media_items));
+          }
+          return (await sendExpertMessage(query, sessionId, mediaItems, attachments)) ?? false;
+        } catch (error) {
+          onErrorRef.current?.((error as WebError).message || t('network.sendMessageFailed'));
+          return false;
+        }
+      }
+      const sessionState = useSessionStore.getState();
+      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
+        ? sessionState.currentSession
+        : sessionState.sessions.find((session) => session.session_id === sessionId);
+      if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && isConversationModelGroupBlocked({
+        mode: sessionState.getRuntime(sessionId)?.mode,
+        cronId: sessionMetadata?.cron_id,
+        selectedModelSelection: sessionState.getRuntime(sessionId)?.selectedModelSelection,
+        collaborationEnabled: isMultiModelCollaborationEnabled(),
+      })) {
+        onErrorRef.current?.(t('chat.modelSelector.collaborationDisabled'));
+        return false;
+      }
       const taskId = options?.queuedTaskId;
       if (taskId) {
         const store = useChatStore.getState();
+        const queuedTask = store.getRuntime(sessionId)?.taskQueue.find((item) => item.id === taskId);
+        if (queuedTask && ['queued', 'failed'].includes(queuedTask.status) && queuedTask.mediaItems?.length) {
+          store.setInterruptResult(sessionId, {
+            intent: 'supplement',
+            success: false,
+            message: t('network.supplementAttachmentsUnsupported'),
+          });
+          return false;
+        }
         // The button supplies input intent; Runtime decides whether it can steer the target.
         // Keep this request's ACK/errors separate from the original chat's lifecycle.
         await sendQueuedTaskInput(sessionId, taskId, request, {
           mode: resolveOutgoingMode(sessionId, 'agent'),
+          ...useSessionStore.getState().getModelSelectionPayload(sessionId),
           ...getSessionWorkContext(sessionId),
         });
         const runtime = useChatStore.getState().getRuntime(sessionId);
@@ -1916,6 +2065,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const sessionRuntime = useSessionStore.getState().getRuntime(sessionId);
       const selectedSkills = sessionRuntime?.selectedSkills ?? [];
       const agentSelectionIntent = sessionRuntime?.agentSelectionIntent ?? { kind: 'keep' as const };
+      const agentTemplateName = (
+        agentSelectionIntent.kind === 'select'
+          ? agentSelectionIntent.id
+          : agentSelectionIntent.kind === 'clear'
+            ? ''
+            : sessionMetadata?.session_equipment?.agent_template_name
+      )?.trim();
+      const selectedAgent = useAgentCatalogStore.getState().catalog?.find(
+        (item) => item.id === agentTemplateName || item.runtimePackageName === agentTemplateName,
+      );
+      // Only known native Agent paths publish the input timestamp confirmation.
+      const waitForInputTimestamp = !isTeamAgentMode(currentMode) && currentMode !== 'auto_harness' && (
+        !agentTemplateName || (selectedAgent !== undefined && !isExternalHarnessCatalogItem(selectedAgent))
+      );
       const agentSelectionPayload = buildDefinitionSelectionPayloadForMode(currentMode, agentSelectionIntent);
       const agentGroupSelectionIntent = sessionRuntime?.agentGroupSelectionIntent ?? { kind: 'keep' as const };
       const agentGroupSelectionPayload = buildAgentGroupSelectionPayloadForMode(
@@ -1945,12 +2108,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // pruneEnabledExtensions）兜底重新核对一遍"我的插件/我的MCP里已连接的"，避免把早就失效的
       // 名字发给后端；被摘掉的项同步从 sessionStore 里移除，让"+"扩展面板的开关同步变回关闭。
       const extensionPayload = buildExtensionSendPayload(sessionId);
+      const userMessageId = prefixedMessageId('user-');
+      const displayedContent =
+        stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content;
       useChatStore.getState().addMessage(sessionId, {
-        id: prefixedMessageId('user-'),
+        id: userMessageId,
         role: 'user',
-        content: stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content,
+        content: displayedContent,
         mediaItems,
         timestamp: new Date().toISOString(),
+        ...(waitForInputTimestamp ? { isTimestampPending: true } : {}),
         ...(selectedSkillsForRequest.length > 0 ? { skills: selectedSkillsForRequest } : {}),
       });
       // 发送后清空输入栏已选技能（一次性语义）；插件/MCP 是会话期间持续启用，不在这里清
@@ -1968,7 +2135,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       localSendPendingRef.current.add(sessionId);
 
       // 正常调用接口
-      const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
       const workContext = getSessionWorkContext(sessionId);
       if (currentMode === 'auto_harness') {
         useHarnessStore.getState().reset(sessionId);
@@ -1984,44 +2150,86 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         let outgoingMediaItems: Record<string, unknown>[] | undefined;
         let outgoingFiles: Record<string, unknown> | undefined;
         if (hasMedia) {
-          if (mediaItems.every(isPersistedMediaItem)) {
-            outgoingMediaItems = mediaItems.map(toPersistedMediaRecord);
-            outgoingFiles = buildPersistedMediaFiles(mediaItems);
-          } else {
-            const imageItems = mediaItems.filter((item) => item.type !== 'document');
-            const documentItems = mediaItems.filter((item) => item.type === 'document');
-            const mergedItems: Record<string, unknown>[] = [];
-            const mergedFiles: Record<string, unknown> = {};
-            if (imageItems.length) {
-              const persisted = await persistMedia(content, sessionId, imageItems);
-              outgoingContent = persisted.content ?? persisted.query ?? content;
-              if (Array.isArray(persisted.media_items)) {
-                mergedItems.push(...persisted.media_items);
-              }
-              if (persisted.files && typeof persisted.files === 'object') {
-                Object.assign(mergedFiles, persisted.files);
-              }
+          const mergedItems: Record<string, unknown>[] = [];
+          // 新会话的附件尚未落盘。每次只上传一项，既不触发批量数量限制，
+          // 也不把多份大文件的 base64 拼进同一条 WebSocket 消息。
+          for (const item of mediaItems) {
+            if (isPersistedMediaItem(item)) {
+              mergedItems.push(toPersistedMediaRecord(item));
+              continue;
             }
-            if (documentItems.length) {
-              const persistedDocs = await persistDocuments(content, sessionId, documentItems);
-              if (Array.isArray(persistedDocs.media_items)) {
-                mergedItems.push(...persistedDocs.media_items);
-              }
-              if (persistedDocs.files && typeof persistedDocs.files === 'object') {
-                Object.assign(mergedFiles, persistedDocs.files);
-              }
-              // The composer could not persist these documents before send (a
-              // brand-new session has no id yet), so its hint block carries
-              // filenames without paths. Rewrite it now that paths exist —
-              // team mode reads paths from the message text only.
-              const documentHints = toUploadDocumentHints(persistedDocs.media_items);
-              if (documentHints.length) {
-                outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
-              }
+            const persist = item.type === 'document' ? persistDocuments : persistMedia;
+            const persisted = await persist('', sessionId, [item]);
+            const stored = persisted.media_items?.[0];
+            if (persisted.media_items?.length !== 1 || typeof stored?.path !== 'string' || !stored.path.trim()) {
+              throw new Error(`${item.filename}: ${t('chat.inputAttachment.uploadFailed')}`);
             }
-            outgoingMediaItems = mergedItems.length ? slimPersistedMediaRecords(mergedItems) : undefined;
-            outgoingFiles = Object.keys(mergedFiles).length ? mergedFiles : undefined;
+            mergedItems.push(stored);
           }
+          const documentHints = toUploadDocumentHints(mergedItems);
+          if (documentHints.length) {
+            outgoingContent = withUploadDocumentBlock(outgoingContent, documentHints);
+          }
+          outgoingMediaItems = slimPersistedMediaRecords(mergedItems);
+          outgoingFiles = buildPersistedMediaFiles(mergedItems);
+        }
+        // @名称 -> 文件路径的引用笔记在这里统一加（不在 InputArea 提交时加）：候选既包括这个
+        // 会话之前已经登记过的素材，也包括这条消息里刚落盘、还没跑完注册往返的文件——用
+        // pendingNames 里用户自己起的名字，没改过就用文件名去掉扩展名（和后端默认命名规则一致）。
+        // 这样欢迎页发的第一条消息（这时候 session 刚建，素材注册还没来得及跑）也能正确 @ 到
+        // 这条消息自己带的附件。
+        {
+          const pendingNames = useSessionAssetsStore.getState().pendingNames;
+          const freshAssets: NamedAsset[] = (outgoingMediaItems ?? []).flatMap((item) => {
+            const path = typeof item.path === 'string' ? item.path.trim() : '';
+            const filename = typeof item.filename === 'string' ? item.filename : '';
+            if (!path) return [];
+            const mimeType = typeof item.mime_type === 'string' ? item.mime_type : '';
+            return [{ name: pendingNames[filename] || stemFilename(filename) || filename, path, kind: assetKindFromMime(mimeType) }];
+          });
+          const knownAssets = useSessionAssetsStore.getState().bySession[sessionId] ?? [];
+          const byName = new Map<string, NamedAsset>();
+          for (const asset of knownAssets) byName.set(asset.name.toLowerCase(), asset);
+          for (const asset of freshAssets) byName.set(asset.name.toLowerCase(), asset); // 本次上传的名字优先
+          const referenced = findReferencedAssets(outgoingContent, [...byName.values()]);
+          if (referenced.length) {
+            // 笔记只加进发给 agent 的文本（outgoingContent），不进气泡——用户不需要读一段带绝对
+            // 路径的文本，引用的是什么样子应该直接看图，不是看路径字符串。
+            const lines = referenced.map((asset) => `@${asset.name} = ${asset.path} (${asset.kind})`);
+            outgoingContent = `${outgoingContent}\n\n[引用素材]\n${lines.join('\n')}`;
+            // 引用的文件如果这条消息本来就带了（最常见：刚上传、随手就 @ 了自己），气泡上已经有
+            // 一张卡片在显示它，不用再摆一张重复的；只给"引用的是之前已经存在、这条消息没有重新
+            // 上传"的素材补一张缩略图卡片，让引用在气泡上是看得见的图，不是纯文本。
+            const shownPaths = new Set(
+              [...mediaItems.map((item) => item.path), ...(outgoingMediaItems ?? []).map((item) => item.path)]
+                .filter((path): path is string => typeof path === 'string' && path.trim().length > 0)
+                .map(normalizePath),
+            );
+            const extraMediaItems: MediaItem[] = referenced
+              .filter((asset) => !shownPaths.has(normalizePath(asset.path)))
+              .map((asset) => ({
+                type: (['image', 'video', 'audio', 'document'] as const).includes(asset.kind as never)
+                  ? (asset.kind as MediaItem['type'])
+                  : 'document',
+                filename: asset.path.split(/[\\/]/).pop() || asset.name,
+                displayName: asset.name,
+                mimeType: '',
+                path: asset.path,
+              }));
+            if (extraMediaItems.length) {
+              const current = useChatStore.getState().runtimes[sessionId]?.messages.find((m) => m.id === userMessageId);
+              useChatStore.getState().updateMessage(sessionId, userMessageId, {
+                mediaItems: [...(current?.mediaItems ?? mediaItems), ...extraMediaItems],
+              });
+            }
+          }
+        }
+        // 上传的文件落盘后登记为任务素材（欢迎页发出的第一条消息也走这里；后端按路径去重）。
+        if (outgoingMediaItems?.length) {
+          void useSessionAssetsStore
+            .getState()
+            .registerUploads(sessionId, outgoingMediaItems)
+            .catch((error) => console.error('Failed to register session assets:', error));
         }
         // Goal 处于 active 时，普通输入按文档 §5.1 作为补充约束插入当前 Goal，而不是覆盖它
         const activeGoal = useGoalStore.getState().getRuntime(sessionId)?.goal;
@@ -2035,7 +2243,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(outgoingMediaItems ? { media_items: outgoingMediaItems } : {}),
           ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: outgoingMode,
-          ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...useSessionStore.getState().getOutgoingModelParams(sessionId),
           ...workContext,
           skills: selectedSkillsForRequest,
           ...agentSelectionPayload,
@@ -2043,6 +2251,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // plugin_names/mcp 的组装+字段语义说明见 utils/enabledExtensions.ts 的
           // buildExtensionSendPayload 头注释（未恢复时省略，恢复后发送完整装备快照）。
           ...extensionPayload,
+          input_origin: provenance.input_origin,
+          assistance_origin: provenance.assistance_origin,
+          ...(provenance.topic_starter ? { topic_starter: provenance.topic_starter } : {}),
+          ...(provenance.prompt_suggestion ? { prompt_suggestion: provenance.prompt_suggestion } : {}),
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
           ...(sessionMetadata ? { metadata: sessionMetadata } : {}),
@@ -2050,8 +2262,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
             : {}),
+          // 会话级团队调度模式：新建会话时由欢迎页开关落成显式值，恢复会话时从 metadata 读回；
+          // 未设置时不发送，后端按 会话持久化 > 团队配置 回退。
+          ...(sessionRt?.teamDispatchMode !== undefined
+            ? { team_dispatch_mode: sessionRt.teamDispatchMode }
+            : {}),
+          // 调度模式的子开关「启动即建队」：同样只在显式值存在时下发。
+          ...(sessionRt?.teamBootstrapMode !== undefined
+            ? { team_bootstrap_mode: sessionRt.teamBootstrapMode }
+            : {}),
+        }, {
+          // 登记乐观 user 气泡的单号：runtime.accepted 到达时按单号回填服务端权威
+          // 时间戳（见 optimisticUserBubblesRef 注释与 runtime.accepted 处理器）。
+          onRequestId: (requestId) => {
+            const registry = optimisticUserBubblesRef.current;
+            // 兜底清理：accepted 丢失（发送失败/断连）时登记项不会被消费，限制驻留规模
+            if (registry.size >= 64) {
+              const oldest = registry.keys().next().value;
+              if (oldest !== undefined) registry.delete(oldest);
+            }
+            registry.set(requestId, { sessionId, messageId: userMessageId });
+          },
         });
         clearConnectionPresentationForUserAction(sessionId);
+        setOrganizationOwnerStopped(sessionId, false);
         if (sessionMetadata) {
           useSessionStore.getState().setSessionMetadata(sessionId, null);
         }
@@ -2097,6 +2331,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   const sendStructuredChatContent = useCallback(
     async (content: unknown, sessionId: string) => {
+      const state = useSessionStore.getState();
+      const metadata = state.currentSession?.session_id === sessionId
+        ? state.currentSession
+        : state.sessions.find((session) => session.session_id === sessionId);
+      if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && isConversationModelGroupBlocked({
+        mode: state.getRuntime(sessionId)?.mode,
+        cronId: metadata?.cron_id,
+        selectedModelSelection: state.getRuntime(sessionId)?.selectedModelSelection,
+        collaborationEnabled: isMultiModelCollaborationEnabled(),
+      })) {
+        onErrorRef.current?.(t('chat.modelSelector.collaborationDisabled'));
+        return;
+      }
       resetContextCompressionTurn(sessionId);
       userInputVersionRef.current += 1;
       stopAllTts();
@@ -2121,7 +2368,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (agentGroupSelectionPayload.agent_group_name) {
         markPendingAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
       }
-      const selectedModel = currentSessionState.getEffectiveModelName(sessionId);
       if (currentMode === 'auto_harness') {
         useHarnessStore.getState().reset(sessionId);
       }
@@ -2138,7 +2384,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           session_id: sessionId,
           content,
           mode: outgoingMode,
-          ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...currentSessionState.getOutgoingModelParams(sessionId),
           ...workContext,
           ...buildExtensionSendPayload(sessionId),
           ...agentSelectionPayload,
@@ -2218,6 +2464,20 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       options?: { newInput?: string }
     ) => {
       const newInput = options?.newInput;
+      const expertId = selectedExpertTeamId(sessionId);
+      if (expertId) {
+        if (intent === 'supplement' && newInput) {
+          return (await sendExpertMessage(newInput, sessionId)) ?? false;
+        }
+        const result = await request<{ success?: boolean }>('chat.interrupt', {
+          session_id: sessionId,
+          target_team_id: expertId,
+          mode: 'team',
+          // The team composer stops via pause; direct expert streams only support cancel.
+          intent: intent === 'pause' ? 'cancel' : intent,
+        });
+        return result?.success === true;
+      }
       if (intent === 'supplement' && newInput) {
         resetContextCompressionTurn(sessionId);
         userInputVersionRef.current += 1;
@@ -2239,6 +2499,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...getSessionWorkContext(sessionId),
         };
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+        const ownerStopTarget = currentMode === 'team' && intent === 'cancel'
+          ? organizationOwnerStopTarget(sessionId) : null;
+        if (ownerStopTarget) {
+          params.intent = 'cancel';
+          params.target_team_id = ownerStopTarget;
+          params.organization_owner_stop = true;
+        }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
           // Plan 打开时补全三段命名 `agent.{work|code}.plan` / `team.{work|code}.plan`，
@@ -2255,13 +2522,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             Object.assign(params, resolvePlanEntryPayload(sessionId, outgoingMode));
           }
         }
-        if (intent === 'supplement') {
-          params.new_input = newInput ?? '';
-          const selectedModel = useSessionStore.getState().getEffectiveModelName(sessionId);
-          if (selectedModel) params.model_name = selectedModel;
-        }
-        await request('chat.interrupt', params);
+        if (intent === 'supplement') params.new_input = newInput ?? '';
         if (intent === 'supplement' || intent === 'resume') {
+          Object.assign(params, useSessionStore.getState().getOutgoingModelParams(sessionId));
+        }
+        const result = await request<{ success?: boolean }>('chat.interrupt', params);
+        if (result?.success === false) return false;
+        if (intent === 'supplement' || intent === 'resume') {
+          setOrganizationOwnerStopped(sessionId, false);
           clearConnectionPresentationForUserAction(sessionId);
         }
         if (intent === 'supplement') {
@@ -2519,6 +2787,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               session_id: sessionId,
               query: '',
               mode: resolvedResumeMode,
+              ...useSessionStore.getState().getModelSelectionPayload(sessionId),
               ...getSessionWorkContext(sessionId),
               request_id: requestId,
               answers: permissionAnswers,
@@ -2915,12 +3184,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         flushPendingStreamDelta(sessionId);
+        // output_phase 是每轮第一次模型调用前必发的帧（先于所有 reasoning/tool 事件），
+        // 作为 runtime.accepted（仅 permission_dispatched 时才发）的保底回填载体。
+        if (event === 'chat.output_phase') {
+          backfillOptimisticBubbleTimestamp(sessionId, payload);
+        }
         handleSessionOutputBoundary(event, { ...payload, session_id: sessionId });
       })),
       webClient.on('chat.delta', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.delta', payload)) return;
-          const sessionId = resolveEventSessionId(payload);
+          const sessionId = resolveEventSessionId(payload, 'chat.delta');
           if (!sessionId) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
@@ -3125,7 +3399,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.reasoning', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.reasoning', payload)) return;
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.reasoning');
         if (!sessionId) return;
         // 主动推荐来源的 reasoning 不进 session 全局 reasoningSegments——否则会并入
         // 上一轮 turn（segment 无 messageId 绑定，按 startedAt 排序），把上一条
@@ -3998,7 +4272,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_call', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.tool_call', payload)) return;
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.tool_call');
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
@@ -4096,7 +4370,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         applyToolUpdatePayload(sessionId, payload);
       }),
       webClient.on('chat.tool_result', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.tool_result');
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -4229,6 +4503,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('runtime.accepted', ({ payload }) => {
         if (handleTaskInputReceipt('runtime.accepted', payload)) return;
         if (shouldDropDuplicatedEvent('runtime.accepted', payload)) return;
+        // 权威时间回填：accepted 携带执行机在输出前记录的输入时间（见
+        // backfillOptimisticBubbleTimestamp 注释）。仅命中 sendMessage 登记的乐观气泡。
+        const acceptedSessionId = getPayloadSessionId(payload);
+        if (acceptedSessionId) {
+          backfillOptimisticBubbleTimestamp(acceptedSessionId, payload);
+        }
         // Goal 的 loading 正常路径下统一以 goal.snapshot 为准（文档 §4 中 set/resume 均先于
         // runtime.accepted 下发 goal.snapshot，实测 bug001 复现日志里 16/16 次 resume 也确认了
         // 这个顺序），所以这里大多数时候只是个通用 ACK 占位。但 goalStore.ts 里 pendingAction
@@ -4337,6 +4617,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
+        // Organization background rounds own their lifecycle in useOrganizationEvents.
+        // They must not close a concurrent foreground Owner request.
+        if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
+          payload.source !== 'org_expert_direct' && payload.team_id) return;
         // A supplemental request never owns the original execution's lifecycle.
         if (handleTaskInputReceipt('chat.processing_status', payload)) return;
         const sessionId = resolveEventSessionId(payload);
@@ -4432,6 +4716,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
         if (!isProcessingNow) {
           useChatStore.getState().setThinking(sessionId, false);
+          // 轮次终态兜底：思考段若因「思考后无文本增量/无工具调用」而未关闭，
+          // 会一直挂着「思考中…」；此处统一收口（已关闭时为幂等空操作）。
+          useChatStore.getState().closeReasoning(sessionId, {
+            atMs: eventTimestampMs(payload),
+          });
           useChatStore.getState().stopStreaming(sessionId);
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
 
@@ -4552,7 +4841,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (existing) {
           chatState.updateMessage(sessionId, messageId, {
             content,
-            timestamp: new Date().toISOString(),
+            timestamp: normalizeEventTimestampIso(payload.timestamp),
           });
           return;
         }
@@ -4560,7 +4849,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           id: messageId,
           role: 'system',
           content,
-          timestamp: new Date().toISOString(),
+          timestamp: normalizeEventTimestampIso(payload.timestamp),
         });
       }),
       webClient.on('config.changed', ({ payload }) => {
@@ -4629,11 +4918,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           closeHeartbeatSessionState(sessionId, hbChatErrorAutomation.run_id);
           return;
         }
+        // 会话预算耗尽提示按会话去重：后端对同一耗尽可能多次广播（终态事件
+        // 重放、新 run 撞同一干账本），重复到达时上面的思考态/历史加载态清理
+        // 已完成，这里直接返回，不再追加提示或触发后续错误通知。
+        const isSessionBudgetExhausted = payload.code === 'SWARMFLOW_SESSION_BUDGET_EXHAUSTED';
+        const sessionBudgetErrorId = `session-budget-exhausted-${sessionId}`;
+        if (
+          isSessionBudgetExhausted &&
+          useChatStore.getState().getRuntime(sessionId)?.messages.some((message) => message.id === sessionBudgetErrorId)
+        ) {
+          return;
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
         useChatStore.getState().addMessage(sessionId, {
-          id: prefixedMessageId('error-'),
+          id: isSessionBudgetExhausted ? sessionBudgetErrorId : prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
@@ -4662,7 +4962,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
 
-        if (typeof updates.model_name === 'string' && updates.model_name) {
+        const updatedSelection = parseModelSelection(updates.model_selection);
+        if (updatedSelection) {
+          useSessionStore.getState().setSelectedModelSelection(sessionId, updatedSelection);
+        } else if (
+          typeof updates.model_name === 'string' && updates.model_name &&
+          useSessionStore.getState().getRuntime(sessionId)?.selectedModelSelection?.type !== 'model_group'
+        ) {
+          // A resolved group member's execution name is not a new conversation selection.
           useSessionStore.getState().setSelectedModelName(sessionId, updates.model_name);
         }
       }),
@@ -4777,6 +5084,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         } else if (resultPayload.intent === 'resume') {
           if (resultPayload.success) {
+            setOrganizationOwnerStopped(sessionId, false);
             // 直接设置所有状态值
             if (hasActiveTask) {
               useChatStore.getState().setPaused(sessionId, false);
@@ -4969,6 +5277,68 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         useChatStore.getState().enqueuePendingQuestion(sessionId, normalizedPayload);
       }),
+      webClient.on('a4p.authorization_request', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        const mandate = requestPayload.mandate;
+        const signingOptions = requestPayload.signingOptions;
+        if (
+          !requestId
+          || !mandate
+          || typeof mandate !== 'object'
+          || Array.isArray(mandate)
+          || !signingOptions
+          || typeof signingOptions !== 'object'
+          || Array.isArray(signingOptions)
+        ) {
+          return;
+        }
+        const uiContext =
+          requestPayload.uiContext && typeof requestPayload.uiContext === 'object'
+            ? requestPayload.uiContext as Record<string, unknown>
+            : {};
+        useChatStore.getState().setPendingA4PAuthorization(sessionId, {
+          requestId,
+          originalActions: Array.isArray(requestPayload.originalActions)
+            ? requestPayload.originalActions as Record<string, unknown>[] : undefined,
+          preparedActionIndexes: Array.isArray(requestPayload.preparedActionIndexes)
+            ? requestPayload.preparedActionIndexes as number[] : undefined,
+          replacesRequestId: typeof requestPayload.replacesRequestId === 'string'
+            ? requestPayload.replacesRequestId : undefined,
+          repreparing: requestPayload.repreparing === true,
+          kind: typeof requestPayload.kind === 'string' ? requestPayload.kind : 'intent',
+          mandate: mandate as Record<string, unknown>,
+          signingOptions: signingOptions as Record<string, unknown>,
+          uiContext,
+          sessionId: getPayloadSessionId(requestPayload),
+        });
+      }),
+      webClient.on('a4p.authorization_terminated', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        if (requestId) {
+          const store = useChatStore.getState();
+          store.setPendingA4PAuthorization(sessionId, null, requestId);
+          // A termination can overtake the replacement push; retire its predecessor too.
+          if (typeof requestPayload.replacesRequestId === 'string') {
+            store.setPendingA4PAuthorization(sessionId, null, requestPayload.replacesRequestId);
+          }
+        }
+      }),
       // 同时监听 session_result 事件，以处理后端可能发送的不同格式
       webClient.on('session_result', ({ payload }) => {
         applySessionResult(payload);
@@ -5087,6 +5457,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             updated_at: e.updated_at,
             workflow_run_id: e.workflow_run_id,
           });
+          const timelineEntry = toTaskTimelineEntry(event as Record<string, unknown>, e.timestamp || Date.now());
+          if (timelineEntry) {
+            useSessionStore.getState().appendTeamTaskTimeline(sessionId, [timelineEntry]);
+          }
           const normalizedTask = normalizeTaskEvent(event);
           if (normalizedTask) {
             useSessionStore.getState().upsertTeamTask(sessionId, normalizedTask);
@@ -5113,6 +5487,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             mode?: string;
             role?: string;
             cli_agent?: string | null;
+            workflow_run_id?: string;
+            agent_template?: string | null;
+            display_name?: string | null;
+            target_status?: string;
           };
           if (e.member_id) markTeamConnectionStateChanged(sessionId, e.member_id);
           if (e.member_id && (e.status || e.new_status || e.execution_status)) {
@@ -5122,7 +5500,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const activeSessionId = getPayloadSessionId(payload) || undefined;
           upsertHumanShareCommandFromEvent(payload, e);
           if (e.type === 'team.member.shutdown' && e.member_id) {
-            applyTeamMemberShutdown(e.member_id, activeSessionId);
+            // 休眠退场同样发 shutdown 事件，但成员仍在名册上、被点名即可唤醒；
+            // 只有终态为 shut_down（或旧后端不带 target_status）时才移出名册，
+            // 休眠成员随后由 status_changed → dormant 更新状态。
+            if (e.target_status !== 'dormant') {
+              applyTeamMemberShutdown(e.member_id, activeSessionId);
+            }
           } else if (e.type === 'team.member.status_changed' && e.member_id && e.new_status) {
             useSessionStore.getState().updateTeamMemberStatus(
               sessionId,
@@ -5143,6 +5526,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 name: e.name,
                 execution_status: e.execution_status || e.new_status,
                 mode: e.mode,
+                workflow_run_id: e.workflow_run_id,
               });
             }
           } else if (
@@ -5164,6 +5548,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               mode: e.mode,
               role: e.role,
               cli_agent: e.cli_agent,
+              workflow_run_id: e.workflow_run_id,
+              agent_template: e.agent_template,
+              display_name: e.display_name,
             });
           }
         }
@@ -5388,6 +5775,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     reconcileAgentGroupBinding,
     updateSession,
     resolveEventSessionId,
+    backfillOptimisticBubbleTimestamp,
     shouldDropDuplicatedEvent,
     t,
     takeTeamMemberOutputEventId,

@@ -29,7 +29,7 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
-from jiuwenswarm.runtime.host_services import send_runtime_push
+from jiuwenswarm.common.host_services import send_runtime_push
 
 if TYPE_CHECKING:
     from jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery import (

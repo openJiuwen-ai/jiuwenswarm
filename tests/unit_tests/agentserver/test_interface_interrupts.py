@@ -4,6 +4,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
@@ -15,7 +18,7 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 
 
@@ -35,6 +38,7 @@ class _FakeTeamManager:
         self.pause_calls: list[tuple[str, str]] = []
         self.cancel_calls: list[tuple[str, str]] = []
         self.cancel_dispositions: list[str | None] = []
+        self.broadcast_events: list[dict] = []
 
     async def pause_session_runtime(self, session_id: str, reason: str = "") -> bool:
         self.pause_calls.append((session_id, reason))
@@ -50,6 +54,61 @@ class _FakeTeamManager:
         self.cancel_calls.append((session_id, reason))
         self.cancel_dispositions.append(workflow_disposition)
         return self.cancel_result
+
+    async def broadcast_event(
+        self,
+        session_id: str,
+        event: dict,
+        *,
+        channel_id: str | None = None,
+    ) -> bool:
+        self.broadcast_events.append(event)
+        return True
+
+
+@pytest.mark.asyncio
+async def test_external_interrupt_keeps_stream_consumer_for_aborted_marker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claw = _InterruptHarness()
+    response = AgentResponse(
+        request_id="req-cancel",
+        channel_id="web",
+        payload={
+            "event_type": "chat.interrupt_result",
+            "intent": "cancel",
+            "success": True,
+            "message": "已请求取消 External Harness 任务",
+        },
+    )
+    adapter = SimpleNamespace(
+        process_interrupt=AsyncMock(return_value=response),
+        is_external_harness_session=lambda session_id: session_id == "external-session",
+    )
+    monkeypatch.setattr(claw, "_ensure_adapter", lambda mode=None: adapter)
+    monkeypatch.setattr(claw, "_adapter_mode_for_request", lambda request: "deep")
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(side_effect=AssertionError("External stream consumer must remain")),
+    )
+    monkeypatch.setattr(
+        claw,
+        "_cancel_team_work_for_session",
+        AsyncMock(side_effect=AssertionError("External cancel must not use team cleanup")),
+    )
+    request = AgentRequest(
+        request_id="req-cancel",
+        channel_id="web",
+        session_id="external-session",
+        req_method=ReqMethod.CHAT_CANCEL,
+        params={"intent": "cancel", "mode": "agent"},
+    )
+
+    result = await claw.process_interrupt_for_test(request)
+
+    assert result is response
+    adapter.process_interrupt.assert_awaited_once_with(request)
 
 
 def _build_team_interrupt_request(
@@ -160,6 +219,80 @@ async def test_team_interrupt_resume_is_ack_only(monkeypatch: pytest.MonkeyPatch
     assert cancelled == []
     assert fake_manager.pause_calls == []
     assert fake_manager.cancel_calls == []
+
+
+@pytest.mark.asyncio
+async def test_team_pause_success_broadcasts_terminal_processing_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pause park must emit an explicit terminal frame for frame-based consumers."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(pause_result=True)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(),
+    )
+
+    await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
+
+    assert len(fake_manager.broadcast_events) == 1
+    event = fake_manager.broadcast_events[0]
+    assert event["event_type"] == "chat.processing_status"
+    assert event["is_processing"] is False
+    assert event["is_complete"] is True
+    assert "paused" not in event
+
+
+@pytest.mark.asyncio
+async def test_team_pause_failure_does_not_broadcast_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pause leaves state unchanged; no terminal frame may be emitted."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(pause_result=False)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(),
+    )
+
+    await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
+
+    assert fake_manager.broadcast_events == []
+
+
+@pytest.mark.asyncio
+async def test_team_cancel_does_not_broadcast_pause_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancel goes through its own teardown path; no pause terminal frame."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(cancel_result=True)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(),
+    )
+
+    await claw.process_interrupt_for_test(_build_team_interrupt_request("cancel"))
+
+    assert fake_manager.broadcast_events == []
 
 
 @pytest.mark.asyncio
@@ -316,7 +449,12 @@ async def test_deliver_control_input_persists_ask_user_answer_with_original_requ
     monkeypatch.setattr(claw, "_build_inputs", _fake_build_inputs)
 
     # 替身 reconcile_session_mcp：no-op。
-    async def _fake_reconcile(_sid, _mcp, *, model_name=None, history_before_request_id=None):
+    async def _fake_reconcile(
+        _sid, _mcp, *, model_name=None, history_before_request_id=None,
+        execution_request=None,
+        retain_moa_snapshot=False, model_selection=None, moa_enabled=None, moa_can_access=None,
+    ):
+        assert retain_moa_snapshot is True
         return None
     monkeypatch.setattr(claw, "reconcile_session_mcp", _fake_reconcile)
 
@@ -395,7 +533,12 @@ def _build_control_input_harness(claw: _InterruptHarness, monkeypatch: pytest.Mo
     """
     monkeypatch.setattr(claw, "_build_inputs", lambda _request: ({}, "local", None))
 
-    async def _fake_reconcile(_sid, _mcp, *, model_name=None, history_before_request_id=None):
+    async def _fake_reconcile(
+        _sid, _mcp, *, model_name=None, history_before_request_id=None,
+        execution_request=None,
+        retain_moa_snapshot=False, model_selection=None, moa_enabled=None, moa_can_access=None,
+    ):
+        assert retain_moa_snapshot is True
         return None
     monkeypatch.setattr(claw, "reconcile_session_mcp", _fake_reconcile)
 
@@ -488,7 +631,7 @@ async def test_deliver_control_input_non_empty_final_clears_pending_deltas(
 ) -> None:
     # 非空 chat.final：正文由 final 承载，前面累积的 delta 不再合并落盘（避免重复）。
     # 同时验证 timestamp 语义对齐 pms：非空 final 传 segment_started_at（首个 delta 时刻），
-    # _resolve_final_record_timestamp 据此把 completed_at 存入 extra、timestamp 用起始时刻。
+    # resolve_final_record_timestamp 据此把 completed_at 存入 extra、timestamp 用起始时刻。
     # 用单调递增 time.time 序列确保 segment_started_at < completed_at（否则该函数走
     # >= 早退分支、不 setdefault completed_at，断言失效）。
     import jiuwenswarm.server.runtime.agent_adapter.interface as _iface

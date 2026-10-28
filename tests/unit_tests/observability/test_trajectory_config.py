@@ -11,6 +11,7 @@ from pathlib import Path
 from jiuwenswarm.observability.config import (
     DEFAULT_QUEUE_SIZE,
     TrajectoryStoreSettings,
+    is_trajectory_diagnosis_enabled,
     load_trajectory_store_settings,
     session_database_path,
 )
@@ -71,6 +72,43 @@ def test_discarding_ended_spans_frames_defaults_on_and_reads_loose_booleans(
     )
     assert kept.discard_final_span_frames is False
     test_logger.info("frame discard defaults on and accepts the usual boolean spellings")
+
+
+def test_diagnosis_switch_turns_the_data_plane_on_without_the_trajectory_view(
+    tmp_path: Path,
+) -> None:
+    diagnosis_only = load_trajectory_store_settings(
+        {"trajectory_ui": {"enabled": False, "diagnosis_enabled": True}},
+        workspace=tmp_path,
+    )
+    view_only = load_trajectory_store_settings(
+        {"trajectory_ui": {"enabled": True, "diagnosis_enabled": False}},
+        workspace=tmp_path,
+    )
+    both = load_trajectory_store_settings(
+        {"trajectory_ui": {"enabled": True, "diagnosis_enabled": True}},
+        workspace=tmp_path,
+    )
+    neither = load_trajectory_store_settings(
+        {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
+        workspace=tmp_path,
+    )
+
+    assert diagnosis_only.enabled is True
+    assert view_only.enabled is True
+    assert neither.enabled is False
+    # Toggling diagnosis while the view is on must not change the settings the
+    # AgentServer compares to decide whether the writer restarts.
+    assert both == view_only
+    test_logger.info("diagnosis switch enables recording independently of the view")
+
+
+def test_diagnosis_enabled_ignores_the_trajectory_view_switch() -> None:
+    assert is_trajectory_diagnosis_enabled({"trajectory_ui": {"enabled": False, "diagnosis_enabled": True}}) is True
+    assert is_trajectory_diagnosis_enabled({"trajectory_ui": {"enabled": True, "diagnosis_enabled": False}}) is False
+    assert is_trajectory_diagnosis_enabled({"trajectory_ui": {"enabled": True}}) is False
+    assert is_trajectory_diagnosis_enabled({}) is False
+    test_logger.info("diagnosis availability follows only its own switch")
 
 
 def test_session_database_path_is_deterministic_and_traversal_safe(

@@ -1,0 +1,206 @@
+.desktop-browser-download-panel {
+  display: flex;
+  width: 300px;
+  height: 450px;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg, 12px);
+  background: var(--color-surface-popover);
+}
+
+.desktop-browser-download-header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.desktop-browser-download-header h2 {
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.desktop-browser-download-close {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.desktop-browser-download-close:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.desktop-browser-download-empty {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 96px;
+  color: var(--color-text-tertiary);
+  font-size: 13px;
+}
+
+.desktop-browser-download-list {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.desktop-browser-download-item {
+  display: flex;
+  position: relative;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+}
+
+.desktop-browser-download-item-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  padding-top: 1px;
+  color: var(--color-text-tertiary);
+}
+
+.desktop-browser-download-item-icon img {
+  display: block;
+  object-fit: contain;
+}
+
+.desktop-browser-download-item-content {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.desktop-browser-download-item-name {
+  /* 文件名默认占满整行（操作按钮 hover 才出现）：最多两行，超出才省略 */
+  display: -webkit-box;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: left;
+  word-break: break-all;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  cursor: pointer;
+}
+
+.desktop-browser-download-item-name:hover {
+  color: var(--color-text-strong);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.desktop-browser-download-item-meta {
+  margin-top: 2px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.desktop-browser-download-item[data-state='cancelled'] .desktop-browser-download-item-icon,
+.desktop-browser-download-item[data-state='interrupted'] .desktop-browser-download-item-icon {
+  color: var(--color-feedback-danger);
+}
+
+.desktop-browser-download-item-actions {
+  /* 悬浮层：绝对定位贴右缘、对齐 item 顶部（与首行文字/图标齐平），
+     悬浮在文字上方而非挤压它；面板底色垫底遮住下方文字，保证按钮可读 */
+  position: absolute;
+  right: 0;
+  top: 0;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--color-surface-popover);
+  border-radius: var(--radius-md);
+}
+
+.desktop-browser-download-item-action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.desktop-browser-download-item-action:hover {
+  background: var(--color-surface-hover);
+  color: var(--color-text-primary);
+}
+
+.desktop-browser-download-item-cancel {
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.desktop-browser-download-item-cancel:hover {
+  background: var(--color-feedback-danger-subtle);
+  color: var(--color-feedback-danger);
+}
+
+/* 操作按钮默认隐藏（文件名因此占满整行），行 hover 或键盘聚焦时出现 */
+.desktop-browser-download-item-actions,
+.desktop-browser-download-item-cancel {
+  display: none;
+}
+
+.desktop-browser-download-item:hover .desktop-browser-download-item-actions,
+.desktop-browser-download-item:hover .desktop-browser-download-item-cancel,
+.desktop-browser-download-item:focus-within .desktop-browser-download-item-actions,
+.desktop-browser-download-item:focus-within .desktop-browser-download-item-cancel {
+  display: inline-flex;
+}
+

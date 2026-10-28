@@ -233,6 +233,44 @@ class TestUpdateSessionMetadata:
         assert data["agent_group_name"] == "sample-expert-group"
 
     @staticmethod
+    def test_agent_group_display_identity_is_written_once(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            update_session_metadata,
+        )
+
+        first_identity = {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": "中文专家团",
+            "avatar": "",
+        }
+        init_session_metadata(session_id="sess_group_identity", channel_id="web")
+        update_session_metadata(
+            session_id="sess_group_identity",
+            agent_group_name="group-a",
+            team_group_identity=first_identity,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+        update_session_metadata(
+            session_id="sess_group_identity",
+            team_group_identity={
+                "id": "changed-asset",
+                "name": "group-a",
+                "display_name": "Changed Team",
+                "avatar": "",
+            },
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+
+        data = _read_json(
+            sessions_dir / "sess_group_identity" / "metadata.json"
+        )
+        assert data["team_group_identity"] == first_identity
+
+    @staticmethod
     def test_fallback_create_when_no_metadata(sessions_dir):
         """外部渠道隐式创建 session 时,metadata 不存在,应自动创建"""
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -474,6 +512,59 @@ class TestGetSessionMetadata:
         assert data["model"] == ""
         assert data["status"] == "idle"
         assert data["last_user_message_at"] == 1000.0  # 回退到 created_at
+
+    @staticmethod
+    def test_backfills_bound_agent_group_display_identity(sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            _METADATA_QUEUE,
+            _write_metadata_sync,
+            get_session_metadata,
+        )
+
+        identity = {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": "中文专家团",
+            "display_name_i18n": {"zh": "中文专家团", "en": "Expert Team"},
+            "avatar": "https://example.test/group.png",
+        }
+        _write_metadata_sync("sess_legacy_group", {
+            "session_id": "sess_legacy_group",
+            "channel_id": "web",
+            "created_at": 1000.0,
+            "last_message_at": 1000.0,
+            "title": "legacy group",
+            "message_count": 1,
+            "mode": "team.work.normal",
+            "team_name": "team-a",
+            "agent_group_name": "group-a",
+            "round_id": 1,
+        })
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_display_identity",
+            lambda name: identity if name == "group-a" else None,
+        )
+
+        data = get_session_metadata("sess_legacy_group", cache_bust=True)
+        assert data["team_group_identity"] == identity
+        _METADATA_QUEUE.join()
+        assert _read_json(
+            sessions_dir / "sess_legacy_group" / "metadata.json"
+        )["team_group_identity"] == identity
+
+        # A later restart after uninstall reads the persisted snapshot without
+        # consulting the package that no longer exists.
+        def package_removed(_name):
+            raise ValueError("package removed")
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_display_identity",
+            package_removed,
+        )
+        _METADATA_CACHE.pop("sess_legacy_group", None)
+        restored = get_session_metadata("sess_legacy_group", cache_bust=True)
+        assert restored["team_group_identity"] == identity
 
 
 # ===========================================================================
@@ -1886,7 +1977,7 @@ class _FakeWebChannel:
 @pytest.fixture()
 def registered_channel(sessions_dir):
     """注册所有 web handler，返回 _FakeWebChannel（含 session.get_metadata）"""
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )
@@ -2626,6 +2717,39 @@ def test_remove_team_mode_session_dirs_at_startup_keeps_stable_team_sessions(
 # ===========================================================================
 # rebind_session_project：并发场景（陈旧异步快照 vs 重绑）
 # ===========================================================================
+def test_external_harness_checkpoint_survives_stale_snapshot(sessions_dir):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _enqueue_write,
+        get_session_metadata,
+        init_session_metadata,
+        update_session_metadata,
+    )
+
+    session_id = "external-checkpoint-stale"
+    init_session_metadata(session_id=session_id, channel_id="web")
+    stale = get_session_metadata(session_id, cache_bust=True)
+    checkpoint = {
+        "agent_template_name": "codex-expert",
+        "provider_name": "codex",
+        "checkpoint": {
+            "checkpoint_id": "checkpoint-2",
+            "sequence": 2,
+        },
+    }
+    update_session_metadata(
+        session_id=session_id,
+        session_harness_checkpoint=checkpoint,
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+    _enqueue_write(session_id, stale, sync_write=True)
+
+    metadata = get_session_metadata(session_id, cache_bust=True)
+    assert metadata["session_harness_checkpoint"] == checkpoint
+
+
 class TestRebindSessionProjectConcurrency:
     """覆盖 P1 关键场景：rebind 的 sync 写入与队列中陈旧异步快照的竞态。
 
@@ -2868,7 +2992,8 @@ class TestRebindSessionProjectConcurrency:
         item_sid, _meta, options = captured[0]
         assert item_sid == sid
         assert options.rebind_gen_at_enqueue == 0
-        assert options.merge_fields is None
+        # A no-op update owns no fields; it must not replace a cross-process snapshot.
+        assert options.merge_fields == frozenset()
 
         # rebind: bump gen
         _bump_rebind_gen(sid)
@@ -3058,3 +3183,118 @@ class TestSessionPinOptimization:
             after = _read_json(sessions_dir / sid / "metadata.json")
             assert after["pin_order"] == order
             assert after["last_message_at"] == before[sid]["last_message_at"]
+
+class TestCanonicalModeBoundary:
+    """公共会话数据保持 canonical mode；客户端兼容由 Gateway 出口负责。"""
+
+    @staticmethod
+    def test_sync_explicit_mode_stores_canonical_mode(sessions_dir):
+        """请求旧 mode 仍归一化，不新增用于全局回显的 wire_mode。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            sync_session_request_metadata,
+            get_session_metadata,
+        )
+
+        init_session_metadata(session_id="s_wire")
+        sync_session_request_metadata(
+            session_id="s_wire", mode="team", explicit_mode_provided=True
+        )
+        _drain_queue()
+        meta = get_session_metadata("s_wire")
+        assert meta["mode"] == "team.work.normal"
+        assert "wire_mode" not in meta
+
+    @staticmethod
+    def test_to_session_info_ignores_legacy_wire_mode():
+        """已有 wire_mode 数据也不能覆盖公共出口的 canonical mode。"""
+        from jiuwenswarm.server.runtime.session.session_info import to_session_info
+
+        assert to_session_info({"mode": "team.work.normal", "wire_mode": "team"})["mode"] == "team.work.normal"
+        assert to_session_info({"mode": "team.work.normal"})["mode"] == "team.work.normal"
+        assert to_session_info({})["mode"] == "unknown"
+
+    @staticmethod
+    def test_chat_turn_code_team_stores_canonical_mode(sessions_dir):
+        """聊天请求的 mode/work_mode 组合在公共元数据中保持 canonical。"""
+        from jiuwenswarm.common.schema.agent import AgentRequest
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.runtime.request import (
+            apply_resolved_mode_to_request,
+            sync_chat_request_metadata,
+        )
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+            init_session_metadata,
+        )
+
+        init_session_metadata(session_id="s_code_team")
+        request = AgentRequest(
+            request_id="r1",
+            channel_id="web",
+            session_id="s_code_team",
+            req_method=ReqMethod.CHAT_SEND,
+            params={"mode": "team", "work_mode": "code"},
+        )
+        apply_resolved_mode_to_request(request, work_mode="code")
+        assert request.params["mode"] == "code.team", "前置：组合发生在 sync 之前"
+        sync_chat_request_metadata(
+            request,
+            None,
+            request.params["mode"],
+            explicit_mode_provided=True,
+            user_id="u1",
+        )
+        _drain_queue()
+        meta = get_session_metadata("s_code_team")
+        assert meta["mode"] == "team.code.normal"
+        assert "wire_mode" not in meta
+
+
+class TestGetAllSessionsMetadataLifecycleVisibility:
+    """Archive/delete are accepted before their directory changes, so the flat
+    active list must already hide them (otherwise a slow or abandoned cleanup
+    keeps a deleted Session visible forever)."""
+
+    @staticmethod
+    def test_hides_logically_deleted_and_archived(sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_all_sessions_metadata,
+            init_session_metadata,
+        )
+
+        for sid in ("live", "gone", "archived", "archiving"):
+            init_session_metadata(session_id=sid, channel_id="web")
+
+        def fake_state(kind, resource_id):
+            if kind != "session":
+                return {}
+            if resource_id == "gone":
+                return {"deleted": True}
+            if resource_id == "archived":
+                return {
+                    "operation": {"kind": "archive", "status": "completed"},
+                }
+            if resource_id == "archiving":
+                return {
+                    "operation": {"kind": "archive", "status": "running"},
+                }
+            return {}
+
+        monkeypatch.setattr(lc, "state", fake_state)
+        # A completed archive lives in sessions_archived; the existing path
+        # check hides it.  Keep the pending one only in the active area.
+        (sessions_dir.parent / "sessions_archived" / "archived").mkdir(parents=True)
+        monkeypatch.setattr(
+            lc,
+            "session_paths",
+            lambda sid, sessions_root=None: (
+                sessions_dir / sid,
+                sessions_dir.parent / "sessions_archived" / sid,
+            ),
+        )
+
+        sessions, total = get_all_sessions_metadata()
+        assert total == 1
+        assert [item["session_id"] for item in sessions] == ["live"]

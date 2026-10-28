@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 from collections.abc import Mapping
 from typing import Any
 
@@ -14,6 +15,9 @@ from openjiuwen.harness.tools.subagent.subagent_tools import (
     SubagentSpawnTool,
     SubagentWaitTool,
 )
+
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import plan_hard_rejected
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.code_tool_bindings import trusted_code_route
 
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.artifact_authorization import (
     _send_file_execution_grant_for_allow,
@@ -57,7 +61,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.review
     _is_allow_once_confirmation,
     _is_rejection_confirmation,
     _parse_confirmation_payload,
-    _should_degrade_auto_confirm,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.runtime_result import (
     _is_openjiuwen_runtime_context,
@@ -66,6 +69,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_ask_user import (
     ASK_USER_TOOL_NAME,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import (
+    session_observation_args_valid,
     ALLOW_LEVEL,
     ASK_LEVEL,
     DENY_LEVEL,
@@ -87,17 +91,8 @@ from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract imp
     build_rejected_permission_response,
     classify_permission_result,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
-    current_permission_owner_scope,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context_rail import (
     root_context_failure_from_context,
-)
-from jiuwenswarm.agents.harness.common.rails.permissions.send_file_approval_scope import (
-    parse_human_approval_scope,
-)
-from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
-    evaluate_session_deny,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     optional_root_permission_queue,
@@ -179,7 +174,16 @@ class AutoPermissionBeforeToolMixin:
 
         native_token = NATIVE_PATH_ACCESS.set(None)
         try:
-            return await self._before_tool_call_impl(*args, **kwargs)
+            invocation = _extract_invocation(args, kwargs)
+            if plan_hard_rejected(invocation.ctx):
+                return await self._before_tool_call_impl(*args, **kwargs)
+            capture = getattr(self.base_rail, "permission_check_context", None)
+            context = (
+                capture(_resolve_session_id(invocation.ctx, kwargs))
+                if callable(capture) else nullcontext()
+            )
+            with context:
+                return await self._before_tool_call_impl(*args, **kwargs)
         except asyncio.CancelledError:
             invocation = _extract_invocation(args, kwargs)
             key = tool_invocation_key_from_context(invocation.ctx)
@@ -196,6 +200,8 @@ class AutoPermissionBeforeToolMixin:
         clear_send_file_execution_grant()
         clear_trusted_search_producer()
         invocation = _extract_invocation(args, kwargs)
+        if plan_hard_rejected(invocation.ctx):
+            return None
         wrapper_resume = consume_permission_wrapper_resume(invocation.ctx)
         context_extra = getattr(invocation.ctx, "extra", None)
         if invocation.ctx is not None and invocation.tool_name == "mcp_fetch_webpage":
@@ -333,6 +339,22 @@ class AutoPermissionBeforeToolMixin:
                 decision_source=decision_source,
             )
             if (
+                decision_source == "policy_evaluator"
+                and policy_evaluation.level == ALLOW_LEVEL
+                and classify_permission_result(result) == "allow"
+            ):
+                self._record_reviewer_success_metadata(
+                    invocation.ctx,
+                    facts,
+                    tool_call_id=tool_call_id,
+                    reason="policy_allow",
+                    metadata={
+                        "decision_source": "policy_evaluator",
+                        "reviewer_status": "approved",
+                        "final_reviewer_status": "approved",
+                    },
+                )
+            if (
                 invocation_resume is not None
                 and decision_source == "manual_approval"
                 and classify_permission_result(result) == "allow"
@@ -373,13 +395,6 @@ class AutoPermissionBeforeToolMixin:
                 facts.tool_name,
                 tool_category=facts.tool_category,
             )
-            if session_id:
-                self.session_deny_store.record_denial(
-                    session_id=session_id,
-                    tool_name=facts.tool_name,
-                    tool_args=facts.untrusted_args,
-                    reason="user_rejected",
-                )
             self._emit_audit(
                 facts,
                 decision=DENY_LEVEL,
@@ -391,12 +406,6 @@ class AutoPermissionBeforeToolMixin:
                 decision_source="manual_approval",
             )
 
-        session_decision = evaluate_session_deny(
-            self.session_deny_store,
-            session_id=session_id,
-            tool_name=invocation.tool_name,
-            tool_args=normalized_args,
-        )
         policy_evaluation = await self.policy_evaluator.evaluate(invocation)
         send_paths = (
             policy_evaluation.path_result.canonical_paths
@@ -422,7 +431,7 @@ class AutoPermissionBeforeToolMixin:
         )
         readonly_binding_verified = bool(
             facts.capability.operation_family == "internal_readonly"
-            and trusted_readonly_binding(invocation, session_id)
+            and trusted_readonly_binding(invocation, session_id, owner_agent=getattr(self, "_owner_agent", None))
         )
 
         if trusted_send_resolution is not None:
@@ -469,15 +478,6 @@ class AutoPermissionBeforeToolMixin:
                 build_denied_permission_response(command_contract_error),
                 decision_source="final_gate",
             )
-        if session_decision is not None:
-            return runtime_result(
-                self._deny(
-                    facts,
-                    session_decision.reason,
-                    decision_source="session_deny",
-                ),
-                decision_source="session_deny",
-            )
         if policy_evaluation.level == DENY_LEVEL:
             return runtime_result(
                 self._deny(
@@ -487,7 +487,15 @@ class AutoPermissionBeforeToolMixin:
                 ),
                 decision_source="policy_evaluator",
             )
+        if policy_evaluation.manual_approval_required:
+            base_result = await self._call_base_rail(args, kwargs, invocation)
+            return runtime_result(base_result, decision_source="manual_approval")
         if policy_evaluation.source == "fail_closed":
+            if invocation_resume is not None or policy_evaluation.reason == "policy_config_refresh_failed":
+                return runtime_result(
+                    build_denied_permission_response(policy_evaluation.reason),
+                    decision_source="policy_evaluator",
+                )
             return runtime_result(
                 build_manual_approval_required_response(policy_evaluation.reason),
                 decision_source="policy_evaluator",
@@ -522,18 +530,6 @@ class AutoPermissionBeforeToolMixin:
                 ),
                 decision_source="manual_approval",
             )
-        human_send_scope = None
-        if path_policy_requires_approval and initial_confirmation_payload:
-            if (
-                "reviewer_override_token" not in initial_confirmation_payload
-                and not _contains_retired_task_scope_confirmation(
-                    initial_confirmation_payload
-                )
-            ):
-                human_send_scope = parse_human_approval_scope(
-                    initial_confirmation_payload
-                )
-
         if is_file_delivery_action(facts) and has_user_file_delivery_prohibition(
             file_delivery_constraint_text(original_user_intent)
         ):
@@ -570,35 +566,19 @@ class AutoPermissionBeforeToolMixin:
             )
         if facts.capability.operation_family == "internal_readonly" and not readonly_binding_verified:
             domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_binding_unverified", "manual_only")
+        if session_observation_args_valid(facts.tool_name, facts.untrusted_args) is False:
+            domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_arguments_unverified", "manual_only")
 
-        if _is_rejection_confirmation(user_input):
-            if invocation_resume is None:
-                self._emit_audit(
-                    facts,
-                    decision=DENY_LEVEL,
-                    reason="tool_invocation_resume_required",
-                    degraded=False,
-                )
-                return runtime_result(
-                    build_denied_permission_response("tool_invocation_resume_required"),
-                    decision_source="root_permission_queue",
-                )
-            if session_id:
-                self.session_deny_store.record_denial(
-                    session_id=session_id,
-                    tool_name=facts.tool_name,
-                    tool_args=facts.untrusted_args,
-                    reason="user_rejected",
-                )
+        if _is_rejection_confirmation(user_input) and invocation_resume is None:
             self._emit_audit(
                 facts,
                 decision=DENY_LEVEL,
-                reason="user_rejected",
+                reason="tool_invocation_resume_required",
                 degraded=False,
             )
             return runtime_result(
-                build_rejected_permission_response("user_rejected"),
-                decision_source="manual_approval",
+                build_denied_permission_response("tool_invocation_resume_required"),
+                decision_source="root_permission_queue",
             )
 
         if wrapper_resume:
@@ -606,18 +586,25 @@ class AutoPermissionBeforeToolMixin:
             # call. Static guards above still apply; the inner runs all rails.
             return runtime_result(None, decision_source="permission_wrapper_resume")
 
-        override_result: PermissionHandlingResult = (
-            await self._consume_reviewer_override(
-                facts,
-                invocation=invocation,
-                user_input=user_input,
-                domain_route=domain_route,
-            )
-        )
-        if override_result.handled:
+        if invocation_resume is not None:
+            base_result = await self._call_base_rail(args, kwargs, invocation)
             return runtime_result(
-                override_result.result,
-                decision_source=override_result.decision_source,
+                base_result, decision_source="manual_approval",
+                explicit_send_authorization=True,
+            )
+
+        # Complete Core policy ALLOW includes the latest User/Session grants.
+        # Runtime binding failures remain a separate execution boundary.
+        binding_unverified = bool(
+            domain_route is not None and domain_route.reason in {
+                "subagent_runtime_control_binding_unverified",
+                "readonly_tool_binding_unverified",
+                "readonly_tool_arguments_unverified",
+            }
+        )
+        if policy_evaluation.level == ALLOW_LEVEL and not binding_unverified:
+            return runtime_result(
+                None, decision_source="policy_evaluator",
                 explicit_send_authorization=True,
             )
 
@@ -658,93 +645,6 @@ class AutoPermissionBeforeToolMixin:
                 session_auto_confirm.result,
                 decision_source=session_auto_confirm.decision_source,
             )
-
-        exact_human_send_scope = bool(
-            path_policy_requires_approval
-            and policy_evaluation.path_result is not None
-            and policy_evaluation.path_result.ask_accesses
-            and human_send_scope in {"session", "permanent"}
-        )
-        if (
-            _should_degrade_auto_confirm(facts, user_input)
-            and not exact_human_send_scope
-        ):
-            self._emit_audit(
-                facts,
-                decision="allow",
-                reason="auto_confirm_degraded_to_once",
-                degraded=True,
-            )
-            return runtime_result(
-                None,
-                decision_source="manual_approval",
-                explicit_send_authorization=True,
-            )
-
-        initial_ask_accesses = (
-            policy_evaluation.path_result.ask_accesses
-            if path_policy_requires_approval
-            and policy_evaluation.path_result is not None
-            else ()
-        )
-        initial_session_scope_match = bool(
-            initial_ask_accesses
-            and user_input is None
-            and self.send_file_session_approval_store.matches(
-                owner_scope=current_permission_owner_scope(),
-                session_id=session_id,
-                tool_name=facts.tool_name,
-                accesses=initial_ask_accesses,
-            )
-        )
-        if path_policy_requires_approval and (
-            initial_session_scope_match or human_send_scope in {"session", "permanent"}
-        ):
-            if initial_session_scope_match:
-                self._emit_audit(
-                    facts,
-                    decision=ALLOW_LEVEL,
-                    reason="send_file_session_approval",
-                    degraded=False,
-                )
-                return runtime_result(
-                    None,
-                    decision_source="manual_approval",
-                    explicit_send_authorization=True,
-                )
-            if human_send_scope in {
-                "session",
-                "permanent",
-            }:
-                outcome = self.send_file_approval_bridge.apply(
-                    scope=human_send_scope,
-                    owner_scope=current_permission_owner_scope(),
-                    session_id=session_id,
-                    tool_name=facts.tool_name,
-                    tool_args=dict(facts.untrusted_args),
-                    ask_accesses=initial_ask_accesses,
-                )
-                self._emit_audit(
-                    facts,
-                    decision=ALLOW_LEVEL,
-                    reason=(
-                        f"send_file_{human_send_scope}_approval"
-                        if outcome.remembered
-                        else f"send_file_{human_send_scope}_degraded_to_once"
-                    ),
-                    degraded=not outcome.remembered,
-                    extra={
-                        "approval_scope": human_send_scope,
-                        "approval_remembered": outcome.remembered,
-                        "approval_persisted": outcome.persisted,
-                        "approval_scope_reason": outcome.reason,
-                    },
-                )
-                return runtime_result(
-                    None,
-                    decision_source="manual_approval",
-                    explicit_send_authorization=True,
-                )
 
         if _is_allow_once_confirmation(user_input):
             if (
@@ -866,6 +766,14 @@ class AutoPermissionBeforeToolMixin:
                 decision_source="policy_evaluator",
             )
 
+        code_route = trusted_code_route(
+            invocation, facts, path_requires_approval=path_policy_requires_approval,
+            owner_agent=getattr(self, "_owner_agent", None),
+        )
+        if code_route is not None:
+            self._emit_audit(facts, decision="allow", reason=code_route, degraded=False)
+            return runtime_result(None, decision_source=code_route)
+
         reviewer_result: PermissionHandlingResult = await run_reviewer()
         if reviewer_result.handled:
             return runtime_result(
@@ -910,13 +818,6 @@ class AutoPermissionBeforeToolMixin:
         base_result = await self._call_base_rail(args, kwargs, invocation)
         result_class = classify_permission_result(base_result)
         if result_class == "user_rejection":
-            if session_id:
-                self.session_deny_store.record_denial(
-                    session_id=session_id,
-                    tool_name=facts.tool_name,
-                    tool_args=facts.untrusted_args,
-                    reason="user_rejected",
-                )
             self._emit_audit(
                 facts, decision=DENY_LEVEL, reason="user_rejected", degraded=False
             )

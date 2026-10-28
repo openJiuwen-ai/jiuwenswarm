@@ -22,8 +22,7 @@ from jiuwenswarm.server.control.responses import (
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 from jiuwenswarm.server.runtime.session.session_metadata import (
-    _read_metadata,
-    _write_metadata_sync,
+    patch_session_metadata,
     get_all_sessions_metadata,
     get_session_metadata,
     set_session_pinned,
@@ -117,8 +116,15 @@ async def handle_get_metadata(request: AgentRequest) -> AgentResponse:
     if not isinstance(sid, str) or not sid.strip():
         return build_error_response(request, "session_id is required", code="BAD_REQUEST")
     sid = sid.strip()
+    # enable_writeback 由调用方声明（gateway 远端读传入只读语义，避免推断
+    # 写盘副作用）；缺省 True 保持既有 web/TUI/video_duplex 调用方原行为。
+    enable_writeback = params.get("enable_writeback", True)
+    if not isinstance(enable_writeback, bool):
+        enable_writeback = True
     try:
-        meta = get_session_metadata(sid, cache_bust=True)
+        meta = get_session_metadata(
+            sid, cache_bust=True, enable_writeback=enable_writeback
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[session_repository] session.get_metadata failed: %s", exc)
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")
@@ -164,9 +170,7 @@ async def handle_color_set(request: AgentRequest) -> AgentResponse:
     if str(color) not in _VALID_ACCENT_COLORS:
         return build_error_response(request, f"invalid color: {color}", code="BAD_REQUEST")
     try:
-        metadata = _read_metadata(target)
-        metadata["accent_color"] = str(color)
-        _write_metadata_sync(target, metadata)
+        await asyncio.to_thread(patch_session_metadata, target, {"accent_color": str(color)})
     except Exception as exc:  # noqa: BLE001
         logger.warning("[session_repository] session.color_set failed: %s", exc)
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")

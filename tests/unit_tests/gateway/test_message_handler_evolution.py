@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from openjiuwen_protocol.message import EventType, ReqMethod
+from gateway.message_handler.message_handler import MessageHandler
 
 
 _APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
@@ -264,7 +264,7 @@ def _set_evolution_auto_save(
     enabled: bool,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         lambda _config=None: enabled,
     )
     original_init = MessageHandler.__init__
@@ -397,7 +397,7 @@ async def test_regular_stream_chunks_do_not_read_evolution_auto_save_config(
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         count_auto_save_reads,
     )
     handler = _TestMessageHandler.create()
@@ -460,7 +460,7 @@ async def test_interrupt_evolution_approval_does_not_read_auto_save_config(
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         count_auto_save_reads,
     )
     handler = _TestMessageHandler.create()
@@ -492,6 +492,58 @@ def test_processing_status_is_only_emitted_for_chat_streams() -> None:
     assert handler.should_emit_processing_status_for_stream(
         _message(ReqMethod.HISTORY_GET)
     ) is False
+
+
+def test_attach_only_stream_does_not_emit_processing_status() -> None:
+    """An attach subscription must not raise or own the processing state."""
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    handler = _TestMessageHandler.create()
+    attach_message = _message(ReqMethod.CHAT_SEND)
+    attach_message.params = {TEAM_ATTACH_ONLY_PARAM: True}
+
+    assert handler.should_emit_processing_status_for_stream(attach_message) is False
+
+
+@pytest.mark.asyncio
+async def test_attach_only_stream_does_not_block_processing_false() -> None:
+    """A terminal is_processing=false must pass while an attach stream is live."""
+    handler = _TestMessageHandler.create()
+    _FakeAgentClient.stream_payloads = [
+        {"event_type": "chat.delta", "request_id": "turn-1", "content": "hi"},
+        {
+            "event_type": "chat.processing_status",
+            "request_id": "turn-1",
+            "session_id": "sess-attach",
+            "is_processing": False,
+            "is_complete": True,
+        },
+    ]
+    # Seed an in-flight attach stream on the same session (emit=False).
+    getattr(handler, "_stream_emits_processing_status")["attach-1"] = False
+    getattr(handler, "_stream_methods")["attach-1"] = ReqMethod.CHAT_SEND.value
+    getattr(handler, "_stream_sessions")["attach-1"] = "sess-attach"
+    getattr(handler, "_stream_modes")["attach-1"] = "team.work.normal"
+    getattr(handler, "_stream_channels")["attach-1"] = "web"
+
+    await handler.process_stream(
+        SimpleNamespace(
+            request_id="turn-1",
+            channel="web",
+            method=ReqMethod.CHAT_SEND.value,
+            params={"query": "hi", "mode": "team.work.normal"},
+        ),
+        "sess-attach",
+        None,
+        emit_processing_status=True,
+    )
+
+    payloads = await _drain_robot_payloads_for_permission_resume(handler)
+    assert any(
+        p.get("event_type") == "chat.processing_status"
+        and p.get("is_processing") is False
+        for p in payloads
+    ), "attach stream must not block the terminal processing_status=false"
 
 
 
@@ -1221,11 +1273,11 @@ def test_error_protocols_are_mapped_to_terminal_chat_error_for_stream_and_unary(
             "is_complete": True,
         }
 
-    from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
+    from gateway.channel_manager.protocol.a2a.a2a_connect import (
         A2AChannel,
     )
-    from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.tui.tui_channel import TuiChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     web_channel = WebChannel.__new__(WebChannel)
     web_frame = web_channel._serialize_frame(stream_message)
@@ -1343,7 +1395,7 @@ async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
         }
     else:
         assert out.payload == {"error": "boom", "code": "BAD_REQUEST"}
-        from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
+        from gateway.channel_manager.tui.tui_channel import TuiChannel
 
         assert json.loads(TuiChannel._serialize_frame(object(), out)) == {
             "type": "res",
@@ -1366,7 +1418,7 @@ def test_message_handler_builds_explicit_gateway_cron_scheduler(
             captured.update(kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.scheduler.CronSchedulerService",
+        "gateway.cron.scheduler.CronSchedulerService",
         _Scheduler,
     )
     store = object()

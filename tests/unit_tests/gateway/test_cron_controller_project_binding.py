@@ -1,7 +1,9 @@
-"""CronController create/update project binding 多用户容忍（Phase 4）。
+"""CronController create/update 项目绑定规则（A3g：本地反查删除后）。
 
-目录分离后 Gateway 部署侧项目表不包含用户侧 project_id；仅 AgentServer 已完成
-绑定的请求可跳过 Gateway 本地反查。历史单用户请求仍应拒绝无效 project_id。
+绑定统一由入口在目标 AgentServer 解析（web/tui 经 PROJECT_CRON_RESOLVE_BINDING，
+agent 工具经 server 侧 CronTools），controller 把 marker 标记的结果作为不透明值
+持久化。marker 缺失时仅放行无项目字段/默认项目；真实 project_id/project_dir
+必须先经 AgentServer 解析。
 """
 from __future__ import annotations
 
@@ -10,7 +12,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.gateway.cron.controller import CronController
+from gateway.cron.controller import CronController
+from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
 
 
@@ -125,6 +128,63 @@ async def test_list_jobs_checks_gate_once_per_project() -> None:
     assert sorted(gate_calls) == [("proj_1", "alice"), ("proj_1", "bob"), ("proj_2", "alice")]
 
 
+@pytest.mark.asyncio
+async def test_list_jobs_filters_owner_before_admission_gate() -> None:
+    """传 user_id 时先按属主过滤:只为自己的项目打闸门,不替其他用户付超时。"""
+    jobs = [
+        SimpleNamespace(id="job_a", project_id="proj_alice", user_id="alice",
+                        to_dict=lambda: {"id": "job_a", "user_id": "alice"}),
+        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b", "user_id": "bob"}),
+        # 无属主的历史任务在带 user_id 的查询下不可见(与 Web 列表语义一致)。
+        SimpleNamespace(id="job_c", project_id="proj_legacy", user_id="",
+                        to_dict=lambda: {"id": "job_c", "user_id": ""}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    result = await controller.list_jobs(user_id="alice")
+
+    assert [job["id"] for job in result] == ["job_a"]
+    assert gate_calls == [("proj_alice", "alice")]
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_owner_without_jobs_issues_no_gate_rpc() -> None:
+    """用户 0 任务时不得为 store 里其他用户的任务发起任何准入查询。"""
+    jobs = [
+        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b"}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    assert await controller.list_jobs(user_id="alice") == []
+    assert gate_calls == []
+
+
 class _RecordingStore:
     def __init__(self) -> None:
         self.create_calls: list[dict] = []
@@ -180,17 +240,8 @@ def _make_controller():
 
 
 @pytest.mark.asyncio
-async def test_create_job_tolerates_user_side_project_id(monkeypatch) -> None:
-    """显式真实 project_id 不在 Gateway 本地项目表时，信任调用方 work_mode。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
-        lambda project_id, project_dir, work_mode: CronProjectBinding(
-            project_id="",
-            work_mode="work",
-            error=f"project not found: {project_id!r}",
-            code="NOT_FOUND",
-        ),
-    )
+async def test_create_job_tolerates_user_side_project_id() -> None:
+    """marker 标记的绑定结果作为不透明值持久化，不查 Gateway 本地项目表。"""
     cc = _make_controller()
     job = await cc.create_job(
         {
@@ -215,19 +266,10 @@ async def test_create_job_tolerates_user_side_project_id(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_job_rejects_missing_project(monkeypatch) -> None:
-    """不存在的项目仍拒绝新增 cron 绑定。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
-        lambda project_id, project_dir, work_mode: CronProjectBinding(
-            project_id="",
-            work_mode="work",
-            error=f"project not found: {project_id!r}",
-            code="NOT_FOUND",
-        ),
-    )
+async def test_create_job_rejects_unresolved_real_project_id() -> None:
+    """marker 缺失 + 真实 project_id：必须先经目标 AgentServer 解析，明确失败。"""
     cc = _make_controller()
-    with pytest.raises(ValueError, match="project not found"):
+    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
         await cc.create_job(
             {
                 "name": "daily",
@@ -242,25 +284,45 @@ async def test_create_job_rejects_missing_project(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_job_rejects_unresolved_project_in_single_user(monkeypatch) -> None:
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
-        lambda project_id, project_dir, work_mode: CronProjectBinding(
-            project_id="",
-            work_mode="work",
-            error=f"project not found: {project_id!r}",
-            code="NOT_FOUND",
-        ),
-    )
-    with pytest.raises(ValueError, match="project not found"):
+async def test_create_job_rejects_unresolved_project_dir() -> None:
+    """marker 缺失 + project_dir：同样必须先经目标 AgentServer 解析。"""
+    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
         await _make_controller().create_job(
             {
                 "name": "daily",
                 "cron_expr": "0 9 * * *",
                 "targets": "web",
-                "project_id": "proj_missing",
+                "project_dir": "/home/user/project",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_create_job_without_marker_allows_default_project_and_no_fields() -> None:
+    """无项目字段的请求（系统路径，如 proactive 自动注册）与默认项目 ID 不需要 marker。"""
+    cc = _make_controller()
+    job = await cc.create_job(
+        {
+            "name": "system-path",
+            "cron_expr": "0 9 * * *",
+            "targets": "web",
+            "mode": "proactive.tick",
+            "id": PROACTIVE_JOB_ID,
+        },
+        internal_proactive_sync=True,
+    )
+    assert job["project_id"] == ""
+    assert job["work_mode"] == "work"
+
+    job_default = await cc.create_job(
+        {
+            "name": "default-bound",
+            "cron_expr": "0 9 * * *",
+            "targets": "web",
+            "project_id": "default_code",
+        }
+    )
+    assert job_default["project_id"] == "default_code"
 
 
 @pytest.mark.asyncio
@@ -286,6 +348,24 @@ async def test_update_job_tolerates_user_side_project_id(monkeypatch) -> None:
     assert "_agentos_project_binding_verified" not in patch
 
 
+@pytest.mark.asyncio
+async def test_update_job_rejects_unresolved_project_fields() -> None:
+    """marker 缺失 + 项目字段：必须先经目标 AgentServer 解析。"""
+    cc = _make_controller()
+    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
+        await cc.update_job("job-1", {"project_id": "proj_user_side"})
+    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
+        await cc.update_job("job-1", {"project_dir": "/home/user/project"})
+
+
+@pytest.mark.asyncio
+async def test_update_job_rejects_work_mode_only_patch() -> None:
+    """work_mode 单独 patch 沿用原规则拒绝（仅能伴随项目重解析生效）。"""
+    cc = _make_controller()
+    with pytest.raises(ValueError, match="requires project re-resolution"):
+        await cc.update_job("job-1", {"work_mode": "code"})
+
+
 # ---------------------------------------------------------------------------
 # 会话级 MCP 选择（mcp）随 job 落库 / patch 规范化
 # ---------------------------------------------------------------------------
@@ -294,15 +374,6 @@ async def test_update_job_tolerates_user_side_project_id(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_create_job_normalizes_and_passes_mcp_to_store(monkeypatch) -> None:
     """create 时 mcp 做 strip/去空/去重后透传 store；不校验存在性。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
-        lambda project_id, project_dir, work_mode: CronProjectBinding(
-            project_id="",
-            work_mode="work",
-            error=None,
-            code="",
-        ),
-    )
     cc = _make_controller()
     await cc.create_job(
         {
@@ -322,15 +393,6 @@ async def test_create_job_normalizes_and_passes_mcp_to_store(monkeypatch) -> Non
 @pytest.mark.asyncio
 async def test_create_job_without_mcp_passes_none(monkeypatch) -> None:
     """未传 mcp → store 收到 None（保持既有行为，旧 job 兜底一致）。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
-        lambda project_id, project_dir, work_mode: CronProjectBinding(
-            project_id="",
-            work_mode="work",
-            error=None,
-            code="",
-        ),
-    )
     cc = _make_controller()
     await cc.create_job(
         {
@@ -349,10 +411,6 @@ async def test_create_job_without_mcp_passes_none(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_update_job_normalizes_mcp_patch(monkeypatch) -> None:
     """patch mcp：非空列表规范化；空列表/null 归 None（清除选择）。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: None,
-    )
     cc = _make_controller()
     await cc.update_job(
         "job-1",

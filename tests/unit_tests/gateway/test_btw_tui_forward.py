@@ -8,7 +8,7 @@ command.btw to CLI_FORWARD_REQ_METHODS and CLI_FORWARD_NO_LOCAL_HANDLER_METHODS.
 
 from __future__ import annotations
 
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+from gateway.channel_manager.tui.tui_connect import (
     CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
     CLI_FORWARD_REQ_METHODS,
     CliHandlersBindParams,
@@ -59,7 +59,7 @@ class TestBtwInForwardSets:
     @staticmethod
     def test_route_binding_includes_command_btw():
         """build_cli_route_binding must include command.btw in forward methods."""
-        from jiuwenswarm.gateway.channel_manager.tui.tui_connect import CliRouteBindParams
+        from gateway.channel_manager.tui.tui_connect import CliRouteBindParams
 
         bind_params = CliRouteBindParams(path="/tui")
         binding = build_cli_route_binding(bind_params)

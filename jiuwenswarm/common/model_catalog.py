@@ -10,8 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.config import get_config, load_models_config
-from jiuwenswarm.common.model_errors import MODEL_SELECTION_NOT_FOUND, ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
+from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, MODEL_SELECTION_NOT_FOUND, ModelSelectionError
+from gateway.common.model_selection import ModelSelection
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,9 @@ _PUBLIC_GROUP_KEYS = (
     "is_default",
     "routes",
     "request_config",
-    "routing",
+)
+_PUBLIC_GROUP_TIMEOUT_KEYS = (
+    "timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout",
 )
 
 
@@ -31,7 +33,9 @@ def _read_session_selection(path: Path) -> dict[str, Any] | None:
         metadata = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         logger.warning("Failed to read session model selection from %s", path, exc_info=True)
-        return None
+        raise
+    if not isinstance(metadata, dict):
+        raise ValueError("session metadata must be an object")
     value = metadata.get("model_selection")
     return value if isinstance(value, dict) else None
 
@@ -94,6 +98,19 @@ class ModelCatalog:
                 return group
         raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_group_id {group_id!r}")
 
+    def has_selection(self, selection: ModelSelection) -> bool:
+        """Whether a saved selection still names a model, group, and route."""
+        if selection.type == "model":
+            return selection.id in self.snapshot["by_id"]
+        for group in self.snapshot["groups"]:
+            if not isinstance(group, dict) or group.get("model_group_id") != selection.id:
+                continue
+            return selection.route_id is None or any(
+                isinstance(route, dict) and route.get("route_id") == selection.route_id
+                for route in group.get("routes") or []
+            )
+        return False
+
     @staticmethod
     def _safe_model(entry: dict[str, Any], source: str) -> dict[str, Any]:
         mcc = entry.get("model_client_config") or {}
@@ -113,18 +130,30 @@ class ModelCatalog:
                     result.append(self._safe_model(entry, source))
         return result
 
-    def get_public_model_detail(self, model_id: str) -> dict[str, Any]:
-        """Return an editable model DTO without write-only credentials.
+    def get_public_model_detail(self, model_id: str, *, include_api_key: bool = False) -> dict[str, Any]:
+        """Return model details, optionally including a user-configured API key.
 
         Updates are merge-based, so omitted write-only fields remain unchanged.
         AgentOS models are intentionally exposed as read-only catalog entries.
+        Editing may include the decrypted API key of a user-configured model.
         """
+        from jiuwenswarm.common.auth.model_catalog import is_login_model
+
         hit = self.get_model(model_id)
         entry = deepcopy(hit["entry"])
-        client = entry.get("model_client_config")
+        model_config = entry.get("model_config_obj")
+        if isinstance(model_config, dict) and isinstance(model_config.get("reasoning_level"), bool):
+            model_config["reasoning_level"] = "on" if model_config["reasoning_level"] else "off"
+        expose_api_key = include_api_key and hit["source"] == "defaults" and not is_login_model(entry)
+        client = entry.get("model_client_config") or {}
+        # The edit dialog requires these strings even for an empty YAML model.
+        # Normalize only the response; retain the original persisted values.
+        client["model_name"] = str(client.get("model_name") or "")
+        client["api_base"] = str(client.get("api_base") or "")
+        entry["model_client_config"] = client
         write_only_fields: list[str] = []
         if isinstance(client, dict):
-            if "api_key" in client:
+            if "api_key" in client and not expose_api_key:
                 client.pop("api_key", None)
                 write_only_fields.append("model_client_config.api_key")
             if "custom_headers" in client:
@@ -143,14 +172,21 @@ class ModelCatalog:
                 continue
             public = {}
             for key in _PUBLIC_GROUP_KEYS:
-                if key == "routing":
-                    continue
                 value = deepcopy(group.get(key))
                 public[key] = value
+            routing = group.get("routing")
+            if isinstance(routing, dict):
+                timeouts = {
+                    key: deepcopy(routing[key])
+                    for key in _PUBLIC_GROUP_TIMEOUT_KEYS
+                    if key in routing
+                }
+                if timeouts:
+                    public["routing"] = timeouts
             result.append(public)
         return result
 
-    def find_references(self, selection: ModelSelection) -> list[SelectionReference]:
+    def find_references(self, selection: ModelSelection, *, include_cron: bool = True) -> list[SelectionReference]:
         refs: list[SelectionReference] = []
         if selection.type == "model":
             for group in self.snapshot["groups"]:
@@ -168,19 +204,28 @@ class ModelCatalog:
                     value = _read_session_selection(path)
                     if _matches(selection, value):
                         refs.append(SelectionReference("session", directory.name))
-        except (OSError, RuntimeError):
+        except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Failed to scan session model references", exc_info=True)
+            # An incomplete scan cannot prove that a resource is safe to delete.
+            raise ModelSelectionError(
+                MODEL_RUNTIME_UNAVAILABLE,
+                "Cannot check model references: session metadata is unreadable or invalid; repair it and retry",
+            ) from exc
         try:
             from jiuwenswarm.common.utils import get_cron_jobs_path
             path = get_cron_jobs_path()
-            data = json.loads(path.read_text(encoding="utf-8")) if path.is_file() else []
+            data = json.loads(path.read_text(encoding="utf-8")) if include_cron and path.is_file() else []
             items = data.get("jobs", []) if isinstance(data, dict) else data
             for item in items if isinstance(items, list) else []:
                 value = item.get("model_selection") if isinstance(item, dict) else None
                 if _matches(selection, value):
                     refs.append(SelectionReference("cron", str(item.get("id") or "")))
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
             logger.warning("Failed to scan cron model references", exc_info=True)
+            raise ModelSelectionError(
+                MODEL_RUNTIME_UNAVAILABLE,
+                "Cannot check model references: cron data is unreadable or invalid; repair it and retry",
+            ) from exc
         refs.extend(_find_embedded_selections(self.config.get("agents"), selection, scope="agent"))
         refs.extend(_find_embedded_selections(self.config.get("team"), selection, scope="team"))
         # A malformed tree can contain the same selection through aliases. Keep

@@ -1,5 +1,4 @@
-﻿import { useAssetPublication } from '../../hooks/useAssetPublication';
-import { publicationLabel, matchesPublicationFilter } from '../../features/assetPublication';
+import { matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
  * SkillPanel 组件
@@ -155,12 +154,11 @@ export function SkillPanel({
   onNavigateToSettings,
   isActive = false,
 }: SkillPanelProps) {
-  const { t, i18n } = useTranslation();
+  const { t } = useTranslation();
   // 导航与页签
   const [activeTab, setActiveTab] = useState<'my' | 'marketplace' | 'graph'>('marketplace');
   const [marketplaceSubView, setMarketplaceSubView] = useState<MarketplaceSubView>('list');
   const [mySkillsSubTab, setMySkillsSubTab] = useState<'all' | 'enabled' | 'disabled' | 'builtin'>('all');
-  const [mySkillsPublishFilter, setMySkillsPublishFilter] = useState<'all' | 'published' | 'unpublished'>('all');
   const [marketplaceCategory, setMarketplaceCategory] = useState<(typeof MARKETPLACE_CATEGORIES)[number]>('all');
   const [detailTab, setDetailTab] = useState<'content' | 'files' | 'experience' | 'members'>('content');
 
@@ -189,7 +187,6 @@ export function SkillPanel({
   const [teamSkillsHubModalOpen, setTeamSkillsHubModalOpen] = useState(false);
   const [uploadSkillModalOpen, setUploadSkillModalOpen] = useState(false);
   const [docToSkillModalOpen, setDocToSkillModalOpen] = useState(false);
-  const [publishFilterOpen, setPublishFilterOpen] = useState(false);
   const [enableFilterOpen, setEnableFilterOpen] = useState(false);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [detailMenuOpen, setDetailMenuOpen] = useState(false);
@@ -268,7 +265,7 @@ export function SkillPanel({
     openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
-  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView, withSession });
+  } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, marketplaceSubView, setMarketplaceSubView });
 
   const {
     skillGraphPanelRef,
@@ -330,13 +327,15 @@ export function SkillPanel({
   }, [skills]);
 
   const filteredSkills = useMemo(() => {
-    let result = skills;
+    const result = skills;
     if (activeTab === 'my') {
       // 2026-08-21：抽成 utils/mySkills.ts 的 computeMySkills，跟"手动创建插件"的"添加技能"
       // 弹窗共用同一份"我的技能"判定规则，见该文件头注释。这里原本是"候选集过滤+排除内置未装"
       // 两步（第二步挪到了下面 visibleSkills 里），computeMySkills 已经把两步合并，语义不变
       // （排除条件不依赖搜索关键字，跟下面的关键字过滤谁先谁后结果一样）。
-      result = computeMySkills(result, installedSkillNames);
+      return computeMySkills(result, installedSkillNames).filter(skill =>
+        matchesAssetName(searchKeyword, [skill.display_name || skill.name]),
+      );
     }
     const keyword = searchKeyword.toLowerCase();
     if (!keyword) return result;
@@ -634,13 +633,15 @@ export function SkillPanel({
     [t],
   );
 
-  // 通过聊天创建：新建会话，选中 skill-creator（统一入口）并在 chip 后追加创建提示文字
+  // 通过聊天创建：新建会话，选中 skill-creator（统一入口）并在 chip 后追加创建提示文字。
+  // skill-creator 走单 Agent；显式 mode，避免仍停在集群模式或未发送的 team 草稿。
   const handleCreateViaChat = useCallback(() => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
           skillName: 'skill-creator',
           suffixText: t('skills.chatPrompts.createSkill'),
+          mode: 'agent' as const,
           metadata: { scene: 'create_skill' },
         },
       }),
@@ -899,9 +900,6 @@ export function SkillPanel({
 
   // 2026-08-25：改用 utils/mySkills.ts 的共享 isSkillInstalled/filterEnabledMySkills，跟"手动创建
   // 插件"的"添加技能"弹窗（CreatePluginPage.tsx）共用同一份"已启用"判定规则，见该文件头注释。
-  const skillPublication = useAssetPublication(
-    activeTab === 'my' ? visibleSkills.map((s) => ({ kind: 'skill', local_id: s.name })) : [],
-  );
   const mySkillsFiltered = useMemo(() => {
     let filtered = visibleSkills;
     switch (mySkillsSubTab) {
@@ -917,18 +915,8 @@ export function SkillPanel({
       default:
         break;
     }
-    // 发布状态筛选
-    if (mySkillsPublishFilter === 'published') {
-      filtered = filtered.filter((s) =>
-        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'published'),
-      );
-    } else if (mySkillsPublishFilter === 'unpublished') {
-      filtered = filtered.filter((s) =>
-        matchesPublicationFilter(skillPublication({ kind: 'skill', local_id: s.name }), 'unpublished'),
-      );
-    }
     return filtered;
-  }, [visibleSkills, mySkillsSubTab, mySkillsPublishFilter, installedSkillNames, skillPublication]);
+  }, [visibleSkills, mySkillsSubTab, installedSkillNames]);
 
   // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶
   const builtinSkills = useMemo(() => mySkillsFiltered.filter((s) => s.source === 'builtin'), [mySkillsFiltered]);
@@ -1073,9 +1061,6 @@ export function SkillPanel({
     }
     if (skill.source === 'builtin') {
       labelTags.push(t('skills.mySkillsTabs.builtin'));
-    }
-    if (activeTab === 'my') {
-      labelTags.push(publicationLabel(skillPublication({ kind: 'skill', local_id: skill.name }), i18n.language));
     }
 
     const actionContent = (
@@ -1264,32 +1249,11 @@ export function SkillPanel({
         <div className="flex items-center gap-3" data-testid="skill-panel-toolbar-actions">
           {activeTab === 'my' && (
             <>
-              {/* 已发布/未发布筛选 */}
-              <FilterDropdown
-                open={publishFilterOpen}
-                onToggle={(v) => {
-                  setPublishFilterOpen(v);
-                  setEnableFilterOpen(false);
-                }}
-                onClose={() => setPublishFilterOpen(false)}
-                value={mySkillsPublishFilter}
-                onChange={(v) => {
-                  setMySkillsPublishFilter(v);
-                  setPublishFilterOpen(false);
-                }}
-                options={[
-                  { value: 'all', label: t('skills.publishFilter.all') },
-                  { value: 'published', label: t('skills.publishFilter.published') },
-                  { value: 'unpublished', label: t('skills.publishFilter.unpublished') },
-                ]}
-                testId="skill-panel-filter-publish"
-              />
               {/* 启用/禁用筛选 */}
               <FilterDropdown
                 open={enableFilterOpen}
                 onToggle={(v) => {
                   setEnableFilterOpen(v);
-                  setPublishFilterOpen(false);
                 }}
                 onClose={() => setEnableFilterOpen(false)}
                 value={mySkillsSubTab}
@@ -1312,7 +1276,7 @@ export function SkillPanel({
               value={search}
               onChange={(e) => handleSearchChange(e.target.value)}
               onClear={() => handleSearchChange('')}
-              placeholder={t('skills.searchPlaceholder')}
+              placeholder={t(activeTab === 'my' ? 'common.searchName' : 'skills.searchPlaceholder')}
               inputTestId="skill-panel-search-input"
               className="focus-visible:border-[color:var(--color-control-emphasis)]"
             />
@@ -1412,6 +1376,7 @@ export function SkillPanel({
   // 技能总谱页签：图谱画布 + 总谱设置
   const renderGraphTab = () => (
     <SkillGraphTab
+      isActive={isActive}
       isConnected={isConnected}
       symphonySaving={symphonySaving}
       symphonyEnabledDraft={symphonyEnabledDraft}

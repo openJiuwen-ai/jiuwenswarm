@@ -2,7 +2,7 @@
 
 import type { ReactNode } from 'react';
 
-export type ChatSurfaceView = 'chat' | 'trajectory';
+export type ChatSurfaceView = 'chat' | 'trajectory' | 'diagnosis';
 
 export interface SingleAgentSurfaceProps {
   activeView: ChatSurfaceView;
@@ -16,12 +16,16 @@ export interface SingleAgentSurfaceProps {
   trajectoryLabel: string;
   trajectoryRequested: boolean;
   showNavigation?: boolean;
+  /** The diagnosis view. It has no tab: the chat header opens it. */
+  diagnosis?: ReactNode;
+  diagnosisEnabled?: boolean;
+  diagnosisRequested?: boolean;
 }
 
 /**
- * Keep the chat subtree mounted while gating the trajectory subtree until its
- * first explicit request. Agent and Team modes share this lifecycle boundary;
- * other modes never expose or mount trajectory UI.
+ * Keep the chat subtree mounted while gating the trajectory and diagnosis
+ * subtrees until their first explicit request. Agent and Team modes share
+ * this lifecycle boundary; other modes never expose or mount either view.
  */
 export function SingleAgentSurface({
   activeView,
@@ -35,17 +39,25 @@ export function SingleAgentSurface({
   trajectoryLabel,
   trajectoryRequested,
   showNavigation = true,
+  diagnosis = null,
+  diagnosisEnabled = false,
+  diagnosisRequested = false,
 }: SingleAgentSurfaceProps) {
-  const trajectoryMode = trajectoryEnabled && (mode === 'agent' || mode === 'team');
-  const navigationVisible = trajectoryMode && showNavigation;
-  const resolvedView: ChatSurfaceView = navigationVisible ? activeView : 'chat';
+  const modeSupported = mode === 'agent' || mode === 'team';
+  // The trajectory tab bar and the diagnosis view are switched independently.
+  const navigationVisible = trajectoryEnabled && modeSupported && showNavigation;
+  const diagnosisVisible = diagnosisEnabled && modeSupported && showNavigation;
+  const resolvedView: ChatSurfaceView = (activeView === 'trajectory' && !navigationVisible)
+    || (activeView === 'diagnosis' && !diagnosisVisible)
+    ? 'chat'
+    : activeView;
 
   return (
     <div
       className={`single-agent-surface single-agent-surface--${resolvedView} ${navigationVisible ? 'single-agent-surface--navigation' : ''}`}
       data-testid="single-agent-surface"
     >
-      {navigationVisible ? (
+      {navigationVisible && resolvedView !== 'diagnosis' ? (
         <div className="chat-surface-toolbar">
           <div
             className="chat-surface-tabs"
@@ -90,6 +102,15 @@ export function SingleAgentSurface({
           data-testid="single-agent-trajectory-view"
         >
           {trajectory}
+        </div>
+      ) : null}
+      {diagnosisVisible && diagnosisRequested ? (
+        <div
+          className={`chat-surface-view flex-1 min-h-0 ${resolvedView === 'diagnosis' ? '' : 'chat-surface-view--hidden'}`}
+          aria-hidden={resolvedView !== 'diagnosis'}
+          data-testid="single-agent-diagnosis-view"
+        >
+          {diagnosis}
         </div>
       ) : null}
     </div>

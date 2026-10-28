@@ -55,6 +55,33 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
         """
         self._swarm_context = context
 
+    def _send_file_enabled(self) -> bool:
+        """当前渠道是否允许文件投递（``channels.<channel>.send_file_allowed``）。
+
+        小艺等渠道关掉该开关后，``send_file_to_user`` 不会注册给模型，
+        提示词里也就不能再要求它发文件，否则模型会承诺一个它没有的能力。
+        渠道未知时保持原有提示（不改变既有行为）。
+        """
+        context = self._swarm_context
+        channel = (
+            str(getattr(context, "channel_id", "") or "").strip() if context else ""
+        )
+        if not channel:
+            return True
+        try:
+            from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import (
+                is_send_file_enabled,
+            )
+            from jiuwenswarm.common.config import get_config
+
+            return is_send_file_enabled(get_config(), channel)
+        except Exception as exc:  # noqa: BLE001 - 判定失败时保持原有提示
+            logger.warning(
+                "[TeamWorkspaceReportPathRail] send_file policy lookup failed: %s",
+                exc,
+            )
+            return True
+
     def init(self, agent) -> None:
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         self._register_swarm_context(agent)
@@ -165,9 +192,27 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
                 "silently drop them in the team workspace.\n"
             )
 
+        # 文件投递提示按渠道开关给：渠道关了 send_file_allowed 就不提示
+        # send_file_to_user（工具本身也不会注册），避免模型承诺发不出的文件。
+        if self._send_file_enabled():
+            delivery_lines = (
+                "- `send_file_to_user` controls message delivery only; it never "
+                "changes the required on-disk destination.\n"
+                "- A path mentioned in `send_message` or a completion summary does "
+                "not deliver the file. Call `send_file_to_user` only when the user "
+                "requested a downloadable file.\n"
+            )
+        else:
+            delivery_lines = (
+                "- This channel cannot deliver files. Do not promise to send a "
+                "file; put the deliverable's content (or its absolute path) in "
+                "your reply instead.\n"
+            )
+
         content = (
             "# Project and Team Workspace File Policy\n\n"
             f"{deliverables_lines}"
+            f"{delivery_lines}"
             f"- Team shared workspace (config / internal data): `{self._root_dir}`\n"
             "- The team shared workspace holds the team's prompts, team.yaml, "
             "skill-visibility metadata, trajectories, and the shared "
@@ -181,11 +226,6 @@ class TeamWorkspaceReportPathRail(DeepAgentRail):
             "- Do not place final project files in the team shared workspace "
             "root; members bound to a project keep deliverables in the project "
             "and projectless members use the deliverables directory above.\n"
-            "- `send_file_to_user` controls message delivery only; it never "
-            "changes the required on-disk destination.\n"
-            "- A path mentioned in `send_message` or a completion summary does "
-            "not deliver the file. Call `send_file_to_user` only when the user "
-            "requested a downloadable file.\n"
         )
         self.system_prompt_builder.add_section(
             PromptSection(

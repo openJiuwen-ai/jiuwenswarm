@@ -8,9 +8,7 @@ import type {
   DefinitionFileEntry,
   RequestStatus,
 } from '../../features/agentManagement';
-import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
-import { GroupAvatar } from './GroupCard';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
@@ -30,6 +28,7 @@ type AgentGroupDetailPageProps = {
   fileStatus: RequestStatus;
   fileError: string | null;
   actionNotice: string | null;
+  actionNoticeError?: boolean;
   busy: boolean;
   onBack: () => void;
   onRetry: () => void;
@@ -56,6 +55,7 @@ export function AgentGroupDetailPage({
   fileStatus,
   fileError,
   actionNotice,
+  actionNoticeError,
   busy,
   onBack,
   onRetry,
@@ -80,7 +80,7 @@ export function AgentGroupDetailPage({
             <>
               <EntityHeader
                 testId="agent-management-detail-header"
-                avatar={<GroupAvatar item={loadingSummary} size="detail" />}
+                avatar={{ name: loadingSummary.displayName, iconUrl: loadingSummary.avatarUrl, testId: 'agent-management-detail-avatar' }}
                 title={loadingSummary.displayName}
                 titleTestId="agent-management-detail-name"
                 tags={[
@@ -93,9 +93,6 @@ export function AgentGroupDetailPage({
                   ...(loadingSummary.installed ? [t('agentManagement.states.installed')] : []),
                 ]}
               />
-              <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
-                <p>{loadingSummary.description || t('agentManagement.unknownDescription')}</p>
-              </DetailSection>
             </>
           ) : null}
           <div
@@ -146,10 +143,12 @@ export function AgentGroupDetailPage({
         {t('agentManagement.actions.back')}
       </button>
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
-        <PublicationDetailStatus kind="agent_group" localId={detail.id} />
         <EntityHeader
           testId="agent-management-detail-header"
-          avatar={<GroupAvatar item={detail} size="detail" />}
+          /* 头像走 EntityHeader 的结构化 EntityImageAvatar（共享 EntityAvatar 组件），与
+             agent 模板详情页（agent-management-detail-avatar）同款，不再用自定义 GroupAvatar
+             ReactNode：字母兜底取色与技能面板 / Agent 管理 / 连接器市场保持一致。 */
+          avatar={{ name: detail.displayName, iconUrl: detail.avatarUrl, testId: 'agent-management-detail-avatar' }}
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[
@@ -245,7 +244,10 @@ export function AgentGroupDetailPage({
           }
         />
         {actionNotice ? (
-          <div className="agent-management-inline-notice" role="status">
+          <div
+            className={`agent-management-inline-notice${actionNoticeError ? ' agent-management-inline-notice--error' : ''}`}
+            role="status"
+          >
             {actionNotice}
           </div>
         ) : null}

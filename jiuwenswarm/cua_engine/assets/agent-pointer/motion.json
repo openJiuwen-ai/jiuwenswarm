@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "hotspot": [0, 0],
+  "move": { "minMs": 120, "maxMs": 280, "pointsPerSecond": 1800, "easing": [0.42, 0, 0.58, 1] },
+  "appearMs": 120,
+  "idle": { "delayMs": 5000, "opacity": 0.4, "fadeMs": 300, "wakeMs": 100 },
+  "press": {
+    "durationMs": 180,
+    "scales": [1, 0.9, 1],
+    "times": [0, 0.4, 1],
+    "doubleDurationMs": 360,
+    "doubleScales": [1, 0.9, 1, 0.9, 1],
+    "doubleTimes": [0, 0.2, 0.5, 0.7, 1]
+  },
+  "ripple": { "durationMs": 300, "fromRadius": 4, "toRadius": 16, "fromOpacity": 0.45, "color": "#5B87BC", "width": 1.2 },
+  "drag": { "scale": 0.92, "transitionMs": 90, "minMs": 40, "maxMs": 80, "pointsPerSecond": 2200 },
+  "reducedMotion": { "pressedColor": "#BAD1EE", "flashMs": 100, "holdUntil": 0.8 }
+}

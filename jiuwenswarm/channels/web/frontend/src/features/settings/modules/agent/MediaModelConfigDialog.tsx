@@ -16,6 +16,7 @@ import {
   normalizeModelOptions,
   parseVendorCatalog,
   selectProviderDefaultModel,
+  withoutGenerationOnlyPresets,
 } from '../models/modelAdapters';
 import type { MediaCapabilityModality } from './mediaCapabilities';
 import {
@@ -164,7 +165,7 @@ export function MediaModelConfigDialog({
     try {
       const payload = await request<{ vendors?: unknown }>('vendors.list');
       if (currentRequestId !== catalogRequestId.current) return;
-      setCatalog(parseVendorCatalog(payload.vendors));
+      setCatalog(withoutGenerationOnlyPresets(parseVendorCatalog(payload.vendors)));
     } catch (error) {
       if (currentRequestId === catalogRequestId.current) {
         setCatalogError(

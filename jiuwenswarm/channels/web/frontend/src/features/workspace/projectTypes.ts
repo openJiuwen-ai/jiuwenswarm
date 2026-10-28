@@ -1,4 +1,4 @@
-export type WorkMode = 'work' | 'code';
+export type WorkMode = 'work' | 'code' | 'design';
 
 export type ProjectGitSnapshot = {
   enabled: boolean;

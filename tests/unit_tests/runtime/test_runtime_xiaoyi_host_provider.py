@@ -12,8 +12,8 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     utils,
     xiaoyi_gui_tool,
 )
-from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi import xiaoyi_connect
-from jiuwenswarm.runtime import host_services
+from gateway.channel_manager.im_platforms.xiaoyi import xiaoyi_connect
+from jiuwenswarm.common import host_services
 
 
 @pytest.fixture(autouse=True)

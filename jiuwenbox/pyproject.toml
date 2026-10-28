@@ -47,6 +47,7 @@ markers = [
     "system: System tests",
     "slow: Slow running tests",
     "async: Async tests",
+    "conch: Tests that require Conch SDK, conchd, and CONCH_SDK_CONFIG",
 ]
 
 [tool.ruff]

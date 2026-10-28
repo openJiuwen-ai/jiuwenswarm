@@ -1,5 +1,13 @@
 # 桌面端打包：Electron 替换 Python（pywebview）方案
 
+## 本地文件与下载
+
+- 本地文件拖拽通过 preload 解析磁盘路径，再接入聊天附件、连接器包导入共用的文件消费链；目录和没有磁盘路径的虚拟文件仍不支持。
+- 切换聊天会话后丢弃旧会话尚未返回的拖拽结果；即使随后切回原会话，旧结果也不会进入当前附件草稿。
+- 桌面下载接口弹出保存对话框，允许选择位置和文件名；取消后不发起下载。先写入目标目录内的独立临时文件，成功后替换目标，失败时清理临时文件并保留已有文件。
+- 启动时仅清理数据目录 `.updates` 中超过 24 小时未更新的 `*.exe.part`、`*.dmg.part`、`*.tar.gz.part`。保留近期文件、完整安装包、目录和更新辅助脚本。
+- 回归检查：仓库根目录运行 `node --test tests/electron/file_transfer.test.cjs`；前端目录运行 `npm run test:desktop-file-drop`。
+
 > 交接文档：目标是**用 Electron 打包替换 Python 打包**作为桌面端发布形态，二者运行时逻辑已对齐。
 > 新会话阅读本文即可获得完整上下文，不需要翻聊天记录。
 
@@ -42,7 +50,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 ## 3. Electron 打包（Windows）
 
-入口：`scripts/build-electron-exe.ps1`（macOS 对应 `build-electron-exe.sh`，见 §9 遗留问题）。
+入口：`scripts/build-electron-exe.ps1`（macOS 对应 `build-electron-exe.sh`）。
 快捷方式：`jiuwenswarm/channels/desktop/electron/package.json` 的 `electron:build*` 脚本。
 
 三种构建模式：
@@ -71,6 +79,20 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
+
+### Windows 升级时保全用户安装的 CLI 和 SDK
+
+两套 Windows 安装器在清理安装目录或调用旧管理员版卸载器前，使用内嵌的 `preserve-windows-cli.ps1` 保全旧 `runtime/node-runtime` 和 `resources/backend/runtime/node-runtime`。整个 Node 前缀连同依赖、入口和未知文件进行离线复制与 SHA256 校验；源文件变化、运行中的 CLI、链接目录或复制失败会停止后续清理。恢复副本位于用户数据目录的 `runtime/npm/preserved`，运行副本位于 `runtime/npm/installed`，二者均不随应用卸载删除，也不会自动清除。完整复制会增加磁盘占用，空间不足会报错并保留原文件。
+
+安装后初始化独立的 `runtime/npm/global` 前缀，冻结进程中的 npm/npx 使用该前缀及固定的 Node。该前缀在保全副本之前查找命令，避免安装新版后仍运行旧版；浏览器工具继续优先使用随应用交付的 Node，现有外部自定义 npm prefix 保持不变。源内容变化会创建新的运行副本，并在已有迁移路径前加入新入口；旧运行副本保留作为独立安装及自更新包的后备。用户 PATH 的其他项目及顺序保持不变，缺失的旧 `cli_path` 和 Codex manifest 的 `codex_bin` 在使用时映射到运行副本。固定 Node 不随应用升级自动替换，需单独维护；安装器不会联网重装包或执行包脚本。
+
+“使用内置 CLI”安装的 SDK 属于另一条链路：安装器同时保全两种旧布局的 `runtime/external-cli/<name>/site-packages`，完整复制包、dist-info、原生 CLI 和安装元数据。恢复副本位于用户数据目录的 `runtime/external-cli-preserved`，工作目录固定为 `runtime/external-cli/<name>/site-packages`；已有用户目录安装保持不变。冻结应用只有在平台、版本清单和必需文件均匹配时才加载 SDK；不兼容或不完整的包保留供恢复，设置页仍需更新安装。SDK 通过 Python 路径加载，无需加入 PATH。迁移的 npm 本地 `.bin` 入口使用自身前缀的 Node，避免误用新版应用的 Node ABI。
+
+MCP 的独立 `command`、路径参数和 `cwd` 也在使用时解析已迁移的绝对路径，原配置保持不变；已有外部文件路径继续生效，任意 shell 脚本或混合命令字符串不会自动改写。早期管理员版卸载会重置三方 agent 配置，升级时额外使用当前 Windows 用户的 DPAPI 临时加密保全；新后端仅在文件校验及重置内容匹配时恢复 `external_cli_agents` / `external_transport`，成功后消费快照。并发修改或异常内容会报错并保留加密快照。普通卸载仍按原行为重置配置。
+
+Windows SDK migration: both old layouts' complete optional SDK trees are copied offline into the stable user-data `runtime/external-cli/<name>/site-packages` location, with independent recovery snapshots in `runtime/external-cli-preserved`. Existing user-data installations are retained. Only runtimes matching the new platform, package pins and required files are exposed to Python imports; incompatible or incomplete runtimes require an explicit update. SDKs need no PATH entries. Migrated npm local `.bin` shims retain their own Node interpreter. MCP commands, standalone path arguments and working directories resolve missing preserved paths without editing stored configuration; arbitrary shell strings are not rewritten. For legacy administrator upgrades only, a temporary user-bound DPAPI snapshot protects settings reset by the old uninstaller. The new backend restores only the two external-agent configuration fields after verifying the snapshot hash and exact reset operation; concurrent changes stop recovery and retain the encrypted snapshot. Normal uninstall behavior is unchanged.
+
+Windows upgrade preservation: both installers copy and hash complete old Node prefixes before cleanup or legacy-admin uninstall. Recovery copies (`runtime/npm/preserved`) are separate from working copies (`runtime/npm/installed`); neither is removed with the application. Busy CLIs, source changes, links or copy failures stop cleanup. Changed sources get separate working generations; earlier working copies remain command fallbacks. Copies consume additional disk space and are retained for manual recovery. Frozen npm/npx installs use the independent `runtime/npm/global` prefix and its pinned Node, maintained separately from application upgrades. Managed global commands precede preserved copies; application browser tools retain bundled Node priority. Existing external custom prefixes and unrelated PATH entries are preserved. Missing configured CLI paths, including native Codex manifest `codex_bin`, resolve to the preserved working copy. No network reinstall or package lifecycle scripts run during migration.
 
 ## 4. Electron 运行时（main.cjs）
 
@@ -118,7 +140,7 @@ JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 ```
 
 Python 侧配合（均已实现并有测试）：
-- `jiuwenswarm/dotenv_early.py`：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定
+- `gateway/dotenv_early.py`（gateway 子进程）与 `jiuwenswarm/dotenv_early.py`（AgentServer 等母仓进程）：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定。两份加载器独立演进；缺实例 `.env` 时仍只由母仓那份创建
 - `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`：检测到 `PLAYWRIGHT_MCP_TARGET_ID` 时走 Electron 分支，不还原 headless 参数、不改写 JSON argv
 
 ### 服务管理
@@ -244,7 +266,7 @@ build_config.py --sync（同步 _build_config.py 防漂移）
 ### 时间花在哪（关键认知，防止误判优化方向）
 
 - **PyInstaller bootloader + 解释器仅 ~26ms**——PyInstaller 本身不是瓶颈
-- 冻结 web 服务启动 ~750ms ≈ 模块导入 + main()。**历史包袱已清除**：`jiuwenswarm/gateway/__init__.py` 曾在包初始化时急切导入整个 gateway 运行时（1674 个模块 / ~1.4s），而 web 静态服务只需要 `gateway.routing.agent_http_bridge` 里一个纯 stdlib 的函数，却被迫付全款。已改为 **PEP 562 惰性导出**（`from jiuwenswarm.gateway import ChannelManager` 等用法完全兼容），效果：app_web 导入 1476ms→45ms、冻结 web 启动 1693ms→750ms。**不变量（有测试保护）：不要往 `gateway/__init__.py` 加回急切导入**；该修复惠及 Electron/Python 桌面/Web 部署全部形态
+- 冻结 web 服务启动 ~750ms ≈ 模块导入 + main()。**历史包袱已清除**：`gateway/__init__.py` 曾在包初始化时急切导入整个 gateway 运行时（1674 个模块 / ~1.4s），而 web 静态服务只需要 `gateway.routing.agent_http_bridge` 里一个纯 stdlib 的函数，却被迫付全款。已改为 **PEP 562 惰性导出**（`from jiuwenswarm.gateway import ChannelManager` 等用法完全兼容），效果：app_web 导入 1476ms→45ms、冻结 web 启动 1693ms→750ms。**不变量（有测试保护）：不要往 `gateway/__init__.py` 加回急切导入**；该修复惠及 Electron/Python 桌面/Web 部署全部形态
 - 静态资源本身不构成瓶颈：index.html 首字节 4ms、3.65MB 主 bundle 传输 17ms（回环）。优化"加载 dist"没有意义，见 §4 缓存策略（管的是二次启动的往返次数）
 - agent/gateway 各自完整导入运行时（暖机各 ~2-3s，冷启 ×2-3）——这部分不可消除，它们真需要全部模块
 - 冷暖差 ≈ 杀软扫描新文件的代价；根治手段是代码签名（未做，发布流程事项）
@@ -298,7 +320,8 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 
 ## 9. 已知遗留（按优先级）
 
-1. **macOS 构建**（`build-electron-exe.sh`）：未签名/公证。DMG 版本号、`CFBundleIdentifier`、`uv sync` extras 已接 build_config（与 ps1 对齐，含 `--sync` 与 A2UI 自检）。应用内更新在 macOS 仍走 `shell.openPath` 手动安装（Python 桌面有完整的 DMG 自动换壳 helper 脚本，未移植）。
+1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。正式 macOS Release 只发布一个 ARM64 Electron DMG；x86_64 仅用于本地验证，不上传至正式 Release。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
+   旧 pywebview 的 macOS helper 整体替换 App，不依赖新 App 的 UI 框架。需分别用实际支持的旧客户端验收 pywebview → Electron，以及 Electron → Electron；签名、公证、ARM64、BrowserAgent 和完整升级仍需产物验收。
 2. **CDP 无认证**：已声明为已接受风险（§5）。
 3. **Windows 强杀关闭**：与 Python 桌面一致；gateway 单例锁需依赖 PID 存活检查自愈。
 4. **发布验证**：内置 MCP 运行时（exe 以 ELECTRON_RUN_AS_NODE 跑 wrapper）尚未在真实打包版上跑过端到端浏览器 Agent 任务，发布前务必实测；README（electron 目录）末尾有完整手工验证矩阵。同样需实测：应用内更新走 `--desktop-install-update` helper（§4）。已实测通过的新机制：`DevToolsActivePort` 端口回读（真实打包版多轮）、启动性能基线（§7）、启动失败页与主进程日志落盘（真实打包版验证）。
@@ -315,16 +338,17 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 | `jiuwenswarm/channels/desktop/electron/preload.cjs` | contextBridge：jiuwenDesktop + pywebview 兼容层 |
 | `jiuwenswarm/channels/desktop/electron/target_mcp_wrapper.cjs` | 精确 TargetID 的 Playwright MCP 适配器 |
 | `jiuwenswarm/channels/desktop/electron/README.md` | 英文版设计说明 + 验证矩阵 + 风险声明 |
-| `scripts/build-electron-exe.ps1` / `.sh` | Electron 打包（Win/macOS） |
+| `scripts/build-electron-exe.ps1` / `scripts/build-electron-exe.sh` | Electron 打包（Win/macOS） |
 | `scripts/installer-electron.iss` | Electron Inno 安装器 |
 | `scripts/build-exe.ps1` / `jiuwenswarm.spec` / `installer.iss` | Python 打包（被替换方） |
 | `scripts/build_config.py` | 版本/产物名单一来源（`--emit-json` / `--emit-shell`） |
 | `scripts/jiuwenswarm_exe_entry.py` | 冻结 exe 分发入口（两套打包共用） |
 | `jiuwenswarm/channels/desktop/desktop_app.py` | Python 桌面运行时（pywebview，对齐参照物） |
-| `jiuwenswarm/gateway/__init__.py` | PEP 562 惰性导出（启动性能关键不变量，见 §7；勿加回急切导入，有测试保护） |
+| `gateway/__init__.py` | PEP 562 惰性导出（启动性能关键不变量，见 §7；勿加回急切导入，有测试保护） |
 | `tests/unit_tests/gateway/test_gateway_lazy_exports.py` | gateway 惰性导出 + app_web 轻导入不变量 |
 | `tests/unit_tests/channels/web/test_web_static_cache_headers.py` | 静态资源 Cache-Control 头行为 |
-| `jiuwenswarm/dotenv_early.py` | env 保留键（Electron browser 键集） |
+| `gateway/dotenv_early.py` | gateway 子进程的 env 保留键（Electron browser 键集）；只加载已有 `.env` |
+| `jiuwenswarm/dotenv_early.py` | 母仓进程的 env 保留键；缺实例 `.env` 时仍由它创建 |
 | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | `_sync_browser_runtime_environment` electron 分支 |
 | `src/components/DesktopBrowserPane/` | 前端浏览器面板 |
 | `src/features/browserAgentActivity.ts` | "浏览器 Agent 已调用"信号 hook |

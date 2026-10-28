@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from pathlib import Path, PurePosixPath
 
 import yaml
+from jiuwenbox.server.runtime.errors import PolicyValidationError
+from jiuwenbox.server.conch_policy import ConchRunAsError, resolve_conch_run_as
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.policy import NetworkRulePolicy, SecurityPolicy
@@ -17,12 +19,6 @@ configure_logging()
 logger = logging.getLogger(__name__)
 
 
-class PolicyValidationError(Exception):
-    """Raised when a policy fails validation."""
-
-    def __init__(self, *args: object) -> None:
-        super().__init__(*args)
-        logger.error("%s: %s", self.__class__.__name__, str(self))
 
 
 class PolicyEngine:
@@ -241,16 +237,31 @@ class PolicyEngine:
         self,
         base_policy: SecurityPolicy,
         extra_policy: SecurityPolicy | Mapping[str, object],
+        *,
+        mode: str = "append",
     ) -> SecurityPolicy:
-        """Append a policy fragment onto a base policy."""
+        """Merge a fragment; existing callers keep deduplicating append."""
+        if mode not in {"append", "override"}:
+            raise PolicyValidationError(f"Unsupported policy merge mode {mode!r}")
         if isinstance(extra_policy, SecurityPolicy):
             extra_data = extra_policy.model_dump(mode="json")
         else:
             extra_data = dict(extra_policy)
 
         base_data = base_policy.model_dump(mode="json")
-        merged = self._merge_value(base_data, extra_data)
+        merged = (self._merge_value_override(base_data, extra_data) if mode == "override"
+                  else self._merge_value(base_data, extra_data))
         return SecurityPolicy.model_validate(merged)
+
+    def _merge_value_override(self, base: object, extra: object) -> object:
+        if extra is None:
+            return base
+        if isinstance(base, dict) and isinstance(extra, Mapping):
+            merged = dict(base)
+            for key, value in extra.items():
+                merged[key] = self._merge_value_override(merged.get(key), value)
+            return merged
+        return list(extra) if isinstance(extra, list) else extra
 
     def _merge_value(self, base: object, extra: object) -> object:
         if extra is None:
@@ -309,3 +320,36 @@ class PolicyEngine:
         """Remove the resolved policy file for a sandbox."""
         path = self.policies_dir / f"{sandbox_id}_sandbox_policy.yaml"
         path.unlink(missing_ok=True)
+
+    def validate_conch_policy(self, policy: SecurityPolicy) -> list[str]:
+        """Validate Conch-specific policy fields used when sandbox_runtime=conch."""
+        warnings: list[str] = []
+        seen_guest_paths: set[str] = set()
+        for mount in policy.conch.filesystem_policy.bind_mounts:
+            if (
+                not self._is_absolute_sandbox_path(mount.host_path)
+                or not self._is_absolute_sandbox_path(mount.sandbox_path)
+            ):
+                raise PolicyValidationError(
+                    "conch.filesystem_policy.bind_mounts paths must be absolute"
+                )
+            host = Path(mount.host_path)
+            if not host.exists():
+                raise PolicyValidationError(
+                    f"conch bind mount host_path does not exist: {mount.host_path}"
+                )
+            if not host.is_dir():
+                raise PolicyValidationError(
+                    f"conch bind mount host_path must be a directory: {mount.host_path}"
+                )
+            if mount.sandbox_path in seen_guest_paths:
+                raise PolicyValidationError(
+                    f"conch bind mount sandbox_path is duplicated: {mount.sandbox_path}"
+                )
+            seen_guest_paths.add(mount.sandbox_path)
+        try:
+            resolve_conch_run_as(policy)
+        except ConchRunAsError as exc:
+            raise PolicyValidationError(str(exc)) from exc
+        # Network fields are validated by ConchNetworkPolicy pydantic validators.
+        return warnings

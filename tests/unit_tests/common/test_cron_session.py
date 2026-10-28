@@ -17,6 +17,9 @@ from jiuwenswarm.common.cron_session import (
     [
         ("cron_19abc_job1", True),
         ("cron_jobid", True),
+        # Unified pre-allocation ids (create_session on the __cron__ channel).
+        ("__cron___19abc_rand12", True),
+        ("__cron___1a0d26c410a_rand", True),
         ("sess_19abc", False),
         ("heartbeat_1", False),
         ("", False),

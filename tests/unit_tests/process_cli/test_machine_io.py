@@ -332,7 +332,7 @@ def test_events_flush_immediately_and_use_external_identity() -> None:
     assert first["sequence"] == 0
     assert first["request_id"] == "external-request"
     assert first["session_id"] is None
-    assert first["payload"] == event.payload
+    assert first["payload"] == {**event.payload, "text": event.payload["delta"]}
     assert "internal-secret" not in output.getvalue()
     assert event.to_dict() == original
     assert writer.sequence == 1
@@ -478,7 +478,7 @@ unexpected = sorted(
     name for name in sys.modules
     if name.startswith('jiuwenswarm.runtime')
     or name == 'jiuwenswarm.channels.process_cli.client'
-    or name.startswith('jiuwenswarm.gateway')
+    or name.startswith('gateway')
 )
 print('UNEXPECTED=' + repr(unexpected))
 """

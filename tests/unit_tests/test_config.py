@@ -4,12 +4,15 @@
 
 import math
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 # TEST ONLY: new URL fixtures use RFC-reserved domains; provider URLs are compared
 # only as configuration strings. These tests do not open sockets.
 
+import portalocker
 import pytest
 import yaml
 
@@ -38,7 +41,32 @@ from jiuwenswarm.common.config import (
     update_setup_guide_enabled_in_config,
     update_xiaoyi_runtime_in_config,
 )
-from jiuwenswarm.symphony import config as symphony_config_module
+from jiuwenswarm.common import symphony_config as symphony_config_module
+
+
+def test_config_refreshes_same_version_build_date_and_preserves_user_values(tmp_path, monkeypatch):
+    from jiuwenswarm.common import version
+
+    monkeypatch.setattr(version, "get_runtime_version", lambda: "0.2.8.dev20261026")
+    monkeypatch.setattr(version, "get_runtime_build_date", lambda: "2026-10-26")
+    template = tmp_path / "template.yaml"
+    config = tmp_path / "config.yaml"
+    template.write_text('config_version: ""\nsetting: default\nnew_option: true\n', encoding="utf-8")
+    config.write_text('# Keep this comment\nconfig_version: "0.2.8.dev20261026 · 2026-10-20"\nsetting: custom\n', encoding="utf-8")
+
+    assert migrate_config_from_template(template, config) is True
+    migrated = yaml.safe_load(config.read_text(encoding="utf-8"))
+    assert migrated["config_version"] == "0.2.8.dev20261026 · 2026-10-26"
+    assert migrated["new_option"] is True
+    assert migrated["setting"] == "custom"
+    assert "app_version" not in migrated
+    assert "build_date" not in migrated
+    assert "# Keep this comment" in config.read_text(encoding="utf-8")
+    assert migrate_config_from_template(template, config) is False
+
+    monkeypatch.setattr(version, "get_runtime_build_date", lambda: "")
+    assert migrate_config_from_template(template, config) is True
+    assert yaml.safe_load(config.read_text(encoding="utf-8"))["config_version"] == "0.2.8.dev20261026"
 
 
 @pytest.mark.parametrize("enabled", [False, True])
@@ -735,6 +763,7 @@ class TestConfigFunctions:
         ("profile", "enabled", "mode"),
         [
             ("default", True, "manual"),
+            ("automatic", True, "auto"),
             ("full_access", False, "manual"),
         ],
     )
@@ -1070,6 +1099,8 @@ symphony:
     ):
         monkeypatch.delenv("EVOLUTION_AUTO_SCAN", raising=False)
         monkeypatch.delenv("EVOLUTION_AUTO_SAVE", raising=False)
+        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_version", lambda: "0.2.8b1")
+        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_build_date", lambda: "2026-10-26")
         template_path = tmp_path / "template.yaml"
         user_config_path = tmp_path / "config.yaml"
         template_path.write_text(
@@ -1103,9 +1134,7 @@ react:
             "auto_save": True,
         }
         # config_version is always stamped on a write-back path.
-        from jiuwenswarm.common._build_config import VERSION
-
-        assert migrated.get("config_version") == VERSION
+        assert migrated.get("config_version") == "0.2.8b1 · 2026-10-26"
         # A second migration now that the version stamp is present is a true
         # no-op: no structural changes, no version to write -> returns False.
         assert migrate_config_from_template(template_path, user_config_path) is False
@@ -1208,6 +1237,140 @@ react:
         assert migrated["react"]["subagent_runtime"]["enabled"] is True
 
         assert ensure_config_migrated_from_template(workspace_dir) is False
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        "lock_error",
+        [TimeoutError("config write lock timed out"), portalocker.exceptions.LockException("lock busy")],
+    )
+    def test_ensure_config_migrated_from_template_skips_lock_timeout(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        lock_error: Exception,
+    ):
+        from jiuwenswarm.common.utils import ensure_config_migrated_from_template
+
+        template_path = tmp_path / "template.yaml"
+        template_path.write_text("new_option: true\n", encoding="utf-8")
+        workspace_dir = tmp_path / "workspace"
+        config_path = workspace_dir / "config" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        original_config = "user_value: keep\n"
+        config_path.write_text(original_config, encoding="utf-8")
+        monkeypatch.setattr(
+            "jiuwenswarm.common.utils._find_config_template_path",
+            lambda: template_path,
+        )
+
+        warnings: list[str] = []
+        monkeypatch.setattr(
+            "jiuwenswarm.common.utils.logger.warning",
+            lambda message, error: warnings.append(message % error),
+        )
+
+        def raise_lock_error(*_args: Path) -> bool:
+            raise lock_error
+
+        monkeypatch.setattr(config_module, "migrate_config_from_template", raise_lock_error)
+        assert ensure_config_migrated_from_template(workspace_dir) is False
+        assert config_path.read_text(encoding="utf-8") == original_config
+        assert len(warnings) == 1
+        assert "获取配置写锁失败" in warnings[0]
+        monkeypatch.setattr(config_module, "migrate_config_from_template", migrate_config_from_template)
+        assert ensure_config_migrated_from_template(workspace_dir) is True
+        migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert migrated["user_value"] == "keep"
+        assert migrated["new_option"] is True
+
+    @staticmethod
+    def test_ensure_config_migrated_from_template_checks_current_version(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        from jiuwenswarm.common.utils import ensure_config_migrated_from_template
+
+        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_version", lambda: "0.2.8b1")
+        monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_build_date", lambda: "2026-10-26")
+        template_path = tmp_path / "template.yaml"
+        template_path.write_text(
+            "react:\n  answer_chunk_size: 500\n  new_option: true\n",
+            encoding="utf-8",
+        )
+        workspace_dir = tmp_path / "workspace"
+        config_path = workspace_dir / "config" / "config.yaml"
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text(
+            'config_version: "0.2.8b1 · 2026-10-26"\nreact:\n  answer_chunk_size: 300\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.common.utils._find_config_template_path",
+            lambda: template_path,
+        )
+
+        assert ensure_config_migrated_from_template(workspace_dir) is True
+        migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert migrated["react"] == {"answer_chunk_size": 300, "new_option": True}
+        assert migrated["config_version"] == "0.2.8b1 · 2026-10-26"
+        assert ensure_config_migrated_from_template(workspace_dir) is False
+
+    @staticmethod
+    def test_migrate_config_preserves_existing_old_defaults(tmp_path: Path):
+        template_path = tmp_path / "template.yaml"
+        config_path = tmp_path / "config.yaml"
+        template_path.write_text(
+            "symphony:\n  skill_retrieval:\n    enabled: false\n"
+            "gateway:\n  agentos:\n    wait_running_timeout_seconds: 90\n"
+            "channels:\n  xiaoyi:\n    send_file_allowed: false\n"
+            "new_option: true\n",
+            encoding="utf-8",
+        )
+        config_path.write_text(
+            "symphony:\n  skill_retrieval:\n    enabled: true\n"
+            "gateway:\n  agentos:\n    wait_running_timeout_seconds: 60\n"
+            "channels:\n  xiaoyi:\n    send_file_allowed: true\n",
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, config_path) is True
+        migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert migrated["symphony"]["skill_retrieval"]["enabled"] is True
+        assert migrated["gateway"]["agentos"]["wait_running_timeout_seconds"] == 60
+        assert migrated["channels"]["xiaoyi"]["send_file_allowed"] is True
+        assert migrated["new_option"] is True
+        assert migrate_config_from_template(template_path, config_path) is False
+
+    @staticmethod
+    def test_migrate_config_serializes_with_config_updates(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        template_path = tmp_path / "template.yaml"
+        config_path = tmp_path / "config.yaml"
+        template_path.write_text("new_option: true\n", encoding="utf-8")
+        config_path.write_text("user_value: old\n", encoding="utf-8")
+        template_loaded = Event()
+        original_load = config_module.load_yaml_round_trip
+
+        def signal_template_load(path: Path):
+            loaded = original_load(path)
+            if path == template_path:
+                template_loaded.set()
+            return loaded
+
+        monkeypatch.setattr(config_module, "load_yaml_round_trip", signal_template_load)
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            with config_module.config_write_lock(config_path=config_path):
+                result = executor.submit(
+                    migrate_config_from_template, template_path, config_path
+                )
+                assert template_loaded.wait(timeout=5)
+                assert not result.done()
+                config_path.write_text("user_value: updated\n", encoding="utf-8")
+            assert result.result(timeout=5) is True
+        migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        assert migrated["user_value"] == "updated"
+        assert migrated["new_option"] is True
 
     @staticmethod
     def test_migrate_config_moves_kv_cache_switch_to_application_scope(tmp_path: Path):

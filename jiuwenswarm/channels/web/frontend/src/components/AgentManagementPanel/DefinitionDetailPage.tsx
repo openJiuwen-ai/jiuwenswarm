@@ -1,4 +1,3 @@
-import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import { canShowAssetPublish } from '../../features/assetPublishState';
 
@@ -29,6 +28,7 @@ type DefinitionDetailPageProps = {
   fileStatus: RequestStatus;
   fileError: string | null;
   actionNotice: string | null;
+  actionNoticeError?: boolean;
   busy: boolean;
   onBack: () => void;
   onRetry: () => void;
@@ -57,6 +57,7 @@ export function DefinitionDetailPage({
   fileStatus,
   fileError,
   actionNotice,
+  actionNoticeError,
   busy,
   onBack,
   onRetry,
@@ -131,7 +132,6 @@ export function DefinitionDetailPage({
         {t('agentManagement.actions.back')}
       </button>
       <div className="detail-body flex-1 min-h-0 overflow-y-auto">
-        <PublicationDetailStatus kind="agent_template" localId={detail.runtimePackageName} />
         <EntityHeader
           testId="agent-management-detail-header"
           avatar={{ name: detail.displayName, iconUrl: avatarUrl, testId: 'agent-management-detail-avatar' }}
@@ -246,7 +246,7 @@ export function DefinitionDetailPage({
 
         {actionNotice ? (
           <div
-            className="agent-management-inline-notice"
+            className={`agent-management-inline-notice${actionNoticeError ? ' agent-management-inline-notice--error' : ''}`}
             role="status"
             data-testid="agent-management-detail-action-notice"
           >

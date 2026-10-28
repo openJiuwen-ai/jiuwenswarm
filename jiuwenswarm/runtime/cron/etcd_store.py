@@ -8,7 +8,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.runtime.cron.cron_job_mutations import (
     apply_cron_job_patch,
     build_new_cron_job,
@@ -16,7 +16,7 @@ from jiuwenswarm.runtime.cron.cron_job_mutations import (
     migrate_work_mode_on_items,
     parse_cron_jobs,
 )
-from jiuwenswarm.runtime.cron.etcd_client import (
+from jiuwenswarm.common.etcd.client import (
     EtcdCasError,
     EtcdError,
     EtcdJsonClient,
@@ -76,13 +76,15 @@ class EtcdCronJobStore:
     async def get_revision(self) -> int:
         return int(self._revision or 0)
 
-    async def list_jobs(self) -> list[CronJob]:
+    async def list_jobs(self, *, strict: bool = False) -> list[CronJob]:
         try:
             result = await self._client.range(
                 self._prefix_bytes(),
                 range_end=prefix_range_end(self._prefix_bytes()),
             )
         except EtcdError as exc:
+            if strict:
+                raise
             logger.warning("[Cron] etcd list_jobs failed: %s", exc)
             return []
         self._revision = result.revision or self._revision
@@ -91,9 +93,13 @@ class EtcdCronJobStore:
             try:
                 item = json.loads(kv.value.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
+                if strict:
+                    raise
                 continue
             if isinstance(item, dict):
                 jobs_raw.append(item)
+            elif strict:
+                raise ValueError("cron job must be an object")
         jobs_raw, changed = migrate_work_mode_on_items(jobs_raw)
         if changed:
             for item in jobs_raw:
@@ -109,6 +115,8 @@ class EtcdCronJobStore:
                     )
                 except EtcdError as exc:
                     logger.warning("[Cron] etcd work_mode migrate put failed job=%s: %s", job_id, exc)
+        if strict:
+            return [CronJob.from_dict(item) for item in jobs_raw]
         return parse_cron_jobs(jobs_raw)
 
     async def get_job(self, job_id: str) -> CronJob | None:

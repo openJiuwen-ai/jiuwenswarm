@@ -9,8 +9,8 @@ from typing import Any, TypeVar
 
 import portalocker
 
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.common.utils import get_cron_jobs_path
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.runtime.cron.cron_job_mutations import (
     _PROACTIVE_TICK_MODE,
     _ProactiveJobProtected,
@@ -82,13 +82,15 @@ class FileCronJobStore:
     async def get_revision(self) -> int:
         return self._file_revision()
 
-    async def list_jobs(self) -> list[CronJob]:
+    async def list_jobs(self, *, strict: bool = False) -> list[CronJob]:
         # 惰性迁移:在同一个锁内 read + 推断缺 work_mode 的老 job + writeback,
         # 替代启动迁移 ``migrate_legacy_jobs_at_startup``。
         def _body() -> list[CronJob]:
-            data = self._read_json_unlocked()
-            jobs_raw = data.get("jobs") or []
+            data = self._read_json_unlocked(strict=strict)
+            jobs_raw = data.get("jobs", [])
             if not isinstance(jobs_raw, list):
+                if strict:
+                    raise ValueError("cron jobs must be an array")
                 return []
 
             jobs_raw, changed = migrate_work_mode_on_items(jobs_raw)
@@ -100,6 +102,8 @@ class FileCronJobStore:
                     logger.warning(
                         "Cron 惰性迁移写回 cron_jobs.json 失败: %s", exc
                     )
+            if strict:
+                return [CronJob.from_dict(item) for item in jobs_raw]
             return parse_cron_jobs(jobs_raw)
 
         return await self._run_locked(_body)
@@ -223,12 +227,37 @@ class FileCronJobStore:
         job_id = str(job_id or "").strip()
         if not job_id:
             raise ValueError("id is required")
-        existing = await self.get_job(job_id)
-        if existing is None:
+
+        # 读-改-写必须单次持锁完成：调度器在触发点标 expired/enabled 与执行
+        # 完成回写 last_session_id 是并发写入者，读与写分开加锁时后写者会
+        # 基于过期快照整条覆盖前者的字段（#4964）。
+        def _body() -> CronJob:
+            data = self._read_json_unlocked()
+            jobs_raw = data.get("jobs") or []
+            if not isinstance(jobs_raw, list):
+                jobs_raw = []
+            # 与 get_job 的读取路径保持一致：兜底缺 work_mode 的老数据。
+            jobs_raw, _ = migrate_work_mode_on_items(jobs_raw)
+            for index, item in enumerate(jobs_raw):
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("id") or "").strip() != job_id:
+                    continue
+                try:
+                    existing = CronJob.from_dict(item)
+                except Exception as exc:  # noqa: BLE001
+                    # 与 get_job 一致：损坏条目视作不存在，不让单条脏数据炸掉更新。
+                    logger.warning("Ignoring invalid cron job id=%s: %s", job_id, exc)
+                    raise KeyError("job not found") from None
+                updated = apply_cron_job_patch(existing, dict(patch or {}))
+                jobs_raw[index] = updated.to_dict()
+                data["version"] = int(data.get("version") or 1)
+                data["jobs"] = jobs_raw
+                self._write_json_unlocked(data)
+                return updated
             raise KeyError("job not found")
-        updated = apply_cron_job_patch(existing, dict(patch or {}))
-        await self._upsert_job(updated)
-        return updated
+
+        return await self._run_locked(_body)
 
     async def delete_job(self, job_id: str, *, force: bool = False) -> bool:
         job_id = str(job_id or "").strip()
@@ -298,7 +327,7 @@ class FileCronJobStore:
     async def _read_json(self) -> dict[str, Any]:
         return await self._run_locked(self._read_json_unlocked)
 
-    def _read_json_unlocked(self) -> dict[str, Any]:
+    def _read_json_unlocked(self, *, strict: bool = False) -> dict[str, Any]:
         path = self._path
         try:
             if not path.exists():
@@ -306,6 +335,8 @@ class FileCronJobStore:
             raw = path.read_text(encoding="utf-8")
             data = json.loads(raw) if raw.strip() else {}
             if not isinstance(data, dict):
+                if strict:
+                    raise ValueError("cron store must be an object")
                 return {"version": 1, "jobs": []}
             if "version" not in data:
                 data["version"] = 1
@@ -313,6 +344,8 @@ class FileCronJobStore:
                 data["jobs"] = []
             return data
         except Exception:
+            if strict:
+                raise
             return {"version": 1, "jobs": []}
 
     def _write_json_unlocked(self, data: dict[str, Any]) -> None:

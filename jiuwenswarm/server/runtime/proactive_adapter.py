@@ -403,8 +403,7 @@ async def init_proactive_engine(server, config: dict[str, Any] | None = None) ->
 
         # 专用 agent：只做决策（无 tools、无 task_loop、单轮、输出 JSON），
         # 替代 proactive_actions._analyze_and_decide 里的裸 model.invoke。
-        proactive_agent = build_proactive_agent()
-        proactive_engine.set_proactive_agent(proactive_agent)
+        proactive_engine.set_proactive_agent_builder(build_proactive_agent)
 
         # 检查 agent 是否活跃——在调 LLM 之前检查，避免 agent 被 evict 后白调 LLM。
         def _check_agent_cb(channel_id):

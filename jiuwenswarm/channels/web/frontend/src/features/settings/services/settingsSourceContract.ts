@@ -6,6 +6,8 @@ type SimpleSettingComponent = 'switch' | 'select' | 'input';
 const BROWSER_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([
   ['chrome_path', 'input'],
   ['headless', 'select'],
+  ['decision_mode', 'select'],
+  ['decision_provider', 'select'],
 ]);
 const LOCALE_SETTING_COMPONENTS = new Map<string, SimpleSettingComponent>([['preferred_language', 'select']]);
 

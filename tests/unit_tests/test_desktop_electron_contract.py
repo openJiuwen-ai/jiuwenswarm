@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import json
 import re
 from pathlib import Path
 
@@ -20,14 +21,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DESKTOP_APP_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "desktop_app.py"
 MAIN_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "main.cjs"
 PRELOAD_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "preload.cjs"
-FILE_PICKER_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "file_picker.py"
+FILE_PICKER_PY = (
+    REPO_ROOT / "gateway" / "channel_manager" / "web" / "file_picker.py"
+)
 APP_WEB_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 VITE_ENV_DTS = (
     REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src" / "vite-env.d.ts"
 )
 FRONTEND_SRC = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src"
 INSTANCE_CONFIG_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "config.py"
-INSTANCE_LOCK_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "lock.py"
+GATEWAY_LOCK_PY = REPO_ROOT / "gateway" / "gateway_lock.py"
 STARTUP_DIAGNOSTICS_PY = REPO_ROOT / "jiuwenswarm" / "common" / "startup_diagnostics.py"
 EXE_ENTRY_PY = REPO_ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
 BUILD_RUNTIMES_PSM1 = REPO_ROOT / "scripts" / "build-runtimes.psm1"
@@ -38,6 +41,10 @@ BUILD_ELECTRON_SH = REPO_ROOT / "scripts" / "build-electron-exe.sh"
 BUILD_RUNTIMES_SH = REPO_ROOT / "scripts" / "build-runtimes.sh"
 INSTALLER_PY_ISS = REPO_ROOT / "scripts" / "installer.iss"
 INSTALLER_ELECTRON_ISS = REPO_ROOT / "scripts" / "installer-electron.iss"
+ELECTRON_PACKAGE_JSON = (
+    REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "package.json"
+)
+ELECTRON_PACKAGE_LOCK = ELECTRON_PACKAGE_JSON.with_name("package-lock.json")
 
 
 def _read(path: Path) -> str:
@@ -401,10 +408,12 @@ def test_port_scan_range_matches() -> None:
 def test_shutdown_budget_is_the_documented_divergence() -> None:
     """已知且接受的分歧(评审结论 E: 强杀=崩溃等价, 系统按崩溃容忍设计)。
 
-    Python 统一 8s 预算; Electron SIGTERM 等待 5s + 强杀等待 1.5s。
+    Python 和 Electron 的应用最终退出使用 30s Runtime 预算。
+    Electron 单个传输进程 SIGTERM 等待 5s + 强杀等待 1.5s。
     钉住当前值: 任一侧改动都会红灯, 迫使重新评审该分歧。
     """
-    assert _python_shutdown_budget_seconds() == 8.0
+    assert _python_shutdown_budget_seconds() == 30.0
+    assert _js_number_const(_read(MAIN_CJS), "RUNTIME_SHUTDOWN_TIMEOUT_MS") == 30_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_SHUTDOWN_TIMEOUT_MS") == 5_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_KILL_TIMEOUT_MS") == 1_500
 
@@ -416,7 +425,7 @@ def test_gateway_preflight_wait_matches() -> None:
 
 
 def test_gateway_lock_filename_matches() -> None:
-    python_name = _py_assignment_value(INSTANCE_LOCK_PY, "GATEWAY_LOCK_FILENAME")
+    python_name = _py_assignment_value(GATEWAY_LOCK_PY, "GATEWAY_LOCK_FILENAME")
     assert _js_const(_read(MAIN_CJS), "GATEWAY_LOCK_FILENAME").strip("'\"") == python_name
 
 
@@ -538,6 +547,8 @@ RUNTIME_MODULE_FUNCTIONS = (
     "Test-Truthy",
     "Get-RuntimeBundleSettings",
     "Get-NodeArch",
+    "Get-NodeRuntimeVersion",
+    "Test-NodeRuntimeReady",
     "Download-NodeRuntime",
     "Resolve-NodeRuntimeDir",
     "Use-NodeRuntime",
@@ -575,12 +586,45 @@ def test_runtime_bundle_defaults_live_in_shared_module() -> None:
             rf"\$env:{env_name}\s*\)\s*\{{\s*\$env:{env_name}\s*\}}\s*else\s*\{{\s*\"1\"\s*\}}",
             module_source,
         ), f"{env_name} 的默认值应为 \"1\"(两条打包链路默认都绑定运行时)"
-    assert '"v22.11.0"' in module_source, "NODE_VERSION 默认值漂移, 请在共享模块统一调整"
+    assert '$DefaultNodeVersion = "v22.11.0"' in module_source, (
+        "Python 打包的 NODE_VERSION 默认值漂移, 请在共享模块统一调整"
+    )
     for script in (BUILD_EXE_PS1, BUILD_ELECTRON_PS1):
         source = _read(script)
-        assert "$env:BUNDLE_NODE" not in source and "$env:BUNDLE_UV" not in source and "v22.11.0" not in source, (
+        assert "$env:BUNDLE_NODE" not in source and "$env:BUNDLE_UV" not in source, (
             f"{script.name} 内出现了运行时绑定默认值, 请改从 Get-RuntimeBundleSettings 读取"
         )
+
+
+def test_windows_electron_sets_amd64_before_any_preflight() -> None:
+    """Electron x64 构建必须先设置进程级 AMD64，再运行任何子进程。"""
+    source = _read(BUILD_ELECTRON_PS1)
+    architecture_override = source.index('$env:PROCESSOR_ARCHITECTURE = "AMD64"')
+    project_root = source.index("$ProjectRoot =")
+    machine_check = source.index("platform.machine()")
+    runtime_resolution = source.index("Resolve-NodeRuntimeDir")
+    dependency_sync = source.index("uv sync", source.index("[1/6]"))
+    assert architecture_override < project_root < machine_check < runtime_resolution < dependency_sync
+    assert '$DetectedMachine -cne "AMD64"' in source
+    assert "Windows Electron packaging requires platform.machine() == AMD64" in source
+    assert "uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc" in source
+    assert "--extra claude" not in source
+    assert "--extra codex" not in source
+
+
+def test_windows_electron_enforces_its_node_minimum_without_changing_python_default() -> None:
+    """Electron 43 需要 Node >=22.12；Python 打包仍沿用共享的 22.11 默认值。"""
+    module_source = _read(BUILD_RUNTIMES_PSM1)
+    electron_source = _read(BUILD_ELECTRON_PS1)
+    python_source = _read(BUILD_EXE_PS1)
+    assert '$ElectronMinimumNodeVersion = [version]"22.12.0"' in electron_source
+    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"' in electron_source
+    assert "-MinimumVersion $ElectronMinimumNodeVersion" in electron_source
+    assert "22.12.0" not in python_source
+    assert "Get-NodeRuntimeVersion -RuntimeDir $RuntimeDir" in module_source
+    assert "$actualVersion -lt $MinimumVersion" in module_source
+    assert "$requestedVersion -lt $MinimumVersion" in module_source
+    assert "NODE_VERSION $NodeVersion is below the required minimum" in module_source
 
 
 def test_electron_build_bundles_runtime_into_backend_dir() -> None:
@@ -600,6 +644,139 @@ def test_electron_build_bundles_runtime_into_backend_dir() -> None:
         r"Copy-NodeRuntime\s+-SourceDir\s+\$NodeSource\s+-DistDir\s+\$FrozenDir",
         _read(BUILD_EXE_PS1),
     ), "build-exe.ps1 的 node-runtime 落地目录漂移(应为 dist 根目录=后端 exe 目录)"
+
+
+def test_windows_electron_installs_runtime_before_validating_executable() -> None:
+    """干净 checkout 必须先安装桌面依赖, 再解析并硬校验 electron.exe。"""
+    source = _read(BUILD_ELECTRON_PS1)
+    local_exe = source.index(
+        '$LocalElectronExe = Join-Path $DesktopDir "node_modules\\electron\\dist\\electron.exe"'
+    )
+    install = source.index("npm ci", local_exe)
+    resolved_dir = source.index(
+        '$ElectronDir = Join-Path $DesktopDir "node_modules\\electron\\dist"', install
+    )
+    binary_install = source.index("& node $ElectronInstaller", install)
+    hard_validation = source.index(
+        "Test-Path -LiteralPath $ElectronExe -PathType Leaf", resolved_dir
+    )
+    assert local_exe < install < binary_install < resolved_dir < hard_validation
+    assert "Test-Path \"node_modules\"" not in source[source.index("[3/6]") : resolved_dir]
+
+
+def test_windows_electron_pins_and_requires_icon_tool() -> None:
+    """Release builds must not silently fall back to Electron's default icon."""
+    package = json.loads(_read(ELECTRON_PACKAGE_JSON))
+    package_lock = json.loads(_read(ELECTRON_PACKAGE_LOCK))
+    assert package["devDependencies"]["rcedit"] == "5.0.2"
+    assert package_lock["packages"][""]["devDependencies"]["rcedit"] == "5.0.2"
+
+    source = _read(BUILD_ELECTRON_PS1)
+    assert 'node_modules\\rcedit\\bin\\rcedit-x64.exe' in source
+    assert "Pinned rcedit executable is missing after npm ci" in source
+    assert "rcedit failed to set the application icon" in source
+    assert "rcedit produced an invalid PE executable" in source
+    assert "npm root -g" not in source
+
+
+def test_windows_electron_signs_payload_installer_and_uninstaller() -> None:
+    """Signed Electron releases use the same certificate controls as the Python EXE."""
+    source = _read(BUILD_ELECTRON_PS1)
+    installer = _read(INSTALLER_ELECTRON_ISS)
+    for setting in (
+        "SigningCertificateThumbprint",
+        "SignToolPath",
+        "TimestampUrl",
+        "NoSign",
+        "RequireSigning",
+    ):
+        assert setting in source
+    # Icon and version resources are applied in two rcedit passes on a temp copy
+    # (one-pass icon+version can corrupt the PE on Windows).
+    icon_index = source.index("& $Rcedit $RceditTemp --set-icon $LogoIco")
+    version_index = source.index("& $Rcedit $RceditTemp `", icon_index)
+    rcedit_end_index = source.index("if ($LASTEXITCODE -ne 0)", version_index)
+    rcedit_command = source[icon_index:rcedit_end_index]
+    for argument in (
+        "--set-icon $LogoIco",
+        "--set-version-string FileDescription $BuildDisplayName",
+        "--set-version-string ProductName $BuildDisplayName",
+        "--set-version-string InternalName $ShellExeName",
+        "--set-version-string OriginalFilename $ShellExeName",
+        "--set-file-version $BuildVersion",
+        "--set-product-version $BuildVersion",
+    ):
+        assert argument in rcedit_command
+    assert "Copy-Item -LiteralPath $RceditTemp -Destination $ShellExePath" in source
+    payload_sign_index = source.index("Invoke-CodeSigning", rcedit_end_index)
+    iscc_index = source.index("& $Iscc @IsccArguments")
+    verify_index = source.index("Assert-ValidEmbeddedSignature", iscc_index)
+    assert icon_index < payload_sign_index < iscc_index < verify_index
+    assert "$BatchSize = 20" in source
+    assert "Invoke-SignToolBatchVerification" in source
+    assert "-ForceResignPaths @($ShellExePath)" in source
+    assert "/DBuildSignToolName=certumsha256" in source
+    assert "SignTool={#BuildSignToolName}" in installer
+    assert "SignedUninstaller=yes" in installer
+
+
+def test_windows_electron_mcp_version_and_install_location_are_pinned() -> None:
+    """Playwright MCP 版本只从 main.cjs 解析, 并安装到 resources/app。"""
+    source = _read(BUILD_ELECTRON_PS1)
+    assert "PLAYWRIGHT_MCP_PACKAGE = '([^']+)'" in source
+    assert '$AppDir = Join-Path $ElectronAppDir "resources\\app"' in source
+    assert "Push-Location $AppDir" in source
+    assert "npm install --omit=dev --no-audit --no-fund" in source
+
+
+def test_windows_electron_validates_exact_assembled_resources_before_iscc() -> None:
+    """ISCC 前硬校验可启动入口，而不是只检查非空目录。"""
+    source = _read(BUILD_ELECTRON_PS1)
+    iscc_invocation = source.index("& $Iscc @IsccArguments")
+    required_fragments = (
+        "Join-Path $ElectronAppDir $ShellExeName",
+        'Join-Path $AppDir "main.cjs"',
+        'Join-Path $AppDir "preload.cjs"',
+        'Join-Path $AppDir "dist\\index.html"',
+        'Join-Path $AppDir "node_modules\\@playwright\\mcp\\package.json"',
+        'Join-Path $AppDir "node_modules\\@playwright\\mcp\\cli.js"',
+        "Join-Path $BackendDir $BuildExecutableNameWindows",
+        'Join-Path $BackendDir "runtime\\node-runtime\\node.exe"',
+        'Join-Path $BackendDir "runtime\\uv-runtime\\uv.exe"',
+        'Join-Path $BackendDir "runtime\\uv-runtime\\uvx.exe"',
+        "Test-Path -LiteralPath $RequiredFile -PathType Leaf",
+    )
+    for fragment in required_fragments:
+        assert fragment in source[:iscc_invocation], f"ISCC 前缺少必需产物校验: {fragment}"
+    assert "$RequiredDirectories" not in source
+
+
+def test_windows_electron_uses_exact_installer_path() -> None:
+    """只认可当前名称/版本的精确产物, 不得拾取目录里的旧 EXE。"""
+    source = _read(BUILD_ELECTRON_PS1)
+    for expected_name in (
+        '"$BuildDisplayName-frontend-test-$BuildVersion.exe"',
+        '"$BuildDisplayName-test-$BuildVersion.exe"',
+        "$BuildSetupFilename",
+    ):
+        assert expected_name in source
+    assert '$InstallerPath = Join-Path $ProjectRoot "dist\\$InstallerFileName"' in source
+    assert "Remove-Item -LiteralPath $InstallerPath -Force" in source
+    assert "Test-Path -LiteralPath $InstallerPath -PathType Leaf" in source
+    assert "Sort-Object LastWriteTime" not in source
+    assert not re.search(r'Get-ChildItem\s+"\$ProjectRoot\\dist\\\$BuildDisplayName-', source)
+
+
+def test_windows_electron_only_verifies_gitcode_cli_when_bundled() -> None:
+    """上游无 Windows 二进制时沿用 spec 的 pip 回退，不能阻断 Electron 出包。"""
+    source = _read(BUILD_ELECTRON_PS1)
+    binary_check = source.index('$BundledGitCodeExe = Join-Path $BackendDist "_internal\\gitcode.exe"')
+    conditional = source.index(
+        "Test-Path -LiteralPath $BundledGitCodeExe -PathType Leaf", binary_check
+    )
+    verifier = source.index("scripts\\verify_gitcode_cli_bundle.py", conditional)
+    fallback_warning = source.index("gitcode-cli has no bundled Windows binary", verifier)
+    assert binary_check < conditional < verifier < fallback_warning
 
 
 def test_frozen_entry_runtime_lookup_matches_bundled_layouts() -> None:
@@ -703,6 +880,67 @@ def test_macos_electron_build_bundles_node_runtime_into_app_resources() -> None:
     ), "build-macos.sh 的 node-runtime 落地目录漂移(应为 Contents/Resources/node-runtime)"
 
 
+def test_macos_electron_build_installs_desktop_dependencies_before_resolution() -> None:
+    """A clean checkout must install Electron before resolving Electron.app."""
+    source = _read(BUILD_ELECTRON_SH)
+    install_marker = 'echo "[3/6] Installing Electron desktop dependencies..."'
+    resolve_marker = 'ELECTRON_APP_SOURCE="${ELECTRON_DIR:-}"'
+    assert install_marker in source and resolve_marker in source
+    assert source.index(install_marker) < source.index(resolve_marker), (
+        "build-electron-exe.sh resolves Electron.app before npm install; "
+        "a clean checkout will fail before it can install Electron"
+    )
+    electron_binary = "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron"
+    install_start = source.index(install_marker)
+    install_end = source.index(resolve_marker)
+    install_section = source[install_start:install_end]
+    assert electron_binary in source
+    assert "npm ci" in install_section
+    assert 'if [ ! -x "$ELECTRON_BIN" ]; then' in source
+
+
+def test_macos_electron_build_bundles_pinned_mcp_runtime() -> None:
+    """macOS packaged browser agents need the same local MCP runtime as Windows."""
+    source = _read(BUILD_ELECTRON_SH)
+    assert "PLAYWRIGHT_MCP_PACKAGE" in source
+    assert '"$MCP_PACKAGE_NAME": "$MCP_PACKAGE_VERSION"' in source
+    assert "npm install --omit=dev --no-audit --no-fund" in source
+    assert '"$APP_DIR/node_modules/@playwright/mcp"' in source
+    assert '"$APP_DIR/logo.svg"' in source
+
+
+def test_macos_electron_build_has_distribution_signing_pipeline() -> None:
+    """Finalize Electron resources before signing/notarizing the app and DMG."""
+    source = _read(BUILD_ELECTRON_SH)
+    for setting in ("SIGN_IDENTITY", "NOSIGN", "NOTARIZE", "NOTARY_PROFILE"):
+        assert setting in source, (
+            f"build-electron-exe.sh missing {setting} release control"
+        )
+    assemble_index = source.index("npm install --omit=dev --no-audit --no-fund")
+    app_sign_index = source.index("codesign --force --timestamp --options runtime")
+    dmg_create_index = source.index("hdiutil create")
+    dmg_sign_index = source.index(
+        'codesign --force --sign "$SIGN_IDENTITY" "$DMG_PATH"'
+    )
+    assert assemble_index < app_sign_index < dmg_create_index < dmg_sign_index
+    assert source.count("xcrun notarytool submit") == 2, (
+        "Electron release must notarize both the assembled app and final DMG"
+    )
+    assert 'xcrun stapler validate "$APP_BUNDLE"' in source
+    assert 'xcrun stapler validate "$DMG_PATH"' in source
+    assert 'hdiutil verify "$DMG_PATH"' in source
+    assert "context:primary-signature" in source
+
+
+def test_macos_electron_build_locks_python_dependencies_and_requires_icon() -> None:
+    """DMG builds preserve uv.lock and fail instead of shipping Electron branding."""
+    source = _read(BUILD_ELECTRON_SH)
+    dependency_sync = source.index("uv sync", source.index("[1/6]"))
+    assert "uv sync --locked --extra dev" in source
+    assert 'if [ ! -f "$ICON_PATH" ]; then' in source
+    assert "ERROR: required macOS icon is missing" in source
+
+
 def test_electron_builds_run_the_same_frozen_verifiers() -> None:
     """Python 打包跑的每个 frozen 验证器, 对应 Electron 打包必须同样跑。
 
@@ -766,3 +1004,33 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
         source, "registerHandler('desktop:close-window'"
     )
     assert "requestShutdown()" in explicit_close_handler
+
+
+def test_electron_module_map_matches_python_entry_points() -> None:
+    """开发模式 serviceCommand 的 -m 模块映射须与 pyproject 入口点一致。
+
+    M0-c 盲区回归：main.cjs 曾长期残留 jiuwenswarm.gateway.app_gateway
+    （Python 侧与打包模式都已改 gateway.app_gateway），契约测试不覆盖
+    该映射导致 CI 抓不到开发模式启动断链。
+    """
+    import re as _re
+
+    import tomllib
+
+    main_source = _read(MAIN_CJS)
+    mapping = _re.search(r"const moduleNames = \{(.*?)\}", main_source, _re.S)
+    assert mapping, "serviceCommand module map not found in main.cjs"
+    electron_map = dict(_re.findall(r"(\w+):\s*'([\w.]+)'", mapping.group(1)))
+
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        entry_points = tomllib.load(fh)["project"]["scripts"]
+    # web 服务无独立 pyproject 入口（desktop 专用路径），只断言有入口点
+    # 对应的 agent / gateway 两项。
+    expected = {
+        "agent": entry_points["jiuwenswarm-agentserver"].split(":")[0],
+        "gateway": entry_points["jiuwenswarm-gateway"].split(":")[0],
+    }
+    for service, module in expected.items():
+        assert electron_map[service] == module, (
+            f"{service} module drift: electron {electron_map[service]!r} vs pyproject {module!r}"
+        )

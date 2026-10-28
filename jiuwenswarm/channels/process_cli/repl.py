@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 
+from gateway.common.mode_matrix import deprecate_mode
 from jiuwenswarm.channels.process_cli.commands import (
     ParsedSlashCommand,
     parse_slash_command,
@@ -111,6 +112,8 @@ def _worker_command(
     worker_result_file: str | None = None,
     operation: str = "chat",
 ) -> list[str]:
+    worker_work_mode = _resolve_cli_work_mode(args.mode, args.work_mode)
+    worker_mode = deprecate_mode(_resolve_display_mode(args.mode, worker_work_mode))
     command = [
         sys.executable,
         "-m",
@@ -118,9 +121,7 @@ def _worker_command(
         "--output",
         "human",
         "--mode",
-        args.mode,
-        "--work-mode",
-        args.work_mode,
+        worker_mode,
         "--_interactive-worker",
         "--_session-result-file",
         session_result_file,

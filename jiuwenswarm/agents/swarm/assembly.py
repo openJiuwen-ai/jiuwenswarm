@@ -26,15 +26,18 @@ from __future__ import annotations
 
 import logging
 import os
-import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from openjiuwen.agent_teams.experts import LoadedAgentGroupPackage
 
 from openjiuwen.agent_teams.paths import (
     SKILL_VISIBILITY_FILENAME,
     configure_global_skills_dir,
     team_home,
 )
+from openjiuwen.agent_teams.experts import compose_template_member
 from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 from openjiuwen.agent_teams.schema.blueprint import TransportSpec
 from openjiuwen.agent_teams.schema.team import (
@@ -44,9 +47,12 @@ from openjiuwen.agent_teams.schema.team import (
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
-from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
-from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
+from jiuwenswarm.agents.swarm.config_specs import (
+    build_member_capability_specs,
+    build_member_deep_agent_spec,
+    build_reviewer_deep_agent_spec,
+)
 from jiuwenswarm.agents.swarm.context import (
     SwarmBuildContext,
     get_heartbeat_job_service,
@@ -57,14 +63,17 @@ from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
-from jiuwenswarm.common.mode_matrix import is_code_profile_mode, is_team_mode
+from gateway.common.mode_matrix import (
+    NEW_TEAM_DESIGN,
+    is_code_profile_mode,
+    is_team_mode,
+)
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
 
 # Member roles enriched in place, in deterministic order.
 _MEMBER_ROLES: tuple[str, ...] = ("leader", "teammate")
-_PROMPT_TEMPLATE_PATTERN = re.compile(r"{{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*}}")
 
 
 def _external_team_publish_url(channel_id: str | None) -> str:
@@ -121,67 +130,6 @@ def _with_project_cwd(member_spec: Any, project_dir: str | None) -> Any:
     return member_spec.model_copy(update={"cwd": project_root, "project_root": project_root})
 
 
-def _template_skill_names(template: AgentTemplateSpec) -> list[str]:
-    """Return stable, deduplicated skill directory names from a template."""
-    names: list[str] = []
-    seen: set[str] = set()
-    for skill in template.skills:
-        name = Path(skill.dir).name
-        if name and name not in seen:
-            names.append(name)
-            seen.add(name)
-    return names
-
-
-def _select_prompt_content(content: dict[str, str], language: str) -> str:
-    """Select one localized AgentTemplate prompt using core's fallback order."""
-    if language in content:
-        return content[language]
-    if "en" in content:
-        return content["en"]
-    if "cn" in content:
-        return content["cn"]
-    if content:
-        return next(iter(content.values()))
-    return ""
-
-
-def _render_prompt_text(text: str, params: dict[str, Any]) -> str:
-    """Render the plain ``{{ name }}`` placeholders used by AgentTemplate."""
-
-    def _replace(match: re.Match[str]) -> str:
-        key = match.group(1)
-        return str(params[key]) if key in params else match.group(0)
-
-    return _PROMPT_TEMPLATE_PATTERN.sub(_replace, text)
-
-
-def _template_team_prompt(template: AgentTemplateSpec, member_spec: Any) -> str:
-    """Flatten an AgentTemplate's prompt sections into the Team-owned prompt.
-
-    ``TeamMemberSpec.prompt`` / ``LeaderSpec.prompt`` is the persisted source of
-    truth for a member's private working agreement.  Preserve AgentTemplate
-    priority and localization semantics while moving that content into the Team
-    layer instead of letting ``NativeHarness`` replace prompt sections later.
-    """
-    language = str(getattr(member_spec, "language", None) or "cn").strip() or "cn"
-    workspace = getattr(getattr(member_spec, "workspace", None), "root_path", None)
-    base_params: dict[str, Any] = {
-        "language": language,
-        "workspace": workspace or "",
-    }
-    rendered: list[str] = []
-    for section in sorted(template.prompt_sections, key=lambda item: item.priority):
-        params = {**base_params, **dict(section.render_params or {})}
-        text = _render_prompt_text(
-            _select_prompt_content(section.content, language),
-            params,
-        ).strip()
-        if text:
-            rendered.append(text)
-    return "\n\n".join(rendered)
-
-
 def _merge_team_prompt(existing: str | None, expert_prompt: str) -> str:
     """Append an expert prompt without discarding an existing Team prompt."""
     return "\n\n".join(
@@ -189,33 +137,36 @@ def _merge_team_prompt(existing: str | None, expert_prompt: str) -> str:
     )
 
 
-def _with_agent_template(member_spec: Any, template: AgentTemplateSpec) -> Any:
-    """Attach a capability-only template snapshot and seed Skill visibility."""
-    skills: list[str] = []
-    seen: set[str] = set()
-    for name in [*(member_spec.skills or []), *_template_skill_names(template)]:
-        if name and name not in seen:
-            skills.append(name)
-            seen.add(name)
-    runtime_template = template.model_copy(update={"prompt_sections": []})
-    return member_spec.model_copy(
-        update={
-            "agent_template_spec": runtime_template.model_dump(mode="json"),
-            "skills": skills,
-        }
-    )
-
-
-def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
+def _apply_agent_group(
+    spec: Any,
+    agent_group_name: str,
+    package: LoadedAgentGroupPackage | None = None,
+) -> None:
     """Seed a hybrid roster from one resolved AgentGroup package."""
-    from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
     from jiuwenswarm.server.runtime.extension_package_manager import (
-        resolve_agent_group_dir,
         resolve_agent_group_member_display_name,
     )
+    if package is None:
+        from openjiuwen.agent_teams.experts import (
+            load_agent_group_package_bundle,
+        )
+        from jiuwenswarm.server.runtime.extension_package_manager import (
+            resolve_agent_group_dir,
+        )
 
-    package_dir = resolve_agent_group_dir(agent_group_name)
-    templates = load_agent_group_package(package_dir)
+        package = load_agent_group_package_bundle(
+            resolve_agent_group_dir(agent_group_name)
+        )
+    templates = package.templates
+    package_dir = package.package_dir
+    # The metadata key stays for existing readers; ``agent_group_name`` is the
+    # field core's spawn_expert reads to spawn more instances of a member.
+    spec.metadata = {
+        **(spec.metadata or {}),
+        "agent_group_name": agent_group_name,
+        "capabilities": list(package.capabilities),
+    }
+    spec.agent_group_name = agent_group_name
 
     leader_base = spec.agents.get("leader")
     teammate_base = spec.agents.get("teammate")
@@ -223,29 +174,23 @@ def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
         raise ValueError(
             "AgentGroup assembly requires both base 'leader' and 'teammate' specs"
         )
-    leader_template = templates["leader"]
-    leader_prompt = _template_team_prompt(leader_template, leader_base)
+    leader_member = compose_template_member(leader_base, templates["leader"])
     spec.leader = spec.leader.model_copy(
         update={
-            "prompt": _merge_team_prompt(spec.leader.prompt, leader_prompt),
+            "prompt": _merge_team_prompt(spec.leader.prompt, leader_member.persona),
         }
     )
-    spec.agents["leader"] = _with_agent_template(
-        leader_base,
-        leader_template,
-    )
+    spec.agents["leader"] = leader_member.spec
 
     predefined_members: list[TeamMemberSpec] = []
     for agent_name, template in templates.items():
         if agent_name == "leader":
             continue
-        member_prompt = _template_team_prompt(template, teammate_base)
+        assembled = compose_template_member(teammate_base.model_copy(deep=True), template)
+        member_prompt = assembled.persona
         external_config = external_cli_agent_spec_from_template(template)
         if external_config is None:
-            spec.agents[agent_name] = _with_agent_template(
-                teammate_base.model_copy(deep=True),
-                template,
-            )
+            spec.agents[agent_name] = assembled.spec
             member = TeamMemberSpec(
                 member_name=agent_name,
                 display_name=resolve_agent_group_member_display_name(
@@ -276,6 +221,157 @@ def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
     spec.team_mode = "hybrid"
 
 
+def _is_design_team_mode(mode: str) -> bool:
+    """Whether this enrich pass serves a team.design (designer canvas) team."""
+    return str(mode or "") == NEW_TEAM_DESIGN
+
+
+
+# Non-negotiable canvas rules for the design leader. Carried as the
+# DeepAgentSpec ``system_prompt`` so TEAM_POLICY mounts them as the static
+# ``team.extra`` system-prompt section (present on every model call); the full
+# persona still travels the member_prompt dynamic lane. Mirrors the old
+# server-side prompt assembly where these rules were force-fed every turn.
+_DESIGN_LEADER_SYSTEM_PROMPT = (
+    "你是设计画布（Design Canvas）的主编，与用户对话并编辑设计图。"
+    "全新的创作需求用 designer_graph_autorun 自动建图，小改动用 designer_graph_patch；执行入口是 swarmflow 和画布运行按钮。"
+    "\n\n画布硬规则（每次编辑必须遵守）：\n1. 全新创作需求（用户提出\"帮我做一个关于X的视频/广告/故事\"）必须调 designer_graph_autorun，"
+    "把用户的完整需求原文传给 prompt 参数——导演链（分析→简报→审核→分镜→审核→建图→校验）在服务端完成，产出带完整锁体系的图。不要自己用 graph_patch 从零拼整图。"
+    "designer_graph_autorun 返回 error 时，把错误原因转告用户并等用户决定，不要改用 graph_patch 手动拼图。"
+    "\n2. designer_graph_patch 只用于用户要求的小改：加减个别节点、改 config.prompt、连线/断连、删节点。"
+    "patch 字段是 {\"upsert_nodes\": [...], \"upsert_edges\": [{\"id\",\"source\",\"target\"}], \"remove_node_ids\": [], "
+    "\"remove_edge_ids\": []}。\n3. 节点 type 只能是五种模态之一：text、table、image、video、"
+    "audio——outline/character/storyboard/script/scene/clip/film 等叙事角色绝不是 type，一律 type=\"text\"。"
+    "config.role 合法值：text、table、image、video、audio；"
+    "config.pipeline 合法值：brief、character、scene、storyboard、clip、compose、music、speech。不要自创其他取值。"
+    "\n4. 不要重建整张图，只 patch 用户要求改动的部分；保留既有节点 ID 与无关内容。"
+    "插入、删除或调换镜头时，镜头节点 ID 照旧保留，但要把所有镜头节点的 config.clip_index 按新顺序重排为 1..N"
+    "（每个镜头按这个序号读取分镜表的对应行，成片也按它排序），并把上一镜→下一镜的连线改成新顺序；"
+    "用户给某一镜指定了时长时，写到该镜节点的 config.duration_sec。graph_patch 返回 clip_order_warning 时按提示再 patch 一次。"
+    "\n5. designer_graph_autorun 建图成功后直接调用 swarmflow 开始执行（用户明确说先不要跑时除外）；graph_patch 小改后询问用户是否重跑（等用户确认或点运行按钮）。"
+    "执行完成后如果用户反馈不满意，给出具体优化建议（哪个节点改什么提示词），询问是否按建议调整后重跑。"
+    "\n6. 上传参考节点（id 以 n_ref_ 开头，config 带 user_reference_path）是用户上传的素材，"
+    "系统已创建并连好线：不要删除、不要重建、不要改它们的连线。只有图片参考可以被角色/场景节点引用"
+    "（参考图是视觉权威，从中提取可兼容的可见特征）；音频和视频参考只连创意简报（brief），不要把它们连到分镜或其他节点。"
+    "\nuser_canvas_edits 是用户的画布操作日志（add/remove/connect/disconnect/replace）——把这些当作已发生的事实，不要恢复被删除的节点或被断开的边。"
+    "\n详细创作规则见你的成员设定（team-context）。"
+)
+
+
+def _apply_design_agent_group(spec: Any, agent_group_name: str) -> None:
+    """Assemble a team.design roster from one resolved AgentGroup package.
+
+    Design teams (``team.design``) apply the leader template only: the member
+    templates stay in the package as worker bases consumed per node by
+    ``TeamWorkerBackend`` — they never enter the spawn roster — and the
+    leader's collaboration toolset is stripped by
+    ``DesignerSurfaceSanitizerRail`` (execution is service-driven; the leader
+    has no run-control surface).
+    """
+    from openjiuwen.agent_teams.experts import load_agent_group_package
+    from jiuwenswarm.server.runtime.extension_package_manager import (
+        resolve_agent_group_dir,
+    )
+    from openjiuwen.agent_teams.schema.deep_agent_spec import ProgressiveToolSpec
+
+    templates = load_agent_group_package(resolve_agent_group_dir(agent_group_name))
+    leader_base = spec.agents.get("leader")
+    if leader_base is None or spec.agents.get("teammate") is None:
+        raise ValueError(
+            "AgentGroup assembly requires both base 'leader' and 'teammate' specs"
+        )
+    leader_member = compose_template_member(leader_base, templates["leader"])
+    spec.leader = spec.leader.model_copy(
+        update={
+            "prompt": _merge_team_prompt(spec.leader.prompt, leader_member.persona),
+        }
+    )
+    leader_spec = leader_member.spec
+
+    # Design-team leader: a conversation surface over the canvas.
+    # Rebuild the leader spec instead of extending the config.yaml base:
+    # the base member's tools/rails/mcps (fs/shell/org/browser/MCP …)
+    # are dropped wholesale and replaced by the design profile
+    # (`_build_design_capability_specs`: vision/audio + designer graph
+    # tools + structured_ask_user). Execution is service-side
+    # (RunCoordinator); the leader has no run-control or collaboration
+    # surface at all.
+    #
+    # sys_operation stays ENABLED (user decision 2026-10-10): the first
+    # tools injected by the base team path (list_files/glob/bash/…) expect
+    # a live sys_operation, and the skill-use rail reads SKILL.md front
+    # matter through it — disabling it left "tools present, engine None"
+    # and every such call crashed with 'NoneType' object has no attribute
+    # 'fs'/'shell'. Skills remain a planned leader capability, so the
+    # filesystem engine must be there even though the design profile does
+    # not advertise fs tools itself.
+    #
+    # progressive_tool is pinned disabled with the base surface: the design
+    # profile is a small curated toolset with no long tail, and the
+    # platform-wide switch (#8145) would defer every design tool behind
+    # tool_search. Pinned rather than None so a harness-side default flip
+    # cannot re-enable it.
+    leader_spec = leader_spec.model_copy(
+        update={
+            "tools": [],
+            "rails": [],
+            "mcps": [],
+            "subagents": [],
+            "enable_skill_discovery": False,
+            "progressive_tool": ProgressiveToolSpec(enabled=False),
+        }
+    )
+    # Hard canvas rules ride the spec-level system prompt (TEAM_POLICY's
+    # base_prompt lane): the leader's static system-prompt sections only
+    # carry [team_bootstrap] + [team.extra(base_prompt)] (progressive
+    # disclosure, F_76), and the AgentGroup persona travels the
+    # member_prompt dynamic lane instead — too weak for schema-level
+    # constraints (first real run: 24 graph_patch attempts, all rejected
+    # for invented node types, persona rule never surfaced). Putting the
+    # non-negotiables here makes them a static system-prompt section that
+    # every model call sees.
+    leader_spec = leader_spec.model_copy(
+        update={"system_prompt": _DESIGN_LEADER_SYSTEM_PROMPT}
+    )
+    rails_specs, tool_specs = build_member_capability_specs(
+        get_config(),
+        NEW_TEAM_DESIGN,
+        "leader",
+        enable_permissions=spec.enable_permissions,
+    )
+    leader_spec = leader_spec.model_copy(
+        update={
+            "rails": rails_specs,
+            "tools": tool_specs,
+        }
+    )
+    spec.agents["leader"] = leader_spec
+    # SDD-0030 expert table (2026-10-14): write each member's capability
+    # snapshot into spec.agents (same shape as the regular team path's
+    # _apply_agent_group) so the design bridge can derive the swarmflow
+    # expert table (agents[m] ⋈ synthesized roster). The members still never
+    # enter the spawn roster (predefined_members stays [] below), so nothing
+    # is spawned — the entries are data for derive_design_expert_specs only.
+    # Pin the platform-wide progressive_tool flag (#8145) off on the derivation
+    # base: worker node tools are the member's whole surface, and deferring
+    # them behind tool_search breaks the single-shot worker protocol. The
+    # write-back also covers the plain-worker fallback base (no agent_template).
+    teammate_base = spec.agents["teammate"].model_copy(
+        update={"progressive_tool": ProgressiveToolSpec(enabled=False)}
+    )
+    spec.agents["teammate"] = teammate_base
+    for agent_name, template in templates.items():
+        if agent_name in ("leader", "teammate"):
+            continue
+        spec.agents[agent_name] = compose_template_member(teammate_base.model_copy(deep=True), template).spec
+    spec.enable_swarmflow = False
+    spec.predefined_members = []
+    # Team-level swarmflow progressive switch (swarmflow_progressive_tool):
+    # derive_swarmflow_expert_specs re-adds ProgressiveToolSpec to the expert
+    # table when this is on, bypassing the strips above — force it off too.
+    spec.progressive_tool = False
+
+
 def enrich_team_spec_for_swarm(
     spec: Any,
     *,
@@ -288,6 +384,7 @@ def enrich_team_spec_for_swarm(
     channel_id: str | None = None,
     request_metadata: dict[str, Any] | None = None,
     agent_group_name: str | None = None,
+    agent_group_package: LoadedAgentGroupPackage | None = None,
 ) -> None:
     """Enrich *spec* in place for provider-based swarm assembly.
 
@@ -306,6 +403,7 @@ def enrich_team_spec_for_swarm(
         channel_id: Raw channel id from the request, if any.
         request_metadata: Request metadata mapping (carries ``mode`` etc.).
         agent_group_name: Optional AgentGroup package selected for this Team.
+        agent_group_package: Optional preloaded package for this AgentGroup.
     """
     register_swarm_providers()
     _ensure_external_team_transport(spec, channel_id)
@@ -410,15 +508,32 @@ def enrich_team_spec_for_swarm(
             )
             member_spec = _with_project_cwd(member_spec, project_dir)
             spec.agents[role] = member_spec
+    if "teammate" in spec.agents:
+        spec.reviewer_agent = build_reviewer_deep_agent_spec(mode, spec.agents["teammate"])
 
     if agent_group_name:
-        _apply_agent_group(spec, agent_group_name)
+        if _is_design_team_mode(mode):
+            _apply_design_agent_group(spec, agent_group_name)
+        else:
+            _apply_agent_group(spec, agent_group_name, agent_group_package)
 
     spec.build_context = base
     # Carry a serializable seed alongside the live context so members rebuilt
     # across a serialization boundary (spawned teammate, distributed remote,
     # cold recovery) can reconstruct the context via the registered factory.
     spec.build_context_seed = base.to_seed()
+    group_members = (request_metadata or {}).get("group_members")
+    if group_members is not None:
+        if agent_group_name:
+            raise ValueError("a public group roster cannot also select a single AgentGroup")
+        from jiuwenswarm.agents.swarm.group_chat import assemble_group_members, GROUP_MEMBER_TEMPLATE
+        from openjiuwen.harness.schema.deep_agent_spec import RailSpec
+
+        assemble_group_members(spec, group_members)
+        # Future members use the shared role without rewriting a running spec.
+        teammate = spec.agents["teammate"]
+        teammate.rails = [*(teammate.rails or []), RailSpec(type=GROUP_MEMBER_TEMPLATE,
+            params={"initial_names": [member["member_name"] for member in group_members]})]
     logger.info(
         "[swarm.assembly] enriched team spec '%s' "
         "(roles=%s, session=%s, mcps=%d, agent_group=%s)",

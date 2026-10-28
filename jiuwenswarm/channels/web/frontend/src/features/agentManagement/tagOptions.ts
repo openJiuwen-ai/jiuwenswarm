@@ -17,3 +17,13 @@ export function resolveAgentTagPayload(tagIds: string[], customTags: string[]) {
     ...customTags.map(label => ({ zh: label, en: label })),
   ];
 }
+
+export function resolveAgentGroupTagPayload(tagIds: string[], customTags: string[]) {
+  return [
+    ...tagIds.flatMap(id => {
+      const labels = AGENT_TAG_OPTIONS.find(option => option.id === id)?.labels;
+      return labels ? [{ id, ...labels }] : [];
+    }),
+    ...customTags.map(label => ({ id: label, zh: label, en: label })),
+  ];
+}

@@ -618,6 +618,8 @@ class RsiTreeService:
         # view before asking the Provider for optional recovery/backfill data.
         self.projector.load_from_disk(task_id)
         self.projector.register_root(task_id)
+        if _is_completed_program_artifact(task):
+            self.projector.reconcile_program_threshold_stops(task_id)
         if adapter is not None:
             tree = _read_provider_snapshot(adapter, "get_tree", task_id)
             if tree is not None:
@@ -772,6 +774,14 @@ class RsiArtifactDownloadService:
         if not result["is_directory"]:
             result.update(_download_fields(result["path"], params))
         return result
+
+
+def _is_completed_program_artifact(task: Any) -> bool:
+    """Whether a stored task is a completed program-artifact optimization."""
+
+    if task is None or task.status != TaskStatus.COMPLETED.value:
+        return False
+    return task.scenario == Scenario.ARTIFACT.value and task.artifact_type == ArtifactType.PROGRAM.value
 
 
 def _download_fields(path: str, params: dict[str, Any]) -> dict[str, str]:

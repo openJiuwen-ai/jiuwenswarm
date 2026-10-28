@@ -6,6 +6,61 @@ import { makeEventDedupKey } from '../node_modules/.cache/ws-event-dedup/utils/w
 const session = 'web_sess_1';
 const requestId = 'req_msr7rhfm_290';
 
+const modelRetryNotice = {
+  session_id: session,
+  event_type: 'chat.notice',
+  notice_type: 'model_retry',
+  request_id: requestId,
+  rid: requestId,
+  attempt: 1,
+  max_attempts: 10,
+  content: 'Model call failed; retrying (1/10).',
+};
+
+test('model retry updates within one request stay distinct', () => {
+  const first = makeEventDedupKey('chat.notice', modelRetryNotice);
+  const second = makeEventDedupKey('chat.notice', {
+    ...modelRetryNotice,
+    attempt: 2,
+    content: 'Model call failed; retrying (2/10).',
+  });
+
+  assert.notEqual(first, second);
+});
+
+test('duplicate model retry notices still match when delivery metadata changes', () => {
+  const first = makeEventDedupKey('chat.notice', modelRetryNotice);
+  const duplicate = makeEventDedupKey('chat.notice', {
+    ...modelRetryNotice,
+    timestamp: '2026-10-09T00:00:01Z',
+  });
+
+  assert.equal(first, duplicate);
+});
+
+test('different team members retrying in one request stay distinct', () => {
+  const first = makeEventDedupKey('chat.notice', { ...modelRetryNotice, member_name: 'researcher' });
+  const second = makeEventDedupKey('chat.notice', { ...modelRetryNotice, member_name: 'reviewer' });
+
+  assert.notEqual(first, second);
+});
+
+test('other notice types retain request-level deduplication', () => {
+  const first = makeEventDedupKey('chat.notice', {
+    ...modelRetryNotice,
+    notice_type: 'image_tool_fallback',
+    content: 'first notice',
+  });
+  const second = makeEventDedupKey('chat.notice', {
+    ...modelRetryNotice,
+    notice_type: 'image_tool_fallback',
+    content: 'another notice',
+    attempt: 2,
+  });
+
+  assert.equal(first, second);
+});
+
 test('processing_status true and false with the same request_id are distinct', () => {
   const started = makeEventDedupKey('chat.processing_status', {
     session_id: session,

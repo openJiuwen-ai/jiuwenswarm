@@ -244,7 +244,7 @@ async def test_handler_does_not_start_or_switch_plan_mode():
 
 
 def test_web_handler_registered():
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )

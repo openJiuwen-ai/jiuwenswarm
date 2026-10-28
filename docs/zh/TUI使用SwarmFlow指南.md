@@ -68,7 +68,10 @@
 | `model` | `agent` / `agent_session` | 覆盖本次 worker 的模型名；**默认省略**，继承团队 teammate 模型 |
 | `timeout` | `agent` / `human` | 超时（秒）：`agent` 为单次 backend 调用；`human` 为等待真人回复 |
 | `isolation` | `agent` | 仅支持 `'worktree'`：在独立 git worktree 中跑 worker（并行改文件防冲突，开销较大） |
-| `agent_type` | `agent` | 用具名专家 subagent 替代默认 worker（与 `schema` 可组合） |
+| `agent_type` | `agent` / `agent_session` | 把节点派给三方 CLI Agent（`'claude'` / `'codex'`，须在团队三方 Agent 白名单内）；与 `schema` 可组合，详见下文「三方 Agent」 |
+| `builtin_model` | `agent` / `agent_session` | 仅三方节点：用 CLI 自带登录跑其内置目录中的型号；与 `model` 互斥，详见下文「三方 Agent → 模型」 |
+| `effort` | `agent` / `agent_session` | 仅三方节点且伴随 `builtin_model`：推理强度档位，须在该型号声明的档位内；缺省取默认档 |
+| `agent_template` | `agent` / `agent_session` | 把节点交给**当前会话已绑定专家团**的某个成员执行（填成员裸名，如 `'clip'`）；worker 以该成员的人设与能力快照运行，详见下文「专家 worker」 |
 
 示例：
 
@@ -158,13 +161,15 @@ jiuwenswarm-tui
 
 运行时配置文件：`~/.jiuwenswarm/config/config.yaml`（由 `jiuwenswarm-init` 从 **`jiuwenswarm/resources/config.yaml`** 初始化）。
 
-SwarmFlow 仅涉及 `modes.team.jiuwen_team` 下两项（仓库模板原文如下）：
+SwarmFlow 涉及 `modes.team.jiuwen_team` 下四个字段（仓库模板节选，`external_transport` 等与 SwarmFlow 无关的键已省略）：
 
 ```yaml
 modes:
   team:
     jiuwen_team:
       enable_swarmflow: false
+      swarmflow_progressive_tool: false
+      external_cli_agents: []
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to
@@ -176,6 +181,8 @@ modes:
 |------|------|--------|
 | `enable_swarmflow` | 为 `true` 时 Leader 可调用 `swarmflow()` 启动工作流；为 `false` 时即使 `/mode team` 也**不会**跑 SwarmFlow | `false` |
 | `swarmflow_budget` | Leader 级 token 上限，本 Team 下所有 run **共享**；脚本内 `budget.total` / `spent()` / `remaining()` 可读。设为**正整数**启用上限；**未设置或 `null`** 表示无硬上限 | 未设置（模板中为注释） |
+| `swarmflow_progressive_tool` | Worker 渐进式工具暴露（`tool_search` 按需检索工具）；仅 `enable_swarmflow: true` 时生效；不与单 Agent 的 `progressive_tool_enabled` 共用；**只能改 `config.yaml`**，前端与 `/swarmflow` 命令不提供开关 | `false` |
+| `external_cli_agents` | 三方 CLI 成员声明（`claude` / `codex`），同时是脚本 `agent_type` 的白名单——未声明的后端不能被工作流派活；Web 设置「三方 Agent」即改此项 | `[]` |
 
 出厂模板默认 **关闭** SwarmFlow（`enable_swarmflow: false`），首次使用请在下列途径之一将其打开。
 
@@ -183,7 +190,7 @@ modes:
 
 | 途径 | 适用项 | 做法 | 生效方式 |
 |------|--------|------|----------|
-| **1. 编辑 `config.yaml`** | `enable_swarmflow`、`swarmflow_budget` | 修改 `~/.jiuwenswarm/config/config.yaml` 中 `modes.team.jiuwen_team` 对应字段 | **重启后端服务**后全局生效 |
+| **1. 编辑 `config.yaml`** | `enable_swarmflow`、`swarmflow_budget`、`swarmflow_progressive_tool` | 修改 `~/.jiuwenswarm/config/config.yaml` 中 `modes.team.jiuwen_team` 对应字段 | **重启后端服务**后全局生效 |
 | **2. Web 前端** | 仅 `enable_swarmflow` | 进入 **更多 → 配置信息 → 其他配置 → SwarmFlow**，勾选「启用 SwarmFlow」开关（**集群模式**；前端**不暴露** `swarmflow_budget`，预算须改 `config.yaml` 或用 TUI `/swarmflow on --budget`） | **不支持热更新**：保存后需**新建会话**（新开聊天或等价操作）才生效；正在跑的 workflow 不会被中断 |
 | **3. TUI `/swarmflow`** | `enable_swarmflow`；`swarmflow_budget` 可用 `on --budget` | `/swarmflow on` / `off` 开关；`/swarmflow on --budget <tokens\|none>` 改预算；`/swarmflow` 查询状态 | 写入配置后提示 **`Use /new to apply.`** — 当前 session 不热更新，执行 **`/new`** 新建 session 后生效 |
 
@@ -346,6 +353,60 @@ Leader Agent 会：
 | **`/swarmflow` / `on` / `off`** | 开关 SwarmFlow、查状态 |
 | **`/swarmflows`** | 全屏查看运行树 |
 | **`h`** | 主界面 pending 人工回复列表 |
+
+---
+
+## 三方 Agent（Claude Code / Codex）
+
+> **前置条件**：需要 agent-core 已包含 swarmflow 三方 Agent 支持（`agent()` 消费 `agent_type`）。若后端引擎版本较旧，`agent_type` 会被静默忽略、节点按 native worker 执行，且不会报错——升级 `openjiuwen` 依赖后本节功能才生效。
+
+脚本可把单个节点派给外部 CLI Agent：
+
+```python
+result = await agent("审查这段 diff", label="review",
+                     options={"agent_type": "codex", "model": "gpt-5-codex"})
+sess = agent_session(label="iter", options={"agent_type": "claude"})
+```
+
+| 要点 | 说明 |
+|------|------|
+| 白名单 | `agent_type` 必须同时是引擎支持的 SDK 后端（`claude` / `codex`）**且**在本团队 `modes.team.<team>.external_cli_agents` 中已声明（Web：设置 → 实验功能 → 三方 Agent（仅集群模式））。不满足时该节点直接失败，错误里给出两个名单 |
+| 会话记忆 | `agent_session` 的记忆按 **run** 隔离：同一 run 续跑找回上下文；同脚本全新 run 从零开始 |
+| fork | 三方 `agent_session` 的 `fork()` 只支持 `full` / `before`（走 CLI 原生分支：Claude 离线复制转写、Codex `thread/fork`）；`after` 与两种 compact 模式直接报错。`before` 的 `keep_rounds` 越界或该轮无标记**直接报错，不降级为 full**；子会话与父会话必须同一 `agent_type`。凭据不写入 journal：续跑时脚本重跑 `fork()`，子会话已有自己指针时直接续接、不产生第二条分支 |
+| 结构化输出 | `schema=` 走"提示词约束 + JSON 解析"；CLI 未按要求返回 JSON 时与 native 未提交同语义（重试后返回 `None`） |
+| 模型 | `model` 命中团队模型池且协议兼容（Claude ↔ Anthropic 协议条目，Codex ↔ 其他）→ CLI 走池端点；`builtin_model` 命中该 CLI 声明的内置目录 → 用 CLI 自带登录跑该型号（可配 `effort`，缺省取默认档）；两者互斥、都不填则用 CLI 自带登录的默认模型。校验失败（不在池 / 不在目录 / 互斥 / effort 越档）发射前报错并列出可用清单——**无兜底**：CLI 登录失效等环境错误会以 `AGENT_FAILED` 呈现（文案含根因与"加 `model=` 绕行"建议），修改脚本后重跑即可（已缓存节点不会重算）。注意：旧文档中"`model` 直接传 CLI 原生模型名"的用法已移除，请改用 `builtin_model`（需在设置里声明内置目录）。 |
+| 预算 | 三方轮次在轮末计入 Team / run 两本账；最坏超支一个轮次 |
+| Web 展示 | 运行树每个节点行显示头像：三方节点为 CLI 品牌头像，`human` / `human_session` 为人类头像，native 为默认插画；`agent_session` 分组只在分组头显示一个头像；`model` 列显示装配期已知值（池模型 / builtin 名），否则运行中为空、完成后显示 CLI 实际回报的模型 |
+| TUI | `/swarmflows` 查看器不区分三方节点（未适配） |
+
+### Web 展示：工具活动与 run 分组
+
+以下两项为 Web 端节点展示的补充行为，对三方与 native 节点均适用：
+
+- **工具活动（live-only）**：运行中的树状图节点行内提示最近工具名，节点详情面板列出工具活动对（`tool_call` / `tool_result`）；完成轮次后，成员调用列表同步呈现该成员的调用记录（既有链）；活动**仅 live 生效**：缓存命中或续跑回放不重发，整页刷新后树内活动随 checkpoint 恢复。
+- **run 分组**：成员列表、会话缩略图、任务面板按工作流 run 分组展示，组头显示工作流名 + run 短 id + 状态徽标；真实队友与普通任务不受影响。整页刷新后，镜像成员（含已结束 run）随团队快照恢复并保持分组。
+
+---
+
+## 专家 worker（`agent_template`）
+
+> **引擎版本门禁**：`openjiuwen` 低于本特性版本时，旧引擎会直接拒绝 `agent_template` 键（报 `unknown option`）；升级 pin 后本节功能才生效。
+
+脚本可把单个节点交给**当前会话已绑定专家团**的某个成员执行：
+
+```python
+result = await agent("裁剪这张图", label="clip",
+                     options={"agent_template": "clip"})
+sess = agent_session(label="design", options={"agent_template": "designer"})
+```
+
+| 要点 | 说明 |
+|------|------|
+| 成员裸名 | `agent_template` 填专家团成员的**裸名**（如 `"clip"`），不带 `designer/` 这类前缀 |
+| 能力来源 | worker 以该成员的人设与能力快照（技能 / 工具 / 门禁 / MCP）运行，**不再继承**通用队友工具 |
+| 两算子 + 首锁 | `agent()` 与 `agent_session()` 均可用；会话在**首个真实轮次**锁定成员，中途换人需 `fork()` |
+| 发射前失败 | 四类情况在发射前报错，并在错误里列出当前可用成员名：名字不在专家团内、名字带 `/`、与 `agent_type` 同时出现、该成员声明了外部运行时 |
+| 缺省不变 | 不写 `agent_template` 时行为与以前完全一致；写了则画布节点主文字仍是 label，悬浮显示"专家：展示名（成员名）"；头像统一为按展示名哈希的插画并叠加 ★ 专家角标（与普通队友同视觉体系，靠角标区分；专家团包内的头像只在管理页展示）。成员名册与任务卡同脸；名册条目与普通 worker 一样显示 label 与 `@member_id`，专家多一行辅助 `★ 展示名（成员名）`。`agent_template` 不能写 `leader`（Team Leader 不是 worker），校验器与引擎都会拒绝 |
 
 ---
 

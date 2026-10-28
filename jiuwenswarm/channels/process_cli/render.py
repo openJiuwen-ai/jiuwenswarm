@@ -37,7 +37,9 @@ def _human_error_summary(message: str) -> str:
             return f"模型服务拒绝访问{suffix}；请检查模型账号或服务权限。"
         if len(translated) > 240 or "\n" in translated:
             return f"模型调用失败{suffix}；详细原因见诊断日志。"
-    first_line = translated.strip().splitlines()[0] if translated.strip() else "未知错误"
+    first_line = (
+        translated.strip().splitlines()[0] if translated.strip() else "未知错误"
+    )
     if len(first_line) > 240 or "\n" in translated:
         return first_line[:240].rstrip() + "…"
     return first_line
@@ -83,6 +85,7 @@ class EventRenderer:
     def prepare_interaction(self) -> None:
         """Clear transient status before the Runtime asks the user a question."""
         if self.output_format == "human":
+            self._human_ui.end_reasoning()
             self._human_ui.clear_status()
 
     def live_input_ready(self, request_text: str) -> None:
@@ -126,6 +129,8 @@ class EventRenderer:
         request_id: str,
         show_completion: bool = True,
     ) -> None:
+        if self.output_format == "human":
+            self._human_ui.end_reasoning()
         if self.output_format == "json":
             document = {
                 "ok": not self.failed,
@@ -145,10 +150,16 @@ class EventRenderer:
     def _render_human(self, event: RuntimeEvent) -> None:
         event_type = event.event_type
         payload = event.payload or {}
+        teammate = str(payload.get("role") or "").strip().lower() == "teammate"
+        if teammate and event_type in {"chat.delta", "chat.final", "chat.reasoning"}:
+            # Member streams run concurrently with the leader. Their text
+            # must not be spliced into the single human-readable answer.
+            return
         text = _event_text(payload)
         if payload.get("steering_generation_start") and self._wrote_delta:
             self._pending_output_break = True
         if event_type == "chat.delta":
+            self._human_ui.end_reasoning()
             if self._pending_output_break:
                 self.stdout.write("\n\n")
                 self._pending_output_break = False
@@ -157,6 +168,7 @@ class EventRenderer:
             self.stdout.flush()
             self._wrote_delta = True
         elif event_type == "chat.final":
+            self._human_ui.end_reasoning()
             if text and not self._wrote_delta:
                 self._human_ui.begin_assistant()
                 self.stdout.write(text)
@@ -170,7 +182,9 @@ class EventRenderer:
                 self._human_ui.begin_assistant()
                 self._human_ui.reasoning(text)
         elif event_type in {"chat.tool_call", "chat.tool_result"}:
-            if self._wrote_delta:
+            if not teammate:
+                self._human_ui.end_reasoning()
+            if self._wrote_delta and not teammate:
                 self._pending_output_break = True
             if self.show_tools:
                 self._human_ui.begin_assistant()

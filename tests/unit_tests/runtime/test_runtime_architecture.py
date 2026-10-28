@@ -3,19 +3,43 @@
 from __future__ import annotations
 
 import ast
+import asyncio
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 
 RUNTIME_DIR = Path(__file__).parents[3] / "jiuwenswarm" / "runtime"
 PROJECT_ROOT = Path(__file__).parents[3]
+# 无状态共享件以 gateway 为唯一真源，runtime 允许引用；其余 gateway 子包属传输层。
+# 扩展治理层 registry/manager/loader 同为单份实现（进程内单例，双份会状态分裂）。
+ALLOWED_IMPORT_PREFIXES = (
+    "gateway.common",
+    "gateway.extensions.registry",
+    "gateway.extensions.manager",
+    "gateway.extensions.loader",
+    "gateway.extensions.sdk",
+    "gateway.extensions.types",
+    "gateway.extensions.callback_compat",
+)
+ALLOWED_IMPORT_MODULES = ("gateway", "gateway.extensions")
 FORBIDDEN_IMPORT_PREFIXES = (
-    "jiuwenswarm.gateway",
+    "gateway",
     "jiuwenswarm.server.agent_ws_server",
     "websockets",
 )
 FORBIDDEN_RUNTIME_TYPES = {"CliAgentPool", "CoreAgentBackend"}
+
+
+def _is_forbidden_import(module: str) -> bool:
+    if module in ALLOWED_IMPORT_MODULES or any(
+        module == allowed or module.startswith(allowed + ".")
+        for allowed in ALLOWED_IMPORT_PREFIXES
+    ):
+        return False
+    return module.startswith(FORBIDDEN_IMPORT_PREFIXES)
 
 
 def _runtime_sources() -> list[Path]:
@@ -65,7 +89,7 @@ def test_runtime_public_api_has_no_transport_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported = [node.module]
             for module in imported:
-                if module.startswith(FORBIDDEN_IMPORT_PREFIXES):
+                if _is_forbidden_import(module):
                     violations.append(f"{source.name}:{node.lineno}: {module}")
 
     assert violations == []
@@ -115,7 +139,7 @@ def test_runtime_execution_dependencies_have_no_transport_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 modules = [node.module]
             for module in modules:
-                if module.startswith(FORBIDDEN_IMPORT_PREFIXES) or module.startswith(
+                if _is_forbidden_import(module) or module.startswith(
                     "jiuwenswarm.server.gateway_push"
                 ):
                     violations.append(f"{source}:{node.lineno}: {module}")
@@ -128,14 +152,32 @@ import asyncio
 import sys
 from jiuwenswarm.runtime import AgentRuntime
 
+ALLOWED = (
+    'gateway',
+    'gateway.extensions',
+    'gateway.common',
+    'gateway.extensions.registry',
+    'gateway.extensions.manager',
+    'gateway.extensions.loader',
+    'gateway.extensions.sdk',
+    'gateway.extensions.types',
+    'gateway.extensions.callback_compat',
+)
+
+def _is_transport(name):
+    if name.startswith('jiuwenswarm.server.agent_ws_server'):
+        return True
+    if not name.startswith('gateway.'):
+        return False
+    return not any(name == a or name.startswith(a + '.') for a in ALLOWED)
+
 async def main():
     runtime = AgentRuntime()
     try:
         await runtime.start()
         names = sorted(
             name for name in sys.modules
-            if name.startswith('jiuwenswarm.gateway')
-            or name.startswith('jiuwenswarm.server.agent_ws_server')
+            if _is_transport(name)
         )
         print('TRANSPORT_MODULES=' + repr(names))
     finally:
@@ -170,28 +212,29 @@ def test_runtime_does_not_reintroduce_alternate_agent_implementations() -> None:
     assert declared.isdisjoint(FORBIDDEN_RUNTIME_TYPES)
 
 
-def test_agentserver_injects_runtime_manager_into_teammate_daemon() -> None:
+@pytest.mark.asyncio
+async def test_agentserver_injects_runtime_manager_into_teammate_daemon(monkeypatch) -> None:
     """The control-plane daemon runs outside a request ContextVar."""
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "app_agentserver.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    daemon_calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "run_teammate_bootstrap_daemon"
-    ]
+    from jiuwenswarm.server.worker.capabilities import _spawn_teammate_bootstrap
 
-    assert len(daemon_calls) == 1
-    keywords = {keyword.arg: keyword.value for keyword in daemon_calls[0].keywords}
-    manager = keywords.get("agent_manager")
-    call = manager.body if isinstance(manager, ast.IfExp) else manager
-    assert isinstance(call, ast.Call)
-    if isinstance(call.func, ast.Attribute):
-        assert call.func.attr == "get_agent_manager"
-        return
-    assert isinstance(call.func, ast.Name)
-    assert call.func.id == "get_agent_manager"
+    manager = object()
+    observed = []
+    stop = asyncio.Event()
+
+    async def daemon(*, stop_event, agent_manager):
+        observed.append(agent_manager)
+        assert stop_event is stop
+        await stop_event.wait()
+
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.agents.harness.team.remote_member_bootstrap",
+                        SimpleNamespace(run_teammate_bootstrap_daemon=daemon))
+    task = _spawn_teammate_bootstrap(stop, SimpleNamespace(get_agent_manager=lambda: manager))
+    try:
+        await asyncio.sleep(0)
+        assert observed == [manager]
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, 1)
 
 
 def test_agentserver_session_lifecycle_uses_runtime_public_api() -> None:

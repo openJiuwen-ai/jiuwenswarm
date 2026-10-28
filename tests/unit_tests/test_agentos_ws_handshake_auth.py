@@ -6,10 +6,10 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
-from jiuwenswarm.gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.extensions.auth.credential_authenticator import AuthResult
+from gateway.app_gateway import GatewayServer, GatewayServerConfig, RouteConfig
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
 
 
 async def _deny(**_kwargs: Any) -> AuthResult:

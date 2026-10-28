@@ -20,6 +20,10 @@ from jiuwenswarm.agents.harness.common.workspace_paths import sanitize_review_ui
 _MANUAL_STATUSES = frozenset({"manual", "fallback", "timed_out", "aborted"})
 
 _DISPLAY_MESSAGES = {
+    "policy_allow": (
+        "当前权限规则已允许此操作，无需再次审批。",
+        "Your permission settings already allow this action. No approval needed.",
+    ),
     "completed": ("宿主权限检查已完成。", "Host permission checks completed."),
     "denied": ("宿主权限检查拒绝了此操作。", "Host permission checks denied this operation."),
     "deterministic_allow": (
@@ -165,6 +169,12 @@ def _host_display_reason(
         key = "deterministic_allow"
     elif source == "manual_approval" and status in {"approved", "deterministic_allow"}:
         key = "manual_approval"
+    elif (
+        source == "policy_evaluator"
+        and reason == "policy_allow"
+        and status == "approved"
+    ):
+        key = "policy_allow"
     elif status in _MANUAL_STATUSES:
         key = "manual_required"
     elif status in {"denied", "blocked"}:
