@@ -560,3 +560,21 @@ A: No. Tool Security Guardrails corresponds to `permissions.enabled`, which defa
 A: The system automatically detects and hot-reloads the file after saving (most settings take effect immediately; a few require a process restart). If changes do not apply after a long time, check the YAML format or re-save via the Web configuration panel to trigger a refresh.
 
 ---
+
+## Keeping sessions and SQLite trajectories indefinitely
+
+Merge these fields into the existing sections in `config/config.yaml` under the data directory:
+
+```yaml
+session_cleanup:
+  retention_days: 0
+trajectory_ui:
+  retention_days: 0
+  discard_final_span_frames: false
+```
+
+`session_cleanup.retention_days` defaults to `30`. Sessions expire by directory modification time, and orphan file-operation logs are cleaned separately. Zero disables both automatic cleanup operations. The legacy `CLEANUP_PERIOD_DAYS` environment variable overrides the configuration; zero also disables cleanup there. Invalid or negative settings fall back to the default.
+
+`trajectory_ui.retention_days` defaults to `7`. Zero disables both expiry of records inside SQLite and sweeping of idle session databases, including WAL/SHM files. `discard_final_span_frames` defaults to `true`, deleting stream frames replaced by a completed span's final record; set it to `false` to keep these frames too.
+
+Restart services after editing. Session archival requires an explicit operation; there is no scheduled automatic archival. These settings leave manual archive/delete operations and ordinary log/OTel file-exporter rotation available. Disk usage grows as history accumulates.

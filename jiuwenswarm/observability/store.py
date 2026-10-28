@@ -386,7 +386,7 @@ def _decode_payload(stored: bytes | None) -> bytes:
 
 
 class TrajectoryStore:
-    """Single-threaded SQLite writer that preserves raw record bytes unchanged."""
+    """Single-threaded SQLite writer preserving raw bytes; zero days disables expiry."""
 
     def __init__(
         self,
@@ -396,7 +396,8 @@ class TrajectoryStore:
         discard_final_span_frames: bool = DEFAULT_DISCARD_FINAL_SPAN_FRAMES,
     ) -> None:
         self.database_path = Path(database_path)
-        self.retention_days = max(1, int(retention_days))
+        parsed_retention_days = int(retention_days)
+        self.retention_days = 0 if parsed_retention_days == 0 else max(1, parsed_retention_days)
         self.discard_final_span_frames = bool(discard_final_span_frames)
         self._connection: sqlite3.Connection | None = None
 
@@ -1038,6 +1039,7 @@ class TrajectoryStore:
         and then reclaims whatever content no remaining record or checkpoint
         reaches. Readers see the removal as a new store epoch and rebuild from
         the checkpoints. The file shrinks by an incremental vacuum afterwards.
+        A retention period of zero skips all expiry work.
 
         Args:
             now: Unix second to measure the retention window from.
@@ -1045,6 +1047,8 @@ class TrajectoryStore:
         Returns:
             The number of records removed.
         """
+        if self.retention_days == 0:
+            return 0
         connection = self._require_connection()
         cutoff = int(now if now is not None else time.time()) - self.retention_days * 86400
         try:

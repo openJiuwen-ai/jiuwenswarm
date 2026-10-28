@@ -1837,3 +1837,24 @@ def test_change_seq_comes_from_store_state_and_never_rewinds(tmp_path: Path) -> 
         reopened.close()
     assert int(state["max_change_seq"]) == 2
     test_logger.info("revision counter kept growing across retention and restart")
+
+
+def test_zero_retention_preserves_expired_frames_after_reopen(tmp_path: Path) -> None:
+    """Startup and repeated expiry passes keep old data indefinitely."""
+    database = tmp_path / "forever.sqlite3"
+    store = TrajectoryStore(database, retention_days=0)
+    store.initialize()
+    try:
+        store.write_records([], frames=[_frame(0, timestamp_unix_nano=1)])
+        assert store.delete_expired(now=999_999_999) == 0
+    finally:
+        store.close()
+    store = TrajectoryStore(database, retention_days=0)
+    store.initialize()
+    try:
+        assert store.delete_expired(now=1_999_999_999) == 0
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM trajectory_stream_frames").fetchone() == (1,)
+    finally:
+        store.close()
+    test_logger.info("zero retention preserved old trajectory frames across reopen")

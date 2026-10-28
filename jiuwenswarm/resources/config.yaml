@@ -623,6 +623,11 @@ agent_observability:
   traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
   file_retention_days: 7            # file exporter 文件保留天数
 
+session_cleanup:
+  # Automatic expiry only; explicit session archive/delete operations remain available.
+  # CLEANUP_PERIOD_DAYS overrides this setting when set.
+  retention_days: 30                # Set 0 to keep sessions and file-operation logs indefinitely.
+
 # ============================================================
 # 单 Agent 轨迹观测 Web 数据面
 # ============================================================
@@ -636,7 +641,7 @@ trajectory_ui:
   enabled: false                     # 数据面开关；由 diagnosis_enabled 同步写入，勿单独依赖实验设置
   diagnosis_enabled: false           # 启用「诊断与归因」入口并记录轨迹数据；关闭后隐藏轨迹相关页面
   db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
-  retention_days: 7                 # SQLite 轨迹保留天数
+  retention_days: 7                 # SQLite retention in days; 0 disables record expiry and database sweeping.
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间

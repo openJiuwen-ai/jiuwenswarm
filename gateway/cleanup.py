@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """Periodic background cleanup for old session data and file_ops logs.
 
@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
+from gateway.common.config import get_config
 from gateway.common.paths import (
     get_agent_sessions_dir,
     get_agent_workspace_dir,
@@ -30,13 +31,19 @@ AGENT_ID = "jiuwenswarm"
 
 
 def _get_cleanup_period_days() -> int:
-    env_val = os.getenv("CLEANUP_PERIOD_DAYS")
-    if env_val:
-        try:
-            return int(env_val)
-        except (ValueError, TypeError):
-            pass
-    return DEFAULT_CLEANUP_PERIOD_DAYS
+    """Resolve session retention; zero disables automatic cleanup.
+
+    The legacy environment variable takes precedence over configuration.
+    Invalid or negative values fall back to the historical default.
+    """
+    section = get_config().get("session_cleanup", {})
+    configured = section.get("retention_days") if isinstance(section, dict) else None
+    value = os.getenv("CLEANUP_PERIOD_DAYS") or configured
+    try:
+        days = int(value)
+    except (ValueError, TypeError):
+        return DEFAULT_CLEANUP_PERIOD_DAYS
+    return days if days >= 0 else DEFAULT_CLEANUP_PERIOD_DAYS
 
 
 def _get_cutoff_timestamp() -> float:
@@ -50,11 +57,13 @@ def _rmtree(path: Path) -> None:
 
 
 def cleanup_old_sessions() -> dict[str, int]:
-    """清理超过保留期的会话目录（按目录 mtime 判断，与 cc 一致）。
+    """Remove expired session directories unless retention is disabled.
 
     Returns:
         { "removed": N, "errors": N }
     """
+    if _get_cleanup_period_days() == 0:
+        return {"removed": 0, "errors": 0}
     cutoff = _get_cutoff_timestamp()
     sessions_dir = get_agent_sessions_dir()
     if not sessions_dir.is_dir():
@@ -84,11 +93,13 @@ def cleanup_old_sessions() -> dict[str, int]:
 
 
 def cleanup_orphan_file_ops() -> dict[str, int]:
-    """清理对应会话目录已不存在的 file_ops 日志。
+    """Remove orphan file-operation logs unless retention is disabled.
 
     Returns:
         { "removed": N, "errors": N }
     """
+    if _get_cleanup_period_days() == 0:
+        return {"removed": 0, "errors": 0}
     sessions_dir = get_agent_sessions_dir()
     existing_sessions: set[str] = set()
     if sessions_dir.is_dir():

@@ -383,3 +383,21 @@ def test_router_start_runs_initial_sweep(tmp_path: Path) -> None:
         assert router.close(timeout=5) is True
     assert not stale.exists()
     test_logger.info("router startup swept a dormant session database")
+
+
+def test_forever_retention_keeps_stale_databases_and_sidecars(tmp_path: Path) -> None:
+    """Neither startup nor periodic sweeping may remove retained databases."""
+    from dataclasses import replace
+
+    from jiuwenswarm.observability.config import database_files
+
+    root = tmp_path / "sessions"
+    stale = _session_database_with_age(root, "session-forever", age_days=999)
+    router = TrajectorySessionSinkRouter(replace(_settings(root), retention_days=0))
+    router.start()
+    try:
+        assert router.sweep_stale_databases() == 0
+        assert all(path.exists() for path in database_files(stale))
+    finally:
+        assert router.close(timeout=5) is True
+    test_logger.info("indefinite retention kept stale databases and WAL sidecars")
