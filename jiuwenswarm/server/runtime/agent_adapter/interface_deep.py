@@ -3396,7 +3396,9 @@ class JiuWenSwarmDeepAdapter:
         ``skill_tool`` call fails with ``Skill not found``. When the request
         carries a session id that maps to a live session adapter here, run the
         same lazy refresh immediately under the session lock; failures fall
-        back to the lazy next-turn semantics and other sessions are untouched.
+        back to the lazy next-turn semantics (a failed refresh records the
+        shared 30s retry-suppression stamp, so the immediately following
+        boundary retry may be suppressed) and other sessions are untouched.
         """
         session_id = str(getattr(request, "session_id", None) or "").strip()
         if not session_id:
