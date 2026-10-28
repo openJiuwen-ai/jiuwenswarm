@@ -14,13 +14,15 @@ PR05 两个无写入的 BUILTIN Ops。由现有 `ops.build` 的 session BUILTIN 
 
 ### `await ops.session.turns() -> int | None`
 
-统计当前主会话已提交用户输入记录的不同 request_id 数；旧记录无 request_id 时按 id，二者均无时逐条计数。不统计 assistant/tool/system、子 Agent、跨会话消息、扩展追加、压缩摘要、已有心跳标记、cron/heartbeat 渠道和带系统 source 的记录；无来源标记的旧 user/human 记录按历史用户记录解释。存在但无输入为 0，未知或已删除会话为 None。读取反映当前保留的历史分支，非生命周期累计计数。
+统计当前主会话已提交用户输入记录的不同 request_id 数；旧记录无 request_id 时按 id，二者均无时逐条计数。不统计 assistant/tool/system、子 Agent、跨会话消息、扩展追加、压缩摘要、已有心跳标记、cron/heartbeat 渠道和带任意非空 source 的记录；当前平台将 source 用作系统来源，不给普通用户历史行设置该顶层字段，无来源标记的旧 user/human 记录按历史用户记录解释。存在但无输入为 0，未知或已删除会话为 None。读取反映当前保留的历史分支，非生命周期累计计数，也不是 AgentLoop turn_id 或 turn.start 的序号。
 
 ### `await ops.session.usage(breakdown: bool = False) -> dict | None`
 
 返回 `schema_version="session-usage.v1"`、session_id、source（host/history）、context 和 turn；二者均缺失时为 None。context 和 turn 可以独立缺失、时点和 request_id 不同，不强行合并。context 保存最新主 Agent context.usage 的 request_id、phase、timestamp、sequence、context_window 和 measurement；context_window 的 occupancy_rate 是 0～1 比例，measurement.estimated 区分估算，总量来源保持 Core 的语义。turn 保存最近 chat.usage_summary 的 request_id、timestamp、input_tokens、output_tokens、total_tokens、cache_tokens（可缺失）、source="provider_usage"；是单轮 provider 汇总而非窗口占用或累计账单。breakdown=True 时 context 额外包含 parts；默认不返回明细。未知数值为 None，0 仍为 0。
 
 宿主通知优先返回边界已捕获的用量快照副本，其他事件读取历史最新已提交快照。返回值为副本；不返回文本、凭据、模型连接或其他会话数据。布尔参数不接受字符串/数字替代。
+
+宿主 context 与 turn 独立校验：单个分量无效时置 None，保留另一个有效分量；两者都无效则返回 None，不回读上一轮来替代本轮。历史文件读取仍保持严格错误语义。cache_tokens 与原生 summary 的字段存在规则一致：input_tokens>0 才携带；未携带时返回 None，已携带的 0 保持 0。历史 context/turn 都排除外会话、子 Agent、非零 depth、父调用、成员和 Team 标记的记录。
 
 ## 3. 不变量与失败
 

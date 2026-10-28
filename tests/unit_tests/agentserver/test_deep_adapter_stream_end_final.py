@@ -174,7 +174,13 @@ async def test_native_model_binding_supplies_history_context_and_releases_scope(
     assert context.metadata["session_model_info"]["model_name"] == "applied-native-model"
     assert context.metadata["session_model_info"]["source"] == "runtime"
     assert bound_history_context("sess-stream-end-final") is None
-async def test_native_usage_captures_structured_context_before_notification(monkeypatch):
+
+
+@pytest.mark.parametrize("marker", [
+    {"session_id": "foreign-session"}, {"depth": 1}, {"parent_invocation_id": "parent"},
+    {"member_name": "member"}, {"team_id": "team"},
+])
+async def test_native_usage_captures_structured_context_before_notification(monkeypatch, marker):
     from jiuwenswarm.extensions_v2.event_types import context_usage
 
     adapter = _adapter_ready(monkeypatch)
@@ -187,17 +193,34 @@ async def test_native_usage_captures_structured_context_before_notification(monk
     }
     observed = []
     monkeypatch.setattr(context_usage, "notify_context_usage", lambda update, **kwargs: observed.append(kwargs))
+    other = {**raw, **marker, "request_id": "excluded-window",
+             "context_window": {"input_tokens": 987, "limit_tokens": 1000}}
     events = await _run_stream(adapter, [
         SimpleNamespace(type="context.usage", payload=raw),
-        SimpleNamespace(type="context.usage", payload={**raw, "session_id": "foreign-session"}),
-        SimpleNamespace(type="context.usage", payload={**raw, "depth": 1}),
+        SimpleNamespace(type="context.usage", payload=other),
         _usage_chunk(),
     ])
     assert observed[0]["context_usage"]["context_window"]["input_tokens"] == 120
+    assert observed[0]["context_usage"]["request_id"] == "model-call-1"
     assert observed[0]["context_usage"]["measurement"]["estimated"] is False
     raw["context_window"]["input_tokens"] = 999
     assert observed[0]["context_usage"]["context_window"]["input_tokens"] == 120
     assert any(item.get("event_type") == "chat.usage_summary" for item in events)
+
+
+@pytest.mark.parametrize("input_tokens", [0, 10])
+async def test_native_summary_cache_field_presence_follows_reported_input(monkeypatch, input_tokens):
+    from jiuwenswarm.extensions_v2.event_types import context_usage
+
+    adapter = _adapter_ready(monkeypatch)
+    monkeypatch.setattr(context_usage, "notify_context_usage", lambda update, **kwargs: None)
+    usage = _usage_chunk(output_tokens=20)
+    usage.payload["usage_metadata"].update({"input_tokens": input_tokens, "total_tokens": input_tokens + 20})
+    events = await _run_stream(adapter, [usage])
+    summary = next(item["usage"] for item in events if item.get("event_type") == "chat.usage_summary")
+    assert ("cache_tokens" in summary) is (input_tokens > 0)
+    if input_tokens > 0:
+        assert summary["cache_tokens"] == 0
 
 
 
