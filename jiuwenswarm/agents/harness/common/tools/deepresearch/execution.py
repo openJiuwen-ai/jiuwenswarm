@@ -14,7 +14,7 @@ import time
 import uuid
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
-from typing import Any, Awaitable, Callable, Mapping
+from typing import Any, Awaitable, Callable, Literal, Mapping
 
 from openjiuwen.core.foundation.tool import tool
 
@@ -34,6 +34,7 @@ from .tools import (
     build_model_research_fallback,
     _call_deepresearch_stream_impl,
     _deepresearch_stage_hint_ctx,
+    _deepresearch_main_agent_plan_ctx,
     _get_brief_upgrade_record,
     _get_cached_outline_json,
     _get_route,
@@ -1055,6 +1056,9 @@ async def _handle_outcome(
             brief_upgrade_available=outcome.get("brief_upgrade_available") is True,
         )
         completed_updates: dict[str, Any] = {"conversation_id": conversation_id}
+        if state.get("task_mode") == "main_agent":
+            # Paths come from successfully delivered artifacts, never model input.
+            completed_updates["report_files"] = outcome.get("report_files", [])
         if html_style_status is not None:
             completed_updates["html_style_status"] = html_style_status
         if html_style_phase is not None:
@@ -1062,6 +1066,8 @@ async def _handle_outcome(
             completed_updates["html_style_reason_code"] = html_style_reason_code
         state = _persist(context, state, "completed", **completed_updates)
         result_fields: dict[str, Any] = {"content": content}
+        if state.get("task_mode") == "main_agent":
+            result_fields.update(continuation="main_agent", report_files=state.get("report_files", []))
         if html_style_status is not None:
             result_fields["html_style_status"] = html_style_status
         if html_style_phase is not None:
@@ -1248,6 +1254,10 @@ _material_execution_locks = weakref.WeakValueDictionary()
         "resumes the same SDK conversation, and directly delivers the terminal result. "
         "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
         "single-page concise reports; infer from the user's original wording. "
+        "task_mode: 'main_agent' when the Main Agent owns the top-level todos; "
+        "return delivered report_files to continue with document skills, without "
+        "publishing internal stage todos or ending the whole request. "
+        "The default 'standalone' retains direct terminal delivery. "
         "upgrade_from_brief: set true only when the user confirms expanding the "
         "just-delivered brief report in the same session into a full professional "
         "report; it reuses the cached brief outline and skips intent recognition. "
@@ -1270,28 +1280,38 @@ async def deepresearch_execute(
     report_type: DeepResearchReportType | None = None,
     upgrade_from_brief: bool = False,
     conversation_id: str = "",
+    task_mode: Literal["standalone", "main_agent"] = "standalone",
 ) -> dict[str, Any]:
     context = _execution_context.get()
-    if context is None or not (context.materials_context or (context.state or {}).get("materials_prepared")):
-        return await _execute_workflow(
-            query, file_name, report_type, conversation_id,
-            upgrade_from_brief=upgrade_from_brief,
-        )
-    key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
-    lock = _material_execution_locks.setdefault(key, asyncio.Lock())
-    if lock.locked():
-        latest = context.load_state() if context.load_state else context.state
-        return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
-    async with lock:
-        latest = context.load_state() if context.load_state else context.state
-        token = _execution_context.set(replace(context, state=latest))
-        try:
+    # HITL resumes and stopped claims retain the initial ownership decision.
+    mode = (context.state or {}).get("task_mode", task_mode) if context else task_mode
+    if mode not in {"standalone", "main_agent"}:
+        raise ValueError("invalid DeepResearch task_mode")
+    plan_token = _deepresearch_main_agent_plan_ctx.set(mode == "main_agent")
+    try:
+        context = _execution_context.get()
+        if context is None or not (context.materials_context or (context.state or {}).get("materials_prepared")):
             return await _execute_workflow(
                 query, file_name, report_type, conversation_id,
                 upgrade_from_brief=upgrade_from_brief,
             )
-        finally:
-            _execution_context.reset(token)
+        key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
+        lock = _material_execution_locks.setdefault(key, asyncio.Lock())
+        if lock.locked():
+            latest = context.load_state() if context.load_state else context.state
+            return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
+        async with lock:
+            latest = context.load_state() if context.load_state else context.state
+            token = _execution_context.set(replace(context, state=latest))
+            try:
+                return await _execute_workflow(
+                    query, file_name, report_type, conversation_id,
+                    upgrade_from_brief=upgrade_from_brief,
+                )
+            finally:
+                _execution_context.reset(token)
+    finally:
+        _deepresearch_main_agent_plan_ctx.reset(plan_token)
 
 
 async def _execute_workflow(
@@ -1327,8 +1347,11 @@ async def _execute_workflow(
             # config REPORT_TYPE -> run_deepsearch.py -> SDK config.report_type，
             # 触发 IntentRecognitionNode 锁死 report_type 字段，LLM 无决定权。
             "requested_report_type": report_type or context.requested_report_type or "brief",
+            "task_mode": "main_agent" if _deepresearch_main_agent_plan_ctx.get() else "standalone",
             "revision": 0,
         }
+    # Existing pre-mode checkpoints can opt in; a stored mode is never overwritten.
+    state.setdefault("task_mode", "main_agent" if _deepresearch_main_agent_plan_ctx.get() else "standalone")
     if not str(state.get("query") or "").strip():
         return _terminal_error(
             context,
@@ -1377,7 +1400,10 @@ async def _execute_workflow(
             ),
         )
     if phase in {"completed", "cancelled"}:
-        return _result(phase, state, content="DeepResearch 任务已经结束。")
+        fields = {}
+        if phase == "completed" and state.get("task_mode") == "main_agent":
+            fields = {"continuation": "main_agent", "report_files": state.get("report_files", [])}
+        return _result(phase, state, content="DeepResearch 任务已经结束。", **fields)
     if phase == "error":
         if (state.get("model_research_fallback") is True
                 and state.get("error_code") in MODEL_RESEARCH_HANDOFF_ERRORS):

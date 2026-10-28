@@ -6864,3 +6864,65 @@ async def test_native_mcp_is_transmitted_only_in_stdin_and_context_is_reset(foll
     assert dt._mcp_servers_ctx.get() is None
     assert dt._deepresearch_upgrade_snapshot_ctx.get() is None
     assert dt._deepresearch_brief_refresh_query_ctx.get() is None
+
+
+@pytest.mark.asyncio
+async def test_main_agent_plan_keeps_progress_without_overwriting_todos(tmp_path: Path):
+    proc = _Proc(
+        [
+            json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
+            json.dumps({"agent": "outline", "content": "# 1. Scope"}),
+            json.dumps(
+                {
+                    "agent": "sub_reporter",
+                    "section_idx": "1",
+                    "section_total": 1,
+                    "event": "summary_response",
+                    "content": "SUCCESS",
+                }
+            ),
+            json.dumps(
+                {
+                    "__deepsearch_status__": "completed",
+                    "conversation_id": "C1",
+                    "final_result": {"response_content": "final"},
+                }
+            ),
+        ]
+    )
+    route = {
+        "request_id": "R",
+        "channel_id": "CH",
+        "session_id": "S",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    persist = Mock(return_value=True)
+    patches = _stream_patches(proc, route=route)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
+        stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
+        stack.enter_context(
+            patch.object(
+                dt,
+                "_write_report_artifacts_stream",
+                new=AsyncMock(return_value={"md": str(tmp_path / "r.md")}),
+            )
+        )
+        token = dt._deepresearch_main_agent_plan_ctx.set(True)
+        try:
+            outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        finally:
+            dt._deepresearch_main_agent_plan_ctx.reset(token)
+    assert outcome["status"] == "completed"
+    payloads = [call.args[0]["payload"] for call in push.send_push.await_args_list]
+    assert not any(item.get("event_type") == "task.update" for item in payloads)
+    assert any(item.get("event_type") == "task.start" for item in payloads)
+    assert any(item.get("event_type") == "task.complete" for item in payloads)
+    delivered = next(item["files"] for item in payloads if item.get("event_type") == "chat.file")
+    assert outcome["report_files"] == delivered
+    persist.assert_not_called()

@@ -236,6 +236,10 @@ _deepresearch_route_ctx: contextvars.ContextVar[dict[str, object] | None] = (
 _deepresearch_router_state_ctx: contextvars.ContextVar[object | None] = (
     contextvars.ContextVar("jiuwenswarm_deepresearch_router_state", default=None)
 )
+# Main Agent owns the outer plan; internal stages must not replace its todos.
+_deepresearch_main_agent_plan_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "jiuwenswarm_deepresearch_main_agent_plan", default=False
+)
 # 停止续跑(resume node='stopped')的前端进度起始阶段提示:认领侧
 # (execution.py)按被停止节点推导后经本上下文传入 _consume_stream,
 # 避免进度列表错误回退到第一步(详见 stream_router.stage_for_resume_node)。
@@ -3468,6 +3472,7 @@ async def _deliver_salvaged_report(
         "status": "completed",
         "conversation_id": conversation_id,
         "report_delivered": True,
+        **({"report_files": files} if _deepresearch_main_agent_plan_ctx.get() else {}),
         "salvaged_report": True,
     }
     if html_style_status in {"applied", "fallback"}:
@@ -3538,6 +3543,8 @@ async def _deliver_race_completed_report(
             return False
         if not isinstance(safe_payload, dict):
             return False
+        if _deepresearch_main_agent_plan_ctx.get() and safe_payload.get("event_type") == "task.update":
+            return True
         if todo_path is not None and safe_payload.get("event_type") == "task.update":
             try:
                 persist_deepresearch_task_update(safe_payload, todo_path=todo_path)
@@ -3651,6 +3658,7 @@ async def _deliver_race_completed_report(
         "status": "completed",
         "conversation_id": resolved_cid,
         "report_delivered": True,
+        **({"report_files": files} if _deepresearch_main_agent_plan_ctx.get() else {}),
         "race_completed": True,
     }
     if html_style_status in {"applied", "fallback"}:
@@ -3786,6 +3794,8 @@ async def _consume_stream(
         safe_payload = _redact_json_value(payload, secrets)
         if not isinstance(safe_payload, dict):
             raise _StreamProtocolInvalid("Gateway payload is not an object")
+        if _deepresearch_main_agent_plan_ctx.get() and safe_payload.get("event_type") == "task.update":
+            return True
         if todo_path is not None and safe_payload.get("event_type") == "task.update":
             try:
                 persist_deepresearch_task_update(
@@ -4180,6 +4190,7 @@ async def _consume_stream(
                 "status": "completed",
                 "conversation_id": chunk.get("conversation_id", outcome_cid),
                 "report_delivered": True,
+                **({"report_files": files} if _deepresearch_main_agent_plan_ctx.get() else {}),
             }
             # brief→professional 升级：完成即登记来源记录（metadata 缺失/无效
             # 同样登记为不可用并覆盖旧记录——升级不会读到上一份 brief 的缓存
