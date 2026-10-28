@@ -9106,15 +9106,19 @@ class JiuWenSwarmDeepAdapter:
         return skill_evolution_rail
 
     def _ttse_bank_path(self) -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob.
+        """FACT/TIP bank shared with expert-team mode; not a user knob.
 
-        Uses ``self._workspace_dir`` (same tenant root as memory rails). Sync
-        and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
+        Uses ``self._workspace_dir`` (same tenant root as memory rails). On the
+        standard ``service_*/agent_*/agent/jiuwenclaw_workspace`` layout this is
+        ``service_*/.ttse/bank.json``, so single-agent and team write one file.
+        Sync and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
         :func:`get_agent_workspace_dir` would fall back to the default-tenant
-        shared workspace and mix FACT/TIP banks across tenants.
+        workspace and pick the wrong service.
         """
+        from jiuwenswarm.common.config import resolve_shared_ttse_bank
+
         root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
-        return str(root / ".ttse" / "bank.json")
+        return str(resolve_shared_ttse_bank(root))
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins).

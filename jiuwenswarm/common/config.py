@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
 import threading
 import time
@@ -630,6 +631,86 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
     """
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
+
+
+def shared_ttse_bank_path(workspace: Path | str) -> Path:
+    """One FACT/TIP bank for single-agent and expert-team on the same service.
+
+    Standard layout is ``<service_*>/agent_*/agent/jiuwenclaw_workspace``.
+    The bank is then ``<service_*>/.ttse/bank.json``, so every agent under that
+    service reads and writes the same file. Leader experience is a category in
+    that bank, not a second directory. Any other workspace keeps
+    ``<workspace>/.ttse/bank.json``.
+    """
+    ws = Path(workspace)
+    agent_dir = ws.parent
+    service = agent_dir.parent.parent
+    if agent_dir.name == "agent" and service.name.startswith("service_"):
+        return service / ".ttse" / "bank.json"
+    return ws / ".ttse" / "bank.json"
+
+
+_TTSE_BANK_SIDECARS = (
+    "chroma",
+    "bm25",
+    "dream",
+    "by_cat",
+    "CATALOG.md",
+    "index.json",
+    "dream-state.json",
+)
+
+
+def resolve_shared_ttse_bank(workspace: Path | str) -> Path:
+    """Bank path to open, moving a legacy workspace bank once.
+
+    The service layout reads ``<service_*>/.ttse/bank.json``. Older single-agent
+    runs wrote ``<workspace>/.ttse/bank.json``. When the new file is absent and
+    the old file exists, move the bank and its index siblings. A new file that
+    already exists is left in place. If the move fails, keep reading the old file.
+    """
+    new_bank = shared_ttse_bank_path(workspace)
+    old_bank = Path(workspace) / ".ttse" / "bank.json"
+    if os.path.normcase(str(new_bank)) == os.path.normcase(str(old_bank)):
+        return new_bank
+    if new_bank.is_file() or not old_bank.is_file():
+        return new_bank
+    try:
+        new_bank.parent.mkdir(parents=True, exist_ok=True)
+        _move_ttse_file(old_bank, new_bank)
+        for name in _TTSE_BANK_SIDECARS:
+            source = old_bank.parent / name
+            target = new_bank.parent / name
+            if source.exists() and not target.exists():
+                shutil.move(str(source), str(target))
+    except OSError as exc:
+        if new_bank.is_file():
+            return new_bank
+        logger.warning(
+            "[ttse] bank migration failed, still reading %s: %s",
+            old_bank,
+            exc,
+        )
+        return old_bank
+    logger.info("[ttse] migrated bank %s -> %s", old_bank, new_bank)
+    return new_bank
+
+
+def _move_ttse_file(source: Path, target: Path) -> None:
+    """Move ``source`` onto ``target`` without replacing an existing file."""
+    try:
+        os.link(source, target)
+    except FileExistsError:
+        return
+    except OSError:
+        if target.exists():
+            return
+        shutil.move(str(source), str(target))
+        return
+    try:
+        source.unlink()
+    except OSError as exc:
+        logger.warning("[ttse] bank copied to %s but old file remains: %s", target, exc)
 
 
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:

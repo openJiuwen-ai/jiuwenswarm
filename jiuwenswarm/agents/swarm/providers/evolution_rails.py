@@ -52,6 +52,8 @@ logger = logging.getLogger(__name__)
 TEAM_SKILL_EVOLUTION = "swarm.team_skill_evolution"
 TEAM_SKILL_CREATE = "swarm.team_skill_create"
 MEMBER_SKILL_EVOLUTION = "swarm.member_skill_evolution"
+TEAM_TTSE = "swarm.team_ttse"
+MEMBER_TTSE = "swarm.member_ttse"
 EVOLUTION_INTERRUPT = "swarm.evolution_interrupt"
 
 
@@ -675,12 +677,224 @@ def build_member_skill_evolution_rail(
         return []
 
 
+class TeamTTSEInput(ConstructionInput):
+    """Construction inputs shared by the leader and member TTSE rails.
+
+    Spec-build bakes harness settings into params so spawn/recover rebuilds do
+    not re-read the receiving process ``config.yaml`` or the tenant workspace CV.
+    """
+
+    evolution_model_config: dict[str, Any] = param_field(
+        default_factory=dict,
+        description="Serializable evolution model config (LLM built at build time).",
+    )
+    evolve_enabled: bool = param_field(
+        default=True,
+        description="Whether the leader bank may induce FACT/TIP rules.",
+    )
+    inject_enabled: bool = param_field(
+        default=True,
+        description="Whether ttse_consult / catalog injection is enabled.",
+    )
+    dream_enabled: bool = param_field(
+        default=True,
+        description="Whether the leader bank may run silent dream hygiene.",
+    )
+    leader_bank_path: str = param_field(
+        default="",
+        description="Absolute path of the shared leader bank.json.",
+    )
+    member_bank_path: str = param_field(
+        default="",
+        description="Absolute path of the shared member bank.json.",
+    )
+    embedding_config: dict[str, str] = param_field(
+        default_factory=dict,
+        description="Serializable embedding provider fields (api_key/base_url/model).",
+    )
+    dream_interval: int = param_field(
+        default=50,
+        description="Non-follow-up iterations between dream attempts. Matches the single-agent default, not TTSEConfig's 20.",
+    )
+    dream_min_hours: float = param_field(
+        default=24.0,
+        description="Minimum hours between dream runs.",
+    )
+    dream_ttl_days: int = param_field(
+        default=90,
+        description="Age in days after which dream may prune rules.",
+    )
+    consult_top_k: int = param_field(
+        default=8,
+        description="Per-track FACT/TIP hit count for ttse_consult.",
+    )
+    consult_retrieve_mode: str = param_field(
+        default="hybrid",
+        description="ttse_consult scoring path: hybrid, embed, or bm25.",
+    )
+    consult_rrf_k: int = param_field(
+        default=60,
+        description="RRF constant for BM25 and embedding fusion.",
+    )
+    trajectory_export_enabled: bool = param_field(
+        default=False,
+        description="Whether to snapshot invoke messages for an offline bench.",
+    )
+    trajectory_export_path: str = param_field(
+        default="",
+        description="JSON path used when trajectory export is enabled.",
+    )
+
+
+def _ttse_embedding_provider(emb_cfg: dict[str, str] | None) -> Any:
+    """Build the embedding provider from baked params. Empty config means off."""
+
+    if not emb_cfg:
+        return None
+    api_key = str(emb_cfg.get("api_key") or "").strip()
+    base_url = str(emb_cfg.get("base_url") or "").strip()
+    model = str(emb_cfg.get("model") or "").strip()
+    if not (api_key and base_url and model):
+        return None
+    from jiuwenswarm.agents.harness.common.memory.embeddings import (
+        OpenAICompatibleEmbeddingProvider,
+    )
+
+    return OpenAICompatibleEmbeddingProvider(
+        api_key=api_key,
+        base_url=base_url,
+        model=model,
+    )
+
+
+def _ttse_config_fields(inp: TeamTTSEInput) -> dict[str, Any]:
+    """Knobs both builders pass through so a team rail matches the single-agent rail."""
+
+    return {
+        "dream_interval": inp.dream_interval,
+        "dream_min_hours": inp.dream_min_hours,
+        "dream_ttl_days": inp.dream_ttl_days,
+        "consult_top_k": inp.consult_top_k,
+        "consult_retrieve_mode": inp.consult_retrieve_mode,
+        "consult_rrf_k": inp.consult_rrf_k,
+        "trajectory_export_enabled": inp.trajectory_export_enabled,
+        "trajectory_export_path": inp.trajectory_export_path,
+    }
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=TEAM_TTSE,
+    description="Leader TTSE rail: split team spans into leader and member banks.",
+    input_model=TeamTTSEInput,
+)
+def build_team_ttse_rail(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build the leader TeamTTSERail. Empty when this member is not the leader."""
+
+    if ctx.role != "leader":
+        return []
+    try:
+        from openjiuwen.agent_evolving.ttse.config import TTSEConfig
+        from openjiuwen.harness.rails.evolution.team_ttse_rail import TeamTTSERail
+
+        inp = TeamTTSEInput.resolve(params, ctx)
+        if not inp.leader_bank_path or not inp.member_bank_path:
+            logger.warning("[swarm.team_ttse] skipped: bank paths missing from params")
+            return []
+        processor = get_trajectory_span_processor()
+        if processor is None:
+            logger.warning("[swarm.team_ttse] skipped: TrajectorySpanProcessor unavailable")
+            return []
+        llm_model, model_name = _build_evolution_llm_from(inp.evolution_model_config)
+        embedding = _ttse_embedding_provider(inp.embedding_config)
+        rail = TeamTTSERail(
+            llm=llm_model,
+            model=model_name,
+            member_store_path=inp.member_bank_path,
+            ttse_config=TTSEConfig(
+                store_path=inp.leader_bank_path,
+                evolve_enabled=inp.evolve_enabled,
+                inject_enabled=inp.inject_enabled,
+                dream_enabled=inp.dream_enabled,
+                embedding=embedding,
+                **_ttse_config_fields(inp),
+            ),
+            trajectory_span_processor=processor,
+        )
+        logger.info(
+            "[swarm.team_ttse] built: leader_bank=%s member_bank=%s evolve=%s inject=%s dream=%s",
+            inp.leader_bank_path,
+            inp.member_bank_path,
+            inp.evolve_enabled,
+            inp.inject_enabled,
+            inp.dream_enabled,
+        )
+        return [rail]
+    except Exception as exc:
+        logger.warning("[swarm.team_ttse] build failed: %s", exc, exc_info=True)
+        return []
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=MEMBER_TTSE,
+    description="Member TTSE rail: inject from the shared member bank, never evolve or dream.",
+    input_model=TeamTTSEInput,
+)
+def build_member_ttse_rail(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
+    """Build an inject-only stock TTSERail for a teammate."""
+
+    if ctx.role == "leader":
+        return []
+    try:
+        from openjiuwen.agent_evolving.ttse.config import TTSEConfig
+        from openjiuwen.harness.rails.evolution.ttse_rail import TTSERail
+
+        inp = TeamTTSEInput.resolve(params, ctx)
+        if not inp.member_bank_path:
+            logger.warning("[swarm.member_ttse] skipped: member bank path missing from params")
+            return []
+        processor = get_trajectory_span_processor()
+        if processor is None:
+            logger.warning("[swarm.member_ttse] skipped: TrajectorySpanProcessor unavailable")
+            return []
+        llm_model, model_name = _build_evolution_llm_from(inp.evolution_model_config)
+        embedding = _ttse_embedding_provider(inp.embedding_config)
+        rail = TTSERail(
+            llm=llm_model,
+            model=model_name,
+            ttse_config=TTSEConfig(
+                store_path=inp.member_bank_path,
+                evolve_enabled=False,
+                inject_enabled=inp.inject_enabled,
+                dream_enabled=False,
+                embedding=embedding,
+                **_ttse_config_fields(inp),
+            ),
+            trajectory_span_processor=processor,
+            catalog_omit_categories=("team-planning-and-acceptance",),
+        )
+        logger.info(
+            "[swarm.member_ttse] built: member_bank=%s inject=%s evolve=False dream=False",
+            inp.member_bank_path,
+            inp.inject_enabled,
+        )
+        return [rail]
+    except Exception as exc:
+        logger.warning("[swarm.member_ttse] build failed: %s", exc, exc_info=True)
+        return []
+
+
 __all__ = [
     "EVOLUTION_INTERRUPT",
     "TEAM_SKILL_EVOLUTION",
     "TEAM_SKILL_CREATE",
     "MEMBER_SKILL_EVOLUTION",
+    "TEAM_TTSE",
+    "MEMBER_TTSE",
     "build_team_skill_evolution_rail",
     "build_team_skill_create_rail",
     "build_member_skill_evolution_rail",
+    "build_team_ttse_rail",
+    "build_member_ttse_rail",
 ]
