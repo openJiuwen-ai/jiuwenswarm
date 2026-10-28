@@ -400,7 +400,8 @@ function spawnService(name, ports, extraArgs = []) {
       // Keep the process-group identity until Electron exits. A uv wrapper can
       // exit before its Python descendants, and deleting this entry would make
       // the final cleanup lose ownership of that group.
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }
   });
   child.once('error', error => {
@@ -521,8 +522,14 @@ function watchBackendPair(agentProcess, gatewayProcess) {
       agentExited,
       gatewayExited,
     });
-    if (agentExited && gatewayProcess.exitCode === null) void terminateService(gatewayProcess);
-    if (gatewayExited && agentProcess.exitCode === null) void terminateService(agentProcess);
+    if (agentExited && gatewayProcess.exitCode === null) {
+      void terminateService(gatewayProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
+    if (gatewayExited && agentProcess.exitCode === null) {
+      void terminateService(agentProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
   }, 250);
 }
 
@@ -757,7 +764,10 @@ async function startBackendServices({ ports, webProcess, webReady }) {
     ]);
   } catch (error) {
     for (const child of [webProcess, agentProcess, gatewayProcess]) {
-      if (child) void terminateService(child);
+      if (child) {
+        void terminateService(child).catch(error =>
+          console.error('[electron] background service cleanup incomplete', error));
+      }
     }
     throw error;
   }
@@ -2387,7 +2397,8 @@ function runStartupDoctor() {
     };
     const timer = setTimeout(() => {
       console.warn('[electron] startup doctor timed out');
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }, STARTUP_DOCTOR_TIMEOUT_MS);
     child.once('exit', finish);
     child.once('error', error => {
