@@ -39,6 +39,9 @@ _pending_sdk_read_timeout: contextvars.ContextVar[float | None] = contextvars.Co
 #: connector discovery/startup may legitimately take longer than this
 #: process-level fail-fast fallback.
 DEFAULT_CALL_TIMEOUT = 30.0
+# 清理等待与取消收尾分别有界，避免失活 owner 无回执时无限屏蔽调用方取消。
+_MCP_CLEANUP_TIMEOUT_S = 10.0
+_MCP_CANCEL_DRAIN_TIMEOUT_S = 1.0
 
 # AbilityManager 外层曾用 anyio.fail_after 包 tool.invoke；MCP 重连若落在该
 # cancel scope 内，退出时会抛 cancel scope（TC_MCP_CALL_014 第 3 轮）。
@@ -126,21 +129,46 @@ async def disconnect_remote_mcp_client(
         raise
 
 
-async def _finish_mcp_task_after_cancel(task: asyncio.Task) -> Any:
-    """仅在已捕获取消后等待清理；调用处必须继续 raise 原取消。
+async def _finish_mcp_task_after_cancel(
+    task: asyncio.Task, *, deadline: float | None = None,
+) -> Any:
+    """在预算内保护 owner 清理，超时后取消并有界收尾；调用处继续传播原取消。
 
-    shield 不移动 owner 的上下文，只防止等待者的第二次取消打断清理。
-    AnyIO shield 位于等待者，避免外层已取消 scope 反复唤醒这个等待循环。
+    asyncio.wait 不把等待者的取消转发给目标；AnyIO shield 避免外层已取消
+    scope 反复唤醒。预算耗尽后才主动取消目标，不跨任务关闭任何资源。
     """
     import anyio
 
-    with anyio.CancelScope(shield=True):
+    loop = asyncio.get_running_loop()
+    if deadline is None:
+        deadline = loop.time() + _MCP_CLEANUP_TIMEOUT_S
+
+    async def wait_until(end: float) -> None:
         while not task.done():
+            remaining = end - loop.time()
+            if remaining <= 0:
+                return
             try:
-                await asyncio.shield(task)
+                await asyncio.wait({task}, timeout=remaining)
             except asyncio.CancelledError:
-                continue
-        return task.result()
+                continue  # 后续取消只影响等待者，不能重置清理截止时间。
+
+    def consume_result(finished: asyncio.Task) -> None:
+        # 超时已报告；仍不响应取消的任务结束时取走异常，资源仍归原 owner。
+        with contextlib.suppress(BaseException):
+            finished.result()
+
+    with anyio.CancelScope(shield=True):
+        await wait_until(deadline)
+        if task.done():
+            return task.result()
+        task.cancel()
+        await wait_until(loop.time() + _MCP_CANCEL_DRAIN_TIMEOUT_S)
+        if task.done():
+            consume_result(task)
+        else:
+            task.add_done_callback(consume_result)
+        raise TimeoutError("MCP cleanup deadline exceeded; cleanup incomplete")
 
 
 def manage_sse_owner_cleanup(client: Any) -> None:
@@ -191,23 +219,31 @@ def manage_sse_owner_cleanup(client: Any) -> None:
                 except asyncio.CancelledError:
                     pass  # owner 取消已被等待；调用方取消仍在下方传播
                 except Exception:
+                    force_invalidate_mcp_client(client)
                     logger.warning("[mcp-timeout] SSE owner cleanup failed", exc_info=True)
             raise
 
     async def disconnect_with_cleanup(*args, **kwargs):
         # public API 只向 SDK owner 投命令；实际 __aexit__ 始终留在原 owner。
         # 保住整个 public disconnect，才能执行命令完成后的停止 owner / 释放锁步骤。
+        deadline = asyncio.get_running_loop().time() + _MCP_CLEANUP_TIMEOUT_S
         closing = asyncio.create_task(
             disconnect(*args, **kwargs), name="mcp-sse-disconnect"
         )
         try:
             return await asyncio.shield(closing)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            current = asyncio.current_task()
+            if current is None or not current.cancelling():
+                # shield 的内部任务取消也会抛 CancelledError，不能伪装成用户取消。
+                force_invalidate_mcp_client(client)
+                raise RuntimeError("SSE disconnect cancelled internally; cleanup incomplete") from exc
             try:
-                await _finish_mcp_task_after_cancel(closing)
+                await _finish_mcp_task_after_cancel(closing, deadline=deadline)
             except asyncio.CancelledError:
-                pass  # 清理任务的取消已取出；调用方取消在下方继续传播
+                force_invalidate_mcp_client(client)
             except Exception:
+                force_invalidate_mcp_client(client)
                 logger.warning("[mcp-timeout] SSE disconnect cleanup failed", exc_info=True)
             raise
 
@@ -262,6 +298,7 @@ class _StreamableHttpOwner:
             except asyncio.CancelledError:
                 pass  # owner 的取消已取出；调用方取消在下方继续传播
             except Exception:
+                force_invalidate_mcp_client(self.client)
                 logger.warning("[mcp-timeout] HTTP owner cleanup failed", exc_info=True)
             raise
         except Exception:

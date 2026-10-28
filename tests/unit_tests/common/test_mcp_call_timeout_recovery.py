@@ -474,11 +474,15 @@ async def test_empty_error_after_half_dead_session_reconnects_once(
 @pytest.mark.asyncio
 async def test_cleanup_failure_blocks_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
     """不能把失败的 disconnect 静默视为成功并在旧上下文上重连。"""
+    healthy = False
+
     async def call(self, *args, **kwargs):
-        raise RuntimeError("Session terminated")
+        if not healthy:
+            raise RuntimeError("Session terminated")
+        return {"ok": True}
 
     async def disconnect(self, **kwargs):
-        return False
+        return healthy
 
     client, connect_count, _ = _install_fake_streamable_client(
         monkeypatch, fake_call_tool=call, fake_disconnect=disconnect,
@@ -490,6 +494,13 @@ async def test_cleanup_failure_blocks_reconnect(monkeypatch: pytest.MonkeyPatch)
     assert client._session is session
     assert client._exit_stack is stack
     assert client._jws_needs_reconnect is True
+
+    # 清理恢复后同一个 client 应可重连，不能永久卡在 needs_reconnect。
+    healthy = True
+    assert await client.call_tool("echo", {}) == {"ok": True}
+    assert connect_count["n"] == 1
+    assert client._session is not session
+    assert client._jws_needs_reconnect is False
 
 
 @pytest.mark.asyncio

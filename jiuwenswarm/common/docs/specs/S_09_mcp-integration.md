@@ -57,8 +57,12 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 - **N7 remote 生命周期归属**：connect、退出上下文、失败清理和重连必须由同一任务
   执行。发现用完整生命周期协程；池化连接复用 worker；ToolMgr 的 Streamable HTTP
   连接由补丁的专用 owner 管理，SSE 保留 SDK owner，建连取消时等待该 owner 的
-  finally 清理。SSE public disconnect 的等待者取消时仍等待完整停止流程；
-  等待清理期间的后续取消不得再次传给 owner，完成清理后继续传播原取消。
+  finally 清理。SSE public disconnect 的等待者取消时，在 10 秒清理预算内等待完整
+  停止流程；预算内的后续取消不得再次传给 owner。预算耗尽后取消目标任务，并最多
+  再等待 1 秒收尾；仍未结束则报告失败、保留不可复用状态，不无限屏蔽取消。
+  SSE 清理任务自身取消按清理失败报告，只有等待者真实取消才继续传播原取消。
+  worker 初始化取消向排队调用者映射为 McpWorkerStoppedError，worker 本身继续传播
+  原取消；发现阶段的内部取消仅跳过当前连接器，真实外部取消继续传播。
   建连/调用用 `asyncio.timeout`
   保持任务归属；`wait_for` 仅可用于完整生命周期或不持有上下文的单次 I/O。
   超时/死会话先 await disconnect 再重置状态，禁止延迟跨任务 aclose；False 必须报错。

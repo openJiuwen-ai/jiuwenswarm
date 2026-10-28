@@ -307,9 +307,10 @@ async def test_worker_cancel_during_connect_unblocks_callers(transport, patched,
     caller = asyncio.create_task(worker.call_tool("echo", {}))
     await asyncio.wait_for(transport.entered.wait(), 1)
     worker.task.cancel()
-    for task in (worker.task, caller):
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, 2)
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(worker.task, 2)
+    with pytest.raises(mcp_config.McpWorkerStoppedError):
+        await asyncio.wait_for(caller, 2)
     await settled(transport)
 
 
@@ -706,3 +707,120 @@ async def test_anyio_caller_scope_cancel_allows_owner_cleanup(transport, patched
     await asyncio.wait_for(release, 1)
     assert transport.close_cancellations == 0
     await settled(transport)
+
+
+@pytest.mark.asyncio
+async def test_worker_init_internal_cancel_is_not_caller_cancel(monkeypatch):
+    """worker 初始化的内部取消不能伪装成所有排队请求的用户取消。"""
+    monkeypatch.setattr(
+        mcp_config, "_enter_remote_mcp_session",
+        AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    worker = mcp_config._PooledMcpWorker("test")
+    requests = [mcp_config._McpCallRequest("echo", {}) for _ in range(2)]
+    for request in requests:
+        worker.queue.put_nowait(request)
+    worker.task = asyncio.create_task(mcp_config._run_mcp_worker(
+        {"_mcp_client_type": "sse"}, worker,
+    ))
+    with pytest.raises(asyncio.CancelledError):
+        await worker.task
+    results = await asyncio.gather(*(request.future for request in requests), return_exceptions=True)
+    assert all(isinstance(result, mcp_config.McpWorkerStoppedError) for result in results)
+    await asyncio.wait_for(worker.queue.join(), 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["sse", "streamable-http"])
+@pytest.mark.parametrize("phase", ["connect", "list_tools"])
+async def test_discovery_internal_cancel_skips_only_connector(monkeypatch, kind, phase):
+    """SDK 内部 CancelledError 只让当前连接器发现失败。"""
+    client = SimpleNamespace(
+        connect=AsyncMock(return_value=True),
+        list_tools=AsyncMock(return_value=[]),
+        disconnect=AsyncMock(return_value=True),
+    )
+    getattr(client, phase).side_effect = asyncio.CancelledError()
+    monkeypatch.setattr(mcp_config, "_remote_mcp_client_cls", lambda _: lambda cfg: client)
+    cfg = SimpleNamespace(server_name="test", server_path="http://localhost/mcp", params={})
+    assert await mcp_config._list_remote_mcp_connector_tools("test", cfg, kind) == ([], {})
+    client.disconnect.assert_awaited_once()
+
+
+def sse_cleanup_client(disconnect):
+    client = SimpleNamespace(
+        connect=AsyncMock(return_value=True),
+        disconnect=disconnect,
+        _owner_loop=AsyncMock(),
+        _do_disconnect=AsyncMock(return_value=True),
+    )
+    patch.manage_sse_owner_cleanup(client)
+    return client
+
+
+@pytest.mark.asyncio
+async def test_sse_disconnect_internal_cancel_is_cleanup_failure():
+    client = sse_cleanup_client(AsyncMock(side_effect=asyncio.CancelledError()))
+    with pytest.raises(RuntimeError, match="cancelled internally"):
+        await client.disconnect()
+    assert client._jws_needs_reconnect is True
+    assert asyncio.current_task().cancelling() == 0
+
+
+@pytest.mark.asyncio
+async def test_sse_cancelled_disconnect_has_bounded_cleanup(monkeypatch):
+    """没有 owner 回执时仍须在预算内结束取消流程，不无限 shield。"""
+    monkeypatch.setattr(patch, "_MCP_CLEANUP_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(patch, "_MCP_CANCEL_DRAIN_TIMEOUT_S", 0.02)
+    started, release, stopped = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def disconnect():
+        started.set()
+        try:
+            await release.wait()
+        finally:
+            stopped.set()
+
+    client = sse_cleanup_client(disconnect)
+    caller = asyncio.create_task(client.disconnect())
+    await started.wait()
+    caller.cancel()
+    done, _ = await asyncio.wait({caller}, timeout=0.2)
+    try:
+        assert done, "取消后的 SSE disconnect 超过清理预算仍未返回"
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert stopped.is_set()
+        assert client._jws_needs_reconnect is True
+    finally:
+        release.set()
+        await asyncio.gather(caller, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_finish_cleanup_budget_includes_cancel_resistant_task(monkeypatch):
+    """目标忽略 cancel 时收尾仍有上限，资源由原任务持有，测试最终显式释放。"""
+    monkeypatch.setattr(patch, "_MCP_CLEANUP_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(patch, "_MCP_CANCEL_DRAIN_TIMEOUT_S", 0.02)
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def resistant():
+        started.set()
+        while not release.is_set():
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                continue
+
+    target = asyncio.create_task(resistant())
+    await started.wait()
+    waiter = asyncio.create_task(patch._finish_mcp_task_after_cancel(target))
+    done, _ = await asyncio.wait({waiter}, timeout=0.2)
+    try:
+        assert done, "目标忽略取消导致清理等待无上限"
+        with pytest.raises(TimeoutError, match="cleanup"):
+            await waiter
+        assert target.cancelling() > 0
+    finally:
+        release.set()
+        await asyncio.gather(target, waiter, return_exceptions=True)

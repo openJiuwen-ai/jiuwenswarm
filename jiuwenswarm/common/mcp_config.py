@@ -1066,7 +1066,11 @@ async def _run_mcp_worker(
                 client_type,
                 exc,
             )
-            await _drain_queue_with_error(worker, exc)
+            # worker 自身仍传播取消，但排队 caller 应收到工具失败而非用户取消。
+            mapped = exc if isinstance(exc, Exception) else McpWorkerStoppedError(
+                f"MCP worker initialization interrupted: server={worker.server_name}"
+            )
+            await _drain_queue_with_error(worker, mapped)
             if not isinstance(exc, Exception):
                 raise
             return
@@ -2376,6 +2380,15 @@ async def _list_remote_mcp_connector_tools(
     try:
         # 外层限制包含清理的完整生命周期，不拆分 connect/disconnect 所属任务。
         return await asyncio.wait_for(_discover(), timeout=2 * discovery_timeout + 10.0)
+    except asyncio.CancelledError:
+        if is_asyncio_outer_cancellation():
+            raise
+        logger.warning(
+            "请求级 MCP 连接器 '%s' (%s) 发现阶段内部取消，跳过当前连接器",
+            server_name,
+            client_type,
+        )
+        return [], {}
     except Exception as exc:
         logger.warning(
             "request-scoped MCP connector '%s' (%s) tool discovery failed: %s",
