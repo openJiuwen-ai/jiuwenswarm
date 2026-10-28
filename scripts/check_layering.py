@@ -69,12 +69,15 @@ KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
 # extensions 治理层（registry/manager/loader）同样以 gateway 为唯一实现：
 # 三者持有进程内单例与扩展注册表，双份副本会导致状态分裂。
 # gateway.auth 为登录栈领域共享（sessions.json 等有状态双侧契约需真源单点，
-# 母仓经 common/auth shim 受控消费）。
+# 母仓经 common/auth shim 受控消费）。base_crypto 为 CryptoProvider 注入点
+# 接口件，实现与装配（_RegistryCryptoBridge）在 extensions 治理层，
+# 母仓 config/config_panel 经 common/security shim 受控消费。
 ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
     "gateway.common",
     "gateway.extensions.registry",
     "gateway.extensions.manager",
     "gateway.extensions.loader",
+    "gateway.extensions.base_crypto",
     "gateway.auth",
 )
 

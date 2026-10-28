@@ -1,7 +1,7 @@
 from abc import abstractmethod
 
 from gateway.extensions.sdk.base import BaseExtension
-from jiuwenswarm.common.security.base_crypto import CryptoProvider
+from gateway.extensions.base_crypto import CryptoProvider
 
 
 class CryptoUtility(BaseExtension):
