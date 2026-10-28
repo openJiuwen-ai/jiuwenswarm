@@ -92,6 +92,8 @@ TEAM_PERMISSION_POLICY = _member_rails.TEAM_PERMISSION_POLICY
 TEAM_SKILL_EVOLUTION = _evolution_rails.TEAM_SKILL_EVOLUTION
 TEAM_SKILL_CREATE = _evolution_rails.TEAM_SKILL_CREATE
 MEMBER_SKILL_EVOLUTION = _evolution_rails.MEMBER_SKILL_EVOLUTION
+TEAM_TTSE = _evolution_rails.TEAM_TTSE
+MEMBER_TTSE = _evolution_rails.MEMBER_TTSE
 EVOLUTION_INTERRUPT = _evolution_rails.EVOLUTION_INTERRUPT
 
 # Code-mode (code.team / team.plan) swarm-owned rail provider names.
@@ -212,6 +214,8 @@ __all__ = [
     "TEAM_SKILL_EVOLUTION",
     "TEAM_SKILL_CREATE",
     "MEMBER_SKILL_EVOLUTION",
+    "TEAM_TTSE",
+    "MEMBER_TTSE",
     "RESPONSE_PROMPT",
     "SYS_OPERATION",
     "STREAM_EVENT",
