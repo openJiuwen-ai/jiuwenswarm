@@ -84,7 +84,7 @@ class LoginModel:
 
 
 def _cache_path() -> Path:
-    from jiuwenswarm.common.auth.session_store import auth_dir
+    from gateway.auth.session_store import auth_dir
 
     return auth_dir() / _CACHE_FILE_NAME
 
@@ -131,7 +131,7 @@ def clear_cache() -> None:
 
 def discover_models(session_id: str | None = None) -> list[LoginModel]:
     """拿登录用户的 id_token 请求 APIG 模型列表"""
-    from jiuwenswarm.common.auth.apig import ApigError, fetch_models, resolve_apig_config
+    from gateway.auth.apig import ApigError, fetch_models, resolve_apig_config
 
     config = resolve_apig_config()
     if config is None:
@@ -333,7 +333,7 @@ def list_login_model_entries(
     ``allow_refresh=False`` 给**请求处理路径**用：既不为过期的目录、也不为快过期的
     id_token 去发同步 HTTP（token 改在后台续），模型解析是逐请求同步执行的
     """
-    from jiuwenswarm.common.auth.apig import resolve_apig_config
+    from gateway.auth.apig import resolve_apig_config
 
     config = resolve_apig_config()
     if config is None:
