@@ -1,6 +1,6 @@
 /** Diagnosis sub-page: what was diagnosed, how the run went, and what to do next. */
 
-import { memo, useCallback, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { experienceJudge, isRunning, skillJudges, ttseRootCauses } from './diagnosisState';
@@ -32,7 +32,7 @@ import {
 } from './diagnosisView';
 import { FillButton } from './DiagnosisFillButton';
 import { RewardSummary } from './DiagnosisReward';
-import { Findings } from './DiagnosisFindings';
+import { Findings, FoldableItem } from './DiagnosisFindings';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
 import { ClampedMarkdown, PlainFold, WholeMarkdown } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
@@ -131,6 +131,27 @@ function Card({ title, action, testId, className, children }: {
   );
 }
 
+/** Suggestions already opened in this session, so the tab dot does not return after leaving the page. */
+const seenSuggestionPanes = new Set<string>();
+
+/** The stage row to follow: the one that is running, or the last row before any has started. */
+function runningItem(list: HTMLElement | null, runningId: string): HTMLElement | null {
+  if (list === null) return null;
+  if (runningId === '') return list.querySelector('li:last-child');
+  return list.querySelector(`[data-stage-id="${CSS.escape(runningId)}"]`);
+}
+
+/** The diagnosis list scrolls as one column; find that box from a node inside it. */
+function scrollBox(element: HTMLElement): HTMLElement | null {
+  let node = element.parentElement;
+  while (node !== null) {
+    const overflow = getComputedStyle(node).overflowY;
+    if (overflow === 'auto' || overflow === 'scroll') return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
 function RecordCards({
   record,
   session,
@@ -160,6 +181,47 @@ function RecordCards({
     || (record.reward_failure_causes?.length ?? 0) > 0
     || (record.evolution_judge?.length ?? 0) > 0
     || (record.root_causes?.length ?? 0) > 0;
+  const [pane, setPane] = useState<{ id: string; value: 'details' | 'suggestions'; seen: boolean }>(
+    () => ({ id: record.diagnosis_id, value: 'details', seen: seenSuggestionPanes.has(record.diagnosis_id) }),
+  );
+  if (pane.id !== record.diagnosis_id) {
+    setPane({
+      id: record.diagnosis_id,
+      value: 'details',
+      seen: seenSuggestionPanes.has(record.diagnosis_id),
+    });
+  }
+  const showSuggestionDot = outlets === 'ready' && pane.value !== 'suggestions' && !pane.seen;
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<HTMLElement>(null);
+  // Viewport Y of the tab bar captured at the click, so the swap does not yank the scroll.
+  const paneAnchorRef = useRef<number | null>(null);
+  const selectPane = (value: 'details' | 'suggestions') => {
+    if (value !== pane.value && tabsRef.current !== null) {
+      paneAnchorRef.current = tabsRef.current.getBoundingClientRect().top;
+    }
+    if (value === 'suggestions') seenSuggestionPanes.add(record.diagnosis_id);
+    setPane({ id: record.diagnosis_id, value, seen: pane.seen || value === 'suggestions' });
+  };
+  useLayoutEffect(() => {
+    const anchor = paneAnchorRef.current;
+    paneAnchorRef.current = null;
+    const tabs = tabsRef.current;
+    const pane = paneRef.current;
+    if (anchor === null || tabs === null || pane === null) return;
+    const scroller = scrollBox(tabs);
+    if (scroller === null) return;
+    const shift = () => tabs.getBoundingClientRect().top - anchor;
+    const delta = shift();
+    if (Math.abs(delta) < 1) return;
+    const desired = scroller.scrollTop + delta;
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    // The other pane is shorter, so the browser would clamp the scroll and pull the cards above into view.
+    if (desired > max) {
+      pane.style.minHeight = `${Math.ceil(pane.getBoundingClientRect().height + desired - max)}px`;
+    }
+    scroller.scrollTop += shift();
+  }, [pane.value]);
 
   return (
     <>
@@ -216,11 +278,47 @@ function RecordCards({
         onCancel={running ? () => { void session.cancel(); } : undefined}
       />
 
-      {(running || showDetails) ? (
-        <Card
-          title={t('trajectory.diagnosis.details')}
-          testId="trajectory-diagnosis-record"
-          className={css.objectCard}
+      <div
+        ref={tabsRef}
+        className={css.resultTabs}
+        role="tablist"
+        aria-label={t('trajectory.diagnosis.resultTabs')}
+      >
+        <button
+          type="button"
+          role="tab"
+          className={css.resultTab}
+          aria-selected={pane.value === 'details'}
+          onClick={() => selectPane('details')}
+          data-testid="trajectory-diagnosis-pane-details"
+        >
+          {t('trajectory.diagnosis.details')}
+        </button>
+        <span className={css.resultTabDivider} aria-hidden />
+        <button
+          type="button"
+          role="tab"
+          className={css.resultTab}
+          aria-selected={pane.value === 'suggestions'}
+          onClick={() => selectPane('suggestions')}
+          data-testid="trajectory-diagnosis-pane-suggestions"
+        >
+          {t('trajectory.diagnosis.suggestions')}
+          {showSuggestionDot ? (
+            <>
+              <span className={css.resultTabDot} aria-hidden />
+              <span className={css.srOnly}>{t('trajectory.diagnosis.suggestionsReady')}</span>
+            </>
+          ) : null}
+        </button>
+      </div>
+
+      {pane.value === 'details' ? (
+        <section
+          ref={paneRef}
+          role="tabpanel"
+          className={css.resultPane}
+          data-testid="trajectory-diagnosis-record"
         >
           {record.error === undefined ? null : (
             <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
@@ -234,24 +332,30 @@ function RecordCards({
             onFocusFinding={onFocusFinding}
           />
           {trajectorySummary === '' ? null : (
-            <div className={`${css.block} ${css.summaryBlock}`} data-testid="trajectory-diagnosis-task">
-              <h4 className={css.blockTitle}>{t('trajectory.diagnosis.objectSummary')}</h4>
-              <PlainFold text={trajectorySummary} />
-            </div>
+            <FoldableItem
+              title={t('trajectory.diagnosis.objectSummary')}
+              className={css.summaryBlock}
+              testId="trajectory-diagnosis-task"
+              toggleTestId="trajectory-diagnosis-summary-toggle"
+            >
+              <div className={css.itemBody}>
+                <PlainFold text={trajectorySummary} />
+              </div>
+            </FoldableItem>
           )}
           {running && !showDetails ? (
             <p className={css.hint} data-testid="trajectory-diagnosis-details-pending">
               {t('trajectory.diagnosis.detailsPending')}
             </p>
           ) : null}
-        </Card>
-      ) : null}
-
-      <Card
-        title={t('trajectory.diagnosis.suggestions')}
-        testId="trajectory-diagnosis-suggestions"
-        className={css.objectCard}
-      >
+        </section>
+      ) : (
+        <section
+          ref={paneRef}
+          role="tabpanel"
+          className={css.resultPane}
+          data-testid="trajectory-diagnosis-suggestions"
+        >
         {outlets === 'pending' ? (
           <p className={css.hint}>{t('trajectory.diagnosis.outletsPending')}</p>
         ) : outlets === 'unfinished' ? (
@@ -329,7 +433,8 @@ function RecordCards({
             ) : null}
           </>
         )}
-      </Card>
+        </section>
+      )}
     </>
   );
 }
@@ -627,9 +732,51 @@ function StageList({ record, running }: { record: DiagnosisRecord; running: bool
   const toggle = useCallback((view: StageView, open: boolean) => {
     setChoices(current => ({ ...current, [view.stageId]: { status: view.status, open } }));
   }, []);
+  const listRef = useRef<HTMLOListElement>(null);
+  const followRef = useRef(true);
+  const programmaticRef = useRef(false);
+  const seenRunningRef = useRef('');
+  const runningStage = views.find(view => view.status === 'running');
+  const runningId = runningStage?.stageId ?? '';
+  const runningOutput = runningStage?.stage?.output ?? '';
+  const onListScroll = useCallback(() => {
+    if (programmaticRef.current) {
+      programmaticRef.current = false;
+      return;
+    }
+    const list = listRef.current;
+    const item = runningItem(list, runningId);
+    followRef.current = list !== null && item !== null && item.getBoundingClientRect().bottom <= list.getBoundingClientRect().bottom + 24;
+  }, [runningId]);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!running || list === null) return;
+    // A newly started step is the one to read, even if an earlier step was scrolled into view.
+    if (seenRunningRef.current !== runningId) {
+      seenRunningRef.current = runningId;
+      followRef.current = true;
+    }
+    const item = runningItem(list, runningId);
+    if (item === null || !followRef.current) return;
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    const overflowBelow = itemRect.bottom - listRect.bottom;
+    const overflowAbove = listRect.top - itemRect.top;
+    const bringUp = itemRect.height <= listRect.height && overflowAbove > 1;
+    if (overflowBelow <= 1 && !bringUp) return;
+    const before = list.scrollTop;
+    programmaticRef.current = true;
+    list.scrollTop += overflowBelow > 1 ? overflowBelow : -overflowAbove;
+    if (list.scrollTop === before) programmaticRef.current = false;
+  }, [running, runningId, runningOutput]);
   if (views.length === 0) return null;
   return (
-    <ol className={css.stages} data-testid="trajectory-diagnosis-stages">
+    <ol
+      ref={listRef}
+      className={css.stages}
+      data-testid="trajectory-diagnosis-stages"
+      onScroll={onListScroll}
+    >
       {views.map((view) => {
         const choice = choices[view.stageId];
         const userChoice = choice !== undefined && choice.status === view.status ? choice.open : undefined;
