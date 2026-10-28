@@ -1,5 +1,7 @@
 # Full-duplex conversation continuity
 
+The frontend currently exposes only Qwen Omni Realtime. JoyAI configuration and startup are hidden. Users with saved JoyAI settings must configure Qwen in Settings; the backend integration and saved settings are retained.
+
 Enable Full-duplex in the experimental settings and start it from a saved Work or Code chat, or a Design project.
 The blue controller stays available when you switch chats or open Settings. Voice and
 Core Agent results remain attached to the chat where you started the session. Starting

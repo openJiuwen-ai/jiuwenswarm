@@ -329,6 +329,7 @@
     }
   },
   "videoLive": {
+    "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
     "status": {

@@ -912,9 +912,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           provider: config.provider || 'realtime',
         });
         setModel(config.model);
-        if (config.provider === 'joyai') {
-          await getJoyAIProvider(config.reply_language).start(config.context_restore?.token);
-          return;
+        if (config.provider !== 'qwen_omni') {
+          throw new Error(t('videoLive.qwenOnly'));
         }
         const videoFrames = new RealtimeVideoFrameScheduler(1_000);
         const session = createRealtimeDuplexSession(

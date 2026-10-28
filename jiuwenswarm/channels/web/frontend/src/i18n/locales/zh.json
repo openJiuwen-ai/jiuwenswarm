@@ -329,6 +329,7 @@
     }
   },
   "videoLive": {
+    "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。",
     "modelFallback": "视频模型",
     "subtitle": "实时多屏音视频问答",
     "status": { "connecting": "正在连接 Full-duplex 模型并申请麦克风权限…", "speaking": "模型正在回答…" },
