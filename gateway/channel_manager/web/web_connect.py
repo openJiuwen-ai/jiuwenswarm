@@ -1174,8 +1174,8 @@ class WebChannel(BaseWsChannel):
             return
 
         # ── 定时任务推 web：不绑定旧 session_id，以支持关闭 tab/换设备；但在
-        # AgentOS 下必须按 job.user_id 限定接收者。空 user_id，以及个人版没填
-        # 用户时落下的占位 default，都按单用户任务广播给当前网页连接。
+        # AgentOS / 企业版必须按 job.user_id 限定接收者。
+        # 个人版空 user_id / 占位 ``default`` 广播是独立于企业的兼容修复。
         if (
             msg.event_type == EventType.CHAT_FINAL
             and isinstance(msg.payload, dict)

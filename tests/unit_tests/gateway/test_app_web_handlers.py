@@ -5233,6 +5233,7 @@ async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling
 
 @pytest.mark.asyncio
 async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> None:
+    """Gateway 本地 ModelCatalog 路径仅企业版（无 AS / RuntimeRouted）启用。"""
     class FakeCatalog:
         def get_public_model_detail(self, model_id):
             assert model_id == "mdl_a"
@@ -5242,6 +5243,7 @@ async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> N
                 "write_only_fields": ["model_client_config.api_key"],
             }
 
+    monkeypatch.setattr("gateway.enterprise.is_enterprise", lambda: True)
     monkeypatch.setattr(app_web_handlers, "ModelCatalog", FakeCatalog)
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))

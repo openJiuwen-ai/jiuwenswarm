@@ -2959,17 +2959,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         AgentServer 输出与迁移前 Web fallback 投影（to_session_info）完全一致。
         """
         from openjiuwen_protocol.message import ReqMethod
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
         )
 
         real_client = _resolve(agent_client)
-        # Only the default local WebSocket client shares Gateway's directory.
-        # Other extension clients may be remote; never substitute deployment
-        # state for their user state when they are unavailable.
+        # 个人版对齐 develop A2g：统一走 E2A。企业版在 legacy 共享目录且
+        # AgentServer 未就绪时允许本地列表（embedded runtime / 无 AS 场景）。
         if (
-            is_legacy_shared_directory_client(real_client)
+            is_enterprise()
+            and is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
             from gateway.embedded.runtime.parse_int import parse_int_param
@@ -3115,15 +3116,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
         from openjiuwen_protocol.message import ReqMethod
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
         )
 
         real_client = _resolve(agent_client)
-        # Only the default local WebSocket client shares the Gateway directory.
+        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 rename 回退。
         if (
-            is_legacy_shared_directory_client(real_client)
+            is_enterprise()
+            and is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
             from gateway.embedded.runtime.session.session_rename import apply_session_rename
@@ -3159,14 +3162,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         SESSION_PIN，AgentServer 注入目录 session_metadata）。
         """
         from openjiuwen_protocol.message import ReqMethod
+        from gateway.enterprise import is_enterprise
         from gateway.routing.e2a_proxy import (
             is_legacy_shared_directory_client,
             proxy_unary_request,
         )
 
         real_client = _resolve(agent_client)
+        # 个人版对齐 develop A2g：统一走 E2A。企业版才允许本地 pin 回退。
         if (
-            is_legacy_shared_directory_client(real_client)
+            is_enterprise()
+            and is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
             raw_params = params if isinstance(params, dict) else {}
@@ -5537,27 +5543,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         }
 
     def _register_config_proxy(method_name, req_method, local_handler=None):
-        # A4g：配置读写默认经目标 AgentServer 执行（ConfigAdapter 在注入目录
-        # 本地执行，自带 in-process reload / zen warmup / config_changed 标记
-        # 等后置行为）。企业版 RuntimeRoutedAgentClient / 无 client / 无 runtime
-        # 的 legacy WebSocket 客户端仍走 local_handler（runtime HTTP 无
-        # config.get REST；企业 models.list 读 Gateway Manager 库，不能代理到
-        # AS 的 config.yaml）。个人版 legacy 仍走 E2A（A4g 主线不变）。legacy
-        # 共享目录的外部 CLI 依赖安装门控保留在 gateway。
+        # A4g：个人版配置读写统一经目标 AgentServer 执行（与 develop 一致，
+        # 不因 client 缺失回落 Gateway 本地）。企业版才走 local_handler：
+        # RuntimeRouted / 无 client / legacy 共享目录（runtime HTTP 无
+        # config.get REST；企业 models.list 读 Gateway Manager 库）。
+        # legacy 共享目录的外部 CLI 依赖安装门控仍保留在 gateway。
 
         async def _handler(ws, req_id, params, session_id, user_id=None):
             from gateway.enterprise import is_enterprise
             from gateway.routing.e2a_proxy import is_legacy_shared_directory_client
 
             resolved_client = _resolve(agent_client)
-            # Enterprise RuntimeRouted / no client / enterprise+legacy WebSocket:
-            # Gateway-local config. Personal WebSocket and AgentOS still proxy.
-            if local_handler is not None and (
-                resolved_client is None
-                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
-                or (
-                    is_enterprise()
-                    and is_legacy_shared_directory_client(resolved_client)
+            # 仅企业版允许 Gateway 本地 config/models；个人版始终 E2A。
+            if (
+                local_handler is not None
+                and is_enterprise()
+                and (
+                    resolved_client is None
+                    or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                    or is_legacy_shared_directory_client(resolved_client)
                 )
             ):
                 await local_handler(ws, req_id, params, session_id)
