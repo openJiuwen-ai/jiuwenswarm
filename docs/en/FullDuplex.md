@@ -7,6 +7,11 @@ The blue controller stays available when you switch chats or open Settings. Voic
 Core Agent results remain attached to the chat where you started the session. Starting
 Full-duplex in another chat replaces the previous media session. Use Exit to stop it.
 
+Starting Full-duplex recovers unfinished tasks only for the current user and conversation.
+Historical queued tasks in other conversations are not started, probed or changed by this action.
+Conversations already activated in this process can still finish their tasks. Executions with
+unknown outcomes are reconciled without automatically replaying dispatched operations.
+
 With screen sharing enabled, starting Full-duplex opens the system screen or window picker directly.
 This entry point supports screen sharing only.
 
