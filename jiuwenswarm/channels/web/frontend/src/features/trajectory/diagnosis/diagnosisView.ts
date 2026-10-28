@@ -153,16 +153,36 @@ export interface DiagnosisTargetGroup {
 }
 
 export interface DiagnosisTarget {
-  /** The whole trajectory was diagnosed, so there is no window to show. */
+  /** The whole trajectory was diagnosed. */
   full: boolean;
+  /** Wall-clock span of a full-trajectory diagnosis. Null when the record stored no ranges. */
+  window: { startMs: number; endMs: number } | null;
   /** Agents sharing one window; a single group when the selection came from the time axis. */
   groups: DiagnosisTargetGroup[];
+}
+
+/** Earliest start and latest end across the ranges a full-trajectory run was fixed to. */
+function fullWindow(
+  ranges: readonly { start_unix_nano: string; end_unix_nano: string }[] | undefined,
+): { startMs: number; endMs: number } | null {
+  if (ranges === undefined || ranges.length === 0) return null;
+  let startMs = Number.POSITIVE_INFINITY;
+  let endMs = Number.NEGATIVE_INFINITY;
+  for (const range of ranges) {
+    const start = unixNanoToMs(range.start_unix_nano);
+    const end = unixNanoToMs(range.end_unix_nano);
+    if (start === null || end === null) continue;
+    if (start < startMs) startMs = start;
+    if (end > endMs) endMs = end;
+  }
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  return { startMs, endMs };
 }
 
 /** What a record diagnosed: the whole trajectory, or windows grouped by identical time span. */
 export function diagnosisTarget(record: Pick<DiagnosisRecord, 'input'>): DiagnosisTarget {
   const scope = record.input.scope;
-  if (scope.kind === 'full') return { full: true, groups: [] };
+  if (scope.kind === 'full') return { full: true, window: fullWindow(record.input.resolved_ranges), groups: [] };
   const groups: DiagnosisTargetGroup[] = [];
   for (const range of scope.ranges) {
     const startMs = unixNanoToMs(range.start_unix_nano);
@@ -172,7 +192,7 @@ export function diagnosisTarget(record: Pick<DiagnosisRecord, 'input'>): Diagnos
     if (group === undefined) groups.push({ startMs, endMs, subjectIds: [range.subject_id] });
     else group.subjectIds.push(range.subject_id);
   }
-  return { full: false, groups };
+  return { full: false, window: null, groups };
 }
 
 /** `YYYY-MM-DD HH:mm:ss – HH:mm:ss`; the end repeats the date only when it falls on another day. */
