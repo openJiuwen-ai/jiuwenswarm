@@ -7,9 +7,14 @@ import AspectRatio3_2Icon from '../../assets/designer/aspect_ratio_3_2.svg?react
 import AspectRatio3_4Icon from '../../assets/designer/aspect_ratio_3_4.svg?react';
 import AspectRatio4_3Icon from '../../assets/designer/aspect_ratio_4_3.svg?react';
 import AspectRatio9_16Icon from '../../assets/designer/aspect_ratio_9_16.svg?react';
+import ArrangeNodesIcon from '../../assets/designer/arrange_nodes.svg?react';
 import AudioTypeIcon from '../../assets/designer/audio_type.svg?react';
+import ComfyuiGenerationIcon from '../../assets/designer/comfyui_generation.svg?react';
+import HideEdgesIcon from '../../assets/designer/hide_edges.svg?react';
 import ImageGenerationIcon from '../../assets/designer/image_generation.svg?react';
 import ImageTypeIcon from '../../assets/designer/image_type.svg?react';
+import MinimapIcon from '../../assets/designer/minimap.svg?react';
+import ShowEdgesIcon from '../../assets/designer/show_edges.svg?react';
 import TextTypeIcon from '../../assets/designer/text_type.svg?react';
 import VideoGenerationIcon from '../../assets/designer/video_generation.svg?react';
 import VideoTypeIcon from '../../assets/designer/video_type.svg?react';
@@ -31,6 +36,14 @@ export const DESIGNER_ASPECT_RATIO_ICONS: Record<string, SvgIcon> = {
   '3:2': AspectRatio3_2Icon,
   '2:3': AspectRatio2_3Icon,
   '21:9': AspectRatio21_9Icon,
+};
+
+export {
+  ArrangeNodesIcon,
+  ComfyuiGenerationIcon,
+  HideEdgesIcon,
+  MinimapIcon,
+  ShowEdgesIcon,
 };
 
 /** Add-node dock / port menu: generation affordances (image / video only). */

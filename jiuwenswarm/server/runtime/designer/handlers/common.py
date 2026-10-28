@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import mimetypes
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import unquote, urlparse
@@ -265,34 +266,36 @@ def uploaded_material_image_paths(node: dict | None) -> list[Path]:
     return paths
 
 
-def user_replaced_output_image(graph: dict | None, node_id: str) -> list[Path]:
-    """The file the user uploaded in place of this node's generated image."""
-    if not isinstance(graph, dict) or not node_id:
-        return []
-    for node in graph.get("nodes") or []:
-        if not isinstance(node, dict) or str(node.get("id") or "") != node_id:
-            continue
-        config = node.get("config") if isinstance(node.get("config"), dict) else {}
-        if not config.get("user_replaced_output"):
-            return []
-        upload = config.get("upload") if isinstance(config.get("upload"), dict) else {}
-        upload_path = path_from_uri(str(upload.get("uri") or ""))
-        if (
-            upload_path is not None
-            and upload_path.is_file()
-            and _is_image_file(upload_path, upload)
-        ):
-            return [upload_path.resolve()]
-        ref = node.get("output_ref") if isinstance(node.get("output_ref"), dict) else {}
-        path = path_from_uri(str(ref.get("uri") or ""))
-        if path is None or not path.is_file() or not _is_image_file(path, ref):
-            return []
-        return [path.resolve()]
-    return []
+def user_replaced_output_ref(graph: dict | None, node_id: str) -> AssetRef | None:
+    """The file (image, video, audio or text) the user uploaded in place of this node's output."""
+    locked = _locked_replacement_refs(graph, node_id)
+    if not locked:
+        return None
+    path = path_from_uri(str(locked[0].get("uri") or ""))
+    if path is None:
+        return None
+    kind = _file_kind(path, locked[0])
+    if not kind:
+        return None
+    resolved = path.resolve()
+    node = next(
+        (
+            item
+            for item in (graph or {}).get("nodes") or []
+            if isinstance(item, dict) and str(item.get("id") or "") == node_id
+        ),
+        {},
+    )
+    stored = node.get("output_ref") if isinstance(node.get("output_ref"), dict) else {}
+    stored_path = path_from_uri(str(stored.get("uri") or ""))
+    if stored_path is not None and stored_path.is_file() and stored_path.resolve() == resolved:
+        return {**stored, "kind": str(stored.get("kind") or kind)}
+    mime = str(locked[0].get("mime_type") or "") or mimetypes.guess_type(resolved.name)[0] or ""
+    return {"kind": kind, "uri": resolved.as_uri(), "mime_type": mime}
 
 
 def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
-    """Copy a user-uploaded image into the run so a rerun does not restore the old file."""
+    """Copy a user-uploaded file into the run so a rerun does not restore the old file."""
     from jiuwenswarm.common.schema.designer_graph import NODE_STATUS_COMPLETED
 
     if not isinstance(run, dict) or not isinstance(graph, dict):
@@ -305,28 +308,10 @@ def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
         if not isinstance(node, dict):
             continue
         node_id = str(node.get("id") or "")
-        replaced = user_replaced_output_image(graph, node_id)
-        if not replaced:
+        replaced = user_replaced_output_ref(graph, node_id)
+        if replaced is None:
             continue
-        stored = node.get("output_ref") if isinstance(node.get("output_ref"), dict) else {}
-        ref = dict(stored) if isinstance(stored, dict) else {}
-        replaced_uri = replaced[0].resolve().as_uri()
-        stored_path = path_from_uri(str(ref.get("uri") or ""))
-        same_file = (
-            stored_path is not None
-            and stored_path.is_file()
-            and stored_path.resolve() == replaced[0].resolve()
-        )
-        if not same_file:
-            upload = {}
-            config = node.get("config") if isinstance(node.get("config"), dict) else {}
-            if isinstance(config.get("upload"), dict):
-                upload = config["upload"]
-            ref = {
-                "kind": "image",
-                "uri": replaced_uri,
-                "mime_type": str(upload.get("mime_type") or ref.get("mime_type") or "image/png"),
-            }
+        ref = dict(replaced)
         state = dict(states.get(node_id) or {})
         current = state.get("output_ref") if isinstance(state.get("output_ref"), dict) else {}
         if str(current.get("uri") or "") == str(ref.get("uri") or ""):
@@ -491,6 +476,25 @@ def node_output_video_paths(ctx: NodeExecutionContext, node_id: str) -> list[Pat
     for ref in _output_refs_for_node(ctx, node_id):
         path = path_from_uri(str(ref.get("uri") or ""))
         if path is None or not path.is_file() or _file_kind(path, ref) != "video":
+            continue
+        resolved = path.resolve()
+        key = str(resolved)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(resolved)
+    return paths
+
+
+def node_output_audio_paths(ctx: NodeExecutionContext, node_id: str) -> list[Path]:
+    """Audio files for one node. A user replacement wins over this run and the saved graph."""
+    if ctx is None or not node_id:
+        return []
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for ref in _output_refs_for_node(ctx, node_id):
+        path = path_from_uri(str(ref.get("uri") or ""))
+        if path is None or not path.is_file() or _file_kind(path, ref) != "audio":
             continue
         resolved = path.resolve()
         key = str(resolved)
