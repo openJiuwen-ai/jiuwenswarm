@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -155,3 +156,139 @@ async def test_session_child_marks_bump_version_not_root_after_concurrent_bump(
     assert root._skill_enabled_version == 7  # this notify + concurrent bump
     # Stamp the version claimed before refresh (6), not the post-await root (7).
     assert root._session_skill_versions.get("sess_a") == 6
+
+
+def _make_push_root(**overrides: object) -> JiuWenSwarmDeepAdapter:
+    root = _make_root(_session_adapter_locks={}, **overrides)
+    return root
+
+
+@pytest.mark.asyncio
+async def test_push_refreshes_bound_session_same_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Web install bound to a live session refreshes it now, not next turn."""
+    root = _make_push_root(_skill_enabled_version=2)
+    child = _make_session_child(root, session_id="sess_a")
+    root._session_adapters["sess_a"] = child
+    monkeypatch.setattr(interface_deep_module, "is_skill_prebuilt_tenant", lambda *_a, **_k: True)
+    monkeypatch.setattr(interface_deep_module, "_skill_session_lazy_refresh_enabled", lambda: True)
+
+    child_refreshed = False
+
+    async def _child_refresh() -> bool:
+        nonlocal child_refreshed
+        child_refreshed = True
+        return True
+
+    child.refresh_enabled_skills_from_db = _child_refresh  # type: ignore[method-assign]
+
+    await root._push_skill_refresh_to_bound_session(SimpleNamespace(session_id="sess_a"))
+
+    assert child_refreshed is True
+    # Same lazy bookkeeping path: stamped current at the root stamp (2).
+    assert root._session_skill_versions.get("sess_a") == 2
+
+
+@pytest.mark.asyncio
+async def test_push_ignores_session_without_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Synthetic facade sessions (bff-*) never map to an adapter here: no push."""
+    root = _make_push_root(_skill_enabled_version=2)
+    monkeypatch.setattr(interface_deep_module, "is_skill_prebuilt_tenant", lambda *_a, **_k: True)
+    monkeypatch.setattr(interface_deep_module, "_skill_session_lazy_refresh_enabled", lambda: True)
+
+    refreshed = False
+
+    async def _refresh() -> bool:
+        nonlocal refreshed
+        refreshed = True
+        return True
+
+    root.refresh_enabled_skills_from_db = _refresh  # type: ignore[method-assign]
+
+    await root._push_skill_refresh_to_bound_session(SimpleNamespace(session_id="bff-656b24ae"))
+
+    assert refreshed is False
+    assert root._session_adapters == {}
+
+
+@pytest.mark.asyncio
+async def test_push_without_session_id_is_noop() -> None:
+    """No session binding on the request: keep the lazy semantics."""
+    root = _make_push_root(_skill_enabled_version=2)
+
+    await root._push_skill_refresh_to_bound_session(SimpleNamespace(session_id=None))
+    await root._push_skill_refresh_to_bound_session(None)
+
+    assert root._session_skill_versions == {}
+
+
+@pytest.mark.asyncio
+async def test_push_refresh_failure_falls_back_to_lazy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Failed push must neither raise nor mark the session current."""
+    root = _make_push_root(_skill_enabled_version=2)
+    child = _make_session_child(root, session_id="sess_a")
+    root._session_adapters["sess_a"] = child
+    monkeypatch.setattr(interface_deep_module, "is_skill_prebuilt_tenant", lambda *_a, **_k: True)
+    monkeypatch.setattr(interface_deep_module, "_skill_session_lazy_refresh_enabled", lambda: True)
+
+    async def _child_refresh() -> bool:
+        return False
+
+    child.refresh_enabled_skills_from_db = _child_refresh  # type: ignore[method-assign]
+
+    await root._push_skill_refresh_to_bound_session(SimpleNamespace(session_id="sess_a"))
+
+    # Stays stale: next turn boundary retries (lazy semantics preserved).
+    assert "sess_a" not in root._session_skill_versions
+
+
+@pytest.mark.asyncio
+async def test_push_survives_adapter_evicted_while_waiting_on_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adapter evicted by a lock holder while the push queues: no error.
+
+    Mirrors the turn-boundary path holding the session lock (``setdefault``
+    shares the same lock) and evicting the adapter between the push's guard
+    check and its lock acquisition.
+    """
+    root = _make_push_root(_skill_enabled_version=2)
+    child = _make_session_child(root, session_id="sess_a")
+    root._session_adapters["sess_a"] = child
+    monkeypatch.setattr(interface_deep_module, "is_skill_prebuilt_tenant", lambda *_a, **_k: True)
+    monkeypatch.setattr(interface_deep_module, "_skill_session_lazy_refresh_enabled", lambda: True)
+
+    lock = asyncio.Lock()
+    root._session_adapter_locks["sess_a"] = lock
+    lock_held = asyncio.Event()
+    release_lock = asyncio.Event()
+
+    async def _evict_holder() -> None:
+        async with lock:
+            lock_held.set()
+            await release_lock.wait()
+            root._session_adapters.pop("sess_a", None)
+
+    holder = asyncio.create_task(_evict_holder())
+    await lock_held.wait()
+
+    async def _child_refresh() -> bool:  # must not be reached
+        raise AssertionError("refresh must not run after eviction")
+
+    child.refresh_enabled_skills_from_db = _child_refresh  # type: ignore[method-assign]
+
+    push_task = asyncio.create_task(
+        root._push_skill_refresh_to_bound_session(SimpleNamespace(session_id="sess_a"))
+    )
+    await asyncio.sleep(0)  # push passes its guard and queues on the lock
+    release_lock.set()
+
+    await push_task
+    await holder
+
+    assert root._session_skill_versions == {}

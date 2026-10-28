@@ -1651,6 +1651,20 @@ class JiuWenSwarm:
             return bump()
         return None
 
+    async def _push_skill_refresh_to_bound_session(
+        self,
+        request: AgentRequest | None,
+    ) -> None:
+        """装/卸请求绑定真实会话时，同轮立即刷新该会话的 SkillUseRail。
+
+        委托 DeepAdapter 同名方法；适配器不支持时静默跳过，维持既有
+        「下一轮边界惰性追平」语义。
+        """
+        adapter = self._ensure_adapter()
+        push = getattr(adapter, "_push_skill_refresh_to_bound_session", None)
+        if callable(push):
+            await push(request)
+
     async def refresh_enabled_skills_from_db(self) -> None:
         """企业账本变更后轻量刷新启用集（直读 DB + 重建 SkillUseRail）。
 
@@ -2439,6 +2453,12 @@ class JiuWenSwarm:
                 # Root create_instance / refresh often no-ops on the chat path;
                 # bump so existing session adapters lazily rebuild SkillUseRail.
                 self.bump_skill_enabled_version()
+                # Same-turn visibility: an install/uninstall request bound to a
+                # live chat session (session_id resolves to an existing session
+                # adapter) refreshes that session's SkillUseRail now instead of
+                # at its next turn boundary, so install -> skill_tool works
+                # within the same turn.
+                await self._push_skill_refresh_to_bound_session(request)
         except Exception as exc:
             logger.error("[JiuWenSwarm] skills 请求处理失败: %s", exc)
             return AgentResponse(
