@@ -6,6 +6,9 @@
 再用 `ops.session.messages(limit=5)` 读回。其 `session.append` USER Handler 给扩展正文加
 `[audited]` 前缀，遇到 `[block]` 则显式拒绝。用户无需创建 EventBus、注册平台 Ops / CORE 或修改 Adapter。
 
+完整字段、注册示例、三个平台触发入口与验收场景见 [F_16 特性设计](../../docs/features/F_16_session-history-ops.md)。
+`session.append` 每次处理一条待写入记录，消息重试也会再次执行策略；它不按每轮固定只触发一次。
+
 ```powershell
 Compress-Archive -LiteralPath .\manifest.yaml, .\extension.py -DestinationPath .\session-history-audit.zip
 ```
@@ -25,9 +28,24 @@ append 的 message 只含 id、role（user / assistant）、content。id 为必�
 CORE 的成功回执在文件写入完成后返回，不只是接受排队。消息只进入产品历史，
 不会创建 Agent 回合、触发模型或把说明注入模型上下文，也不改变会话标题和外部投递路由。
 
+append 返回字典的 status 为 persisted / duplicate / rejected，并包含 session_id、message_id、message、reason。
+前两者携带真实历史记录；rejected 的 message 为 None，可检查 reason。
+事件 Handler 则返回 next_handler 得到的 SessionAppendResult 对象或合法 SessionAppendRejection，不能把方法返回字典直接用作事件输出。
+
 messages 返回 messages / next_cursor / has_more / snapshot_id，按新到旧分页。
 继续旧 cursor 固定在旧快照，不包含后来追加；要读新消息请用 cursor=None 重新开始。
 查询只需要宿主绑定的有效会话 ID，不需要用量事件或 cwd。
+
+```text
+平台真实回合产生用量 → notify_context_usage → context.usage.updated + SessionContext
+  → 用户 on_usage 获得当次 Ops，调用 append
+    → 新 session.append 链：on_append 改正文/显式拒绝 → 默认 CORE 实际提交
+    → 真实回执转换成字典返回 on_usage
+  → on_usage 调 messages 直接读取历史新快照，日志显示 visible=True
+  → on_usage 调 next_handler 继续原用量链，由原用量 CORE 返回回执
+```
+
+追加链的 CORE 负责写入，原用量链的 CORE 处理用量；messages 不触发新的查询事件。
 
 追加前 Hook 也覆盖已有 history.append_record RPC 和主会话的可等待历史写入；
 本例匹配 source=extension，保持这些平台记录的正文原样。
@@ -50,10 +68,21 @@ The USER handler on `context.usage.updated` appends an audit note, awaits a real
 receipt and reads it back with `ops.session.messages()`. Its `session.append` handler rewrites
 extension notes and explicitly rejects a body beginning with `[block]`.
 
+The append event runs per record attempt, including retries, rather than once per Agent turn.
+See [F_16](../../docs/features/F_16_session-history-ops.md) for the contracts, registration example,
+platform entry points and acceptance cases. The USER usage handler calls append, which starts a
+new append chain; its CORE commits the record. Messages reads directly without another query
+event. Finally, next_handler continues the original usage chain and its own CORE.
+
 Messages contain only a stable id, role and content. Retries of the same original request are
 deduplicated within the bound session and package; changing content under the same identity
 is a conflict. The write only affects the product transcript: it does not start an Agent,
 call a model, inject model context, change a session title or alter delivery routing.
+
+Append returns a dictionary with status, session_id, message_id, message and reason. A persisted
+or duplicate result contains the actual record; a rejected result contains no message. The
+event handler itself returns the downstream SessionAppendResult object or a valid
+SessionAppendRejection, not the dictionary returned by the Ops method.
 
 Pages are newest-first and tied to a stable cursor snapshot. Start a new query after appending
 to see new records. Other host-bound session events can reuse both Ops. Existing awaitable
