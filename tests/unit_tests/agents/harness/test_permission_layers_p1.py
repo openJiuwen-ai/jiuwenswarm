@@ -362,3 +362,41 @@ def test_colliding_ids_are_rewritten_per_full_signature() -> None:
     ids = [item["id"] for item in overlay.get("approval_overrides") or []]
     assert len(set(ids)) == 3
     assert all(override_id != "user_allow_bash_command_echo" for override_id in ids)
+
+
+def test_colliding_ids_without_pattern_are_renamed() -> None:
+    user = {
+        "approval_overrides": [
+            {
+                "id": "user_allow_foo",
+                "tools": ["bash"],
+                "action": "allow",
+            }
+        ]
+    }
+    effective = {
+        "approval_overrides": [
+            *user["approval_overrides"],
+            {
+                "id": "user_allow_foo",
+                "tools": ["shell"],
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bar",
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bar",
+                "action": "allow",
+            },
+        ]
+    }
+    overlay = layers.overlay_from_effective(
+        effective, session=True, global_permissions={}, user_permissions=user
+    )
+    overrides = overlay.get("approval_overrides") or []
+    ids = [item["id"] for item in overrides]
+    assert len(set(ids)) == len(overrides)
+    assert "user_allow_foo" not in ids
+    assert "user_allow_bar" not in ids

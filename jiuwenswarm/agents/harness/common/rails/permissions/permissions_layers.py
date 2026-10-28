@@ -202,6 +202,26 @@ def _stable_override_id(item: dict[str, Any]) -> str:
     return f"{slug[:111]}_{digest}"[:120]
 
 
+def _unique_override_ids(
+    overrides: list[dict[str, Any]], reserved_ids: set[str] | None = None
+) -> list[dict[str, Any]]:
+    seen: set[str] = set(reserved_ids or ())
+    result: list[dict[str, Any]] = []
+    for item in overrides:
+        override_id = str(item.get("id") or "").strip()
+        if not override_id:
+            result.append(item)
+            continue
+        candidate = override_id
+        suffix = 2
+        while candidate in seen:
+            candidate = f"{override_id}_{suffix}"
+            suffix += 1
+        seen.add(candidate)
+        result.append(item if candidate == override_id else {**item, "id": candidate})
+    return result
+
+
 def _path_key(item: dict[str, Any]) -> tuple[str, str]:
     path = str(item.get("path") or "").replace("\\", "/").rstrip("/").casefold()
     match = str(item.get("match") or "prefix").strip().lower() or "prefix"
@@ -356,13 +376,13 @@ def overlay_from_effective(
             for oid in output_ids
             if oid in base_override_ids or output_ids.count(oid) > 1
         }
-        out["approval_overrides"] = [
-            {**item, "id": _stable_override_id(item)}
-            if str(item.get("id") or "").strip() in colliding_ids
-            and str(item.get("pattern") or "").strip()
-            else item
-            for item in overrides
-        ]
+        renamed: list[dict[str, Any]] = []
+        for item in overrides:
+            override_id = str(item.get("id") or "").strip()
+            if override_id in colliding_ids:
+                item = {**item, "id": _stable_override_id(item)}
+            renamed.append(item)
+        out["approval_overrides"] = _unique_override_ids(renamed, base_override_ids)
 
     fg = src.get("file_guard")
     if isinstance(fg, dict):
