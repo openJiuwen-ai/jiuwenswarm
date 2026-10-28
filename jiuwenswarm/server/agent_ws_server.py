@@ -8224,7 +8224,8 @@ class AgentWebSocketServer:
             "snapshot_id": snapshot_id,
             "snapshot_end": snapshot_end,
         }
-        if session_usage is not None:
+        usage_revision = session_usage.get("revision") if isinstance(session_usage, dict) else None
+        if isinstance(usage_revision, int) and not isinstance(usage_revision, bool) and usage_revision > 0:
             done_payload["session_usage"] = session_usage
         # Parent history cold-start: advertise on-disk subagent buckets so the
         # frontend can fetch per-subagent transcripts even when parent history
