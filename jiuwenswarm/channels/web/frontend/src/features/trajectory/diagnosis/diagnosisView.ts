@@ -547,6 +547,63 @@ export function splitStageOutput(output: string): StageOutputView {
   return { body: body.join('\n').trim(), requestLines, requestCount: requests.size };
 }
 
+export type StageOutputBlock =
+  | { kind: 'body'; text: string }
+  | { kind: 'requests'; lines: string[]; count: number };
+
+/**
+ * Paint order for one stage's output.
+ *
+ * While the stage is running, blocks follow arrival order, so text that lands
+ * after a model call stays under the request lines already on screen. Once the
+ * stage stops, the body is gathered above a single folded request log.
+ */
+export function stageOutputBlocks(output: string, live: boolean): StageOutputBlock[] {
+  if (!live) {
+    const view = splitStageOutput(output);
+    const blocks: StageOutputBlock[] = [];
+    if (view.body !== '') blocks.push({ kind: 'body', text: view.body });
+    if (view.requestCount > 0) {
+      blocks.push({ kind: 'requests', lines: view.requestLines, count: view.requestCount });
+    }
+    return blocks;
+  }
+  const blocks: StageOutputBlock[] = [];
+  let body: string[] = [];
+  let requestLines: string[] = [];
+  let requestIds = new Set<string>();
+  const flushBody = () => {
+    const text = body.join('\n').trim();
+    body = [];
+    if (text !== '') blocks.push({ kind: 'body', text });
+  };
+  const flushRequests = () => {
+    if (requestLines.length === 0) return;
+    blocks.push({ kind: 'requests', lines: requestLines, count: requestIds.size });
+    requestLines = [];
+    requestIds = new Set();
+  };
+  for (const line of output.split('\n')) {
+    // A blank line must not split a request run that is still arriving.
+    if (line.trim() === '') {
+      if (requestLines.length === 0) body.push(line);
+      continue;
+    }
+    const match = LLM_LINE.exec(line);
+    if (match === null) {
+      flushRequests();
+      body.push(line);
+    } else {
+      flushBody();
+      requestLines.push(line);
+      requestIds.add(match[1]);
+    }
+  }
+  flushBody();
+  flushRequests();
+  return blocks;
+}
+
 /** Tone of a TTSE experience verdict: success reads like a met tier, failure like a missed one. */
 export function ttseTier(category: string): RewardTier {
   if (category === 'ttse_success') return 'perfect';

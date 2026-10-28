@@ -28,6 +28,7 @@ import {
   splitLeadParagraph,
   splitRewardSignalText,
   splitStageOutput,
+  stageOutputBlocks,
   stageViews,
   stripLeadingHeading,
   suggestionsState,
@@ -436,6 +437,50 @@ test('model request lines are split from the rest of a stage output', () => {
   assert.equal(view.requestLines.length, 3);
   assert.equal(view.body, '任务描述：装好依赖\n消息产物 main:0：先看 README');
   assert.deepEqual(splitStageOutput(''), { body: '', requestLines: [], requestCount: 0 });
+});
+
+test('a running stage keeps arrival order and a finished stage puts the body first', () => {
+  const output = [
+    'llm-1 · task_parse · 请求中 · m',
+    'llm-1 · task_parse · iter 1 · 成功 · m',
+    '任务描述：装好依赖',
+    'llm-2 · diagnose · 成功 · m',
+    '消息产物 main:0：先看 README',
+  ].join('\n');
+  assert.deepEqual(stageOutputBlocks(output, true), [
+    {
+      kind: 'requests',
+      lines: ['llm-1 · task_parse · 请求中 · m', 'llm-1 · task_parse · iter 1 · 成功 · m'],
+      count: 1,
+    },
+    { kind: 'body', text: '任务描述：装好依赖' },
+    { kind: 'requests', lines: ['llm-2 · diagnose · 成功 · m'], count: 1 },
+    { kind: 'body', text: '消息产物 main:0：先看 README' },
+  ]);
+  assert.deepEqual(
+    stageOutputBlocks('llm-1 · task_parse · 请求中 · m\n\nllm-1 · task_parse · 成功 · m', true),
+    [{
+      kind: 'requests',
+      lines: ['llm-1 · task_parse · 请求中 · m', 'llm-1 · task_parse · 成功 · m'],
+      count: 1,
+    }],
+  );
+  assert.deepEqual(stageOutputBlocks(output, false), [
+    { kind: 'body', text: '任务描述：装好依赖\n消息产物 main:0：先看 README' },
+    {
+      kind: 'requests',
+      lines: [
+        'llm-1 · task_parse · 请求中 · m',
+        'llm-1 · task_parse · iter 1 · 成功 · m',
+        'llm-2 · diagnose · 成功 · m',
+      ],
+      count: 2,
+    },
+  ]);
+  assert.deepEqual(stageOutputBlocks('', true), []);
+  assert.deepEqual(stageOutputBlocks('llm-1 · task_parse · 请求中 · m', true), [
+    { kind: 'requests', lines: ['llm-1 · task_parse · 请求中 · m'], count: 1 },
+  ]);
 });
 
 test('processSummary counts stages and adds their durations', () => {
