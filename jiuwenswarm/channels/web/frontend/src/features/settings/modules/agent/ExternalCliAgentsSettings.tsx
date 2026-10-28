@@ -1,6 +1,6 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -185,6 +185,27 @@ function ExternalCliSettings({
     },
     [onConfigPatch, onPruneExternalCliPathHistories, onValidateExternalCliPaths, savedValues],
   );
+
+  // On first load, sweep every agent's persisted path history: entries that
+  // no longer exist on disk are pruned server-side so the path dropdown does
+  // not offer stale addresses. This must not depend on detection results —
+  // the saved path itself may be the dead one, in which case detection fails
+  // and the detection-gated cleanup never fires. Runs once per mount, after
+  // saved values first become available.
+  const initialHistorySweepDoneRef = useRef(false);
+  useEffect(() => {
+    if (initialHistorySweepDoneRef.current) return;
+    if (!onValidateExternalCliPaths || !onPruneExternalCliPathHistories) return;
+    const pendingAgents = EXTERNAL_CLI_AGENT_KINDS.filter(
+      (agent) => parseExternalCliPathHistories(savedValues[externalCliKey(agent, 'path_histories')]).length > 0,
+    );
+    if (!pendingAgents.length) return; // Saved values not loaded yet: retry on the next render.
+    initialHistorySweepDoneRef.current = true;
+    for (const agent of pendingAgents) {
+      // Empty detectedPath: only the persisted cli_path counts as known-good.
+      void cleanupPersistedPathHistories(agent, '');
+    }
+  }, [cleanupPersistedPathHistories, onPruneExternalCliPathHistories, onValidateExternalCliPaths, savedValues]);
 
   // When a dependency install finishes, replay the user's deferred choices:
   // save on success, drop on failure (user retries manually as before).
