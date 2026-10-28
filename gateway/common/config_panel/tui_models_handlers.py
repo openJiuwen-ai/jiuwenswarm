@@ -99,7 +99,7 @@ def _get_crypto_provider() -> Any:
     AgentServer 进程无 crypto 扩展时 api_key 以明文落库（与原实现一致）。
     """
     try:
-        from jiuwenswarm.common.security.base_crypto import get_crypto_provider
+        from gateway.extensions.base_crypto import get_crypto_provider
 
         return get_crypto_provider()
     except Exception:  # noqa: BLE001

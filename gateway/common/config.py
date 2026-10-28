@@ -35,7 +35,7 @@ from gateway.common.paths import (
     get_config_file,
 )
 from gateway.common.runtime_model_config import apply_runtime_model_config
-from jiuwenswarm.common.security.base_crypto import get_crypto_provider
+from gateway.extensions.base_crypto import get_crypto_provider
 
 logger = logging.getLogger(__name__)
 

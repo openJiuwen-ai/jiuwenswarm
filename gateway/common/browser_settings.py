@@ -1,4 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# Gateway 侧副本，源文件 jiuwenswarm/common/browser_settings.py；改动请同步两侧。
 """Lightweight browser settings projection shared by Front and Runtime."""
 
 import os
@@ -82,6 +83,7 @@ def project_browser_decision(
         "decision_mode": mode if mode in BROWSER_DECISION_MODES else "llm",
         "decision_provider": provider,
         "decision_model": section.get("model") or defaults["model"],
+        "decision_display_name": section.get("display_name", ""),
         "decision_api_base": section.get("api_base") or defaults["api_base"],
         "jev_key_configured": isinstance(key_env, str) and bool(environment.get(key_env, "").strip()),
     }
