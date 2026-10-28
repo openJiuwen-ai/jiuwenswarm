@@ -13,7 +13,7 @@ from typing import Any
 from jiuwenswarm.common.request_ext import attach_to_metadata as _ext_attach
 from jiuwenswarm.common.request_ext import build_ext_from_source as _ext_build
 from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 from gateway.channel_manager.web.invoke import dispatch_web_request as invoke_web_request
 from gateway.channel_manager.web.outbound import (
     HttpJsonOutbound,
@@ -130,7 +130,7 @@ async def dispatch_http_request(
     # 仅新建会话且解析到 user_id 时打 http_resolve_identity UA。
     if method == "session.create" and user_id:
         try:
-            from jiuwenswarm.common.audit_emit import emit_audit_ua
+            from gateway.enterprise.capabilities.audit.audit_emit import emit_audit_ua
 
             emit_audit_ua(
                 SUBMDL="gateway",

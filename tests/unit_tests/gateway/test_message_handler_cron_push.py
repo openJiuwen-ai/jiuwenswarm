@@ -138,7 +138,7 @@ async def test_cron_push_create_replaces_default_tenant_with_chat_routing(
         },
     }
     monkeypatch.setattr(
-        "jiuwenswarm.edition.is_enterprise",
+        "gateway.enterprise.is_enterprise",
         lambda: True,
     )
 

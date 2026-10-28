@@ -89,10 +89,14 @@ from jiuwenswarm.server.handlers.ops import (
 from jiuwenswarm.server.handlers.permissions import handle_permissions_config
 from jiuwenswarm.server.handlers.sandbox import handle_command_sandbox
 from jiuwenswarm.server.handlers.schedule import handle_schedule_request
+from jiuwenswarm.server.handlers.agent_templates import handle_agent_templates_request
 from jiuwenswarm.server.handlers.skills import handle_skills_request
 from jiuwenswarm.server.handlers.session import (
     handle_history_append_record,
     handle_history_get,
+    handle_project_sessions_lifecycle,
+    handle_session_archive,
+    handle_session_archived_list,
     handle_session_delete,
     handle_session_input_intent,
     handle_session_list,
@@ -103,6 +107,7 @@ from jiuwenswarm.server.handlers.session import (
     handle_session_rewind,
     handle_session_rewind_context,
     handle_session_switch,
+    handle_session_unarchive,
 )
 from jiuwenswarm.server.handlers.team import (
     handle_swarmflow_control,
@@ -207,6 +212,13 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SESSION_LIST: handle_session_list,
     ReqMethod.SESSION_RENAME: handle_session_rename,
     ReqMethod.SESSION_DELETE: handle_session_delete,
+    # 企业版 HTTP：与 WS ``_handle_lifecycle_request`` 同契约，否则
+    # Gateway mapped 路由南向落到 agentserver 时 HANDLERS 缺项 → HTTP_METHOD_NOT_HANDLED。
+    ReqMethod.SESSION_ARCHIVE: handle_session_archive,
+    ReqMethod.SESSION_UNARCHIVE: handle_session_unarchive,
+    ReqMethod.SESSION_ARCHIVED_LIST: handle_session_archived_list,
+    ReqMethod.PROJECT_SESSIONS_ARCHIVE: handle_project_sessions_lifecycle,
+    ReqMethod.PROJECT_SESSIONS_DELETE_ARCHIVED: handle_project_sessions_lifecycle,
     ReqMethod.SESSION_REBIND_PROJECT: handle_session_rebind_project,
     ReqMethod.SESSION_SWITCH: handle_session_switch,
     ReqMethod.SESSION_PLAN_STATUS: handle_session_plan_status,
@@ -319,6 +331,14 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.SKILLS_ENTERPRISE_UNINSTALL: handle_skills_request,
     ReqMethod.SKILLS_ENTERPRISE_SOURCE_PROVIDERS: handle_skills_request,
     ReqMethod.SKILLS_ENTERPRISE_SOURCE_SEARCH: handle_skills_request,
+    # 专家包在 AgentServer 的装备目录。WebSocket 经 process_message；
+    # 企业版南向是 HTTP，这里登记后专用网址走同一条路径。
+    ReqMethod.AGENT_TEMPLATES_LIST: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_SHOW: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_FILE_LIST: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_FILE_READ: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_INSTALL: handle_agent_templates_request,
+    ReqMethod.AGENT_TEMPLATES_UNINSTALL: handle_agent_templates_request,
 }
 
 

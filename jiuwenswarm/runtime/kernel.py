@@ -42,11 +42,11 @@ class KernelIdentity:
     def for_agent(cls, *, project_dir: str, work_mode: str, definition: Any,
                   capabilities: Any, configuration: Any) -> KernelIdentity:
         from jiuwenswarm.common.utils import get_user_workspace_dir
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         data_root = get_user_workspace_dir()
         if is_enterprise():
-            from jiuwenswarm.server.runtime.tenant_context import TenantContext
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
             data_root = TenantContext.current_tenant_root() or data_root
         data_dir = os.path.normcase(str(data_root.resolve()))

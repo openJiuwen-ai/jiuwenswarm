@@ -7,7 +7,7 @@ import logging
 import os
 
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 
 from .db import POLL_TABLES
 from .syncer import ConfigPollSyncer

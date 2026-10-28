@@ -135,10 +135,10 @@ class WebFileDownloadManager:
             "name": Path(file_name).name,
             "sid": session_id,
         }
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         if is_enterprise():
-            from jiuwenswarm.server.runtime.tenant_context import TenantContext
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
             tenant_key = TenantContext.current_tenant_key()
             if not tenant_key:

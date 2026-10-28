@@ -127,8 +127,8 @@ class WorkspaceFileAdapter(GatewayAdapter):
     )
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.common.workspace.quota import bind_quota_identity, reset_quota_identity
-        from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import bind_quota_identity, reset_quota_identity
+        from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
 
         group_id, bot_id, user_id = TenantAgentPool.extract_triple(request)
         tokens = bind_quota_identity(group_id=group_id, bot_id=bot_id, user_id=user_id)
@@ -141,10 +141,10 @@ class WorkspaceFileAdapter(GatewayAdapter):
         method = request.req_method
         if method is not None and method.value.startswith("workspace."):
             return await self._handle_workspace(request)
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         if is_enterprise() and method in {ReqMethod.MEDIA_PERSIST, ReqMethod.DOCUMENT_PERSIST}:
-            from jiuwenswarm.server.runtime.tenant_context import TenantContext
+            from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
             root = TenantContext.current_tenant_root()
             params = request.params or {}
@@ -185,9 +185,9 @@ class WorkspaceFileAdapter(GatewayAdapter):
 
     async def _handle_workspace(self, request: AgentRequest) -> AgentResponse:
         from jiuwenswarm.common.workspace.service import WorkspaceError, WorkspaceService
-        from jiuwenswarm.common.workspace.quota import resolve_effective_quota, snapshot_to_dict
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import resolve_effective_quota, snapshot_to_dict
         from jiuwenswarm.common.utils import get_multi_tenant_user_workspace_dir
-        from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+        from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
 
         params = request.params or {}
         service = WorkspaceService(get_multi_tenant_user_workspace_dir())
@@ -590,8 +590,8 @@ class WorkspaceFileAdapter(GatewayAdapter):
                 code="FORBIDDEN",
             )
 
-        from jiuwenswarm.edition import is_enterprise
-        from jiuwenswarm.server.runtime.tenant_context import TenantContext
+        from jiuwenswarm.enterprise import is_enterprise
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
         tenant_key = TenantContext.current_tenant_key()
         if is_enterprise() and (not tenant_key or payload.get("tenant_key") != tenant_key):
@@ -665,11 +665,11 @@ class WorkspaceFileAdapter(GatewayAdapter):
         params = request.params if isinstance(request.params, dict) else {}
         raw_files = params.get("files")
         overwrite = bool(params.get("overwrite", False))
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         if is_enterprise():
             from jiuwenswarm.server.runtime.attachments.obs_attachments import import_obs_files
-            from jiuwenswarm.common.workspace.quota import WorkspaceQuotaExceeded
+            from jiuwenswarm.enterprise.capabilities.workspace.quota import WorkspaceQuotaExceeded
 
             try:
                 imported = await asyncio.to_thread(import_obs_files, request)

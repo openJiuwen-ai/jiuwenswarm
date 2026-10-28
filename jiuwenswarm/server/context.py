@@ -9,9 +9,8 @@
 
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, AsyncIterator, Optional
+from typing import Any, Optional
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.app_services import (
@@ -276,43 +275,8 @@ class RequestContext:
     services: AgentServerServices
 
 
-@asynccontextmanager
-async def bind_request_tenant(ctx: RequestContext) -> AsyncIterator[RequestContext]:
-    """按请求解析 Manager，并绑定 TenantContext + Runtime 执行切片。
-
-    handlers 通过 ``ctx.services.agent_manager`` 拿到本租户 Manager；
-    SessionProvisioner 等经 ``get_current_agent_manager()`` 读取同一绑定。
-    并发安全：不写 Runtime / Provisioner 上的共享字段。
-    """
-    from jiuwenswarm.runtime.context import (
-        reset_runtime_context,
-        set_runtime_context,
-    )
-    from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
-    from jiuwenswarm.server.runtime.tenant_context import TenantContext
-
-    runtime = ctx.services.execution_runtime()
-    resolve = getattr(runtime, "resolve_manager", None)
-    if callable(resolve):
-        manager = await resolve(ctx.request)
-    else:
-        manager = ctx.services.agent_manager
-
-    pool = getattr(runtime, "_tenant_pool", None)
-    if pool is not None:
-        tenant_key = pool.extract_tenant_key(ctx.request)
-    else:
-        tenant_key = TenantAgentPool.extract_tenant_key(ctx.request)
-
-    ctx.services.set_scoped_agent_manager(manager)
-    tenant_ctx = TenantContext.bind(tenant_key)
-    runtime_token = set_runtime_context(runtime, manager)
-    try:
-        yield ctx
-    finally:
-        reset_runtime_context(runtime_token)
-        tenant_ctx.reset()
-        ctx.services.set_scoped_agent_manager(None)
+# 租户信封实现在 enterprise；此处再导出以兼容 dispatch / HTTP / 测试既有 import。
+from jiuwenswarm.enterprise.tenant.bind_request import bind_request_tenant  # noqa: E402
 
 
 def build_ws_request_context(
@@ -326,8 +290,8 @@ def build_ws_request_context(
     ``connection_id`` 用连接对象的编号，和现有 ACP 能力按连接存放时用的是同一个对象。
     对象还在，编号就不变。
 
-    造好后须经 :func:`bind_request_tenant`（或 ``try_dispatch`` / HTTP invoke）
-    再进业务 handler，才能拿到正确租户的 Manager。
+    造好后须经 :func:`jiuwenswarm.enterprise.tenant.bind_request.bind_request_tenant`
+    （或 ``try_dispatch`` / HTTP invoke）再进业务 handler，才能拿到正确租户的 Manager。
     """
 
     return RequestContext(

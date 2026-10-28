@@ -12,18 +12,15 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwenswarm.common.a2ui_web_config import (
+    get_a2ui_config_payload,
+    get_default_a2ui_config_payload,
+    validate_a2ui_config_update,
+)
 from jiuwenswarm.server.runtime.a2ui.config import get_a2ui_config, get_current_a2ui_config
 from jiuwenswarm.server.runtime.a2ui.runtime.team_stream import TeamA2UIBlockBuffer
 
 logger = logging.getLogger(__name__)
-
-_WEB_CONFIG_KEY_MAP: dict[str, str] = {
-    "a2ui_enabled": "enabled",
-}
-
-_A2UI_CONFIG_DEFAULT_PAYLOAD: dict[str, str] = {
-    "a2ui_enabled": "false",
-}
 
 _A2UI_CHANNEL_ID = "web"
 
@@ -31,18 +28,6 @@ _A2UI_CHANNEL_ID = "web"
 def is_a2ui_channel(channel: str | None) -> bool:
     """Return whether the channel can natively run A2UI."""
     return str(channel or "").strip().lower() == _A2UI_CHANNEL_ID
-
-
-def _to_bool(value: Any) -> bool:
-    """Normalize Web config boolean values to Python bools."""
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"true", "1", "yes", "on"}
-
-
-def _bool_text(value: bool) -> str:
-    """Render boolean config values in the string format used by Web config."""
-    return "true" if value else "false"
 
 
 def _get_runtime_a2ui_config():
@@ -130,29 +115,9 @@ def apply_non_web_text_fallback_to_payload(
     return payload
 
 
-def get_a2ui_config_payload(raw_config: dict[str, object]) -> dict[str, str]:
-    """Return user-facing Web config payload fields for the A2UI section."""
-    config = get_a2ui_config(raw_config)
-    return {
-        "a2ui_enabled": _bool_text(config.enabled),
-    }
-
-
-def get_default_a2ui_config_payload() -> dict[str, str]:
-    """Return fallback Web config fields when config loading fails."""
-    return dict(_A2UI_CONFIG_DEFAULT_PAYLOAD)
-
-
-def validate_a2ui_config_update(
-    param_key: str,
-    value: object,
-) -> tuple[bool, dict[str, object], str]:
-    """Validate and map one Web A2UI config update to config.yaml keys."""
-    config_key = _WEB_CONFIG_KEY_MAP.get(param_key)
-    if config_key is None:
-        return False, {}, f"Unknown A2UI config key: {param_key}"
-
-    return True, {config_key: _to_bool(value)}, ""
+# get_a2ui_config_payload / get_default_a2ui_config_payload /
+# validate_a2ui_config_update 已下沉到 common.a2ui_web_config（见上方 import），
+# 本模块继续 re-export，保证历史 import 与 provider("a2ui") 自注册契约不变。
 
 
 __all__ = [

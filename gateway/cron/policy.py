@@ -52,7 +52,7 @@ def max_jobs_per_user_from_config() -> int:
 async def resolve_max_jobs_per_user() -> int:
     """企业库有 cron_policy 行时用该行，否则用 YAML。"""
     try:
-        from jiuwenswarm.edition import is_enterprise
+        from gateway.enterprise import is_enterprise
 
         if not is_enterprise():
             return max_jobs_per_user_from_config()

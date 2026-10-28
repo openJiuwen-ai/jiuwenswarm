@@ -47,9 +47,13 @@ def test_mapped_routes_for_edition_strips_a2a_ingress(mapped_mod: ModuleType) ->
 
 
 def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatch) -> None:
-    edition = ModuleType("jiuwenswarm.edition")
-    edition.is_enterprise = lambda: False  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "jiuwenswarm.edition", edition)
+    ge = ModuleType("gateway.enterprise")
+    ge.is_enterprise = lambda: False  # type: ignore[attr-defined]
+    ge.try_build_enterprise_plane = lambda: None  # type: ignore[attr-defined]
+    ge.EnterprisePlaneError = type(  # type: ignore[attr-defined]
+        "EnterprisePlaneError", (RuntimeError,), {}
+    )
+    monkeypatch.setitem(sys.modules, "gateway.enterprise", ge)
 
     for pkg in (
         "jiuwenswarm",
@@ -115,9 +119,25 @@ def test_register_http_routes_personal_skips_core(monkeypatch: pytest.MonkeyPatc
 
 
 def test_register_http_routes_enterprise_mounts_core(monkeypatch: pytest.MonkeyPatch) -> None:
-    edition = ModuleType("jiuwenswarm.edition")
-    edition.is_enterprise = lambda: True  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "jiuwenswarm.edition", edition)
+    class _FakePlane:
+        def install_web_channel(self, app: FastAPI, channel: object) -> None:
+            from gateway.channel_manager.web.web_http_routes import (
+                register_web_http_api_routes,
+            )
+            from gateway.channel_manager.web.enterprise_files import (
+                register_enterprise_file_routes,
+            )
+
+            register_web_http_api_routes(app, channel, enterprise=True)
+            register_enterprise_file_routes(app, channel)
+
+    ge = ModuleType("gateway.enterprise")
+    ge.is_enterprise = lambda: True  # type: ignore[attr-defined]
+    ge.try_build_enterprise_plane = lambda: _FakePlane()  # type: ignore[attr-defined]
+    ge.EnterprisePlaneError = type(  # type: ignore[attr-defined]
+        "EnterprisePlaneError", (RuntimeError,), {}
+    )
+    monkeypatch.setitem(sys.modules, "gateway.enterprise", ge)
 
     for pkg in (
         "jiuwenswarm",

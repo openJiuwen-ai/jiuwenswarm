@@ -42,7 +42,7 @@ from jiuwenswarm.common.utils import (
     get_builtin_skills_dir,
     is_package_installation,
 )
-from jiuwenswarm.edition import is_enterprise
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.extensions.sdk.skill_source import (
     ArtifactDescriptor,
     ArtifactRef,
@@ -352,6 +352,45 @@ _BUILTIN_SKILL_UI_WHITELIST = frozenset(
         "skill-creator",
         "swarmskill-creator",
     }
+)
+# 企业场景内置自动安装范围（个人版 UI 白名单不变）：
+# 对应 builtin_skills_catalog 第 1/2/3 类。
+_ENTERPRISE_CREATOR_BUILTIN_SKILLS = frozenset(
+    {
+        "skill-creator",
+        "skill-creator-normal",
+        "swarmskill-creator",
+        "skill-omni-creation",
+        "skill-gen-4-enterprise-doc",
+        "agent-creator",
+        "agent-group-creator",
+        "plugin-creator",
+    }
+)
+_ENTERPRISE_OFFICE_BUILTIN_SKILLS = frozenset(
+    {
+        "docx-pro",
+        "xlsx",
+        "pptx-generator",
+        "ppt-creation",
+        "pdf-extraction",
+        "local-doc-ocr",
+        "financial-document-parser",
+    }
+)
+_ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS = frozenset(
+    {
+        "openJiuwen-DeepSearch",
+        "llm-wiki",
+        "cross-channel-history-retrieval",
+        "advanced-daily-report",
+        "dynamic-memory-cli",
+    }
+)
+_ENTERPRISE_BUILTIN_AUTO_INSTALL = (
+    _ENTERPRISE_CREATOR_BUILTIN_SKILLS
+    | _ENTERPRISE_OFFICE_BUILTIN_SKILLS
+    | _ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS
 )
 _SKILL_DISPLAY_KEYS = (
     "display_name_zh",
@@ -1002,7 +1041,8 @@ class SkillManager:
         except Exception:  # noqa: BLE001
             logger.debug("[SkillManager] builtin skill source registration skipped", exc_info=True)
         if is_enterprise():
-            self._remove_enterprise_builtin_skills()
+            # 白名单内置自动装进租户工作区；非白名单旧 builtin 账本仍清理。
+            self._sync_enterprise_builtin_skills()
             self._register_unmanaged_local_skills()
         # SkillNet 异步安装：install 立即返回 install_id，后台下载；完成后调用 hook 重载 Agent
         self._skillnet_install_complete_hook: Callable[[], Awaitable[None]] | None = None
@@ -1042,7 +1082,8 @@ class SkillManager:
         else:
             self._register_unmanaged_local_skills()
         local = self._scan_local_skills()
-        # 企业版不展示内置目录技能（与 Agent 可执行集一致：未装进租户工作区则不可用）。
+        # 企业版：白名单内置已在启动时装进租户工作区，由 local 扫描带出；
+        # 不再把未安装的包内目录技能直接挂到列表（与可执行集一致）。
         builtin = [] if is_enterprise() else self._scan_builtin_skills()
         marketplace = [] if is_enterprise() else self._scan_marketplace_skills()
         out: dict[str, Any] = {"skills": local + builtin + marketplace}
@@ -1229,7 +1270,7 @@ class SkillManager:
         if "marketplace" in base_meta:
             meta["marketplace"] = base_meta.get("marketplace")
         # 列表扫描写入的安装账本字段（source_type/origin 等）需带回详情，
-        # 否则前端无法识别企业预置而错误展示启停开关。
+        # 否则前端无法识别企业预置（prebuilt）而错误展示启停开关。
         self._copy_skill_installation_identity(meta, base_meta)
         meta["has_evolutions"] = _has_effective_evolutions(
             skill_dir if version_requested is None else read_root
@@ -1450,15 +1491,20 @@ class SkillManager:
         return self._toggle_skill_body(params)
 
     def _prebuilt_toggle_blocked(self, params: dict) -> dict | None:
+        """拦截不可启停的安装类型。
+
+        - prebuilt：各版本均不可启停
+        - builtin：仅企业版可启停（单机版保持原拦截，避免行为变化）
+        """
         name = str(params.get("name") or "")
         origin = str(params.get("origin") or "").strip() or None
         if not name or params.get("dry_run"):
             return None
         installation = self._find_skill_installation(name=name, origin=origin)
-        if (
-            installation is not None
-            and str(installation.get("source_type") or "").strip() in {"builtin", "prebuilt"}
-        ):
+        if installation is None:
+            return None
+        source_type = str(installation.get("source_type") or "").strip()
+        if source_type == "prebuilt" or (source_type == "builtin" and not is_enterprise()):
             return {
                 "success": False,
                 "error_code": "prebuilt_not_toggleable",
@@ -1469,21 +1515,9 @@ class SkillManager:
 
     @_state_transactional
     def _handle_enterprise_skills_toggle(self, params: dict) -> dict:
+        # prebuilt 拦截已由 handle_skills_toggle → _prebuilt_toggle_blocked 完成。
         name = str(params.get("name") or "")
         origin = str(params.get("origin") or "").strip() or None
-        installation = (
-            self._find_skill_installation(name=name, origin=origin) if name else None
-        )
-        if (
-            installation is not None
-            and str(installation.get("source_type") or "").strip() in {"builtin", "prebuilt"}
-        ):
-            return {
-                "success": False,
-                "error_code": "prebuilt_not_toggleable",
-                "error_message": "prebuilt skill is managed by administrator",
-                "detail": "企业预置技能由管理员统一管理，不允许启停。",
-            }
         result = self._toggle_skill_body(params)
         if result.get("success") and isinstance(params.get("enabled"), bool):
             self._set_plugin_enabled(str(result.get("name") or name), params["enabled"], origin=origin)
@@ -2631,43 +2665,7 @@ class SkillManager:
             _log_rejected_name("skills.install_builtin", "skill", name, exc)
             return {"success": False, "detail": str(exc)}
 
-        builtin_dir = get_builtin_skills_dir()
-        if not builtin_dir.exists():
-            return {"success": False, "detail": "内置技能目录不存在"}
-
-        src = _safe_child_path(builtin_dir, name, "skill")
-        if not src.exists() or not src.is_dir():
-            return {"success": False, "detail": f"未找到内置技能: {name}"}
-
-        # 检查是否已经安装
-        dest = _safe_child_path(self._skills_dir, name, "skill")
-        if dest.exists() and dest.is_dir():
-            return {"success": False, "detail": f"技能 {name} 已经安装"}
-
-        # 复制技能到用户目录
-        try:
-            shutil.copytree(src, dest)
-        except Exception as exc:
-            logger.error("安装内置技能失败: %s", exc)
-            return {"success": False, "detail": f"安装失败: {exc}"}
-
-        # 记录安装信息到状态文件
-        meta = self._parse_skill_md(self._try_find_skill_file(dest)) or {}
-        self._add_installed_plugin(
-            {
-                "name": name,
-                "marketplace": "builtin",
-                "version": meta.get("version", ""),
-                "commit": "",
-                "source": "builtin",
-                "installed_at": datetime.now(timezone.utc).isoformat(),
-            }
-        )
-
-        # 刷新索引
-        self._refresh_agent_data_indexes()
-
-        return {"success": True}
+        return await asyncio.to_thread(self._install_builtin_skill_sync, name)
 
     @staticmethod
     def _normalize_online_search_identifier(source: str, identifier: str) -> str:
@@ -5064,8 +5062,8 @@ class SkillManager:
                 "缺少会话信息，无法校验 download_token",
             )
 
-        from jiuwenswarm.edition import is_enterprise
-        from jiuwenswarm.server.runtime.tenant_context import TenantContext
+        from jiuwenswarm.enterprise import is_enterprise
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
         enterprise = is_enterprise()
         if enterprise:
@@ -5696,6 +5694,23 @@ class SkillManager:
         preserved_source = "local"
         preserved_version: str | None = None
 
+        # 企业版：import_local 会同步写入 source_type=user 安装账本；
+        # 禁止覆盖 prebuilt/builtin，避免把管理面/内置身份改写成用户自装。
+        if is_enterprise():
+            installation = self._find_skill_installation(name=skill_name)
+            if installation is not None:
+                existing_type = str(installation.get("source_type") or "").strip()
+                if existing_type == "prebuilt":
+                    raise SkillRpcError(
+                        ERROR_SKILL_NAME_CONFLICT,
+                        f"skill `{skill_name}` is prebuilt and cannot be overwritten",
+                    )
+                if existing_type == "builtin":
+                    raise SkillRpcError(
+                        ERROR_SKILL_BUILTIN_READ_ONLY,
+                        f"内置 Skill 不可覆盖: {skill_name}",
+                    )
+
         if existing:
             if self._is_builtin_skill(skill_name, self._get_installed_plugins(), dest):
                 raise SkillRpcError(
@@ -5745,18 +5760,53 @@ class SkillManager:
             ),
             None,
         )
-        record = {
-            "name": skill_name,
-            "origin": origin,
-            "source": (
-                existing_record.get("source")
-                if isinstance(existing_record, dict) and existing_record.get("source")
-                else preserved_source
-            ),
-        }
-        if isinstance(existing_record, dict) and existing_record.get("display_name"):
-            record["display_name"] = existing_record.get("display_name")
-        self._add_local_skill(record)
+        if is_enterprise():
+            # 企业版只写安装账本（与技能源/web install 一致），不双写 local_skills。
+            existing_installation = self._find_skill_installation(name=skill_name)
+            source_value = preserved_source
+            if isinstance(existing_installation, dict):
+                prev_source = str(existing_installation.get("source") or "").strip()
+                if prev_source:
+                    source_value = prev_source
+            elif isinstance(existing_record, dict):
+                prev_source = str(existing_record.get("source") or "").strip()
+                if prev_source:
+                    source_value = prev_source
+            display_name = ""
+            if isinstance(existing_installation, dict):
+                display_name = str(
+                    existing_installation.get("market_display_name") or ""
+                ).strip()
+            if not display_name and isinstance(existing_record, dict):
+                display_name = str(existing_record.get("display_name") or "").strip()
+            try:
+                self.record_skill_installation(
+                    name=skill_name,
+                    source_type="user",
+                    source=str(source_value or "local"),
+                    origin=origin,
+                    version=str(preserved_version or ""),
+                    entity_dir=skill_name,
+                    market_display_name=display_name or None,
+                    replace_by_name=True,
+                )
+            except SkillNameConflictError as exc:
+                raise SkillRpcError(ERROR_SKILL_NAME_CONFLICT, str(exc)) from exc
+            # 清掉同名 local_skills，避免与安装账本双口径残留。
+            self._remove_local_skill(skill_name)
+        else:
+            record = {
+                "name": skill_name,
+                "origin": origin,
+                "source": (
+                    existing_record.get("source")
+                    if isinstance(existing_record, dict) and existing_record.get("source")
+                    else preserved_source
+                ),
+            }
+            if isinstance(existing_record, dict) and existing_record.get("display_name"):
+                record["display_name"] = existing_record.get("display_name")
+            self._add_local_skill(record)
         self._refresh_agent_data_indexes()
 
         skill_type = detect_skill_type(dest)
@@ -12222,15 +12272,114 @@ class SkillManager:
                 configs.pop(name, None)
 
     @_state_transactional
-    def _remove_enterprise_builtin_skills(self) -> None:
-        """清理旧企业版 builtin 状态及其独占目录。
+    def _install_builtin_skill_sync(self, name: str) -> dict[str, Any]:
+        """将包内置技能复制到当前 workspace，并写入 builtin 安装账本。"""
+        builtin_dir = get_builtin_skills_dir()
+        if not builtin_dir.exists():
+            return {"success": False, "detail": "内置技能目录不存在"}
 
-        仅来源明确为 builtin 的历史记录参与清理。若同一实体目录同时被
-        prebuilt/user/local 记录认领，则只移除 builtin 记录并保留目录。
+        src = _safe_child_path(builtin_dir, name, "skill")
+        if not src.exists() or not src.is_dir():
+            return {"success": False, "detail": f"未找到内置技能: {name}"}
+
+        dest = _safe_child_path(self._skills_dir, name, "skill")
+        if dest.exists() and dest.is_dir():
+            return {"success": False, "detail": f"技能 {name} 已经安装"}
+
+        try:
+            shutil.copytree(src, dest)
+        except Exception as exc:
+            logger.error("安装内置技能失败: %s", exc)
+            return {"success": False, "detail": f"安装失败: {exc}"}
+
+        meta = self._parse_skill_md(self._try_find_skill_file(dest)) or {}
+        try:
+            self.record_skill_installation(
+                name=name,
+                source_type="builtin",
+                source="builtin",
+                origin=f"builtin:{name}",
+                version=str(meta.get("version") or ""),
+                entity_dir=name,
+            )
+        except SkillNameConflictError as exc:
+            _safe_rmtree(dest)
+            return {"success": False, "detail": str(exc)}
+        except Exception as exc:
+            logger.error("登记内置技能失败: %s", exc)
+            _safe_rmtree(dest)
+            return {"success": False, "detail": f"安装失败: {exc}"}
+
+        # 兼容旧字段：marketplace=builtin 仍被部分路径识别为内置来源。
+        for record in self._get_installed_plugins():
+            if (
+                isinstance(record, dict)
+                and str(record.get("name") or "").strip() == name
+                and str(record.get("source_type") or "").strip() == "builtin"
+            ):
+                record.setdefault("marketplace", "builtin")
+                break
+        self._save_state()
+        self._refresh_agent_data_indexes()
+        return {"success": True}
+
+    @_state_transactional
+    def _sync_enterprise_builtin_skills(self) -> None:
+        """企业版：清理非自动安装名单的旧 builtin，并装进租户工作区。
+
+        自动安装范围 = 创作者/资产脚手架 ∪ 办公文档 ∪ 知识检索记忆。
+        不覆盖已存在的 prebuilt/user/本地目录；仅补齐缺失副本。
         """
         if not is_enterprise():
             return
 
+        self._remove_enterprise_builtin_skills(
+            keep_names=_ENTERPRISE_BUILTIN_AUTO_INSTALL
+        )
+
+        builtin_dir = get_builtin_skills_dir()
+        if not builtin_dir.exists() or not builtin_dir.is_dir():
+            return
+
+        claimed_names = {
+            str(record.get("name") or "").strip()
+            for record in self.list_skill_installations()
+            if isinstance(record, dict) and str(record.get("name") or "").strip()
+        }
+        for name in sorted(_ENTERPRISE_BUILTIN_AUTO_INSTALL):
+            if name in claimed_names:
+                continue
+            src = _safe_child_path(builtin_dir, name, "skill")
+            if not src.exists() or not src.is_dir():
+                continue
+            dest = _safe_child_path(self._skills_dir, name, "skill")
+            if dest.exists() and dest.is_dir():
+                # 目录已被其它来源或手工拷贝占用，不覆盖。
+                continue
+            result = self._install_builtin_skill_sync(name)
+            if not result.get("success"):
+                logger.warning(
+                    "[SkillManager] 企业版白名单内置安装跳过: name=%s detail=%s",
+                    name,
+                    result.get("detail"),
+                )
+
+    @_state_transactional
+    def _remove_enterprise_builtin_skills(
+        self,
+        *,
+        keep_names: frozenset[str] | set[str] | None = None,
+    ) -> None:
+        """清理企业版 builtin 状态及其独占目录。
+
+        仅来源明确为 builtin 的历史记录参与清理。``keep_names`` 内的白名单
+        记录保留。若同一实体目录同时被 prebuilt/user/local 记录认领，则只
+        移除 builtin 记录并保留目录。
+        """
+        if not is_enterprise():
+            return
+
+        keep = keep_names or frozenset()
         plugins = self._state.get("installed_plugins", [])
         local_skills = self._state.get("local_skills", [])
         records = [
@@ -12242,6 +12391,7 @@ class SkillManager:
             record
             for record in records
             if self._is_builtin_installation_record(record)
+            and str(record.get("name") or "").strip() not in keep
         ]
         if not builtin_records:
             return

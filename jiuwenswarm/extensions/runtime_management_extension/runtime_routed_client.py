@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.common.request_identity import web_routing_identity
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.extensions.runtime_management_extension.agent_authorization import (
     authorize_agent,
@@ -141,14 +142,23 @@ def identity_from_envelope(
     """返回 ``session_id, group_id, bot_id, request_id, user_id``。"""
     params = envelope.params if isinstance(envelope.params, dict) else {}
     ctx = envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
+    # Web 进站把 group_id/bot_id 放在 channel_context.routing，不摊到顶层。
+    # session.create 不走聊天授权，这里必须自己读 routing，否则 group 会落到
+    # default，企业版按组织准入的 scope 匹配不上，创建对话直接失败。
+    routed = web_routing_identity(ctx)
     request_id = _first_text(envelope.request_id)
     user_id = _first_text(
         envelope.user_id,
         params.get("user_id"),
         _from_maps("user_id", params, ctx),
+        routed.get("user_id"),
     ) or None
-    group_id = _from_maps("group_id", params, ctx) or _first_text(envelope.chat_id)
-    bot_id = _from_maps("bot_id", params, ctx)
+    group_id = (
+        _from_maps("group_id", params, ctx)
+        or routed.get("group_id")
+        or _first_text(envelope.chat_id)
+    )
+    bot_id = _from_maps("bot_id", params, ctx) or routed.get("bot_id")
     if not bot_id:
         bot_id = _from_maps("app_id", params, ctx)
     if not bot_id and isinstance(envelope.agent_ref, dict):

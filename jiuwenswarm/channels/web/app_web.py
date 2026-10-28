@@ -292,7 +292,7 @@ def _uses_agentos_routing() -> bool:
 
 def _runtime_web_transport() -> str:
     """WEB_TRANSPORT 优先；没写时企业版 http，个人版 websocket。"""
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     value = (os.getenv("WEB_TRANSPORT") or "").strip().lower()
     if value in {"http", "a2"}:
@@ -303,7 +303,7 @@ def _runtime_web_transport() -> str:
 
 
 def _inject_user_web_runtime_config(document: str) -> str:
-    from jiuwenswarm.edition import is_enterprise
+    from jiuwenswarm.enterprise import is_enterprise
 
     edition = "enterprise" if is_enterprise() else "personal"
     login_auth_simulate = (os.getenv("LOGIN_AUTH_SIMULATE") or "").strip().lower() or "true"

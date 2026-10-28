@@ -116,10 +116,9 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     Container file APIs are mounted when ``channel.container_file_client`` is an
     ``AgentOSRouterClient`` (wired during web handler registration).
 
-    企业版（``is_enterprise()``）额外增量挂载 ``/api/v1`` 核心 chat/SSE + mapped；
-    个人版不挂，继续主用 WS。
+    企业版经 ``gateway.enterprise`` 平面增量挂载管理面 + ``/api/v1`` chat/SSE 等；
+    个人版不挂，继续主用 WS。不依赖 ``jiuwenswarm.enterprise``（便于 gateway 拆仓）。
     """
-    from jiuwenswarm.edition import is_enterprise
     from gateway.channel_manager.web.container_file_http import (
         attach_container_file_routes,
     )
@@ -137,31 +136,19 @@ def register_http_routes(app: FastAPI, channel: WebChannel) -> None:
     attach_diagnosis_routes(app, channel)
     # register auth http routes for huawei account login
     register_auth_routes(app)
-    # Manager → Gateway 配置下发（与用户 Web 共用 WEB_PORT；受开关控制）
-    try:
-        from gateway.manager_config import register_manager_config_routes
-
-        register_manager_config_routes(app)
-    except Exception:  # noqa: BLE001 — 管理面注册失败不应阻断用户 Web
-        logger.exception("failed to register Manager config routes")
+    # 企业能力：依赖 Gateway 平面。个人版跳过；企业版组装/挂载失败必须报错，
+    # 禁止静默回退成个人版行为。
+    from gateway.enterprise import is_enterprise, try_build_enterprise_plane
 
     if is_enterprise():
-        from gateway.channel_manager.web.web_http_routes import (
-            register_web_http_api_routes,
-        )
+        plane = try_build_enterprise_plane()
+        if plane is None:
+            from gateway.enterprise import EnterprisePlaneError
 
-        register_web_http_api_routes(
-            app,
-            channel,
-            enterprise=True,
-        )
-        from gateway.channel_manager.web.enterprise_files import register_enterprise_file_routes
-
-        register_enterprise_file_routes(app, channel)
-        logger.info(
-            "WebChannel enterprise HTTP/SSE mounted on same port "
-            "(/api/v1 health·sessions·chat/completions + mapped, no A2A)",
-        )
+            raise EnterprisePlaneError(
+                "Gateway enterprise plane is required but try_build returned None"
+            )
+        plane.install_web_channel(app, channel)
 
 
 async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) -> None:

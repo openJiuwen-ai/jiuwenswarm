@@ -18,7 +18,7 @@ from jiuwenswarm.common.obs_files import (
 )
 from jiuwenswarm.common.request_identity import normalize_routing_identity, web_routing_identity
 from jiuwenswarm.common.utils import build_tenant_key
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 def build_object_file_download_info(

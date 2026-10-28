@@ -70,12 +70,13 @@ from jiuwenswarm.runtime.session.model import (
 )
 from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
-from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Mapping
 
     from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
+    from jiuwenswarm.enterprise.tenant.tenant_strategy import TenantStrategy
+    from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
     from jiuwenswarm.runtime.agent_definition import (
         RuntimeAgentDefinition,
         RuntimeAgentExecution,
@@ -324,6 +325,7 @@ class AgentRuntime:
         self,
         *,
         agent_manager: AgentManager | None = None,
+        tenant_strategy: TenantStrategy | None = None,
         initializer: Callable[[], Awaitable[None]] | None = None,
         plan_controller: PlanModeController | None = None,
         admission_controller: Any | None = None,
@@ -334,14 +336,16 @@ class AgentRuntime:
         team_execution_controller: object | None = None,
         session_runtime_lifecycle: object | None = None,
     ) -> None:
-        from jiuwenswarm.common.utils import build_tenant_key
+        from jiuwenswarm.enterprise import resolve_tenant_strategy
 
-        # Each Runtime owns its managers and cleanup. Sharing a process-global
-        # pool would discard injected managers and let one Runtime close another.
-        self._tenant_pool = TenantAgentPool()
-        default_key = build_tenant_key()
-        seeded = agent_manager or AgentManager()
-        default_manager = self._tenant_pool.put_nowait(default_key, seeded)
+        # 个人版：SingleTenantStrategy（无 Pool）；企业版：平面 Multi（Pool）。
+        if tenant_strategy is not None:
+            self._tenant = tenant_strategy
+            if agent_manager is not None:
+                self._tenant.adopt_default_manager(agent_manager)
+        else:
+            self._tenant = resolve_tenant_strategy(agent_manager=agent_manager)
+        default_manager = self._tenant.get_default_manager()
         self._initializer = initializer or _initialize_runtime_dependencies
         self._initialize_extensions = initializer is None
         self._manage_runner = initializer is None
@@ -403,8 +407,26 @@ class AgentRuntime:
         self.set_admission_controller(admission_controller)
 
     @property
+    def tenant_strategy(self) -> TenantStrategy:
+        return self._tenant
+
+    @property
     def tenant_pool(self) -> TenantAgentPool:
-        return self._tenant_pool
+        """企业 Multi 策略上的 Pool；个人版 Single 无池时抛错.
+
+        遗留兼容属性；新代码请用 :attr:`tenant_strategy`。
+        """
+        pool = getattr(self._tenant, "pool", None)
+        if pool is None:
+            raise RuntimeStateError(
+                "tenant_pool is only available under enterprise MultiTenantStrategy"
+            )
+        return pool
+
+    @property
+    def _tenant_pool(self) -> TenantAgentPool:
+        """兼容旧测试 / 内部对 ``_tenant_pool`` 的访问."""
+        return self.tenant_pool
 
     @property
     def agent_manager(self) -> AgentManager:
@@ -413,27 +435,19 @@ class AgentRuntime:
         有请求的热路径应使用 :meth:`resolve_manager` 得到的局部引用，
         不要依赖本属性做多租户切换。
         """
-        from jiuwenswarm.common.utils import build_tenant_key
-
-        manager = self._tenant_pool.get_manager_nowait(build_tenant_key())
-        if manager is None:
-            raise RuntimeStateError(
-                "default tenant AgentManager is missing; "
-                "AgentRuntime.__init__ must put the default slot"
-            )
-        return manager
+        try:
+            return self._tenant.get_default_manager()
+        except RuntimeError as exc:
+            raise RuntimeStateError(str(exc)) from exc
 
     async def resolve_manager(
         self, request: AgentRequest | None = None
     ) -> AgentManager:
-        """按请求从池取 Manager；无请求或个人版则返回默认租户槽.
+        """按请求经 TenantStrategy 取 Manager；无请求则返回默认槽.
 
-        个人版进程内单 Manager：``extract_tenant_key`` / 池键均收敛到默认槽。
+        个人版 Single：永远同一 Manager；企业版 Multi：按 tenant_key 分槽。
         """
-        if request is None:
-            return self.agent_manager
-        tenant_key = self._tenant_pool.extract_tenant_key(request)
-        return await self._tenant_pool.get_agent_manager(tenant_key)
+        return await self._tenant.resolve_manager(request)
 
     async def _get_request_manager(self, request: AgentRequest) -> AgentManager:
         """取本请求对应的 Manager：优先执行切片上已绑定的，否则按请求从池解析.
@@ -491,7 +505,7 @@ class AgentRuntime:
             for execution in snapshot.executions
         ):
             return True
-        for manager in self._tenant_pool.iter_agent_managers_nowait():
+        for manager in self._tenant.iter_managers_for_host_event():
             checker = getattr(manager, "has_active_goal", None)
             if callable(checker) and checker(snapshot.channel_id, session_id):
                 return True
@@ -934,7 +948,7 @@ class AgentRuntime:
             )
 
         async def _run_session_message() -> list[RuntimeEvent]:
-            async with self._tenant_pool.tenant_scope(request) as manager:
+            async with self._tenant.scoped_manager(request) as manager:
                 from jiuwenswarm.runtime.context import (
                     reset_runtime_context,
                     set_runtime_context,
@@ -1273,8 +1287,8 @@ class AgentRuntime:
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
         excluded = None if exclude_session_ids is None else set(exclude_session_ids)
-        # 断连扫池内全部 Manager，避免只打到默认租户。
-        for manager in self._tenant_pool.iter_agent_managers_nowait():
+        # 断连扫策略内全部 Manager，避免只打到默认租户。
+        for manager in self._tenant.iter_managers_for_host_event():
             await manager.cancel_all_inflight_work(
                 reason=reason,
                 exclude_session_ids=excluded,
@@ -1447,7 +1461,7 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        async with self._tenant_pool.tenant_scope(request) as manager:
+        async with self._tenant.scoped_manager(request) as manager:
             token = set_runtime_context(self, manager)
             try:
                 work_kind = self.session_work_kind(request)
@@ -1912,7 +1926,7 @@ class AgentRuntime:
         """Execute one request and yield the shared Runtime event stream."""
         await self.start()
 
-        async with self._tenant_pool.tenant_scope(request) as manager:
+        async with self._tenant.scoped_manager(request) as manager:
             async with aclosing(self._stream_under_tenant(
                 request,
                 manager=manager,
@@ -2710,7 +2724,7 @@ class AgentRuntime:
             managers = [await self.resolve_manager(request)]
         else:
             # 无请求时扫池，避免 delete 等路径漏掉非默认租户。
-            managers = self._tenant_pool.iter_agent_managers_nowait() or [
+            managers = list(self._tenant.iter_managers_for_host_event()) or [
                 self.agent_manager
             ]
         cleaned = False
@@ -2854,7 +2868,7 @@ class AgentRuntime:
         a release that raises leaves the caller its ordinary busy fallback.
         """
         released = False
-        for manager in self._tenant_pool.iter_agent_managers_nowait():
+        for manager in self._tenant.iter_managers_for_host_event():
             release = getattr(manager, "release_subagent_runtime_for_session", None)
             if not callable(release):
                 continue
@@ -2878,7 +2892,7 @@ class AgentRuntime:
         retry shortly instead of telling the user to stop a Session that has
         already been stopped.
         """
-        for manager in self._tenant_pool.iter_agent_managers_nowait():
+        for manager in self._tenant.iter_managers_for_host_event():
             probe = getattr(manager, "session_has_live_subagents", None)
             if callable(probe) and probe(
                 channel_id=channel_id or None, session_id=session_id
@@ -3172,7 +3186,7 @@ class AgentRuntime:
             self._activity_executions.clear()
             self._participant_registry.clear_targets()
             try:
-                for manager in self._tenant_pool.iter_agent_managers_nowait():
+                for manager in self._tenant.iter_managers_for_host_event():
                     await manager.cancel_all_inflight_work("[runtime close] ")
             except (
                 BaseException
@@ -3193,9 +3207,9 @@ class AgentRuntime:
                     except BaseException as exc:
                         cleanup_errors.append(exc)
             self._stateless_agents.clear()
-            # Manager 只在池内；统一走 pool.cleanup()。
+            # Manager 由 TenantStrategy 持有（Single 单例 / Multi 池）。
             try:
-                await self._tenant_pool.cleanup()
+                await self._tenant.cleanup()
             except BaseException as exc:
                 cleanup_errors.append(exc)
             async with self._agent_execution_owner_lock:
@@ -3930,7 +3944,7 @@ class AgentRuntime:
         """
         from jiuwenswarm.common.utils import build_tenant_key
         from jiuwenswarm.runtime.context import get_current_agent_manager
-        from jiuwenswarm.server.runtime.tenant_context import TenantContext
+        from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
         manager = get_current_agent_manager() or self.agent_manager
         cached = manager.get_agent_nowait(

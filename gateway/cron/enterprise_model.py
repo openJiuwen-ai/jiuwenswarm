@@ -23,10 +23,10 @@ async def list_enterprise_default_models(
         apply_routing_metadata,
         normalize_routing_identity,
     )
-    from jiuwenswarm.server.runtime.enterprise_config.loader import (
+    from gateway.enterprise.config.effective.loader import (
         load_effective_enterprise_config,
     )
-    from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
+    from gateway.enterprise.config.effective.schemas import TemplateRefSlot
 
     identity = normalize_routing_identity(
         {

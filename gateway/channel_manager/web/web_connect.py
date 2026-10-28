@@ -692,7 +692,7 @@ class WebChannel(BaseWsChannel):
             return params
 
         ac = getattr(self, "agent_client", None)
-        from jiuwenswarm.edition import is_enterprise
+        from gateway.enterprise import is_enterprise
 
         if ac is None:
             if is_enterprise():
@@ -1185,7 +1185,7 @@ class WebChannel(BaseWsChannel):
             cron_user_id = str(msg.payload.get("user_id") or "").strip()
             # ``default`` 是个人版没填用户时写进任务的占位，不是登录名。
             # 按它过滤会和当前网页连接对不上，结果只留在历史里，不刷新就看不到。
-            from jiuwenswarm.edition import is_enterprise
+            from gateway.enterprise.edition import is_enterprise
 
             if not is_enterprise() and (not cron_user_id or cron_user_id == "default"):
                 clients = list(self.clients)
@@ -1740,7 +1740,7 @@ class WebChannel(BaseWsChannel):
         )
         # 连接级权威身份：user_id + group/bot/gateway（进站时再拆到顶层 / routing）。
         from jiuwenswarm.common.request_identity import normalize_routing_identity
-        from jiuwenswarm.edition import is_enterprise
+        from gateway.enterprise import is_enterprise
 
         _routing = normalize_routing_identity(
             _flat_query,

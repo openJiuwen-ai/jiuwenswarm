@@ -11,7 +11,7 @@ from datetime import datetime, timezone as dt_timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 from gateway.cron.models import CronJob
 from jiuwenswarm.runtime.cron.cron_expr import (
     is_croniter_no_next_date,
@@ -252,7 +252,7 @@ async def _execute_claim_sql(sql: str, params: dict[str, Any]) -> int:
     from gateway.storage.backends.db.datetime_codec import (
         normalize_datetime_columns_for_write,
     )
-    from jiuwenswarm.infrastructure.db.database import Database
+    from gateway.enterprise.db.database import Database
 
     handler = await Database.current().ensure_ready(log_prefix="cron_db_schedule")
     params = normalize_datetime_columns_for_write(handler, _CRON_JOB_TABLE, params)

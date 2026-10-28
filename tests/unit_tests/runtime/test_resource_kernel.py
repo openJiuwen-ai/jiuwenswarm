@@ -603,7 +603,7 @@ async def test_close_cancels_async_factory_on_its_own_event_loop():
 
 def test_enterprise_kernel_resources_are_scoped_to_trusted_tenant_root(monkeypatch, tmp_path):
     from jiuwenswarm.common import utils
-    from jiuwenswarm.server.runtime.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
@@ -622,7 +622,7 @@ def test_enterprise_kernel_resources_are_scoped_to_trusted_tenant_root(monkeypat
 
 def test_personal_kernel_identity_keeps_process_root(monkeypatch, tmp_path):
     from jiuwenswarm.common import utils
-    from jiuwenswarm.server.runtime.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
     monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)

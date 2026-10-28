@@ -17,7 +17,7 @@ from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     EXECUTION_WORK_MODES,
 )
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 from gateway.cron.factory import enterprise_cron_enabled
 from gateway.cron.cron_expr import (
     clamp_wake_offset_for_delay_seconds,

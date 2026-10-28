@@ -1940,7 +1940,7 @@ async def _run(
     # 企业版在 MessageHandler / config_poll 之前装配存储屏蔽层并注入各配置模块。
     # 个人版不进入该路径，配置读写保持原来的文件直读。
     storage_ctx = None
-    from jiuwenswarm.edition import is_enterprise
+    from gateway.enterprise import is_enterprise
 
     if is_enterprise():
         from jiuwenswarm.extensions.redis import init_gateway_redis_from_config
@@ -3911,8 +3911,10 @@ def main() -> None:
 
     # gateway 进程注入点装配（bridge 已退役）：session_metadata 与
     # mcp_registry 两域注册 WS 远端实现——gateway 仓不再加载任何
-    # server 侧模块；a2ui/team/mcp_state/mcp_credential 域在本进程
-    # 零消费，保持未注册（调用得到 ExternalProviderUnregistered 降级）。
+    # server 侧模块；team/mcp_state/mcp_credential 域在本进程零消费，
+    # 保持未注册（调用得到 ExternalProviderUnregistered 降级）。
+    # a2ui 配置面板字段已下沉 common.a2ui_web_config，config.get/set
+    # 不再依赖 provider("a2ui")。
     from gateway.routing.mcp_remote import install as _install_mcp_registry_remote
     from gateway.routing.session_metadata_remote import (
         install as _install_session_metadata_remote,

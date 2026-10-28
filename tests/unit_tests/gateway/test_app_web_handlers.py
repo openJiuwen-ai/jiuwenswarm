@@ -1293,7 +1293,7 @@ async def test_enterprise_no_runtime_models_list_uses_gateway_manager(
     monkeypatch,
 ) -> None:
     """企业版无 runtime（legacy WebSocket）走 Gateway 企业库，不代理 AS yaml。"""
-    from jiuwenswarm.server.runtime.enterprise_config.schemas import TemplateRefSlot
+    from gateway.enterprise.config.effective.schemas import TemplateRefSlot
 
     async def _fake_load(_request, _slots):
         return SimpleNamespace(
@@ -1312,11 +1312,11 @@ async def test_enterprise_no_runtime_models_list_uses_gateway_manager(
         )
 
     monkeypatch.setattr(
-        "jiuwenswarm.edition.is_enterprise",
+        "gateway.enterprise.is_enterprise",
         lambda: True,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.enterprise_config.loader.load_effective_enterprise_config",
+        "gateway.enterprise.config.effective.loader.load_effective_enterprise_config",
         _fake_load,
     )
     # 若误走 A4g E2A / 个人 yaml，会落到这些占位值
@@ -1364,7 +1364,7 @@ async def test_personal_legacy_models_list_still_proxies_to_agent_server(
     from jiuwenswarm.server.runtime import opencode_zen
 
     monkeypatch.setattr(
-        "jiuwenswarm.edition.is_enterprise",
+        "gateway.enterprise.is_enterprise",
         lambda: False,
     )
     monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})

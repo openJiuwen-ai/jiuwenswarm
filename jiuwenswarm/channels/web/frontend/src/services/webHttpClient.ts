@@ -15,6 +15,19 @@ import i18n from '../i18n';
 import { buildRuntimeIdentityHeaders } from './runtimeScope';
 import { createSessionEventGate } from './sessionEventGate';
 import { PauseBufferHook, PAUSABLE_STREAM_EVENTS } from './webClient';
+import { withExpertUiLanguage } from './expertUiLanguage';
+import {
+  isChatSseTerminal,
+  isSteerReceiptSseTerminal,
+  isSteerSessionInputParams,
+} from './webHttpSseLifecycle';
+
+export {
+  isChatSseTerminal,
+  isSteerReceiptSseTerminal,
+  isSteerSessionInputParams,
+} from './webHttpSseLifecycle';
+
 
 import { hasManagerSessionCredentials, getManagerAccessToken, managerAuthenticatedFetch } from '../auth/manager/authSession';
 import { isLoginAuthSimulateEnabled } from '../auth/config';
@@ -22,6 +35,12 @@ import { isLoginAuthSimulateEnabled } from '../auth/config';
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
 type StateHandler = (state: WebConnectionState) => void;
+
+/** Mirrors WebClient pending.awaitRuntimeAccepted for HTTP SSE admission. */
+interface RuntimeAckPending {
+  resolve: (value: unknown) => void;
+  reject: (reason?: unknown) => void;
+}
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
@@ -79,6 +98,19 @@ const ROUTES: Record<string, RouteRow> = {
   'session.rename': { verb: 'PATCH', path: '/sessions/{session_id}', kind: 'unary' },
   'session.pin': { verb: 'PATCH', path: '/sessions/{session_id}', kind: 'unary' },
   'session.delete': { verb: 'DELETE', path: '/sessions/{session_id}', kind: 'unary' },
+  'session.archive': { verb: 'POST', path: '/sessions/actions/archive', kind: 'unary' },
+  'session.unarchive': { verb: 'POST', path: '/sessions/actions/unarchive', kind: 'unary' },
+  'session.archived.list': { verb: 'GET', path: '/archived-sessions', kind: 'unary' },
+  'project.sessions.archive': {
+    verb: 'POST',
+    path: '/projects/{project_id}/sessions/actions/archive',
+    kind: 'unary',
+  },
+  'project.sessions.delete_archived': {
+    verb: 'POST',
+    path: '/projects/{project_id}/sessions/actions/delete-archived',
+    kind: 'unary',
+  },
   'history.get': { verb: 'GET', path: '/sessions/{session_id}/history', kind: 'history-stream' },
   'chat.send': { verb: 'POST', path: '/chat/completions', kind: 'sse' },
   'chat.interrupt': { verb: 'POST', path: '/chat/{session_id}/actions/interrupt', kind: 'unary' },
@@ -100,6 +132,12 @@ const ROUTES: Record<string, RouteRow> = {
   'cron.job.preview': { verb: 'POST', path: '/cron/jobs/{id}/actions/preview', kind: 'unary' },
   'cron.job.run_now': { verb: 'POST', path: '/cron/jobs/{id}/actions/run-now', kind: 'unary' },
   'skills.list': { verb: 'GET', path: '/skills', kind: 'unary' },
+  'agent_templates.list': { verb: 'GET', path: '/agent-templates', kind: 'unary' },
+  'agent_templates.show': { verb: 'GET', path: '/agent-templates/{id}', kind: 'unary' },
+  'agent_templates.file.list': { verb: 'GET', path: '/agent-templates/{id}/files', kind: 'unary' },
+  'agent_templates.file.read': { verb: 'GET', path: '/agent-templates/{id}/files/content', kind: 'unary' },
+  'agent_templates.install': { verb: 'POST', path: '/agent-templates/{id}/actions/install', kind: 'unary' },
+  'agent_templates.uninstall': { verb: 'POST', path: '/agent-templates/{id}/actions/uninstall', kind: 'unary' },
   'skills.installed': { verb: 'GET', path: '/skills/installed', kind: 'unary' },
   'skills.get': { verb: 'GET', path: '/skills/{name}', kind: 'unary' },
   'skills.install': { verb: 'POST', path: '/skills/actions/install', kind: 'unary' },
@@ -289,6 +327,7 @@ interface UnaryFail {
   message: string;
   code?: string;
   requestId?: string;
+  details?: Record<string, unknown>;
 }
 
 type UnaryResult = UnaryOk | UnaryFail;
@@ -299,7 +338,7 @@ interface SseFrame {
   id?: string;
 }
 
-function errorFields(error: unknown): { message: string; code?: string } {
+function errorFields(error: unknown): { message: string; code?: string; details?: Record<string, unknown> } {
   if (typeof error === 'string' && error.trim()) {
     return { message: error };
   }
@@ -311,7 +350,8 @@ function errorFields(error: unknown): { message: string; code?: string } {
           ? error.error
           : 'request failed';
     const code = typeof error.code === 'string' ? error.code : undefined;
-    return { message, code };
+    const details = isRecord(error.details) ? error.details : undefined;
+    return { message, code, details };
   }
   return { message: 'request failed' };
 }
@@ -326,8 +366,8 @@ export function unwrapHttpUnary(input: unknown, status?: number): UnaryResult {
       const payload = input.data !== undefined ? input.data : input.payload;
       return { ok: true, payload: payload ?? {}, requestId };
     }
-    const { message, code } = errorFields(input.error);
-    return { ok: false, message, code, requestId };
+    const { message, code, details } = errorFields(input.error);
+    return { ok: false, message, code, requestId, details };
   }
   if (input.agent_ready !== undefined) {
     return { ok: true, payload: input, requestId };
@@ -488,20 +528,6 @@ function isSseContentType(contentType: string | null | undefined): boolean {
   return Boolean(contentType && contentType.toLowerCase().includes('text/event-stream'));
 }
 
-function isChatSseTerminal(event: WsEvent): boolean {
-  // 仅企业版使用任务级 SSE 生命周期：chat.final 只是回复段结束，
-  // 必须继续读到 processing_status(false)，避免工具状态停在 pending。
-  // 个人版保持原有 chat.final 即结束的协议，避免改变个人版行为。
-  if (!isEnterprise()) {
-    return event.event === 'chat.final' || event.event === 'chat.error';
-  }
-  return (
-    event.event === 'chat.processing_status' &&
-    isRecord(event.payload) &&
-    event.payload.is_processing === false
-  );
-}
-
 /**
  * HTTP unary ``chat.interrupt`` 把 ``accepted`` 与 ``interrupt_result`` 合在同一 JSON body。
  * 只在 Gateway 明确给出 ``event_type`` 时映射为 WS 事件，前端不伪造 success。
@@ -539,6 +565,8 @@ export class WebHttpClient {
   private sseInflight = new Map<string, { controller: AbortController; sessionId: string }>();
   /** 被后续 chat.send 顶掉的 SSE，abort 后不得再发 interrupt / 不得当发送失败。 */
   private sseSuperseded = new Set<string>();
+  /** chat.send + awaitRuntimeAccepted：等本请求 SSE 上的 runtime.accepted / chat.error。 */
+  private runtimeAckPending = new Map<string, RuntimeAckPending>();
   private connectAbort: AbortController | null = null;
   private reconnectTimer: number | null = null;
   private reconnectAttempts = 0;
@@ -633,6 +661,9 @@ export class WebHttpClient {
     this.clearReconnectTimer();
     this.connectAbort?.abort();
     this.connectAbort = null;
+    this.rejectAllRuntimeAckPending(
+      this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_CLOSED', undefined, true)
+    );
     this.abortInflight();
     this.connectPromise = null;
     this.updateState('closed');
@@ -656,9 +687,10 @@ export class WebHttpClient {
 
     const requestId = this.generateRequestId();
     options.onRequestId?.(requestId);
+    const requestParams = withExpertUiLanguage(method, params);
     let assembled;
     try {
-      assembled = assembleWebRest(method, params, getGatewayHttpBase());
+      assembled = assembleWebRest(method, requestParams, getGatewayHttpBase());
     } catch (error) {
       if (error instanceof RestAssemblyError) {
         throw this.createWebError(error.message, 'BAD_REQUEST', requestId, false);
@@ -677,11 +709,25 @@ export class WebHttpClient {
     const controller = new AbortController();
     this.inflight.set(requestId, controller);
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const awaitRuntimeAccepted =
+      options.awaitRuntimeAccepted === true && assembled.kind === 'sse';
     const timeoutId = window.setTimeout(() => {
+      if (awaitRuntimeAccepted) {
+        this.rejectRuntimeAckPending(
+          requestId,
+          this.createWebError(i18n.t('network.requestTimeout'), 'REQUEST_TIMEOUT', requestId, true)
+        );
+      }
       controller.abort();
     }, timeoutMs);
 
     const onAbort = () => {
+      if (awaitRuntimeAccepted) {
+        this.rejectRuntimeAckPending(
+          requestId,
+          this.createWebError(i18n.t('network.requestAborted'), 'REQUEST_ABORTED', requestId, false)
+        );
+      }
       controller.abort();
     };
     if (options.signal) {
@@ -701,7 +747,12 @@ export class WebHttpClient {
     try {
       const chatSessionId = pickHeaderString(params?.session_id);
       if (assembled.kind === 'sse') {
-        this.abortSseInflight({ exceptRequestId: requestId, sessionId: chatSessionId });
+        // STEER 是注入父 execution 的短回执：Gateway 不会取消父流，正文仍从父
+        // SSE 下发。若此处 abort 同 session 旧 SSE，父连接被掐掉 → 实时无输出、
+        // processing_status(false) 也丢，UI 一直「执行中」（刷新 history 才有字）。
+        if (!isSteerSessionInputParams(params)) {
+          this.abortSseInflight({ exceptRequestId: requestId, sessionId: chatSessionId });
+        }
         this.sseInflight.set(requestId, {
           controller,
           sessionId: chatSessionId ?? '',
@@ -720,11 +771,11 @@ export class WebHttpClient {
         body: assembled.jsonBody ? JSON.stringify(assembled.jsonBody) : undefined,
         signal: controller.signal,
       });
-      window.clearTimeout(timeoutId);
 
       if (assembled.kind === 'sse' || assembled.kind === 'history-stream') {
         if (isSseContentType(response.headers.get('content-type'))) {
           if (!response.ok) {
+            window.clearTimeout(timeoutId);
             const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
             throw this.createWebError(
               unwrapped.ok ? i18n.t('network.requestFailed') : unwrapped.message,
@@ -740,6 +791,10 @@ export class WebHttpClient {
               ? { page_idx: params.page_idx }
               : {}),
           };
+          // Register before pump so the first frames cannot race past the waiter.
+          const runtimeAck = awaitRuntimeAccepted
+            ? this.createRuntimeAckPromise<T>(requestId, timeoutId)
+            : null;
           void this.pumpSse(
             response,
             requestId,
@@ -747,8 +802,13 @@ export class WebHttpClient {
             controller,
             chatSessionId
           );
+          if (runtimeAck) {
+            return runtimeAck;
+          }
+          window.clearTimeout(timeoutId);
           return accepted as T;
         }
+        window.clearTimeout(timeoutId);
         if (assembled.kind === 'history-stream') {
           const page = await this.readUnaryPayload(response, requestId);
           const sessionId = typeof params?.session_id === 'string' ? params.session_id : undefined;
@@ -760,6 +820,7 @@ export class WebHttpClient {
         }
       }
 
+      window.clearTimeout(timeoutId);
       const payload = await this.readUnaryPayload(response, requestId);
       this.inflight.delete(requestId);
       // chat.send 在拿到响应前已登记 sseInflight。非 SSE 响应走 unary 时
@@ -782,6 +843,10 @@ export class WebHttpClient {
       return payload as T;
     } catch (error) {
       window.clearTimeout(timeoutId);
+      this.rejectRuntimeAckPending(
+        requestId,
+        error instanceof Error ? error : this.asWebError(error, requestId, true)
+      );
       this.inflight.delete(requestId);
       this.sseInflight.delete(requestId);
       if (this.sseSuperseded.delete(requestId)) {
@@ -907,8 +972,15 @@ export class WebHttpClient {
       const event = sseFrameToWsEvent(frame);
       if (!event) return false;
       sawChatError ||= event.event === 'chat.error';
+      // Dispatch before resolving awaitRuntimeAccepted so receipt handlers settle
+      // synchronously ahead of the request() microtask (avoids delivery-less bubbles).
       this.dispatchEvent(event);
-      sawTaskEnd ||= event.event === 'chat.processing_status' && event.payload.is_processing === false;
+      this.resolveRuntimeAckPending(event, requestId);
+      // processing_status(false) 或 STEER 短回执终态都算「正常结束」：
+      // 后者必须抬 sawTaskEnd，否则 finally 会误判异常 EOF 并 interrupt(cancel) 父任务。
+      sawTaskEnd ||=
+        (event.event === 'chat.processing_status' && event.payload.is_processing === false) ||
+        isSteerReceiptSseTerminal(event);
       return kind === 'sse' ? isChatSseTerminal(event) : isHistorySseDone(event.payload);
     };
     try {
@@ -943,7 +1015,8 @@ export class WebHttpClient {
     } finally {
       try {
         // 异常 EOF（gateway pod 被删、链路重置、错误流无终态）时本地收尾。
-        // 主动 abort / 被新 chat.send 顶替仍由对应路径处理，这里不 settle、不 interrupt。
+        // 主动 abort / 被新 chat.send 顶替 / STEER 短回执正常结束（sawTaskEnd）
+        // 仍由对应路径处理，这里不 settle、不 interrupt。
         if (
           kind === 'sse' &&
           isEnterprise() &&
@@ -956,19 +1029,35 @@ export class WebHttpClient {
           this.dispatchEvent({
             type: 'event',
             event: 'chat.processing_status',
+            // Top-level request_id matches SSE frame id semantics so request
+            // filters (and awaitRuntimeAccepted correlation) see the same id.
+            request_id: requestId,
             payload: {
               session_id: sessionId,
               request_id: requestId,
               is_processing: false,
               source: sawChatError ? 'http_error_eof' : 'http_abnormal_eof',
             },
-          });
+          } as WsEvent);
           // 多副本下任意存活 gateway 均可按 session 转发 cancel。
           void this.interruptChat(sessionId, requestId);
         }
       } catch (error) {
         console.warn('[WebHttpClient] Failed to settle errored SSE', requestId, error);
       } finally {
+        this.rejectRuntimeAckPending(
+          requestId,
+          this.createWebError(
+            i18n.t('network.requestFailed'),
+            this.sseSuperseded.has(requestId)
+              ? 'REQUEST_ABORTED'
+              : readAborted || controller.signal.aborted
+                ? 'REQUEST_ABORTED'
+                : 'SESSION_INPUT_DELIVERY_UNKNOWN',
+            requestId,
+            true
+          )
+        );
         this.inflight.delete(requestId);
         this.sseInflight.delete(requestId);
         this.sseSuperseded.delete(requestId);
@@ -1002,12 +1091,16 @@ export class WebHttpClient {
   private async readUnaryPayload(response: Response, requestId: string): Promise<unknown> {
     const unwrapped = unwrapHttpUnary(await this.readJson(response), response.status);
     if (!unwrapped.ok) {
-      throw this.createWebError(
+      const error = this.createWebError(
         unwrapped.message,
         unwrapped.code ?? (response.status >= 500 ? 'HTTP_ERROR' : undefined),
         unwrapped.requestId ?? requestId,
         this.isRetriableCode(unwrapped.code) || response.status >= 500
       );
+      if (unwrapped.details) {
+        error.payload = unwrapped.details;
+      }
+      throw error;
     }
     if (!response.ok && response.status >= 400 && response.status !== 201) {
       throw this.createWebError(
@@ -1129,6 +1222,76 @@ export class WebHttpClient {
     if (this.reconnectTimer !== null) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+  }
+
+  private createRuntimeAckPromise<T>(requestId: string, timeoutId: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      this.runtimeAckPending.set(requestId, {
+        resolve: (value) => {
+          window.clearTimeout(timeoutId);
+          this.runtimeAckPending.delete(requestId);
+          resolve(value as T);
+        },
+        reject: (reason) => {
+          window.clearTimeout(timeoutId);
+          this.runtimeAckPending.delete(requestId);
+          reject(reason);
+        },
+      });
+    });
+  }
+
+  private eventRequestId(event: WsEvent): string | undefined {
+    if (typeof event.payload.request_id === 'string' && event.payload.request_id) {
+      return event.payload.request_id;
+    }
+    const top = (event as WsEvent & { request_id?: unknown }).request_id;
+    return typeof top === 'string' && top ? top : undefined;
+  }
+
+  /** Resolve awaitRuntimeAccepted after handlers have seen the admission event. */
+  private resolveRuntimeAckPending(event: WsEvent, pumpRequestId: string): void {
+    if (event.event !== 'runtime.accepted' && event.event !== 'chat.error') {
+      return;
+    }
+    const eventId = this.eventRequestId(event);
+    // Prefer payload/top-level id; fall back to this SSE's client request id when
+    // Gateway only stamped the frame id (already folded into event.request_id).
+    const pendingId =
+      (eventId && this.runtimeAckPending.has(eventId) ? eventId : undefined) ??
+      (this.runtimeAckPending.has(pumpRequestId) ? pumpRequestId : undefined);
+    if (!pendingId) {
+      return;
+    }
+    const pending = this.runtimeAckPending.get(pendingId);
+    if (!pending) {
+      return;
+    }
+    if (event.event === 'runtime.accepted') {
+      pending.resolve(event.payload);
+      return;
+    }
+    const message =
+      typeof event.payload.error === 'string' ? event.payload.error : i18n.t('network.requestFailed');
+    const code = typeof event.payload.code === 'string' ? event.payload.code : undefined;
+    const error = this.createWebError(message, code, pendingId, true);
+    error.payload = event.payload;
+    pending.reject(error);
+  }
+
+  private rejectRuntimeAckPending(requestId: string, reason: unknown): void {
+    const pending = this.runtimeAckPending.get(requestId);
+    if (!pending) {
+      return;
+    }
+    pending.reject(reason);
+  }
+
+  private rejectAllRuntimeAckPending(reason: unknown): void {
+    const ids = [...this.runtimeAckPending.keys()];
+    for (const id of ids) {
+      this.rejectRuntimeAckPending(id, reason);
     }
   }
 

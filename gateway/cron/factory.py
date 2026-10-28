@@ -11,7 +11,7 @@ import logging
 import os
 from typing import Any
 
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 from gateway.runtime.cron.store_base import CronJobStoreBackend
 
 logger = logging.getLogger(__name__)

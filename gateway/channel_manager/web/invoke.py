@@ -13,7 +13,7 @@ from jiuwenswarm.common.request_identity import (
     web_routing_identity,
 )
 from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.edition import is_enterprise
+from gateway.enterprise import is_enterprise
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,8 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.source.install",
     "skills.updates.check",
     "skills.update",
+    # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
+    "skills.import_local",
     "skills.enterprise.list",
     "skills.enterprise.install",
     "skills.enterprise.uninstall",

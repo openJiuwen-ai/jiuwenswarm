@@ -64,6 +64,7 @@ from jiuwenswarm.common.config import (
     upsert_subagent_in_config,
 )
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from jiuwenswarm.common.request_ext import lift_from_metadata, reset_ext
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
@@ -2750,6 +2751,18 @@ class AgentWebSocketServer:
             if tokens is None:
                 tokens = self._startup_preparation_tokens = set()
             tokens.add(priority_token)
+        # 请求级 ext 抬升（X-User-Token 等）：把本请求 metadata['ext'] 抬到
+        # ContextVar，供本轮栈内消费（如 MCP 动态 token 网关的每请求用户授权
+        # 覆盖，见 mcp_dynamic_token_patch）。无 ext 的请求 lift 返回 None，
+        # finally 里 reset 为 no-op。
+        ext_token = lift_from_metadata(request.metadata)
+        # 企业版执行面（归档/删除、session.rename、team.bind、lifecycle.guard、
+        # Gateway adapter 等）都会经 get_agent_sessions_dir / agent_root 读盘；
+        # Front 控制面已用 bind_control_tenant，此处对齐，避免落到 default 三元组。
+        from jiuwenswarm.enterprise.tenant.tenant_identity import bind_control_tenant
+
+        _tenant_cm = bind_control_tenant(request)
+        _tenant_cm.__enter__()
         try:
             if self._request_requires_sandbox_bootstrap(request):
                 preparation = getattr(self, "_sandbox_start_task", None)
@@ -3377,12 +3390,14 @@ class AgentWebSocketServer:
                 async with send_lock:
                     await send_wire_payload(ws, wire)
         finally:
+            reset_ext(ext_token)
             if priority_token is not None:
                 registry.resume_background(priority_token)
                 self._startup_preparation_tokens.discard(priority_token)
             if pending_chat_request is not None:
                 runtime, session_id, request_id = pending_chat_request
                 runtime.end_chat_request(session_id, request_id)
+            _tenant_cm.__exit__(None, None, None)
 
     @staticmethod
     def _should_trigger_before_chat_request_hook(request: AgentRequest) -> bool:
@@ -6010,6 +6025,7 @@ class AgentWebSocketServer:
         if service is None:
             service = self._archive_service = SessionArchiveService(self._execution_runtime())
         params = request.params if isinstance(request.params, dict) else {}
+        # 租户绑定由 dispatch_parsed_request 入口统一处理。
         ok = True
         try:
             if method == "session.archived.list":
@@ -12710,7 +12726,7 @@ class AgentWebSocketServer:
                 # stale 懒重载，而**新建会话**的首次企业加载不经过懒重载，必须
                 # 能看到最新模板行（如动态 token 凭据热更），否则读到 600s TTL
                 # 旧行（与 dev-stable 的 refresh_config_source 语义对齐）。
-                from jiuwenswarm.common.config_provider import refresh_config_source
+                from jiuwenswarm.enterprise.config.config_provider import refresh_config_source
 
                 await refresh_config_source()
                 await self._agent_manager.reload_agents_config(

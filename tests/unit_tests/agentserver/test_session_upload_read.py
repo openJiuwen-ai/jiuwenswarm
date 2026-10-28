@@ -16,7 +16,7 @@ from jiuwenswarm.server.runtime.attachments.upload_storage import (
     UPLOAD_READ_CHUNK_BYTES, read_session_upload_chunk,
 )
 from jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter import WorkspaceFileAdapter
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 @pytest.fixture

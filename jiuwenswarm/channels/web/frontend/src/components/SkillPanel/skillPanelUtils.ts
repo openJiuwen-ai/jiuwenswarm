@@ -102,15 +102,41 @@ export const MARKETPLACE_CATEGORIES = [
   'finance-wealth',
 ] as const;
 
+/** 预置技能（source_type=prebuilt）。 */
+export function isPrebuiltSkill(skill: Pick<SkillItem, 'source_type'>): boolean {
+  return String(skill.source_type || '').trim() === 'prebuilt';
+}
+
 /**
- * 企业预置 / 内置技能由管理员统一管理：不展示启停、编辑、卸载、发布。
- * （后端也会拒绝 toggle / uninstall。）
+ * 内置技能。广场自装（source_type=user）即使同名也不算内置；
+ * 兼容旧列表仅 source=builtin 且未标成 user。
+ */
+export function isBuiltinSkill(skill: Pick<SkillItem, 'source_type' | 'source'>): boolean {
+  const sourceType = String(skill.source_type || '').trim();
+  if (sourceType === 'user' || sourceType === 'prebuilt') return false;
+  if (sourceType === 'builtin') return true;
+  return skill.source === 'builtin';
+}
+
+/**
+ * 企业预置 / 内置：不展示编辑、卸载、发布。
+ * （后端也会拒绝 uninstall；预置还会拒绝 toggle。）
  */
 export function isAdminManagedSkill(skill: Pick<SkillItem, 'source_type' | 'source'>): boolean {
-  const sourceType = String(skill.source_type || '').trim();
-  if (sourceType === 'prebuilt' || sourceType === 'builtin') return true;
-  // 兼容旧列表：仅 source=builtin 且未标成 user 自装
-  return skill.source === 'builtin' && sourceType !== 'user';
+  return isPrebuiltSkill(skill) || isBuiltinSkill(skill);
+}
+
+/**
+ * 是否展示启停开关。
+ * - 企业版：预置不可；内置与用户技能可以
+ * - 单机版：保持原 adminManaged 逻辑（内置/预置均不展示）
+ */
+export function shouldShowEnableSwitch(
+  skill: Pick<SkillItem, 'source_type' | 'source'>,
+  enterpriseEdition: boolean,
+): boolean {
+  if (enterpriseEdition) return !isPrebuiltSkill(skill);
+  return !isAdminManagedSkill(skill);
 }
 
 /** 广场搜索结果列表 key：ClawHub 带 owner，避免同 slug 重复 key。 */

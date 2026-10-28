@@ -27,7 +27,7 @@ from gateway.channel_manager.web.enterprise_files import (
     serve_presigned_download,
 )
 from starlette.requests import Request
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 @pytest.mark.parametrize(

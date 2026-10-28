@@ -65,6 +65,32 @@ _ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
 _ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
 _ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
 _ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
+# Enterprise verify still registers these wire methods in HANDLERS / adapters,
+# but the pinned openjiuwen-protocol revision does not ship them yet. Without
+# ensure, importing dispatch crashes the runtime worker and HTTP :8766 never
+# binds (readiness stays connection-refused).
+_ensure_req_method("FILE_READ_UPLOAD_CHUNK", "file.read_upload_chunk")
+_ensure_req_method("WORKSPACE_TREE", "workspace.tree")
+_ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
+_ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
+_ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
+_ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
+_ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
+_ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
+_ensure_req_method("SKILLS_UPDATES_CHECK", "skills.updates.check")
+_ensure_req_method("SKILLS_UPDATE", "skills.update")
+_ensure_req_method("SKILLS_ENTERPRISE_LIST", "skills.enterprise.list")
+_ensure_req_method("SKILLS_ENTERPRISE_INSTALL", "skills.enterprise.install")
+_ensure_req_method("SKILLS_ENTERPRISE_UNINSTALL", "skills.enterprise.uninstall")
+_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_PROVIDERS", "skills.enterprise.source.providers")
+_ensure_req_method("SKILLS_ENTERPRISE_SOURCE_SEARCH", "skills.enterprise.source.search")
+_ensure_req_method("SKILLDEV_START", "skilldev.start")
+_ensure_req_method("SKILLDEV_RESPOND", "skilldev.respond")
+_ensure_req_method("SKILLDEV_STATUS", "skilldev.status")
+_ensure_req_method("SKILLDEV_DOWNLOAD", "skilldev.download")
+_ensure_req_method("SKILLDEV_CANCEL", "skilldev.cancel")
+_ensure_req_method("SKILLDEV_FILE_LIST", "skilldev.file.list")
+_ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
 
 logger = logging.getLogger(__name__)
 
@@ -72,24 +98,6 @@ logger = logging.getLogger(__name__)
 # ``chat.send`` 请求携带该 truthy 参数时，仅为已在运行的 Team Session 附加
 # 响应订阅，不提交新输入（gateway / runtime / server 三方共用的协议参数名）。
 TEAM_ATTACH_ONLY_PARAM = "attach_only"
-
-
-# Enterprise RPCs extend the shared protocol enum; never shadow its identity.
-_ensure_req_method('WORKSPACE_TREE', 'workspace.tree')
-_ensure_req_method('WORKSPACE_PREVIEW', 'workspace.preview')
-_ensure_req_method('WORKSPACE_USAGE', 'workspace.usage')
-_ensure_req_method('WORKSPACE_ENTRIES_DELETE', 'workspace.entries.delete')
-_ensure_req_method('FILE_READ_UPLOAD_CHUNK', 'file.read_upload_chunk')
-_ensure_req_method('SKILLS_SOURCE_PROVIDERS', 'skills.source.providers')
-_ensure_req_method('SKILLS_SOURCE_SEARCH', 'skills.source.search')
-_ensure_req_method('SKILLS_SOURCE_INSTALL', 'skills.source.install')
-_ensure_req_method('SKILLS_UPDATES_CHECK', 'skills.updates.check')
-_ensure_req_method('SKILLS_UPDATE', 'skills.update')
-_ensure_req_method('SKILLS_ENTERPRISE_LIST', 'skills.enterprise.list')
-_ensure_req_method('SKILLS_ENTERPRISE_INSTALL', 'skills.enterprise.install')
-_ensure_req_method('SKILLS_ENTERPRISE_UNINSTALL', 'skills.enterprise.uninstall')
-_ensure_req_method('SKILLS_ENTERPRISE_SOURCE_PROVIDERS', 'skills.enterprise.source.providers')
-_ensure_req_method('SKILLS_ENTERPRISE_SOURCE_SEARCH', 'skills.enterprise.source.search')
 
 
 class EventType(Enum):

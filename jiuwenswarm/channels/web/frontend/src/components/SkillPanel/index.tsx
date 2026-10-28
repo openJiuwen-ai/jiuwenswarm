@@ -31,7 +31,10 @@ import {
   coerceStringList,
   getSourceLabel,
   isAdminManagedSkill,
+  isBuiltinSkill,
+  isPrebuiltSkill,
   normalizeSkillItem,
+  shouldShowEnableSwitch,
   transformSkillContentImages,
 } from './skillPanelUtils';
 import { FilterDropdown, MySkillGoTryButton, TopAnchorTooltip } from './SkillPanelWidgets';
@@ -77,8 +80,8 @@ const MY_SKILLS_EMPTY_KEY: Record<
   enabled: 'skills.noEnabledSkills',
   disabled: 'skills.noDisabledSkills',
   builtin: 'skills.noBuiltinSkills',
-  prebuilt: 'skills.noMatches',
-  user: 'skills.noMatches',
+  prebuilt: 'skills.noPrebuiltSkills',
+  user: 'skills.noUserSkills',
 };
 
 function MySkillsGroupHeader({ label }: { label: string }) {
@@ -959,40 +962,46 @@ export function SkillPanel({
         filtered = filtered.filter((s) => s.source_type === 'user');
         break;
       default:
-        // 企业版「全部」：不含内置，企业预置优先、用户自装其次
+        // 企业版「全部」：企业预置 > 内置 > 用户自装
         if (enterpriseEdition) {
-          const priority = (s: SkillItem) =>
-            s.source_type === 'prebuilt' ? 0 : s.source_type === 'user' ? 1 : 2;
-          filtered = visibleSkills
-            .filter((s) => s.source_type !== 'builtin' && s.source !== 'builtin')
-            .sort((a, b) => priority(a) - priority(b));
+          const priority = (s: SkillItem) => {
+            if (s.source_type === 'prebuilt') return 0;
+            if (s.source_type === 'builtin' || s.source === 'builtin') return 1;
+            if (s.source_type === 'user') return 2;
+            return 3;
+          };
+          filtered = [...visibleSkills].sort((a, b) => priority(a) - priority(b));
         }
         break;
     }
     return filtered;
   }, [visibleSkills, mySkillsSubTab, installedSkillNames, enterpriseEdition]);
 
-  // 内置/非内置分组（用于"我的技能"列表分组展示）；技能包单独成组置顶。
-  // 企业版按 source_type 判断，避免广场自装（source_type=user）因同名内置包被归到「内置技能」。
-  const isBuiltinListedSkill = useCallback(
-    (s: SkillItem) => {
-      if (s.source_type === 'user' || s.source_type === 'prebuilt') return false;
-      if (s.source_type === 'builtin') return true;
-      return s.source === 'builtin';
-    },
-    [],
-  );
-  const builtinSkills = useMemo(
-    () => mySkillsFiltered.filter((s) => isBuiltinListedSkill(s)),
-    [mySkillsFiltered, isBuiltinListedSkill],
-  );
+  // 分组展示：技能包 / 预置 / 用户自装(或已添加) / 内置。
   const skillPackSkills = useMemo(
     () => mySkillsFiltered.filter((s) => s.skill_type === 'skillpack'),
     [mySkillsFiltered],
   );
+  // 预置独立分组仅企业版；单机版仍把这类技能留在「已添加」里，避免行为变化。
+  const prebuiltSkills = useMemo(
+    () =>
+      enterpriseEdition
+        ? mySkillsFiltered.filter((s) => isPrebuiltSkill(s) && s.skill_type !== 'skillpack')
+        : [],
+    [enterpriseEdition, mySkillsFiltered],
+  );
+  const builtinSkills = useMemo(
+    () => mySkillsFiltered.filter((s) => isBuiltinSkill(s) && s.skill_type !== 'skillpack'),
+    [mySkillsFiltered],
+  );
   const otherSkills = useMemo(
-    () => mySkillsFiltered.filter((s) => !isBuiltinListedSkill(s) && s.skill_type !== 'skillpack'),
-    [mySkillsFiltered, isBuiltinListedSkill],
+    () =>
+      mySkillsFiltered.filter((s) => {
+        if (s.skill_type === 'skillpack' || isBuiltinSkill(s)) return false;
+        if (enterpriseEdition && isPrebuiltSkill(s)) return false;
+        return true;
+      }),
+    [enterpriseEdition, mySkillsFiltered],
   );
 
   /** 判断技能是否为技能包（接口标记 skillpack，或技能名与所属插件名一致） */
@@ -1113,9 +1122,14 @@ export function SkillPanel({
     ) : undefined;
 
     const labelTags: string[] = [];
-    labelTags.push(
-      `${t('skills.sourceLabel')}: ${getSourceLabel(skill.source, t, skill.is_builtin_source, skill.source_type)}`,
-    );
+    const builtinCard = isBuiltinSkill(skill);
+    const prebuiltCard = isPrebuiltSkill(skill);
+    // 内置/预置已有类型标签，不再重复写「来源：…」
+    if (!builtinCard && !prebuiltCard) {
+      labelTags.push(
+        `${t('skills.sourceLabel')}: ${getSourceLabel(skill.source, t, skill.is_builtin_source, skill.source_type)}`,
+      );
+    }
     if (skill.skill_type === 'swarm_skill') {
       labelTags.push(t('skills.skillTypes.team'));
     } else if (skill.skill_type === 'multimodal_skill') {
@@ -1128,14 +1142,15 @@ export function SkillPanel({
         labelTags.push(t('skills.memberCountSuffix', { count: skill.member_count }));
       }
     }
-    // 仅真正的内置/企业预置打标签；广场用户自装即使与内置同名也不标「内置」
-    if (skill.source_type === 'prebuilt') {
+    // 仅真正的内置/预置打标签；广场用户自装即使与内置同名也不标「内置」
+    if (prebuiltCard) {
       labelTags.push(t('skills.mySkillsTabs.prebuilt'));
-    } else if (skill.source_type === 'builtin' || (skill.source === 'builtin' && skill.source_type !== 'user')) {
+    } else if (builtinCard) {
       labelTags.push(t('skills.mySkillsTabs.builtin'));
     }
 
     const adminManaged = isAdminManagedSkill(skill);
+    const showEnableSwitch = shouldShowEnableSwitch(skill, enterpriseEdition);
     const actionContent = (
       <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
         <div className="page-card-actions-hover flex items-center gap-1.5">
@@ -1193,7 +1208,7 @@ export function SkillPanel({
             tooltip={t('skills.actions.goTry')}
           />
         </div>
-        {!adminManaged ? (
+        {showEnableSwitch ? (
           <span title={isPackBlocked ? t('skills.packBlockedHint') : undefined} className="flex items-center">
             <Switch
               checked={!isDisabled}
@@ -1281,13 +1296,6 @@ export function SkillPanel({
       setActiveTab('marketplace');
     }
   }, [enterpriseEdition, activeTab]);
-
-  // 企业版不展示内置筛选；若残留 builtin 子页签则回落到全部
-  useEffect(() => {
-    if (enterpriseEdition && mySkillsSubTab === 'builtin') {
-      setMySkillsSubTab('all');
-    }
-  }, [enterpriseEdition, mySkillsSubTab]);
 
   // 企业版：拉取可搜索技能源，生成广场子页签（SwarmSkills / 其他源）
   useEffect(() => {
@@ -1398,7 +1406,7 @@ export function SkillPanel({
         <div className="flex items-center gap-3" data-testid="skill-panel-toolbar-actions">
           {activeTab === 'my' && (
             <>
-              {/* 企业版：全部 / 企业预置 / 用户自装（不展示内置）；个人版：全部 / 启用 / 禁用 / 内置 */}
+              {/* 企业版：全部 / 企业预置 / 内置 / 用户自装；个人版：全部 / 启用 / 禁用 / 内置 */}
               <FilterDropdown
                 open={enableFilterOpen}
                 onToggle={(v) => {
@@ -1415,6 +1423,7 @@ export function SkillPanel({
                     ? [
                         { value: 'all', label: t('skills.mySkillsTabs.all') },
                         { value: 'prebuilt', label: t('skills.mySkillsTabs.prebuilt') },
+                        { value: 'builtin', label: t('skills.mySkillsTabs.builtin') },
                         { value: 'user', label: t('skills.mySkillsTabs.user') },
                       ]
                     : [
@@ -1674,13 +1683,27 @@ export function SkillPanel({
                   )}
                   {otherSkills.length > 0 && (
                     <>
-                      {((!enterpriseEdition && builtinSkills.length > 0) || skillPackSkills.length > 0) && (
-                        <MySkillsGroupHeader label={t('skills.mySkillsGroups.added')} />
+                      {(prebuiltSkills.length > 0 ||
+                        builtinSkills.length > 0 ||
+                        skillPackSkills.length > 0) && (
+                        <MySkillsGroupHeader
+                          label={t(
+                            enterpriseEdition
+                              ? 'skills.mySkillsTabs.user'
+                              : 'skills.mySkillsGroups.added',
+                          )}
+                        />
                       )}
                       <div className="card-grid-auto mb-6">{otherSkills.map(renderMySkillCard)}</div>
                     </>
                   )}
-                  {!enterpriseEdition && builtinSkills.length > 0 && (
+                  {enterpriseEdition && prebuiltSkills.length > 0 && (
+                    <>
+                      <MySkillsGroupHeader label={t('skills.mySkillsGroups.prebuilt')} />
+                      <div className="card-grid-auto mb-6">{prebuiltSkills.map(renderMySkillCard)}</div>
+                    </>
+                  )}
+                  {builtinSkills.length > 0 && (
                     <>
                       <MySkillsGroupHeader label={t('skills.mySkillsGroups.builtin')} />
                       <div className="card-grid-auto">{builtinSkills.map(renderMySkillCard)}</div>

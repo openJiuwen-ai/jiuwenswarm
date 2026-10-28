@@ -11,7 +11,7 @@ from jiuwenswarm.server.runtime.gateway_adapter.base import AdapterRegistry
 from jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter import (
     WorkspaceFileAdapter,
 )
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 @pytest.fixture

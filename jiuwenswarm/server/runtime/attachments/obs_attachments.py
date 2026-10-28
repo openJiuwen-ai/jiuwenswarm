@@ -20,8 +20,8 @@ from jiuwenswarm.server.runtime.attachments.upload_storage import (
     safe_session_dirname,
     safe_upload_filename,
 )
-from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
-from jiuwenswarm.server.runtime.tenant_context import TenantContext
+from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool
+from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
 def _open_uploads(root: Path, uploads: Path) -> int:

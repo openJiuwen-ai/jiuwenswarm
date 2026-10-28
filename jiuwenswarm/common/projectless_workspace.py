@@ -84,7 +84,7 @@ def get_projectless_tasks_dir() -> Path:
     """
     configured = os.environ.get(_TASKS_DIR_ENV, "").strip()
     if not configured:
-        from jiuwenswarm.edition import is_enterprise
+        from jiuwenswarm.enterprise import is_enterprise
 
         if is_enterprise():
             from jiuwenswarm.common.utils import get_default_project_workspace_dir
