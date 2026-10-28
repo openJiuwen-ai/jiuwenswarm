@@ -22,6 +22,26 @@ from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
 
 
+@pytest.fixture(autouse=True)
+def _restore_patch_bindings(monkeypatch):
+    from mcp.client import sse, streamable_http
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import StreamableHttpClient
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+    from jiuwenswarm.common import mcp_call_timeout_patch as patch
+
+    for cls in (SseClient, StreamableHttpClient, ToolMgr):
+        for name in ("connect", "_do_connect", "disconnect", "call_tool", "list_tools", "_create_client"):
+            if name in cls.__dict__:
+                monkeypatch.setattr(cls, name, cls.__dict__[name])
+    for module, name in ((sse, "sse_client"), (streamable_http, "streamablehttp_client")):
+        monkeypatch.setattr(module, name, getattr(module, name))
+    monkeypatch.setattr(patch, "_PATCHED", False)
+    monkeypatch.setattr(patch, "_wrapped_methods", set())
+    monkeypatch.setattr(patch, "_wrapped_connects", set())
+    monkeypatch.setattr(patch, "_wrapped_factories", set())
+    monkeypatch.setattr(patch, "_patch_ability_manager_fail_after", lambda: None)
+
+
 class _FakeSession:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict[str, Any]]] = []

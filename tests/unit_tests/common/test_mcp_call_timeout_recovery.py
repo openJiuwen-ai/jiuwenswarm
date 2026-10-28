@@ -91,67 +91,26 @@ def restore_mcp_timeout_patch():
 
 
 @pytest.mark.asyncio
-async def test_force_invalidate_defers_aclose_until_host_task_finishes() -> None:
-    """活着的聊天 task 上不得 aclose：跨 task 退 cancel scope 会取消整次请求。"""
+async def test_force_invalidate_retains_resources_without_background_aclose() -> None:
+    """同步作废只能标记，不能丢弃资源或在另一任务关闭上下文。"""
     import asyncio
+    from unittest.mock import AsyncMock
 
-    aclosed = asyncio.Event()
-
-    class _CancellingStack(AsyncExitStack):
-        def __init__(self, host: asyncio.Task) -> None:
-            super().__init__()
-            self._host = host
-
-        async def aclose(self) -> None:
-            # 复现 anyio：别的 task 退出 scope 时取消进入该 scope 的宿主 task。
-            self._host.cancel()
-            aclosed.set()
-
-    async def host() -> None:
-        current = asyncio.current_task()
-        assert current is not None
-        client = SimpleNamespace(
-            _session=object(),
-            _exit_stack=_CancellingStack(current),
-            _is_disconnected=False,
-        )
-        force_invalidate_mcp_client(client)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert current.cancelling() == 0
-        assert not aclosed.is_set()
-
-    # host 必须是独立 task：aclose 挂在 current_task 的 done 回调上。
-    task = asyncio.create_task(host())
-    await task
+    stack = AsyncExitStack()
+    stack.aclose = AsyncMock()
+    session = object()
+    client = SimpleNamespace(_session=session, _exit_stack=stack, _is_disconnected=False)
+    await asyncio.create_task(_mark_invalid(client))
     for _ in range(10):
-        if aclosed.is_set():
-            break
         await asyncio.sleep(0)
-    assert aclosed.is_set()
-
-
-def test_force_invalidate_clears_session_and_replaces_exit_stack() -> None:
-    old_stack = AsyncExitStack()
-    client = SimpleNamespace(
-        _session=object(),
-        _client=object(),
-        _read=object(),
-        _write=object(),
-        _is_disconnected=False,
-        _exit_stack=old_stack,
-        _auth_provider=object(),
-    )
-    force_invalidate_mcp_client(client)
-    assert client._session is None
-    assert client._client is None
-    assert client._read is None
-    assert client._write is None
-    assert client._is_disconnected is True
-    assert client._auth_provider is None
-    assert client._exit_stack is not old_stack
-    assert isinstance(client._exit_stack, AsyncExitStack)
     assert client._jws_needs_reconnect is True
+    assert client._session is session
+    assert client._exit_stack is stack
+    stack.aclose.assert_not_awaited()
+
+
+async def _mark_invalid(client):
+    force_invalidate_mcp_client(client)
 
 
 @pytest.mark.parametrize(
@@ -246,9 +205,7 @@ def _install_fake_streamable_client(
 
     async def _default_disconnect(self, *, timeout=-1):
         del timeout
-        raise RuntimeError(
-            "Attempted to exit cancel scope in a different task than it was entered in"
-        )
+        return True
 
     connect_count = {"n": 0}
 
@@ -293,15 +250,16 @@ def _install_fake_streamable_client(
 
 
 @pytest.fixture(autouse=True)
-def _autouse_restore_mcp_timeout_patch():
+def _autouse_restore_mcp_timeout_patch(monkeypatch):
     """本文件凡 apply / 改 ability_manager.anyio 的用例结束后还原全局副作用。"""
+    monkeypatch.setattr(timeout_patch, "_patch_sdk_read_timeouts", lambda: None)
     with _restore_after_mcp_timeout_patch():
         yield
 
 
 @pytest.mark.asyncio
 async def test_timeout_then_same_session_call_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
-    """对齐现场：disconnect 因 cancel scope 失败且未清 _session 时，下一轮须重连成功。"""
+    """超时在 owner 清理完成后，下一轮须重连成功。"""
     call_count = {"n": 0}
 
     async def fake_call_tool(self, tool_name: str, arguments: dict, *, timeout=-1):
@@ -514,89 +472,51 @@ async def test_empty_error_after_half_dead_session_reconnects_once(
 
 
 @pytest.mark.asyncio
-async def test_sticky_reconnect_flag_forces_reconnect_even_if_session_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """disconnect 失败若残留 _session，靠 _jws_needs_reconnect 仍须强制重连。"""
-    call_count = {"n": 0}
-    dead_session = object()
+async def test_cleanup_failure_blocks_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不能把失败的 disconnect 静默视为成功并在旧上下文上重连。"""
+    async def call(self, *args, **kwargs):
+        raise RuntimeError("Session terminated")
 
-    async def fake_call_tool(self, tool_name: str, arguments: dict, *, timeout=-1):
-        del timeout
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            await anyio.sleep(5)
-            return {"unreachable": True}
-        # 若未强制重连，仍拿着超时前的 dead_session
-        assert self._session is not dead_session
-        return {"tool": tool_name, "ok": True}
-
-    async def fake_disconnect(self, *, timeout=-1):
-        del timeout
-        # 模拟 SDK：aclose 失败且不清 _session
-        raise RuntimeError(
-            "Attempted to exit cancel scope in a different task than it was entered in"
-        )
+    async def disconnect(self, **kwargs):
+        return False
 
     client, connect_count, _ = _install_fake_streamable_client(
-        monkeypatch,
-        fake_call_tool=fake_call_tool,
-        fake_disconnect=fake_disconnect,
-        default_timeout=0.05,
+        monkeypatch, fake_call_tool=call, fake_disconnect=disconnect,
     )
-    client._session = dead_session
-
-    with pytest.raises(TimeoutError, match="timed out after"):
-        await client.call_tool("qa_delay", {"seconds": 5})
-
-    # 补丁应已清掉并打标；再故意塞回 dead_session 模拟竞态残留
-    client._session = dead_session
-    client._is_disconnected = False
-    client._jws_needs_reconnect = True
-
-    result = await client.call_tool("qa_echo", {"text": "after"})
-    assert result["ok"] is True
-    assert connect_count["n"] >= 1
-    assert call_count["n"] == 2
+    session, stack = client._session, client._exit_stack
+    with pytest.raises(RuntimeError, match="disconnect returned false"):
+        await client.call_tool("echo", {})
+    assert connect_count["n"] == 0
+    assert client._session is session
+    assert client._exit_stack is stack
+    assert client._jws_needs_reconnect is True
 
 
 @pytest.mark.asyncio
-async def test_timeout_teardown_cancelled_error_still_reports_timeout(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """超时 teardown 不再 aclose；即使旧 disconnect 会抛 CancelledError，仍报 TimeoutError。"""
+async def test_cleanup_cancelled_error_propagates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清理中的取消也必须传播，不可伪装为完整断开。"""
     import asyncio
 
-    async def fake_call_tool(self, tool_name: str, arguments: dict, *, timeout=-1):
-        del self, tool_name, arguments, timeout
-        await anyio.sleep(5)
-        return {"unreachable": True}
+    async def call(self, *args, **kwargs):
+        await asyncio.Event().wait()
 
-    async def fake_disconnect(self, *, timeout=-1):
-        del self, timeout
+    async def disconnect(self, **kwargs):
         raise asyncio.CancelledError()
 
     client, _, _ = _install_fake_streamable_client(
-        monkeypatch,
-        fake_call_tool=fake_call_tool,
-        fake_disconnect=fake_disconnect,
-        default_timeout=0.05,
+        monkeypatch, fake_call_tool=call, fake_disconnect=disconnect, default_timeout=0.01,
     )
-
-    with pytest.raises(TimeoutError, match="timed out after") as ei:
-        await client.call_tool("qa_delay", {"seconds": 5})
-
-    assert not isinstance(ei.value, asyncio.CancelledError)
-    assert "user cancel" not in str(ei.value).lower()
-    assert client._session is None
-    assert client._is_disconnected is True
+    with pytest.raises(asyncio.CancelledError):
+        await client.call_tool("echo", {})
+    assert client._session is not None
+    assert client._jws_needs_reconnect is True
 
 
 @pytest.mark.asyncio
-async def test_spurious_cancelled_error_reconnects_once(
+async def test_cancelled_error_propagates_after_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """连接中断冒出的 CancelledError（非外层取消）应重连重试，而非标成用户取消。"""
+    """不再依据取消计数猜测并吞掉 CancelledError。"""
     import asyncio
 
     call_count = {"n": 0}
@@ -614,13 +534,11 @@ async def test_spurious_cancelled_error_reconnects_once(
         default_timeout=5.0,
     )
 
-    result = await client.call_tool(
-        "qa_echo",
-        {"text": "MCP-CALL-sds-90b35bbefb56-after-restart"},
-    )
-    assert result["ok"] is True
-    assert call_count["n"] == 2
-    assert connect_count["n"] >= 1
+    with pytest.raises(asyncio.CancelledError):
+        await client.call_tool("qa_echo", {})
+    assert call_count["n"] == 1
+    assert connect_count["n"] == 0
+    assert client._session is None
 
 
 @pytest.mark.asyncio
@@ -639,7 +557,7 @@ async def test_sse_timeout_reports_timeout_not_cancelled(
 
     async def fake_disconnect(self, *, timeout=-1):
         del self, timeout
-        raise asyncio.CancelledError()
+        return True
 
     async def fake_connect(self, *, timeout=-1):
         del timeout
@@ -806,10 +724,10 @@ def test_init_subclass_hook_must_be_classmethod() -> None:
 
 
 @pytest.mark.asyncio
-async def test_disconnect_wrap_clears_session_when_aclose_fails(
+async def test_disconnect_wrap_retains_resources_when_aclose_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """disconnect finally 清会话：aclose 失败也不留半死连接。"""
+    """清理失败不丢弃仍待 owner 关闭的资源，不假报成功。"""
     StreamableHttpClient, _, _ = _install_fake_transport_modules(monkeypatch)
 
     async def boom_disconnect(self, *, timeout=-1):
@@ -834,7 +752,7 @@ async def test_disconnect_wrap_clears_session_when_aclose_fails(
     with pytest.raises(RuntimeError, match="aclose failed"):
         await client.disconnect()
 
-    assert client._session is None
-    assert client._client is None
-    assert client._is_disconnected is True
+    assert client._session is not None
+    assert client._client is not None
+    assert client._is_disconnected is False
     assert client._jws_needs_reconnect is True
