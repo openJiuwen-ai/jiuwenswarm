@@ -136,6 +136,7 @@ Most users can leave these options unchanged:
 permissions:
   auto:
     reviewer_timeout_ms: 60000
+    reviewer_output_format: json_object
     reviewer_min_confidence: 0.7
     persistent_audit_enabled: false
     bounded_write_max_files: 3
@@ -146,6 +147,7 @@ permissions:
 | --- | --- |
 | `reviewer_timeout_ms` | Maximum time allowed for a review. A timeout sends the request to manual review; it never causes the request to be allowed automatically. |
 | `reviewer_min_confidence` | Minimum reviewer confidence. Results below this threshold are sent for manual review. |
+| `reviewer_output_format` | `json_object` (default) requests JSON mode on the built-in OpenAI-compatible Chat transport; `prompt` disables this default. Explicit model formats and other protocols are preserved. |
 | `persistent_audit_enabled` | Writes approval decisions to a persistent audit log. |
 | `bounded_write_max_files` | Maximum number of files allowed on the bounded-write fast path. |
 | `bounded_write_excluded_paths` | Additional sensitive paths to exclude from the fast path. These are combined with the built-in protected paths. |
@@ -172,3 +174,5 @@ For tasks with multiple subagents, the Web todo panel may show only one item as 
 - Periodically review remembered decisions and `approval_overrides`.
 
 For related settings, see [Tool Permissions & Security](ToolPermissionsSecurity.md) and [Configuration](Configuration.md).
+
+JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying.
