@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any
 
@@ -238,6 +239,58 @@ def test_maas_span_id_replaces_blank_value(
     headers = recorded[0]["custom_headers"]
     assert [k for k in headers if k.lower() == "x-span-id"] == ["x-span-id"]
     assert len(headers["x-span-id"]) == 32
+
+
+# ── 流式请求发送前日志 ───────────────────────────────────────────────
+
+
+def test_stream_logs_request_before_send(
+    monkeypatch: pytest.MonkeyPatch, fresh_patch_state: None, caplog: pytest.LogCaptureFixture
+) -> None:
+    """无论后续是否超时，发请求前都必须先落一行（带 span/模型/超时参数）。"""
+
+    async def _fake_stream(self: Any, *args: Any, **kwargs: Any):
+        yield "chunk-1"
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(oai_mod.OpenAIModelClient, "stream", _fake_stream)
+    patch_mod.apply_huawei_maas_span_id_patch()
+
+    client = SimpleNamespace(
+        model_client_config=SimpleNamespace(
+            api_base="https://modelarts-maas.cn/v1",
+            stream_idle_timeout=60,
+        ),
+        model_config=SimpleNamespace(model_name="glm-5.3"),
+    )
+    caplog.set_level(logging.INFO, logger="jiuwenswarm.llm_sse_patch")
+
+    async def _run() -> None:
+        async for _chunk in oai_mod.OpenAIModelClient.stream(
+            client, messages=[{"role": "user", "content": "hi"}], model="glm-5.3"
+        ):
+            pass
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_run())
+
+    line = next(
+        r.getMessage() for r in caplog.records if "[MODEL_HTTP] begin" in r.getMessage()
+    )
+    assert "span=" in line
+    assert "model=glm-5.3" in line
+    assert "host=modelarts-maas.cn" in line
+    assert "idle_timeout=60" in line
+
+    # 失败也必须留下 end 汇总，不能只在正常结束时打
+    end = next(
+        r.getMessage() for r in caplog.records if "[MODEL_HTTP] end" in r.getMessage()
+    )
+    assert "status=error" in end
+    assert "chunks=1" in end
+    assert "exc=CancelledError" in end
+    # end 必须带上本次尝试的 span，失败行才能直接拿去 MaaS 侧对账
+    assert f"span={line.split('span=', 1)[1].split(' ', 1)[0]}" in end
 
 
 # ── P1：渠道门控读取路径 ──────────────────────────────────────────────

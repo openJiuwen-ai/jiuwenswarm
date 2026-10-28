@@ -39,6 +39,7 @@ import re
 import time
 import uuid
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger("jiuwenswarm.llm_sse_patch")
 
@@ -705,34 +706,59 @@ def apply_huawei_maas_span_id_patch() -> None:
 
     async def _stream_with_maas_span(self: Any, *args, **kwargs):
         _maybe_inject_maas_span_id(self, kwargs)
+        _mcc = getattr(self, "model_client_config", None)
+        _mc = getattr(self, "model_config", None)
+        _span = (
+            _span_id_value(kwargs.get("custom_headers"))
+            or _span_id_value(getattr(_mcc, "custom_headers", None))
+            or "-"
+        )
+        logger.info(
+            "[MODEL_HTTP] begin span=%s model=%s host=%s idle_timeout=%s",
+            _span,
+            kwargs.get("model") or getattr(_mc, "model_name", "") or "-",
+            urlsplit(str(getattr(_mcc, "api_base", "") or "")).netloc or "-",
+            getattr(_mcc, "stream_idle_timeout", None),
+        )
         # [PERF] 打点:LLM 流调用 TTFT 与总时长
         import time as _perf_time
         _t0 = _perf_time.perf_counter()
-        _ttft_logged = False
+        _ttft_ms = None
         _producer_s = 0.0
         _n_chunks = 0
+        _status = "ok"
+        _exc_name = "-"
         _it = _orig_stream(self, *args, **kwargs)
-        while True:
-            _t_next = _perf_time.perf_counter()
-            try:
-                chunk = await _it.__anext__()
-            except StopAsyncIteration:
-                break
-            _producer_s += _perf_time.perf_counter() - _t_next
-            _n_chunks += 1
-            if not _ttft_logged:
-                _ttft_logged = True
-                logger.info(
-                    "[PERF] llm_stream ttft_ms=%.1f",
-                    (_perf_time.perf_counter() - _t0) * 1000,
-                )
-            yield chunk
-        logger.info(
-            "[PERF] llm_stream total_ms=%.1f producer_ms=%.1f chunks=%d",
-            (_perf_time.perf_counter() - _t0) * 1000,
-            _producer_s * 1000,
-            _n_chunks,
-        )
+        try:
+            while True:
+                _t_next = _perf_time.perf_counter()
+                try:
+                    chunk = await _it.__anext__()
+                except StopAsyncIteration:
+                    break
+                _producer_s += _perf_time.perf_counter() - _t_next
+                _n_chunks += 1
+                if _ttft_ms is None:
+                    _ttft_ms = (_perf_time.perf_counter() - _t0) * 1000
+                    logger.info("[PERF] llm_stream ttft_ms=%.1f", _ttft_ms)
+                yield chunk
+        except BaseException as exc:
+            _status = "error"
+            _exc_name = type(exc).__name__
+            raise
+        finally:
+            # 正常结束、超时、取消都打：失败时也要留下本次尝试的汇总
+            logger.info(
+                "[MODEL_HTTP] end span=%s status=%s chunks=%d ttft_ms=%s producer_ms=%.1f "
+                "total_ms=%.1f exc=%s",
+                _span,
+                _status,
+                _n_chunks,
+                f"{_ttft_ms:.1f}" if _ttft_ms is not None else "-",
+                _producer_s * 1000,
+                (_perf_time.perf_counter() - _t0) * 1000,
+                _exc_name,
+            )
 
     client_cls.invoke = _invoke_with_maas_span
     client_cls.stream = _stream_with_maas_span
