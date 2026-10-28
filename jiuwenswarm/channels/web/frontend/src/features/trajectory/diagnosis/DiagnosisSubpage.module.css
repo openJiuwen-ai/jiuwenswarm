@@ -116,11 +116,9 @@
   padding: 0 0.5rem;
 }
 
-.noteText {
-  margin: 0;
-  border-radius: 0.375rem;
-  background: var(--color-surface-muted);
-  padding: 0.375rem 0.625rem;
+.noteInline {
+  min-width: 0;
+  flex: 1 1 12rem;
   white-space: pre-wrap;
   word-break: break-word;
 }
