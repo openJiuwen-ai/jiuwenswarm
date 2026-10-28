@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import logging
 import math
 
 from openjiuwen.core.context_engine.usage import ContextUsageSnapshot
@@ -14,6 +15,7 @@ from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.server.runtime.session.session_history import read_committed_main_history
 
 SESSION_USAGE_INFO_KEY = "session_usage_info"
+logger = logging.getLogger(__name__)
 
 
 class SessionStatisticsError(RuntimeError):
@@ -120,11 +122,19 @@ def build_usage_snapshot(
     turn_usage: dict | None = None,
     source: str = "host",
 ) -> dict | None:
-    """Copy only public counters and measurement metadata at a host boundary."""
+    """Copy independent valid host components without consulting old history."""
     if not is_valid_session_id(session_id):
         raise ValueError("invalid session_id")
-    context = _context(session_id, context_usage)
-    turn = _turn(turn_usage)
+    context = None
+    turn = None
+    try:
+        context = _context(session_id, context_usage)
+    except (TypeError, ValueError):
+        logger.debug("[SessionStatistics] invalid host context component")
+    try:
+        turn = _turn(turn_usage)
+    except (TypeError, ValueError):
+        logger.debug("[SessionStatistics] invalid host turn component")
     if context is None and turn is None:
         return None
     return {
@@ -165,6 +175,8 @@ def read_session_usage(session_id: str, breakdown: bool = False) -> dict | None:
             if (
                 record.get("subagent_id") or record.get("mode") == "subagent"
                 or record.get("session_id") not in (None, "", session_id)
+                or record.get("depth", 0) != 0 or record.get("parent_invocation_id")
+                or record.get("member_name") or record.get("team_id")
             ):
                 continue
             if context is None and record.get("event_type") == "context.usage":
