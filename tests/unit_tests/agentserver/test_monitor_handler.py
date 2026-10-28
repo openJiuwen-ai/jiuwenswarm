@@ -316,6 +316,26 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
 
 
 @pytest.mark.anyio
+async def test_get_team_snapshot_drops_shut_down_members_and_keeps_dormant() -> None:
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[
+                _FakeMember("worker-1"),
+                _FakeMember("retired", status="shut_down"),
+                _FakeMember("sleeper", status="dormant"),
+            ],
+            leader_member_name=None,
+        ),
+        "sess-retired",
+    )
+
+    snapshot = await handler.get_team_snapshot()
+
+    assert snapshot is not None
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper"]
+
+
+@pytest.mark.anyio
 async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> None:
     handler = TeamMonitorHandler(
         _FakeMonitor(
@@ -1218,13 +1238,19 @@ async def test_get_team_snapshot_from_db_requires_session_and_team() -> None:
 
 @pytest.mark.anyio
 async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
-    """When monitor is down, bind session_id and read tasks/members from team.db."""
+    """When monitor is down, bind session_id and read tasks/members from team.db.
+
+    Departed (``shut_down``) members stay out of the restored roster; dormant
+    ones stay in.
+    """
     from pathlib import Path
     from unittest.mock import patch
 
     long_title = "T" * (_TASK_TEXT_LIMIT + 20)
     member = _FakeMember("worker-1", display_name="Worker")
     leader = _FakeMember("team-leader", role="leader")
+    retired = _FakeMember("retired", status="shut_down")
+    sleeper = _FakeMember("sleeper", status="dormant")
     task = _FakeTask(
         task_id="uuid-1",
         title=long_title,
@@ -1240,7 +1266,7 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     class _FakeSharedDb:
         def __init__(self) -> None:
             self.member = SimpleNamespace(
-                get_team_members=AsyncMock(return_value=[leader, member])
+                get_team_members=AsyncMock(return_value=[leader, member, retired, sleeper])
             )
             self.task = SimpleNamespace(
                 get_team_tasks=AsyncMock(return_value=[task])
@@ -1290,7 +1316,7 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     shared.initialize.assert_awaited()
     shared.create_cur_session_tables.assert_awaited()
     assert snapshot["team_id"] == "team-sess-1"
-    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper"]
     assert len(snapshot["tasks"]) == 1
     out = snapshot["tasks"][0]
     assert out["task_id"] == "uuid-1"

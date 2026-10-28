@@ -16,6 +16,7 @@ from typing import Any
 
 from openjiuwen.agent_teams.monitor import TeamMonitor
 from openjiuwen.agent_teams.monitor.models import MonitorEvent, MonitorEventType
+from openjiuwen.agent_teams.schema.status import MemberStatus
 
 from jiuwenswarm.agents.harness.team.event_types import (
     TeamEventCategory,
@@ -134,6 +135,16 @@ def _task_text_field(name: str, value: str | None) -> dict[str, Any]:
         field[f"{name}_truncated"] = True
         field[f"{name}_original_size"] = original_size
     return field
+
+
+def _is_departed_member(status: str | None) -> bool:
+    """Whether a member has left the roster for good (``shut_down``).
+
+    Snapshots restore the frontend roster, so a departed member must not come
+    back through them. ``dormant`` stays: it is still on the roster and a
+    mention wakes it.
+    """
+    return str(status or "").strip().lower() == MemberStatus.SHUTDOWN.value
 
 
 # 框架模板消息（SDK ``message_template``）的模板 key → 前端交接类型。
@@ -485,6 +496,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             leader_name = team_info.leader_member_name if team_info else None
             if leader_name:
                 members = [m for m in members if m.member_name != leader_name]
+            members = [m for m in members if not _is_departed_member(m.status)]
             tasks = await self._monitor.get_tasks() or []
             return {
                 "members": [
@@ -685,6 +697,7 @@ class TeamMonitorHandler(BaseMonitorHandler):
             members = await db.member.get_team_members(tname, status=None) or []
             if leader_name:
                 members = [m for m in members if m.member_name != leader_name]
+            members = [m for m in members if not _is_departed_member(m.status)]
             tasks = await db.task.get_team_tasks(tname) or []
 
             return {

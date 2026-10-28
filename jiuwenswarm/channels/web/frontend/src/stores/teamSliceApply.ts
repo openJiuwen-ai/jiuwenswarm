@@ -10,6 +10,7 @@ import { useTeamSelectorStore } from './teamSelectorStore';
 import type { TeamTask, TeamTaskStatus } from './sessionStore';
 import type { TeamSnapshotPayload } from './teamSelectorStore';
 import { resolveOrganizationTeamIdentity } from '../features/teamOrganization/teamIdentity';
+import { isDepartedTeamMemberStatus } from '../features/teamMemberDeparture';
 
 const TEAM_TASK_STATUSES = new Set<TeamTaskStatus>([
   'pending',
@@ -80,7 +81,7 @@ export function applyTeamSnapshotToSession(
   const rawTasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
 
   const members = rawMembers
-    .filter((member) => str(member?.member_id))
+    .filter((member) => str(member?.member_id) && !isDepartedTeamMemberStatus(member?.status))
     .map((member, index) => ({
       id: `snapshot-${teamId}-${member.member_id}-${index}`,
       member_id: str(member.member_id),

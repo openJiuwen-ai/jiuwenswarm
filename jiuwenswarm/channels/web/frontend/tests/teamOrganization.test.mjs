@@ -1496,6 +1496,22 @@ test('expert member mentions retain their IDs and selected Team in chat.send', a
   }
 });
 
+test('snapshot leaves departed members off the roster but keeps dormant ones', () => {
+  seed();
+  applyTeamSnapshotToSession('session', 'expert', {
+    members: [
+      { member_id: 'worker', status: 'ready' },
+      { member_id: 'retired', status: 'shut_down' },
+      { member_id: 'sleeper', status: 'dormant' },
+    ],
+    tasks: [],
+  });
+  assert.deepEqual(
+    useSessionStore.getState().runtimes['session::expert'].teamMembers.map((m) => m.member_id),
+    ['worker', 'sleeper'],
+  );
+});
+
 test('history is routed to independent conversations without polluting owner', () => {
   seed();
   useChatStore.getState().replaceHistoryMessages('session', [

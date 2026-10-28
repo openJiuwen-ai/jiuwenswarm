@@ -148,6 +148,7 @@ import { useAgentCatalogStore } from '../stores/agentCatalogStore';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
+import { isDepartedTeamMemberStatus } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
@@ -1396,7 +1397,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
       const snapshotMemberIds = new Set(snapshotMembers.map((member) => member.member_id));
       const members = snapshotMembers.flatMap((member) => {
-        if (!changedMemberIds.has(member.member_id)) return [member];
+        // 快照列的是 DB 全量名册；已离队成员只能留在库里，不能借对账回到面板。
+        if (!changedMemberIds.has(member.member_id)) {
+          return isDepartedTeamMemberStatus(member.status) ? [] : [member];
+        }
         const currentMember = runtime.teamMembers.find(
           (candidate) => candidate.member_id === member.member_id
         );
