@@ -228,3 +228,45 @@ for (const failure of ['success', 'retry', 'nonzero', 'spawn', 'timeout']) {
     }
   });
 }
+
+for (const exited of ['agent', 'gateway']) {
+  test(`paired backend cleanup consumes rejected termination after ${exited} exit`, async () => {
+    const source = await fs.readFile(path.join(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs'), 'utf8');
+    const block = source.slice(source.indexOf('function watchBackendPair('), source.indexOf('const GATEWAY_LOCK_FILENAME'));
+    let poll;
+    const errors = [];
+    const calls = [];
+    const context = vm.createContext({
+      shuttingDown: false, setInterval: callback => { poll = callback; return 1; }, clearInterval() {},
+      console: { error: (...args) => errors.push(args) },
+      terminateService: async child => { calls.push(child); throw new Error('Front cleanup refused'); },
+    });
+    vm.runInContext(block, context);
+    const agent = { exitCode: exited === 'agent' ? 1 : null };
+    const gateway = { exitCode: exited === 'gateway' ? 1 : null };
+    context.watchBackendPair(agent, gateway);
+    poll();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(calls, [exited === 'agent' ? gateway : agent]);
+    assert.equal(errors.some(args => args[0] === '[electron] background service cleanup incomplete'
+      && args[1].message === 'Front cleanup refused'), true);
+  });
+}
+
+test('startup failure preserves its original error and consumes background cleanup failures', async () => {
+  const source = await fs.readFile(path.join(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs'), 'utf8');
+  const block = source.slice(source.indexOf('async function startBackendServices('), source.indexOf('function signalServiceTree('));
+  const startupError = new Error('Backend startup failed');
+  const errors = [];
+  const context = vm.createContext({
+    BACKEND_HOST: '127.0.0.1', prepareRuntimeWorkspace: async () => {}, spawnService: name => ({ name }),
+    waitForTcp: async () => { throw startupError; },
+    terminateService: async () => { throw new Error('Background stop failed'); },
+    console: { error: (...args) => errors.push(args) },
+  });
+  vm.runInContext(block, context);
+  await assert.rejects(context.startBackendServices({ ports: {}, webProcess: { name: 'web' },
+    webReady: Promise.resolve() }), error => error === startupError);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(errors.filter(args => args[0] === '[electron] background service cleanup incomplete').length, 3);
+});
