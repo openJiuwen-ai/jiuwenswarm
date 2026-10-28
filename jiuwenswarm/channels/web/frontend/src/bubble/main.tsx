@@ -11,6 +11,6 @@ import './bubble.css';
 const container = document.getElementById('root');
 if (container) {
   ReactDOM.createRoot(container).render(
-    <DownloadPanel onClose={() => window.jiuwenDesktop?.browser.hideDownloadBubble()} />,
+    <DownloadPanel onClose={() => void window.jiuwenDesktop?.browser.hideDownloadBubble()} />,
   );
 }

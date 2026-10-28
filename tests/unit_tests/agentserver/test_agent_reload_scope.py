@@ -1127,7 +1127,7 @@ def test_deep_adapter_resolve_model_for_request_falls_back_to_session_metadata()
 
 
 def test_deep_adapter_persisted_selection_overrides_last_resolved_model():
-    from jiuwenswarm.common.model_selection import ModelSelection
+    from gateway.common.model_selection import ModelSelection
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         AgentRequest,
         JiuWenSwarmDeepAdapter,

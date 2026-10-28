@@ -17,7 +17,7 @@ from jiuwenswarm.common.auth import service as service_mod
 from jiuwenswarm.common.auth import session_store as store_mod
 from jiuwenswarm.common.auth.account_kit import AccountKitFlow, OAuthConfig
 from jiuwenswarm.common.auth.service import AuthService
-from jiuwenswarm.gateway.channel_manager.web import web_http_auth
+from gateway.channel_manager.web import web_http_auth
 
 ID_TOKEN_MARKER = "IDTOKEN-LEAK"
 REFRESH_TOKEN = "REFRESH-LEAK"
@@ -326,7 +326,7 @@ def test_logout_clears_session_and_cookie(client):
 
 
 def test_logout_revokes_the_credential_held_by_agent_server(client, monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web import web_http_auth
+    from gateway.channel_manager.web import web_http_auth
 
     revoked: list[str] = []
 

@@ -6,12 +6,13 @@ import {
   setMultiModelCollaborationEnabled,
 } from '../../multiModelCollaboration/featureConfig';
 import { setTeamScheduledDispatchEnabled } from '../../teamDispatch/featureConfig';
+import { setComfyuiWorkflowEnabled } from '../../designer/comfyuiFeatureConfig';
 import { setTeamOrganizationUiEnabled } from '../../teamOrganization/featureConfig';
-import { buildConfigSavePayload, SETTINGS_CONFIG_CHANGED_EVENT } from './settingsContract';
+import { buildConfigSavePayload, parseConfigBoolean, SETTINGS_CONFIG_CHANGED_EVENT } from './settingsContract';
 import { useSettingsServices } from './SettingsServicesProvider';
 
 export function useSettingsConfig() {
-  const { isConnected, request, saveQueue } = useSettingsServices();
+  const { isConnected, request, saveQueue, onRecommendationEnabledChange } = useSettingsServices();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -43,6 +44,7 @@ export function useSettingsConfig() {
         }
         setConfig(visible);
         setTeamOrganizationUiEnabled(visible.team_organization_ui_enabled);
+        setComfyuiWorkflowEnabled(visible.comfyui_workflow_enabled);
         setTeamScheduledDispatchEnabled(visible.team_scheduled_dispatch_enabled);
       }
     } catch (loadError) {
@@ -73,11 +75,17 @@ export function useSettingsConfig() {
       if ('team_organization_ui_enabled' in payload.config) {
         setTeamOrganizationUiEnabled(payload.config.team_organization_ui_enabled);
       }
+      if ('comfyui_workflow_enabled' in payload.config) {
+        setComfyuiWorkflowEnabled(payload.config.comfyui_workflow_enabled);
+      }
       if ('team_scheduled_dispatch_enabled' in payload.config) {
         setTeamScheduledDispatchEnabled(payload.config.team_scheduled_dispatch_enabled);
       }
       if ('multi_model_collaboration_enabled' in payload.config) {
         setMultiModelCollaborationEnabled(payload.config.multi_model_collaboration_enabled);
+      }
+      if ('prompt_suggestion_enabled' in payload.config) {
+        onRecommendationEnabledChange?.(parseConfigBoolean(payload.config.prompt_suggestion_enabled));
       }
       // Do not retain write-only credentials or one-shot clear actions in settings state.
       const { moa_jev_api_key: newJevKey, moa_jev_api_key_clear: clearJevKey, ...visibleUpdates } = payload.config;
@@ -93,7 +101,7 @@ export function useSettingsConfig() {
       setConfig((current) => ({ ...current, ...visibleUpdates }));
       return result;
     },
-    [request, saveQueue],
+    [onRecommendationEnabledChange, request, saveQueue],
   );
   return { config, setConfig, loading, error, reload, save };
 }

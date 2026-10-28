@@ -75,7 +75,7 @@ def test_agentos_team_placeholder_fallback_keeps_global_index(monkeypatch):
 
 
 def test_agentos_team_wire_projection_and_explicit_member_model(monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
+    from gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
 
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
     config = _agentos_test_config()

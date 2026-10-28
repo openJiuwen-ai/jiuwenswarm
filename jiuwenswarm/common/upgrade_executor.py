@@ -248,7 +248,7 @@ class PipExecutor(UpgradeExecutor):
             if uv_cmd:
                 result = subprocess.run(
                     [uv_cmd, "pip", "show", "--format", "json", package],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 )
                 if result.returncode == 0:
                     import json as _json
@@ -261,7 +261,7 @@ class PipExecutor(UpgradeExecutor):
             else:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "show", package],
-                    capture_output=True, text=True, timeout=10,
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10,
                 )
                 if result.returncode == 0:
                     for line in result.stdout.splitlines():

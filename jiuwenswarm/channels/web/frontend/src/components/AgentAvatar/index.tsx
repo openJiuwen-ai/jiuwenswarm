@@ -33,7 +33,10 @@ export function AgentAvatar({
   const catalogRevision = useAgentCatalogStore((state) => state.revision);
   const [imageFailed, setImageFailed] = useState(false);
   const normalizedId = identityOverride?.agentTemplateId?.trim() || agentId?.trim() || '';
-  const item = identityOverride ? undefined : catalog?.find((candidate) => candidate.id === normalizedId);
+  const item = identityOverride ? undefined : (
+    catalog?.find((candidate) => candidate.id === normalizedId)
+    ?? catalog?.find((candidate) => candidate.runtimePackageName === normalizedId)
+  );
   const avatarUrl = identityOverride?.avatar ?? item?.avatarUrl ?? null;
   const displayName = identityOverride
     ? resolveTeamLeaderDisplayName(identityOverride, i18n.language)

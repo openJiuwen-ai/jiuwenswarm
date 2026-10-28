@@ -8,6 +8,7 @@ interface UpdatePanelProps {
 
 interface UpdateStatusPayload {
   current_version?: unknown;
+  current_build_date?: unknown;
   latest_version?: unknown;
   state?: unknown;
   has_update?: unknown;
@@ -218,6 +219,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   const installMode = normalizeString(status?.install_mode) || 'desktop';
   const isPipMode = installMode === 'pip';
   const currentVersion = normalizeString(status?.current_version) || '-';
+  const currentBuildDate = normalizeString(status?.current_build_date);
   const latestVersion = normalizeString(status?.latest_version) || '-';
   const releaseNotes = normalizeString(status?.release_notes);
   const publishedAt = formatPublishedAt(normalizeString(status?.published_at), i18n.language);
@@ -284,7 +286,15 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4" data-testid="update-panel-info-grid">
           <div className="rounded-xl border border-border bg-panel-strong/70 px-4 py-3" data-testid="update-panel-info-card" data-variant="current_version">
             <div className="text-xs uppercase tracking-wide text-text-muted" data-testid="update-panel-info-card-label" data-variant="current_version">{t('updatePanel.currentVersion')}</div>
-            <div className="mt-2 font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="current_version">{currentVersion}</div>
+            <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1" data-testid="update-panel-current-build">
+              <span className="min-w-0 break-all font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="current_version">{currentVersion}</span>
+              {currentBuildDate && (
+                <span className="inline-flex items-baseline gap-2 whitespace-nowrap text-xs text-text-muted" data-testid="update-panel-build-date">
+                  <span aria-hidden="true">·</span>
+                  <span>{t('updatePanel.builtOn')} <time dateTime={currentBuildDate}>{currentBuildDate}</time></span>
+                </span>
+              )}
+            </div>
           </div>
           <div className="rounded-xl border border-border bg-panel-strong/70 px-4 py-3" data-testid="update-panel-info-card" data-variant="latest_version">
             <div className="text-xs uppercase tracking-wide text-text-muted" data-testid="update-panel-info-card-label" data-variant="latest_version">{t('updatePanel.latestVersion')}</div>

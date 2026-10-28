@@ -21,14 +21,16 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DESKTOP_APP_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "desktop_app.py"
 MAIN_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "main.cjs"
 PRELOAD_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "preload.cjs"
-FILE_PICKER_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "file_picker.py"
+FILE_PICKER_PY = (
+    REPO_ROOT / "gateway" / "channel_manager" / "web" / "file_picker.py"
+)
 APP_WEB_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 VITE_ENV_DTS = (
     REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src" / "vite-env.d.ts"
 )
 FRONTEND_SRC = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src"
 INSTANCE_CONFIG_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "config.py"
-INSTANCE_LOCK_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "lock.py"
+GATEWAY_LOCK_PY = REPO_ROOT / "gateway" / "gateway_lock.py"
 STARTUP_DIAGNOSTICS_PY = REPO_ROOT / "jiuwenswarm" / "common" / "startup_diagnostics.py"
 EXE_ENTRY_PY = REPO_ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
 BUILD_RUNTIMES_PSM1 = REPO_ROOT / "scripts" / "build-runtimes.psm1"
@@ -423,7 +425,7 @@ def test_gateway_preflight_wait_matches() -> None:
 
 
 def test_gateway_lock_filename_matches() -> None:
-    python_name = _py_assignment_value(INSTANCE_LOCK_PY, "GATEWAY_LOCK_FILENAME")
+    python_name = _py_assignment_value(GATEWAY_LOCK_PY, "GATEWAY_LOCK_FILENAME")
     assert _js_const(_read(MAIN_CJS), "GATEWAY_LOCK_FILENAME").strip("'\"") == python_name
 
 
@@ -1002,3 +1004,33 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
         source, "registerHandler('desktop:close-window'"
     )
     assert "requestShutdown()" in explicit_close_handler
+
+
+def test_electron_module_map_matches_python_entry_points() -> None:
+    """开发模式 serviceCommand 的 -m 模块映射须与 pyproject 入口点一致。
+
+    M0-c 盲区回归：main.cjs 曾长期残留 jiuwenswarm.gateway.app_gateway
+    （Python 侧与打包模式都已改 gateway.app_gateway），契约测试不覆盖
+    该映射导致 CI 抓不到开发模式启动断链。
+    """
+    import re as _re
+
+    import tomllib
+
+    main_source = _read(MAIN_CJS)
+    mapping = _re.search(r"const moduleNames = \{(.*?)\}", main_source, _re.S)
+    assert mapping, "serviceCommand module map not found in main.cjs"
+    electron_map = dict(_re.findall(r"(\w+):\s*'([\w.]+)'", mapping.group(1)))
+
+    with open(REPO_ROOT / "pyproject.toml", "rb") as fh:
+        entry_points = tomllib.load(fh)["project"]["scripts"]
+    # web 服务无独立 pyproject 入口（desktop 专用路径），只断言有入口点
+    # 对应的 agent / gateway 两项。
+    expected = {
+        "agent": entry_points["jiuwenswarm-agentserver"].split(":")[0],
+        "gateway": entry_points["jiuwenswarm-gateway"].split(":")[0],
+    }
+    for service, module in expected.items():
+        assert electron_map[service] == module, (
+            f"{service} module drift: electron {electron_map[service]!r} vs pyproject {module!r}"
+        )

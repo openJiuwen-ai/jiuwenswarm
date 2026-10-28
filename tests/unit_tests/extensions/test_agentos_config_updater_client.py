@@ -7,7 +7,7 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.extensions.agentos.config_updater.client import ConfigUpdaterClient
+from gateway.extensions.agentos.config_updater.client import ConfigUpdaterClient
 from jiuwenswarm.common.etcd.client import (
     EtcdError,
     EtcdKv,
@@ -204,11 +204,11 @@ async def test_watch_loop_filters_neighbour_key_events():
 
 async def test_watch_loop_repulls_after_stream_ends(monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.agentos.config_updater.client._CONNECT_INITIAL_DELAY",
+        "gateway.extensions.agentos.config_updater.client._CONNECT_INITIAL_DELAY",
         0.01,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.agentos.config_updater.client._CONNECT_MAX_DELAY",
+        "gateway.extensions.agentos.config_updater.client._CONNECT_MAX_DELAY",
         0.02,
     )
     fake = FakeEtcd()

@@ -250,7 +250,7 @@ class TeamBindingStore:
         """Persist a validated stable model selection for a Team."""
         normalized_name = validate_team_name(team_name)
         try:
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             normalized = ModelSelection.model_validate(selection).model_dump(exclude_none=True)
         except Exception as exc:
             raise TeamBindingStoreError(

@@ -158,6 +158,17 @@ export function selectProviderDefaultModel(currentModel: string, options: readon
   return normalizedOptions.includes(normalizedCurrentModel) ? normalizedCurrentModel : (normalizedOptions[0] ?? '');
 }
 
+/** Keep display name in sync with model_name until the user customizes it. */
+export function syncDisplayNameWithModelName(draft: ModelDraft, previousModelName: string): ModelDraft {
+  const nextModelName = draft.model_name.trim();
+  const currentAlias = draft.alias.trim();
+  const previous = previousModelName.trim();
+  if (!currentAlias || currentAlias === previous) {
+    return { ...draft, alias: nextModelName };
+  }
+  return draft;
+}
+
 export function resolveModelPreset(model: ModelEntry, catalog: VendorPresetMap): VendorPreset | undefined {
   if (!model.vendor_key) return undefined;
   if (model.plan) {
@@ -183,7 +194,8 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
     };
   }
 
-  const alias = model.alias ?? '';
+  // Display name is required; seed from model_name when alias was historically empty.
+  const alias = (model.alias ?? '').trim() || model.model_name;
   const contextWindowTokens = normalizeContextWindowTokens(model.context_window_tokens);
 
   if (model.model_provider === 'OpenAIAccount') {

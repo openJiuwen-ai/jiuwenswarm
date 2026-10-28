@@ -55,6 +55,7 @@ const { bindPendingPermissionCard } = await import(
   pathToFileURL(pendingQueueBundle).href
 );
 const {
+  AutoReviewerDetails,
   reviewerBadgeTone,
   reviewerDecisionSourceCategory,
   reviewerDetailValues,
@@ -281,7 +282,7 @@ test('renders the current permission card reviewer and redacted payload', async 
     'first-reason',
     'data-badge-tone="success"',
     'Tool payload \\(redacted\\)',
-    'Risk: </span><span class="break-words text-text">Low',
+    'Tool capability risk: </span><span class="break-words text-text">Low',
   ]) {
     assert.match(html, new RegExp(expected));
   }
@@ -303,3 +304,31 @@ test('keeps required permission labels in both language resources', () => {
     assert.ok(resource.chatUi.autoReviewer.details.manualGuidanceFallback);
   }
 });
+
+for (const [language, reason] of [
+  ['zh', '当前权限规则已允许此操作，无需再次审批。'],
+  ['en', 'Your permission settings already allow this action. No approval needed.'],
+]) {
+  test(`renders the policy allowance source and reason in ${language}`, async () => {
+    const React = (await import(pathToFileURL(join(frontendRoot, 'node_modules/react/index.js')).href)).default;
+    const { renderToStaticMarkup } = await import(pathToFileURL(join(frontendRoot, 'node_modules/react-dom/server.node.js')).href);
+    const { createInstance } = await import(pathToFileURL(join(frontendRoot, 'node_modules/i18next/dist/esm/i18next.js')).href);
+    const { I18nextProvider } = await import(pathToFileURL(join(frontendRoot, 'node_modules/react-i18next/dist/es/index.js')).href);
+    const resources = JSON.parse(readFileSync(join(frontendRoot, `src/i18n/locales/${language}.json`), 'utf8'));
+    const i18n = createInstance();
+    await i18n.init({ lng: language, resources: { [language]: { translation: resources } } });
+    const reviewer = normalizeReviewerMetadata({ reviewer_metadata: {
+      decision_source: 'policy_evaluator',
+      final_reviewer_status: 'approved',
+      reviewer_status: 'approved',
+      risk_level: 'low',
+      evidence_summary: reason,
+    } });
+    const html = renderToStaticMarkup(React.createElement(I18nextProvider, { i18n },
+      React.createElement(AutoReviewerDetails, { reviewer })));
+    assert.match(html, /data-testid="chat-panel-auto-reviewer-details"/);
+    assert.ok(html.includes(reason));
+    assert.ok(html.includes(resources.chatUi.autoReviewer.details.sourceValues.system));
+    assert.ok(!html.includes(resources.chatUi.autoReviewer.details.sourceValues.automatic));
+  });
+}

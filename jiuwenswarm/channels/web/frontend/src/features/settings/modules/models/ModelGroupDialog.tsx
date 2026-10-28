@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { GripVertical } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -6,9 +6,11 @@ import type { ModelEntry, ModelGroup, ModelPlan, ModelRoute } from '../../../../
 import { Button } from '../../../../components/ui';
 import { ModelProviderIcon } from '../../../../components/ModelProviderIcon';
 import { Form, FormDialog, useForm, type FormItem } from '../../../../components/form';
+import { useAdaptiveTooltip } from '../../../../hooks/useAdaptiveTooltip';
 import { SettingsConfirmDialog } from '../../components';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
 import { buildModelGroupUpsertPayload, getGroupCandidateModels } from './modelGroupAdapters';
+import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
 import { getVendorLabel } from './ModelProviderSelect';
 
 type ModelGroupDraft = {
@@ -21,6 +23,7 @@ type ModelRouteOption = {
   key: string;
   label: string;
   modelName: string;
+  metadata: string;
   vendorKey?: string;
   plan?: ModelPlan;
   model: ModelEntry;
@@ -65,11 +68,19 @@ function ModelRouteMultiSelect({
   onBlur: () => void;
 }): JSX.Element {
   const { t } = useTranslation();
+  const dialogSurfaceRef = useRef<HTMLElement | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [openRouteKey, setOpenRouteKey] = useState<string | null>(null);
   const [activePlanKey, setActivePlanKey] = useState<string | null>(null);
   const [menuPosition, setMenuPosition] = useState<CSSProperties | null>(null);
   const [submenuPosition, setSubmenuPosition] = useState<{ top: number; left: number } | null>(null);
+  const { tooltip: modelTooltip, handlers: modelTooltipHandlers } = useAdaptiveTooltip({
+    placement: 'right',
+    containerRef: dialogSurfaceRef,
+  });
+  useEffect(() => {
+    dialogSurfaceRef.current = document.querySelector('.settings-model-group-dialog-surface');
+  }, [openRouteKey]);
   const optionByKey = new Map(options.map((option) => [option.key, option]));
   const usedModelIds = new Set(value.map((route) => route.model_id));
   const addableOption = options.find((option) => !usedModelIds.has(option.key));
@@ -230,7 +241,18 @@ function ModelRouteMultiSelect({
                               data-testid="settings-model-group-dialog-model-option"
                               data-variant={candidate.key}
                             >
-                              <span>{candidate.label}</span>
+                              <span className="settings-model-group-route-picker__option-main">
+                                <span className="settings-model-group-route-picker__icon" aria-hidden="true">
+                                  <ModelProviderIcon model={candidate.model} />
+                                </span>
+                                <span
+                                  className="settings-model-group-route-picker__option-title"
+                                  data-tooltip={candidate.metadata}
+                                  {...modelTooltipHandlers}
+                                >
+                                  {candidate.modelName}
+                                </span>
+                              </span>
                               {candidate.key === route.model_id && <span aria-hidden>✓</span>}
                             </button>
                           ))}
@@ -284,17 +306,24 @@ function ModelRouteMultiSelect({
                                           <span className="settings-model-group-route-picker__icon" aria-hidden="true">
                                             <ModelProviderIcon model={candidate.model} />
                                           </span>
-                                          <span>{candidate.modelName}</span>
+                                          <span
+                                            className="settings-model-group-route-picker__option-title"
+                                            data-tooltip={candidate.metadata}
+                                            {...modelTooltipHandlers}
+                                          >
+                                            {candidate.modelName}
+                                          </span>
                                         </span>
                                         {candidate.key === route.model_id && <span aria-hidden>✓</span>}
                                       </button>
                                     ))}
                                   </div>,
-                                  document.querySelector('.settings-model-group-dialog-surface') ?? document.body,
+                                  dialogSurfaceRef.current ?? document.body,
                                 )}
                               </div>
                             );
                           })}
+                          {modelTooltip}
                         </div>
                       )}
                     </div>
@@ -348,12 +377,14 @@ function ModelRouteMultiSelect({
 
 export function ModelGroupDialog({
   models,
+  modelGroups = [],
   group,
   saving = false,
   onClose,
   onSave,
 }: {
   models: ModelEntry[];
+  modelGroups?: readonly ModelGroup[];
   group?: ModelGroup | null;
   saving?: boolean;
   onClose: () => void;
@@ -385,8 +416,9 @@ export function ModelGroupDialog({
     () =>
       getGroupCandidateModels(models).map((model) => ({
         key: model.model_id,
-        label: `${model.vendor_key?.trim() ? getVendorLabel(model.vendor_key, t) : t('settingsPanel.models.customVendor')}/${model.alias?.trim() || model.model_name}`,
-        modelName: model.alias?.trim() || model.model_name,
+        label: `${model.vendor_key?.trim() ? getVendorLabel(model.vendor_key, t) : t('settingsPanel.models.customVendor')}/${getModelDisplayName(model)}`,
+        modelName: getModelDisplayName(model),
+        metadata: formatModelMetadata(model, t),
         vendorKey: model.vendor_key?.trim() || undefined,
         plan: model.plan,
         model,
@@ -429,10 +461,23 @@ export function ModelGroupDialog({
       name: [
         {
           trigger: 'blur' as const,
-          validator: (value: unknown) =>
-            typeof value === 'string' && value.trim().length > 0
-              ? undefined
-              : t('settingsPanel.validation.required'),
+          validator: (value: unknown) => {
+            if (typeof value !== 'string' || value.trim().length === 0) {
+              return t('settingsPanel.validation.required');
+            }
+            const name = value.trim();
+            const editingId = group?.model_group_id?.trim();
+            const conflict = modelGroups.some((item) => {
+              if (
+                group &&
+                (item === group || (Boolean(editingId) && item.model_group_id?.trim() === editingId))
+              ) {
+                return false;
+              }
+              return (item.display_name?.trim() || '') === name;
+            });
+            return conflict ? t('settingsPanel.models.validation.modelGroupNameConflict') : undefined;
+          },
         },
       ],
       routes: [
@@ -445,7 +490,7 @@ export function ModelGroupDialog({
         },
       ],
     }),
-    [t],
+    [group, modelGroups, t],
   );
 
   const confirm = async () => {

@@ -49,6 +49,14 @@ test('computeBubbleBounds scales the anchor row with the zoom factor and clamps 
   assert.ok(small.height <= 300 - 20);
 });
 
+test('computeBubbleBounds tolerates a null anchor from the IPC contract', () => {
+  // showDownloadBubble(null) is allowed by the API; the bubble must not throw
+  // and lands at the content area's top-right corner.
+  const bounds = computeBubbleBounds(null, CONTENT, 1);
+  assert.equal(bounds.x + bounds.width, CONTENT.width - 10);
+  assert.equal(bounds.y, 10);
+});
+
 function createFakeWindow() {
   const window = {
     destroyed: false,

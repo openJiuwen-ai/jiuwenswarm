@@ -1723,12 +1723,19 @@ def test_prompt_command_denies_permission_requests_even_with_a_tty(monkeypatch, 
 def test_process_cli_has_no_server_or_transport_dependencies() -> None:
     package = Path(app.__file__).resolve().parent
     forbidden = (
-        "jiuwenswarm.gateway",
+        "gateway",
         "jiuwenswarm.server.agent_ws_server",
         "jiuwenswarm.channels.tui",
         "websockets",
         "http.server",
     )
+
+    def _forbidden(module: str) -> bool:
+        # gateway.common 是无状态纯组件的唯一真源，进程内 CLI 允许引用。
+        if module == "gateway.common" or module.startswith("gateway.common."):
+            return False
+        return module.startswith(forbidden)
+
     violations: list[str] = []
     for source in package.glob("*.py"):
         tree = ast.parse(source.read_text(encoding="utf-8"))
@@ -1738,9 +1745,9 @@ def test_process_cli_has_no_server_or_transport_dependencies() -> None:
                 module = node.module or ""
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name.startswith(forbidden):
+                    if _forbidden(alias.name):
                         violations.append(f"{source.name}:{node.lineno}:{alias.name}")
-            if module.startswith(forbidden):
+            if _forbidden(module):
                 violations.append(f"{source.name}:{node.lineno}:{module}")
     assert violations == []
 

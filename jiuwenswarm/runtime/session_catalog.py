@@ -8,7 +8,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     deprecate_mode,
     is_single_agent_mode,
     is_team_mode,

@@ -431,6 +431,54 @@ test('restored records without a usable startTime are dropped as malformed', () 
   assert.deepEqual(service.list().map(record => record.id), ['download-3']);
 });
 
+test('list caches presence across notify ticks; fresh listings re-check', () => {
+  // The disk starts empty and files land on completion — otherwise the
+  // will-download conflict rename would redirect the save path.
+  const disk = new Set();
+  let statCalls = 0;
+  const session = new EventEmitter();
+  const service = createBrowserDownloadService({
+    openPath: async () => '',
+    getDownloadsPath: () => 'C:\\Downloads',
+    pathExists: filePath => {
+      statCalls += 1;
+      return disk.has(filePath);
+    },
+    notifyCoalesceMs: 1,
+  });
+  service.attach(session, () => {});
+  for (const name of ['kept.exe', 'moved.exe']) {
+    const item = createDownloadItem({ filename: name, savePath: `C:\\Downloads\\${name}` });
+    session.emit('will-download', {}, item);
+    item.state = 'completed';
+    item.emit('done', {}, 'completed');
+    disk.add(item.savePath);
+  }
+  statCalls = 0;
+
+  // Coalesced notify ticks hit each unique path once, then serve from cache.
+  service.list();
+  assert.equal(statCalls, 2);
+  service.list();
+  service.list();
+  assert.equal(statCalls, 2);
+
+  // Deleting the file externally does not re-stat on cached ticks: the cached
+  // listing keeps its last-known state (and costs zero stats).
+  disk.delete('C:\\Downloads\\kept.exe');
+  const cached = service.list();
+  assert.equal(cached.find(record => record.filename === 'kept.exe').fileMissing, false);
+  assert.equal(statCalls, 2);
+
+  // IPC listings re-check, so a file deleted outside the app shows up there —
+  // and the cache picks up the new state for subsequent ticks.
+  const fresh = service.list({ freshPresence: true });
+  assert.equal(statCalls, 4);
+  assert.equal(fresh.find(record => record.filename === 'kept.exe').fileMissing, true);
+  assert.equal(service.list().find(record => record.filename === 'kept.exe').fileMissing, true);
+  assert.equal(statCalls, 4);
+});
+
 test('records are capped to the newest MAX_DOWNLOAD_RECORDS entries', async () => {
   const session = new EventEmitter();
   const service = createBrowserDownloadService({

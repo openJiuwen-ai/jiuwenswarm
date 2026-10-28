@@ -11,16 +11,16 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
     _CronToolsCronBackend,
     _extract_legacy_params,
 )
-from jiuwenswarm.gateway.cron.dingtalk_routing import (
+from gateway.cron.dingtalk_routing import (
     build_dingtalk_cron_session_id_from_context,
     encode_dingtalk_cron_session_id,
     is_usable_dingtalk_staff_id,
     parse_dingtalk_cron_session_id,
     resolve_dingtalk_push_metadata,
 )
-from jiuwenswarm.gateway.cron.models import CronRunState
-from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.models import CronRunState
+from gateway.cron.scheduler import CronSchedulerService
+from gateway.cron.store import CronJobStore
 
 
 def test_encode_parse_roundtrip_private() -> None:

@@ -15,12 +15,12 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.gateway.cron.proactive_cron_sync import (
+from gateway.cron.controller import CronController
+from gateway.cron.proactive_cron_sync import (
     DEFAULT_CRON_EXPR,
     PROACTIVE_JOB_ID,
 )
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.store import CronJobStore
 
 
 def _make_controller(tmp_path) -> tuple[CronController, CronJobStore]:
@@ -68,12 +68,69 @@ async def test_create_job_allows_auto_registered_proactive_tick_job(
             name="主动推荐定时检查",
             cron_expr=DEFAULT_CRON_EXPR,
             mode="proactive.tick",
-        )
+        ),
+        internal_proactive_sync=True,
     )
 
     assert job["id"] == PROACTIVE_JOB_ID
     assert job["mode"] == "proactive.tick"
     assert await store.get_job(PROACTIVE_JOB_ID) is not None
+
+
+@pytest.mark.asyncio
+async def test_create_job_rejects_user_path_spoofing_fixed_proactive_id(tmp_path):
+    """用户路径携带内置固定 id + proactive.tick → 拒绝，内置任务不被顶替（#5853）。"""
+    controller, store = _make_controller(tmp_path)
+    builtin = await controller.create_job(
+        _job_params(
+            id=PROACTIVE_JOB_ID,
+            name="主动推荐定时检查",
+            cron_expr=DEFAULT_CRON_EXPR,
+            mode="proactive.tick",
+        ),
+        internal_proactive_sync=True,
+    )
+
+    with pytest.raises(ValueError, match="proactive.tick"):
+        await controller.create_job(
+            _job_params(
+                id=PROACTIVE_JOB_ID,
+                name="冒充内置注册占位",
+                cron_expr="0 3 * * *",
+                mode="proactive.tick",
+            )
+        )
+
+    stored = await store.get_job(PROACTIVE_JOB_ID)
+    assert stored.name == builtin["name"]
+    assert stored.cron_expr == builtin["cron_expr"]
+    assert len(await store.list_jobs()) == 1
+
+
+@pytest.mark.asyncio
+async def test_create_job_rejects_user_path_reusing_fixed_proactive_id(tmp_path):
+    """用户路径即使换成普通模式，也不能占用内置任务的保留 id（#5853）。"""
+    controller, store = _make_controller(tmp_path)
+
+    with pytest.raises(ValueError, match=PROACTIVE_JOB_ID):
+        await controller.create_job(
+            _job_params(id=PROACTIVE_JOB_ID, name="占位", mode="agent")
+        )
+
+    assert await store.list_jobs() == []
+
+
+@pytest.mark.asyncio
+async def test_proactive_sync_registers_builtin_job_via_internal_path(tmp_path):
+    """proactive_cron_sync 走内部关键字路径，开关打开时仍能注册内置任务。"""
+    from gateway.cron.proactive_cron_sync import _ensure_present
+
+    controller, store = _make_controller(tmp_path)
+    await _ensure_present(controller)
+
+    stored = await store.get_job(PROACTIVE_JOB_ID)
+    assert stored is not None
+    assert stored.mode == "proactive.tick"
 
 
 @pytest.mark.asyncio

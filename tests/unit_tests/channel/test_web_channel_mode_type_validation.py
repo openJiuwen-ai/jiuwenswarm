@@ -15,13 +15,13 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentRef
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_connect import (
+from openjiuwen_protocol.e2a.agent_models import AgentRef
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.web_connect import (
     WebChannel,
     WebChannelConfig,
 )
-from jiuwenswarm.gateway.routing.keys import RoutingKey
+from gateway.routing.keys import RoutingKey
 
 
 class _FakeWebSocket:

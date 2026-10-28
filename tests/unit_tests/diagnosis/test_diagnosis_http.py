@@ -4,9 +4,10 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
-import re
+import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -23,8 +24,8 @@ from jiuwenswarm.diagnosis.model_resolver import ResolvedDiagnosisModel
 from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE, ModelInfo
 from jiuwenswarm.diagnosis.service import DiagnosisService
 from jiuwenswarm.diagnosis.store import DiagnosisStore
-from jiuwenswarm.gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
-from jiuwenswarm.gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
+from gateway.channel_manager.web.diagnosis_http import attach_diagnosis_routes, error_status
+from gateway.channel_manager.web.trajectory_http import TRAJECTORY_API_PREFIX
 from jiuwenswarm.server.diagnosis.host import DiagnosisHost
 from tests.unit_tests.diagnosis.diagnosis_fixtures import (
     SESSION_ID,
@@ -84,7 +85,11 @@ def _fetch_via(host: DiagnosisHost) -> Any:
         response = await host.handle(request)
         payload = dict(response.payload or {})
         if not response.ok:
-            return False, {"error": str(payload.get("error")), "code": str(payload.get("code"))}
+            forwarded: dict[str, Any] = {"error": str(payload.get("error")), "code": str(payload.get("code"))}
+            reported_status = payload.get("status")
+            if isinstance(reported_status, int) and not isinstance(reported_status, bool):
+                forwarded["status"] = reported_status
+            return False, forwarded
         return True, payload
 
     return fetch
@@ -156,17 +161,18 @@ async def test_run_poll_trigger_ttse_and_delete(client: httpx.AsyncClient) -> No
 
     finished = await _wait_completed(client, record["diagnosis_id"])
     assert finished["status"] == "completed"
-    assert finished["root_causes"]
-    assert "ttse" not in finished["suggestions"]
+    assert finished["trajectory_summary"]
+    assert finished["reward_failure_causes"]
+    assert [item["category"] for item in finished["evolution_judge"]] == ["skill", "experience"]
 
     listing = (await client.get(_BASE)).json()
     assert [item["diagnosis_id"] for item in listing["items"]] == [record["diagnosis_id"]]
     assert listing["items"][0]["status"] == "completed"
 
-    cause_id = next(item["id"] for item in finished["root_causes"] if item["category"].startswith("ttse_"))
-    triggered = await client.post(f"{_BASE}/{record['diagnosis_id']}/ttse", json={"root_cause_ids": [cause_id]})
+    judge_id = next(item["id"] for item in finished["evolution_judge"] if item["category"] == "experience")
+    triggered = await client.post(f"{_BASE}/{record['diagnosis_id']}/ttse", json={"evolution_judge_id": judge_id})
     assert triggered.status_code == 200
-    assert triggered.json()["results"][cause_id]["result"] == "triggered"
+    assert triggered.json()["results"][judge_id]["result"] == "triggered"
 
     deleted = await client.delete(f"{_BASE}/{record['diagnosis_id']}")
     assert deleted.status_code == 204
@@ -188,7 +194,7 @@ async def test_validation_errors_use_the_contract_body(client: httpx.AsyncClient
         },
     )
     too_long = await client.post(_BASE, json={**_FULL, "user_note": "x" * 2001})
-    no_causes = await client.post(f"{_BASE}/dg_0123456789abcdef/ttse", json={"root_cause_ids": []})
+    no_causes = await client.post(f"{_BASE}/dg_0123456789abcdef/ttse", json={"evolution_judge_id": ""})
 
     for response in (not_json, bad_scope, bad_time, too_long, no_causes):
         assert response.status_code == 400
@@ -272,10 +278,10 @@ async def test_ttse_before_completion_of_for_code_mode_answers_409(tmp_path: Pat
         finished = await _wait_completed(http, record["diagnosis_id"])
         response = await http.post(
             f"{_BASE}/{record['diagnosis_id']}/ttse",
-            json={"root_cause_ids": ["tt-1"]},
+            json={"evolution_judge_id": "evo-2"},
         )
 
-    assert not [item for item in finished["root_causes"] if item["category"].startswith("ttse_")]
+    assert finished["evolution_judge"] == []
     assert (response.status_code, response.json()["code"]) == (409, "TTSE_NOT_SUPPORTED")
 
 
@@ -296,7 +302,7 @@ async def test_proxy_forwards_method_session_and_body() -> None:
         await http.get(f"{_BASE}/dg_1")
         await http.post(f"{_BASE}/dg_1/cancel")
         deleted = await http.delete(f"{_BASE}/dg_1")
-        await http.post(f"{_BASE}/dg_1/ttse", json={"root_cause_ids": ["a"]})
+        await http.post(f"{_BASE}/dg_1/ttse", json={"evolution_judge_id": "a"})
 
     assert deleted.status_code == 204
     assert calls == [
@@ -305,7 +311,7 @@ async def test_proxy_forwards_method_session_and_body() -> None:
         (ReqMethod.DIAGNOSIS_GET, SESSION_ID, {"diagnosis_id": "dg_1"}),
         (ReqMethod.DIAGNOSIS_CANCEL, SESSION_ID, {"diagnosis_id": "dg_1"}),
         (ReqMethod.DIAGNOSIS_DELETE, SESSION_ID, {"diagnosis_id": "dg_1"}),
-        (ReqMethod.DIAGNOSIS_TTSE_TRIGGER, SESSION_ID, {"diagnosis_id": "dg_1", "request": {"root_cause_ids": ["a"]}}),
+        (ReqMethod.DIAGNOSIS_TTSE_TRIGGER, SESSION_ID, {"diagnosis_id": "dg_1", "request": {"evolution_judge_id": "a"}}),
     ]
 
 
@@ -328,26 +334,51 @@ async def test_proxy_rejects_bad_bodies_before_forwarding() -> None:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("code", "status"),
+    ("payload", "status"),
     [
-        ("FEATURE_DISABLED", 403),
-        ("DIAGNOSIS_ALREADY_RUNNING", 409),
-        ("MODEL_UNAVAILABLE", 503),
-        ("SERVICE_UNAVAILABLE", 503),
-        ("RUNTIME_WARMING", 503),
-        ("AGENT_SERVER_TIMEOUT", 504),
-        ("SOMETHING_NEW", 500),
+        ({"error": "boom", "code": "FEATURE_DISABLED", "status": 403}, 403),
+        ({"error": "boom", "code": "DIAGNOSIS_ALREADY_RUNNING", "status": 409}, 409),
+        ({"error": "boom", "code": "MODEL_UNAVAILABLE", "status": 503}, 503),
+        ({"error": "boom", "code": "SERVICE_UNAVAILABLE"}, 503),
+        ({"error": "boom", "code": "RUNTIME_WARMING"}, 503),
+        ({"error": "boom", "code": "AGENT_SERVER_TIMEOUT"}, 504),
+        ({"error": "boom", "code": "SOMETHING_NEW"}, 500),
+        ({"error": "boom", "code": "FEATURE_DISABLED", "status": "403"}, 500),
     ],
 )
-async def test_proxy_maps_error_codes_to_http_status(code: str, status: int) -> None:
+async def test_proxy_maps_error_codes_to_http_status(payload: dict[str, Any], status: int) -> None:
     async def fetch(method: ReqMethod, session_id: str, params: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
-        return False, {"error": "boom", "code": code}
+        return False, payload
 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=_app(fetch)), base_url="http://test") as http:
         response = await http.get(_BASE)
 
     assert response.status_code == status
-    assert response.json() == {"error": "boom", "code": code}
+    assert response.json() == {"error": "boom", "code": payload["code"]}
+
+
+def test_missing_status_is_logged_and_transport_codes_are_not() -> None:
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Capture()
+    target = logging.getLogger("gateway.channel_manager.web.diagnosis_http")
+    target.addHandler(handler)
+    try:
+        assert error_status("SOMETHING_NEW") == 500
+        assert error_status("FEATURE_DISABLED", "403") == 500
+        assert error_status("SERVICE_UNAVAILABLE") == 503
+        assert error_status("AGENT_SERVER_TIMEOUT") == 504
+    finally:
+        target.removeHandler(handler)
+
+    assert [record.message for record in records] == [
+        "[diagnosis] error payload has no usable status, using 500: code=SOMETHING_NEW",
+        "[diagnosis] error payload has no usable status, using 500: code=FEATURE_DISABLED",
+    ]
 
 
 @pytest.mark.asyncio
@@ -361,11 +392,37 @@ async def test_proxy_answers_500_when_the_forward_raises() -> None:
     assert (response.status_code, response.json()["code"]) == (500, "INTERNAL_ERROR")
 
 
-def test_every_service_error_code_has_a_status() -> None:
-    root = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "diagnosis"
-    codes: set[str] = set()
-    for source in root.glob("*.py"):
-        codes |= set(re.findall(r'DiagnosisHostError\(\s*"([A-Z_]+)"', source.read_text(encoding="utf-8")))
+def _diagnosis_host_error_calls() -> list[tuple[str, int | None, Path]]:
+    """Return ``(code, literal status, path)`` for each raise with a string code."""
+    repo = Path(__file__).resolve().parents[3]
+    files = list((repo / "jiuwenswarm" / "diagnosis").glob("*.py"))
+    files.append(repo / "jiuwenswarm" / "server" / "diagnosis" / "host.py")
+    found: list[tuple[str, int | None, Path]] = []
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+                continue
+            call = node.exc
+            func = call.func
+            name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            if name != "DiagnosisHostError" or not call.args:
+                continue
+            code_node = call.args[0]
+            if not isinstance(code_node, ast.Constant) or not isinstance(code_node.value, str):
+                continue
+            status: int | None = None
+            if len(call.args) >= 3 and isinstance(call.args[2], ast.Constant) and isinstance(call.args[2].value, int):
+                status = call.args[2].value
+            found.append((code_node.value, status, path))
+    return found
 
-    assert codes
-    assert codes <= set(ERROR_STATUS_BY_CODE)
+
+def test_every_service_error_code_has_a_status() -> None:
+    found = _diagnosis_host_error_calls()
+
+    assert found
+    for code, status, path in found:
+        assert code in ERROR_STATUS_BY_CODE, path
+        if status is not None:
+            assert status == ERROR_STATUS_BY_CODE[code], (path, code)

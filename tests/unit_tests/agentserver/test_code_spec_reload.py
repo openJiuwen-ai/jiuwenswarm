@@ -4,8 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from openjiuwen.harness import AudioModelConfig, VisionModelConfig
 
-from jiuwenswarm.server.runtime.agent_adapter import interface_code
+from jiuwenswarm.agents.harness.code import spec as code_spec
+from jiuwenswarm.server.runtime.agent_adapter import interface_code, interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
@@ -162,13 +164,17 @@ async def test_code_reload_resolves_and_applies_spec_without_replacing_agent(
 
 
 @pytest.mark.asyncio
-async def test_code_multimodal_reload_syncs_only_configured_tools(
+async def test_code_multimodal_reload_syncs_model_enabled_tools(
     monkeypatch: pytest.MonkeyPatch,
 ):
     adapter = JiuwenSwarmCodeAdapter()
     adapter._instance = _FakeDeepAgent([])
-    adapter._vision_model_config = object()
-    adapter._audio_model_config = object()
+    adapter._vision_model_config = VisionModelConfig(
+        api_key="test-key", base_url="https://vision.example/v1", model="vision-model",
+    )
+    adapter._audio_model_config = AudioModelConfig(
+        api_key="test-key", base_url="https://audio.example/v1",
+    )
     adapter._video_model_config = True
     adapter._image_gen_model_config = True
     config_base = {
@@ -205,9 +211,12 @@ async def test_code_multimodal_reload_syncs_only_configured_tools(
         permission_notification=False,
     )
     assert synced == [
-        ("Code vision tools", True),
-        ("Code audio transcription tool", False),
-        ("Code video understanding tool", False),
+        ("vision tools", True),
+        ("audio tools", True),
+        ("video tool", True),
+        ("generate_image tool", True),
+        ("generate_video tools", False),
+        ("generate_visual tool", False),
     ]
     assert not adapter._vision_tools
     assert not adapter._audio_tools
@@ -369,6 +378,88 @@ async def test_code_reload_validation_failure_does_not_reregister_active_tools(
     register_tool_mock.assert_not_called()
     assert adapter._code_build_context is old_context
     assert adapter._config_cache == {"agent_name": "old", "max_iterations": 7}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["after_bundle", "build", "registration"])
+async def test_failed_spec_resolution_restores_hot_reloaded_multimodal_instances(monkeypatch, failure):
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._instance = _FakeDeepAgent([])
+    adapter._config_base_cache = {"modes": {"code": {"tools": []}}}
+    adapter._tool_cards = []
+    adapter._vision_model_config = VisionModelConfig(
+        api_key="test-key", base_url="https://vision.example/v1", model="vision-model",
+    )
+    adapter._audio_model_config = AudioModelConfig(
+        api_key="test-key", base_url="https://audio.example/v1",
+    )
+    adapter._video_gen_model_config = True
+    old_context = code_spec.CodeBuildContext(
+        adapter=adapter, config_base=adapter._config_base_cache,
+        tool_owner_id=adapter._tool_owner_id(),
+    )
+    adapter._code_build_context = old_context
+    registered = {}
+
+    def register(tool, _owner_id):
+        registered[tool.card.name] = tool
+
+    def unregister(tool):
+        if not tool.card.stateless:
+            registered.pop(tool.card.name, None)
+
+    monkeypatch.setattr(interface_deep, "register_tool", register)
+    monkeypatch.setattr(interface_deep, "unregister_tool", unregister)
+    monkeypatch.setattr(interface_code, "register_tool", register)
+    monkeypatch.setattr(interface_code, "unregister_tool", unregister)
+    candidate_vision_config = adapter._vision_model_config
+    if failure == "registration":
+        # Vision is new in the candidate; rollback cannot rely on overwriting
+        # these registrations with instances from the previous build context.
+        adapter._vision_model_config = None
+    adapter._sync_multimodal_tools_for_runtime()
+    old_tools = list(old_context.artifacts.tools)
+    old_cards = list(adapter._instance.deep_config.tools)
+    adapter._vision_model_config = candidate_vision_config
+    candidate_context = code_spec.CodeBuildContext(
+        adapter=adapter, config_base=adapter._config_base_cache,
+        tool_owner_id=adapter._tool_owner_id(),
+    )
+    if failure == "build":
+        monkeypatch.setattr(
+            interface_deep, "create_audio_tools",
+            MagicMock(side_effect=RuntimeError("audio build failed")),
+        )
+    elif failure == "registration":
+        def fail_registration(tool, owner_id):
+            register(tool, owner_id)
+            if tool.card.name == "audio_question_answering":
+                raise RuntimeError("audio registration failed")
+
+        monkeypatch.setattr(interface_deep, "register_tool", fail_registration)
+
+    def resolve_parts(context):
+        code_spec._build_code_tool_bundle({"include_multimodal": True}, context)
+        if failure != "after_bundle":
+            pytest.fail("candidate tool failure must abort Spec replacement")
+        assert context.artifacts.tools[0] is not old_tools[0]
+        assert adapter._get_multimodal_tools() == old_tools
+        raise RuntimeError("candidate resolution failed")
+
+    candidate_spec = SimpleNamespace(resolve_parts=resolve_parts)
+    monkeypatch.setattr(adapter, "_apply_reload_config_snapshot", AsyncMock(return_value=adapter._config_base_cache))
+    monkeypatch.setattr(adapter, "_create_model", lambda _config: object())
+    monkeypatch.setattr(adapter, "_build_code_spec_snapshot", lambda _base, _config, _model: (candidate_spec, candidate_context))
+    monkeypatch.setattr(adapter, "_refresh_multimodal_configs", MagicMock())
+
+    error = "candidate resolution failed" if failure == "after_bundle" else f"audio {failure} failed"
+    with pytest.raises(RuntimeError, match=error):
+        await adapter.reload_agent_config(adapter._config_base_cache, {})
+
+    assert adapter._code_build_context is old_context
+    assert adapter._get_multimodal_tools() == old_tools
+    assert adapter._instance.deep_config.tools == old_cards
+    assert registered == {tool.card.name: tool for tool in old_tools}
 
 
 @pytest.mark.asyncio

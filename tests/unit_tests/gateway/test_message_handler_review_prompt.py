@@ -4,13 +4,13 @@
 
 import pytest
 
-from jiuwenswarm.gateway.message_handler.prompts.review_prompt import build_review_prompt
+from gateway.message_handler.prompts.review_prompt import build_review_prompt
 
 
 @pytest.fixture(autouse=True)
 def _english_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.prompts.get_config",
+        "gateway.message_handler.prompts.get_config",
         lambda: {"preferred_language": "en"},
     )
 
@@ -35,7 +35,7 @@ def test_build_review_prompt_passes_through_args() -> None:
 
 def test_build_review_prompt_chinese_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.prompts.get_config",
+        "gateway.message_handler.prompts.get_config",
         lambda: {"preferred_language": "zh"},
     )
     prompt = build_review_prompt("42")

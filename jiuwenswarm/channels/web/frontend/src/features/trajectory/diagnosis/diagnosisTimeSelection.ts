@@ -53,7 +53,13 @@ export interface AxisTick {
   label: string;
 }
 
+/** Preferred tick spacing; pick the coarsest step that still yields ≤ ~180 marks. */
 const AXIS_STEP_MS = [
+  100,
+  200,
+  500,
+  1_000,
+  2_000,
   5_000,
   10_000,
   15_000,
@@ -67,6 +73,69 @@ const AXIS_STEP_MS = [
   3_600_000,
   7_200_000,
 ];
+
+/** Target tick count across the visible window (~3× denser than the prior ≤60). */
+const AXIS_TICK_BUDGET = 180;
+
+const NANOSECONDS_PER_MILLISECOND = 1_000_000n;
+
+/** Minimal OTLP span fields needed to place one record on the diagnosis axis. */
+export interface OtelSpanTiming {
+  startTimeUnixNano: string;
+  endTimeUnixNano?: string;
+}
+
+/**
+ * One raw trajectory detail record that may carry a single OTLP span.
+ *
+ * Only the first span of the export request is used (same as the raw inspector).
+ */
+export interface RawOtelSpanCarrier {
+  otlp: {
+    resourceSpans?: readonly {
+      scopeSpans?: readonly {
+        spans?: readonly OtelSpanTiming[];
+      }[];
+    }[];
+  } | null;
+}
+
+/** Wall-clock start/end of one OTLP span; missing end collapses to the start. */
+export function otelSpanWallInterval(span: OtelSpanTiming): { startMs: number; endMs: number } | null {
+  try {
+    const startMs = Number(BigInt(span.startTimeUnixNano) / NANOSECONDS_PER_MILLISECOND);
+    if (!Number.isFinite(startMs) || startMs < 0) return null;
+    const endRaw = span.endTimeUnixNano;
+    const endMs = endRaw === undefined || endRaw === ''
+      ? startMs
+      : Number(BigInt(endRaw) / NANOSECONDS_PER_MILLISECOND);
+    if (!Number.isFinite(endMs)) return { startMs, endMs: startMs };
+    return { startMs, endMs: Math.max(startMs, endMs) };
+  } catch {
+    return null;
+  }
+}
+
+/** Wall-clock interval of the first span on a raw OTel record, or `null` if unusable. */
+export function rawOtelSpanInterval(record: RawOtelSpanCarrier): { startMs: number; endMs: number } | null {
+  const span = record.otlp?.resourceSpans
+    ?.flatMap(resource => resource.scopeSpans ?? [])
+    .flatMap(scope => scope.spans ?? [])[0];
+  if (span === undefined) return null;
+  return otelSpanWallInterval(span);
+}
+
+/** Every timed raw OTel span in order; records without a usable span are skipped. */
+export function rawOtelSpanIntervals(
+  records: readonly RawOtelSpanCarrier[],
+): { startMs: number; endMs: number }[] {
+  const intervals: { startMs: number; endMs: number }[] = [];
+  for (const record of records) {
+    const interval = rawOtelSpanInterval(record);
+    if (interval !== null) intervals.push(interval);
+  }
+  return intervals;
+}
 
 /**
  * Start and end of one timed node.
@@ -297,6 +366,15 @@ export function formatElapsed(ms: number): string {
   return `${minutes}:${ss}`;
 }
 
+/** Wall-clock instant as local `HH:mm:ss`, or an empty string when invalid. */
+export function formatAxisClock(ms: number): string {
+  if (!Number.isFinite(ms)) return '';
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (value: number) => String(value).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
+
 /**
  * Keep a shared zoom window inside the compressed domain.
  *
@@ -334,7 +412,8 @@ export function axisTicks(durationMs: number): AxisTick[] {
   if (!Number.isFinite(durationMs) || durationMs <= 0) {
     return [{ offsetMs: 0, fraction: 0, label: '0:00' }];
   }
-  const step = AXIS_STEP_MS.find(item => durationMs / item <= 6) ?? AXIS_STEP_MS[AXIS_STEP_MS.length - 1];
+  const step = AXIS_STEP_MS.find(item => durationMs / item <= AXIS_TICK_BUDGET)
+    ?? AXIS_STEP_MS[AXIS_STEP_MS.length - 1];
   const ticks: AxisTick[] = [];
   for (let offset = 0; offset < durationMs; offset += step) {
     ticks.push({ offsetMs: offset, fraction: offset / durationMs, label: formatElapsed(offset) });
@@ -343,7 +422,13 @@ export function axisTicks(durationMs: number): AxisTick[] {
   if (ticks.length >= 2) {
     const last = ticks[ticks.length - 1];
     const previous = ticks[ticks.length - 2];
-    if (last !== undefined && previous !== undefined && previous.offsetMs !== 0 && last.fraction - previous.fraction < 0.08) {
+    const minGap = (step / durationMs) * 0.55;
+    if (
+      last !== undefined
+      && previous !== undefined
+      && previous.offsetMs !== 0
+      && last.fraction - previous.fraction < minGap
+    ) {
       ticks.splice(ticks.length - 2, 1);
     }
   }

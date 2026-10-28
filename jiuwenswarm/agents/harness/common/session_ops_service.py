@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
+from gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session import lifecycle as lc
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -682,8 +682,8 @@ def compact_partial_session(
 
     import uuid
     from jiuwenswarm.server.runtime.session.session_history import (
-        _FILE_LOCK,
-        _WRITE_QUEUE,
+        FILE_LOCK,
+        WRITE_QUEUE,
         truncate_history_records,
     )
     from jiuwenswarm.server.runtime.session.session_metadata import update_session_metadata
@@ -727,8 +727,8 @@ def compact_partial_session(
         removed = summarized_count
         remaining = len(kept)
 
-        _WRITE_QUEUE.join()
-        with _FILE_LOCK:
+        WRITE_QUEUE.join()
+        with FILE_LOCK:
             _write_records_to_path(history_path, kept)
     else:
         raise ValueError(f"unknown direction: {direction}")
@@ -780,8 +780,8 @@ def compact_partial_session(
         "is_compact_summary": True,
     }
 
-    _WRITE_QUEUE.join()
-    with _FILE_LOCK:
+    WRITE_QUEUE.join()
+    with FILE_LOCK:
         existing = load_history_records(session_id) if history_path.exists() else []
         if not isinstance(existing, list):
             existing = []

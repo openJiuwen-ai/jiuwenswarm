@@ -18,6 +18,7 @@ import {
   getSessionActivityAt,
   getSessionIndicator,
   getTaskStatusLabel,
+  getViewedSessionId,
   sortSessionsForSidebar,
 } from './sidebarModel';
 import { ProjectCreateMenu } from './ProjectCreateMenu';
@@ -91,6 +92,8 @@ interface ConversationSidebarProps {
   onSelect: (session: Session) => void;
   onSelectDesignSession?: (project: ProjectInfo, sessionId: string) => void;
   activeDesignSessionId?: string;
+  /** 主区域正在显示设计画布；workMode 持久化且不随路由切回，不能用它判断用户在看哪个会话 */
+  designCanvasOpen?: boolean;
   /** 项目软删除成功后回调；上层可按 workMode 决定是否需要路由回退等 */
   onProjectRemoved?: (projectId: string, workMode: WorkMode) => void;
   /** 跳转到"定时任务"主面板；该入口原来在最左侧图标栏，现移到工作小窗口的"新建任务"下方 */
@@ -731,6 +734,7 @@ export function ConversationSidebar({
   onOpenCron,
   onSelectDesignSession,
   activeDesignSessionId,
+  designCanvasOpen = false,
   onProjectRemoved,
   isCronActive,
   collapsed = false,
@@ -852,15 +856,17 @@ export function ConversationSidebar({
     return () => window.clearInterval(timer);
   }, []);
 
+  const viewedSessionId = getViewedSessionId(designCanvasOpen, activeSessionId, activeDesignSessionId);
+
   useEffect(() => {
-    if (!activeSessionId) return;
+    if (!viewedSessionId) return;
     setUnreadSessions((current) => {
-      if (!current.has(activeSessionId)) return current;
+      if (!current.has(viewedSessionId)) return current;
       const next = new Set(current);
-      next.delete(activeSessionId);
+      next.delete(viewedSessionId);
       return next;
     });
-  }, [activeSessionId]);
+  }, [viewedSessionId]);
 
   useEffect(() => {
     localStorage.setItem(UNREAD_KEY, JSON.stringify([...unreadSessions]));
@@ -939,13 +945,13 @@ export function ConversationSidebar({
       previousProcessing.current,
       observedSidebarSessions,
       runtimes,
-      activeSessionId,
+      viewedSessionId,
     );
     previousProcessing.current = snapshot;
     if (completedInBackground.length > 0) {
       setUnreadSessions((current) => new Set([...current, ...completedInBackground]));
     }
-  }, [activeSessionId, observedSidebarSessions, runtimes]);
+  }, [observedSidebarSessions, runtimes, viewedSessionId]);
 
   async function handleCreateProject(name: string, projectDir: string) {
     setPathDialogError(null);
@@ -1024,7 +1030,7 @@ export function ConversationSidebar({
         now={relativeTimeNow}
         onSelect={() => openListedSession(session)}
         menuScope={projectMenu ? 'project' : 'conversation'}
-        activeSessionId={workMode === 'design' ? (activeDesignSessionId ?? null) : activeSessionId}
+        activeSessionId={viewedSessionId}
         onLeaveActiveSession={leaveActiveSession}
       />
     );

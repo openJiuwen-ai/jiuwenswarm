@@ -6,28 +6,28 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "ExtensionLoader": ("jiuwenswarm.extensions.loader", "ExtensionLoader"),
-    "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
-    "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
+    "ExtensionLoader": ("gateway.extensions.loader", "ExtensionLoader"),
+    "ExtensionManager": ("gateway.extensions.manager", "ExtensionManager"),
+    "ExtensionRegistry": ("gateway.extensions.registry", "ExtensionRegistry"),
     "AgentServerClientExtension": (
-        "jiuwenswarm.extensions.sdk.agent_server_client",
+        "gateway.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",
     ),
     "ApplicationPluginExtension": (
-        "jiuwenswarm.extensions.sdk.application_plugin",
+        "gateway.extensions.sdk.application_plugin",
         "ApplicationPluginExtension",
     ),
-    "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
+    "BaseExtension": ("gateway.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
-        "jiuwenswarm.extensions.sdk.crypto_utility",
+        "gateway.extensions.sdk.crypto_utility",
         "CryptoUtility",
     ),
     "ThirdAgentExtension": (
-        "jiuwenswarm.extensions.sdk.third_agent",
+        "gateway.extensions.sdk.third_agent",
         "ThirdAgentExtension",
     ),
-    "ExtensionConfig": ("jiuwenswarm.extensions.types", "ExtensionConfig"),
-    "ExtensionMetadata": ("jiuwenswarm.extensions.types", "ExtensionMetadata"),
+    "ExtensionConfig": ("gateway.extensions.types", "ExtensionConfig"),
+    "ExtensionMetadata": ("gateway.extensions.types", "ExtensionMetadata"),
 }
 
 

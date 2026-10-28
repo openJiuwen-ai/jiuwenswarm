@@ -58,6 +58,7 @@ def run_env() -> Any:
             {"id": "n_brief", "type": "text", "config": {"pipeline": "brief"}},
             {"id": "n_character", "type": "image", "config": {"pipeline": "character"}},
             {"id": "n_clip", "type": "video", "config": {"pipeline": "clip"}},
+            {"id": "n_clip_2", "type": "video", "config": {"pipeline": "clip", "duration_sec": 3}},
         ],
     }
     run: dict[str, Any] = {"run_id": _RUN_ID, "graph_id": _GRAPH_ID, "node_states": {}}
@@ -142,6 +143,25 @@ async def test_video_generation_cancelled_records_a_specific_error(
     error = run_env["bridge"].member_error_for("n_clip")
     assert error
     assert "structured_output" not in error
+
+
+@pytest.mark.parametrize(("node_id", "expected"), [("n_clip", {"duration_sec": 5}), ("n_clip_2", {})])
+async def test_member_duration_does_not_override_the_nodes_own(
+    node_tools, run_env, monkeypatch, node_id, expected
+):
+    injected_by_call: list[dict[str, Any]] = []
+
+    async def capture(env, node, injected, kind):
+        injected_by_call.append(injected)
+        return _generated(), injected["prompt"]
+
+    monkeypatch.setattr(node_tools, "_run_handler", capture)
+
+    await node_tools.generate_node_output(
+        _ticket(node_id), member="clip", prompt="咖啡豆特写", duration_seconds=5
+    )
+
+    assert {k: v for k, v in injected_by_call[0].items() if k != "prompt"} == expected
 
 
 async def test_rejected_submit_keeps_the_generation_error(node_tools, run_env, monkeypatch):

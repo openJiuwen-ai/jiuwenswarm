@@ -17,9 +17,9 @@ description: 从自然语言创建可被 JiuwenSwarm 加载和安装的专家团
 
 ## 2. 填充专家团包
 
-读取 [references/package-spec.md](references/package-spec.md)，在当前任务的可写目录创建 `<group-id>/`。ID 使用小写 kebab-case，目录名必须等于顶层 manifest 的 `name`。
+完整读取 [references/package-spec.md](references/package-spec.md) 的包结构和成员内容规范，在当前任务的可写目录创建 `<group-id>/`。ID 使用小写 kebab-case，目录名必须等于顶层 manifest 的 `name`。
 
-包内包括根 `manifest.json`、`README.md`，以及每个角色的 `manifest.json` 和 persona。Leader 另有 `AGENT.md`，普通成员不得有 `AGENT.md`。共享技能只在实际需要时添加。
+包内包括根 `manifest.json`、`README.md`，以及每个角色的 `manifest.json` 和 persona。Leader 另有 `AGENT.md`，普通成员不得有 `AGENT.md`。成员专用技能放在 `agents/<角色 ID>/skills/<skill-id>/SKILL.md`，并在该成员 manifest 的 `skills` 中以相对成员目录的 `skills/<skill-id>` 声明。只有团队共享技能放在与 `agents/` 同级的根 `skills/` 下；根目录技能会共享给所有角色，不要把成员专用技能集中放在那里。没有实际需要时不创建技能。
 
 不要直接写安装目录或 marketplace.json，不改内置资产。专家团与单专家路径不同：最终由运行时导入至 `<JiuwenSwarm 用户工作区>/.agent_teams/agent_groups/local/<group-id>/`。由运行环境确定用户工作区，不硬编码用户路径或借用 agent-creator 的注册脚本。
 
@@ -41,7 +41,11 @@ description: 从自然语言创建可被 JiuwenSwarm 加载和安装的专家团
 <runtime> <skill_dir>/scripts/register_group.py /absolute/path/<group-id>
 ```
 
-脚本调用真实专家团加载器，验证每个成员模板、persona、Leader 规则和共享技能。出现 `RESULT: PASS` 后才进入注册。失败时修正具体报错；缺少运行依赖时说明阻塞，不跳过校验或宣称已创建成功。
+脚本先拒绝 Markdown、Python、JSON 文件中的 `[TODO]` 占位符，并校验各技能 frontmatter 的名称、目录一致性及非空简介，再调用真实专家团加载器验证成员模板、persona、Leader 规则和技能路径。出现 `RESULT: PASS` 后才进入注册。失败时修正具体报错；缺少运行依赖时说明阻塞，不跳过校验或宣称已创建成功。
+
+按 [成员内容规范](references/package-spec.md#成员内容规范) 逐一完成所有成员的内容检查和组件自检；包加载通过不等于完整 harness 热加载或业务执行通过。
+
+注册前逐项核对：每个成员声明的技能目录都位于该成员的 `skills/` 下且有 `SKILL.md`；根 `skills/` 中每项都是确实需要共享给所有角色的团队技能；没有用 `../../skills/` 引用根目录来代替成员专用技能。加载通过不能判断一个技能是否应该共享。
 
 同时检查语义质量：成员职责是否互补、共享指令是否与 persona 一致、是否覆盖用户要求、是否清楚说明交付物及验收标准。加载成功不代表这些内容自动合格。
 

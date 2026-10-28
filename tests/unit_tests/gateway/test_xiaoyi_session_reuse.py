@@ -15,8 +15,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.schema.message import Message, ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from openjiuwen_protocol.message import Message, ReqMethod
+from gateway.message_handler.message_handler import MessageHandler
 
 _CONVERSATION_ID = "5a423bc9f2ce471cab9e316d2d06edbf"
 _PHYSICAL_SESSION_ID = "ef130309-65f4-4aa6-9df1-639390ad08cb"

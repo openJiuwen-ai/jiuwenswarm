@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+from gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
     build_tui_session_create_channel_metadata,
     register_cli_handlers,

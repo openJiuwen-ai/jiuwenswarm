@@ -89,7 +89,7 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
+from gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -272,7 +272,6 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         # Skill retrieval is a separate self-gated tool provider.
         registry.SKILL_RETRIEVAL,
         registry.SYMPHONY_TOOLKIT,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,
@@ -664,6 +663,14 @@ def test_build_member_capability_specs_tool_names(role: str) -> None:
         expected.add(registry.SESSION_MESSAGING_TOOLS)
     assert tool_names == expected
     assert all(isinstance(spec, BuiltinToolSpec) for spec in tool_specs)
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.code"])
+def test_team_members_do_not_register_user_todos(mode: str, role: str) -> None:
+    _, tool_specs = build_member_capability_specs({}, mode, role)
+
+    assert registry.USER_TODOS not in {spec.type for spec in tool_specs}
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
@@ -1794,6 +1801,14 @@ def test_send_file_gating_defaults_by_channel() -> None:
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
 
 
+def test_xiaoyi_send_file_is_disabled_even_when_config_enabled() -> None:
+    """Xiaoyi's missing delivery path is enforced regardless of stale config."""
+    enabled = {"channels": {"xiaoyi": {"send_file_allowed": True}}}
+
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi")
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi:app")
+
+
 def test_team_send_file_does_not_enable_auto_authorization(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2542,7 +2557,6 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.AUDIO,
         # SKILL_TOOLKIT moved to the MEMBER_SKILL_TOOLKIT rail (see common set).
         registry.SKILL_RETRIEVAL,
-        registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
         registry.VIDEO_GEN,

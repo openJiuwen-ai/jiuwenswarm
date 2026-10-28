@@ -163,6 +163,9 @@ _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-iden
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
 _identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
 datas.append((str(_identity_file), "jiuwenswarm"))
+_build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
+build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
+datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
 _playwright_mcp_resource_dir = os.path.join(
     project_root,
     "jiuwenswarm",

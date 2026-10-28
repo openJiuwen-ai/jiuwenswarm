@@ -6,6 +6,8 @@ const SAFE_FAILURE_KEYS = {
   RESOURCE_NOT_FOUND: 'resourceNotFound',
   VERSION_CONFLICT: 'versionConflict',
   HUB_REQUEST_FAILED: 'hubRequestFailed',
+  UNDEFINED_PLACEHOLDER: 'undefinedPlaceholder',
+  INVALID_AGENT_MCP: 'invalidAgentMcp',
   INVALID_PACKAGE: 'invalidPackage',
   PUBLISH_UNAVAILABLE: 'publishUnavailable',
   UPLOAD_OUTCOME_UNKNOWN: 'uploadOutcomeUnknown',

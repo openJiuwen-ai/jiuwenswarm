@@ -234,6 +234,11 @@ def extract_last_frame(video_path: Path, dest: Path | None = None) -> Path | Non
             ],
             capture_output=True,
             text=True,
+            # ffmpeg writes UTF-8 to a pipe; decode explicitly so a non-UTF-8
+            # locale cannot raise inside the reader thread (which would leave a
+            # traceback on stderr while the caller only sees empty output).
+            encoding="utf-8",
+            errors="replace",
             timeout=60,
             check=False,
         )

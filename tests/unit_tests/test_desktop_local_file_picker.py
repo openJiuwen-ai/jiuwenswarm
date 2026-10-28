@@ -51,9 +51,10 @@ def test_describe_local_file_image_includes_base64(tmp_path: Path):
 
 
 def test_describe_local_file_webp_mime_without_stdlib_mapping(tmp_path: Path, monkeypatch):
-    from jiuwenswarm.channels.web import file_picker
+    from jiuwenswarm.channels.desktop import picker_dir_state
 
-    monkeypatch.setattr(file_picker.mimetypes, "guess_type", lambda _filename: (None, None))
+    import mimetypes
+    monkeypatch.setattr(mimetypes, "guess_type", lambda _filename: (None, None))
     path = tmp_path / "sample.webp"
     path.write_bytes(b"RIFF\x1a\x00\x00\x00WEBP" + b"x" * 8)
 
@@ -92,7 +93,7 @@ def test_attachment_open_file_types_excludes_blacklist():
 
 
 def test_select_local_files_uses_allowed_file_types(monkeypatch, tmp_path: Path):
-    from jiuwenswarm.channels.web import file_picker
+    from jiuwenswarm.channels.desktop import picker_dir_state
 
     monkeypatch.setattr(
         desktop_app.webview,
@@ -104,7 +105,7 @@ def test_select_local_files_uses_allowed_file_types(monkeypatch, tmp_path: Path)
     doc = tmp_path / "a.md"
     doc.write_text("# hi", encoding="utf-8")
     captured: dict[str, object] = {}
-    monkeypatch.setattr(file_picker, "_last_dir_state_path", lambda: tmp_path / "last_file_picker_dir.txt")
+    monkeypatch.setattr(picker_dir_state, "_last_dir_state_path", lambda: tmp_path / "last_file_picker_dir.txt")
 
     class FakeWindow:
         def create_file_dialog(self, *args, **kwargs):
@@ -120,7 +121,7 @@ def test_select_local_files_uses_allowed_file_types(monkeypatch, tmp_path: Path)
     assert captured["file_types"] == desktop_app.attachment_open_file_types()
     # First open with no memory → user home; selection remembers the file's parent.
     assert captured["directory"] == str(Path.home())
-    assert file_picker.get_last_file_picker_dir() == str(tmp_path.resolve())
+    assert picker_dir_state.get_last_file_picker_dir() == str(tmp_path.resolve())
 
     # Next open should start in the remembered directory.
     captured.clear()
@@ -204,3 +205,21 @@ def test_desktop_drop_rejects_directory_path_without_describing_files(tmp_path: 
 
     assert len(scripts) == 1
     assert "jiuwen-desktop-directory-drop-rejected" in scripts[0]
+
+
+def test_picker_dir_state_mime_map_matches_gateway_copy():
+    """漂移守护：desktop 本地副本与 gateway 侧 file_picker 的 MIME 表逐键一致。
+
+    M0-b review：副本曾漏 .jfif（server 侧会静默丢弃 jfif 图片）并多出
+    gateway 侧没有的键——两侧任一漂移本测试即失败。
+    """
+    from jiuwenswarm.channels.desktop import picker_dir_state
+    from gateway.channel_manager.web import file_picker as gateway_picker
+
+    assert picker_dir_state._IMAGE_MIME_BY_EXTENSION == (
+        gateway_picker._IMAGE_MIME_BY_EXTENSION
+    )
+    # desktop 声明接受的图片扩展名必须有回退 mime
+    assert desktop_app.IMAGE_EXTENSIONS <= set(
+        picker_dir_state._IMAGE_MIME_BY_EXTENSION
+    )

@@ -65,7 +65,8 @@ export function RewardSummary({ reward }: { reward: RewardPayload }) {
   if (overview.comment === '' && overview.categories.length === 0 && overview.dimensionCount === 0) return null;
   const opened = overview.categories.find(category => category.name === openName) ?? null;
   return (
-    <div className={css.rewardSummary} data-testid="trajectory-diagnosis-reward-overall">
+    <div className={`${css.block} ${css.rewardSummary}`} data-testid="trajectory-diagnosis-reward-overall">
+      <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rewardResult')}</h4>
       {overview.comment === '' ? null : <p className={css.rewardComment}>{overview.comment}</p>}
       {overview.categories.length === 0 ? null : (
         <div className={css.row}>
@@ -103,7 +104,7 @@ export function RewardSummary({ reward }: { reward: RewardPayload }) {
       )}
       {opened === null ? null : <CategoryDetail category={opened} />}
       {overview.dimensionCount === 0 ? null : (
-        <p className={css.hint} data-testid="trajectory-diagnosis-reward-dimensions">
+        <p className={css.rewardComment} data-testid="trajectory-diagnosis-reward-dimensions">
           {t('trajectory.diagnosis.rewardDimensions', {
             count: overview.dimensionCount,
             perfect: overview.perfectCount,

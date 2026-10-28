@@ -25,7 +25,7 @@ from jiuwenswarm.channels.process_cli.model_options import (
     prepare_model_options,
     validate_model_options,
 )
-from jiuwenswarm.common.mode_matrix import is_plan_mode, is_team_mode
+from gateway.common.mode_matrix import is_plan_mode, is_team_mode
 from jiuwenswarm.common.runtime_model_config import runtime_model_config
 
 

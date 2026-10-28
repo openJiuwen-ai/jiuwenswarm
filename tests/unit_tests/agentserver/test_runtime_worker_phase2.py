@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
+from gateway.routing.keys import AgentRef
+from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, PermissionContext
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.routing.keys import AgentRef
 from jiuwenswarm.server.front.admission import ExecutionAdmission
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.server.ipc.client import connect, endpoint_is_listening
 from jiuwenswarm.server.ipc.protocol import (
     KIND_CANCEL,
@@ -39,6 +39,7 @@ from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor.affinity import SessionAffinity
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
+from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
 from jiuwenswarm.server.worker.service import (
     WorkerForceExit,
     _close_worker,
@@ -46,7 +47,6 @@ from jiuwenswarm.server.worker.service import (
     _retire_session,
     _runtime_for_shutdown,
 )
-from jiuwenswarm.server.worker.gateway_bridge import ConnHolder, WorkerGatewayBridge
 
 
 def _socket_path() -> str:
@@ -990,7 +990,7 @@ from jiuwenswarm.server.worker import lifecycle, runtime_backend, runtime_bootst
 forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
-    "jiuwenswarm.extensions.manager",
+    "gateway.extensions.manager",
     "jiuwenswarm.agents.harness",
 )
 hits = [name for name in sys.modules

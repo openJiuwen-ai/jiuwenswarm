@@ -10,7 +10,11 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.admission import ExecutionAdmission
-from jiuwenswarm.server.front.router import CONTROL_METHODS, MethodRouter, is_control_method
+from jiuwenswarm.server.front.router import (
+    CONTROL_METHODS,
+    MethodRouter,
+    is_control_method,
+)
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 
 
@@ -212,7 +216,7 @@ os.environ["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
 forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
-    "jiuwenswarm.gateway.channel_manager.web.app_web_handlers",
+    "gateway.channel_manager.web.app_web_handlers",
     "jiuwenswarm.agents.harness",
     "jiuwenswarm.common.config",
     "jiuwenswarm.server.runtime.gateway_adapter",
@@ -394,7 +398,10 @@ async def _settle() -> None:
 async def test_rpc_connection_never_takes_or_clears_push_slot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
+    from jiuwenswarm.server.front.protocol import (
+        CONNECTION_ROLE_HEADER,
+        CONNECTION_ROLE_RPC,
+    )
 
     backend = _RecordingPushBackend()
     handler, forwarder = _push_handler(monkeypatch, backend)
@@ -477,8 +484,13 @@ async def test_skill_rpc_client_declares_rpc_connection_role(
 
     import websockets.legacy.client as legacy_client
 
-    from jiuwenswarm.server.front.protocol import CONNECTION_ROLE_HEADER, CONNECTION_ROLE_RPC
-    from jiuwenswarm.server.runtime.skill.skills_multipart_http import _AgentServerSkillWsClient
+    from jiuwenswarm.server.front.protocol import (
+        CONNECTION_ROLE_HEADER,
+        CONNECTION_ROLE_RPC,
+    )
+    from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+        _AgentServerSkillWsClient,
+    )
 
     captured: dict[str, object] = {}
 
@@ -874,13 +886,13 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
 
 @pytest.mark.asyncio
 async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callback_framework) -> None:
+    import threading
     from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
-    import threading
 
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
     from jiuwenswarm.server.worker.telemetry import StartupTelemetry

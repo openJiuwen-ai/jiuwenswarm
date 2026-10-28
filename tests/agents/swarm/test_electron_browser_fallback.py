@@ -16,10 +16,11 @@ from openjiuwen.harness.tools.browser_move.playwright_runtime.config import (
 )
 from openjiuwen.harness.tools.browser_move.playwright_runtime.service import BrowserService
 
-from jiuwenswarm.agents.harness.common import browser_config, electron_sideview
+from jiuwenswarm.agents.harness.common import electron_sideview
 from jiuwenswarm.agents.swarm import browser_runtime
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.providers import code_subagents
+from jiuwenswarm.common import browser_config
 from jiuwenswarm.common.playwright_mcp_runtime import PlaywrightMcpLaunch
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 

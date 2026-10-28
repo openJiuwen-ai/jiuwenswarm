@@ -7,6 +7,12 @@
 import { create } from 'zustand';
 import { webClient } from '../services/webClient';
 import { useChatStore } from './chatStore';
+import {
+  clearOrganizationRequests, organizationProcessingRevision, reconcileOrganizationRequests,
+  type ExpertRequest, type OrganizationRequest,
+} from '../features/teamOrganization/processing';
+import { ownerTeamId } from '../features/teamOrganization/ownerIdentity';
+import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 
 export type RuntimeTeamState = 'running' | 'paused' | 'pending' | 'configured';
 
@@ -17,15 +23,22 @@ export interface RuntimeTeamInfo {
   agent_group_name?: string | null;
   team_group_identity?: unknown;
   state: RuntimeTeamState | string;
+  available?: boolean;
+  unavailable_reason?: string;
   leader_id?: string | null;
   organization_id?: string | null;
   is_leader?: boolean;
   is_owner?: boolean;
   capabilities?: string[];
   source?: string;
+  execution_model_name?: string;
+  execution_model_selection?: { type: 'model'; id: string };
 }
 
 interface TeamListResponse {
+  organization_owner_stopped?: boolean;
+  organization_requests?: OrganizationRequest[];
+  expert_requests?: ExpertRequest[];
   session_id: string;
   teams: RuntimeTeamInfo[];
   default_team_id?: string | null;
@@ -144,6 +157,7 @@ export const useTeamSelectorStore = create<TeamSelectorState>((set, get) => ({
   },
 
   removeRuntime: (sessionId) => {
+    clearOrganizationRequests(sessionId);
     set((state) => {
       if (!(sessionId in state.runtimes)) return state;
       const next = { ...state.runtimes };
@@ -175,6 +189,7 @@ export const useTeamSelectorStore = create<TeamSelectorState>((set, get) => ({
     }));
 
     try {
+      const processingRevision = organizationProcessingRevision();
       const response = await webClient.request<TeamListResponse>(
         'team.list',
         { session_id: sessionId },
@@ -182,6 +197,13 @@ export const useTeamSelectorStore = create<TeamSelectorState>((set, get) => ({
       );
       const teams = Array.isArray(response?.teams) ? response.teams : [];
       const defaultTeamId = response?.default_team_id ?? null;
+      if (isTeamOrganizationUiEnabled() && Array.isArray(response?.organization_requests)) {
+        reconcileOrganizationRequests(
+          sessionId, teams.find((team) => team.is_owner)?.team_id || ownerTeamId(sessionId),
+          response.organization_requests, processingRevision, response.expert_requests,
+          response.organization_owner_stopped,
+        );
+      }
 
       set((state) => {
         const previous = state.runtimes[sessionId] ?? createEmptyRuntime();

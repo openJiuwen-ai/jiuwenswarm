@@ -10,6 +10,7 @@ import type {
   DesignerGraphNode,
   DesignerNodeState,
 } from './executionGraphTypes';
+import { isUploadedMediaNode, readMediaConfig } from './mediaNodeConfig';
 
 export type DesignerPreviewKind = 'video' | 'image' | 'audio' | 'text' | 'file' | 'placeholder';
 
@@ -108,25 +109,15 @@ export function classifyDesignerOutput(input: {
   return 'file';
 }
 
-function refsFromState(
-  state: DesignerNodeState | undefined,
-  kind: 'accepted' | 'candidate',
-): AssetRef[] {
+function refsFromState(state: DesignerNodeState | undefined): AssetRef[] {
   if (!state) return [];
-  const primary =
-    kind === 'candidate' ? state.candidate_output_ref : state.output_ref;
+  const primary = state.output_ref;
   const list =
-    kind === 'candidate'
-      ? state.candidate_output_refs && state.candidate_output_refs.length > 0
-        ? state.candidate_output_refs
-        : primary
-          ? [primary]
-          : []
-      : state.output_refs && state.output_refs.length > 0
-        ? state.output_refs
-        : primary
-          ? [primary]
-          : [];
+    state.output_refs && state.output_refs.length > 0
+      ? state.output_refs
+      : primary
+        ? [primary]
+        : [];
   if (!primary?.uri || list.length === 0) return list;
   // Always include primary media even when output_refs is only a .md sidecar.
   if (list.some((ref) => ref?.uri === primary.uri)) return list;
@@ -139,6 +130,7 @@ export function materialsFromRefs(
   idPrefix: string,
 ): DesignerMaterial[] {
   const role = typeof node.config?.role === 'string' ? node.config.role : '';
+  const source = isUploadedMediaNode(node) ? 'uploaded' : 'generated';
   return refs.flatMap((ref, index) => {
     if (!ref?.uri) return [];
     const textUrl = designerAssetTextUrl(ref.uri);
@@ -188,24 +180,10 @@ export function materialsFromRefs(
         previewUrl: isTextish ? null : designerAssetPreviewUrl(ref.uri),
         textUrl,
         editable,
-        source: placeholder ? undefined : 'generated',
+        source: placeholder ? undefined : source,
       },
     ];
   });
-}
-
-export function isDesignerMediaAsset(ref?: Pick<AssetRef, 'kind' | 'uri' | 'mime_type' | 'label'> | null): boolean {
-  if (!ref?.uri || isPlaceholderAsset(ref.uri)) return false;
-  if (isDesignerFallbackTextAsset(ref)) return false;
-  const kind = (ref.kind || '').toLowerCase();
-  const mime = (ref.mime_type || '').toLowerCase();
-  if (kind === 'image' || kind === 'video' || kind === 'audio') return true;
-  if (mime.startsWith('image/') || mime.startsWith('video/') || mime.startsWith('audio/')) {
-    return true;
-  }
-  return /\.(png|jpe?g|webp|gif|bmp|mp4|webm|mov|m4v|mp3|wav|ogg)(?:\?|$)/i.test(
-    `${ref.label || ''} ${ref.uri}`,
-  );
 }
 
 export function isDesignerFallbackTextAsset(
@@ -227,63 +205,78 @@ export function isDesignerFallbackTextAsset(
   );
 }
 
-export function preferredDesignerPreviewRef(
-  accepted?: AssetRef | null,
-  candidate?: AssetRef | null,
+/**
+ * Preview URL of a node output, only when it is an image an ``<img>`` can show.
+ * Video and audio have no thumbnail the raw-file route can serve cheaply, so
+ * they keep their type icon instead of a broken image.
+ */
+export function designerImagePreviewUrl(
+  ref: Pick<AssetRef, 'kind' | 'uri' | 'mime_type' | 'label'> | null | undefined,
+  nodeType: string,
+): string | null {
+  if (!ref?.uri) return null;
+  const previewUrl = designerAssetPreviewUrl(ref.uri);
+  if (!previewUrl) return null;
+  const kind = classifyDesignerOutput({
+    kind: ref.kind || nodeType,
+    mimeType: ref.mime_type,
+    label: ref.label,
+    uri: ref.uri,
+    previewUrl,
+    placeholder: isPlaceholderAsset(ref.uri),
+  });
+  return kind === 'image' ? previewUrl : null;
+}
+
+/**
+ * The output ref a node shows in a preview or material list.
+ *
+ * The run store's accepted ref wins, then the graph node's own ``output_ref``,
+ * then a configured upload. An uploaded reference is never executed and a run
+ * reloaded from disk can carry no state for a node, so the run store alone
+ * leaves those tiles without a thumbnail.
+ */
+export function resolveDesignerNodePreviewRef(
+  node:
+    | { type?: string; config?: unknown; output_ref?: AssetRef | null }
+    | null
+    | undefined,
+  state?: DesignerNodeState | null,
 ): AssetRef | null {
-  if (isDesignerMediaAsset(candidate) && (!accepted || isDesignerFallbackTextAsset(accepted))) {
-    return candidate ?? null;
+  const fromRun = state?.output_ref;
+  if (fromRun?.uri && !isPlaceholderAsset(fromRun.uri)) return fromRun;
+
+  const nodeType = String(node?.type ?? '');
+  const declared = node?.output_ref;
+  if (declared?.uri && !isPlaceholderAsset(declared.uri)) {
+    return {
+      kind: declared.kind || nodeType,
+      uri: declared.uri,
+      mime_type: declared.mime_type,
+      label: declared.label,
+    };
   }
-  if (isDesignerFallbackTextAsset(candidate) && isDesignerFallbackTextAsset(accepted)) {
-    return candidate ?? null;
-  }
-  return accepted || candidate || null;
+  return configuredUploadRef(node?.config, nodeType);
 }
 
-export function shouldAutoPromoteDesignerRevision(
-  original?: Pick<DesignerMaterial, 'kind' | 'uri' | 'mimeType' | 'label'> | null,
-  incoming?: Pick<DesignerMaterial, 'kind' | 'uri' | 'mimeType' | 'label'> | null,
-): boolean {
-  if (!original || !incoming) return false;
-  const asRef = (item: Pick<DesignerMaterial, 'kind' | 'uri' | 'mimeType' | 'label'>) => ({
-    kind: item.kind,
-    uri: item.uri,
-    mime_type: item.mimeType,
-    label: item.label,
-  });
-  if (isDesignerFallbackTextAsset(asRef(original)) && isDesignerMediaAsset(asRef(incoming))) {
-    return true;
+/** An uploaded file kept only in the node config (upload slot or attached materials). */
+function configuredUploadRef(config: unknown, nodeType: string): AssetRef | null {
+  const media = readMediaConfig(config as Record<string, unknown> | undefined, nodeType);
+  const slots: Array<{ uri?: string; mime_type?: string; filename?: string }> = [
+    ...(media.materials ?? []),
+    media.upload ?? {},
+  ];
+  for (const slot of slots) {
+    const uri = String(slot?.uri ?? '').trim();
+    if (!uri || isPlaceholderAsset(uri)) continue;
+    return {
+      kind: nodeType || 'file',
+      uri,
+      mime_type: String(slot?.mime_type ?? '') || undefined,
+      label: String(slot?.filename ?? '') || undefined,
+    };
   }
-  return isDesignerFallbackTextAsset(asRef(original)) && isDesignerFallbackTextAsset(asRef(incoming));
-}
-
-export function hasPendingDesignerRevision(state: DesignerNodeState | undefined): boolean {
-  const uri = state?.candidate_output_ref?.uri || state?.candidate_output_refs?.[0]?.uri;
-  return Boolean(uri) && !isPlaceholderAsset(uri);
-}
-
-export type DesignerPendingRevision = {
-  nodeId: string;
-  label: string;
-  original: DesignerMaterial[];
-  incoming: DesignerMaterial[];
-  requiresSelection: boolean;
-};
-
-export function collectPendingRevisions(
-  graph: DesignerExecutionGraph | null | undefined,
-  run: DesignerExecutionRun | null | undefined,
-): DesignerPendingRevision[] {
-  if (!graph || !run) return [];
-  return graph.nodes.flatMap((node) => {
-    const state = run.node_states?.[node.id];
-    if (!hasPendingDesignerRevision(state)) return [];
-    const original = materialsFromRefs(node, refsFromState(state, 'accepted'), `${node.id}:orig`);
-    const incoming = materialsFromRefs(node, refsFromState(state, 'candidate'), `${node.id}:new`);
-    if (original.length === 0 || incoming.length === 0) return [];
-    const requiresSelection = DESIGNER_EDITABLE_ROLES.has(String(node.config?.pipeline || node.config?.role || ''));
-    return [{ nodeId: node.id, label: node.label, original, incoming, requiresSelection }];
-  });
+  return null;
 }
 
 export function collectDesignerMaterials(
@@ -292,12 +285,7 @@ export function collectDesignerMaterials(
 ): DesignerMaterial[] {
   if (!graph) return [];
   const fromNodes = graph.nodes.flatMap((node) => {
-    const state = run?.node_states?.[node.id];
-    const accepted = refsFromState(state, 'accepted');
-    const candidate = refsFromState(state, 'candidate');
-    const preferred = preferredDesignerPreviewRef(accepted[0], candidate[0]);
-    const fromRun =
-      preferred && candidate[0] && preferred.uri === candidate[0].uri ? candidate : accepted;
+    const fromRun = refsFromState(run?.node_states?.[node.id]);
     const refs =
       fromRun.length > 0
         ? fromRun

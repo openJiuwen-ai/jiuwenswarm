@@ -50,6 +50,23 @@ test('publish errors preserve actionable safe backend codes', () => {
   assert.equal(publishIssueKey('upload_outcome_unknown'), 'uploadOutcomeUnknown');
 });
 
+test('undeclared OAuth placeholders are package errors, not login failures', () => {
+  assert.equal(publishIssueKey('UNDEFINED_PLACEHOLDER'), 'undefinedPlaceholder');
+  assert.equal(
+    publishFailureKey({ payload: { error: { code: 'UNDEFINED_PLACEHOLDER' } } }),
+    'undefinedPlaceholder',
+  );
+  assert.equal(publishFailureKey({ code: 'AUTH_REQUIRED' }), 'authRequired');
+});
+
+test('Hub MCP validation rejection remains an actionable safe error', () => {
+  assert.equal(publishIssueKey('invalid_agent_mcp'), 'invalidAgentMcp');
+  assert.equal(
+    publishFailureKey({ payload: { error: { code: 'invalid_agent_mcp', message: 'privatevalue' } } }),
+    'invalidAgentMcp',
+  );
+});
+
 test('oauth start tolerates an empty error response', async () => {
   const previousWindow = globalThis.window;
   const previousFetch = globalThis.fetch;

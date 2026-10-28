@@ -9,10 +9,10 @@ import pytest
 
 from jiuwenswarm.common.auth import login_credentials as lc
 from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from openjiuwen_protocol.e2a.agent_models import AgentRequest
+from openjiuwen_protocol.message import ReqMethod
+from gateway.message_handler.message_handler import MessageHandler
 
 REF = "abe633f3a47a2758174eabe9160daf36"
 
@@ -47,7 +47,7 @@ async def test_refresh_request_is_answered_with_an_update(monkeypatch):
         seen_refs.append(ref)
         return {"credential_ref": ref, "api_key": "id-new"}
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", _refresh)
+    monkeypatch.setattr("gateway.auth.passthrough.refreshed_credential_for_ref", _refresh)
     sent: list = []
 
     assert await _handler(sent)._handle_login_credential_refresh_push(_refresh_chunk()) is True
@@ -69,7 +69,7 @@ async def test_refresh_runs_off_the_event_loop(monkeypatch):
         ran_in.append(threading.get_ident())
         return None
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", _refresh)
+    monkeypatch.setattr("gateway.auth.passthrough.refreshed_credential_for_ref", _refresh)
     await _handler([])._handle_login_credential_refresh_push(_refresh_chunk())
     assert ran_in and ran_in[0] != loop_thread
 
@@ -79,7 +79,7 @@ async def test_failed_refresh_sends_nothing_and_is_still_consumed(monkeypatch):
     def _boom(ref):
         raise RuntimeError("exchange service down")
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", _boom)
+    monkeypatch.setattr("gateway.auth.passthrough.refreshed_credential_for_ref", _boom)
     sent: list = []
     assert await _handler(sent)._handle_login_credential_refresh_push(_refresh_chunk()) is True
     assert sent == []
@@ -137,7 +137,7 @@ async def test_agent_server_applies_the_pushed_update(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_logout_revokes_the_agent_server_credential(monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web import web_http_auth
+    from gateway.channel_manager.web import web_http_auth
 
     monkeypatch.setattr(lc, "_ref_key_cache", b"k" * 32)
     sent: list = []
@@ -150,7 +150,7 @@ async def test_logout_revokes_the_agent_server_credential(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_logout_revoke_is_best_effort(monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web import web_http_auth
+    from gateway.channel_manager.web import web_http_auth
 
     monkeypatch.setattr(lc, "_ref_key_cache", b"k" * 32)
     monkeypatch.setattr(MessageHandler, "try_get_instance", classmethod(lambda cls: None))

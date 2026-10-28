@@ -1,6 +1,6 @@
 from websockets.exceptions import ConnectionClosedError
 
-from jiuwenswarm.common.ws_diagnostics import (
+from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     format_ws_diagnostics,
 )

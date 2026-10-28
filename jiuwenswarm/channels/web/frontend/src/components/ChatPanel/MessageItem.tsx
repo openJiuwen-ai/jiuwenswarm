@@ -5,6 +5,7 @@
  */
 
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useConversationLeaderIdentity } from '../../features/teamOrganization/leaderIdentity';
 import { useState, useCallback, useContext, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -418,9 +419,7 @@ export const MessageItem = memo(function MessageItem({
   // 任务素材（@名称 引用）：素材存在后端，历史消息里只有 @名称 文本。
   // 渲染用户气泡时按名称解析成缩略图，这样刷新/重进会话依然能看到素材。
   const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
-  const sessionTeamLeaderIdentity = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
-  );
+  const sessionTeamLeaderIdentity = useConversationLeaderIdentity(activeSessionId);
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? sessionTeamLeaderIdentity;
 
   // TTS

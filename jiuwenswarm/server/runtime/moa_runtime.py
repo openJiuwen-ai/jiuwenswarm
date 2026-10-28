@@ -12,7 +12,8 @@ import math
 from typing import Any, Callable
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from jiuwenswarm.common.model_selection import ModelSelection
+from jiuwenswarm.common.browser_settings import resolve_jev_connection
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.moa_config import build_moa_config_from_frontend
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
@@ -20,7 +21,7 @@ from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionCont
 def effective_moa_enabled(config: dict[str, Any], selection: ModelSelection | dict | None,
                           *, mode: str, is_cron: bool = False) -> bool:
     """Derive product MoA solely from experimental settings and stable selection."""
-    from jiuwenswarm.common.mode_matrix import is_team_mode
+    from gateway.common.mode_matrix import is_team_mode
 
     if is_cron or is_team_mode(mode):
         return False
@@ -40,7 +41,9 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
     selected = ModelSelection.model_validate(selection)
     if selected.type != "model_group":
         raise ValueError("MoA requires a model group selection")
-    experimental = build_moa_config_from_frontend({}, config)
+    from jiuwenswarm.common.config import get_crypto_provider, resolve_env_vars
+
+    experimental = build_moa_config_from_frontend({}, config, resolve_value=resolve_env_vars)
     if experimental["multi_model_collaboration_enabled"] is not True:
         raise ValueError("Multi-model collaboration is disabled; select an ordinary model before sending")
     settings = experimental["multi_model_collaboration"]
@@ -50,18 +53,16 @@ def resolve_moa_settings(config: dict[str, Any], selection: ModelSelection | dic
             "type": "jev" if settings["jev_enabled"] else "group_model",
             "interval": settings["verifier_interval"],
         },
-        "jev": deepcopy(settings["jev"]),
+        "jev": {},
     }
     if settings["jev_enabled"]:
-        from jiuwenswarm.common.config import get_crypto_provider, resolve_env_vars
-
-        candidate["jev"]["api_key"] = resolve_env_vars(candidate["jev"]["api_key"])
+        candidate["jev"] = resolve_jev_connection(config, resolve_value=resolve_env_vars)
         crypto = get_crypto_provider()
         if crypto is not None:
             try:
                 candidate["jev"]["api_key"] = crypto.decrypt(candidate["jev"]["api_key"])
             except Exception:
-                raise ValueError("JEV credential cannot be decrypted; re-enter it in experimental settings") from None
+                raise ValueError("JEV credential cannot be decrypted; re-enter it in Models > Jev settings") from None
         if not candidate["jev"]["api_key"]:
             raise ValueError("JEV api_key is required")
     catalog_config = deepcopy(config)
@@ -164,8 +165,14 @@ class JevProgressScorer:
     no shared mutable progress or client leaks between sessions or event loops.
     """
 
-    def __init__(self, *, api_key: str, api_base: str, model_name: str, client_factory=None):
-        self._settings = {"api_key": api_key, "api_base": api_base, "model_name": model_name}
+    def __init__(
+        self, *, api_key: str, api_base: str, model_name: str,
+        endpoint_path: str = "/systemone", client_factory=None,
+    ):
+        self._settings = {
+            "api_key": api_key, "api_base": api_base, "model_name": model_name,
+            "endpoint_path": endpoint_path,
+        }
         self._factory = client_factory
 
     async def __call__(self, problem: str, steps: tuple[str, ...], n_evaluations: int) -> float:

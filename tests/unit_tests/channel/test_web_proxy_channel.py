@@ -17,14 +17,18 @@ import pytest
 from aiohttp import web
 from yarl import URL
 
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.protocol.web_proxy import (
+    web_proxy_listen,
+)
+from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+    _TEST_NET_1,
     WEB_PROXY_COOKIE_NAME,
     WEB_PROXY_USER_COOKIE,
     WebProxyChannelConfig,
-    new_web_proxy_client_session,
     _append_tail,
+    _ensure_http_proxy_session,
+    _ensure_proxy_session,
     _filter_response_headers,
     _final_response_headers,
     _forward_headers,
@@ -33,22 +37,18 @@ from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect im
     _merge_request_query,
     _retry_after_seconds,
     _sandbox_creating_response,
-    _TEST_NET_1,
-    _ensure_http_proxy_session,
-    _ensure_proxy_session,
+    new_web_proxy_client_session,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy import (
-    web_proxy_listen,
-)
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+from gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
     WebPortManager,
     _manager_for,
     _request_target_summary,
     build_agent_port_app,
     handle_3rdagent_web,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.extensions.auth.credential_authenticator import AuthResult
 
 
 def _free_port() -> int:
@@ -288,7 +288,7 @@ class _FakeIamClient:
         channel: str = "file-api",
         allow_query_token: bool = True,
     ) -> AuthResult:
-        from jiuwenswarm.extensions.agentos.auth.common import (
+        from gateway.extensions.auth.common import (
             extract_token_from_path_and_headers,
         )
 

@@ -1,20 +1,22 @@
 import { createElement } from 'react';
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsTabDefinition } from '../../components';
-import type { SettingsModuleDefinition } from '../../registry/types';
+import type { SettingsCustomItemProps, SettingsModuleDefinition } from '../../registry/types';
 import { ModelsSettings, type ModelSettingsTabId } from './ModelsSettings';
 
 export const modelSettingsTabs = [
   { id: 'models', labelKey: 'settingsPanel.models.modelsTab' },
   { id: 'groups', labelKey: 'settingsPanel.models.modelGroups' },
+  { id: 'jev', labelKey: 'settingsPanel.models.jevTab' },
 ] as const satisfies readonly SettingsTabDefinition<ModelSettingsTabId>[];
 
 export const defaultModelSettingsTab: ModelSettingsTabId = 'models';
 
-function ModelsSettingsModule() {
+function ModelsSettingsModule({ disabled }: SettingsCustomItemProps) {
   return createElement(ModelsSettings, {
     tabs: modelSettingsTabs,
     defaultTab: defaultModelSettingsTab,
+    disabled,
   });
 }
 

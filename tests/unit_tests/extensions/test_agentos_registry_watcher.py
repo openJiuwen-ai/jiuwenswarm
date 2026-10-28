@@ -8,18 +8,18 @@ import json
 
 import pytest
 
-from jiuwenswarm.common.etcd.client import EtcdKv, EtcdRangeResult
-from jiuwenswarm.extensions.agentos.registry_watcher import (
+from gateway.extensions.agentos.registry_watcher import (
     NAMESPACE_ENV,
     registry_prefix,
 )
-from jiuwenswarm.extensions.agentos.registry_watcher.client import (
+from gateway.extensions.agentos.registry_watcher.client import (
     RegistryWatcherClient,
 )
-from jiuwenswarm.extensions.agentos.registry_watcher.decode import (
+from gateway.extensions.agentos.registry_watcher.decode import (
     decode_record,
     web_svc_port,
 )
+from jiuwenswarm.common.etcd.client import EtcdKv, EtcdRangeResult
 
 # Registry contract: ``{namespace}/images/image_<sid>`` (no leading slash,
 # ``access_mode`` nested under ``data``).
@@ -221,11 +221,11 @@ async def test_watch_loop_emits_snapshot_then_add_and_delete():
 
 async def test_watch_loop_repulls_after_stream_ends(monkeypatch):
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.agentos.registry_watcher.client._CONNECT_INITIAL_DELAY",
+        "gateway.extensions.agentos.registry_watcher.client._CONNECT_INITIAL_DELAY",
         0.01,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.agentos.registry_watcher.client._CONNECT_MAX_DELAY",
+        "gateway.extensions.agentos.registry_watcher.client._CONNECT_MAX_DELAY",
         0.02,
     )
     fake = FakeEtcd()

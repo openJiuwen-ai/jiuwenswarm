@@ -11,7 +11,8 @@ pytest process after openjiuwen imports), so the tests pre-cache the real
 module and never exercise the finder during tests.
 
 sdk 模式的内核配置优先级（2026-10-17 起 builder 不再自行缝合）：
-``sdk.config_path`` 直通外部文件 > provider 内置 agent 场景默认装配（裸构造）。
+``memory.builtin.jiuwen.sdk`` 内联的两层命名空间 dict > provider 内置 agent 场景
+默认装配（裸构造）；``sdk.config_path`` 为历史字段，已不再读取。
 """
 
 import pytest
@@ -34,6 +35,7 @@ class _FakeJiuwenRail:
         *,
         user_id="__default__",
         scope_id="__default__",
+        agent_id="jiuwenswarm",
         session_id="",
         session_end_extract=False,
     ):
@@ -41,6 +43,7 @@ class _FakeJiuwenRail:
             "provider": provider,
             "user_id": user_id,
             "scope_id": scope_id,
+            "agent_id": agent_id,
             "session_id": session_id,
             "session_end_extract": session_end_extract,
         }
@@ -56,6 +59,8 @@ class _FakeAgentMemoryProvider:
         *,
         base_url=None,
         config_path=None,
+        config_dict=None,
+        security_provider=None,
         api_key="",
         user_id="",
         agent_id="",
@@ -67,6 +72,8 @@ class _FakeAgentMemoryProvider:
         _FakeAgentMemoryProvider.last_init_kwargs = {
             "base_url": base_url,
             "config_path": config_path,
+            "config_dict": config_dict,
+            "security_provider": security_provider,
             "api_key": api_key,
             "user_id": user_id,
             "agent_id": agent_id,
@@ -87,7 +94,12 @@ def _stubs(monkeypatch):
     _FakeAgentMemoryProvider.last_init_kwargs = None
     _FakeAgentMemoryProvider.available = True
 
-    monkeypatch.setattr("openjiuwen.harness.rails.JiuwenMemoryRail", _FakeJiuwenRail)
+    # The pinned openjiuwen may not export JiuwenMemoryRail at all (the builder
+    # then disables the variant). Inject the stub unconditionally so the
+    # builder's lazy from-import resolves it in either dependency state.
+    monkeypatch.setattr(
+        "openjiuwen.harness.rails.JiuwenMemoryRail", _FakeJiuwenRail, raising=False
+    )
 
     # Patch the provider class on the (module-level imported, hence cached)
     # real adapter module — the builder's lazy from-import then resolves the
@@ -98,7 +110,6 @@ def _stubs(monkeypatch):
         "JIUWEN_MEMORY_MODE",
         "JIUWEN_MEMORY_BASE_URL",
         "JIUWEN_MEMORY_API_KEY",
-        "JIUWEN_MEMORY_SDK_CONFIG_PATH",
     ):
         monkeypatch.delenv(env, raising=False)
     yield
@@ -151,43 +162,39 @@ def test_http_mode_builds_network_provider():
 # ---------------------------------------------------------------------------
 
 def test_sdk_bare_uses_provider_builtin_default():
-    """sdk + 空 config_path：不传配置文件，provider 自填内置 agent 默认装配。"""
+    """sdk + 无内联 sdk dict：provider 自填内置 agent 默认装配。"""
     rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk"}))
     assert isinstance(rail, _FakeJiuwenRail)
     init = _FakeAgentMemoryProvider.last_init_kwargs
-    assert init["config_path"] is None  # provider 端走内置默认
+    assert init["config_dict"] is None  # provider 端走内置默认
+    assert init["config_path"] is None
     assert not init["base_url"]
+    assert init["security_provider"] is not None  # mem2.0 进程内身份 fail-closed
     assert _FakeJiuwenRail.last_args["user_id"] == "__default__"
     assert _FakeJiuwenRail.last_args["session_id"] == ""
 
 
-def test_sdk_custom_config_path_passthrough(tmp_path):
-    custom = tmp_path / "serve-doc.yml"
-    custom.write_text("globals:\n  write_document: true\n", encoding="utf-8")
+def test_sdk_inline_config_dict_passthrough():
+    """sdk + 内联 sdk dict：整份 dict 直传 provider（config_path 被忽略）。"""
     rail = jrb.build_jiuwen_memory_rail(
-        _cfg({"mode": "sdk", "sdk": {"config_path": str(custom)}})
+        _cfg({"mode": "sdk", "sdk": {"globals": {"llm_model": "inline-model"}}})
     )
     assert isinstance(rail, _FakeJiuwenRail)
     init = _FakeAgentMemoryProvider.last_init_kwargs
-    assert init["config_path"] == str(custom)
+    assert init["config_path"] is None
     assert not init["base_url"]
+    passed = init["config_dict"]
+    assert passed["globals"]["llm_model"] == "inline-model"
+    # 空凭证字段就地填入 jiuwenswarm 真源（可能为空串），不破坏内联值
+    assert "llm_api_key" in passed["globals"]
+    assert "config_path" not in passed
 
 
-def test_sdk_custom_config_path_env_override(tmp_path, monkeypatch):
-    custom = tmp_path / "kernel.yml"
-    custom.write_text("globals: {}\n", encoding="utf-8")
-    monkeypatch.setenv("JIUWEN_MEMORY_SDK_CONFIG_PATH", str(custom))
-    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk"}))
+def test_sdk_agent_name_overrides_agent_id():
+    """运行 agent name 优先作为 scope.agent 轴。"""
+    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk", "agent_id": "cfg-agent"}), agent_name="run-agent")
     assert isinstance(rail, _FakeJiuwenRail)
-    assert _FakeAgentMemoryProvider.last_init_kwargs["config_path"] == str(custom)
-
-
-def test_sdk_custom_config_path_missing_returns_none(tmp_path):
-    missing = tmp_path / "nope.yml"
-    rail = jrb.build_jiuwen_memory_rail(
-        _cfg({"mode": "sdk", "sdk": {"config_path": str(missing)}})
-    )
-    assert rail is None
+    assert _FakeJiuwenRail.last_args["agent_id"] == "run-agent"
 
 
 # ---------------------------------------------------------------------------
@@ -226,23 +233,19 @@ def test_fingerprint_builtin_default_is_constant_marker():
     assert "builtin-default" in fp
 
 
-def test_fingerprint_distinguishes_builtin_and_file(tmp_path):
-    custom = tmp_path / "kernel.yml"
-    custom.write_text("globals: {a: 1}\n", encoding="utf-8")
+def test_fingerprint_distinguishes_builtin_and_inline_dict():
     bare = jrb.jiuwen_builtin_config_fingerprint(_cfg({"mode": "sdk"}))
-    file_fp = jrb.jiuwen_builtin_config_fingerprint(
-        _cfg({"mode": "sdk", "sdk": {"config_path": str(custom)}})
+    inline_fp = jrb.jiuwen_builtin_config_fingerprint(
+        _cfg({"mode": "sdk", "sdk": {"globals": {"a": 1}}})
     )
-    assert bare != file_fp
+    assert bare != inline_fp
 
 
-def test_fingerprint_sensitive_to_custom_config_content(tmp_path):
-    custom = tmp_path / "kernel.yml"
-    custom.write_text("globals: {a: 1}\n", encoding="utf-8")
-    cfg = _cfg({"mode": "sdk", "sdk": {"config_path": str(custom)}})
+def test_fingerprint_sensitive_to_inline_dict_content():
+    cfg = _cfg({"mode": "sdk", "sdk": {"globals": {"a": 1}}})
     base = jrb.jiuwen_builtin_config_fingerprint(cfg)
     assert jrb.jiuwen_builtin_config_fingerprint(cfg) == base  # stable
-    custom.write_text("globals: {a: 2}\n", encoding="utf-8")  # 内容变化
+    cfg["memory"]["builtin"]["jiuwen"]["sdk"]["globals"]["a"] = 2  # 内容变化
     assert jrb.jiuwen_builtin_config_fingerprint(cfg) != base
 
 
