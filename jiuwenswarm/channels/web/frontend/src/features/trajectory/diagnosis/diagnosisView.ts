@@ -487,6 +487,25 @@ export function skillSuggestionText(judge: Pick<EvolutionJudge, 'suggestion'>): 
 }
 
 /**
+ * Text for the composer from the chosen skill suggestions.
+ * One skill is the advice alone. Several are headed by the skill name so each block stays tied to its skill.
+ */
+export function skillBatchFillText(
+  judges: readonly Pick<EvolutionJudge, 'id' | 'target' | 'suggestion'>[],
+  prefix: string,
+): string {
+  const blocks = judges.flatMap((judge) => {
+    const body = skillSuggestionText(judge);
+    if (body === '') return [];
+    if (judges.length === 1) return [body];
+    const name = (judge.target ?? '').trim() || judge.id;
+    return [`## ${name}\n\n${body}`];
+  });
+  if (blocks.length === 0) return prefix;
+  return `${prefix}\n\n${blocks.join('\n\n')}`;
+}
+
+/**
  * Break an evaluator comment into the points it makes, one per line or per full-width semicolon.
  * Only those two break a comment, so text that merely contains `;` (commands, code) stays whole.
  */
