@@ -9,6 +9,8 @@ from urllib.parse import urlsplit
 
 import unicodedata
 
+from .citation_links import iter_citations
+
 logger = logging.getLogger(__name__)
 
 TEXT_READ_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
@@ -100,7 +102,6 @@ INDENTED_HTML_BLOCK_END_RE = re.compile(
 )
 SENTENCE_END_RE = re.compile(r"[。！？?!…]$")
 
-CITATION_RE = re.compile(r"\[\[(\d+)\]\]\((https?://[^\s)]+(?:\([^\s)]+\)[^\s)]*)*)\)")
 CHECKED_CITATION_RE = re.compile(
     r"\[\s*checked_citation:\s*\d+\s*\](\[\[\d+\]\]\((?:[^()]|\([^()]*\))*\))"
 )
@@ -259,16 +260,19 @@ def replace_citations(text: str) -> str:
         - URLs are HTML-escaped for security
         - Removes whitespace before <sup class="citation"> tags
     """
-    def _repl(match: re.Match[str]) -> str:
-        idx, url = match.group(1), match.group(2).strip()
-        safe_url = html.escape(url, quote=True)
-        return (
+    parts: list[str] = []
+    cursor = 0
+    for citation in iter_citations(text):
+        parts.append(text[cursor:citation.start])
+        safe_url = html.escape(citation.url, quote=True)
+        parts.append(
             f'<sup class="citation">'
-            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">[{idx}]</a>'
+            f'<a href="{safe_url}" target="_blank" rel="noopener noreferrer">[{citation.index}]</a>'
             f"</sup>"
         )
-
-    text = CITATION_RE.sub(_repl, text)
+        cursor = citation.end
+    parts.append(text[cursor:])
+    text = "".join(parts)
     return re.sub(r'[ \t]+(<sup class="citation">)', r"\1", text)
 
 
@@ -278,11 +282,19 @@ def strip_internal_citation_markers(text: str) -> str:
 
 
 def replace_citations_with_markdown_links(text: str) -> str:
-    def _repl(match: re.Match[str]) -> str:
-        idx, url = match.group(1), match.group(2).strip()
-        return rf"[\[{idx}\]]({url})"
-
-    return CITATION_RE.sub(_repl, text)
+    parts: list[str] = []
+    cursor = 0
+    for citation in iter_citations(text):
+        parts.append(text[cursor:citation.start])
+        # Keep the original destination syntax, including Markdown escapes.
+        parts.append(
+            text[citation.start:citation.end].replace(
+                f"[[{citation.index}]]", rf"[\[{citation.index}\]]", 1
+            )
+        )
+        cursor = citation.end
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 def _is_pipe_table_delimiter_line(line: str) -> bool:

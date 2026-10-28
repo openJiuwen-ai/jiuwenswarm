@@ -14,6 +14,9 @@ from markdown_it.common.entities import entities
 from markdown_it.common.utils import fromCodePoint, isValidEntityCode
 from markdown_it.token import Token
 
+from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.citation_links import (
+    parse_citation,
+)
 from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.cjk_friendly_emphasis import (
     apply_cjk_friendly_rules,
 )
@@ -280,7 +283,6 @@ _LIST_MARKER = re.compile(r"^[ \t]*(?P<marker>[-+*]|\d+[.)])(?=[ \t])")
 _LIST_PREFIX = re.compile(r"^[ \t]*(?:[-+*]|\d+[.)])[ \t]+")
 _HEADING_PREFIX = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+")
 _HEADING_SUFFIX = re.compile(r"(?:[ \t]+#+)?[ \t]*")
-_CITATION = re.compile(r"\[\[(?P<number>\d+)\]\]\((?P<href>https?://[^\s)]+)\)")
 _INTERNAL_LINK_SOURCE = re.compile(
     r"(?<!!)\[[^\]\r\n]*\]\(\s*(?P<destination>#[^\s)>]+)"
     r"(?:\s+(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|\([^\r\n)]*\)))?\s*\)"
@@ -533,17 +535,17 @@ class _InlineScanner:
         href = link_open.attrGet("href") or ""
         link_start = self.cursor
 
-        citation = _CITATION.match(self.raw, self.cursor)
+        citation = parse_citation(self.raw, self.cursor)
         if citation is not None:
             expected_citation = (
                 close_index == index + 2
                 and self.children[index + 1].type == "text"
-                and self.children[index + 1].content == f"[{citation.group('number')}]"
-                and href == citation.group("href")
+                and self.children[index + 1].content == f"[{citation.index}]"
+                and href == self.parser.normalizeLink(citation.url)
             )
             if not expected_citation:
                 raise _InlineTopologyError("citation disagrees with inline tokens")
-            self.cursor = citation.end()
+            self.cursor = citation.end
             self._add_anchor("citation", link_start, self.cursor)
             return close_index + 1
 

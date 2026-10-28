@@ -10,9 +10,9 @@ dev-stable 适配说明（相对 0708
   ACTIVE Grant 的 overlay 由本 rail 手工合成（``compose_skill_permissions`` +
   ``get_effective_permissions_config`` + 会话 overlay）后以临时引擎裁决；
 - agent-core ``PermissionResult`` 无 ``risk`` 字段：审批卡不再展示风险等级；
-- 0708 的 ``EXCLUDED_TOOLS_SPAWN`` 注册表在 dev-stable 不存在（子 Agent 工具
-  剔除由 agent-core TaskTool/SubAgentConfig 装配层负责），此处保留同名兜底集合
-  作为防御性深防御，命中即无条件拒绝。
+- ``EXCLUDED_TOOLS_SPAWN``（见 ``leader_exclusive_tools``）由装配期
+  ``excluded_spawn_tools`` 在 GP inject 的 ``tools=`` 参数剔除；本 rail
+  保留同名集合作执行期深防御，命中即无条件拒绝。
 """
 
 from __future__ import annotations
@@ -60,6 +60,9 @@ from openjiuwen.harness.security.skill_authorization.subagent_approval_registry 
     get_subagent_approval_registry,
 )
 
+from jiuwenswarm.agents.harness.common.rails.leader_exclusive_tools import (
+    EXCLUDED_TOOLS_SPAWN,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     get_effective_permissions_config,
     merge_session_permissions_overlay,
@@ -78,6 +81,7 @@ from jiuwenswarm.agents.harness.common.rails.subagent_skill_authorization_rail i
 
 logger = logging.getLogger(__name__)
 
+# EXCLUDED_TOOLS_SPAWN：装配期由 GP inject 的 tools 过滤剔除；此处作执行期深防御。
 
 _SEVERITY = {PermissionLevel.ALLOW: 0, PermissionLevel.ASK: 1, PermissionLevel.DENY: 2}
 
@@ -85,43 +89,6 @@ _SEVERITY = {PermissionLevel.ALLOW: 0, PermissionLevel.ASK: 1, PermissionLevel.D
 _REJECTED_RETRY_TOOL_RESULT = (
     "[PERMISSION_DENIED] 相同的子 Agent 工具调用已被拒绝或审批超时"
 )
-
-#: 主 Agent 专属工具兜底集合（0708 ``EXCLUDED_TOOLS_SPAWN`` 平移）。
-#: dev-stable 装配层已在子 Agent 工具列表中剔除这些工具；此处仅作异常路径
-#: （继承异常、直接注入）下的防御性深防御，命中即无条件拒绝。
-EXCLUDED_TOOLS_SPAWN = frozenset({
-    "spawn_subagent",
-    "send_file_to_user",
-    # 主 Agent 级调度与消息（子 Agent 不应触发）
-    "office_claw_dispatch_agent_task",
-    "office_claw_post_message",
-    "office_claw_get_pending_mentions",
-    "office_claw_ack_mentions",
-    "office_claw_get_thread_context",
-    "office_claw_list_threads",
-    "office_claw_cross_post_message",
-    "office_claw_register_pr_tracking",
-    "office_claw_multi_mention",
-    # 主 Agent 级计划任务
-    "office_claw_list_scheduled_tasks",
-    "office_claw_list_schedule_templates",
-    "office_claw_preview_scheduled_task",
-    "office_claw_register_scheduled_task",
-    "office_claw_set_scheduled_task_enabled",
-    "office_claw_remove_scheduled_task",
-    "office_claw_update_scheduled_task",
-    # 主 Agent 级记忆与反思
-    "office_claw_retain_memory_callback",
-    "office_claw_search_evidence",
-    "office_claw_reflect",
-    # 主 Agent 级会话链追踪
-    "office_claw_list_session_chain",
-    "office_claw_read_session_events",
-    "office_claw_read_session_digest",
-    "office_claw_read_invocation_detail",
-    # 主 Agent 级技能管理
-    "office_claw_list_skills",
-})
 
 _APPROVAL_PREVIEW_MAX_CHARS = 2000
 
@@ -162,7 +129,15 @@ def build_tool_permission_approval_sender() -> ApprovalSender:
         tool_args = payload.get("tool_args")
         skill_name = str(payload.get("skill_name") or "").strip()
         reason = str(payload.get("reason") or "").strip()
-        question_parts = [
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            build_permission_intent_headline,
+        )
+
+        headline = build_permission_intent_headline(tool_name, tool_args)
+        question_parts = []
+        if headline:
+            question_parts += [headline, "\n\n"]
+        question_parts += [
             f"**工具 `{tool_name}` 需要授权才能执行**\n\n",
             f"> 发起方：子 Agent `{request.agent_scope_id}`"
             f"（当前 Skill：`{skill_name}`）",

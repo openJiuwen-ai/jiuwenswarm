@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -20,7 +20,7 @@
 ## 装配关系（一句话）
 
 入口是 `config.get_config()`：慢路径先向 `config_provider`（企业注入，fail-open 回退
-Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `resolve_env_vars` 解析
+Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `resolve_config_env_vars` 解析
 `${VAR}`——变量值经 `local_env_config` 的 tip/overlay 读取，而 tip 写入反向失效 config
 的 ns 缓存；`hooks_config` / `kv_cache_affinity_config` 是 config 树特定段的 schema /
 规则消费者；`http_proxy_config` 消费 local_env_config 读代理；`mode_matrix` 组合
@@ -69,12 +69,26 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 - **N14 work_mode 正交**：work_mode（work 办公 / code 工程）与 mode 正交；Web 默认
   `work`、TUI 默认 `code`；虚拟默认项目 ID：work → `default`、code → `default_code`；
   `normalize_work_mode` 宽松（非法回落 default）仅限迁移/兜底，公开入口走严格校验。
+- **N15 OfficeClaw 显式 Flash**：前台聊天与会话创建由请求 `mode=flash` 选择
+  FlashAdapter，普通 Agent 请求不受 `flash.enabled` 隐式转换影响；其它渠道与后台
+  保留原规则。`flash` 保留独立 canonical，并纳入单 Agent 轨迹白名单；尚未实现的
+  `flash.*` 在此入口拒绝。续接结合已存 `mode` 与 `adapter_mode` 恢复，保证前台准备与租户池二次解析一致；活跃 Plan 与中断归属优先于新的默认模式。
+
+- **N16 Flash 配置占位符**：模板的 `flash.enabled` 与
+  `flash.skill_selection.enabled` 分别引用 `${JIUWENSWARM_FLASH_ENABLED:-false}`
+  与 `${JIUWENSWARM_FLASH_SKILL_SELECTION_ENABLED:-false}`；两变量属于 Track A，
+  沙箱启动注入后经统一配置加载解析，`get_config()` 返回布尔值，消费方不再直读环境。
+  旧 YAML / provider 中的布尔值在运行时作为同名占位符的默认值，环境变量可双向覆盖；
+  未注入时保留原布尔配置。非法字符串关闭开关，不改变其它字段的字符串解析语义。
+  配置文件、实例创建/热更新快照及预热均通过 `resolve_config_env_vars` 统一解析。
+  原始 YAML、合并缓存及 provider 输入保持不变；重启或清理配置缓存后重新解析。
+  N15 的 OfficeClaw 显式模式与既有会话绑定不受默认开关替代。
 
 ## 接口契约
 
 | 模块 | 关键符号 | 语义要点 |
 |---|---|---|
-| `config.py`（~2500 行） | `get_config` / `get_config_raw` / `get_merged_config_dict` / `resolve_env_vars` / `set_config` / `update_config` / `clear_config_cache` / `CONFIG_YAML_PATH` | N1–N4；各配置段（permissions/models/mcp/teams/hooks）读写 API |
+| `config.py`（~2500 行） | `get_config` / `get_config_raw` / `get_merged_config_dict` / `resolve_env_vars` / `resolve_config_env_vars` / `set_config` / `update_config` / `clear_config_cache` / `CONFIG_YAML_PATH` | N1–N4；各配置段（permissions/models/mcp/teams/hooks）读写 API |
 | `config_provider.py` | `ConfigProvider`（Protocol）/ `register/get/reset_config_provider` / `DefaultConfigProvider` / `AgentConfigContext/Result` / `apply_enterprise_mcp` | N9；配置源由 `JIUWENSWARM_CONFIG_SOURCE` 或 `config.source` 决定 |
 | `path_provider.py` | `PathCategory`（~20 类目录）/ `PathProvider`（Protocol）/ `register/get/reset_path_provider` / `current_path_context` / `bind_path_session_id` | 进程级单例 provider；请求身份 task-local（ContextVar） |
 | `local_env_config.py`（~1340 行） | `SPAWN_ENV_KEYS` / `BUSINESS_MIRROR_KEYS` / `get_local_config` / `read_env[_if_set]` / `set_os_environ` / `export_agent_environ` / `bind_agent_env_ns` / `bind_task_env_overlay` / `effective_tip` | N5–N8 |

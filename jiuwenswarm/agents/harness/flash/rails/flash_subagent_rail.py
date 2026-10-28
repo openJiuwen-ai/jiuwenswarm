@@ -210,6 +210,11 @@ class FlashSubagentRail(SubagentRail):
         这里主动构造 ``SlimSysOperationRail()`` 传入，确保 gp 的文件面
         与主代理一致（FlashReadFileTool/FlashWriteFileTool 等）。构造
         失败时返回 None，工厂 fallback 到 stock（降级可用）。
+
+        刻意不在此挂 ``SubagentPermissionRail``：该 rail 需要
+        ``agent_scope_id`` / session，只在 ``create_subagent`` 授权装配时
+        才有；冷启动 inject 阶段尚无子会话。主 Agent 专属工具依赖装配期
+        ``filter_excluded_spawn_tools``（及 factory inject patch）剔除。
         """
         try:
             from jiuwenswarm.agents.harness.flash import SlimSysOperationRail
@@ -245,6 +250,10 @@ class FlashSubagentRail(SubagentRail):
         if not cfg_rails:
             cfg_rails = self._build_subagent_rails()
 
+        from jiuwenswarm.agents.harness.common.tools.subagent_executor.excluded_spawn_tools import (
+            filter_excluded_spawn_tools,
+        )
+
         try:
             specs = _inject_general_purpose_subagent(
                 existing,
@@ -252,7 +261,8 @@ class FlashSubagentRail(SubagentRail):
                 resolved_language=self._resolve_language(),
                 rails=cfg_rails,
                 system_prompt=getattr(cfg, "system_prompt", None),
-                tools=getattr(cfg, "tools", None),
+                # 子 Agent 不得继承 send_file_to_user 等主 Agent 专属工具。
+                tools=filter_excluded_spawn_tools(getattr(cfg, "tools", None)),
                 mcps=None,
                 model=getattr(cfg, "model", None),
                 skills=None,

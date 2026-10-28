@@ -137,6 +137,48 @@ def _run_unary(dp, server, request, *, lock=None) -> FakeWs:
     return ws
 
 
+def test_tenant_stream_stops_when_flush_send_fails(dp, server, monkeypatch, caplog):
+    """尾包写出失败时不得再打「流式响应完成」，与 agent 路径一致。"""
+    req = _request(stream=True, session_id="s-flush-fail")
+    checked = {"exit": False}
+
+    class _Pool:
+        async def process_message_stream(self, request):  # noqa: ANN001
+            yield _chunk(request.request_id, "头")
+            yield _chunk(request.request_id, "尾")
+
+    async def _tenant_prepare(*_a, **_k):  # noqa: ANN002
+        return ("agent", None, object())
+
+    async def _check_exit(*_a, **_k):  # noqa: ANN002
+        checked["exit"] = True
+
+    from jiuwenswarm.server.transports.sink import WSSink
+
+    original = WSSink.send_chunk
+
+    async def _send(self, chunk, *, sequence, response_id=None):  # noqa: ANN001
+        payload = chunk.payload or {}
+        if payload.get("content") == "尾":
+            return False
+        return await original(self, chunk, sequence=sequence, response_id=response_id)
+
+    monkeypatch.setattr(dp, "_uses_tenant_pool", lambda _r: True)
+    monkeypatch.setattr(server, "_tenant_pool", lambda: _Pool())
+    monkeypatch.setattr(dp, "_prepare_tenant_code_mode_chat_turn", _tenant_prepare)
+    monkeypatch.setattr(dp, "_check_post_process_plan_exit", _check_exit)
+    monkeypatch.setattr(WSSink, "send_chunk", _send)
+
+    with caplog.at_level("INFO", logger="jiuwenswarm.server.handlers._default"):
+        ws = _run_stream(dp, server, req)
+
+    dumped = json.dumps(ws.sent, ensure_ascii=False)
+    assert "头" in dumped
+    assert "尾" not in dumped
+    assert "流式响应完成" not in caplog.text
+    assert checked["exit"] is True
+
+
 def test_stream_emits_ordered_chunks_and_completes(dp, server, monkeypatch):
     req = _request(stream=True)
     _install_agent(dp, monkeypatch, StubAgent([

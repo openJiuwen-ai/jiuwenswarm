@@ -1,9 +1,9 @@
 /**
  * Plan 模式开关（多 session 版本）。
  *
- * 与 Goal 的 armed 不同：Plan 是一个**持续**开关。打开后该会话的每条消息都用
- * `agent.plan` 发送，直到用户主动关闭，或后端在计划执行后推送
- * `plan.mode_exited`。Plan 只对单 agent 开放，集群不提供入口。
+ * 与 Goal 的 armed 不同：Plan 是一个**持续**开关。打开后该会话的每条消息都按
+ * 基础模式拼 `agent.plan` / `team.plan.*` 发送，直到用户主动关闭，或后端在计划
+ * 执行后推送 `plan.mode_exited`。Plan 对单 agent 与集群均开放。
  *
  * 这里刻意保持最小：只有开关本身，不做 GoalBar 式的常驻进度、计时与历史恢复。
  */

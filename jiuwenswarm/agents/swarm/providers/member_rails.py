@@ -67,7 +67,11 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.rails.request_scoped_mcp_tools_rail import (
     RequestScopedMcpToolsRail,
 )
+from jiuwenswarm.agents.harness.team.rails.team_admission_rail import (
+    build_team_admission_rail,
+)
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
+    _build_context_overflow_recovery_rail,
     _build_context_processor_rail,
 )
 
@@ -81,6 +85,8 @@ TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 TEAM_SHARED_SKILL_LINK_REFRESH = "swarm.team_shared_skill_link_refresh"
 TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 CONTEXT_PROCESSOR = "swarm.context_processor"
+CONTEXT_OVERFLOW_RECOVERY = "swarm.context_overflow_recovery"
+TEAM_ADMISSION = "swarm.team_admission"
 PLUGIN_RAILS = "swarm.plugin_rails"
 SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
@@ -600,6 +606,79 @@ def _build_context_processor(
     )
 
 
+class ContextOverflowRecoveryInput(ConstructionInput):
+    """Construction inputs for the context-overflow recovery rail."""
+
+    context_engine_enabled: bool = param_field(
+        default=True,
+        description="Whether the context engine is enabled in config (gate).",
+    )
+    max_recovery_attempts: int = param_field(
+        default=3,
+        description="Max consecutive overflow recoveries before circuit-break.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=CONTEXT_OVERFLOW_RECOVERY,
+    description="Recover from LLM context overflow (413) via FullCompact + retry; "
+    "aligned with single-agent ContextOverflowRecoveryRail.",
+    input_model=ContextOverflowRecoveryInput,
+)
+def _build_context_overflow_recovery(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> Any | None:
+    """Build ContextOverflowRecoveryRail when the context engine is enabled."""
+    inp = ContextOverflowRecoveryInput.resolve(params, context)
+    if not inp.context_engine_enabled:
+        return None
+    # Prefer shared builder (fixed attempts=3) for parity with hot-reload path;
+    # allow param override when callers pass an explicit value.
+    if inp.max_recovery_attempts == 3:
+        return _build_context_overflow_recovery_rail()
+    try:
+        from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail import (
+            ContextOverflowRecoveryRail,
+        )
+
+        return ContextOverflowRecoveryRail(max_recovery_attempts=inp.max_recovery_attempts)
+    except Exception as exc:
+        logger.warning(
+            "[SwarmRails] ContextOverflowRecoveryRail create failed: %s",
+            exc,
+        )
+        return None
+
+
+class TeamAdmissionInput(ConstructionInput):
+    """Construction inputs for process-wide Team LLM admission."""
+
+    max_concurrent_llm_calls: int = param_field(
+        default=0,
+        description="Process-wide concurrent Team LLM call ceiling; 0 disables.",
+    )
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=TEAM_ADMISSION,
+    description="Cap concurrent Team member LLM calls process-wide "
+    "(especially when enable_swarmflow is false).",
+    input_model=TeamAdmissionInput,
+)
+def _build_team_admission(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> Any | None:
+    """Build TeamAdmissionRail when max_concurrent_llm_calls > 0."""
+    inp = TeamAdmissionInput.resolve(params, context)
+    return build_team_admission_rail(
+        max_concurrent_llm_calls=inp.max_concurrent_llm_calls,
+    )
+
+
 @harness_element(
     kind=ElementKind.RAIL,
     name=PLUGIN_RAILS,
@@ -646,6 +725,8 @@ __all__ = [
     "TEAM_SHARED_SKILL_LINK_REFRESH",
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
+    "CONTEXT_OVERFLOW_RECOVERY",
+    "TEAM_ADMISSION",
     "PLUGIN_RAILS",
     "SKILL_RETRIEVAL_PROMPT",
     "SYMPHONY_ORCHESTRATION_PROMPT",

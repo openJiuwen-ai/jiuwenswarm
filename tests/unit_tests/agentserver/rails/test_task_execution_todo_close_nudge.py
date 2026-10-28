@@ -284,6 +284,38 @@ def test_skill_protocol_allows_standalone_todo_modify_before_final() -> None:
     assert "when all work is done" not in en
 
 
+def test_skill_protocol_exempts_dedicated_deepresearch_but_keeps_normal_todos() -> None:
+    cn = _build_skill_protocol_section_text("cn")
+    en = _build_skill_protocol_section_text("en")
+    assert "加载 `deepresearch` Skill 之前及同轮" in cn
+    assert "不创建加载、准备、研究或交付 todo" in cn
+    assert "before or alongside loading the `deepresearch` Skill" in en
+    assert "do not create loading, preparation, research, or delivery todos" in en
+    for text in (cn, en):
+        assert "deepresearch_execute" in text
+        assert "fallback.mode=model_research" in text
+        assert "todo_create" in text
+        assert "todo_modify" in text
+    assert "其他技能及同一请求中的其他独立工作仍遵循原 todo 规则" in cn
+    assert "Other skills and independent work in the same request retain the normal todo rules" in en
+    assert "必须先创建 todo 列表" in cn
+    assert "MUST create a todo list" in en
+    assert "按第 2 条的适用规则处理 todo" in cn
+    assert "handle todos under the applicable rules in item 2" in en
+
+
+def test_skill_protocol_exempts_single_deliverable_acceleration_channel() -> None:
+    """单份交付物走 skill_acceleration_exec 时不强制 todo（根因① prompt 冲突）。"""
+    cn = _build_skill_protocol_section_text("cn")
+    en = _build_skill_protocol_section_text("en")
+    assert "加速通道例外" in cn
+    assert "skill_acceleration_exec" in cn
+    assert "不要创建 todo" in cn
+    assert "Acceleration-channel exception" in en
+    assert "do **NOT** create a todo" in en
+    assert "skill_acceleration_exec" in en
+
+
 @pytest.mark.asyncio
 async def test_stream_rail_does_not_emit_todo_close_nudge(monkeypatch) -> None:
     rail = JiuSwarmStreamEventRail()

@@ -104,6 +104,7 @@ def test_roundtrip_chunk_chat_delta() -> None:
             "event_type": "chat.delta",
             "content": "hi",
             "source_chunk_type": "llm_reasoning",
+            "rid": 7,
         },
         is_complete=False,
     )
@@ -113,6 +114,7 @@ def test_roundtrip_chunk_chat_delta() -> None:
     assert back.payload.get("event_type") == "chat.delta"
     assert back.payload.get("content") == "hi"
     assert back.payload.get("source_chunk_type") == "llm_reasoning"
+    assert back.payload.get("rid") == 7
 
 
 def test_roundtrip_chunk_custom_event() -> None:

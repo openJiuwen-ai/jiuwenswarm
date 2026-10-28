@@ -165,6 +165,7 @@ export const A2UIMessageContent = memo(function A2UIMessageContent({
               key={part.key}
               content={part.text}
               className="chat-markdown"
+              isStreaming={isStreaming}
             />
           );
         }

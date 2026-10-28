@@ -32,7 +32,33 @@ EXIT_MISSING_DEPENDENCY = 4
 EXIT_TRAIN_FAILED = 5
 
 _DEFAULT_BACKEND = "jiuwenswarm_cli_exec"
-_ENVS = ("searchqa", "docvqa", "officeqa")
+_ENVS = ("searchqa", "docvqa", "officeqa", "skillsbench")
+
+
+def parse_skill_init_named(value: str) -> tuple[str, str]:
+    """Parse ``name=path`` for ``--skill-init-named`` (name must be non-empty)."""
+    text = str(value or "").strip()
+    if "=" not in text:
+        raise argparse.ArgumentTypeError(
+            f"expected name=path, got {value!r}"
+        )
+    name, path = text.split("=", 1)
+    name = name.strip()
+    path = path.strip()
+    if not name or not path:
+        raise argparse.ArgumentTypeError(
+            f"expected non-empty name and path in name=path, got {value!r}"
+        )
+    return name, path
+
+
+def _skill_inits_from_args(args: argparse.Namespace) -> dict[str, str]:
+    """Build name→path map from repeated ``--skill-init-named`` values."""
+    raw = getattr(args, "skill_init_named", None) or []
+    out: dict[str, str] = {}
+    for name, path in raw:
+        out[name] = path
+    return out
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +74,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="skill_train data root holding *_id_split dirs (SKILL_TRAIN_DATA_ROOT).")
     p.add_argument("--split-dir", default="", help="Explicit id-split directory for --env.")
     p.add_argument("--skill-init", default="", help="Initial SKILL markdown (default: env preset).")
+    p.add_argument(
+        "--skill-init-named",
+        action="append",
+        default=[],
+        type=parse_skill_init_named,
+        metavar="NAME=PATH",
+        help=(
+            "Named initial SKILL.md for joint multi-skill training "
+            "(repeatable; enables TrainLaunchOptions.skill_inits)."
+        ),
+    )
     p.add_argument("--output-dir", default="", help="Training output directory (SKILL_TRAIN_OUTPUT).")
     # optimizer credentials (chat model)
     p.add_argument("--optimizer-model", default="", help="Analyst / optimizer chat model (OPTIMIZER_MODEL).")
@@ -130,10 +167,12 @@ def _resolve_cli_path(explicit: str) -> str:
 def _build_options(args: argparse.Namespace):
     from openjiuwen.agent_evolving.skill_train import TrainLaunchOptions
 
+    skill_inits = _skill_inits_from_args(args)
     return TrainLaunchOptions(
         env_name=args.env,
         target_backend=args.backend,
-        skill_init=args.skill_init,
+        skill_init="" if skill_inits else args.skill_init,
+        skill_inits=skill_inits or None,
         split_dir=args.split_dir,
         data_root=args.data_root,
         output_dir=args.output_dir,
@@ -156,6 +195,40 @@ def _build_options(args: argparse.Namespace):
         jiuwenswarm_chat_mode=args.mode,
         jiuwenswarm_instance_name=args.name,
         jiuwenswarm_trace_to_optimizer=not args.no_trace_to_optimizer,
+    )
+
+
+def _best_skill_paths(output_dir: str, best_skills: dict | None) -> list[str]:
+    """Return relative paths under *output_dir* for persisted best skill files."""
+    root = Path(str(output_dir or ""))
+    skills = dict(best_skills or {})
+    if len(skills) > 1:
+        return [str(root / "best_skills" / name / "SKILL.md") for name in sorted(skills)]
+    if skills:
+        return [str(root / "best_skill.md")]
+    return [str(root / "best_skill.md")] if output_dir else []
+
+
+def _log_training_complete(args: argparse.Namespace, opts, result) -> None:
+    if isinstance(result, dict):
+        logger.info(
+            "Training complete. env=%s backend=%s tasks=%s passed=%s",
+            args.env,
+            opts.resolved_backend(),
+            result.get("n_tasks"),
+            result.get("n_passed"),
+        )
+        return
+    output_dir = getattr(result, "output_dir", "") or ""
+    best_skills = getattr(result, "best_skills", None) or {}
+    paths = _best_skill_paths(output_dir, best_skills if isinstance(best_skills, dict) else None)
+    logger.info(
+        "Training complete. env=%s backend=%s best_score=%.4f output=%s skills=%s",
+        args.env,
+        opts.resolved_backend(),
+        result.best_score,
+        output_dir,
+        ",".join(paths) if paths else output_dir,
     )
 
 
@@ -219,13 +292,7 @@ def run_skill_train(args: argparse.Namespace) -> int:
         logger.debug("traceback", exc_info=True)
         return EXIT_TRAIN_FAILED
 
-    logger.info(
-        "Training complete. env=%s backend=%s best_score=%.4f output=%s",
-        args.env,
-        opts.resolved_backend(),
-        result.best_score,
-        result.output_dir,
-    )
+    _log_training_complete(args, opts, result)
     return 0
 
 

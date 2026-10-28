@@ -6,7 +6,7 @@
 
 import React, { useRef, useEffect, useLayoutEffect, useCallback, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, CheckCircle2, ClipboardList, Copy, Info, Share2, Sparkles, X } from 'lucide-react';
+import { Activity, ArrowRight, CheckCircle2, ClipboardList, Copy, Info, Share2, Sparkles, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
@@ -17,6 +17,7 @@ import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
 import expandIcon from '../../assets/expand.svg';
 import lineUpIcon from '../../assets/lineUp.svg';
+import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import loadSendIcon from '../../assets/load-send.svg';
 import editIcon from '../../assets/edit.svg';
 import deleteIcon from '../../assets/delete.svg';
@@ -38,6 +39,7 @@ import { WorkspaceQuotaBanner } from '../WorkspacePanel/WorkspaceQuotaBanner';
 import { useWorkspaceQuotaEnabled } from '../../features/workspace/useWorkspaceQuotaEnabled';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
+import { turnDiffKey } from '../../features/code-mode/turnChangeState';
 import type { CodeReviewTarget } from '../../features/code-mode/types';
 import {
   canLoadOlderHistory,
@@ -107,6 +109,10 @@ interface ChatPanelProps {
   /** 打开右侧面板并切换到代码审核 Tab */
   onOpenCodeReview?: (target: CodeReviewTarget) => void;
   permissionsEnabled: boolean;
+  /** 心跳面板展开状态：由 App.tsx 统一管理，跟团队/代码审核面板一样占用右侧工作区一栏 */
+  heartbeatPanelOpen?: boolean;
+  /** 切换心跳面板展开状态 */
+  onToggleHeartbeatPanel?: () => void;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** Goal（持续目标）控制，见 GoalBar 组件 */
   onSetGoal?: (sessionId: string, objective: string) => void;
@@ -675,6 +681,8 @@ export function ChatPanel({
   onNavigateToSkills,
   onToggleTeamArea,
   onOpenCodeReview,
+  heartbeatPanelOpen = false,
+  onToggleHeartbeatPanel,
   permissionsEnabled,
   onSavePermission,
   onSetGoal,
@@ -745,10 +753,18 @@ export function ChatPanel({
   const shouldShowChatHeader = hasConversation;
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
+  // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
+  const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const {
     turnsByMessageId: codeTurnsByMessageId,
     loading: codeTurnHistoryLoading,
     reload: reloadCodeTurnHistory,
+    latestTurnKey: latestCodeTurnKey,
+    turnChangeOperation,
+    turnChangeError,
+    turnChangeNotice,
+    discardLatestTurn,
+    redoLatestTurn,
   } = useCodeTurnDiffHistory({
     project: sessionProject,
     sessionId: activeSessionId,
@@ -758,16 +774,37 @@ export function ChatPanel({
   const renderCodeChangesAfterMessage = useCallback((message: Message) => {
     const turns = codeTurnsByMessageId.get(message.id);
     if (!turns?.length) return null;
-    return turns.map(turn => (
-      <CodeChangesCard
-        key={turn.change_set_id || `turn-${turn.turn_index}`}
-        diff={turn}
-        refreshing={codeTurnHistoryLoading}
-        onRefresh={() => void reloadCodeTurnHistory()}
-        onReview={target => onOpenCodeReview?.(target)}
-      />
-    ));
-  }, [codeTurnHistoryLoading, codeTurnsByMessageId, onOpenCodeReview, reloadCodeTurnHistory]);
+    return turns.map(turn => {
+      const turnKey = turnDiffKey(turn);
+      const isLatest = turnKey === latestCodeTurnKey;
+      return (
+        <CodeChangesCard
+          key={turnKey}
+          diff={turn}
+          refreshing={codeTurnHistoryLoading}
+          isLatest={isLatest}
+          isProcessing={isProcessing}
+          operation={isLatest ? turnChangeOperation?.action ?? null : null}
+          operationError={turnChangeError?.turnKey === turnKey ? turnChangeError.message : null}
+          onRefresh={() => void reloadCodeTurnHistory()}
+          onReview={target => onOpenCodeReview?.(target)}
+          onDiscard={() => void discardLatestTurn()}
+          onRedo={() => void redoLatestTurn()}
+        />
+      );
+    });
+  }, [
+    codeTurnHistoryLoading,
+    codeTurnsByMessageId,
+    discardLatestTurn,
+    isProcessing,
+    latestCodeTurnKey,
+    onOpenCodeReview,
+    redoLatestTurn,
+    reloadCodeTurnHistory,
+    turnChangeError,
+    turnChangeOperation,
+  ]);
 
   // 跟踪用户是否正在查看历史消息（不在底部）
   const userScrolledUpRef = useRef(false);
@@ -1125,6 +1162,12 @@ export function ChatPanel({
       onDragOver={handleDesktopFileDragOver}
       onDrop={handleDesktopFileDrop}
     >
+      {turnChangeNotice ? (
+        <div className="code-turn-change-toast" role="status" aria-live="polite">
+          <CheckCircle2 size={17} aria-hidden="true" />
+          <span>{turnChangeNotice}</span>
+        </div>
+      ) : null}
       {shouldShowChatHeader && (
         <div className="chat-panel-header">
           <div className="chat-panel-header__meta">
@@ -1149,9 +1192,21 @@ export function ChatPanel({
                 <Sparkles size={16} strokeWidth={2} />
               </button>
             )}
+            {heartbeatAvailable && (
+              <button
+                type="button"
+                className={`chat-header-icon-btn ${heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
+                onClick={() => onToggleHeartbeatPanel?.()}
+                title={t('heartbeat.panel.title')}
+              >
+                <Activity size={14} strokeWidth={2} />
+              </button>
+            )}
             <button
               type="button"
-              className={`chat-header-icon-btn ${teamAreaExpanded ? 'chat-header-icon-btn--active' : ''}`}
+              className={`chat-header-icon-btn ${teamAreaExpanded && !heartbeatPanelOpen ? 'chat-header-icon-btn--active' : ''}`}
+              data-testid="chat-panel-header-chat-toggle"
+              data-variant="collapse"
               onClick={() => onToggleTeamArea?.(!teamAreaExpanded)}
             >
               <img src={expandIcon} alt="" className="chat-header-icon-btn__icon" />

@@ -1,5 +1,5 @@
 import { webRequest } from '../../services/webClient';
-import type { GitRepoStatus, GitTurnDiff, GitTurnDiffList, ProjectGitDiffStatus } from './types';
+import type { GitCommitResult, GitPushResult, GitRepoStatus, GitTurnDiff, GitTurnDiffList, ProjectGitDiffStatus } from './types';
 
 export const gitClient = {
   status: (projectId: string) =>
@@ -42,6 +42,34 @@ export const gitClient = {
       checkout: true,
       ...(startPoint ? { start_point: startPoint } : {}),
     }),
+
+  commit: (projectId: string, message: string, options: { stageAll?: boolean; paths?: string[]; amend?: boolean; noVerify?: boolean } = {}) =>
+    webRequest<GitCommitResult>(
+      'project.git.commit',
+      {
+        project_id: projectId,
+        message,
+        stage_all: options.stageAll ?? !options.paths,
+        amend: options.amend ?? false,
+        no_verify: options.noVerify ?? false,
+        ...(options.paths ? { paths: options.paths } : {}),
+      },
+      { timeoutMs: 60_000 },
+    ),
+
+  push: (projectId: string, options: { remote?: string; branch?: string; setUpstream?: boolean; force?: boolean; delete?: boolean } = {}) =>
+    webRequest<GitPushResult>(
+      'project.git.push',
+      {
+        project_id: projectId,
+        remote: options.remote ?? 'origin',
+        ...(options.branch ? { branch: options.branch } : {}),
+        set_upstream: options.setUpstream ?? false,
+        force: options.force ?? false,
+        delete: options.delete ?? false,
+      },
+      { timeoutMs: 90_000 },
+    ),
 
   diffStatus: (projectId: string, sessionId: string, options: { includeFiles?: boolean; includeHunks?: boolean } = {}) =>
     webRequest<ProjectGitDiffStatus>('project.git.diff_status', {

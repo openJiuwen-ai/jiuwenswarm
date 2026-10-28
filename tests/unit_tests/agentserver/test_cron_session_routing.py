@@ -16,10 +16,21 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.context import AgentServerServices, RequestContext
 from jiuwenswarm.server.handlers import _default
+from jiuwenswarm.server.handlers import _shared
 from jiuwenswarm.server.runtime import agent_manager as am
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 from jiuwenswarm.server.transports.sink import WSSink
+
+
+@pytest.fixture(autouse=True)
+def _disable_flash_for_cron_routing_tests(monkeypatch):
+    """Keep cron-routing tests independent of the host Flash switch."""
+    monkeypatch.setattr(
+        _shared,
+        "get_config",
+        lambda: {"flash": {"enabled": False}},
+    )
 
 
 def _default_ctx(server, request):

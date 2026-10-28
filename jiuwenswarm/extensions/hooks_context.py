@@ -71,6 +71,34 @@ class SystemPromptHookContext:
 
 
 @dataclass
+class ModelHttpHookContext:
+    """模型 HTTP 出口埋点（``before_model_http``）的扩展回调上下文。
+
+    在模型客户端 ``invoke`` / ``stream`` / ``generate_image`` 组装完请求、真正
+    发出 HTTP 之前触发；工具循环、重试、换模型都经过该出口。扩展往 ``headers``
+    / ``extra_body`` 两个口袋写值，宿主在trigger 返回后按保留键白名单合并进本次请求：
+
+    - ``headers`` 并进 ``custom_headers``（``Authorization``、``x-span-id``
+      扩展写了也丢弃）；
+    - ``extra_body`` 并进请求正文扩展字段（``thinking``、
+      ``enable_thinking``、``reasoning_effort`` 扩展写了也丢弃）；
+    - 未写的口袋保持原样。
+
+    ``api_base`` / ``model_name`` 只读，供扩展自行判断要不要填。
+    """
+
+    api_base: str = ""
+    model_name: str = ""
+    # 扩展可写：并进本次请求 custom_headers
+    headers: dict[str, str] = field(default_factory=dict)
+    # 扩展可写：并进请求正文 extra_body
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ImageArtifactHookContext:
     """图像产物落盘后的扩展回调上下文（兼容旧版扩展）。
 

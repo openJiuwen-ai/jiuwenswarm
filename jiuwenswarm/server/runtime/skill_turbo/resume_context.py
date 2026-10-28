@@ -160,7 +160,8 @@ class ResumeContextManager:
     async def load(self) -> dict[str, Any] | None:
         """从 checkpointer 读取断点上下文。None 表示无可恢复的中断。
 
-        返回语义与原 load_resume_ctx 逐位一致（影响 _try_skill_turbo_resume 分流）。
+        返回语义与原 load_resume_ctx 逐位一致（None 时工具体 resume 分支
+        退化 fresh run_stream——消费方见 skill_turbo_tools.py）。
         """
         if self._session is None:
             logger.warning("[ResumeContextManager] load: session is None")
@@ -250,33 +251,55 @@ class ResumeContextManager:
         logger.info("[ResumeContextManager] clear: cleared sid=%s", self._sid)
 
     async def mark_in_flight(self, resume_ctx: dict[str, Any]) -> None:
-        """标记 resume_ctx 为 in-flight，防重复答案提交触发两次续跑。"""
+        """标记 resume_ctx 为 in-flight，防重复答案提交触发两次续跑。
+
+        使用 isolated 通道强制落盘（与 clear_in_flight 对齐）：避免 post_run
+        主 session 把中断过程中的整份状态写盘。
+        """
         if self._session is None or not isinstance(resume_ctx, dict):
             return
         marked = dict(resume_ctx)
         marked["resume_in_flight"] = True
-        try:
-            await self._session.pre_run(inputs=None)
-        except Exception as e:
-            logger.warning(
-                "[ResumeContextManager] mark_in_flight pre_run failed: sid=%s err=%s",
-                self._sid, e,
-            )
-        try:
-            self._session.update_state({SKILL_TURBO_RESUME_CTX_KEY: marked})
-        except Exception:
-            logger.debug(
-                "[ResumeContextManager] mark_in_flight update_state failed",
-                exc_info=True,
-            )
+        if self._card is None:
+            # 无 card 时降级原 session 落盘（无 isolated 键空间，仍须 post_run 持久化）
+            try:
+                await self._session.pre_run(inputs=None)
+            except Exception as e:
+                logger.warning(
+                    "[ResumeContextManager] mark_in_flight pre_run failed: sid=%s err=%s",
+                    self._sid, e,
+                )
+            try:
+                self._session.update_state({SKILL_TURBO_RESUME_CTX_KEY: marked})
+            except Exception:
+                logger.debug(
+                    "[ResumeContextManager] mark_in_flight (no card) update_state failed",
+                    exc_info=True,
+                )
+                return
+            try:
+                await self._session.post_run()
+            except Exception as e:
+                logger.warning(
+                    "[ResumeContextManager] mark_in_flight post_run failed: sid=%s err=%s",
+                    self._sid, e,
+                )
             return
+        from openjiuwen.core.session.agent import create_agent_session
+
+        isolated = create_agent_session(session_id=self._sid, card=self._card)
+        set_skill_turbo_id(isolated, self._card)
         try:
-            await self._session.post_run()
-        except Exception as e:
-            logger.warning(
-                "[ResumeContextManager] mark_in_flight post_run failed: sid=%s err=%s",
-                self._sid, e,
-            )
+            await isolated.pre_run(inputs=None)
+            isolated.update_state({SKILL_TURBO_RESUME_CTX_KEY: marked})
+        finally:
+            try:
+                await isolated.post_run()
+            except Exception as e:
+                logger.warning(
+                    "[ResumeContextManager] mark_in_flight post_run failed sid=%s err=%s",
+                    self._sid, e,
+                )
 
     async def clear_in_flight(self) -> None:
         """清除 in-flight 标志（resume_ctx 仍在时）。

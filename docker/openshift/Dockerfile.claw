@@ -39,11 +39,6 @@ RUN uv pip install --system \
 ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 RUN python -c "import tiktoken; tiktoken.get_encoding('cl100k_base')"
 
-# symphony extension.yaml 存在才清理依赖
-RUN if [ -f jiuwenswarm/extensions/symphony/extension.yaml ]; then \
-        yq -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml; \
-    fi
-
 ENV HOME=/home/app \
     PATH=/usr/local/bin:$PATH:/home/app/.local/bin
 

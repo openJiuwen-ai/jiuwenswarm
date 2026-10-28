@@ -44,7 +44,6 @@ from jiuwenswarm.common.config import (
     get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_evolution_review_trigger_enabled,
-    get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
     resolve_string_or_list_config,
@@ -106,6 +105,8 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.AVATAR_PROMPT,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
+    registry.CONTEXT_OVERFLOW_RECOVERY,
+    registry.TEAM_ADMISSION,
     registry.PERSONAL_CONTEXT,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
@@ -159,6 +160,8 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_AGENT_MODE,
     registry.STRUCTURED_ASK_USER,
     registry.CONTEXT_PROCESSOR,
+    registry.CONTEXT_OVERFLOW_RECOVERY,
+    registry.TEAM_ADMISSION,
     registry.PERSONAL_CONTEXT,
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
@@ -368,6 +371,22 @@ def _context_processor_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _team_admission_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Attribute params for process-wide Team LLM admission."""
+    from jiuwenswarm.agents.harness.team.rails.team_admission_rail import (
+        resolve_team_admission_limit,
+        resolve_team_section_for_admission,
+    )
+
+    team_key = ""
+    if isinstance(config, dict):
+        team_key = str(config.get("team_name") or "").strip()
+    team_cfg = resolve_team_section_for_admission(config, team_key=team_key or None)
+    return {
+        "max_concurrent_llm_calls": resolve_team_admission_limit(team_cfg),
+    }
+
+
 def _permission_params(config: dict[str, Any]) -> dict[str, Any]:
     """Attribute params for the permission-interrupt rail."""
     return {
@@ -395,6 +414,25 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _llm_retry_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Project adapter retry settings into the serializable member rail spec."""
+    guard = _config_section(config, "execution_guard")
+    retry = _config_section(guard, "llm_retry_rail")
+    params: dict[str, Any] = {
+        "max_retries": retry.get("max_retries", 2),
+        "repeat_min_pattern_chars": retry.get("repeat_min_pattern_chars", 2),
+        "repeat_max_pattern_chars": retry.get("repeat_max_pattern_chars", 64),
+        "repeat_min_count": retry.get("repeat_min_count", 6),
+        "repeat_min_total_chars": retry.get("repeat_min_total_chars", 160),
+        "repeat_window_chars": retry.get("repeat_window_chars", 1024),
+        "single_char_repeat_count": retry.get("single_char_repeat_count", 100),
+        "retry_transient_invoke_errors": retry.get("retry_transient_invoke_errors", True),
+        "notify_user_on_retry": retry.get("notify_user_on_retry", True),
+        "notify_user_on_exhausted": retry.get("notify_user_on_exhausted", True),
+    }
+    return params
+
+
 # Per-element attribute params, keyed by provider name; empty for parameterless.
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.DISABLED_TOOLS: lambda c: {
@@ -403,6 +441,11 @@ _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
         )
     },
     registry.CONTEXT_PROCESSOR: _context_processor_params,
+    registry.CONTEXT_OVERFLOW_RECOVERY: lambda c: {
+        "context_engine_enabled": get_context_engine_enabled(c),
+        "max_recovery_attempts": 3,
+    },
+    registry.TEAM_ADMISSION: _team_admission_params,
     registry.CODE_PROJECT_MEMORY: lambda c: {
         "additional_directories": _additional_directories(c)
     },
@@ -413,6 +456,7 @@ _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.TEAM_PERMISSION_POLICY: lambda c: {
         "permissions_config": _config_section(c, "permissions"),
     },
+    registry.TEAM_MEMBER_LLM_RETRY: _llm_retry_params,
     registry.CODE_CODING_MEMORY: lambda c: {
         "embed_config": _config_section(c, "embed")
     },
@@ -456,6 +500,13 @@ def _tool_params(name: str, config: dict[str, Any]) -> dict[str, Any]:
     """Return attribute params baked into tool *name* (empty when parameterless)."""
     builder = _TOOL_PARAM_BUILDERS.get(name)
     return builder(config) if builder else {}
+
+
+def _llm_retry_enabled(config: dict[str, Any]) -> bool:
+    """Reuse the adapter's existing retry guard switch for team members."""
+    guard = _config_section(config, "execution_guard")
+    retry = _config_section(guard, "llm_retry_rail")
+    return retry.get("enabled", False) is True
 
 
 def _team_common_rail_names(role: str) -> tuple[str, ...]:
@@ -515,6 +566,13 @@ def _build_team_capability_specs(
         RailSpec(type=name, params=_rail_params(name, config))
         for name in _team_common_rail_names(role)
     ]
+    if role in {"leader", "teammate"} and _llm_retry_enabled(config):
+        rails_specs.append(
+            RailSpec(
+                type=registry.TEAM_MEMBER_LLM_RETRY,
+                params=_rail_params(registry.TEAM_MEMBER_LLM_RETRY, config),
+            )
+        )
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
 
@@ -599,6 +657,13 @@ def _build_code_capability_specs(
         RailSpec(type=name, params=_rail_params(name, config))
         for name in _code_base_rail_names(role)
     ]
+    if role in {"leader", "teammate"} and _llm_retry_enabled(config):
+        rails_specs.append(
+            RailSpec(
+                type=registry.TEAM_MEMBER_LLM_RETRY,
+                params=_rail_params(registry.TEAM_MEMBER_LLM_RETRY, config),
+            )
+        )
 
     if is_team_plan_leader:
         rails_specs.append(RailSpec(type=registry.TEAM_PLAN_APPROVAL))

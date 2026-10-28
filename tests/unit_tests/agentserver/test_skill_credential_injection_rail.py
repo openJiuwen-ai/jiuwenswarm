@@ -103,18 +103,25 @@ class TestCredentialInjection(unittest.TestCase):
     @patch(
         "jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail.get_session_active_skill"
     )
-    def test_does_not_overwrite_existing_env_keys(self, mock_get_skill):
+    def test_config_value_overrides_model_env_keys(self, mock_get_skill):
+        # 配置权威覆盖：模型 env 已带的凭据 key（典型为历史回写后被模仿
+        # 抄写的陈旧值）一律以当前配置值覆盖，防凭据轮换后旧值透传执行；
+        # 非技能凭据 key 的模型 env 项不受影响
         mock_get_skill.return_value = "hwocr"
         rail = self._make_rail(
             skill_envs={"hwocr": {"HWOCR_AK": "from_rail", "HWOCR_SK": "from_rail"}}
         )
         ctx = self._make_ctx(
-            tool_args={"command": "echo hello", "env": {"HWOCR_AK": "user_provided"}}
+            tool_args={
+                "command": "echo hello",
+                "env": {"HWOCR_AK": "stale_from_history", "OTHER_KEY": "keep"},
+            }
         )
         asyncio.run(rail.before_tool_call(ctx))
         env = ctx.inputs.tool_args["env"]
-        assert env["HWOCR_AK"] == "user_provided"
+        assert env["HWOCR_AK"] == "from_rail"
         assert env["HWOCR_SK"] == "from_rail"
+        assert env["OTHER_KEY"] == "keep"
 
     @patch(
         "jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail.get_session_active_skill"
@@ -323,7 +330,7 @@ class TestSkillGateAndFallback(unittest.TestCase):
         return SkillCredentialInjectionRail(
             skill_envs={
                 "hwocr": {"HWOCR_AK": "ak", "HWOCR_SK": "sk"},
-                "ppt-creation": {"PPT_TOKEN": "tok"},
+                "ppt-creation": {"PPT_TOKEN": "tok", "PPT_SK": "sk"},
             }
         )
 
@@ -392,18 +399,22 @@ class TestSkillGateAndFallback(unittest.TestCase):
         "jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail.get_session_active_skill"
     )
     def test_escape_hatch_explicit_env_allows(self, mock_get_skill):
-        # 逃生口：显式带了目标技能凭据 key → 放行且不注入 active 凭据
+        # 逃生口：显式带了目标技能凭据 key → 放行且不注入 active 凭据；
+        # 配置权威覆盖：只刷新模型已带入的同名 key（陈旧值 → 当前配置值），
+        # 不补全模型未提供的 key（跨技能隔离不变）
         mock_get_skill.return_value = "hwocr"
         rail = self._make_rail()
         ctx = self._make_ctx(
             tool_args={
                 "command": "python3 /opt/skills/ppt-creation/scripts/build.py",
-                "env": {"PPT_TOKEN": "explicit"},
+                "env": {"PPT_TOKEN": "stale_explicit", "OTHER_KEY": "keep"},
             }
         )
         asyncio.run(rail.before_tool_call(ctx))
         assert not ctx.extra.get("_skip_tool")
-        assert ctx.inputs.tool_args["env"]["PPT_TOKEN"] == "explicit"
+        assert ctx.inputs.tool_args["env"]["PPT_TOKEN"] == "tok"
+        assert ctx.inputs.tool_args["env"]["OTHER_KEY"] == "keep"
+        assert "PPT_SK" not in ctx.inputs.tool_args["env"]
         assert "HWOCR_AK" not in ctx.inputs.tool_args["env"]
 
     @patch(

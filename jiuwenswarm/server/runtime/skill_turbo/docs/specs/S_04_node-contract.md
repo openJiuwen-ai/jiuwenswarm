@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_04 / node-contract |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：plan_node.py / json_utils.py / thinking_seam.py；executor.py 的回调绑定、LLM 与 ask_user 实现侧） |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无（首批 specs，由现状代码逆向固化） |
+| 最近一次修订日期 | 2026-10-23 |
+| 关联 feature | [[F_02]]（`_needs_fallback` 标志检测 + 回调槽 12→11）；[[F_04]]（python_cmd 注入契约）；关联 bugfix [[B_02]]（异常通道 guard 置位 + 标志剥离解耦） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
 
@@ -19,8 +19,8 @@
 PlanNode 基类契约，**双视角**：技能代码作者视角（怎么写节点才合法）+ 引擎实现视角（模板方法与回调注入的语义）：
 
 - **契约 v1 全文 11 条**（plan_node.py 文件头 docstring）逐条展开，含违反后果与重点条款展开。
-- 类结构：`__init__` 参数与 depth 传播、**12 个回调槽**全表、`set_runtime_callbacks` 递归传播、group / leaf 节点差异。
-- `run` / `run_stream` 模板方法的异常三分流语义。
+- 类结构：`__init__` 参数与 depth 传播、**11 个回调槽**全表、`set_runtime_callbacks` 递归传播、group / leaf 节点差异。
+- `run` / `run_stream` 模板方法的异常三分流语义 + 正常返回后的 `_needs_fallback` 标志检测。
 - `execute_subplan*` / `skip_subplan*` 钩子序列与 **after 触发条件矩阵**（成功/异常/AbortError/skip 四态）。
 - plan_name / display_names 双层命名机制；inputs / outputs 约定（含 `__artifact__` / `_partial_artifact`）；**节点能力面**（可访问/不可访问）。
 - LLM 调用契约（call_llm / stream_llm / stream_llm_collect 签名 + executor 侧实现要点）。
@@ -46,8 +46,8 @@ PlanNode 基类契约，**双视角**：技能代码作者视角（怎么写节�
 1. **N1 模板方法封闭**：`run` / `run_stream`（plan_node.py `PlanNode.run` / `PlanNode.run_stream`）是框架模板方法，skill_code 禁止覆盖（契约第 2 条）；异常捕获、AbortError/FallbackContractError 直通与 fallback 入口统一归框架。
 2. **N2 异常分流顺序固定**：模板方法内 `except AbortError: raise` → `except FallbackContractError: raise` → `except Exception` 进 fallback 回调（回调缺失则 raise）。顺序重排即破坏 HITL 与终止性降级。
 3. **N3 AbortError 不触发 after**：`execute_subplan` / `execute_subplan_stream` 的 AbortError 分支不调 `_after_subplan_execute`——task 保持 in_progress 供 resume 重入，这是中断快照能正确续跑的前提（[[S_06]]）。
-4. **N4 失败必须上抛**：节点吞异常 = 剥夺框架 fallback 机会（契约第 8 条）；节点内不得以返回值表达基础设施级失败。
-5. **N5 回调 fail-fast**：12 个回调槽任一未初始化即调用 → `RuntimeError("PlanNode xxx 回调未初始化")`；不静默降级、不返回默认值——绑定顺序错误必须在首次调用当场暴露。
+4. **N4 失败必须上抛**：节点吞异常 = 剥夺框架 fallback 机会（契约第 8 条）；节点内不得以返回值表达基础设施级失败。**例外**：三态节点（ok/partial/failed）以结果 dict 携带 `_needs_fallback=True` 表达"已尽力执行但产物不可用、需子代理修复"——模板方法在正常返回后检测标志转入与 raise 异常同一 fallback 通道；`_fallback_triggered` 防循环 guard 保证同节点一次 run 至多触发一次，**异常通道与标志通道进入 fallback 前均置位 guard**（[[B_02]]）；标志剥离与 guard 判定解耦——guard 拒绝时同样剥离，防内部协议键泄入返回值 / after 回调。父节点经公开访问器 `try_begin_fallback()` / `fallback_stream_callback` 判定，禁直访受保护成员。
+5. **N5 回调 fail-fast**：11 个回调槽任一未初始化即调用 → `RuntimeError("PlanNode xxx 回调未初始化")`；不静默降级、不返回默认值——绑定顺序错误必须在首次调用当场暴露。
 6. **N6 回调注入递归全树**：`set_runtime_callbacks` 由 executor 对 root 调一次，逐层传播到全部后代节点；不存在"只绑 root 不绑子树"的合法形态。
 7. **N7 深度语义**：root depth=0、二层=1（`_update_subplans_depth` 构造后迭代传播，只访问公开属性 `depth` / `sub_plans`）；**只有 depth==1 的子节点参与 task 事件发射与 resume 跳过判定**（executor 侧消费 depth）。
 8. **N8 plan_name 约定唯一**：同一 skill 内唯一（软约束，引擎不静态强制）；它是日志、trace、`node_execution_order`、fallback 定位、task_id 派生、节点产物 key 的共同锚——重名即互相覆盖。
@@ -73,7 +73,7 @@ PlanNode 基类契约，**双视角**：技能代码作者视角（怎么写节�
 | 5 | 复合节点遍历 `self.sub_plans` 并 `await child.run(ctx)`（或 `execute_subplan*` 带钩子版本）完成调度 | executor 不做拓扑调度；遍历顺序/循环/并发全部由 skill_code 决定 |
 | 6 | 外部能力仅可通过 `self.has_tool / call_tool / call_llm / stream_llm` | 配套通道还有 extract_json / log / 编排 API，全量见能力面表（N10） |
 | 7 | 节点禁止直接 import `os/subprocess` 等系统模块 | validator 白名单强制（[[S_03]]）；违反 → 注册期整技能跳过，用户视角"无匹配 skill" |
-| 8 | 节点失败应直接 raise，框架自动触发 fallback；**不要在节点内吞异常** | 吞异常 = fallback 不触发（N4），失败被静默洗白 |
+| 8 | 节点失败应直接 raise，框架自动触发 fallback；**不要在节点内吞异常**。三态节点（ok/partial/failed）可用结果 dict 携带 `_needs_fallback=True` 表达"硬失败需修复"（引擎转为同一 fallback 通道，见 N4） | 吞异常 = fallback 不触发（N4），失败被静默洗白 |
 | 9 | 每个 skill_code 必须有入口文件，且暴露 `root: PlanNode` | 缺失走 `_extract_root_node` 脆弱兜底（N9）；多实例无显式 root → 校验错误 |
 | 10 | `plan_name` 同一 skill 内唯一 | 唯一性是日志/trace/fallback 定位/task 派生/产物 key 的前提（N8） |
 | 11 | 编排类节点应覆盖 `validate_fallback_success(inputs, contract_result) -> str \| None` | 引擎在 fallback 契约自证通过后、结果写回 inputs 前强制调用；返回拒绝原因 str 触发终止性降级，None 放行；实现异常同样 fail-closed（N15）。参考实现：技能侧仓 pptx-craft 的 `turbo_codes/ppt/ppt_gen_root.py` |
@@ -96,7 +96,10 @@ async for chunk in self.execute_subplan_stream(child, inputs): yield chunk   # c
 # 反模式 1（吞异常返回错误 dict）：fallback 永不触发，错误混入业务流
 # 反模式 2（宽泛捕获只打日志）：同上，且吞掉 AbortError → HITL 失效
 # 正确：业务性"失败态"用结果 dict 表达（export_status/status 键，见 outputs 约定）；
-#       基础设施失败直接 raise（含 BashExecError / 解析 ValueError 等）
+#       基础设施失败直接 raise（含 BashExecError / 解析 ValueError 等）；
+#       节点已尽力执行但产物不可用、需要子代理修复时，结果 dict 携带
+#       _needs_fallback=True（run）或末 chunk 携带（execute_subplan_stream）——
+#       引擎检测标志转入与 raise 同一的 fallback 通道（N4），并剥离标志防循环
 ```
 
 **第 11 条（validate_fallback_success）的调用时机**：
@@ -111,7 +114,7 @@ async for chunk in self.execute_subplan_stream(child, inputs): yield chunk   # c
 
 校验对象是**终端交付物真实存在**（如 PPTX 文件已产出且 delivery_status 达标），不是子代理的自述文本；fail-closed（N15）意味着钩子内部抛异常也按拒绝处理。
 
-### 类结构与回调槽（12 个）
+### 类结构与回调槽（11 个）
 
 ```python
 class PlanNode(ABC):
@@ -120,7 +123,7 @@ class PlanNode(ABC):
 ```
 
 - depth 由 `_update_subplans_depth` 在构造后迭代传播（root=0、二层=1、三层=2…）。
-- 12 个回调槽初始为 None，由 `set_runtime_callbacks`（executor 经 `_bind_node_callbacks` 调用）注入并递归传播：
+- 11 个回调槽初始为 None，由 `set_runtime_callbacks`（executor 经 `_bind_node_callbacks` 调用）注入并递归传播：
 
 | # | 槽位属性 | set_runtime_callbacks 形参 | executor 侧实现 | 用途 |
 |---|---|---|---|---|
@@ -135,9 +138,8 @@ class PlanNode(ABC):
 | 9 | `_before_subplan_execute` | `before_subplan_execute` | `executor._before_subplan_execute` | task.start（depth==1） |
 | 10 | `_after_subplan_execute` | `after_subplan_execute` | `executor._after_subplan_execute` | task.complete + 产物收集 |
 | 11 | `_should_skip_subplan_execute` | `should_skip_subplan_execute` | `executor._should_skip_subplan_execute` | HITL resume：completed stage 跳过 |
-| 12 | `_should_suppress_subplan_start_banner` | `should_suppress_subplan_start_banner` | `executor._should_suppress_subplan_start_banner` | HITL resume：横幅抑制 |
 
-回调未初始化即调用 → RuntimeError（N5）。槽 11/12 是 HITL resume 专用**查询接口**（非执行钩子）：编排节点经 `should_skip_subplan` / `should_suppress_subplan_start_banner` 公开方法查询，回调缺失时返回 False，不 raise。
+回调未初始化即调用 → RuntimeError（N5）。槽 11 是 HITL resume 专用**查询接口**（非执行钩子）：编排节点经 `should_skip_subplan` 公开方法查询，回调缺失时返回 False，不 raise；in_progress stage 的重复 task.start 跳过已内联于 `_before_subplan_execute` 按 task_states 快照判定（原槽 12 `should_suppress_subplan_start_banner` 已删，[[F_02]] D7）。
 
 **group / leaf 节点差异**（框架不区分类型，差异纯靠组合）：
 
@@ -147,7 +149,7 @@ class PlanNode(ABC):
 | `_execute` | 做实际工作（LLM/工具） | 遍历 sub_plans 调度 |
 | 调度方式 | — | `execute_subplan(_stream)`（带钩子）或直接 `child.run()` |
 | validate_fallback_success | 通常不覆盖 | **应覆盖**（校验终端交付物，契约第 11 条） |
-| HITL resume | 被 skip 时收到 resume_skip 结果 | 提供 should_skip / should_suppress 查询 |
+| HITL resume | 被 skip 时收到 resume_skip 结果 | 提供 should_skip 查询 |
 
 **回调生命周期时序**（节点实例与回调的关系）：
 
@@ -168,14 +170,27 @@ try: _execute / _execute_stream
   except FallbackContractError: raise   # 终止性降级信号：不进节点 LLM fallback，交 executor 包 SkillTurboNotHandled（[[S_07]]）
   except Exception as e:                # 其余异常
       run:         WARNING（plan_name/instruction/error）→ 无 _fallback_callback 则 raise，
-                   否则 return await _fallback_callback(self, inputs, e)
+                   否则 置 _fallback_triggered → return await _fallback_callback(self, inputs, e)
       run_stream:  无 _fallback_stream_callback 则 raise，
-                   否则 yield from _fallback_stream_callback(self, inputs, e)
+                   否则 置 _fallback_triggered → yield from _fallback_stream_callback(self, inputs, e)
+      # 异常通道进入 fallback 前置位 guard（[[B_02]]）：防 fallback 产出再带标志经
+      # 父节点 try_begin_fallback 判定在同一次 run 内二次触发
+正常返回后（无异常）的标志检测（[[F_02]] D6 + [[B_02]] 剥离解耦）：
+  run:                      result 为 dict → 先无条件剥离 result["_needs_fallback"]，
+                            剥离值为真且未触发过 → 置 _fallback_triggered → 构造 RuntimeError
+                            （message/fail_reason 进合成 error）→ 与 raise 异常走同一 fallback 通道
+                            （无 callback 则 raise）；guard 拒绝时返回剥离后的 result（不含标志键）
+  execute_subplan_stream:   last_chunk 为 dict → 先无条件剥离 last_chunk["_needs_fallback"]，
+                            剥离值为真且 subplan.try_begin_fallback() → 经 subplan.fallback_stream_callback
+                            续接产出，fallback chunk 续在原流尾部、last_chunk 逐个替换为修复结果，
+                            after 回调看到修复后结果（error 为 None 时传 last_chunk）；
+                            guard 拒绝时 after 回调收到剥离后的 last_chunk（不含标志键）
 ```
 
 - `run` 是非流式入口（`execute_plan` 消费，生产不使用）；`run_stream` 是流式入口（生产主链，[[S_01]]）。
 - `_execute_stream` 默认实现调用 `_execute` 并单值 yield；子类可产出进度片段（`{"status": "progress", ...}`）与终态（`{"status": "ok", "result": ...}`）。
 - CancelledError / KeyboardInterrupt 是 BaseException，不被 `except Exception` 捕获，自然穿透模板方法。
+- **标志检测防循环**：`_fallback_triggered` 同节点一次 run 至多触发一次，**异常 / 标志两通道进入 fallback 前均置位**（fallback 产出再带标志不会二次进入，含经父节点 `try_begin_fallback` 的组合路径）；标志剥离与 guard 判定解耦——guard 拒绝时同样剥离，内部协议键不泄入返回值 / after 回调。父节点经公开访问器判定——`try_begin_fallback()`（原子判定+置位）与 `fallback_stream_callback` property（只读），禁止直访子节点受保护成员（G.CLS.11 门禁）。未携带标志的节点行为不变。
 
 ### execute_subplan / execute_subplan_stream / skip_subplan：钩子序列与 after 触发矩阵
 
@@ -324,8 +339,8 @@ finally:
 | LLM | `call_llm` / `stream_llm` / `stream_llm_collect` | `executor.call_llm` / `stream_llm` | 见 LLM 调用契约 |
 | JSON 提取 | `extract_json(raw, expected_type)` | `json_utils.extract_llm_json` | 四级提取链（见数据结构） |
 | 受控日志 | `log` / `log_debug` / `log_info` / `log_warning` / `log_error` | `executor._log_from_node` | 级别白名单 + request_id/session_id 上下文格式化 |
-| 子节点编排 | `execute_subplan(_stream)` / `skip_subplan(_stream)` / `should_skip_subplan` / `should_suppress_subplan_start_banner` | plan_node 自身 + executor 回调 | 任务追踪钩子（after 矩阵） |
-| 数据 | `inputs` dict | executor `_merge_env_config_to_inputs` | 唯一数据入口：用户 inputs + `skill_root` / `skill_name` 注入 |
+| 子节点编排 | `execute_subplan(_stream)` / `skip_subplan(_stream)` / `should_skip_subplan` | plan_node 自身 + executor 回调 | 任务追踪钩子（after 矩阵） |
+| 数据 | `inputs` dict | executor `_merge_env_config_to_inputs` | 唯一数据入口：用户 inputs + `skill_root` / `skill_name` / `python_cmd` 注入 |
 
 **不可访问**：session 对象、事件发射器、request_id、环境变量、白名单外 import（validator 拒绝，[[S_03]]）、文件 IO 方法（denied_attribute_call_names 封死 pathlib 读写）、dunder 属性（`__init__` / `__name__` 除外）。工具实例语义：`env.get_tool_function` 按 `Runner.resource_mgr` 全局 tool_id 现取共享实例；send_file 等带 session 路由的工具执行期从请求级 ContextVar 解析，节点侧无感知（[[S_01]] N9）。
 
@@ -338,7 +353,8 @@ finally:
 
 ### inputs / outputs 约定
 
-- **inputs 整树共享同一 dict 引用**：executor `merged_inputs`（用户 inputs 浅拷贝 + `skill_root` / `skill_name` 注入，均带 "not in merged" 保护——resume inputs 已有则不覆盖）。节点间数据传递是技能侧约定，executor 不做数据路由。
+- **inputs 整树共享同一 dict 引用**：executor `merged_inputs`（用户 inputs 浅拷贝 + `skill_root` / `skill_name` 注入，均带 "not in merged" 保护——resume inputs 已有则不覆盖；另有 `python_cmd` 注入——缺省 / 空白时取 `sys.executable`，显式非空值保留，[[F_04]]）。节点间数据传递是技能侧约定，executor 不做数据路由。
+- **python_cmd 使用契约（技能侧）**：需要拉起 python 子进程的 skill_code（如 docx-craft `pipeline_init.py` P0）一律用 `inputs["python_cmd"]`（= 引擎当前解释器：jiuwenclaw venv / 打包后 embeddable python，技能依赖装在哪它就指向哪）；**禁止 import sys 取 `sys.executable`**（validator denied_import_exact，[[S_03]]），**禁止探测系统 PATH 上的 python**——PATH 命中的解释器不含技能依赖，是依赖缺失类故障的直接来源。
 - **子节点写回约定键**：子节点通常把结果写回 `inputs[plan_name]` 或 merge 结果字段（技能侧约定：跳过 node / status / message / content / skipped / resume_skip 等元键）；"下游未消费的键也保持存在"是技能侧防御惯例（默认键预置，防下游 KeyError）。
 - **输出推荐 dict 且至少含 `node/status/result`**；skip 类结果额外 `skipped: True`（resume skip 双标记 `skipped + resume_skip`）。
 - **业务失败表达**：结果 dict 含 `export_status=="failed"` 或 `status=="error"` → executor 侧 `_is_subplan_business_failure` 识别 → task.complete 标 failed（节点不抛异常也可表达失败终态）。
@@ -364,8 +380,8 @@ finally:
 
 ## 执行路径全景（P1-P5）
 
-- **P1 root 树准备**（executor `_prepare_root_node`）：plan_code（`from {module} import root`，[[S_02]]）→ validator 校验（[[S_03]]，失败 E5）→ `_load_plan_namespace`（动态包自愈 [[S_05]] + 受限 namespace exec）→ `_extract_root_node`（N9 三分支）→ **deepcopy**（N11）→ `_bind_node_callbacks`（12 回调一次注入，N6）→ 读 display_names。节点视角：构造即绑定全部回调，执行期不存在"补绑"。
-- **P2 模板方法执行**：`root.run_stream(inputs)`（流式主链）/ `root.run(inputs)`（非流式）→ 子类 `_execute_stream` / `_execute` → 三类异常分流（N2；AbortError/FallbackContractError 直通，其余进 fallback 回调，回调缺失 raise；[[S_07]]）。run 失败先打 WARNING 再进 fallback；run_stream 直接进流式 fallback。
+- **P1 root 树准备**（executor `_prepare_root_node`）：plan_code（`from {module} import root`，[[S_02]]）→ validator 校验（[[S_03]]，失败 E5）→ `_load_plan_namespace`（动态包自愈 [[S_05]] + 受限 namespace exec）→ `_extract_root_node`（N9 三分支）→ **deepcopy**（N11）→ `_bind_node_callbacks`（11 回调一次注入，N6）→ 读 display_names。节点视角：构造即绑定全部回调，执行期不存在"补绑"。
+- **P2 模板方法执行**：`root.run_stream(inputs)`（流式主链）/ `root.run(inputs)`（非流式）→ 子类 `_execute_stream` / `_execute` → 三类异常分流（N2；AbortError/FallbackContractError 直通，其余进 fallback 回调，回调缺失 raise；[[S_07]]）+ 正常返回后的 `_needs_fallback` 标志检测（N4）。run 失败先打 WARNING 再进 fallback；run_stream 直接进流式 fallback。
 - **P3 子节点调度**：编排节点 `_execute[_stream]` 内调 `execute_subplan[_stream]`（before → maybe_skip → run[_stream] → after，四态矩阵）；业务性跳过走 `skip_subplan[_stream]`。depth==1 的子节点才产生 task 事件（N7，[[S_01]]）。
 - **P4 LLM 调用**：节点 `call_llm` / `stream_llm` / `stream_llm_collect` → executor 重试循环（见接口契约）；`concurrent=True` 生成分桶 source_id（前端消费归 [[S_08]]）。
 - **P5 ask_user HITL**：`call_tool("ask_user")` → tcid → rail interrupt（AbortError）→ save_resume_ctx → adapter 三件套 →（用户作答）→ resume 重放 → tcid name+idx 回退命中 → answers 回填 → 节点拿到结构化作答继续（细节归 [[S_06]]）。
@@ -391,10 +407,11 @@ finally:
 | 15 | **run / run_stream 日志不对称**：run 进 fallback 前打 WARNING（含 plan_name/instruction/error），run_stream 直接进 fallback_stream（无 WARNING）——排查流式路径失败需依赖 fallback trace 而非节点日志。 | 无（日志不对称） |
 | 16 | **display_names 读取时机**：`_prepare_root_node` 在绑回调后一次性读取类属性；执行中途修改 root.display_names 不影响本请求的事件映射（要生效需改类属性后重启/重新 import）。 | 无 |
 | 17 | **inputs 浅拷贝语义**：`merged_inputs` 是用户 inputs 的浅拷贝——顶层键写入互不影响，但嵌套 dict/list 是共享引用；技能侧避免原地修改深层共享结构（约定：读后新建写回，不 in-place 改嵌套）。模块级 root 单例在并发请求间共享（deepcopy 前），任何在构造函数里捕获 executor 状态的写法都会造成跨请求串扰——N11 deepcopy 是唯一防线。 | 部分：test_executor_plan_code_import（deepcopy 防串扰断言） |
+| 18 | **`_needs_fallback` 标志触发**（run 6 场景 / execute_subplan_stream 6 场景）：无标志透传 / 触发 fallback 且 message 进合成 error / guard 防二次触发且**剥离后透传（不泄标志键）** / 无 callback 诚实 raise / 异常路径不受影响 / 异常通道 fallback 消费一次性 guard（公开访问器可见）；流式续接 + last_chunk 替换 + 标志剥离 / guard 二次不触发 / 无 callback raise / **异常通道 fallback 末 chunk 带标志不二次触发** / **guard 拒绝路径标志剥离后才进 after 回调**。 | test_plan_node_fallback_flag（12 用例） |
 
 ## 修改检查单
 
-1. 改 `run` / `run_stream` 模板方法 → 必查三类异常分流顺序（N2）不变 + [[S_06]] 引擎侧透传表逐处复核 + [[S_07]] fallback 触发语义。
+1. 改 `run` / `run_stream` 模板方法 → 必查三类异常分流顺序（N2）不变 + 正常返回后的 `_needs_fallback` 标志检测与防循环 guard（N4）+ [[S_06]] 引擎侧透传表逐处复核 + [[S_07]] fallback 触发语义。
 2. 新增回调槽 → 必查三处同步：`PlanNode.__init__` 槽位定义、`set_runtime_callbacks` 形参与递归传播、`executor._bind_node_callbacks` 注入；fail-fast RuntimeError 分支保留（N5）。
 3. 改 `execute_subplan` / `execute_subplan_stream` → 必查 after 触发条件矩阵（成功/异常/AbortError/skip 四态）与 [[S_01]] task 状态机、resume 快照的耦合（N3）。
 4. 新增节点能力（新回调方法）→ 必查能力面表更新 + [[S_03]] validator（白名单 / denied_call / dunder）+ executor 沙箱 namespace 三方一致（N10）。

@@ -54,7 +54,7 @@ _SECTION_PROCESS_NODES = {
 }
 # Brief mode performs report-wide collection/review outside the per-section
 # process branch.  Their ordinary ``content`` carries the evidence detail that
-# users expect in the expanded reasoning view, not final report prose.
+# users expect in task details, not final report prose.
 _BRIEF_PROCESS_CONTENT_NODES = {
     "brief_info_collector",
     "brief_evidence_reviewer",
@@ -86,7 +86,10 @@ MAX_SECTION_COUNT = 256
 MAX_STATE_ENTRIES = 256
 MAX_IDENTIFIER_CHARS = 1024
 MAX_CHUNK_TEXT_CHARS = 1_048_576
-MAX_TERMINAL_RESULT_TEXT_CHARS = 16 * 1024 * 1024
+# Complete reports include citations, charts and metadata. Keep this budget
+# separate from process-display limits; depth and identifier bounds still apply.
+MAX_TERMINAL_RESULT_TEXT_CHARS = 64 * 1024 * 1024
+MAX_TERMINAL_RESULT_JSON_NODES = 100_000
 MAX_ACCUMULATED_TEXT_CHARS = 1_048_576
 MAX_JSON_DEPTH = 64
 MAX_JSON_NODES = 16_384
@@ -191,20 +194,24 @@ def _validate_identifier(value: Any) -> str:
 
 
 def _validate_json_shape(
-    value: Any, *, max_text_chars: int = MAX_CHUNK_TEXT_CHARS
+    value: Any,
+    *,
+    max_text_chars: int = MAX_CHUNK_TEXT_CHARS,
+    max_nodes: int | None = None,
 ) -> int:
     """Bound container traversal without recursion or copying caller data."""
     stack: list[tuple[Any, int, bool]] = [(value, 0, False)]
     active: set[int] = set()
     nodes = 0
     text_chars = 0
+    node_limit = MAX_JSON_NODES if max_nodes is None else max_nodes
     while stack:
         current, depth, leaving = stack.pop()
         if leaving:
             active.discard(id(current))
             continue
         nodes += 1
-        if nodes > MAX_JSON_NODES or depth > MAX_JSON_DEPTH:
+        if nodes > node_limit or depth > MAX_JSON_DEPTH:
             raise ValueError(ROUTER_LIMIT_ERROR)
         if isinstance(current, str):
             if len(current) > max_text_chars:
@@ -342,17 +349,23 @@ def _node_frames_for_chunk(
         node_state is None or not node_state["done"]
     )
     frames: list[dict] = []
+    start_text = f"{display[0]}开始\n"
+    complete_text = f"{display[0]}完成\n"
+    if agent == "brief_sub_reporter":
+        section = _text_field(chunk.get("section_title"))
+        section_idx = str(chunk.get("section_idx") or "").strip()
+        section = section or (f"第 {section_idx} 章" if section_idx and section_idx != "0" else "")
+        if section:
+            section = _escape_markdown_text(section)
+            start_text = f"正在撰写章节：{section}\n"
+            complete_text = f"章节撰写完成：{section}\n"
     if starts_node and event != "done":
-        frames.append(_node_reasoning(stage, agent, display, f"{display[0]}开始\n"))
+        frames.append(_node_reasoning(stage, agent, display, start_text.rstrip() + "\n\n"))
     if agent in _BRIEF_PROCESS_CONTENT_NODES:
-        process_parts = _raw_process_parts(chunk, content, agent=agent)
-    else:
-        reasoning = _chunk_reasoning_content(chunk, content)
-        process_parts = [_as_text(reasoning)] if reasoning else []
-    for process_content in process_parts:
-        frames.append(_node_reasoning(stage, agent, display, process_content))
+        for text in _process_parts(chunk, content, agent=agent):
+            frames.append(_node_reasoning(stage, agent, display, text))
     if completes_node:
-        frames.append(_node_reasoning(stage, agent, display, f"{display[0]}完成\n"))
+        frames.append(_node_reasoning(stage, agent, display, complete_text.rstrip() + "\n\n"))
     return frames, starts_node, completes_node
 
 
@@ -372,9 +385,15 @@ def _validate_router_input(
     incoming_text_chars = 0
     for key in ("content", "reasoning_content"):
         value = chunk.get(key)
-        if value is not None and not (
-            terminal_result_content and key == "content"
-        ):
+        if value is None:
+            continue
+        if terminal_result_content and key == "content":
+            _validate_json_shape(
+                value,
+                max_text_chars=MAX_TERMINAL_RESULT_TEXT_CHARS,
+                max_nodes=MAX_TERMINAL_RESULT_JSON_NODES,
+            )
+        else:
             incoming_text_chars += _validate_json_shape(value)
     if len(state.active_nodes) > MAX_STATE_ENTRIES:
         raise ValueError(ROUTER_LIMIT_ERROR)
@@ -413,6 +432,7 @@ def _stage_child_reasoning(stage: int, agent: str, display: tuple[str, str], con
     task_content = display[0] + (f" - {display[1]}" if display[1] else "")
     return {
         "event_type": "chat.reasoning",
+        "source_chunk_type": "process",
         "task_id": f"deepresearch_stage_{stage}",
         "task_content": task_content,
         "stream_source_id": f"dr_{agent}",
@@ -593,7 +613,7 @@ def _format_plan_markdown(data: dict[str, Any]) -> str | None:
     blocks: list[str] = []
     blocks.append(f"#### 调研计划：{_escape_markdown_text(title)}")
     if thought:
-        blocks.append(f"调研思路：{_escape_markdown_text(thought)}")
+        blocks.append(f"计划说明：{_escape_markdown_text(thought)}")
     if isinstance(completed, bool):
         blocks.append("状态：资料已充分，准备撰写" if completed else "状态：继续调研")
 
@@ -612,23 +632,38 @@ def _format_plan_markdown(data: dict[str, Any]) -> str | None:
 def _format_retrieved_source_markdown(data: dict[str, Any]) -> str | None:
     title = _text_field(data.get("title"))
     url = _text_field(data.get("url"))
-    raw_query = data.get("query")
-    if not title or not url or not isinstance(raw_query, str):
+    if not url:
         return None
-    query = raw_query.strip()
 
-    safe_title = _escape_markdown_text(title)
-    safe_link_url = url if _SAFE_HTTP_URL_RE.fullmatch(url) else ""
-    if safe_link_url:
-        source = f"[{safe_title}](<{safe_link_url}>)"
-    else:
-        source = safe_title
-    blocks = [f"发现资料：{source}"]
-    if not safe_link_url:
-        blocks.append(f"链接：{_escape_markdown_text(url)}")
-    if query:
-        blocks.append(f"检索词：{_escape_markdown_text(query)}")
-    return "\n\n".join(blocks)
+    safe_label = _escape_markdown_text(title or url)
+    if _SAFE_HTTP_URL_RE.fullmatch(url):
+        return f"[{safe_label}](<{url}>)"
+    safe_url = _escape_markdown_text(url)
+    return f"{safe_label}\n\n{safe_url}" if title else safe_url
+
+
+def _format_evidence_review_markdown(data: dict[str, Any]) -> str | None:
+    required = data.get("supplement_required")
+    coverage = data.get("section_coverage")
+    gaps = data.get("blocking_gaps")
+    if not isinstance(required, bool) or not isinstance(coverage, list) or not isinstance(gaps, list):
+        return None
+    statuses = {"covered": "已覆盖", "weak": "证据偏弱", "missing": "缺少证据", "unknown": "待核验"}
+    blocks = ["需要补充检索。" if required else "无需补充检索。"]
+    for item in coverage:
+        if not isinstance(item, dict) or not _text_field(item.get("section_id")):
+            return None
+        if not isinstance(item.get("status"), str) or item["status"] not in statuses:
+            return None
+        section = _escape_markdown_text(_text_field(item["section_id"]))
+        blocks.append(f"- 章节 {section}：{statuses[item['status']]}")
+    for gap in gaps:
+        if not isinstance(gap, dict) or not _text_field(gap.get("reason")):
+            return None
+        section = _escape_markdown_text(_text_field(gap.get("section_id")))
+        reason = _escape_markdown_text(_text_field(gap["reason"]))
+        blocks.append(f"- 待补充：章节 {section}：{reason}" if section else f"- 待补充：{reason}")
+    return blocks[0] + ("\n\n" + "\n".join(blocks[1:]) if len(blocks) > 1 else "")
 
 
 def _format_process_content(agent: str, value: Any) -> str:
@@ -641,8 +676,10 @@ def _format_process_content(agent: str, value: Any) -> str:
         formatted = _format_outline_markdown(data)
     elif agent == "plan_reasoning":
         formatted = _format_plan_markdown(data)
-    elif agent == "collector_info_retrieval":
+    elif agent in {"collector_info_retrieval", "brief_info_collector"}:
         formatted = _format_retrieved_source_markdown(data)
+    elif agent == "brief_evidence_reviewer":
+        formatted = _format_evidence_review_markdown(data)
     return formatted if formatted is not None else _as_text(value)
 
 
@@ -675,36 +712,20 @@ def _remember_question_chunk(state: RouterState, chunk: dict, content: Any) -> N
     _append_text_part(state, state.question_parts[message_id], text)
 
 
-def _chunk_reasoning_content(chunk: dict, content: Any) -> Any:
-    reasoning = chunk.get("reasoning_content")
-    if reasoning or not isinstance(content, str):
-        return reasoning
-    try:
-        parsed = json.loads(content)
-    except (json.JSONDecodeError, TypeError):
-        return reasoning
-    return parsed.get("reasoning_content") if isinstance(parsed, dict) else reasoning
-
-
-def _raw_process_parts(
-    chunk: dict,
-    content: Any,
-    *,
-    agent: str,
-    include_content: bool = True,
-) -> list[str]:
-    """Return process bodies with node-aware display formatting and lossless fallback."""
-    parts: list[str] = []
-    values = [_chunk_reasoning_content(chunk, content)]
-    if include_content:
-        values.append(content)
-    for value in values:
-        text = _format_process_content(agent, value)
-        if not text or not text.strip() or text.strip() in _CONTROL_PROCESS_VALUES:
-            continue
-        if text not in parts:
-            parts.append(text)
-    return parts
+def _process_parts(chunk: dict, content: Any, *, agent: str, include_content: bool = True) -> list[str]:
+    """Display ordinary process content only; SDK reasoning is not user-facing output."""
+    if not include_content:
+        return []
+    data = _as_json_object(content)
+    if data is not None and "reasoning_content" in data:
+        data = {key: value for key, value in data.items() if key != "reasoning_content"}
+        content = data.get("content") if set(data) == {"content"} else (data or "")
+    text = _format_process_content(agent, content)
+    if not text or not text.strip() or text.strip() in _CONTROL_PROCESS_VALUES:
+        return []
+    if _as_json_object(content) is not None or str(chunk.get("message_type", "")) != "message_chunk":
+        text = text.rstrip() + "\n\n"
+    return [text]
 
 
 def _remember_section_title(state: RouterState, section_idx: str, section_title: Any) -> str:
@@ -733,6 +754,7 @@ def _section_reasoning(state: RouterState, chunk: dict, content: str) -> dict:
     section_title = _remember_section_title(state, section_idx, chunk.get("section_title"))
     payload = {
         "event_type": "chat.reasoning",
+        "source_chunk_type": "process",
         "task_id": "deepresearch_stage_3",
         "task_content": section_title or f"章节 {section_idx}",
         "stream_source_id": f"deepresearch_section_{section_idx}",
@@ -753,6 +775,7 @@ def _section_boundary(state: RouterState, chunk: dict, event_type: str) -> dict:
     payload = _section_reasoning(state, chunk, "")
     payload["event_type"] = event_type
     payload.pop("content")
+    payload.pop("source_chunk_type", None)
     return payload
 
 
@@ -791,11 +814,25 @@ def _can_start_final_report(state: RouterState, agent: str) -> bool:
     return agent in BRIEF_FINAL_REPORT_NODES or _all_sections_completed(state)
 
 
+def is_terminal_result_chunk(value: Any) -> bool:
+    """Identify result envelopes without parsing or trusting their contents."""
+    if not isinstance(value, dict):
+        return False
+    if (value.get("__deepsearch_status__") or value.get("status")) == "completed":
+        return isinstance(value.get("final_result"), dict)
+    return (
+        value.get("agent") == "end"
+        and str(value.get("section_idx", "0")).strip() in {"", "0"}
+        and value.get("event") in ("summary_response", "error")
+        and isinstance(value.get("content"), (str, dict))
+    )
+
+
 def _is_successful_workflow_end(chunk: dict, agent: str, event: str) -> bool:
-    """Recognize the SDK EndNode result emitted after the workflow has finished."""
+    """Validate SDK EndNode results and recognize successful completion."""
     if (
         agent != "end"
-        or event != _SUMMARY_RESPONSE_EVENT
+        or event not in {_SUMMARY_RESPONSE_EVENT, "error"}
         or str(chunk.get("section_idx", "0")).strip() not in {"", "0"}
     ):
         return False
@@ -803,15 +840,18 @@ def _is_successful_workflow_end(chunk: dict, agent: str, event: str) -> bool:
     _validate_json_shape(
         content,
         max_text_chars=MAX_TERMINAL_RESULT_TEXT_CHARS,
+        max_nodes=MAX_TERMINAL_RESULT_JSON_NODES,
     )
     result = _as_json_object(content)
     if result is not None:
         _validate_json_shape(
             result,
             max_text_chars=MAX_TERMINAL_RESULT_TEXT_CHARS,
+            max_nodes=MAX_TERMINAL_RESULT_JSON_NODES,
         )
     return bool(
-        result
+        event == _SUMMARY_RESPONSE_EVENT
+        and result
         and isinstance(result.get("response_content"), str)
         and result["response_content"].strip()
         and not result.get("exception_info")
@@ -859,6 +899,7 @@ def _node_reasoning(
         return _stage_child_reasoning(stage, agent, display, content)
     return {
         "event_type": "chat.reasoning",
+        "source_chunk_type": "process",
         "task_id": "deepresearch_stage_4",
         "task_content": "最终报告处理",
         "stream_source_id": "deepresearch_final_report",
@@ -916,7 +957,7 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
     职责:① 累积 report 和 outline,为不含正文的 interrupt marker 提供兜底;
          ② 捕获 interrupt chunk 的 node_id/raw_prompt 进 state(interrupt chunk 先于
             interrupted marker 到达,marker 到达时 tool 调 build_interrupt_prompt);
-         ③ outline 正文和并行章节未经压缩的原始过程写入 chat.reasoning。
+         ③ 过程资料沿用 chat.reasoning 传输并标记 process 展示，原始推理不向界面转发。
     status marker(__deepsearch_status__)不在此处理(由 tool 主循环识别);interrupted marker
     本体由 tool 主循环捕获后整块传给 build_interrupt_prompt(marker 参数)。
     """
@@ -927,14 +968,11 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
     section_idx = _validate_identifier(chunk.get("section_idx", "0")) or "0"
     # The EndNode embeds the complete final result in ``content`` (1+ MiB).
     # It is a workflow boundary, not process text for the frontend, so keep it
-    # under the terminal 16 MiB protocol bound without applying the 1 MiB
+    # under the terminal result budget without applying the 1 MiB
     # process-display accumulator limit — even when the result carries
     # non-fatal exception_info (the SDK then emits event=error).  Delivery is
     # still gated by _is_successful_workflow_end below.
-    is_end_node = (
-        agent == "end"
-        and section_idx in {"", "0"}
-    )
+    is_end_node = agent == "end" and is_terminal_result_chunk(chunk)
     successful_workflow_end = _is_successful_workflow_end(chunk, agent, event)
 
     _validate_router_input(
@@ -1012,6 +1050,7 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
     if str(chunk.get("event")) == "user_input_ended":
         frames.append({
             "event_type": "chat.reasoning",
+            "source_chunk_type": "process",
             "task_id": "deepresearch_stage_2",
             "stream_source_id": "dr_outline",
             "content": "大纲已根据您的修改重新生成，自动确认继续研究",
@@ -1027,7 +1066,7 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
     if agent in _SECTION_PROCESS_NODES and section_idx != "0":
         _remember_expected_sections(state, chunk)
         start_final_report = False
-        process_parts = _raw_process_parts(
+        process_parts = _process_parts(
             chunk,
             content,
             agent=agent,
@@ -1049,11 +1088,11 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
             }
             state.active_nodes[key] = node_state
             if event != "done":
-                frames.append(_section_reasoning(state, chunk, f"{display[0]}开始\n"))
+                frames.append(_section_reasoning(state, chunk, f"{display[0]}开始\n\n"))
 
         if event == "done" and not node_state["done"]:
             node_state["done"] = True
-            frames.append(_section_reasoning(state, chunk, f"{display[0]}完成\n"))
+            frames.append(_section_reasoning(state, chunk, f"{display[0]}完成\n\n"))
 
         section_succeeded = (
             agent == "sub_reporter"
@@ -1072,14 +1111,37 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
             frames.extend(start_final_report_processing(state))
         return frames
 
-    # 大纲正文只读展示在思考过程；其他非并行节点维持 reasoning_content 通用透传。
+    # 大纲正文展示在任务正文；SDK 原始 reasoning_content 不向界面转发。
     if agent in {"outline", "brief_outline"}:
+        if agent == "outline" and isinstance(content, str) and content:
+            # A complete outline is a current snapshot. The same stream id is
+            # reused after HITL; appending would leave the first draft on top.
+            for candidate in (content, "".join(state.outline_parts) + content):
+                data = _as_json_object(candidate)
+                snapshot = _format_outline_markdown(data) if data is not None else None
+                if snapshot is None:
+                    continue
+                previous_size = sum(len(part) for part in state.outline_parts)
+                _ensure_text_capacity(state, max(0, len(candidate) - previous_size))
+                state._accumulated_text_chars -= previous_size
+                state.outline_parts.clear()
+                _append_text_part(state, state.outline_parts, candidate)
+                frames.append({
+                    "event_type": "chat.reasoning",
+                    "task_id": "deepresearch_stage_2",
+                    "task_content": display[0],
+                    "stream_source_id": "dr_outline",
+                    "content": snapshot + "\n\n",
+                    "merge_strategy": "replace",
+                })
+                return frames
         if isinstance(content, str) and content:
             _append_text_part(state, state.outline_parts, content)
         task_content = display[0] + (f" - {display[1]}" if display[1] else "")
-        for process_content in _raw_process_parts(chunk, content, agent=agent):
+        for process_content in _process_parts(chunk, content, agent=agent):
             frames.append({
                 "event_type": "chat.reasoning",
+                "source_chunk_type": "process",
                 "task_id": "deepresearch_stage_2",
                 "task_content": task_content,
                 "stream_source_id": "dr_outline",
@@ -1137,10 +1199,6 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
             if not total_known or _all_sections_completed(state):
                 frames.extend(start_final_report_processing(state))
         return frames
-
-    reasoning = _chunk_reasoning_content(chunk, content)
-    if reasoning:
-        frames.append({"event_type": "chat.reasoning", "content": _as_text(reasoning)})
 
     # 首次见 → task.start(交互节点也发边界气泡,让用户看到"大纲生成中"等)
     if key not in state.active_nodes:

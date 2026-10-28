@@ -34,8 +34,6 @@ RUN mkdir -p /opt/tiktoken-cache \
     && chown -R app:app /opt/tiktoken-cache \
     && chmod -R u+rwX,go+rX /opt/tiktoken-cache
 
-RUN yq -y -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml
-
 USER app
 ENV PATH=$PATH:/home/app/.local/bin
 

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import logging
 from typing import Any, Mapping
@@ -14,6 +15,7 @@ from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptExcept
 from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails.interrupt.ask_user_rail import AskUserRequest
 
@@ -21,6 +23,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
     _IN_FLIGHT_PHASES,
     _query_matches_stopped_claim,
     EXECUTION_SCHEMA,
+    MODEL_RESEARCH_HANDOFF_ERRORS,
     bind_deepresearch_execution_context,
     reset_deepresearch_execution_context,
 )
@@ -37,6 +40,26 @@ DEEPRESEARCH_EXECUTION_STATE_KEY = "deepresearch_execution_states"
 DEEPRESEARCH_EXECUTION_ALIAS_KEY = "deepresearch_execution_aliases"
 _TOKENS_KEY = "__deepresearch_execution_context_tokens__"
 _TOOL_NAME = "deepresearch_execute"
+_BRIEF_REFRESH_SECTION = "deepresearch_brief_refresh"
+_BRIEF_REFRESH_INSTRUCTION = (
+    "本轮已由服务端校验为 refresh_latest_brief：补充证据后重新交付精简报告。"
+    "加载 deepresearch 技能，然后调用一次 deepresearch_execute，query 使用本轮用户的补充要求，"
+    "report_type='brief'、upgrade_from_brief=False；执行工具会核对来源报告并读取原报告。"
+    "必须生成并交付包含补充数据、事实依据和来源的新版精简报告文件，不要只在聊天里回答。"
+    "用户所说的‘不需要重新生成完整报告’指不生成专业版，不禁止生成新版精简报告。"
+    "不要升级专业版、不要另建 todo，也不要重复发送工具已交付的报告。"
+)
+
+# HITL 暂停占位文案（interaction 分支写入 tool_msg）。必须注册进
+# StreamEventRail 的占位模板白名单（_is_legacy_tool_interrupt_placeholder_text）：
+# resume 完成后占位与 completed tool_msg 挂同一原始 tool_call_id，
+# 白名单识别使孤儿清理按"占位被真实结果替换"收敛，而非 duplicate
+# 规则保留占位删掉完成态（后者会让历史停留在"等待答复"）。
+DEEPRESEARCH_INTERACTION_PLACEHOLDER = (
+    "DeepResearch 已暂停并向用户发起结构化问答，正在等待用户答复。"
+    "用户答复后本工具将自动恢复执行并返回后续结果；请勿代替用户"
+    "作答，也无需重复调用本工具轮询进度。"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +118,21 @@ def _save_aliases(session: Any, aliases: dict[str, str]) -> None:
 
 def _workflow_id(session: Any, tool_call_id: str) -> str:
     return _load_aliases(session).get(tool_call_id, tool_call_id)
+
+
+def _history_tool_call_id(tool_call_id: str, workflow_id: str) -> str:
+    """tool_msg 应挂的历史 tool_call_id：须与 assistant 消息 tool_calls
+    的原始 id 对齐，否则被 StreamEventRail 孤儿清理删除。
+
+    resume 执行时 ctx.inputs.tool_call 是 TIE 克隆件，id 已被改写为
+    interaction_id（{workflow_id}_interaction_N），须映射回原始 id。
+    bridge 场景（模型换新 id 重试被桥接旧 state）例外：本次调用 id
+    本身就是历史 id，原样保留——故按 interaction 后缀模式判断，而非
+    "是否在 aliases 中"（bridge 的 alias 不带该后缀）。
+    """
+    if workflow_id and tool_call_id.startswith(f"{workflow_id}_interaction_"):
+        return workflow_id
+    return tool_call_id
 
 
 # 修复点3.2：error 相位入桥候选。取消转译的 stopped 写入（phase=new）
@@ -240,12 +278,16 @@ class DeepResearchExecutionRail(DeepAgentRail):
     # interrupt and does not leak the internal envelope as a tool result.
     priority = 81
 
-    def __init__(self, *, model_provider):
+    def __init__(self, *, model_provider, materials_context_provider=None, mcp_context_provider=None):
         super().__init__()
         self._model_provider = model_provider
+        self._materials_context_provider = materials_context_provider
+        self._mcp_context_provider = mcp_context_provider
         self._agent_id = "jiuwenswarm"
+        self.system_prompt_builder: Any = None
 
     def init(self, agent: Any) -> None:
+        self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
         card = getattr(agent, "card", None)
         self._agent_id = str(
             getattr(card, "id", "")
@@ -253,16 +295,49 @@ class DeepResearchExecutionRail(DeepAgentRail):
             or "jiuwenswarm"
         ).strip()
 
+    def uninit(self, agent: Any) -> None:
+        builder = getattr(agent, "system_prompt_builder", None) or self.system_prompt_builder
+        if builder is not None:
+            builder.remove_section(_BRIEF_REFRESH_SECTION)
+        self.system_prompt_builder = None
+
+    async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        builder = getattr(getattr(ctx, "agent", None), "system_prompt_builder", None)
+        if builder is not None:
+            self.system_prompt_builder = builder
+        builder = self.system_prompt_builder
+        if builder is None:
+            return
+        # Agent instances can be reused: refresh instructions belong to one request.
+        builder.remove_section(_BRIEF_REFRESH_SECTION)
+        request_context = get_request_context(
+            session_id=extract_session_id_from_callback(ctx)
+        )
+        followup = (request_context or {}).get("deepresearch_followup")
+        if not isinstance(followup, Mapping) or followup.get("action") != "refresh_latest_brief":
+            return
+        language = getattr(builder, "language", "cn") or "cn"
+        builder.add_section(PromptSection(
+            name=_BRIEF_REFRESH_SECTION,
+            content={language: _BRIEF_REFRESH_INSTRUCTION},
+            priority=121,
+        ))
+
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if _tool_name(ctx) != _TOOL_NAME:
             return
         tool_call_id = _tool_call_id(ctx)
         workflow_id = _workflow_id(ctx.session, tool_call_id)
         states = _load_states(ctx.session)
-        if workflow_id not in states:
+        request_context = get_request_context(
+            session_id=extract_session_id_from_callback(ctx)
+        )
+        deepresearch_followup = (request_context or {}).get("deepresearch_followup")
+        args = _tool_args(ctx)
+        is_upgrade = deepresearch_followup is not None or args.get("upgrade_from_brief") is True
+        if workflow_id not in states and not is_upgrade:
             # state miss 兜底桥：硬中断丢失 conversation_id 后模型换新
             # tool_call_id 重试时，桥回旧 workflow state 直通续跑。
-            args = _tool_args(ctx)
             workflow_id = _bridge_stale_workflow(
                 ctx.session,
                 tool_call_id,
@@ -277,11 +352,11 @@ class DeepResearchExecutionRail(DeepAgentRail):
             _save_states(ctx.session, current)
 
         model = self._model_provider() if callable(self._model_provider) else None
-        request_context = get_request_context(
-            session_id=extract_session_id_from_callback(ctx)
-        )
         request_id = str((request_context or {}).get("request_id") or "").strip()
         requested_report_type = (request_context or {}).get("requested_report_type")
+        mcp_servers = self._mcp_context_provider() if callable(self._mcp_context_provider) else None
+        if inspect.isawaitable(mcp_servers):
+            mcp_servers = await mcp_servers
         token = bind_deepresearch_execution_context(
             tool_call_id=workflow_id,
             state=states.get(workflow_id),
@@ -291,6 +366,13 @@ class DeepResearchExecutionRail(DeepAgentRail):
             agent_id=self._agent_id,
             request_id=request_id,
             requested_report_type=requested_report_type,
+            deepresearch_followup=deepresearch_followup,
+            materials_context=(
+                self._materials_context_provider() if callable(self._materials_context_provider) else None
+            ),
+            mcp_servers=mcp_servers,
+            mcp_context_provider=self._mcp_context_provider,
+            load_state=lambda: _load_states(ctx.session).get(workflow_id),
         )
         tokens = ctx.extra.setdefault(_TOKENS_KEY, {})
         tokens[tool_call_id] = token
@@ -302,8 +384,13 @@ class DeepResearchExecutionRail(DeepAgentRail):
             payload = _result_payload(ctx.inputs.tool_result)
             if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:
                 return
+            if payload.get("kind") == "in_progress":
+                return  # A concurrent caller must not overwrite or finish the active workflow.
             tool_call_id = _tool_call_id(ctx)
             workflow_id = _workflow_id(ctx.session, tool_call_id)
+            # tool_msg 必须挂历史原始 id（resume 时 ctx 携带的是 TIE
+            # 克隆件的 interaction_id），否则被孤儿清理删除
+            history_id = _history_tool_call_id(tool_call_id, workflow_id)
             state = payload.get("state")
             states = _load_states(ctx.session)
             if isinstance(state, Mapping):
@@ -340,12 +427,8 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 # 保持不变，打断/恢复流程不受影响。tool_call_id 必须用原始
                 # 调用 id，与 assistant 消息中的 tool_calls 对齐。
                 ctx.inputs.tool_msg = ToolMessage(
-                    content=(
-                        "DeepResearch 已暂停并向用户发起结构化问答，正在等待"
-                        "用户答复。用户答复后本工具将自动恢复执行并返回后续"
-                        "结果；请勿代替用户作答，也无需重复调用本工具轮询进度。"
-                    ),
-                    tool_call_id=tool_call_id,
+                    content=DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+                    tool_call_id=history_id,
                 )
                 return
 
@@ -375,11 +458,21 @@ class DeepResearchExecutionRail(DeepAgentRail):
                         "主题，同样会自动认领）。恢复将从停止处继续，已完成"
                         "阶段不会重跑。"
                     ),
-                    tool_call_id=tool_call_id,
+                    tool_call_id=history_id,
                 )
                 return
 
-            states.pop(workflow_id, None)
+            fallback = payload.get("fallback")
+            model_handoff = (
+                payload.get("kind") == "error"
+                and payload.get("error_code") in MODEL_RESEARCH_HANDOFF_ERRORS
+                and isinstance(state, Mapping)
+                and state.get("model_research_fallback") is True
+                and isinstance(fallback, Mapping)
+                and fallback.get("mode") == "model_research"
+            )
+            if not (model_handoff or (isinstance(state, Mapping) and state.get("materials_prepared"))):
+                states.pop(workflow_id, None)
             _save_states(ctx.session, states)
             aliases = {
                 alias: target
@@ -387,7 +480,35 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 if target != workflow_id
             }
             _save_aliases(ctx.session, aliases)
+            if model_handoff:
+                # Leave the tool envelope in the normal Core tool-result path.
+                # The next main-model turn follows the Skill, using existing tools.
+                return
             content = payload.get("content")
+
+            if payload.get("kind") == "completed":
+                # 完成态回写：completed 结果不再以原始 JSON payload（含
+                # state/revision/timing/token usage 等内部字段，由框架默认
+                # 序列化成 tool_msg）裸入 LLM 历史，改为与 interaction/
+                # stopped 同口径的短文案。旁路自恢复（用户答复交互卡后的
+                # interrupt continuation）不重入 LLM 主循环，本次执行的
+                # tool_msg 是完成态进入历史的唯一通道——若不显式改写，
+                # 历史中该 tool_call_id 下最后一条 tool 消息会停留在暂停
+                # 占位文案，后续轮模型误判任务未完成（实测事故：任务已
+                # 完成，模型答"还在第一阶段暂停等待用户答复"）。payload
+                # content 即完成摘要（报告名/章节结构/交付说明），短载荷
+                # 同时避开部署版按体积拒收 llm_context 的守卫；前端交付
+                # 不受影响——chat.tool_result 帧使用 tool_result 原始
+                # payload（StreamEventRail），与 tool_msg 解耦。
+                ctx.inputs.tool_msg = ToolMessage(
+                    content=(
+                        content.strip()
+                        if isinstance(content, str) and content.strip()
+                        else "DeepResearch 任务已完成，报告已交付。"
+                    ),
+                    tool_call_id=history_id,
+                )
+
             if isinstance(content, str) and content.strip():
                 ctx.request_force_finish(
                     {"output": content.strip(), "result_type": "answer"}
@@ -404,5 +525,6 @@ class DeepResearchExecutionRail(DeepAgentRail):
 __all__ = [
     "DEEPRESEARCH_EXECUTION_ALIAS_KEY",
     "DEEPRESEARCH_EXECUTION_STATE_KEY",
+    "DEEPRESEARCH_INTERACTION_PLACEHOLDER",
     "DeepResearchExecutionRail",
 ]

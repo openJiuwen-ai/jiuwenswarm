@@ -10,6 +10,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from dataclasses import replace
+from functools import partial
 from typing import Any, Optional
 
 from pathlib import Path
@@ -36,6 +37,7 @@ from jiuwenswarm.common.mode_matrix import (
     resolve_request_mode,
 )
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+from jiuwenswarm.telemetry.request_context import refresh_incoming_mode_binding
 
 logger = logging.getLogger(__name__)
 
@@ -172,6 +174,7 @@ def resolve_agent_request_mode(
     raw_mode: Any,
     *,
     work_mode: Any = None,
+    allow_flash_default: bool = True,
 ) -> tuple[str, str | None, str]:
     """Resolve request params.mode into manager mode, sub_mode, and canonical value.
 
@@ -180,11 +183,13 @@ def resolve_agent_request_mode(
     ``fast``（无 ``agent.`` 前缀，如旧 cron job 存量数据）同样归一到 ``agent``，
     与 CLI ``MODE_ALIASES``、记忆配置 ``_resolve_mode_memory`` 的裸 token 处理保持一致。
 
-    ``flash.enabled`` 配置开关：置 true 时，普通 agent 对话请求被归到 ``flash``
+    ``flash.enabled`` 由配置加载层解析环境变量占位符；为 true 时，普通 agent
+    对话请求被归到 ``flash``
     mode（独立轻量 facade：单轮、裁 rail、无 task loop），配置即触发，无需前端发
     ``mode=flash``。注入由函数最前面的 guard 完成，只命中 agent 类请求（agent /
     plan / fast / 空，且 work_mode 非 code）；``code`` / ``team`` / 显式 flash 等
     其余路径不受影响，下面走原归一化逻辑。置 false（默认）时维持原 ``agent`` 行为。
+    OfficeClaw 前台入口传入 ``allow_flash_default=False``，仅接受显式选型。
 
     注：cron / heartbeat / proactive 等后台流水线若发 agent 类 mode，同样会被
     归到 flash——flash 保留 filesystem / bash / skill / 子代理能力，仅裁掉
@@ -200,12 +205,16 @@ def resolve_agent_request_mode(
     # 新增 agent.* 子模式自动覆盖，无需同步维护枚举（参见 PR6431 review 次要项）。
     # try/except 兜底：config 不可读时安全降级为不注入，保持原 agent 行为。
     _guard_head = mode_text.split(".", 1)[0] if mode_text else ""
-    if not mode_text or _guard_head in ("agent", "plan", "fast"):
+    is_agent_family = not mode_text or _guard_head in ("agent", "plan", "fast")
+    if allow_flash_default and is_agent_family:
         _wm = work_mode.strip().lower() if isinstance(work_mode, str) else ""
         if _wm != "code":
             try:
                 if bool((get_config() or {}).get("flash", {}).get("enabled", False)):
-                    return "flash", None, "flash"
+                    # Flash is an implementation choice.  Keep the business
+                    # canonical as normal agent so history / UI / plan checks
+                    # continue to see the same office mode.
+                    return "flash", None, "agent"
             except Exception:
                 logger.debug(
                     "[resolve_agent_request_mode] flash config read failed, not injecting",
@@ -275,8 +284,24 @@ def _request_allows_plan_entry(request: AgentRequest, params: dict) -> bool:
         return True
     if request.session_id and request.session_id in _plan_active_sessions:
         return True
+    if _uses_explicit_officeclaw_mode(request):
+        previous_mode = canonicalize_mode_text(params.get(_SESSION_PREVIOUS_MODE_KEY))
+        if previous_mode in _PLAN_MODE_TOKENS:
+            return True
     source = str(params.get("plan_entry_source") or "").strip().lower()
     return source in EXPLICIT_PLAN_ENTRY_SOURCES
+
+
+def _uses_explicit_officeclaw_mode(request: AgentRequest) -> bool:
+    """OfficeClaw 前台入口由 Relay 显式选型，后台与其它渠道保留旧策略。"""
+    if str(getattr(request, "channel_id", "") or "").strip().lower() != "officeclaw":
+        return False
+    if getattr(request, "req_method", None) not in _CODE_MODE_SYNC_METHODS | {ReqMethod.SESSION_CREATE}:
+        return False
+    metadata = getattr(request, "metadata", None)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    source = str(metadata.get("source") or "").strip().lower()
+    return source not in {"cron", "heartbeat", "proactive"}
 
 
 def resolve_request_runtime_mode(
@@ -291,29 +316,45 @@ def resolve_request_runtime_mode(
     """
     params = request.params if isinstance(request.params, dict) else {}
     mode_text = canonicalize_mode_text(params.get("mode"))
-    if mode_text in _PLAN_MODE_TOKENS and not _request_allows_plan_entry(
-        request, params
-    ):
-        params = {**params, "mode": mode_text.split(".", 1)[0]}
-    resolved = resolve_request_mode(
-        params,
-        resolve_agent_request_mode,
-        work_mode=work_mode,
+    explicit_officeclaw = _uses_explicit_officeclaw_mode(request)
+    if explicit_officeclaw and mode_text.startswith("flash."):
+        raise ValueError(f"unsupported OfficeClaw mode: {mode_text}")
+    if explicit_officeclaw and mode_text.startswith("code."):
+        # 审批恢复的具体 Code 模式不能被旧会话 work_mode=work 再次改成 Agent。
+        params = dict(params)
+        params.pop("work_mode", None)
+        work_mode = None
+    restoring_plan = False
+    if explicit_officeclaw and mode_text == "flash":
+        previous_mode = canonicalize_mode_text(params.get(_SESSION_PREVIOUS_MODE_KEY))
+        restoring_plan = previous_mode in _PLAN_MODE_TOKENS
+        if request.session_id in _plan_active_sessions:
+            restoring_plan = True
+        if restoring_plan:
+            mode_text = previous_mode if previous_mode in _PLAN_MODE_TOKENS else WEB_PLAN_AGENT
+            params = {**params, "mode": mode_text}
+    if mode_text in _PLAN_MODE_TOKENS and not restoring_plan:
+        if not _request_allows_plan_entry(request, params):
+            params = {**params, "mode": mode_text.split(".", 1)[0]}
+    legacy_resolver = partial(
+        resolve_agent_request_mode, allow_flash_default=not explicit_officeclaw,
     )
+    resolved = resolve_request_mode(params, legacy_resolver, work_mode=work_mode)
     # Web composition and new canonical modes bypass the legacy Flash guard.
     # Apply the default only after resolving the profile, so Code, Team and
     # explicit Plan requests retain their own routing and approval semantics.
     if resolved.canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}:
         default_mode, _, _ = resolve_agent_request_mode(
             "agent", work_mode=resolved.work_mode,
+            allow_flash_default=not explicit_officeclaw,
         )
         if default_mode == "flash":
             resolved = replace(
                 resolved,
                 manager_mode="flash",
                 sub_mode=None,
-                canonical_mode="flash",
-                normal_mode="flash",
+                adapter_mode="flash",
+                adapter_source="flash_enabled_default",
             )
     return resolved
 
@@ -323,13 +364,22 @@ def _apply_resolved_mode_to_request(
     *,
     work_mode: Any = None,
 ) -> tuple[str, str | None]:
-    if not hasattr(request, "_original_mode") and isinstance(request.params, dict):
-        raw_mode = request.params.get("mode")
-        if isinstance(raw_mode, str) and raw_mode.strip():
-            setattr(request, "_original_mode", canonicalize_mode_text(raw_mode))
     resolved = resolve_request_runtime_mode(request, work_mode=work_mode)
+    request.resolved_adapter_mode = resolved.adapter_mode
+    request.resolved_adapter_source = resolved.adapter_source
     if isinstance(request.params, dict):
         request.params["mode"] = resolved.canonical_mode
+    try:
+        refresh_incoming_mode_binding(
+            resolved.canonical_mode,
+            resolved.adapter_mode,
+        )
+    except Exception as error:
+        logger.warning(
+            "[_apply_resolved_mode_to_request] refresh mode binding failed: %s",
+            error,
+            exc_info=True,
+        )
     return resolved.manager_mode, resolved.sub_mode
 
 
@@ -474,6 +524,7 @@ def _sync_chat_request_metadata(
     project_dir: str | None,
     mode: str,
     explicit_mode_provided: bool = False,
+    adapter_mode: str | None = None,
 ) -> str | None:
     """将本次 chat 请求的参数同步到会话元数据，返回生效的 project_dir。
 
@@ -551,6 +602,7 @@ def _sync_chat_request_metadata(
             explicit_mode_provided=explicit_mode_provided,
             explicit_model_provided=explicit_model_provided,
             work_mode=params.get("work_mode"),
+            adapter_mode=adapter_mode,
             sessions_root=_sessions_dir_for_request(request),
         )
     except (OSError, ValueError) as exc:

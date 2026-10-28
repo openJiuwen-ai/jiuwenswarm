@@ -1255,7 +1255,7 @@ def test_commit_preserves_multiple_citation_identity_order_count(tmp_path):
     )
 
     child = Path(result["report_path"]).read_text(encoding="utf-8")
-    assert rewrite_module.CITATION_RE.findall(child) == [
+    assert [(item.index, item.url) for item in rewrite_module.iter_citations(child)] == [
         ("1", "https://example.com/source"),
         ("2", "https://second.example/source"),
     ]
@@ -3152,3 +3152,106 @@ def test_commit_rejects_trusted_workspace_root_swap_after_allocation(
     assert not (
         owned_old / "artifacts" / "report-v2.provenance.json"
     ).exists()
+
+
+@pytest.mark.parametrize("select_citations", [False, True])
+@pytest.mark.parametrize("url", [
+    "https://example.com/report(1).pdf",
+    "https://example.com/report?a=1&amp;b=2",
+    r"https://example.com/report\(1\).pdf",
+])
+def test_rewrite_parenthesized_duplicate_citations_prepare_and_commit(
+    tmp_path, select_citations, url
+):
+    body = f"English introduction.\n\nFirst [[1]]({url}) and second [[1]]({url}) end.\n"
+    report, provenance = _write_document(tmp_path, body)
+    citations = [
+        {
+            "id": source_id,
+            "reference_index": 1,
+            "url": url,
+            "title": "PDF",
+            "content": f"evidence {source_id}",
+            "chunk": "source",
+            "source": "web",
+        }
+        for source_id in (3, 4)
+    ]
+    _set_snapshot_citations(report, provenance, citations)
+    original = report.read_bytes()
+    raw = (
+        body.split("\n\n")[1].rstrip("\n")
+        if select_citations
+        else "English introduction."
+    )
+    visible = "First [1] and second [1] end." if select_citations else raw
+    prepared = _prepare(tmp_path, report, raw, visible=visible, action="polish")
+    replacements = {
+        slot["slot_id"]: slot["text"]
+        .replace("English", "Clear English")
+        .replace("First", "Initial")
+        for unit in prepared["units"]
+        for slot in unit["slots"]
+    }
+    result = commit_rewrite(
+        context_token=prepared["context_token"],
+        session_id="S1",
+        structured_result=_structured_payload(prepared, replacements),
+    )
+    assert report.read_bytes() == original
+    child = Path(result["report_path"]).read_text(encoding="utf-8")
+    assert child.count(f"[[1]]({url})") == 2
+    history = json.loads(Path(result["provenance_path"]).read_text())[
+        "rewrite_history"
+    ][-1]
+    assert history["citation_ids"] == (["3", "4"] if select_citations else [])
+
+
+@pytest.mark.parametrize("destination", [
+    "https://example.com/report(1).pdf",
+    "https://example.com/report(a(b)).pdf",
+    r"https://example.com/report\(1\).pdf",
+    "<https://example.com/report(1).pdf>",
+    "https://example.com/report?a=1&amp;b=2",
+])
+def test_conversion_preserves_complete_citation_destination(destination, tmp_path):
+    import html
+    from markdown_it.helpers import parseLinkDestination
+
+    raw = f"Before [[1]]({destination}) after [[2]](https://example.com/other)."
+    url = parseLinkDestination(destination, 0, len(destination)).str
+    expected = (
+        'Before<sup class="citation">'
+        f'<a href="{html.escape(url, quote=True)}" target="_blank" '
+        'rel="noopener noreferrer">[1]</a></sup>'
+        ' after<sup class="citation">'
+        '<a href="https://example.com/other" target="_blank" '
+        'rel="noopener noreferrer">[2]</a></sup>.'
+    )
+    from html.parser import HTMLParser
+    from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.convert_html_offline import convert_md_to_html
+
+    assert conversion_utils.replace_citations(raw) == expected
+    assert conversion_utils.preprocess_markdown_text(raw) == expected
+    assert conversion_utils.replace_citations_with_markdown_links(raw) == (
+        rf"Before [\[1\]]({destination}) after [\[2\]](https://example.com/other)."
+    )
+
+    class Links(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.hrefs = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "a":
+                self.hrefs.append(dict(attrs).get("href"))
+
+    source = tmp_path / "report.md"
+    output = tmp_path / "report.html"
+    source.write_text(raw, encoding="utf-8")
+    convert_md_to_html(source, output)
+    rendered = output.read_text(encoding="utf-8")
+    links = Links()
+    links.feed(rendered)
+    assert links.hrefs == [url, "https://example.com/other"]
+    assert ".pdf)</sup>" not in rendered
