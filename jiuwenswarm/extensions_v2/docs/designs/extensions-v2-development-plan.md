@@ -285,7 +285,7 @@
 - **目标与范围：** 提供只读 `ops.session.messages(limit=50, cursor=None)`、写入 `ops.session.append(message)` 和追加前事件 `session.append`，实现主会话产品历史分页、用户审核 / 正文改写、默认 CORE 落盘后回执；接入原可等待主历史写入和 `history.append_record` RPC。不驱动 Agent、不注入模型上下文，不新增前端入口。
 - **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
 - **开工硬前置：** 已有 EXTV2-01 装配、EXTV2-05 共享 Ops Builder、宿主绑定的有效 SessionContext 和原历史服务；不依赖 cwd / model / repo 能力。
-- **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 第 5 节](../features/F_16_session-history-ops.md#5-验证设计与执行记录)。
+- **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 第 6 节](../features/F_16_session-history-ops.md#6-验收与未决问题)。
 - **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py`；用户示例 `examples/session_history_audit/`。
 - **前端与联合交付：** 历史可通过既有读取入口恢复，本次不主动渲染 UI，不据此完成 M1～M3。对应 Server PR-04。
 
