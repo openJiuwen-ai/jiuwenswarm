@@ -19,6 +19,11 @@ from jiuwenswarm.agents.harness.common.workspace_paths import sanitize_review_ui
 
 _MANUAL_STATUSES = frozenset({"manual", "fallback", "timed_out", "aborted"})
 
+_REVIEWER_RESPONSE_ERRORS = frozenset({
+    "invalid_json", "forbidden_field", "missing_field", "unknown_field",
+    "invalid_field", "unknown_outcome", "missing_manual_field",
+})
+
 _DISPLAY_MESSAGES = {
     "policy_allow": (
         "当前权限规则已允许此操作，无需再次审批。",
@@ -50,8 +55,29 @@ _DISPLAY_MESSAGES = {
         "the tool parameters and risks manually.",
     ),
     "reviewer_fallback": (
-        "自动审批响应无法通过宿主校验，未形成可信结论。",
-        "The AutoReviewer response did not pass host validation and produced no trusted decision.",
+        "智能审批未能完成判断，已转人工审批。",
+        "Smart approval could not complete the decision; manual review is required.",
+    ),
+    "reviewer_input_unavailable": (
+        "调用信息缺失或无效，未调用审查模型，已转人工审批。",
+        "Call information is missing or invalid; the reviewer model was not called. Manual review is required.",
+    ),
+    "reviewer_response_invalid": (
+        "智能审批结果格式不符合要求，已转人工审批。",
+        "The smart approval response has an invalid format; manual review is required.",
+    ),
+    "client_exception": (
+        "智能审批服务异常，未取得有效结论，已转人工审批。",
+        "The smart approval service failed without a valid decision; manual review is required.",
+    ),
+    "reviewer_payload_too_large": (
+        "完整审查正文超出字节预算，未调用审查模型，已转人工审批。",
+        "The complete review payload exceeds the byte budget; "
+        "the reviewer model was not called. Manual review is required.",
+    ),
+    "reviewer_redaction_incomplete": (
+        "秘密值遮挡后无法完整核验调用结构，未调用审查模型，已转人工审批。",
+        "Secret redaction prevents a complete review of the call structure; the reviewer model was not called. Manual review is required.",
     ),
     "reviewer_outcome_not_allowed": (
         "自动审批给出的结论超出宿主策略允许范围，已转人工审批。",
@@ -163,6 +189,16 @@ def _host_display_reason(
         key = "low_confidence"
     elif reason_code == "reviewer_outcome_not_allowed":
         key = "reviewer_outcome_not_allowed"
+    elif fallback == "client_exception":
+        key = "client_exception"
+    elif fallback in _REVIEWER_RESPONSE_ERRORS:
+        key = "reviewer_response_invalid"
+    elif fallback in {"reviewer_payload_missing", "reviewer_payload_invalid"}:
+        key = "reviewer_input_unavailable"
+    elif fallback == "reviewer_redaction_incomplete":
+        key = "reviewer_redaction_incomplete"
+    elif fallback == "reviewer_payload_too_large":
+        key = "reviewer_payload_too_large"
     elif fallback or reason_code == "reviewer_fallback":
         key = "reviewer_fallback"
     elif source.startswith("deterministic_"):
