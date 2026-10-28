@@ -20,6 +20,7 @@ from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_PLAN,
     is_code_profile_mode,
 )
+from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.utils import get_config_file, get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
@@ -186,6 +187,7 @@ def create_memory_settings(
             "path": store_config.get("path", "memory.db"),
             "vector": store_config.get("vector", {"enabled": True}),
             "fts": store_config.get("fts", {"enabled": True}),
+            "journal_mode": workspace_sqlite_journal_mode(config) or "WAL",
         }
     
     for key, value in overrides.items():

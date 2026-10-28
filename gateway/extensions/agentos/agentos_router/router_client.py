@@ -2847,6 +2847,10 @@ class AgentOSRouterClient(AgentServerClient):
                     "type", "enabled", "startup_mode", "url", "template_name",
                     "user", "group",
                 ))
+                if sandbox_config.get("type") == "adx-environment":
+                    deployment.update(_pick_keys(sandbox_config, (
+                        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "network",
+                    )))
                 conch = sandbox_config.get("conch")
                 if isinstance(conch, dict):
                     deployment["conch"] = _pick_keys(conch, (

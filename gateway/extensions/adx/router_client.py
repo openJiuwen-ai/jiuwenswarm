@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import logging
 from collections.abc import Callable, Mapping
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -11,6 +10,7 @@ from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from openjiuwen_protocol.e2a.models import E2AEnvelope
 
+from gateway.extensions.adx.ssh_relay import AdxSshRelay
 from gateway.channel_manager.base import ChannelType
 from gateway.extensions.adx.config import AdxRouterConfig
 from gateway.extensions.adx.control_client import AdxControlClient
@@ -52,10 +52,14 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             ),
             workspace_root=settings.workspace_root, agent_sandbox_cpu=settings.agent_sandbox_cpu,
             agent_sandbox_memory=settings.agent_sandbox_memory,
+            tool_sandbox_idle_timeout_seconds=settings.tool_sandbox_idle_timeout_seconds,
+            tool_sandbox_cpu=settings.tool_sandbox_cpu, tool_sandbox_memory=settings.tool_sandbox_memory,
             sandbox_idle_timeout_seconds=settings.sandbox_idle_timeout_seconds,
             sandbox_idle_check_interval_seconds=settings.sandbox_idle_check_interval_seconds,
             disconnect_cleanup_timeout_seconds=settings.disconnect_cleanup_timeout_seconds,
-            connect_warmup_enabled=False, probe_settings=settings.probes, auth_client=auth_client,
+            connect_warmup_enabled=settings.connect_warmup_enabled,
+            probe_settings=settings.probes, auth_client=auth_client,
+            ssh_relay=AdxSshRelay(config), ssh_channel_endpoint=settings.ssh_channel,
             ws_client_factory=ws_client_factory,
         )
         self._closed = True
@@ -81,12 +85,10 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         )
 
     def set_or_update_server_config(self, *, config: dict, env: dict | None = None) -> None:
-        settings = copy.deepcopy(config)
-        settings.setdefault('sandbox', {})['enabled'] = False
-        super().set_or_update_server_config(config=settings, env=env)
+        super().set_or_update_server_config(config=config, env=env)
 
     def _tool_sandbox_env(self) -> dict[str, str]:
-        return {}
+        return super()._tool_sandbox_env()
 
     def _agent_url(self, instance: str, port: int, protocol: str) -> str:
         origin = urlsplit(self._config.ingress_url)

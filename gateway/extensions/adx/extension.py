@@ -8,9 +8,11 @@ from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
 from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
+from gateway.extensions.sdk.third_agent import ThirdAgentExtension
+from gateway.extensions.agentos.agentos_router.third_agent import AgentOSThirdAgent
 
 
-class AdxRouter(AgentServerClientExtension):
+class AdxRouter(AgentServerClientExtension, ThirdAgentExtension):
     def __init__(self, config) -> None:
         settings = config.router
         auth_client = (
@@ -18,12 +20,26 @@ class AdxRouter(AgentServerClientExtension):
             if settings.auth_enabled else None
         )
         self._client = AdxRouterClient(config, auth_client=auth_client)
+        self._third_agent = AgentOSThirdAgent(self._client)
 
     async def initialize(self, config) -> None:
         del config
 
     def get_client(self) -> AdxRouterClient:
         return self._client
+
+    def get_third_agent(self):
+        return self._third_agent
+
+    def set_key_issuer(self, key_issuer, *, ephemeral_key_ttl_sec: float = 300.0) -> None:
+        self._client.set_key_issuer(key_issuer, ephemeral_key_ttl_sec=ephemeral_key_ttl_sec)
+
+    async def resolve_web_endpoint(self, user_id: str, agent_type: str, protocol: str,
+                                   *, acquire: bool = False) -> str | None:
+        return await self._client.resolve_web_endpoint(user_id, agent_type, protocol, acquire=acquire)
+
+    async def release_web_endpoint(self, user_id: str, agent_type: str) -> None:
+        await self._client.release_web_endpoint(user_id, agent_type)
 
     async def shutdown(self) -> None:
         await self._client.shutdown()
@@ -35,4 +51,5 @@ async def register_extensions(registry):
         return []
     extension = AdxRouter(load_router_config(config))
     registry.register_agent_server_client(extension)
+    registry.register_third_agent(extension)
     return [extension]

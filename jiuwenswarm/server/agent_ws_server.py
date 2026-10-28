@@ -108,6 +108,7 @@ from jiuwenswarm.common.e2a.wire_codec import (
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
+from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.schema.agent import (
@@ -1311,7 +1312,8 @@ class AgentWebSocketServer:
 
         service = SessionMessageService(
             store=SessionMessageStore(
-                get_agent_root_dir() / "session_messages.sqlite3"
+                get_agent_root_dir() / "session_messages.sqlite3",
+                journal_mode=workspace_sqlite_journal_mode(get_config()) or "WAL",
             ),
             admission=self._heartbeat_runtime.admission,
             execute=self.execute_internal_session_message,
