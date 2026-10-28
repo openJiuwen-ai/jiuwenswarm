@@ -1838,26 +1838,6 @@ def _project_info_payload(
     }
 
 
-def _persist_media_locally(
-    data: bytes, safe_session_id: str, filename: str
-) -> tuple[bool, dict[str, Any]]:
-    """Write large media bytes directly to the shared user directory.
-
-    Used in legacy single-user mode where the AgentServer has no HTTP upload
-    listener.  The path matches ``media_attachments._store_image_item`` so the
-    AgentServer-side ``_persisted`` passthrough recognizes the file.
-    """
-    from jiuwenswarm.common.utils import get_agent_sessions_dir
-    from gateway.embedded.runtime.attachments.upload_storage import atomic_write_unique
-
-    try:
-        upload_dir = get_agent_sessions_dir() / safe_session_id / "uploads"
-        path = atomic_write_unique(upload_dir / filename, data)
-        return True, {"path": str(path)}
-    except Exception as exc:  # noqa: BLE001
-        return False, {"error": str(exc), "code": "UPLOAD_FAILED"}
-
-
 async def _upload_document_item_via_http(
     item: dict[str, Any],
     data: bytes,
@@ -2482,20 +2462,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         except Exception as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
 
-    async def _session_selection_set(ws, req_id, params, session_id):
-        from gateway.common.model_selection import ModelSelection
-        from gateway.embedded.runtime.model_routing_registry import ModelSelectionResolver
-        from gateway.embedded.runtime.session.model_selection_store import set_session_model_selection
-        try:
-            target = str((params or {}).get("session_id") or session_id or "")
-            selection = ModelSelection.model_validate((params or {}).get("model_selection"))
-            ModelSelectionResolver().resolve(selection)
-            set_session_model_selection(target, selection)
-            await channel.send_response(ws, req_id, ok=True, payload={"model_selection": selection.model_dump()})
-        except Exception as exc:
-            code = getattr(exc, "code", "BAD_REQUEST")
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code=code)
-
     async def _channel_get(ws, req_id, params, session_id):
         """返回已注册的 channel 列表."""
         cm = _resolve(channel_manager)
@@ -2967,15 +2933,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         real_client = _resolve(agent_client)
         # 个人版对齐 develop A2g：统一走 E2A。企业版在 legacy 共享目录且
-        # AgentServer 未就绪时允许本地列表（embedded runtime / 无 AS 场景）。
+        # AgentServer 未就绪时允许本地列表（server.runtime / 无 AS 场景）。
         if (
             is_enterprise()
             and is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
-            from gateway.embedded.runtime.parse_int import parse_int_param
-            from gateway.embedded.runtime.session.session_info import to_session_info
-            from gateway.embedded.runtime.session.session_metadata import get_all_sessions_metadata
+            from jiuwenswarm.server.control.responses import parse_int_param
+            from jiuwenswarm.server.runtime.session.session_info import to_session_info
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_all_sessions_metadata,
+            )
 
             raw_params = params if isinstance(params, dict) else {}
             limit = parse_int_param(raw_params, "limit", 20, minimum=1, maximum=200)
@@ -3129,7 +3097,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             and is_legacy_shared_directory_client(real_client)
             and not getattr(real_client, "server_ready", True)
         ):
-            from gateway.embedded.runtime.session.session_rename import apply_session_rename
+            from jiuwenswarm.server.runtime.session.session_rename import (
+                apply_session_rename,
+            )
 
             ok, payload, error, code = apply_session_rename(
                 params if isinstance(params, dict) else {},
@@ -3184,7 +3154,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if not isinstance(pinned, bool):
                 await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
                 return
-            from gateway.embedded.runtime.session.session_metadata import set_session_pinned
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                set_session_pinned,
+            )
 
             result = await asyncio.to_thread(set_session_pinned, sid.strip(), pinned)
             if result is None:
@@ -5281,7 +5253,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             deleted = await cc.delete_job(job_id, **_cron_owner_ids(user_id, params))
         except Exception as exc:
             from gateway.lifecycle_errors import LifecycleError
-            from gateway.embedded.runtime.session.lifecycle import LifecycleError
             code = exc.code if isinstance(exc, LifecycleError) else (getattr(exc, "code", None) or "DELETE_FAILED")
             await channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code=code
@@ -5622,7 +5593,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                            lambda *a: _model_resource_rpc(*a, "groups.upsert"))
     _register_config_proxy("model_groups.delete", _ConfigReq.MODEL_GROUPS_DELETE,
                            lambda *a: _model_resource_rpc(*a, "groups.delete"))
-    _register_config_proxy("session.selection.set", _ConfigReq.SESSION_SELECTION_SET, _session_selection_set)
+    _register_config_proxy("session.selection.set", _ConfigReq.SESSION_SELECTION_SET)
 
     # vendors.* 为本分支新增的厂商选择接口，不经 config proxy（无 AgentOS 多用户注入目录语义），
     # 直接走本地 handler。
