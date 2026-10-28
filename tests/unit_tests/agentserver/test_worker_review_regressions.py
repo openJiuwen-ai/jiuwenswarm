@@ -60,7 +60,7 @@ async def test_retirement_still_reaps_owned_root_when_descendant_disappears(tmp_
 
 
 @pytest.mark.parametrize("force", [False, True])
-def test_detach_keeps_unreadable_worker_subtree_and_handles_trailing_module_flag(monkeypatch, force):
+def test_detach_keeps_unreadable_tool_in_verified_worker_subtree(monkeypatch, force):
     def native(pid, argv, ppid):
         return SimpleNamespace(pid=pid, cmdline=Mock(return_value=argv), ppid=lambda: ppid,
                                terminate=Mock(), kill=Mock())
@@ -68,11 +68,12 @@ def test_detach_keeps_unreadable_worker_subtree_and_handles_trailing_module_flag
     parent = native(10, ["launcher"], 1)
     front = native(11, ["python", "-m", "jiuwenswarm.server.app_agentserver"], 10)
     malformed = native(12, ["python", "-m"], 10)
-    unknown = native(13, [], 10)
-    unknown.cmdline.side_effect = psutil.AccessDenied(13)
+    unknown = native(13, ["python", "-m", "jiuwenswarm.server.worker.main"], 10)
     tool = native(14, ["tool"], 13)
+    tool.cmdline.side_effect = psutil.AccessDenied(14)
     parent.children = lambda **kw: [front, malformed, unknown, tool]
     monkeypatch.setattr(psutil, "Process", lambda pid: parent)
+    monkeypatch.setattr(psutil, "wait_procs", lambda targets, timeout: (targets, []))
     shutdown.detach_front_process(10, force=force)
     for process in (unknown, tool):
         process.terminate.assert_not_called()
@@ -80,6 +81,24 @@ def test_detach_keeps_unreadable_worker_subtree_and_handles_trailing_module_flag
     for process in (parent, front, malformed):
         (process.kill if force else process.terminate).assert_called_once()
         (process.terminate if force else process.kill).assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["cmdline", "ppid", "terminate", "alive"])
+def test_detach_never_reports_success_for_unverified_or_surviving_front(monkeypatch, failure):
+    front = SimpleNamespace(pid=11, cmdline=Mock(return_value=["python", "-m", "jiuwenswarm.server.app_agentserver"]),
+                            ppid=Mock(return_value=10), terminate=Mock(), kill=Mock())
+    parent = SimpleNamespace(pid=10, cmdline=lambda: ["uv", "run", "python", "-m",
+                                                   "jiuwenswarm.server.app_agentserver"],
+                             children=lambda **kw: [front], terminate=Mock(), kill=Mock())
+    if failure in {"cmdline", "ppid", "terminate"}:
+        getattr(front, failure).side_effect = psutil.AccessDenied(11)
+    monkeypatch.setattr(psutil, "Process", lambda pid: parent)
+    monkeypatch.setattr(psutil, "wait_procs", lambda targets, timeout: ([], [front]))
+    with pytest.raises(RuntimeError, match="Front detach incomplete"):
+        shutdown.detach_front_process(parent.pid)
+    parent.terminate.assert_not_called()
+    if failure in {"cmdline", "ppid"}:
+        front.terminate.assert_not_called()
 
 
 def test_shutdown_cli_reports_non_ok_as_nonzero(monkeypatch, capsys):

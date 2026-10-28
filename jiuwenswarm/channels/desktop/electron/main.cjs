@@ -776,12 +776,25 @@ function signalServiceTree(child, signal) {
   try {
     if (process.platform === 'win32') {
       if (serviceProcesses.get('agent') === child) {
+        const timeout = signal === 'SIGKILL' ? SERVICE_KILL_TIMEOUT_MS : SERVICE_SHUTDOWN_TIMEOUT_MS;
         const { command, args } = serviceCommand('lifecycle', [
-          '--detach-front', String(child.pid), ...(signal === 'SIGKILL' ? ['--force'] : []),
+          '--detach-front', String(child.pid), '--timeout', String(timeout / 1000),
+          ...(signal === 'SIGKILL' ? ['--force'] : []),
         ]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
-        helper.on('error', error => console.error('[electron] Front detach helper failed', error));
-        helper.once('exit', code => { if (code !== 0) console.error('[electron] Front detach helper failed', { code }); });
+        child.frontDetachPromise = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            helper.kill();
+            reject(new Error('Front detach helper exceeded deadline'));
+          }, timeout);
+          helper.once('error', error => { clearTimeout(timer); reject(error); });
+          helper.once('exit', code => {
+            clearTimeout(timer);
+            if (code === 0) resolve();
+            else reject(new Error(`Front detach incomplete (exit=${code})`));
+          });
+        });
+        void child.frontDetachPromise.catch(error => console.error('[electron] Front detach helper failed', error));
         helper.unref();
         return true;
       }
@@ -832,14 +845,28 @@ function waitForServiceTreeExit(child, timeoutMs) {
 }
 
 async function terminateService(child) {
-  if (!child?.pid || !serviceTreeRunning(child)) return;
-  signalServiceTree(child, 'SIGTERM');
-  if (await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS)) return;
+  if (!child?.pid) return;
+  if (!serviceTreeRunning(child)) {
+    await child.frontDetachPromise;
+    return;
+  }
+  const signaled = signalServiceTree(child, 'SIGTERM');
+  try {
+    if (!signaled) throw new Error('Failed to start service shutdown');
+    const stopped = await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS);
+    await child.frontDetachPromise;
+    if (stopped) return;
+  } catch (error) {
+    console.warn('[electron] graceful Front detach incomplete', error);
+    if (!serviceTreeRunning(child)) throw error;
+  }
 
   console.warn(`[electron] service tree ${child.pid} did not stop after SIGTERM; forcing shutdown`);
-  signalServiceTree(child, 'SIGKILL');
-  if (!(await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS))) {
-    console.error(`[electron] service tree ${child.pid} is still running after SIGKILL`);
+  if (!signalServiceTree(child, 'SIGKILL')) throw new Error('Failed to start forced service shutdown');
+  const stopped = await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS);
+  await child.frontDetachPromise;
+  if (!stopped) {
+    throw new Error(`Service tree ${child.pid} is still running after SIGKILL`);
   }
 }
 

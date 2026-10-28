@@ -63,7 +63,7 @@ def test_successful_update_cli_may_verify_the_worker_is_absent(tmp_path, monkeyp
     assert json.loads(capsys.readouterr().out) == {"ok": True, "absent": True}
 
 
-@pytest.mark.parametrize("failure", ["exception", "non_ok", "invalid_result", "missing_receipt"])
+@pytest.mark.parametrize("failure", ["exception", "non_ok", "invalid_result", "missing_receipt", "front_cleanup"])
 def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_path, monkeypatch, failure):
     from jiuwenswarm.server.supervisor import shutdown
 
@@ -83,6 +83,10 @@ def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_
         receipt.unlink()
     lifecycle = (AsyncMock(side_effect=RuntimeError("persistence incomplete")) if failure == "exception"
                  else AsyncMock(return_value=None if failure == "invalid_result" else {"ok": False}))
+    if failure == "front_cleanup":
+        runtime.processes["agent"].poll = Mock(side_effect=[None, 0, 0])
+        namespace["_terminate_process_tree"].side_effect = RuntimeError("Front ownership unknown")
+        lifecycle = AsyncMock(return_value={"ok": True, "absent": True})
     monkeypatch.setattr(shutdown, "shutdown_resident_worker", lifecycle)
     namespace["shutdown"](runtime)
     assert runtime.processes == {}

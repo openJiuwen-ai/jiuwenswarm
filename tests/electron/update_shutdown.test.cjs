@@ -112,6 +112,7 @@ for (const packaged of [false, true]) {
       backendExecutable: () => 'backend.exe',
       process: { platform: 'win32', env: {}, execPath: 'node' },
       serviceProcesses: new Map([['agent', child]]), shutdownPromise: null, shuttingDown: false,
+      SERVICE_SHUTDOWN_TIMEOUT_MS: 100, SERVICE_KILL_TIMEOUT_MS: 100,
       serviceWorkingDirectory: () => '.',
       terminateService: async () => { child.exitCode = 0; },
       serviceTreeRunning: service => service.exitCode === null,
@@ -182,3 +183,48 @@ test('failed installer spawn does not poison a later normal quit', async t => {
   assert.equal(await fs.readFile(receipt, 'utf8'), 'failed\n');
   await recordShutdownOutcome(context.updateShutdownReceipt, async () => {});
 });
+
+for (const failure of ['success', 'retry', 'nonzero', 'spawn', 'timeout']) {
+  test(`Front detach ${failure} must be confirmed before completing an update receipt`, async t => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'detach-receipt-'));
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    const receipt = await createShutdownReceipt(root);
+    const source = await fs.readFile(path.join(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs'), 'utf8');
+    const block = source.slice(source.indexOf('function signalServiceTree('), source.indexOf('function forceStopServices('));
+    const child = { pid: 123, exitCode: null };
+    let detachCalls = 0;
+    const context = vm.createContext({
+      serviceProcesses: new Map([['agent', child]]), shutdownPromise: null, shuttingDown: false,
+      SERVICE_SHUTDOWN_TIMEOUT_MS: 20, SERVICE_KILL_TIMEOUT_MS: 20, RUNTIME_SHUTDOWN_TIMEOUT_MS: 200,
+      serviceCommand: (_, args) => ({ command: 'backend', args }), serviceWorkingDirectory: () => root,
+      process: { platform: 'win32', env: {} }, setTimeout, clearTimeout,
+      console: { log() {}, warn() {}, error() {} },
+      spawn: (_, args) => {
+        if (failure === 'spawn' && args.includes('--detach-front')) throw new Error('Cannot spawn detach helper');
+        const helper = new EventEmitter();
+        helper.unref = () => {};
+        helper.kill = () => {};
+        if (args.includes('--detach-front')) {
+          detachCalls += 1;
+          if (failure !== 'retry' || detachCalls > 1) child.exitCode = 0;
+          if (failure !== 'timeout') {
+            queueMicrotask(() => helper.emit('exit', failure === 'success' || detachCalls > 1 ? 0 : 1));
+          }
+        } else {
+          queueMicrotask(() => helper.emit('exit', 0));
+        }
+        return helper;
+      },
+    });
+    vm.runInContext(block, context);
+    if (['success', 'retry'].includes(failure)) {
+      await recordShutdownOutcome(receipt, () => context.stopServices());
+      assert.equal(await fs.readFile(receipt, 'utf8'), 'ok\n');
+      assert.equal(detachCalls, failure === 'retry' ? 2 : 1);
+    } else {
+      await assert.rejects(recordShutdownOutcome(receipt, () => context.stopServices()));
+      assert.equal(await fs.readFile(receipt, 'utf8'), 'failed\n');
+      if (failure !== 'spawn') assert.equal(detachCalls, 1, 'A missing launcher cannot erase failed descendant cleanup');
+    }
+  });
+}

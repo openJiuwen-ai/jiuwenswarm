@@ -286,17 +286,20 @@ async def test_worker_process_forced_exit_does_not_start_another_wait_budget(mon
     worker = WorkerProcess("unused", host="127.0.0.1", port=18092)
     worker._proc = Process()
     budgets = []
+    clock = [0.0]
+    monkeypatch.setattr(worker_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
 
     async def wait(*, timeout=None):
         assert timeout is not None, "the kill/reap wait must also be bounded"
         budgets.append(timeout)
-        await asyncio.sleep(timeout)
+        clock[0] += timeout
         return None
 
     monkeypatch.setattr(worker, "wait", wait)
     await asyncio.wait_for(worker.stop(timeout=0.04), 0.5)
     assert calls == ["terminate", "kill"]
     assert len(budgets) == 2
+    assert sum(budgets) <= .04, "grace and reap must not each start a fresh budget"
     assert 0 < budgets[0] < .04
     assert 0 < budgets[1] <= .04, "force-kill observation must share the original deadline"
     assert "exit could not be observed" in caplog.text

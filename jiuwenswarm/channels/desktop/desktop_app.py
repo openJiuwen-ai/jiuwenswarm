@@ -3272,7 +3272,11 @@ nohup {q_executable} >/dev/null 2>&1 &
 
         for process in processes:
             if process.poll() is None:
-                _terminate_process_tree(process)
+                try:
+                    _terminate_process_tree(process)
+                except (OSError, RuntimeError):
+                    shutdown_ok = False
+                    logger.exception("[desktop] service tree cleanup incomplete")
 
         if processes:
             # Front restarts detach. The desktop application owns final exit
@@ -3295,7 +3299,10 @@ nohup {q_executable} >/dev/null 2>&1 &
         for process in processes:
             if process.poll() is None:
                 shutdown_ok = False
-                _kill_process_tree(process)
+                try:
+                    _kill_process_tree(process)
+                except (OSError, RuntimeError):
+                    logger.exception("[desktop] forced service tree cleanup incomplete")
 
         with self._lock:
             self.processes.clear()
@@ -3726,8 +3733,10 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
                 argv = child.cmdline()
                 if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
                     retained.add(child.pid)
-            except psutil.Error:
-                retained.add(child.pid)
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.Error as exc:
+                raise RuntimeError("Desktop process tree ownership could not be established") from exc
         for child in children:
             try:
                 ancestor = child.ppid()
@@ -3735,8 +3744,10 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
                     ancestor = by_pid[ancestor].ppid()
                 if ancestor in retained:
                     retained.add(child.pid)
-            except psutil.Error:
-                retained.add(child.pid)
+            except psutil.NoSuchProcess:
+                continue
+            except psutil.Error as exc:
+                raise RuntimeError("Desktop process tree ownership could not be established") from exc
         kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
         # 先杀子孙，再杀父进程，避免子孙变成孤儿
         for child in reversed(children):
@@ -3744,14 +3755,16 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
                 continue
             try:
                 kill_fn(child)
-            except psutil.Error:
+            except psutil.NoSuchProcess:
                 pass
         try:
             kill_fn(parent)
-        except psutil.Error:
+        except psutil.NoSuchProcess:
             pass
-    except Exception:  # noqa: BLE001
+    except psutil.NoSuchProcess:
         pass
+    except psutil.Error as exc:
+        raise RuntimeError("Desktop process tree termination incomplete") from exc
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
