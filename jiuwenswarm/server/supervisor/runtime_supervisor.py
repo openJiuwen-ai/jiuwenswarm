@@ -387,8 +387,8 @@ class RuntimeSupervisor:
                 logger.error("[Supervisor] final shutdown deadline exhausted before IPC/task cleanup completed")
         self._ipc_ready.set()
         remaining_process = self._process or owned_process
-        if (terminate_worker and remaining_process is not None
-                and getattr(remaining_process, "pid", None) is not None
+        has_owned_pid = remaining_process is not None and getattr(remaining_process, "pid", None) is not None
+        if (terminate_worker and has_owned_pid
                 and getattr(remaining_process, "returncode", 0) is None):
             self._process = remaining_process
             self._owns_process = True
@@ -1128,6 +1128,7 @@ class RuntimeSupervisor:
                 except Exception:
                     self._fatal = True
                     self._fatal_reason = "legacy Worker migration failed"
+                    self._readiness.mark_failed(self._fatal_reason)
                     raise
                 finally:
                     await connection.close()

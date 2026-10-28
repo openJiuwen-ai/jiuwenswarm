@@ -168,7 +168,7 @@ printf 'Verifying frozen RSI Harness baseline bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_rsi_bundle.py"
 
 printf 'Verifying frozen Computer Use runtime without build tools...\n'
-"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_computer_use_bundle.py"
 
 printf 'Verifying frozen GitCode CLI bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_gitcode_cli_bundle.py"

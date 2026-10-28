@@ -96,7 +96,8 @@ async def test_unobserved_reattached_exit_fails_and_keeps_identity_for_retry(mon
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows descendant lifetime regression")
-async def test_windows_front_tree_exit_preserves_worker_until_validated_ipc_stop(tmp_path, monkeypatch):
+@pytest.mark.parametrize("method", ["desktop", "cli", "force_cli"])
+async def test_windows_front_tree_exit_preserves_worker_until_validated_ipc_stop(tmp_path, monkeypatch, method):
     from jiuwenswarm.common import utils
 
     data = tmp_path / "data"
@@ -135,8 +136,15 @@ asyncio.run(run())
         assert marker.exists(), (tmp_path / "front.log").read_text(encoding="utf-8", errors="replace")
         observed = json.loads(marker.read_text(encoding="utf-8"))
         native = psutil.Process(observed["hello"]["pid"])
-        entry = _entry_functions(ROOT / "jiuwenswarm/channels/desktop/desktop_app.py", {"_psutil_terminate"})
-        entry["_psutil_terminate"](front.pid)
+        if method == "desktop":
+            entry = _entry_functions(ROOT / "jiuwenswarm/channels/desktop/desktop_app.py", {"_psutil_terminate"})
+            entry["_psutil_terminate"](front.pid)
+        else:
+            command = [sys.executable, "-m", "jiuwenswarm.server.supervisor.shutdown", "--detach-front", str(front.pid)]
+            if method == "force_cli":
+                command.append("--force")
+            await asyncio.to_thread(subprocess.run, command, env=os.environ.copy(), check=True,
+                                    capture_output=True, timeout=10)
         await asyncio.to_thread(front.wait, 3)
         assert native.is_running(), "Front tree termination must retain its resident Worker"
         result = await shutdown.shutdown_resident_worker(socket_path=socket, timeout=5)

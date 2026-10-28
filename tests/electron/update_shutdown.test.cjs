@@ -5,7 +5,37 @@ const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
 const { EventEmitter } = require('node:events');
+const { createRequire } = require('node:module');
 const { createShutdownReceipt, completeShutdownReceipt, recordShutdownOutcome } = require('../../jiuwenswarm/channels/desktop/electron/update_shutdown.cjs');
+
+test('complete production entry loads and registers application shutdown', async () => {
+  const entry = path.resolve(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs');
+  const source = await fs.readFile(entry, 'utf8');
+  const host = new EventEmitter();
+  let readyCallback;
+  const switches = new Map();
+  Object.assign(host, {
+    isPackaged: false,
+    commandLine: { appendSwitch: (key, value) => switches.set(key, value) },
+    requestSingleInstanceLock: () => true,
+    whenReady: () => ({ then: callback => { readyCallback = callback; } }),
+  });
+  const processHost = new EventEmitter();
+  Object.assign(processHost, { platform: 'win32', env: { JIUWENSWARM_ELECTRON_CDP_PORT: '19319' },
+    argv: ['node', entry], execPath: process.execPath, pid: process.pid });
+  const realRequire = createRequire(entry);
+  vm.runInNewContext(source, {
+    require: name => name === 'electron' ? { app: host } : realRequire(name),
+    __filename: entry, __dirname: path.dirname(entry), module: { exports: {} }, exports: {},
+    process: processHost, Buffer, URL, AbortController, setTimeout, clearTimeout, setInterval, clearInterval,
+    console: { log() {}, error() {}, warn() {} },
+  }, { filename: entry });
+  assert.equal(typeof readyCallback, 'function');
+  assert.equal(host.listenerCount('before-quit'), 1);
+  assert.equal(host.listenerCount('window-all-closed'), 1);
+  assert.equal(processHost.listenerCount('exit'), 1);
+  assert.equal(switches.get('remote-debugging-port'), '19319');
+});
 
 for (const failure of ['exit', 'spawn', 'timeout', 'service', 'survivor']) {
   test(`failed ${failure} shutdown blocks update even when the next check sees absent`, async t => {
@@ -101,9 +131,54 @@ for (const packaged of [false, true]) {
     assert.equal(calls[0].args.includes('--detach-front'), true);
     assert.equal(calls[0].executable === 'taskkill', false);
     assert.equal(calls[0].options.env, child.spawnEnvironment);
+    assert.equal(context.signalServiceTree(child, 'SIGKILL'), true);
+    assert.equal(calls[1].args.includes('--force'), true);
+    assert.equal(calls[1].executable === 'taskkill', false, 'Worker subtree must survive Front force-stop');
     await context.stopServices();
-    assert.equal(calls[1].args.includes('--shutdown-worker'), true);
-    assert.equal(calls[1].args.includes(packaged ? '--desktop-run-worker-lifecycle' : 'jiuwenswarm.server.supervisor.shutdown'), true);
-    assert.equal(calls[1].options.env, child.spawnEnvironment);
+    assert.equal(calls[2].args.includes('--shutdown-worker'), true);
+    assert.equal(calls[2].args.includes(packaged ? '--desktop-run-worker-lifecycle' : 'jiuwenswarm.server.supervisor.shutdown'), true);
+    assert.equal(calls[2].options.env, child.spawnEnvironment);
   });
 }
+
+test('missing receipt cannot hide the original shutdown error', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shutdown-receipt-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const receipt = await createShutdownReceipt(root);
+  await fs.rm(receipt);
+  const failure = new Error('Original Front shutdown failure');
+  await assert.rejects(recordShutdownOutcome(receipt, async () => { throw failure; }), error => error === failure);
+  await assert.rejects(recordShutdownOutcome(receipt, async () => {}), { code: 'ENOENT' });
+});
+
+test('failed installer spawn does not poison a later normal quit', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'shutdown-receipt-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const source = await fs.readFile(path.join(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs'), 'utf8');
+  const block = source.slice(source.indexOf('    if (canUseBackendUpdateHelper()) {'),
+    source.indexOf('    const errorMessage = await shell.openPath(target);'));
+  const helper = new EventEmitter();
+  helper.unref = () => {};
+  let prompts = 0;
+  const context = vm.createContext({
+    target: 'new-installer.exe', updateShutdownReceipt: null, process: { env: {}, execPath: 'desktop', pid: 1 },
+    app: { getPath: () => root }, path, sessionPorts: {}, createShutdownReceipt,
+    completeShutdownReceipt,
+    canUseBackendUpdateHelper: () => true, backendExecutable: () => 'backend', serviceWorkingDirectory: () => root,
+    spawn: () => helper, console: { error() {} },
+    dialog: { showMessageBox: async () => { prompts += 1; } },
+    requestShutdown: () => assert.fail('Failed helper must not initiate update shutdown'), setTimeout,
+  });
+  vm.runInContext(`async function install() { ${block} }`, context);
+  assert.equal(await context.install(), true);
+  const receipt = context.updateShutdownReceipt;
+  const failed = new Promise(resolve => {
+    context.completeShutdownReceipt = async (...args) => { await completeShutdownReceipt(...args); resolve(); };
+  });
+  helper.emit('error', new Error('ENOENT'));
+  await failed;
+  assert.equal(context.updateShutdownReceipt, null);
+  assert.equal(prompts, 1);
+  assert.equal(await fs.readFile(receipt, 'utf8'), 'failed\n');
+  await recordShutdownOutcome(context.updateShutdownReceipt, async () => {});
+});

@@ -768,7 +768,9 @@ def _wait_for_port_release(host: str, port: int, timeout: float = 15.0) -> bool:
 def _shutdown_runtime_before_update() -> None:
     from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
 
-    asyncio.run(shutdown_resident_worker(timeout=30))
+    result = asyncio.run(shutdown_resident_worker(timeout=30))
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError(f"Worker shutdown incomplete: {result}")
 
 
 def _launch_windows_installer_helper(
@@ -1281,6 +1283,7 @@ class DesktopRuntime:
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
+        self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
         self._tray_menu = None
@@ -3276,7 +3279,10 @@ nohup {q_executable} >/dev/null 2>&1 &
             # and upgrade, so it explicitly drains the resident Worker here.
             from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
             try:
-                asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
+                result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
+                if not isinstance(result, dict) or result.get("ok") is not True:
+                    shutdown_ok = False
+                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
             except Exception:
                 shutdown_ok = False
                 logger.exception("[desktop] resident Worker final shutdown incomplete")
@@ -3295,7 +3301,10 @@ nohup {q_executable} >/dev/null 2>&1 &
             self.processes.clear()
         receipt = getattr(self, "_update_shutdown_receipt", None)
         if receipt is not None:
-            complete_shutdown_receipt(receipt, ok=shutdown_ok)
+            try:
+                complete_shutdown_receipt(receipt, ok=shutdown_ok)
+            except (OSError, RuntimeError):
+                logger.exception("[desktop] failed to record update shutdown receipt")
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
@@ -3715,10 +3724,10 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
         for child in children:
             try:
                 argv = child.cmdline()
-                if "-m" in argv and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
+                if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
                     retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                pass
+            except psutil.Error:
+                retained.add(child.pid)
         for child in children:
             try:
                 ancestor = child.ppid()
@@ -3726,8 +3735,8 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
                     ancestor = by_pid[ancestor].ppid()
                 if ancestor in retained:
                     retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                pass
+            except psutil.Error:
+                retained.add(child.pid)
         kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
         # 先杀子孙，再杀父进程，避免子孙变成孤儿
         for child in reversed(children):
@@ -3735,11 +3744,11 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
                 continue
             try:
                 kill_fn(child)
-            except psutil.NoSuchProcess:
+            except psutil.Error:
                 pass
         try:
             kill_fn(parent)
-        except psutil.NoSuchProcess:
+        except psutil.Error:
             pass
     except Exception:  # noqa: BLE001
         pass

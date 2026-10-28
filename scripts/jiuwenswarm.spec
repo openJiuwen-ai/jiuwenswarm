@@ -109,7 +109,7 @@ def collect_tree_python_modules(source_dir, package_roots):
 # One shared build step for Windows/macOS, pywebview and Electron installers.
 # Native compiler inputs stay on the build machine; the installed app never builds.
 computer_use_source = os.path.join(project_root, "jiuwenswarm", "cua_engine", "src")
-computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
+computer_use_build = runpy.run_path(os.path.join(packaging_root, "scripts", "build_computer_use.py"))
 computer_use_data = computer_use_build["bundle_data"](Path(project_root))
 computer_use_submodules = (
     collect_tree_python_modules(computer_use_source, ("computer_use",))

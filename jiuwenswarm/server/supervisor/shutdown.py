@@ -16,7 +16,7 @@ from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, star
 logger = logging.getLogger(__name__)
 
 
-def detach_front_process(pid: int) -> None:
+def detach_front_process(pid: int, *, force: bool = False) -> None:
     """Stop an owned Front launcher subtree while retaining Worker and tools."""
     import psutil
     try:
@@ -26,8 +26,13 @@ def detach_front_process(pid: int) -> None:
         retained = set()
         fronts = []
         for child in [parent, *children]:
-            argv = child.cmdline()
-            module = argv[argv.index("-m") + 1] if "-m" in argv else ""
+            try:
+                argv = child.cmdline()
+            except psutil.Error:
+                # An unreadable command may be a Worker; preserve its subtree.
+                retained.add(child.pid)
+                continue
+            module = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
             if module == "jiuwenswarm.server.worker.main":
                 retained.add(child.pid)
             if module == "jiuwenswarm.server.app_agentserver" or "--desktop-run-agent" in argv:
@@ -35,18 +40,21 @@ def detach_front_process(pid: int) -> None:
         if not fronts:
             raise RuntimeError("Front detach refused a process without an AgentServer child")
         for child in children:
-            ancestor = child.ppid()
-            while ancestor in by_pid and ancestor not in retained:
-                ancestor = by_pid[ancestor].ppid()
-            if ancestor in retained:
+            try:
+                ancestor = child.ppid()
+                while ancestor in by_pid and ancestor not in retained:
+                    ancestor = by_pid[ancestor].ppid()
+                if ancestor in retained:
+                    retained.add(child.pid)
+            except psutil.Error:
                 retained.add(child.pid)
         for child in reversed(children):
             if child.pid not in retained:
                 try:
-                    child.terminate()
-                except psutil.NoSuchProcess:
-                    pass
-        parent.terminate()
+                    child.kill() if force else child.terminate()
+                except psutil.Error:
+                    logger.warning("Front child termination failed: pid=%s", child.pid, exc_info=True)
+        parent.kill() if force else parent.terminate()
     except psutil.NoSuchProcess:
         pass
 
@@ -69,7 +77,7 @@ async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | 
             while connection is None and time.monotonic() < deadline:
                 try:
                     connection = await asyncio.wait_for(connect(path), min(.2, deadline - time.monotonic()))
-                except (OSError, RuntimeError, asyncio.TimeoutError):
+                except (OSError, RuntimeError):
                     await asyncio.sleep(.025)
             if connection is None:
                 raise TimeoutError("Worker shutdown could not acquire its detached IPC connection")
@@ -85,6 +93,7 @@ async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Application-owner Runtime lifecycle control")
     parser.add_argument("--detach-front", type=int)
+    parser.add_argument("--force", action="store_true", help="Force-stop the Front while preserving Worker subtrees")
     parser.add_argument("--shutdown-worker", action="store_true")
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--shutdown-receipt", help="Require this desktop update attempt's successful shutdown")
@@ -94,7 +103,7 @@ def main() -> None:
 
         require_clean_shutdown(args.shutdown_receipt)
     if args.detach_front:
-        detach_front_process(args.detach_front)
+        detach_front_process(args.detach_front, force=args.force)
     if args.shutdown_worker:
         result = asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout)))
         result_logger = logging.Logger(f"{__name__}.result", level=logging.INFO)
@@ -105,6 +114,8 @@ def main() -> None:
             result_logger.info("%s", json.dumps(result))
         finally:
             result_handler.close()
+        if not isinstance(result, dict) or result.get("ok") is not True:
+            raise SystemExit(1)
 
 
 if __name__ == "__main__":

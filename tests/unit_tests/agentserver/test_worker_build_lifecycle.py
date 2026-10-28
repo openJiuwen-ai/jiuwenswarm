@@ -170,7 +170,8 @@ def test_retirement_refuses_self_and_reused_pid(monkeypatch):
              "deployment_scope": identity.deployment_scope(), "pid": os.getpid()}
     with pytest.raises(RuntimeError, match="invalid PID"):
         resident_lifecycle.worker_process(hello, "unused")
-    process = SimpleNamespace(create_time=lambda: 2)
+    process = SimpleNamespace(pid=123, create_time=lambda: 1)
+    monkeypatch.setattr(resident_lifecycle.psutil, "Process", lambda pid: SimpleNamespace(create_time=lambda: 2))
     with pytest.raises(RuntimeError, match="PID identity changed"):
         resident_lifecycle._alive(process, 1)
 

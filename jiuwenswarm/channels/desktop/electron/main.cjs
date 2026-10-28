@@ -41,7 +41,6 @@ const CDP_TARGET_TIMEOUT_MS = 10_000;
 const BROWSER_VIEW_MAX_CRASHES = 5;
 const SERVICE_SHUTDOWN_TIMEOUT_MS = 5_000;
 const RUNTIME_SHUTDOWN_TIMEOUT_MS = 30_000;
-const RUNTIME_SHUTDOWN_TIMEOUT_MS = 30_000;
 const SERVICE_KILL_TIMEOUT_MS = 1_500;
 const DEFAULT_BROWSER_URL = 'https://cn.bing.com/';
 const PLAYWRIGHT_MCP_PACKAGE = '@playwright/mcp@0.0.78';
@@ -283,7 +282,6 @@ function serviceCommand(name, extraArgs = []) {
     agent: 'jiuwenswarm.server.app_agentserver',
     gateway: 'jiuwenswarm.gateway.app_gateway',
     web: 'jiuwenswarm.channels.web.app_web',
-    lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
     lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
   };
   const moduleName = moduleNames[name];
@@ -778,9 +776,12 @@ function signalServiceTree(child, signal) {
   try {
     if (process.platform === 'win32') {
       if (serviceProcesses.get('agent') === child) {
-        const { command, args } = serviceCommand('lifecycle', ['--detach-front', String(child.pid)]);
+        const { command, args } = serviceCommand('lifecycle', [
+          '--detach-front', String(child.pid), ...(signal === 'SIGKILL' ? ['--force'] : []),
+        ]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
         helper.on('error', error => console.error('[electron] Front detach helper failed', error));
+        helper.once('exit', code => { if (code !== 0) console.error('[electron] Front detach helper failed', { code }); });
         helper.unref();
         return true;
       }
@@ -2874,7 +2875,10 @@ function registerIpcHandlers() {
         shell: false,
       });
       helper.once('error', error => {
+        if (updateShutdownReceipt === receipt) updateShutdownReceipt = null;
         console.error('[electron] failed to launch backend update helper', error);
+        void dialog.showMessageBox({ type: 'error', message: 'Failed to launch update installer. Please try again.' })
+          .catch(error => console.error('[electron] failed to display update error', error));
         void completeShutdownReceipt(receipt, false).catch(error => console.error('[electron] update receipt failed', error));
       });
       helper.once('spawn', () => {

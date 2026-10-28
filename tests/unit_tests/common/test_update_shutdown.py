@@ -63,7 +63,8 @@ def test_successful_update_cli_may_verify_the_worker_is_absent(tmp_path, monkeyp
     assert json.loads(capsys.readouterr().out) == {"ok": True, "absent": True}
 
 
-def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["exception", "non_ok", "invalid_result", "missing_receipt"])
+def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_path, monkeypatch, failure):
     from jiuwenswarm.server.supervisor import shutdown
 
     root = Path(__file__).resolve().parents[3]
@@ -78,12 +79,34 @@ def test_python_desktop_records_persistence_failure_after_worker_disappears(tmp_
     runtime = SimpleNamespace(_lock=threading.Lock(), _is_shutting_down=False, _startup_cancelled=threading.Event(),
         _abort_all_blob_saves=Mock(), processes={"agent": SimpleNamespace(poll=lambda: 0)},
         _update_shutdown_receipt=receipt)
-    monkeypatch.setattr(shutdown, "shutdown_resident_worker", AsyncMock(side_effect=RuntimeError("persistence incomplete")))
+    if failure == "missing_receipt":
+        receipt.unlink()
+    lifecycle = (AsyncMock(side_effect=RuntimeError("persistence incomplete")) if failure == "exception"
+                 else AsyncMock(return_value=None if failure == "invalid_result" else {"ok": False}))
+    monkeypatch.setattr(shutdown, "shutdown_resident_worker", lifecycle)
     namespace["shutdown"](runtime)
     assert runtime.processes == {}
-    assert receipt.read_bytes() == b"failed\n"
+    if failure == "missing_receipt":
+        assert not receipt.exists()
+    else:
+        assert receipt.read_bytes() == b"failed\n"
     with pytest.raises(RuntimeError, match="Update refused"):
         require_clean_shutdown(receipt)
+
+
+@pytest.mark.parametrize("result", [{"ok": False}, None])
+def test_python_update_helper_rejects_non_ok_shutdown(monkeypatch, result):
+    from jiuwenswarm.server.supervisor import shutdown
+
+    root = Path(__file__).resolve().parents[3]
+    tree = ast.parse((root / "jiuwenswarm/channels/desktop/desktop_app.py").read_text(encoding="utf-8"))
+    method = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                  and node.name == "_shutdown_runtime_before_update")
+    namespace = {"asyncio": asyncio}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), "update-preflight", "exec"), namespace)
+    monkeypatch.setattr(shutdown, "shutdown_resident_worker", AsyncMock(return_value=result))
+    with pytest.raises(RuntimeError, match="Worker shutdown incomplete"):
+        namespace[method.name]()
 
 
 def test_python_linux_updater_forwards_its_attempt_receipt_before_replacing_files(tmp_path):

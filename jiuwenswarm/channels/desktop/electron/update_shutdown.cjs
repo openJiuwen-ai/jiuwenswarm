@@ -27,7 +27,10 @@ async function recordShutdownOutcome(receipt, shutdown) {
   try {
     await shutdown();
   } catch (error) {
-    if (receipt) await completeShutdownReceipt(receipt, false);
+    if (receipt) {
+      await completeShutdownReceipt(receipt, false).catch(receiptError =>
+        console.error('[electron] failed to record shutdown failure', receiptError));
+    }
     throw error;
   }
   if (receipt) await completeShutdownReceipt(receipt, true);
