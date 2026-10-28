@@ -104,6 +104,7 @@ _TEAM_STREAM_EXIT_GRACE_TIMEOUT_SEC = 1.5
 # event emitted by a long-running team session.
 TEAM_EVENT_QUEUE_MAXSIZE = 64
 _WAITER_PUT_RECHECK_TIMEOUT_SEC = 0.1
+_WAITER_PUT_TIMEOUT_LOG_INTERVAL_SEC = 5.0
 _TEAM_ROUND_FINAL_GRACE_SECONDS = 2.0
 
 
@@ -689,6 +690,22 @@ class TeamManager:
             and event.get("is_complete") is True
         )
         current_round = self._active_rounds.get(session_id)
+        if event_type == "chat.processing_status":
+            logger.log(
+                logging.INFO if terminal else logging.DEBUG,
+                "[TeamProcessingStatus] broadcast_event received: session_id=%s channel_id=%s "
+                "event_type=%s request_id=%s round_request_id=%s round_id=%s "
+                "is_processing=%s is_complete=%s registered_waiter_count=%s",
+                session_id,
+                channel_id,
+                event_type,
+                event.get("request_id"),
+                current_round.request_id if current_round is not None else None,
+                event.get("rid"),
+                event.get("is_processing"),
+                event.get("is_complete"),
+                len(self._pending_waiters.get(session_id, ())),
+            )
         if terminal and current_round is not None and not current_round.terminal_armed:
             # A persistent Runner stream can emit duplicate terminal frames
             # after the previous round has released.  A follow-up round is not
@@ -696,10 +713,12 @@ class TeamManager:
             # least one event for the newly submitted interaction.  Dropping
             # the stale control frame also keeps it out of the new exclusive
             # waiter.
-            logger.debug(
-                "[TeamManager] ignored unarmed terminal: session_id=%s request_id=%s",
+            logger.info(
+                "[TeamManager] ignored unarmed terminal: session_id=%s request_id=%s "
+                "round_id=%s is_processing=False",
                 session_id,
                 current_round.request_id,
+                event.get("rid"),
             )
             return False
         if not terminal and current_round is not None:
@@ -755,6 +774,7 @@ class TeamManager:
             queue: asyncio.Queue,
         ) -> None:
             queued_event = dict(event)
+            next_timeout_log_at = 0.0
             while any(
                 rid == request_id and registered_queue is queue
                 for rid, registered_queue in self._pending_waiters.get(session_id, ())
@@ -764,17 +784,59 @@ class TeamManager:
                         queue.put(queued_event),
                         timeout=_WAITER_PUT_RECHECK_TIMEOUT_SEC,
                     )
+                    if event_type == "chat.processing_status":
+                        logger.log(
+                            logging.INFO if terminal else logging.DEBUG,
+                            "[TeamProcessingStatus] enqueued_to_waiter: session_id=%s request_id=%s "
+                            "channel_id=%s is_processing=%s is_complete=%s round_id=%s",
+                            session_id,
+                            request_id,
+                            channel_id,
+                            event.get("is_processing"),
+                            event.get("is_complete"),
+                            event.get("rid"),
+                        )
                     break
                 except asyncio.TimeoutError:
+                    now = time.monotonic()
+                    if now >= next_timeout_log_at:
+                        logger.warning(
+                            "[TeamManager] waiter queue put timed out; retrying: "
+                            "session_id=%s request_id=%s event_type=%s is_processing=%s round_id=%s "
+                            "queue_size=%s queue_capacity=%s timeout_sec=%s",
+                            session_id,
+                            request_id,
+                            event_type,
+                            event.get("is_processing"),
+                            event.get("rid"),
+                            queue.qsize(),
+                            queue.maxsize,
+                            _WAITER_PUT_RECHECK_TIMEOUT_SEC,
+                        )
+                        next_timeout_log_at = now + _WAITER_PUT_TIMEOUT_LOG_INTERVAL_SEC
                     continue
                 except Exception:
-                    logger.debug(
-                        "[TeamManager] broadcast failed: session_id=%s request_id=%s",
+                    logger.warning(
+                        "[TeamManager] broadcast failed: session_id=%s request_id=%s "
+                        "event_type=%s is_processing=%s round_id=%s",
                         session_id,
                         request_id,
+                        event_type,
+                        event.get("is_processing"),
+                        event.get("rid"),
                         exc_info=True,
                     )
                     break
+            else:
+                if event_type == "chat.processing_status":
+                    logger.info(
+                        "[TeamProcessingStatus] waiter_removed_before_enqueue: "
+                        "session_id=%s request_id=%s is_processing=%s round_id=%s",
+                        session_id,
+                        request_id,
+                        event.get("is_processing"),
+                        event.get("rid"),
+                    )
 
         await asyncio.gather(*(
             _put_to_waiter(request_id, queue)
@@ -819,8 +881,12 @@ class TeamManager:
             server = AgentWebSocketServer.get_instance()
         except Exception:
             logger.warning(
-                "[TeamManager] waiter-less push fallback: server unavailable: session_id=%s",
+                "[TeamManager] waiter-less push fallback: server unavailable: "
+                "session_id=%s event_type=%s is_processing=%s round_id=%s",
                 session_id,
+                event.get("event_type"),
+                event.get("is_processing"),
+                event.get("rid"),
                 exc_info=True,
             )
             return
@@ -843,16 +909,21 @@ class TeamManager:
             )
             logger.info(
                 "[TeamManager] terminal event pushed without waiter: "
-                "session_id=%s event_type=%s status=%s",
+                "session_id=%s event_type=%s status=%s is_processing=%s round_id=%s",
                 session_id,
                 str(payload.get("event_type") or ""),
                 status,
+                payload.get("is_processing"),
+                event.get("rid"),
             )
         else:
             logger.warning(
-                "[TeamManager] waiter-less terminal event not delivered: session_id=%s event_type=%s",
+                "[TeamManager] waiter-less terminal event not delivered: "
+                "session_id=%s event_type=%s is_processing=%s round_id=%s",
                 session_id,
                 str(payload.get("event_type") or ""),
+                payload.get("is_processing"),
+                event.get("rid"),
             )
 
     def _observe_interactive_round_event(
@@ -903,6 +974,12 @@ class TeamManager:
             return
         if not cron_team_round_should_end(current.completion_state):
             return
+        logger.info(
+            "[TeamProcessingStatus] generated: original_event=chat.final source=interactive_round_grace_finished "
+            "session_id=%s request_id=%s is_processing=False is_complete=True",
+            session_id,
+            request_id,
+        )
         await self.broadcast_event(
             session_id,
             {

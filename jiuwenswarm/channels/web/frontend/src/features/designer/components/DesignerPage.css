@@ -1357,16 +1357,32 @@
   box-shadow: none;
 }
 
+/*
+ * The node's height comes from the canvas layout, so the error floats over the
+ * top of the body instead of taking height of its own. It stops short of the
+ * bottom so a video's controls stay usable, and scrolls so long errors can
+ * still be read and copied.
+ */
 .designer-node__error {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  max-height: 60%;
   margin: 0;
   padding: 6px 12px 8px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-danger, #c0392b) 30%, transparent);
+  border-radius: 11px 11px 0 0;
+  background: color-mix(in srgb, var(--color-surface-card) 94%, transparent);
   color: var(--color-danger, #c0392b);
   font-size: 11px;
   line-height: 1.35;
-  overflow: hidden;
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
+  overflow-wrap: anywhere;
+  user-select: text;
+  cursor: text;
 }
 
 .designer-node__type-icon {
