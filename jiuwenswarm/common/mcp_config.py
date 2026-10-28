@@ -814,6 +814,11 @@ def _office_claw_mcp_schema_cache_enabled() -> bool:
 
 
 _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES = 256
+# Node 启动参数中“取文件/模块值”的 flag:其值为启动辅助脚本(--require
+# polyfill 等),只做单文件指纹;第一个位置参数才是 MCP 入口,做目录树扫描。
+_NODE_FILE_VALUED_FLAGS = frozenset(
+    {"--require", "-r", "--import", "--experimental-loader", "--loader"}
+)
 
 
 def _fingerprint_bundle_tree(root: Path) -> list[dict[str, Any]] | None:
@@ -840,6 +845,12 @@ def _fingerprint_bundle_tree(root: Path) -> list[dict[str, Any]] | None:
             if child.name.endswith(".map"):
                 continue
             if len(entries) >= _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES:
+                logger.warning(
+                    "OfficeClaw MCP bundle tree exceeded %d files under %s; "
+                    "bypassing the schema cache for this config",
+                    _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES,
+                    root,
+                )
                 return None
             try:
                 stat = child.stat()
@@ -867,11 +878,15 @@ def _office_claw_mcp_build_fingerprint(
     either miss the real bundle or stat the wrong file, so a bundle rebuild
     would not change the fingerprint and the cache would serve a stale schema.
 
-    The interpreter (``command``) is fingerprinted as a single file. Every
-    script entry in ``args`` additionally fingerprints its owning directory
-    tree: the entry file is typically a thin shell that imports the toolset
-    modules next to it, so a rebuild that only touches those imports must
-    still rotate the key. ``node_modules`` and ``*.map`` files are skipped.
+    The interpreter (``command``) is fingerprinted as a single file. The
+    first positional script arg (the Node entry) additionally fingerprints
+    its owning directory tree: the entry file is typically a thin shell that
+    imports the toolset modules next to it, so a rebuild that only touches
+    those imports must still rotate the key. ``node_modules`` and ``*.map``
+    files are skipped. File-valued Node flags (``--require``/``--import``
+    startup polyfills) are single-file fingerprinted instead — their owning
+    directory (e.g. a full-source ``scripts/`` checkout with hundreds of
+    files) must not trip the bundle cap and silently disable the cache.
 
     Returns ``None`` when a bundle tree exceeds ``_OFFICE_CLAW_MCP_BUNDLE_MAX_FILES``
     files — the caller then bypasses the cache instead of trusting a
@@ -922,15 +937,45 @@ def _office_claw_mcp_build_fingerprint(
         if resolved is not None and resolved.is_file():
             _stat_once(resolved)
 
-    for value in params.get("args") or []:
-        raw = str(value or "").strip()
+    args = [str(value or "").strip() for value in params.get("args") or []]
+    entry_scanned = False
+    index = 0
+    while index < len(args):
+        raw = args[index]
+        index += 1
         if not raw:
+            continue
+        if raw.startswith("-"):
+            flag, _, inline_value = raw.partition("=")
+            value_raw = inline_value or None
+            if (
+                value_raw is None
+                and flag in _NODE_FILE_VALUED_FLAGS
+                and index < len(args)
+            ):
+                value_raw = args[index]
+                index += 1
+            if value_raw is None:
+                continue
+            resolved = _resolve(value_raw)
+            if resolved is not None and resolved.is_file():
+                # --require/--import 启动辅助脚本:单文件指纹(同 #5347 基线)。
+                # 其所在目录(如完整源码的 scripts/,数百个受版本管理文件)
+                # 不做树扫描,否则会撞 _OFFICE_CLAW_MCP_BUNDLE_MAX_FILES 把
+                # 整个缓存废掉(OpenHarmony 启动形态,见 !9045 评审复现)。
+                _stat_once(resolved)
             continue
         resolved = _resolve(raw)
         if resolved is None or not resolved.is_file():
             continue
+        if entry_scanned:
+            # 入口之后的位置参数是传给脚本的参数,单文件指纹
+            _stat_once(resolved)
+            continue
+        entry_scanned = True
         parent_key = _normalized_path(str(resolved.parent))
         if parent_key in expanded_dirs:
+            _stat_once(resolved)
             continue
         expanded_dirs.add(parent_key)
         tree = _fingerprint_bundle_tree(resolved.parent)

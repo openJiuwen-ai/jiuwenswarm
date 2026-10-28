@@ -362,3 +362,69 @@ async def test_capacity_bound_clears_orphaned_entries(
     # the cleared entries are gone: a repeat of the first variant re-discovers
     await mcp_config.list_office_claw_mcp_tools(variants[0])
     assert calls == 4, "evicted entry must re-discover"
+
+
+@pytest.mark.asyncio
+async def test_require_import_aux_scripts_do_not_disable_cache(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenHarmony-style --require/--import aux args must not disable the cache.
+
+    Regression for the review on !9045: with the full-source checkout the
+    relay prepends ``--require scripts/ohos-fetch-polyfill.cjs`` and
+    ``--import scripts/ohos-undici-register.mjs`` to the bundle entry, and
+    ``scripts/`` holds far more files than the bundle cap. Tree-scanning an
+    aux flag's owning directory tripped the cap and forced uncached
+    discovery on every request; aux scripts are single-file fingerprinted
+    instead (matching the #5347 baseline), so only the entry's directory
+    gets the tree scan.
+    """
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    polyfill = scripts / "ohos-fetch-polyfill.cjs"
+    polyfill.write_text("polyfill v1")
+    register = scripts / "ohos-undici-register.mjs"
+    register.write_text("register v1")
+    # push scripts/ far past the 256-file bundle cap
+    for i in range(300):
+        (scripts / f"tool-{i:03d}.cjs").write_text("x")
+
+    dist = tmp_path / "dist"
+    dist.mkdir()
+    entry = dist / "index.js"
+    entry.write_text("shell v1")
+    (dist / "server-toolsets.js").write_text("toolset v1")
+
+    # cover both node flag forms: "--require value" and "--import=value"
+    params = {
+        "command": "node",
+        "args": ["--require", str(polyfill), f"--import={register}", str(entry)],
+        "cwd": str(tmp_path),
+        "env": {},
+    }
+
+    calls = 0
+
+    async def _discover(p):
+        nonlocal calls
+        calls += 1
+        return [_make_tool("office_claw_post_message")]
+
+    monkeypatch.setattr(mcp_config, "_list_office_claw_mcp_tools_uncached", _discover)
+
+    await mcp_config.list_office_claw_mcp_tools(params)
+    await mcp_config.list_office_claw_mcp_tools(params)
+    assert calls == 1, (
+        "aux --require/--import directory over the cap must not disable the cache"
+    )
+
+    # aux script rebuild rotates the key via its single-file fingerprint
+    polyfill.write_text("polyfill v2-with-more-bytes")
+    await mcp_config.list_office_claw_mcp_tools(params)
+    assert calls == 2, "aux script rebuild must rotate the key"
+
+    # entry tree change still rotates the key
+    (dist / "server-toolsets.js").write_text("toolset v2-with-more-bytes")
+    await mcp_config.list_office_claw_mcp_tools(params)
+    assert calls == 3, "entry tree change must rotate the key"
