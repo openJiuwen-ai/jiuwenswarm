@@ -39,6 +39,7 @@ from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
 from jiuwenswarm.server.runtime.session.history_io import run_history_io as _run_history_io
+from jiuwenswarm.server.runtime.session.history_context import history_context_request, history_context_stream
 from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
     append_history_record,
@@ -2987,6 +2988,7 @@ class JiuWenSwarm:
         plan_language = str(params.get("plan_language") or "").strip().lower()
         return plan_language in {"cn", "en"}
 
+    @history_context_request
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
         return await self._process_message(request, schedule_session=True)
@@ -3638,6 +3640,7 @@ class JiuWenSwarm:
             mode=request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown",
         )
 
+    @history_context_stream
     async def process_message_stream(
             self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:

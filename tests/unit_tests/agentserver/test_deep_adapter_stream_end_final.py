@@ -172,6 +172,36 @@ async def test_native_usage_captures_structured_context_before_notification(monk
     assert any(item.get("event_type") == "chat.usage_summary" for item in events)
 
 
+async def test_native_model_binding_supplies_history_context_and_releases_scope(monkeypatch, tmp_path):
+    import jiuwenswarm.server.runtime.agent_adapter.interface_deep as deep_module
+    from jiuwenswarm.extensions_v2.event_types import context_usage
+    from jiuwenswarm.server.runtime.session.history_context import bound_history_context
+
+    adapter = _adapter_ready(monkeypatch)
+    adapter._instance._react_agent = SimpleNamespace(_config=None, set_llm=lambda model: None)
+    adapter._project_dir = str(tmp_path)
+    model = SimpleNamespace(model_config=SimpleNamespace(model_name="applied-native-model"),
+                            model_client_config={"client_provider": "OpenAI"})
+    monkeypatch.setattr(adapter, "_resolve_model_for_request", lambda request: model)
+    monkeypatch.setattr(adapter, "_apply_model_to_react_agent",
+                        JiuWenSwarmDeepAdapter._apply_model_to_react_agent.__get__(adapter))
+    monkeypatch.setattr(deep_module, "get_cwd", lambda: str(tmp_path / "src"))
+    monkeypatch.setattr(deep_module, "get_project_root", lambda: str(tmp_path))
+    (tmp_path / "src").mkdir()
+    async def bind_workspace(config):
+        adapter._seed_runtime_cwd(str(tmp_path / "src"), workspace=str(tmp_path), session_id="sess-stream-end-final")
+    monkeypatch.setattr(adapter, "_update_runtime_config", bind_workspace)
+    seen = []
+    monkeypatch.setattr(context_usage, "notify_context_usage",
+                        lambda update, **kwargs: seen.append(bound_history_context(update.session_id)))
+    await _run_stream(adapter, [_usage_chunk()])
+    context = seen[0]
+    assert context.cwd == str(tmp_path / "src") and context.metadata["project_root"] == str(tmp_path)
+    assert context.metadata["session_model_info"]["model_name"] == "applied-native-model"
+    assert context.metadata["session_model_info"]["source"] == "runtime"
+    assert bound_history_context("sess-stream-end-final") is None
+
+
 
 async def test_dropped_empty_answer_synthesizes_final_with_delta_text(monkeypatch):
     """answer 输出为空被解析层丢弃：合成 final 携带 delta 拼接文本，而非空串。"""

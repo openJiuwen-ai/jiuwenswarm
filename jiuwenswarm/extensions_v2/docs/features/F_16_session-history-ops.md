@@ -4,6 +4,7 @@
 | --- | --- |
 | 编号 | F_16 / session-history-ops |
 | 归档日期 | 2026-10-27 |
+| 后续修订 | 2026-10-28，PR !83 评审修订，验证记录在第 7 节维护 |
 | 关联计划 | EXTV2-16 / Server PR-04 |
 | 主责契约 | [S_06](../specs/S_06_session-history-ops.md) |
 
@@ -20,11 +21,11 @@
 - D-03：可信调用封装保存目标会话、原记录身份、来源及幂等键；事件只开放正文改写。CORE 重新校验身份与正文，用户不能通过改写 Event 改变目标、角色或包归属。
 - D-04：Hook 期间不持历史文件锁；CORE 在线程中先排空原写入队列，再持文件锁和生命周期锁完成去重与写入。返回前文件已关闭，写失败不返回成功；不承诺断电级 fsync 耐久性。
 - D-05：扩展追加要求用户提供稳定 id；同一会话、包与 id 的原请求一致时返回 duplicate，原内容不同时报冲突。去重标记与正文在同一历史记录，避免另一个索引文件的提交窗口；首版查重扫描历史，属于已知成本。
-- D-06：追加 Hook 中再次调用 append 明确拒绝，避免递归事件链。重复调用 next 不重复提交。USER 抛异常沿用 Core 的故障隔离；显式拒绝使用 `SessionAppendRejection`。
+- D-06：追加 Hook 中再次调用 append 明确拒绝，避免递归事件链。重复调用 next 不重复提交。USER 抛异常沿用 Core 的故障隔离；仅扩展自身追加可用 `SessionAppendRejection` 显式拒绝。平台来源的拒绝属于无效输出，继续默认写入。
 - D-07：取消发生在 Hook 阶段可以不写入；进入文件提交后沿用 `run_history_io` 的屏蔽与排空语义，完成写入后再传播取消。调用方应以同一 id 重试确认结果。
 
 - D-08：Hook 前预检并捕获会话生命周期 generation，提交锁内再次核对；Hook 等待期间删除、恢复等代次变化不能写入新一代会话。平台已有的展示时间戳字段保持原格式，只校验用于平台事实的数值时间戳。
-- D-09：沿用当前 Core 的 USER 故障隔离：非法改写或异常可能使该 Handler 被跳过，并用其进入前的有效输入继续，不能将其当作拒绝手段。显式拒绝必须在 next 前返回有效的 `SessionAppendRejection`；下游已落盘后不能再改写成功事实。
+- D-09：沿用当前 Core 的 USER 故障隔离：非法改写或异常可能使该 Handler 被跳过，并用其进入前的有效输入继续，不能将其当作拒绝手段。扩展来源的显式拒绝必须在 next 前返回有效的 `SessionAppendRejection`；下游已落盘后不能再改写成功事实。
 
 ## 3. 分工与入口
 
@@ -52,7 +53,9 @@ receipt = await ops.session.append({
 page = await ops.session.messages(limit=10)
 ```
 
-## 5. 验证设计与执行记录
+## 5. 初版验证设计与执行记录（2026-10-27）
+
+本节保留初版验证事实，其中平台拒绝路径已由第 7 节的评审修订收窄；当前契约以 S_06 和第 7 节为准。
 
 ### 5.1 单元与集成回归
 
@@ -105,3 +108,31 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2 `
 ## 6. 限制
 
 只提供主会话产品历史，不发送聊天请求、不驱动 Agent，不实现 Team / 子 Agent 扩展。游标沿用现有 JSONL 模式与旧 JSON 自动迁移；显式启用旧 JSON 写入模式时，分页查询沿用原服务的不支持错误。历史重写 / 截断可能令游标失效，调用方重新开始查询。完整记录内的幂等标记可供进程重启后去重，但不承诺对断电或已有损坏文件自动修复。
+
+## 7. 2026-10-28 评审修订设计与验证
+
+以下为本次修订设计及执行结果。本节取代初版关于任意来源可拒绝的决策；第 5 节保留初版历史验证范围。
+
+- R-01：新增平台 `server/runtime/session/history_context.py`，从任务作用域的已绑定原生运行时捕获 cwd、project_root 和模型快照。真实 unary/stream Adapter 在请求范围内绑定和释放；模型选择应用后记录本次事实。无活跃运行时的 RPC/其他平台入口，从宿主持久会话资料读取可用目录，模型保持保存值语义，不激活 Agent、不借用进程默认目录、不跨会话借用快照。回落资料缺失时保留 None，用户不负责补上下文。
+- R-02：`try_append_platform_history` 在事件触发前取得上述可信上下文。扩展通过 append Ops 发起时仍沿用 Core 为当前 Handler 绑定的 SessionContext；事件名称和 CORE 提交链不变。由完整平台请求持有 ContextVar 中的专属 holder，原生生产任务和历史消费任务共享该 holder；模型应用与工作目录实际绑定分别更新事实，避免读到工作目录绑定前的进程默认值。退出或取消后 holder 失效并重置，多会话/请求隔离，跨目标写入只能读取目标自己的持久资料。
+- R-03：`SessionAppendRejection` 仅允许可信 source=extension 的调用。平台主历史和 history.append_record RPC 的拒绝结果为非法 Hook 输出，按既有 Core USER 故障隔离继续默认写入；正文改写仍可用。身份校验和真实提交回执的最终效力保持不变，用户无法改 source 绕过限制。
+- R-04：保持现有 JiuwenSwarm 消息和分页协议，补充与固定版本 Claude mods 类型的差异。当前接口不宣称可直接互换；messages 保持直接只读能力，没有新增查询事件；append 为产品历史追加，不进入模型上下文。结构化块、door/origin、Agent 输入和完整 Claude 适配不在本次修订中补造。
+
+验证计划：实际 Registry 用户包比较 Ops/平台/RPC 三个入口；已有目录、无目录、运行时模型与保存值、两会话并发、作用域取消和清理、伪造事件资料、平台拒绝不能阻断写入、扩展仍可拒绝、改写和幂等链保持有效；运行相关回归及真实 Worker 验收，结果在此补录。
+
+### 7.1 修订验证结果
+
+Windows / Python 3.11.15，Core ead700d7d；复用第 5.1 节列出的原定向范围，并补充模型选择、登录模型、跨会话模型与重载回归。
+
+| 范围 | 已通过结果 |
+| --- | --- |
+| 扩展、历史、原生链路定向回归 | 363 项通过，其中历史 Ops 65 项；本轮增加 17 项历史上下文/拒绝范围用例、1 项原生模型绑定用例 |
+| 模型兼容回归 | request_scoped_login_model、deep_adapter_model_resolve、deep_adapter_login_model、agent_reload_model_scope、cross_session_model_input、cron_session_model_inherit 共 74 项通过 |
+| 异步交接 | 子任务绑定的模型/目录可由父任务历史消费端读取；请求关闭和取消后失效；同会话不同请求及并发会话不共享作用域 |
+| 真实服务和模型 | Front/Supervisor/Worker、Qwen3.8-Flash、两个用户 ZIP、两个真实项目/会话通过；平台原生历史 Hook 取得正确 cwd/root/当前模型，独立 RPC 取得保存目录且不冒充运行时模型 |
+| 拒绝与既有能力 | 平台/RPC 拒绝结果及未经 CORE 的伪造成功结果被隔离后记录仍提交；扩展追加拒绝仍无写入；正文改写、重复提交、冲突、固定分页、原四项 Ops、原 CORE 实际回执通过 |
+| 卸载和资源清理 | 两包卸载成功，Worker 已退出、端口已释放，真实验收脚本退出码 0 |
+
+本轮真实验收未 mock 模型/Ops/Adapter，也未手工传入 SessionContext。首次真实验证暴露了生产与消费任务间的 ContextVar 交接，以及模型应用先于工作目录绑定的问题；修订采用请求专属共享 holder、按实际绑定阶段更新事实，并新增回归后重跑上述完整验证。
+
+证据在 `D:\work_space\.codex-temp\server-pr04-review-fix-20261028` 的 regression.xml、model-regression.xml、validation-summary.json、live-run-receipt.json；其 runDirectory 内有 result.json、append-hooks.jsonl 和 cleanup.json。收据核对四个实现文件 SHA256，真实验收期间源码未变。既有 Windows symlink 用例因当前权限跳过 1 项；Gateway/浏览器 UI、非 Windows 实机、大历史性能和远端 CI 未纳入通过结论。
