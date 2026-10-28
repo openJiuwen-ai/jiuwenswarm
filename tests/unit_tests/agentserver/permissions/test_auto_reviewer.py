@@ -419,7 +419,7 @@ def test_reviewer_path_targets_use_only_core_extracted_accesses(
     "relative_path",
     [".env", ".ssh/id_rsa", "secrets/api_token.txt"],
 )
-def test_reviewer_path_targets_redact_sensitive_workspace_names(
+def test_reviewer_path_targets_preserve_sensitive_name_risk_cues(
     tmp_path: Path,
     relative_path: str,
 ) -> None:
@@ -443,15 +443,16 @@ def test_reviewer_path_targets_redact_sensitive_workspace_names(
         {
             "operation": "read",
             "scope": "workspace",
-            "target": "[redacted_target]",
-            "location_status": "redacted",
+            "target": relative_path.rsplit("/", 1)[-1],
+            "location_status": "complete",
+            "location": {"base": "workspace", "relative_path": relative_path},
         }
     ]
     serialized = json.dumps(request, ensure_ascii=False)
-    assert relative_path not in serialized
+    assert relative_path in serialized
 
 
-def test_reviewer_path_targets_redact_system_path_and_keep_scope_neutral(
+def test_reviewer_path_targets_preserve_system_identity_and_keep_scope_neutral(
     tmp_path: Path,
 ) -> None:
     facts = build_facts(
@@ -474,13 +475,11 @@ def test_reviewer_path_targets_redact_system_path_and_keep_scope_neutral(
         {
             "operation": "read",
             "scope": "nonworkspace_unclassified",
-            "target": "[redacted_target]",
-            "location_status": "redacted",
+            "target": "passwd",
+            "location_status": "complete",
+            "location": {"base": "/", "relative_path": Path("/etc/passwd").resolve().relative_to(Path("/")).as_posix()},
         }
     ]
-    serialized = json.dumps(request, ensure_ascii=False)
-    assert "/etc/passwd" not in serialized
-    assert "passwd" not in serialized
 
 
 @pytest.mark.parametrize(
@@ -520,8 +519,9 @@ def test_engine_restriction_precedes_platform_scope(
     ).to_json_dict()
 
     assert request["review_evidence"]["path_targets"] == [
-        {"operation": "read", "scope": expected_scope, "target": "[redacted_target]",
-         "location_status": "redacted"}
+        {"operation": "read", "scope": expected_scope, "target": ".env",
+         "location_status": "complete",
+         "location": {"base": "platform_trusted_root", "relative_path": ".env"}}
     ]
     assert str(platform) not in json.dumps(request, ensure_ascii=False)
 
@@ -1817,3 +1817,15 @@ async def test_ignored_confidence_never_rescues_invalid_negative_output(outcome,
         payload["extra" if defect == "unknown" else "grant"] = True
     result = await AutoReviewer(client=StaticReviewerClient(json.dumps(payload))).assess(view)
     assert result.outcome == "manual" and result.fallback_reason == expected
+
+
+def test_path_secret_values_with_slashes_are_fully_masked(tmp_path):
+    facts = build_facts("read_file", {"path": str(tmp_path / "password=FAKE/SECOND/value.txt")}, workspace_root=tmp_path)
+    request = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask", allowed_outcomes=("allow_once", "manual", "deny"),
+        no_auto_allow_reason="", original_user_intent=None, domain_route=None,
+    )
+    wire = json.dumps(request.to_json_dict())
+    assert "FAKE" not in wire
+    assert "SECOND" not in wire
+    assert "password=" in wire
