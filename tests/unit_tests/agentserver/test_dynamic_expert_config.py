@@ -21,15 +21,15 @@ def test_packaged_dynamic_default_is_independent_from_skill_symphony():
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
     assert config["symphony"]["enabled"] is False
     assert config["symphony"]["dynamic_experts"]["enabled"] is None
-    assert is_dynamic_experts_enabled(config) is False
+    assert is_dynamic_experts_enabled(config) is True
 
 
 @pytest.mark.parametrize(
     ("config", "expected"),
     [
-        (None, False),
-        ({}, False),
-        ({"symphony": {"dynamic_experts": {"enabled": None}}}, False),
+        (None, True),
+        ({}, True),
+        ({"symphony": {"dynamic_experts": {"enabled": None}}}, True),
         ({"symphony": {"dynamic_experts": {"enabled": False}}}, False),
         ({"symphony": {"dynamic_experts": {"enabled": "true"}}}, False),
         ({"symphony": {"dynamic_experts": {"enabled": 1}}}, False),

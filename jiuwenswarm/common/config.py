@@ -52,7 +52,7 @@ _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 DEFAULT_SWARMFLOW_ENABLED = False
-DEFAULT_DYNAMIC_EXPERTS_ENABLED = False
+DEFAULT_DYNAMIC_EXPERTS_ENABLED = True
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
