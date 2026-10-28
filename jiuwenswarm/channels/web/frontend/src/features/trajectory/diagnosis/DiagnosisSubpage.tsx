@@ -163,13 +163,19 @@ function RecordCards({
 
   return (
     <>
-      <Card title={t('trajectory.diagnosis.object')} testId="trajectory-diagnosis-object" className={css.objectCard}>
+      <Card
+        title={t('trajectory.diagnosis.object')}
+        testId="trajectory-diagnosis-object"
+        className={`${css.objectCard} ${css.spacedCard}`}
+      >
         {target.full ? (
           <>
-            <p className={css.line}>
-              <span className={css.lineLabel}>{t('trajectory.diagnosis.objectTime')}</span>
-              {t('trajectory.diagnosis.objectFull')}
-            </p>
+            {target.window === null ? null : (
+              <p className={css.line}>
+                <span className={css.lineLabel}>{t('trajectory.diagnosis.objectTime')}</span>
+                {formatTimeWindow(target.window.startMs, target.window.endMs)}
+              </p>
+            )}
             {subjectLabels.size === 0 ? null : (
               <AgentLine labels={[...subjectLabels.values()]} />
             )}
@@ -210,10 +216,11 @@ function RecordCards({
         onCancel={running ? () => { void session.cancel(); } : undefined}
       />
 
-      {showDetails ? (
+      {(running || showDetails) ? (
         <Card
           title={t('trajectory.diagnosis.details')}
           testId="trajectory-diagnosis-record"
+          className={css.objectCard}
         >
           {record.error === undefined ? null : (
             <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
@@ -232,10 +239,19 @@ function RecordCards({
               <PlainFold text={trajectorySummary} />
             </div>
           )}
+          {running && !showDetails ? (
+            <p className={css.hint} data-testid="trajectory-diagnosis-details-pending">
+              {t('trajectory.diagnosis.detailsPending')}
+            </p>
+          ) : null}
         </Card>
       ) : null}
 
-      <Card title={t('trajectory.diagnosis.suggestions')} testId="trajectory-diagnosis-suggestions">
+      <Card
+        title={t('trajectory.diagnosis.suggestions')}
+        testId="trajectory-diagnosis-suggestions"
+        className={css.objectCard}
+      >
         {outlets === 'pending' ? (
           <p className={css.hint}>{t('trajectory.diagnosis.outletsPending')}</p>
         ) : outlets === 'unfinished' ? (
@@ -526,7 +542,7 @@ function ProcessSection({ record, running, onCancel }: {
     <Card
       title={t('trajectory.diagnosis.process')}
       testId="trajectory-diagnosis-process"
-      className={css.objectCard}
+      className={`${css.objectCard} ${css.spacedCard}`}
       action={action}
     >
       <StageList record={record} running={running} />

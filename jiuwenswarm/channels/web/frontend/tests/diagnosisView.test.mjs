@@ -143,8 +143,23 @@ test('unix nanoseconds convert to milliseconds without losing precision', () => 
   assert.equal(unixNanoToMs(''), null);
 });
 
-test('a full-scope record has no window to show', () => {
-  assert.deepEqual(diagnosisTarget({ input: { scope: { kind: 'full' } } }), { full: true, groups: [] });
+test('a full-scope record shows the span of its resolved ranges', () => {
+  assert.deepEqual(diagnosisTarget({ input: { scope: { kind: 'full' } } }), {
+    full: true,
+    window: null,
+    groups: [],
+  });
+  const target = diagnosisTarget({
+    input: {
+      scope: { kind: 'full' },
+      resolved_ranges: [
+        { subject_id: 'main', start_unix_nano: nano(1_000), end_unix_nano: nano(4_000) },
+        { subject_id: 'worker', start_unix_nano: nano(2_000), end_unix_nano: nano(8_000) },
+        { subject_id: 'bad', start_unix_nano: 'x', end_unix_nano: nano(9_000) },
+      ],
+    },
+  });
+  assert.deepEqual(target, { full: true, window: { startMs: 1_000, endMs: 8_000 }, groups: [] });
 });
 
 test('selected ranges with the same window collapse into one group', () => {
@@ -162,6 +177,7 @@ test('selected ranges with the same window collapse into one group', () => {
     },
   });
   assert.equal(target.full, false);
+  assert.equal(target.window, null);
   assert.deepEqual(target.groups, [
     { startMs: 1000, endMs: 2000, subjectIds: ['main', 'worker'] },
     { startMs: 3000, endMs: 4000, subjectIds: ['solo'] },

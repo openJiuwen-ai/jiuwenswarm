@@ -1168,6 +1168,7 @@
         "interrupted": "已中断"
       },
       "outletsPending": "诊断完成后在这里给出优化建议",
+      "detailsPending": "评估结果和诊断发现会显示在这里",
       "stageStatus": {
         "pending": "等待中",
         "running": "进行中",

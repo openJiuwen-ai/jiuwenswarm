@@ -17,7 +17,7 @@
   min-height: 0;
   flex: 1 1 0;
   flex-direction: column;
-  gap: 8px;
+  gap: 16px;
   padding: 8px;
   overflow-x: hidden;
   overflow-y: auto;

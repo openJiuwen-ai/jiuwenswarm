@@ -128,6 +128,8 @@ export interface DiagnosisInput {
   evaluate_artifact: boolean;
   locale: 'zh' | 'en';
   resolved_span_count: number;
+  /** Per-subject windows the run was fixed to, including a full-trajectory run. */
+  resolved_ranges?: SelectionRange[];
   excluded_running: StepRef[];
 }
 
