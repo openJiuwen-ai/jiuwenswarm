@@ -1642,6 +1642,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     for (const path of plan.paths) {
       requestImageDiscard(sessionId, path);
     }
+    // A removed chip that had already been auto-registered as a session material
+    // (session.assets.register fires as soon as the upload completes, well before
+    // send) must drop that material too, unless another still-attached draft needs
+    // the same path kept. Only 'upload' materials: agent-generated ('generated')
+    // ones are not tied to any composer draft and must survive regardless.
+    if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
+      const keptPaths = new Set(
+        remaining
+          .map((draft) => pickString(draft.persistedMediaItem?.path))
+          .filter((path): path is string => Boolean(path))
+          .map(normalizePath),
+      );
+      for (const draft of drafts) {
+        const path = pickString(draft.persistedMediaItem?.path);
+        if (!path || keptPaths.has(normalizePath(path))) continue;
+        const asset = sessionAssetsRef.current.find(
+          (item) => item.source === 'upload' && normalizePath(item.path) === normalizePath(path),
+        );
+        if (!asset) continue;
+        void useSessionAssetsStore
+          .getState()
+          .remove(sessionId, asset.asset_id)
+          .catch((error) => console.error('Failed to remove session asset:', error));
+      }
+    }
   }, [activeSessionId, requestImageDiscard]);
 
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {

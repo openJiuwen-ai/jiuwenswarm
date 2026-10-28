@@ -317,6 +317,7 @@ class ReqMethod(Enum):
     SESSION_ASSETS_LIST = "session.assets.list"
     SESSION_ASSETS_REGISTER = "session.assets.register"
     SESSION_ASSETS_RENAME = "session.assets.rename"
+    SESSION_ASSETS_REMOVE = "session.assets.remove"
 
     # 技能同步（Server / Client 分离部署）。外部入口为 HTTP /skill-sync/*
     # （Bearer token 鉴权）。WS 侧仅保留 reload：web 进程 HTTP apply 落盘后的
