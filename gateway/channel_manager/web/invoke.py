@@ -40,6 +40,8 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.source.providers",
     "skills.source.search",
     "skills.source.install",
+    # 用户安装的 skill 卸载；SkillManager 会拦截 builtin/prebuilt。
+    "skills.uninstall",
     "skills.updates.check",
     "skills.update",
     # 聊天产物「保存」走 download_token → import_local；SkillManager 已有企业版路径。
