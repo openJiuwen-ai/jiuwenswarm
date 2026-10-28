@@ -534,6 +534,35 @@ def flush_history_writes() -> None:
     _WRITE_QUEUE.join()
 
 
+def read_committed_main_history(session_id: str) -> list[dict[str, Any]] | None:
+    """Read a strict main-transcript snapshot after the queued-write boundary.
+
+    Unlike display-oriented history readers, this statistics input must not
+    silently turn corrupted or unavailable records into an empty transcript.
+    No session directory is created. Call from a worker thread.
+    """
+    if not session_id or not is_valid_session_id(session_id):
+        raise ValueError("invalid session_id")
+    if not flush_pending_writes():
+        raise TimeoutError("session history write boundary timed out")
+    with _FILE_LOCK:
+        path = get_read_history_path(session_id)
+        if not path.parent.is_dir():
+            return None
+        if not path.exists():
+            return []
+        if path.resolve().parent != path.parent.resolve():
+            raise ValueError("session history path escapes managed storage")
+        text = path.read_text(encoding="utf-8")
+        records = (
+            [json.loads(line) for line in text.split("\n") if line.strip()]
+            if path.suffix.lower() == ".jsonl" else json.loads(text)
+        )
+        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+            raise ValueError("session history must contain object records")
+        return records
+
+
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     sid = _managed_history_session_id(path)

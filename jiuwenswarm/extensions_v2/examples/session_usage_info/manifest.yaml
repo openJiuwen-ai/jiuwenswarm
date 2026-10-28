@@ -1,0 +1,9 @@
+schemaVersion: 1
+package:
+  id: example.session-usage-info
+  version: 1.0.0
+  displayName: Session Usage Info
+extensions:
+  - id: usage-reader
+    runtime: backend
+    module: extension.py

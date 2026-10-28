@@ -18615,6 +18615,7 @@ class JiuWenSwarmDeepAdapter:
         output_phase_id: str | None = None
         pending_input_ids: set[str] = set()
         output_sequence = 0
+        latest_extension_context_usage: dict[str, Any] | None = None
 
         def should_skip_duplicate_ask_user(parsed: dict | None) -> bool:
             if not isinstance(parsed, dict):
@@ -18634,7 +18635,16 @@ class JiuWenSwarmDeepAdapter:
         ) -> dict[str, Any]:
             nonlocal had_assistant_output, had_tool_output, emitted_terminal_chat_final
             nonlocal run_answer_final, output_sequence
+            nonlocal latest_extension_context_usage
             event_type = payload.get("event_type")
+            if (
+                event_type == "context.usage" and payload.get("session_id") == session_id
+                and payload.get("depth", 0) == 0 and not payload.get("parent_invocation_id")
+                and not payload.get("member_name") and not payload.get("team_id")
+            ):
+                # Capture the primary window before asynchronous notification;
+                # a later live window must not change this turn's observation.
+                latest_extension_context_usage = copy.deepcopy(payload)
             if output_phase_id and isinstance(event_type, str) and event_type.startswith("chat."):
                 output_sequence += 1
                 payload = {**payload, "output_phase_id": output_phase_id,
@@ -19907,6 +19917,7 @@ class JiuWenSwarmDeepAdapter:
                 cwd=get_cwd(),
                 project_root=get_project_root() if self._project_dir else None,
                 model_info=extension_model_info,
+                context_usage=latest_extension_context_usage,
             )
 
             yield AgentResponseChunk(

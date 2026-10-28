@@ -174,6 +174,30 @@ async def test_native_model_binding_supplies_history_context_and_releases_scope(
     assert context.metadata["session_model_info"]["model_name"] == "applied-native-model"
     assert context.metadata["session_model_info"]["source"] == "runtime"
     assert bound_history_context("sess-stream-end-final") is None
+async def test_native_usage_captures_structured_context_before_notification(monkeypatch):
+    from jiuwenswarm.extensions_v2.event_types import context_usage
+
+    adapter = _adapter_ready(monkeypatch)
+    raw = {
+        "event_type": "context.usage", "session_id": "sess-stream-end-final",
+        "request_id": "model-call-1", "timestamp": "2026-10-28T01:00:00Z",
+        "phase": "post_call", "context_window": {"input_tokens": 120, "limit_tokens": 1000},
+        "parts": {"messages": {"category": "messages", "tokens": 90}},
+        "measurement": {"estimated": False, "total_source": "provider_usage"},
+    }
+    observed = []
+    monkeypatch.setattr(context_usage, "notify_context_usage", lambda update, **kwargs: observed.append(kwargs))
+    events = await _run_stream(adapter, [
+        SimpleNamespace(type="context.usage", payload=raw),
+        SimpleNamespace(type="context.usage", payload={**raw, "session_id": "foreign-session"}),
+        SimpleNamespace(type="context.usage", payload={**raw, "depth": 1}),
+        _usage_chunk(),
+    ])
+    assert observed[0]["context_usage"]["context_window"]["input_tokens"] == 120
+    assert observed[0]["context_usage"]["measurement"]["estimated"] is False
+    raw["context_window"]["input_tokens"] = 999
+    assert observed[0]["context_usage"]["context_window"]["input_tokens"] == 120
+    assert any(item.get("event_type") == "chat.usage_summary" for item in events)
 
 
 
