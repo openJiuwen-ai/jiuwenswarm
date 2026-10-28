@@ -243,11 +243,19 @@ def test_validate_cron_model_accepts_login_free_model(
         lambda name, index=None: None,
     )
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
-    monkeypatch.setattr(
-        _model_catalog, "get_models",
-        lambda *args, **kwargs: _login_catalog(["GLM-5.2", "Kimi-K2.6"]),
-    )
+    calls: list[int] = []
+
+    def _counting_get_models(*args, **kwargs):
+        calls.append(1)
+        return _login_catalog(["GLM-5.2", "Kimi-K2.6"])
+
+    monkeypatch.setattr(_model_catalog, "get_models", _counting_get_models)
+    # CI-only 故障诊断探针：定位登录块内的失败段（本地全组合无法复现）
+    from gateway.auth.login_credentials import bare_model_name as _bmn
+
+    assert _bmn("GLM-5.2") == "GLM-5.2", "bare_model_name 变换了名字"
     assert validate_cron_model("GLM-5.2") == "GLM-5.2"
+    assert calls, "get_models 从未被调用——登录块在循环前死亡"
     assert validate_cron_model("Kimi-K2.6") == "Kimi-K2.6"
 
 
