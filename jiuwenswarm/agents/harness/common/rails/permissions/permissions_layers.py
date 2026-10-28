@@ -157,11 +157,22 @@ def _override_ids(raw: Any) -> set[str]:
     return ids
 
 
-def _override_key(item: dict[str, Any]) -> tuple[str, Any]:
+def _normalized_tool_names(item: dict[str, Any]) -> list[str]:
     tools = item.get("tools") or []
     if isinstance(tools, str):
         tools = [tools]
-    tools_key = tuple(sorted(str(tool).strip() for tool in tools if str(tool).strip()))
+    elif not isinstance(tools, (list, tuple, set)):
+        tools = []
+    names: list[str] = []
+    for tool in tools:
+        name = str(tool).strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _override_key(item: dict[str, Any]) -> tuple[str, Any]:
+    tools_key = tuple(sorted(_normalized_tool_names(item)))
     match_type = str(item.get("match_type") or "").strip().lower()
     pattern = str(item.get("pattern") or "")
     action = str(item.get("action") or "").strip().lower()
@@ -181,14 +192,12 @@ def _override_keys(raw: Any) -> set[tuple[str, Any]]:
 
 
 def _stable_override_id(item: dict[str, Any]) -> str:
-    tools = item.get("tools") or []
-    if isinstance(tools, str):
-        tools = [tools]
-    tool = next((str(name).strip() for name in tools if str(name).strip()), "tool")
+    tool_part = "_".join(sorted(_normalized_tool_names(item))) or "tool"
     match_type = str(item.get("match_type") or "").strip().lower() or "rule"
     pattern = str(item.get("pattern") or "")
-    raw = f"user_allow_{tool}_{match_type}_{pattern}"
-    slug = re.sub(r"[^a-zA-Z0-9]+", "_", raw).strip("_").lower() or "user_allow_override"
+    action = str(item.get("action") or "").strip().lower() or "allow"
+    raw = f"user_{action}_{tool_part}_{match_type}_{pattern}"
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", raw).strip("_").lower() or "user_override"
     digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:8]
     return f"{slug[:111]}_{digest}"[:120]
 
