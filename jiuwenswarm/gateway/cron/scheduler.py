@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
 from typing import Any, Callable
@@ -351,6 +350,9 @@ class CronSchedulerService:
         self._events: list[tuple[float, int, _Event]] = []
         self._seq = 0
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
+        # 立即执行的秒级戳（每 job 单调递增）：run_id 必须保持计费 trace 可识别的
+        # jobId:epoch 形态，不能在中间插 uuid（见 _next_run_now_id）
+        self._last_run_now_ts: dict[str, int] = {}
         self._run_tasks: dict[str, asyncio.Task] = {}
         # run_id -> job_id.  A run skipped during crash recovery must stay
         # suppressed across later store reloads; otherwise a reload after the
@@ -639,6 +641,40 @@ class CronSchedulerService:
         self._sync_store_mtime()
         self._reload_event.set()
 
+    def _reserved_run_ids(self, job_id: str) -> set[str]:
+        """该 job 已被占用的 run_id：活跃/待唤醒/崩溃恢复跳过。
+
+        run_now 与定时轮共用 ``jobId:epoch`` 命名空间；定时轮的 run_id 在
+        reload() 先排进 _events，wake 触发后才写入 _runs。只查 _runs 会让
+        立即执行占用尚未 wake 的定时轮 id（wake_offset=0/proactive.tick 同秒
+        时尤易发生），导致定时轮静默跳过、store 按 id 覆盖记录。
+        """
+        reserved: set[str] = set(getattr(self, "_runs", {}) or {})
+        reserved.update(getattr(self, "_run_tasks", {}) or {})
+        for _, _, ev in getattr(self, "_events", []) or []:
+            if getattr(ev, "job_id", None) == job_id:
+                reserved.add(ev.run_id)
+        skipped = getattr(self, "_crash_recovery_skipped_runs", {}) or {}
+        reserved.update(rid for rid, jid in skipped.items() if jid == job_id)
+        return reserved
+
+    def _next_run_now_id(self, job_id: str, now_ts: int) -> str:
+        """立即执行的 run_id：与定时轮同格式 ``jobId:epoch``。
+
+        计费 trace 核心段上限 45（jobId 32 + ':' + 10 位秒级时间戳）；旧实现额外
+        插入 uuid（核心段 80），计费服务不识别，FINISH consumedPoints 恒为 0。
+        同一 job 连续立即执行用单调秒级时间戳避重；并避开 _events 中尚未 wake
+        的定时轮 id、_run_tasks/_runs 中的活跃 id（见 _reserved_run_ids）。
+        """
+        ts = max(now_ts, self._last_run_now_ts.get(job_id, 0) + 1)
+        reserved = self._reserved_run_ids(job_id)
+        run_id = f"{job_id}:{ts}"
+        while run_id in reserved:
+            ts += 1
+            run_id = f"{job_id}:{ts}"
+        self._last_run_now_ts[job_id] = ts
+        return run_id
+
     async def trigger_run_now(self, job_id: str) -> str:
         info = await self.trigger_run_now_info(job_id)
         return str(info["run_id"])
@@ -651,7 +687,7 @@ class CronSchedulerService:
         now = datetime.now(tz=ZoneInfo(job.timezone))
         push_dt = now
         wake_dt = now
-        run_id = f"{job.id}:{uuid.uuid4().hex}:{int(push_dt.timestamp())}"
+        run_id = self._next_run_now_id(job.id, int(push_dt.timestamp()))
         channel_id, exec_session_id = self._make_execution_context(job)
         self._runs[run_id] = CronRunState(
             run_id=run_id,
@@ -767,7 +803,17 @@ class CronSchedulerService:
         else:
             offset = max(0, int(job.wake_offset_seconds or 0))
         wake_dt = push_dt - timedelta(seconds=offset)
-        run_id = f"{job.id}:{int(push_dt.timestamp())}"
+        push_ts = int(push_dt.timestamp())
+        # 与 run_now 互斥：定时轮 id 也要避开活跃/待唤醒/立即执行已占用的 id。
+        # 占用时把 push/wake 整体顺延同样的秒数，保证 run_id 时间戳与真实触发
+        # 时间一致（_on_wake 会用 run_id 后缀回推 push 时间）。
+        reserved = self._reserved_run_ids(job.id)
+        while f"{job.id}:{push_ts}" in reserved:
+            push_ts += 1
+        if push_ts != int(push_dt.timestamp()):
+            push_dt = push_dt + timedelta(seconds=push_ts - int(push_dt.timestamp()))
+            wake_dt = push_dt - timedelta(seconds=offset)
+        run_id = f"{job.id}:{push_ts}"
         return push_dt, wake_dt, run_id
 
     @staticmethod
