@@ -19,10 +19,10 @@ import {
   legacyArtifactInstruction,
   looksLikePath,
   processSummary,
+  skillBatchFillText,
   skillSuggestionText,
   stageOutputBlocks,
   stageViews,
-  stripLeadingHeading,
   suggestionParts,
   suggestionsState,
   truncateText,
@@ -291,21 +291,7 @@ function RecordCards({
                 <ClampedMarkdown text={artifactText} />
               </SuggestionCard>
             )}
-            {skills.map(judge => (
-              <EvolutionCard
-                key={judge.id}
-                judge={judge}
-                action={(
-                  <FillButton
-                    text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skillSuggestionText(judge)}`}
-                    onFill={onFill}
-                    testId="trajectory-diagnosis-skill-fill"
-                  />
-                )}
-              >
-                <SuggestionLines lines={skillSuggestionParts(judge)} />
-              </EvolutionCard>
-            ))}
+            <SkillSuggestions skills={skills} onFill={onFill} />
             {experience === null ? null : (
               <EvolutionCard
                 judge={experience}
@@ -371,7 +357,7 @@ function SuggestionLines({ lines }: { lines: readonly string[] }) {
 function SuggestionMarkdown({ text }: { text: string }) {
   return (
     <div className={css.suggestionBody}>
-      <WholeMarkdown text={stripLeadingHeading(text)} />
+      <WholeMarkdown text={text} />
     </div>
   );
 }
@@ -380,15 +366,96 @@ function skillSuggestionParts(judge: EvolutionJudge): string[] {
   return suggestionParts(judge.suggestion);
 }
 
+/** Skill cards. Two or more can be ticked and filled together; each card can still fill itself. */
+function SkillSuggestions({ skills, onFill }: {
+  skills: readonly EvolutionJudge[];
+  onFill: (text: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const batch = skills.length > 1;
+  const chosen = skills.filter(skill => selected.has(skill.id));
+  const allOn = batch && chosen.length === skills.length;
+  const prefix = t('trajectory.diagnosis.skillFillPrefix');
+  const toggle = (id: string, on: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  return (
+    <>
+      {batch ? (
+        <div className={css.skillBatch} data-testid="trajectory-diagnosis-skill-batch">
+          <label className={css.skillCheck}>
+            <input
+              type="checkbox"
+              checked={allOn}
+              ref={(node) => {
+                if (node !== null) node.indeterminate = chosen.length > 0 && !allOn;
+              }}
+              onChange={() => {
+                setSelected(allOn ? new Set() : new Set(skills.map(skill => skill.id)));
+              }}
+              data-testid="trajectory-diagnosis-skill-select-all"
+            />
+            {t('trajectory.diagnosis.skillSelectAll')}
+          </label>
+          <span className={css.spacer} />
+          <FillButton
+            text={skillBatchFillText(chosen, prefix)}
+            onFill={onFill}
+            testId="trajectory-diagnosis-skill-fill-selected"
+            label={t('trajectory.diagnosis.skillFillSelected', { count: chosen.length })}
+            disabled={chosen.length === 0}
+          />
+        </div>
+      ) : null}
+      {skills.map(judge => (
+        <EvolutionCard
+          key={judge.id}
+          judge={judge}
+          selected={selected.has(judge.id)}
+          onSelect={batch ? (on => toggle(judge.id, on)) : undefined}
+          action={(
+            <FillButton
+              text={`${prefix}\n\n${skillSuggestionText(judge)}`}
+              onFill={onFill}
+              testId="trajectory-diagnosis-skill-fill"
+            />
+          )}
+        >
+          <SuggestionLines lines={skillSuggestionParts(judge)} />
+        </EvolutionCard>
+      ))}
+    </>
+  );
+}
+
 /** One evolution item: the advice/verdict text and its action; details live in the findings list. */
-function EvolutionCard({ judge, action, children }: {
+function EvolutionCard({ judge, action, children, selected = false, onSelect }: {
   judge: EvolutionJudge;
   action: ReactNode;
   children: ReactNode;
+  selected?: boolean;
+  onSelect?: (selected: boolean) => void;
 }) {
   const { t } = useTranslation();
   const skill = judge.category === 'skill';
   const title = skill ? (judge.target ?? '') : t('trajectory.diagnosis.ttseReady');
+  const leading = onSelect === undefined ? undefined : (
+    <label className={css.skillCheck}>
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={event => onSelect(event.target.checked)}
+        aria-label={t('trajectory.diagnosis.skillSelectOne', { name: title || judge.id })}
+        data-testid="trajectory-diagnosis-skill-select"
+      />
+    </label>
+  );
   return (
     <SuggestionCard
       tone={skill ? 'skill' : 'experience'}
@@ -397,6 +464,7 @@ function EvolutionCard({ judge, action, children }: {
       mono={skill && looksLikePath(title)}
       testId={skill ? 'trajectory-diagnosis-skill' : 'trajectory-diagnosis-ttse'}
       action={action}
+      leading={leading}
     >
       {children}
     </SuggestionCard>
@@ -468,18 +536,20 @@ function LegacySuggestions({ record, onFill }: {
 }
 
 /** One suggestion: what kind it is and what it is about on top, the action beside them, the detail below. */
-function SuggestionCard({ tone, kind, title, mono = false, action, testId, children }: {
+function SuggestionCard({ tone, kind, title, mono = false, action, testId, leading, children }: {
   tone: 'artifact' | 'skill' | 'experience';
   kind: string;
   title?: string;
   mono?: boolean;
   action: ReactNode;
   testId: string;
+  leading?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className={`${css.suggestion} ${css[`tone_${tone}`]}`} data-testid={testId}>
       <div className={css.suggestionHead}>
+        {leading}
         <span className={css.suggestionKind}>{kind}</span>
         {title === undefined ? null : (
           <strong className={`${css.suggestionTitle} ${mono ? css.mono : ''}`}>{title}</strong>

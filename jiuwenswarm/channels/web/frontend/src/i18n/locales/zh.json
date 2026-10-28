@@ -1279,6 +1279,9 @@
       "ttseTriggeredNotice": "已触发TTSE，将在后台完成经验生成和保存",
       "ttseReady": "可生成经验",
       "skillFillPrefix": "根据以下优化建议对相应skill进行演进：",
+      "skillSelectAll": "全选",
+      "skillSelectOne": "选择 {{name}}",
+      "skillFillSelected": "填入所选（{{count}}）",
       "artifactFillPrefix": "请根据以下建议进行优化：",
       "ttseResult": {
         "triggered": "已触发",

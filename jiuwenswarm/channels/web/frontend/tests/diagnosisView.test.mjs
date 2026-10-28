@@ -34,6 +34,7 @@ import {
   suggestionsState,
   truncateText,
   skillSuggestionText,
+  skillBatchFillText,
   unixNanoToMs,
   usesLegacyFindings,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisView.mjs';
@@ -437,6 +438,30 @@ test('model request lines are split from the rest of a stage output', () => {
   assert.equal(view.requestLines.length, 3);
   assert.equal(view.body, '任务描述：装好依赖\n消息产物 main:0：先看 README');
   assert.deepEqual(splitStageOutput(''), { body: '', requestLines: [], requestCount: 0 });
+});
+
+test('one chosen skill fills as itself and several are headed by the skill name', () => {
+  const image = { id: 'evo-1', target: 'baoyu-image-gen', suggestion: ['## 交付前质量校验\n\n- 先自检'] };
+  const other = { id: 'evo-2', target: 'writer', suggestion: ['补上引用'] };
+  const prefix = '根据以下优化建议对相应skill进行演进：';
+  assert.equal(skillBatchFillText([image], prefix), `${prefix}\n\n## 交付前质量校验\n\n- 先自检`);
+  assert.equal(
+    skillBatchFillText([image, other], prefix),
+    [
+      prefix,
+      '',
+      '## baoyu-image-gen',
+      '',
+      '## 交付前质量校验',
+      '',
+      '- 先自检',
+      '',
+      '## writer',
+      '',
+      '补上引用',
+    ].join('\n'),
+  );
+  assert.equal(skillBatchFillText([], prefix), prefix);
 });
 
 test('a running stage keeps arrival order and a finished stage puts the body first', () => {
