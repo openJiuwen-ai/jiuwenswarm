@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import base64
 import importlib
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -12,7 +14,7 @@ import subprocess
 from PIL import Image
 import pytest
 
-from jiuwenswarm.server.runtime.attachments import steer_images
+from jiuwenswarm.server.runtime.attachments import media_attachments, steer_images
 
 
 @pytest.fixture
@@ -34,9 +36,13 @@ def _item(path: Path, mime_type: str = "image/png") -> dict:
 
 @pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.session_input", "gateway.runtime.session_input"])
 @pytest.mark.parametrize("query", [None, "", " ", "compare screenshots"])
-def test_reference_only_steer_accepts_image_only_without_filesystem_access(module_name: str, query) -> None:
+@pytest.mark.parametrize("image_count", [1, 9])
+def test_reference_only_steer_accepts_image_only_without_filesystem_access(
+    module_name: str, query, image_count: int,
+) -> None:
     module = importlib.import_module(module_name)
-    params = {"input_mode": "steer", "media_items": [_item(Path("/not-an-existing-upload.png"))]}
+    images = [_item(Path(f"/not-an-existing-upload-{index}.png")) for index in range(image_count)]
+    params = {"input_mode": "steer", "media_items": images}
     if query is not None:
         params["query"] = query
     module.validate_session_input(params)
@@ -52,7 +58,6 @@ def test_reference_only_steer_accepts_image_only_without_filesystem_access(modul
     {"media_items": [_item(Path("/file.png")) | {"base64_data": "AAAA"}]},
     {"media_items": [_item(Path("/file.png")) | {"path": 123}]},
     {"media_items": [_item(Path("/file.png")) | {"filename": ""}]},
-    {"media_items": [_item(Path("/file.png"))] * 9},
     {"images": ["file.png"]},
     {"image_files": ["file.png"]},
     {"files": {"uploaded_images": [_item(Path("/file.png"))]}},
@@ -98,12 +103,36 @@ def test_resolves_real_upload_and_recomputes_client_metadata(uploads: Path, name
     assert item["size_bytes"] == "untrusted"
 
 
-def test_resolves_both_uploaded_screenshots(uploads: Path) -> None:
-    paths = [uploads / "before.png", uploads / "after.png"]
+@pytest.mark.parametrize("image_count", [2, 9])
+def test_resolves_all_uploaded_screenshots(uploads: Path, image_count: int) -> None:
+    paths = [uploads / f"screenshot-{index}.png" for index in range(image_count)]
     for path in paths:
         _image(path)
     result = steer_images.resolve_steer_image_references({"media_items": [_item(path) for path in paths]}, "session-a")
     assert [image["path"] for image in result] == [str(path) for path in paths]
+
+
+def test_steer_reuses_main_chat_image_upload_without_copying(uploads: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(media_attachments, "get_agent_sessions_dir", lambda: uploads.parent.parent)
+    stream = io.BytesIO()
+    Image.new("RGB", (32, 16), color="red").save(stream, format="PNG")
+    payload = stream.getvalue()
+    params = {"media_items": [{
+        "type": "image", "filename": "main-chat.png", "mimeType": "image/png",
+        "base64Data": base64.b64encode(payload).decode("ascii"),
+    }]}
+    media_attachments.normalize_chat_media_attachments(params, "session-a")
+    uploaded = params["media_items"][0]
+    original = Path(uploaded["path"])
+    original_stat = original.stat()
+
+    resolved = steer_images.resolve_steer_image_references({"media_items": [uploaded]}, "session-a")
+
+    assert resolved == [uploaded]
+    assert original.parent == uploads
+    assert original.read_bytes() == payload
+    assert original.stat().st_mtime_ns == original_stat.st_mtime_ns
+    assert list(uploads.iterdir()) == [original]
 
 
 @pytest.mark.parametrize("location", ["other-session", "local", "nested", "relative", "traversal"])

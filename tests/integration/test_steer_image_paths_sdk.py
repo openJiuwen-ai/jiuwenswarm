@@ -8,6 +8,7 @@ import hashlib
 import io
 import json
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -97,13 +98,14 @@ class ImageSteerModel:
         )
 
 
-async def _upload_images(tmp_path, monkeypatch, session_id):
+async def _upload_images(tmp_path, monkeypatch, session_id, image_count=2):
     sessions = tmp_path / "sessions"
     monkeypatch.setattr(media_attachments, "get_agent_sessions_dir", lambda: sessions)
     monkeypatch.setattr(steer_images, "get_agent_sessions_dir", lambda: sessions)
     uploader = WorkspaceFileAdapter()
     items, payloads = [], []
-    for index, color in enumerate(("red", "blue")):
+    for index in range(image_count):
+        color = ("red", "blue")[index] if index < 2 else (17 * index % 256, 23 * index % 256, 29 * index % 256)
         stream = io.BytesIO()
         Image.new("RGB", (32, 24), color).save(stream, format="PNG")
         payload = stream.getvalue()
@@ -155,9 +157,14 @@ async def _close_active_agent(agent, gate, operation_id, stream, reader):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("query", ["Compare the supplied screenshots.", ""])
-async def test_uploaded_steer_images_reach_real_file_tool_and_next_model(tmp_path, monkeypatch, query):
+@pytest.mark.parametrize("image_count", [2, 9])
+async def test_uploaded_steer_images_reach_real_file_tool_and_next_model(
+    tmp_path, monkeypatch, query, image_count,
+):
     session_id = f"steer-images-{uuid.uuid4().hex}"
-    media_items, payloads = await _upload_images(tmp_path, monkeypatch, session_id)
+    media_items, payloads = await _upload_images(tmp_path, monkeypatch, session_id, image_count)
+    upload_dir = Path(media_items[0]["path"]).parent
+    original_uploads = set(upload_dir.iterdir())
     agent, model, gate, operation_id = await _new_active_agent(tmp_path, media_items, native_images=True)
     session = create_agent_session(session_id=session_id, card=agent.card)
     await session.pre_run(inputs={})
@@ -208,7 +215,7 @@ async def test_uploaded_steer_images_reach_real_file_tool_and_next_model(tmp_pat
                     for part in message.content if isinstance(part, dict) and part.get("type") == "image_url"]
             counts.append(len(urls))
             final_urls = urls
-        assert counts == [0, 0, 2]
+        assert counts == [0, 0, image_count]
         assert [hashlib.sha256(base64.b64decode(url.split(",", 1)[1])).hexdigest() for url in final_urls] == [
             hashlib.sha256(payload).hexdigest() for payload in payloads
         ]
@@ -221,6 +228,7 @@ async def test_uploaded_steer_images_reach_real_file_tool_and_next_model(tmp_pat
                    if chunk.type == "session_output_phase" and chunk.payload.get("applied_input_ids")]
         assert applied == [["image-supplement"]]
         assert agent.event_handler.interaction_queues.steering.empty()
+        assert set(upload_dir.iterdir()) == original_uploads
     finally:
         await _close_active_agent(agent, gate, operation_id, stream, reader)
 

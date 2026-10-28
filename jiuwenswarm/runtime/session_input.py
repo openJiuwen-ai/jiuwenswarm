@@ -7,7 +7,6 @@ from enum import Enum
 from typing import Any
 
 
-MAX_STEER_IMAGE_COUNT = 8
 _STEER_IMAGE_FIELDS = frozenset({"type", "path", "filename", "mime_type", "size_bytes"})
 _STEER_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
 
@@ -70,8 +69,6 @@ def validate_steer_image_references(params: Mapping[str, Any]) -> list[Mapping[s
         return []
     if not isinstance(raw_items, list):
         raise ValueError("steer media_items must be a list of uploaded image references")
-    if len(raw_items) > MAX_STEER_IMAGE_COUNT:
-        raise ValueError(f"steering accepts at most {MAX_STEER_IMAGE_COUNT} images")
     for item in raw_items:
         if not isinstance(item, Mapping) or set(item) - _STEER_IMAGE_FIELDS:
             raise ValueError("steer images require uploaded file references without inline data")
