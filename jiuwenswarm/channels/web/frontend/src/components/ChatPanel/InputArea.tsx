@@ -42,7 +42,7 @@ import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObject
 import { OverwriteGoalConfirmModal } from '../GoalBar/OverwriteGoalConfirmModal';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
-import { attachmentDraftsBySession } from '../../features/sessionAssets/attachmentDraftRegistry';
+import { attachmentDraftsBySession, useAttachmentDraftClearNonce } from '../../features/sessionAssets/attachmentDraftRegistry';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
@@ -1767,6 +1767,27 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const sessionId = attachmentSessionIdRef.current;
     if (sessionId) attachmentDraftsBySession.set(sessionId, attachments);
   }, [attachments]);
+
+  // 外部清空（目前只有 App.tsx enterNewConversation 对 'new' 调用 clearAttachmentDrafts）
+  // 只改了 Map，不会让 activeSessionId 变化——如果这时候本来就停留在被清的那个会话上
+  // （典型：已经在 'new' 欢迎页带着未发送附件，又点了一次"新建对话"），下面"切换会话"
+  // 那个 effect 不会跑，本地 attachments state 就不会跟着清空，残留的附件之后一发送
+  // 还是会被注册成新会话自己的素材——清空形同虚设。这个 effect 专门补上这种"没有发生
+  // 会话切换"的清空场景。
+  const attachmentDraftClearNonce = useAttachmentDraftClearNonce(activeSessionId);
+  const attachmentDraftClearNonceRef = useRef(attachmentDraftClearNonce);
+  useEffect(() => {
+    if (attachmentDraftClearNonce === attachmentDraftClearNonceRef.current) return;
+    attachmentDraftClearNonceRef.current = attachmentDraftClearNonce;
+    // ref 还没等于 activeSessionId 说明一次真正的会话切换正在进行中，下面那个 effect
+    // 本来就会用（已经清空的）Map 内容重新同步本地 state，这里不用重复处理。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
+    releaseUnsentUploads(attachmentsRef.current);
+    setAttachments([]);
+    setAttachmentAlerts([]);
+    setAttachmentMenuId(null);
+    clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
+  }, [attachmentDraftClearNonce, activeSessionId, releaseUnsentUploads]);
 
   useEffect(() => {
     if (attachmentSessionIdRef.current === activeSessionId) return;
