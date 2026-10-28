@@ -230,7 +230,7 @@ async def persist_backlog_create(tool: Any, session: Any, result: Any) -> Any:
     if session_id is None:
         return result
     # todo_create already replaced the file with this call's tasks.
-    todos = await tool._load_todos(session_id)
+    todos = await tool.read_todos(session_id)
     changed = False
     for todo in todos:
         if is_persistent_todo(todo):
@@ -240,7 +240,7 @@ async def persist_backlog_create(tool: Any, session: Any, result: Any) -> Any:
         changed = True
     if not changed:
         return result
-    await tool._save_todos(session_id, todos)
+    await tool.write_todos(session_id, todos)
     message = result.get("message")
     if not isinstance(message, str):
         return result
@@ -270,7 +270,7 @@ def _is_missing_todo_file(exc: Exception) -> bool:
 async def _load_todos_or_empty(tool: Any, session_id: str) -> list[TodoItem]:
     """Read the current file. A missing file means there is nothing to keep."""
     try:
-        loaded = await tool._load_todos(session_id)
+        loaded = await tool.read_todos(session_id)
     except Exception as exc:
         if not _is_missing_todo_file(exc):
             logger.warning("todo_create could not read existing reminders: %s", exc)
@@ -303,12 +303,12 @@ async def restore_persistent_reminders(
     preserved = [todo for todo in before if _is_active_reminder(todo)]
     if not preserved:
         return
-    current = await tool._load_todos(session_id)
+    current = await tool.read_todos(session_id)
     seen = {todo.id for todo in current if todo.id}
     extras = [todo for todo in preserved if todo.id and todo.id not in seen]
     if not extras:
         return
-    await tool._save_todos(session_id, [*current, *extras])
+    await tool.write_todos(session_id, [*current, *extras])
 
 
 async def merge_persistent_list_items(tool: Any, session: Any, result: Any) -> Any:
@@ -326,7 +326,7 @@ async def merge_persistent_list_items(tool: Any, session: Any, result: Any) -> A
         if isinstance(item, dict) and isinstance(item.get("id"), str):
             seen.add(item["id"])
     extras: list[dict[str, Any]] = []
-    todos = await tool._load_todos(session_id)
+    todos = await tool.read_todos(session_id)
     for todo in todos:
         entry = _persistent_list_entry(todo)
         if entry is None or entry["id"] in seen:

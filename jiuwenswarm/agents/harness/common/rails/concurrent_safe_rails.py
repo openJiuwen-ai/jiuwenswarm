@@ -284,7 +284,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
 
         async def apply():
             try:
-                todos = await tool._load_todos(session_id)
+                todos = await tool.read_todos(session_id)
             except Exception:
                 logger.debug("ConcurrentSafeTaskPlanningRail: no todos for sync")
                 return
@@ -320,7 +320,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             if not changed:
                 return
 
-            await tool._save_todos(session_id, todos)
+            await tool.write_todos(session_id, todos)
             logger.info(
                 "ConcurrentSafeTaskPlanningRail: synced %d todos from TaskPlan",
                 len(todos),

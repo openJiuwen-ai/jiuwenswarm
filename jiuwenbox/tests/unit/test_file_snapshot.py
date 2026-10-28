@@ -73,11 +73,13 @@ def test_snapshot_read_always_closes_descriptor(tmp_path, monkeypatch, failure):
     monkeypatch.setattr(os, "fdopen", fail_fdopen)
     if failure == "read":
         monkeypatch.setattr(sandbox_daemon, "MAX_FILE_BYTES", 1)
+    response, content = request(path)
     if failure:
-        with pytest.raises(OSError):
-            sandbox_daemon._snapshot_read(str(path))
+        assert not response["ok"]
+        assert response["error"] == "io_error"
     else:
-        assert sandbox_daemon._snapshot_read(str(path))[1] == b"old"
+        assert response["ok"]
+        assert content == b"old"
     assert len(descriptors) == 1
     with pytest.raises(OSError):
         os.fstat(descriptors[0])

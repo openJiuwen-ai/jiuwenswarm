@@ -1901,13 +1901,13 @@ class TaskExecutionRail(DeepAgentRail):
         tool = TodoModifyTool(self._deep_agent.deep_config.sys_operation, str(todo_path.parent.parent))
 
         async def advance():
-            items = await tool._load_todos(session_id)
+            items = await tool.read_todos(session_id)
             for item in items:
                 if item.id == raw_id:
                     if item.status.value not in self._BINDING_PENDING:
                         return {"changed": False}
                     item.status = TodoStatus.IN_PROGRESS
-                    await tool._save_todos(session_id, items)
+                    await tool.write_todos(session_id, items)
                     return {"changed": True}
                 if item.status not in (TodoStatus.COMPLETED, TodoStatus.CANCELLED) and not is_persistent_todo(item):
                     return {"changed": False}

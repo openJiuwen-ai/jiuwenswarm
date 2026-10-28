@@ -10,7 +10,7 @@ from openjiuwen.core.session.agent import Session
 from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
 from openjiuwen.core.sys_operation.local._rw_lock_manager import ReadWriteLockManager
 from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
-from openjiuwen.harness.tools.todo import TodoCreateTool, TodoModifyTool
+from openjiuwen.harness.tools.todo import TodoCreateTool, TodoModifyTool, TodoTool
 from openjiuwen.harness.tools.todo_store import (
     _BINDING,
     bind_todo_batch,
@@ -28,12 +28,17 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
     persist_deepresearch_task_update,
 )
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
+    CompatibleTodoModifyTool,
     _install_backlog_create_patch,
 )
-from jiuwenswarm.agents.harness.common.tools.todo_resume import remember_turn_user_query
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    mark_persistent_todo,
+    remember_turn_user_query,
+)
 from jiuwenswarm.common.todo_snapshot import TODO_SNAPSHOT_MODE
 from jiuwenswarm.server.runtime.agent_adapter.plan_pause_helpers import (
     pause_pending_todos_on_tool,
+    snapshot_and_isolate_unfinished_todos,
 )
 
 
@@ -189,6 +194,34 @@ async def test_reminder_create_and_mark_are_one_commit(env, monkeypatch):
     assert saved["todos"][0]["status"] == "pending"
     assert saved["todos"][0]["meta_data"]["persistent"] is True
     assert result.todo_snapshot == saved
+
+
+@pytest.mark.asyncio
+async def test_pause_isolation_preserves_reminder_without_legacy_cache(env, monkeypatch):
+    creator, original, session, path = env
+    await creator.invoke(
+        {"tasks": [{"id": "reminder", "content": "remind"}, {"id": "work", "content": "work"}]},
+        session=session,
+    )
+
+    async def mark(items):
+        mark_persistent_todo(items[0])
+
+    await original.update_todos("s", mark)
+    before = json.loads(path.read_text())
+    modifier = CompatibleTodoModifyTool(SimpleNamespace(fs=lambda: original.fs), original.workspace)
+    modifier.snapshot_guard = original.snapshot_guard
+
+    async def legacy_cache(*args, **kwargs):
+        raise AssertionError("Pause isolation must not use the legacy cache")
+
+    monkeypatch.setattr(TodoTool, "load_todos", legacy_cache)
+    monkeypatch.setattr(TodoTool, "save_todos", legacy_cache)
+    snapshot = await snapshot_and_isolate_unfinished_todos(modifier, "s")
+    saved = json.loads(path.read_text())
+    assert saved["revision"] == before["revision"] + 1
+    assert [(item["id"], item["status"]) for item in saved["todos"]] == [("reminder", "pending")]
+    assert {item["id"] for item in snapshot["unfinished"]} == {"reminder", "work"}
 
 
 @pytest.mark.asyncio

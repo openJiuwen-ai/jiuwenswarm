@@ -115,10 +115,10 @@ class _TodoFile:
     def __init__(self, todos: list[TodoItem]) -> None:
         self.todos = todos
 
-    async def _load_todos(self, _session_id: str) -> list[TodoItem]:
+    async def read_todos(self, _session_id: str) -> list[TodoItem]:
         return list(self.todos)
 
-    async def _save_todos(self, _session_id: str, todos: list[TodoItem]) -> None:
+    async def write_todos(self, _session_id: str, todos: list[TodoItem]) -> None:
         self.todos = list(todos)
 
 

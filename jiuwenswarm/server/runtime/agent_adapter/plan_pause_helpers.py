@@ -342,12 +342,12 @@ async def pause_pending_todos_on_tool(modify_tool: Any, session_id: str) -> bool
     from openjiuwen.harness.tools.todo_store import transact
 
     async def apply():
-        todos = await modify_tool._load_todos(session_id)
+        todos = await modify_tool.read_todos(session_id)
         if not todos:
             return False
         if not pause_todo_items(todos):
             return False
-        await modify_tool._save_todos(session_id, todos)
+        await modify_tool.write_todos(session_id, todos)
         return True
     return await transact(modify_tool, session_id, apply)
 
@@ -361,7 +361,7 @@ async def snapshot_and_isolate_unfinished_todos(modify_tool: Any, session_id: st
     from openjiuwen.harness.tools.todo_store import transact
 
     async def apply():
-        todos = await modify_tool._load_todos(session_id)
+        todos = await modify_tool.read_todos(session_id)
         if not todos:
             return None
 
@@ -401,7 +401,7 @@ async def delete_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
     async def apply():
         if not ids:
             return
-        current = await modify_tool._load_todos(session_id)
+        current = await modify_tool.read_todos(session_id)
         await modify_tool._delete_todos(session_id, ids, current)  # pylint: disable=protected-access
     return await transact(modify_tool, session_id, apply)
 
@@ -413,7 +413,7 @@ async def cancel_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
     async def apply():
         if not ids:
             return
-        current = await modify_tool._load_todos(session_id)
+        current = await modify_tool.read_todos(session_id)
         await modify_tool._cancel_todos(session_id, ids, current)  # pylint: disable=protected-access
     return await transact(modify_tool, session_id, apply)
 
@@ -423,7 +423,7 @@ async def cancel_pending_todos_on_tool(modify_tool: Any, session_id: str) -> boo
     from openjiuwen.harness.tools.todo_store import transact
 
     async def apply():
-        todos = await modify_tool._load_todos(session_id)
+        todos = await modify_tool.read_todos(session_id)
         if not todos:
             return False
 

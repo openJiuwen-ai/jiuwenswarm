@@ -36,9 +36,9 @@ async def isolate_todo_context(tmp_path, monkeypatch):
 
 def business_tool(tool):
     """Retain isolated plan-algorithm mocks; satisfy the snapshot boundary."""
-    tool._load_todos = tool.load_todos
+    tool.read_todos = tool.load_todos
     if hasattr(tool, "save_todos"):
-        tool._save_todos = tool.save_todos
+        tool.write_todos = tool.save_todos
     items = tool.load_todos.return_value
     raw = json.dumps([t.to_dict() for t in items])
     tool.get_file_path = lambda sid: f"/test/{id(tool)}/{sid}/todo.json"
