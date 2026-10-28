@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / config-and-environment |
 | 关联模块 | jiuwenswarm/common/{config, config_provider, path_provider, local_env_config, hooks_config, http_proxy_config, kv_cache_affinity_config, mode_matrix, work_mode, context_keys}.py |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-10-28 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -42,9 +42,18 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   Track B = 业务键仅存进程内 `(sid, aid)` tip bag（active ∪ staged，staged 胜）+ 任务
   overlay。**Track B 永不驻留 os.environ**；`export_agent_environ` 是子进程唯一出口
   （含加解密与 `JIUWENCLAW_*` ↔ `JIUWENSWARM_*` 别名互换）。
-- **N6 overlay 绑定即 seal**：`bind_task_env_overlay` 后 miss 即 unset（不回退 tip）；
+- **N6 overlay 绑定即 seal（默认读取面）**：`bind_task_env_overlay` 后，
+  `get_local_config` / `read_env[_if_set]` 的 miss 即 unset（不回退 tip）；
   `_UNBOUND` 哨兵区分"未绑定"与绑定 `{}`。overlay 是任务级 ContextVar，bind/reset
   必须成对。
+
+  显式例外：`read_env_live()` 仅供已声明"可观测请求中 reload"的消费者使用。当前
+  生产消费点仅限 Petal search 的 `PETAL_SEARCH_URL` / `PETAL_SEARCH_HEADERS`：
+  它不读取任务 sealed overlay，而是读取当前 namespace 的 `effective_tip()`。若
+  overlay 已绑定且 live tip miss，仍按 unset 返回 default，不回退 sealed overlay
+  或进程环境变量。该例外不参与 sealed overlay 快照缓存：live read 在每次工具调用
+  时解析 `effective_tip()`，用于观察 staged reload；overlay 快照仍只服务默认读取面，
+  bind/reset 生命周期不变。
 - **N7 tip 联动失效**：tip 写入（`set_os_environ` 等）联动失效 config 的 ns 缓存。
   绕过 local_env_config 直写 `os.environ` 会破坏该联动（且 Track B 值根本不在那）。
 - **N8 空串凭证键不覆盖**：API_KEY 等凭证键空串不覆盖已有值（防"手滑清空密钥"）。
@@ -91,7 +100,7 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 | `config.py`（~2500 行） | `get_config` / `get_config_raw` / `get_merged_config_dict` / `resolve_env_vars` / `resolve_config_env_vars` / `set_config` / `update_config` / `clear_config_cache` / `CONFIG_YAML_PATH` | N1–N4；各配置段（permissions/models/mcp/teams/hooks）读写 API |
 | `config_provider.py` | `ConfigProvider`（Protocol）/ `register/get/reset_config_provider` / `DefaultConfigProvider` / `AgentConfigContext/Result` / `apply_enterprise_mcp` | N9；配置源由 `JIUWENSWARM_CONFIG_SOURCE` 或 `config.source` 决定 |
 | `path_provider.py` | `PathCategory`（~20 类目录）/ `PathProvider`（Protocol）/ `register/get/reset_path_provider` / `current_path_context` / `bind_path_session_id` | 进程级单例 provider；请求身份 task-local（ContextVar） |
-| `local_env_config.py`（~1340 行） | `SPAWN_ENV_KEYS` / `BUSINESS_MIRROR_KEYS` / `get_local_config` / `read_env[_if_set]` / `set_os_environ` / `export_agent_environ` / `bind_agent_env_ns` / `bind_task_env_overlay` / `effective_tip` | N5–N8 |
+| `local_env_config.py`（~1340 行） | `SPAWN_ENV_KEYS` / `BUSINESS_MIRROR_KEYS` / `get_local_config` / `read_env[_if_set]` / `read_env_live` / `set_os_environ` / `export_agent_environ` / `bind_agent_env_ns` / `bind_task_env_overlay` / `effective_tip` | N5–N8 |
 | `hooks_config.py` | `HookEvent`（17）/ `HooksConfig.match` / `HookMatcher` / `load_hooks_config` / `is_rail_event` / `is_gateway_event` | N10 |
 | `http_proxy_config.py` | `requests_get/post` / `resolve_requests_proxies` / `resolve_httpx_proxy` / `should_bypass_proxy` / `ssl_verify_enabled` | N11 |
 | `kv_cache_affinity_config.py` | `ASCEND_AFFINITY_PROVIDER` / `get_default_model_provider` / `validate_affinity_invariant` / `normalize_affinity_request` / `KVC_CONFIG_KEYS` | N12 |
@@ -122,6 +131,8 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
   `test_config_concurrent_models.py` 全量回归；检查 tip 联动（N7）。
 - 改 `${VAR}` 语义 → 三种形式（无默认 / `:-` / `-`）回归 + Track A/B 读取路径确认。
 - 改 overlay seal 语义 → miss-unset 行为回归（这是防"幽灵配置"的关键）。
+- 扩大 `read_env_live` 消费面 → 必须先确认该配置允许请求中 reload，补 sealed
+  overlay 下读取 staged tip 的回归测试，并同步更新 N6 例外清单。
 - 加 HookEvent → Rail/Gateway 归类 + matcher 语法回归 + hooks 消费方三处
   （user_hook_rail / gateway handler / extensions handler）确认。
 - 改模式归一 → 组合表 / 直解 / legacy 三级矩阵 + `deprecate_mode` None/空串原样铁律 +

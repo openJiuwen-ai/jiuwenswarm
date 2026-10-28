@@ -233,7 +233,10 @@ common/
    共享引用，消费方禁止原地修改；`local_env_config` 的 tip 写入必须联动失效 config 的
    ns 缓存（已内置，绕过 `set_os_environ` 直写 os.environ 会破坏该联动）。
 10. **Track B 业务键永不驻留 os.environ**（[[S_08]] N5）。`export_agent_environ` 是子进程
-    环境的唯一合法出口（含加解密）；overlay 绑定即 seal（miss 即 unset，不回退 tip）。
+    环境的唯一合法出口（含加解密）；overlay 绑定后默认读取面即 seal（miss 即 unset，
+    不回退 tip）。唯一显式例外 `read_env_live` 当前仅用于 Petal search 的
+    `PETAL_SEARCH_URL` / `PETAL_SEARCH_HEADERS`；overlay 已绑定且 live tip miss 时仍
+    视为 unset，不回退 sealed overlay 或进程环境变量。
     `JIUWENCLAW_*` ↔ `JIUWENSWARM_*` 别名互换只在出口处做。
 11. **模式与身份归一的原样铁律**（[[S_08]] / [[S_13]]）。`deprecate_mode` 对 None / 空串
     原样返回（禁降级为默认值）；路由身份四字段只写一次（Gateway 入口）、读多处，
