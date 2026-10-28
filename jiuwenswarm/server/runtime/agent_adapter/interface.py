@@ -145,6 +145,7 @@ from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io as _run_history_io,
 )
+from jiuwenswarm.server.runtime.session.history_context import history_context_request, history_context_stream
 from jiuwenswarm.server.runtime.session.session_history import (
     SESSION_REQUEST_COMPLETED_EVENT,
     append_compact_history_records,
@@ -3600,6 +3601,7 @@ class JiuWenSwarm:
         plan_language = str(params.get("plan_language") or "").strip().lower()
         return plan_language in {"cn", "en"}
 
+    @history_context_request
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
@@ -4392,6 +4394,7 @@ class JiuWenSwarm:
             mode=request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown",
         )
 
+    @history_context_stream
     async def process_message_stream(
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
