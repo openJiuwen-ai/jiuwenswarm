@@ -3495,8 +3495,26 @@ class MessageHandler(ABC):
                     rid,
                 )
                 return
+            # Agent 侧会把路由 group/bot 放进 wire metadata（与 owner user 同级），
+            # 避免仅依赖 _stream_metadata.routing（权限续跑 request_id 可能对不上）。
+            cron_payload = dict(chunk.payload)
+            body_data = cron_payload.get("data")
+            if not isinstance(body_data, dict):
+                body_data = {}
+                cron_payload["data"] = body_data
+            else:
+                body_data = dict(body_data)
+                cron_payload["data"] = body_data
+            if isinstance(wire_metadata, dict):
+                for src_key, dst_key in (
+                    ("_jiuwenswarm_cron_owner_group_id", "group_id"),
+                    ("_jiuwenswarm_cron_owner_bot_id", "bot_id"),
+                ):
+                    pushed = str(wire_metadata.get(src_key) or "").strip()
+                    if pushed and not str(body_data.get(dst_key) or "").strip():
+                        body_data[dst_key] = pushed
             await self._handle_cron_push_payload(
-                payload=dict(chunk.payload),
+                payload=cron_payload,
                 request_id=rid,
                 channel_id=chunk.channel_id,
                 session_id=session_id,
@@ -3726,6 +3744,47 @@ class MessageHandler(ABC):
         )
         owner_user_id = str(user_id or "").strip()
 
+        # 对话里的 cron 工具（list/get/update/…）通常不带 group_id/bot_id；
+        # 空值会被 controller normalize 成 default，企业版任务筛不中 → 列表空。
+        # create 路径已有 routing 回填；这里对所有 action 统一先补齐。
+        from jiuwenswarm.common.request_identity import (
+            merge_routing_into_params,
+            web_routing_identity,
+        )
+        from gateway.enterprise import is_enterprise
+
+        identity_meta = (
+            request_metadata if isinstance(request_metadata, dict) else None
+        )
+        if identity_meta is None and isinstance(metadata, dict):
+            identity_meta = metadata
+        # 先保留 body/push 已带的 group/bot，再用 stream routing 补洞；
+        # 不要用空的 stream identity 把已有租户盖成 default。
+        params = merge_routing_into_params(
+            dict(params),
+            identity_meta,
+            override=False,
+        )
+        if is_enterprise():
+            identity = web_routing_identity(identity_meta)
+            for key in ("group_id", "bot_id"):
+                routed = str(identity.get(key) or "").strip()
+                current = str(params.get(key) or "").strip()
+                if routed and current in {"", "default"}:
+                    params[key] = routed
+                    continue
+                if current in {"", "default"} and not routed:
+                    params.pop(key, None)
+        tenant_group_id = str(params.get("group_id") or "")
+        tenant_bot_id = str(params.get("bot_id") or "")
+        logger.info(
+            "[MessageHandler] cron push tenant: action=%s user=%s group=%s bot=%s",
+            action,
+            owner_user_id,
+            tenant_group_id or "(empty)",
+            tenant_bot_id or "(empty)",
+        )
+
         async def _get_owned_job(job_id: str) -> dict[str, Any] | None:
             job = await cc.get_job(
                 job_id,
@@ -3735,8 +3794,8 @@ class MessageHandler(ABC):
                     else None
                 ),
                 user_id=owner_user_id,
-                group_id=str(params.get("group_id") or ""),
-                bot_id=str(params.get("bot_id") or ""),
+                group_id=tenant_group_id,
+                bot_id=tenant_bot_id,
             )
             if job is None:
                 return None
@@ -3760,9 +3819,9 @@ class MessageHandler(ABC):
                         if "project_id" in params
                         else None
                     ),
-                    user_id=str(owner_user_id or ""),
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    user_id=owner_user_id,
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
                 if owner_user_id:
                     data = [
@@ -3803,42 +3862,11 @@ class MessageHandler(ABC):
                 params.pop("_auth_session", None)
                 if auth_session:
                     params["_auth_session"] = auth_session
-                # 对话里的 cron 工具通常不带 group/bot。这里用原始 chat 请求的
-                # routing 盖回去，企业库才能按真实 bot_id 查对话模型，而不是查到
-                # 空名单或历史占位名 default。
-                from jiuwenswarm.common.request_identity import (
-                    merge_routing_into_params,
-                    web_routing_identity,
-                )
-                from gateway.enterprise import is_enterprise
-
-                identity_meta = (
-                    request_metadata
-                    if isinstance(request_metadata, dict)
-                    else None
-                )
-                if identity_meta is None and isinstance(metadata, dict):
-                    identity_meta = metadata
-                params = merge_routing_into_params(
-                    params,
-                    identity_meta,
-                    override=True,
-                )
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
+                # group/bot 已在上方用 chat routing 回填。
                 if owner_user_id:
                     params["user_id"] = owner_user_id
-                if is_enterprise():
-                    identity = web_routing_identity(identity_meta)
-                    for key in ("group_id", "bot_id"):
-                        routed = str(identity.get(key) or "").strip()
-                        if routed:
-                            params[key] = routed
-                            continue
-                        # 没有路由身份时丢掉占位 default，让控制器明确报缺身份，
-                        # 避免拿 bot_id=default 去企业库查出空名单再误报 Unknown model。
-                        if str(params.get(key) or "").strip() in {"", "default"}:
-                            params.pop(key, None)
                 # 从原始请求中获取 mode，覆盖 LLM 工具调用的默认值
                 request_mode = self._stream_modes.get(request_id)
                 if request_mode:
@@ -3861,8 +3889,8 @@ class MessageHandler(ABC):
                     job_id,
                     patch,
                     user_id=owner_user_id,
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
             elif action == "delete":
                 job_id = str(params.get("job_id") or "")
@@ -3872,8 +3900,8 @@ class MessageHandler(ABC):
                     "deleted": await cc.delete_job(
                         job_id,
                         user_id=owner_user_id,
-                        group_id=str(params.get("group_id") or ""),
-                        bot_id=str(params.get("bot_id") or ""),
+                        group_id=tenant_group_id,
+                        bot_id=tenant_bot_id,
                     )
                 }
             elif action == "toggle":
@@ -3884,8 +3912,8 @@ class MessageHandler(ABC):
                     job_id,
                     bool(params.get("enabled")),
                     user_id=owner_user_id,
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
             elif action == "preview":
                 job_id = str(params.get("job_id") or "")
@@ -3895,8 +3923,8 @@ class MessageHandler(ABC):
                     job_id,
                     int(params.get("count", 5)),
                     user_id=owner_user_id,
-                    group_id=str(params.get("group_id") or ""),
-                    bot_id=str(params.get("bot_id") or ""),
+                    group_id=tenant_group_id,
+                    bot_id=tenant_bot_id,
                 )
             elif action == "run_now":
                 job_id = str(params.get("job_id") or "")
@@ -3906,8 +3934,8 @@ class MessageHandler(ABC):
                     "run_id": await cc.run_now(
                         job_id,
                         user_id=owner_user_id,
-                        group_id=str(params.get("group_id") or ""),
-                        bot_id=str(params.get("bot_id") or ""),
+                        group_id=tenant_group_id,
+                        bot_id=tenant_bot_id,
                     )
                 }
                 # P2：把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer，让
