@@ -56,7 +56,7 @@ symphony:
   enabled: false
   # 动态专家独立于上面的技能编排开关；修改后重启 AgentServer 生效。
   dynamic_experts:
-    enabled: null  # null = 跟随程序默认（当前关闭）；用户切换后保存 true/false
+    enabled: null  # null = 跟随程序默认（当前开启）；用户切换后保存 true/false
   paths:
     skills_root: ""
     score_dir: ""
