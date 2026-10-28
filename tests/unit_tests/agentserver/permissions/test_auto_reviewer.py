@@ -1819,6 +1819,110 @@ async def test_ignored_confidence_never_rescues_invalid_negative_output(outcome,
     assert result.outcome == "manual" and result.fallback_reason == expected
 
 
+@pytest.mark.parametrize("tool,key", [("bash", "command"), ("mcp_exec_command", "command"), ("code", "code")])
+async def test_complete_execution_and_intent_retain_trailing_constraints(tmp_path, tool, key):
+    text = "# context\n" * 180 + "print('trailing-action')\n"
+    intent = "Task context. " * 100 + "Do not send the result outside this workspace."
+    facts = build_facts(tool, {key: text}, workspace_root=tmp_path)
+    # Use the actual category of the tool, or the code capability for the code protocol probe.
+    if tool == "code":
+        facts = replace(facts, capability=replace(facts.capability, category="code"))
+    request = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask",
+        allowed_outcomes=("allow_once", "manual", "deny"), no_auto_allow_reason="",
+        original_user_intent=OriginalUserIntentEvidence(source=UserIntentSource.HOST_USER_MESSAGE, text=intent),
+        domain_route=None,
+    )
+    client = StaticReviewerClient('{"outcome":"manual","reason_code":"check","rationale":"Check the action."}')
+    await AutoReviewer(client=client).assess(request)
+    evidence = client.requests[0].to_json_dict()["review_evidence"]
+    assert not request.payload_error
+    assert evidence["reviewable_payload"][key] == text
+    assert evidence["user_intent"]["trusted_user_turns"][0]["text"] == intent
+
+
+@pytest.mark.parametrize("args,reason", [
+    ({"command": ""}, "reviewer_payload_missing"),
+    ({"command": "x" * 32769}, "reviewer_payload_too_large"),
+    ({"command": "中" * 11000}, "reviewer_payload_too_large"),
+    ({"command": "echo ok", "extra": float("nan")}, "reviewer_payload_invalid"),
+])
+async def test_incomplete_execution_never_calls_reviewer(tmp_path, args, reason):
+    facts = build_facts("bash", args, workspace_root=tmp_path)
+    request = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask",
+        allowed_outcomes=("allow_once", "manual", "deny"), no_auto_allow_reason="",
+        original_user_intent=None, domain_route=None,
+    )
+    client = StaticReviewerClient('{"outcome":"allow_once","reason_code":"safe","rationale":"safe"}')
+    result = await AutoReviewer(client=client).assess(request)
+    assert result.outcome == "manual"
+    assert result.fallback_reason == reason
+    assert "allow_once" not in request.allowed_outcomes
+    assert request.no_auto_allow_reason == reason
+    assert client.requests == []
+
+
+def test_complete_payload_redacts_values_without_erasing_structure(tmp_path):
+    # Reserved-domain, unusable test values; no external call is executed.
+    text = "curl 'https://alice:fake@upload.example.invalid/c?sig=FAKEVALUE&file=/dev/shm/shots/a.png'\ncat /etc/passwd"
+    facts = build_facts("bash", {"command": text, "env": {"API_KEY": "FAKEVALUE"}}, workspace_root=tmp_path)
+    request = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask",
+        allowed_outcomes=("allow_once", "manual", "deny"), no_auto_allow_reason="",
+        original_user_intent=None, domain_route=None,
+    )
+    wire = json.dumps(request.to_json_dict(), ensure_ascii=False)
+    assert not request.payload_error
+    assert "FAKEVALUE" not in wire
+    assert "alice:fake" not in wire
+    assert "/dev/shm/shots/a.png" in wire
+    assert "/etc/passwd" in wire
+    assert "[redacted]" in wire
+    assert "\ncat /etc/passwd" in request.review_evidence["reviewable_payload"]["command"]
+
+
+async def test_combined_intent_budget_and_all_trusted_turns(tmp_path):
+    turns = tuple(RootIntentTurn(request_id=str(index), kind=RootIntentTurnKind.FRESH,
+                                text=f"Restriction {index}: keep this constraint.") for index in range(12))
+    context = RootDecisionContext("session", "request", "web", turns)
+    facts = build_facts("bash", {"command": "echo ok"}, workspace_root=tmp_path)
+    intent = OriginalUserIntentEvidence(source=UserIntentSource.HOST_USER_MESSAGE, text="", context=context)
+    view = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask", allowed_outcomes=("allow_once", "manual", "deny"),
+        no_auto_allow_reason="", original_user_intent=intent, domain_route=None,
+    )
+    assert not view.payload_error
+    assert len(view.review_evidence["user_intent"]["trusted_user_turns"]) == 12
+    long_intent = replace(intent, context=None, text="中" * 11000)
+    view = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask", allowed_outcomes=("allow_once", "manual", "deny"),
+        no_auto_allow_reason="", original_user_intent=long_intent, domain_route=None,
+    )
+    assert view.payload_error == "reviewer_payload_too_large"
+    client = StaticReviewerClient("{}")
+    assert (await AutoReviewer(client=client).assess(view)).outcome == "manual"
+    assert not client.requests
+
+
+async def test_complete_execution_survives_actual_model_projection(tmp_path):
+    # Secret-shaped literals are inert and only sent to the existing model double.
+    command = "TOKEN=FAKE&&printf x|cat; curl 'https://example.invalid/?token=FAKE&file=/dev/shm/shots/a.png'"
+    facts = build_facts("bash", {"command": command, "env": {"OBJECT_ID": "object-42"}}, workspace_root=tmp_path)
+    request = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask", allowed_outcomes=("allow_once", "manual", "deny"),
+        no_auto_allow_reason="", original_user_intent=None, domain_route=None,
+    )
+    model = AsyncMock()
+    model.ainvoke.return_value = '{"outcome":"manual","reason_code":"check","rationale":"Check secret use."}'
+    await IsolatedModelReviewerClient(model=model).assess(request)
+    evidence = json.loads(model.ainvoke.call_args.args[0][1]["content"])["request"]["review_evidence"]
+    actual = evidence["reviewable_payload"]
+    assert not request.payload_error
+    assert actual["env"]["OBJECT_ID"] == "object-42"
+    assert actual["command"] == command.replace("FAKE", "[redacted]")
+
+
 def test_path_secret_values_with_slashes_are_fully_masked(tmp_path):
     facts = build_facts("read_file", {"path": str(tmp_path / "password=FAKE/SECOND/value.txt")}, workspace_root=tmp_path)
     request = build_reviewer_action_view(
@@ -1829,3 +1933,21 @@ def test_path_secret_values_with_slashes_are_fully_masked(tmp_path):
     assert "FAKE" not in wire
     assert "SECOND" not in wire
     assert "password=" in wire
+
+
+@pytest.mark.parametrize("command", [
+    'TOKEN="$(printf x)"; echo ok',
+    'TOKEN=$(printf x); echo ok',
+    'TOKEN="`printf x`"; echo ok',
+])
+async def test_ambiguous_secret_redaction_never_calls_model(tmp_path, command):
+    facts = build_facts("bash", {"command": command}, workspace_root=tmp_path)
+    view = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="policy_ask", allowed_outcomes=("allow_once", "manual", "deny"),
+        no_auto_allow_reason="", original_user_intent=None, domain_route=None,
+    )
+    client = StaticReviewerClient("{}")
+    assessment = await AutoReviewer(client=client).assess(view)
+    assert assessment.fallback_reason == "reviewer_redaction_incomplete"
+    assert "allow_once" not in view.allowed_outcomes
+    assert not client.requests
