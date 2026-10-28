@@ -1105,13 +1105,6 @@ def test_reviewer_ui_metadata_localizes_host_fallback_reasons(
         ("manual", "reviewer_fallback", "reviewer_payload_too_large", "超出字节预算", "exceeds the byte budget"),
         (
             "manual",
-            "reviewer_fallback",
-            "low_confidence",
-            "置信度低于当前阈值",
-            "confidence was below",
-        ),
-        (
-            "manual",
             "reviewer_outcome_not_allowed",
             "",
             "结论超出宿主策略允许范围",

@@ -10,7 +10,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import (
     build_reviewer_action_view,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
-    redact_reviewer_intent,
+    redact_reviewer_value,
     redact_text,
     reviewer_path_location,
 )
@@ -193,18 +193,16 @@ def test_intent_boundaries_unicode_spaces_and_platform(tmp_path):
     root = tmp_path / "project"
     platform = tmp_path / "data"
     raw = f'只改 "{root}/work/项目 A"，读取 {platform}/skills/demo/SKILL.md。'
-    text = redact_reviewer_intent(
-        raw, workspace_root=str(root), platform_trusted_root=str(platform)
-    )
+    text = redact_reviewer_value(raw)
     assert text == raw
     for outside in (
         f"{root}-other/report.py", f"file://{root}/report.py", f"{root}/../outside/report.py",
     ):
-        assert redact_reviewer_intent(outside, workspace_root=str(root), platform_trusted_root="") == outside
+        assert redact_reviewer_value(outside) == outside
     # Generic display redaction retains its existing contract.
     assert redact_text(f"Read {root}/report.py") == "Read [path]"
     literal = 'Inspect /custom-location/a and "/custom-location/目录 A".'
-    assert redact_reviewer_intent(literal, workspace_root=str(root), platform_trusted_root="") == literal
+    assert redact_reviewer_value(literal) == literal
 
 
 def test_symlink_location_uses_host_canonical_target(tmp_path):

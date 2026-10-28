@@ -241,14 +241,6 @@ def _redact_path_values(value: str) -> str:
     return _SECRET_ASSIGNMENT_PATTERN.sub(mask_assignment, value)
 
 
-def redact_reviewer_intent(
-    value: Any, *, workspace_root: str, platform_trusted_root: str,
-    max_length: int | None = 1024,
-) -> str:
-    """Preserve literal intent; only tool targets use canonical path identity."""
-    return redact_secret_values_preserve_format(value, max_length=max_length)
-
-
 def redact_reviewable_payload_text(
     value: Any,
     *,

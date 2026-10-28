@@ -41,10 +41,6 @@ _DISPLAY_MESSAGES = {
         "confirmation is required. Manual approval does not change the tool's actual "
         "execution environment.",
     ),
-    "low_confidence": (
-        "自动审批结论的置信度低于当前阈值，已转人工审批。",
-        "AutoReviewer confidence was below the configured threshold; manual review is required.",
-    ),
     "manual_approval": (
         "用户已通过人工审批允许此操作。",
         "The user allowed this operation through manual approval.",
@@ -186,8 +182,6 @@ def _host_display_reason(
         key = reason_code
     elif status == "timed_out" or fallback == "reviewer_timeout":
         key = "reviewer_timeout"
-    elif fallback == "low_confidence":
-        key = "low_confidence"
     elif reason_code == "reviewer_outcome_not_allowed":
         key = "reviewer_outcome_not_allowed"
     elif fallback == "client_exception":
