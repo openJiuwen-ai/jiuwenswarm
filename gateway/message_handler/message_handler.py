@@ -3678,6 +3678,7 @@ class MessageHandler(ABC):
                     job_id=str(params.get("job_id") or ""),
                     run_id=str(data.get("run_id") or ""),
                     user_id=owner_user_id or None,
+                    session_id=session_id,
                 )
             else:
                 data = {"error": f"unknown cron action: {action}"}
@@ -3689,6 +3690,7 @@ class MessageHandler(ABC):
                 command_id=command_id,
                 data=data,
                 user_id=owner_user_id or None,
+                session_id=session_id,
             )
 
         if not channel_id:
@@ -3715,7 +3717,12 @@ class MessageHandler(ABC):
         await self.publish_robot_messages(out)
 
     async def _push_cron_command_ack(
-        self, *, command_id: str, data: Any, user_id: str | None = None
+        self,
+        *,
+        command_id: str,
+        data: Any,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         """Return a Gateway cron command result to the waiting Agent tool."""
         try:
@@ -3727,6 +3734,7 @@ class MessageHandler(ABC):
                 req_method=ReqMethod.CRON_COMMAND_ACK,
                 params={"command_id": command_id, "data": data},
                 is_stream=False, timestamp=time.time(), user_id=user_id,
+                session_id=session_id,
             )
             await send_agent_request_with_timeout(
                 self.agent_client, env, label="cron.command.ack"
@@ -3735,7 +3743,13 @@ class MessageHandler(ABC):
             logger.warning("[Cron] command ack delivery failed: command_id=%s", command_id, exc_info=True)
 
     async def _push_cron_run_now_ack(
-        self, *, request_id: str, job_id: str, run_id: str, user_id: str | None = None
+        self,
+        *,
+        request_id: str,
+        job_id: str,
+        run_id: str,
+        user_id: str | None = None,
+        session_id: str | None = None,
     ) -> None:
         """把 Gateway 生成的 run_id 经 E2A 回传目标 AgentServer（P2）。
 
@@ -3760,6 +3774,7 @@ class MessageHandler(ABC):
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=user_id,
+                session_id=session_id,
             )
             await send_agent_request_with_timeout(
                 self.agent_client,
