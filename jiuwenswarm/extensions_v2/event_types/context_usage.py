@@ -97,16 +97,21 @@ def notify_context_usage(
     metadata: dict[str, object] = {"project_root": project_root} if project_root is not None else {}
     if model_info is not None:
         metadata[SESSION_MODEL_INFO_KEY] = sanitize_model_info(model_info)
+    turn_usage = {
+        "input_tokens": update.input_tokens, "output_tokens": update.output_tokens,
+        "total_tokens": update.total_tokens,
+    }
+    # Match chat.usage_summary's field-presence rule. A missing cache count is
+    # distinct from a reported zero; invalid counters are validated separately.
+    if isinstance(update.input_tokens, (int, float)) and update.input_tokens > 0:
+        turn_usage["cache_tokens"] = update.cache_tokens
     try:
         metadata[SESSION_USAGE_INFO_KEY] = build_usage_snapshot(
             update.session_id,
             context_usage=context_usage,
             turn_usage={
                 "request_id": update.request_id, "timestamp": time.time(),
-                "usage": {
-                    "input_tokens": update.input_tokens, "output_tokens": update.output_tokens,
-                    "total_tokens": update.total_tokens, "cache_tokens": update.cache_tokens,
-                },
+                "usage": turn_usage,
             },
         )
     except (TypeError, ValueError):

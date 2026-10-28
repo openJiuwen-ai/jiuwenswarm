@@ -4,6 +4,7 @@
 | --- | --- |
 | 编号 | F_21 / session-usage-ops |
 | 建档日期 | 2026-10-28 |
+| 后续修订 | 2026-10-28，PR !90 建议级评审修订，见第 8 节 |
 | 关联计划 | [EXTV2-17](../designs/extensions-v2-development-plan.md) |
 | 主责规约 | [S_11](../specs/S_11_session-usage-ops.md) |
 
@@ -73,3 +74,24 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2 tests/unit_tests/
 ## 7. 编号核对
 
 已知 PR04 占 F_16/S_06；并行 Gateway PR !89 占 F_16～F_20/S_06～S_10，且尚有历史编号冲突。本项避让为 F_21/S_11；两项并行 PR 的台账均占 EXTV2-16，本项取 EXTV2-17，发布前再次核对远端文件与台账，不改其它 PR 编号。
+
+## 8. PR !90 建议级评审修订
+
+修订设计先于实现；第 5 节保留初次交付验证记录，本节记录修订后的验证结果。
+
+- R-01：宿主通知的 context 和 turn 分开校验、分开构建。窗口格式错误时 context=None，仍保留本轮有效 provider 用量；本轮两部分都不可用时也写入明确的 None，避免缺失 metadata 后误读上一轮历史。历史文件回读仍严格校验，损坏不伪装为成功。
+- R-02：通知快照的 cache_tokens 与原生 summary 使用同一字段存在条件：input_tokens>0 才携带该字段；否则 Ops 返回 None。真实已提供的 0 保持 0，不改变既有 ContextUsageUpdate 事件字段。
+- R-03：原生主窗口过滤回归使用不同 token 和 request_id 的干扰窗口，分别覆盖外会话、depth、parent_invocation_id、member_name、team_id，并继续验证捕获后原数据变更不会污染快照。
+- R-04：历史回读的 turn 与 context 统一排除子调用、成员和 Team 的标记，避免共享产品会话的旁路 summary 覆盖主用量。保持当前 source 排除规则并准确写入规约：所有非空 source 的 user 行都被排除；turns 是保留历史的用户输入计数，不能作为 AgentLoop turn.start 的序号。
+
+修订前复现：将新增的宿主窗口与 cache 回归运行于原实现，6 项中 4 项失败，复现了窗口无效导致回读旧用量、零输入时通知与历史的 cache 返回不一致；修订后均通过。
+
+| 修订后验证范围 | 实际结果 |
+| --- | --- |
+| 统计/Ops 测试 | 44 项通过；覆盖两个宿主分量独立失效、两者都失效不回读旧值、历史损坏仍报错、cache 缺失与零值及六类非主会话 summary 过滤 |
+| 第 5 节同范围定向回归 | 319 项通过；1 项既有 Windows symlink 用例因创建权限跳过 |
+| 原生 Adapter | 五类干扰窗口使用不同 token/request_id 均通过；零输入与正输入的 summary cache 字段存在规则通过 |
+| 真实 Front → Supervisor → Worker → Qwen3.8-Flash | 两个 ZIP 安装、alpha 两轮与 beta 一轮 USER 查询通过；turns 分别为 1/2 和 1，用量与 WebSocket 及独立进程历史读取一致；原 CORE 回执及 cwd/root/model/repo 查询通过 |
+| 卸载与清理 | 两包卸载后新增回合不再执行 USER Handler，历史可读且轮次为 3/1；Worker 退出、端口释放，验证退出码 0，五个实现文件在运行期间哈希不变 |
+
+修订证据位于 `D:\work_space\.codex-temp\server-pr05-review-fix-20261028`：`before-fix.xml`、`regression.xml`、`live-run-receipt.json`，以及收据 runDirectory 内的 `validation-summary.json` / `cleanup.json`。复用第 5 节回归命令与隔离验证方法；这些结果不代表浏览器 UI 或远端 CI 验收。

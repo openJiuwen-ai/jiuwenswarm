@@ -327,3 +327,97 @@ async def test_notify_binds_current_facts_before_summary_is_durable(host, sessio
     assert result["usage"]["turn"]["request_id"] == "r2"
     assert result["usage"]["context"]["context_window"]["input_tokens"] == 120
     assert result["receipt"].accepted
+
+
+async def _notify_query(host, monkeypatch, update, window):
+    seen = []
+    original = host.bus.trigger
+
+    async def record(event, context):
+        result = await original(event, context)
+        seen.append(result)
+        return result
+
+    monkeypatch.setattr(host.bus, "trigger", record)
+    await context_usage.notify_context_usage(update, context_usage=window)
+    return seen[-1]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["missing_request", "negative_tokens", "invalid_part"])
+async def test_invalid_window_keeps_current_turn_instead_of_reading_old_history(host, sessions, monkeypatch, invalid):
+    _save(sessions, "s1", [_summary("old-request", 900)])
+    window = _window(request="current-request")
+    if invalid == "missing_request":
+        window.pop("request_id")
+    elif invalid == "negative_tokens":
+        window["context_window"]["input_tokens"] = -1
+    else:
+        window["parts"]["messages"]["category"] = "unsupported-category"
+    result = await _notify_query(host, monkeypatch,
+        context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=20, total_tokens=20), window)
+    assert result["usage"]["source"] == "host"
+    assert result["usage"]["context"] is None
+    assert result["usage"]["turn"]["request_id"] == "current-request"
+    assert result["usage"]["turn"]["total_tokens"] == 20
+    assert result["receipt"].accepted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_input", [-1, "invalid-input"])
+async def test_invalid_turn_keeps_valid_context_snapshot(host, sessions, monkeypatch, invalid_input):
+    _save(sessions, "s1", [_summary("old-request", 900)])
+    result = await _notify_query(host, monkeypatch,
+        context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=invalid_input, total_tokens=20),
+        _window(request="current-window"))
+    assert result["usage"]["source"] == "host" and result["usage"]["turn"] is None
+    assert result["usage"]["context"]["request_id"] == "current-window"
+    assert result["receipt"].accepted
+
+
+@pytest.mark.asyncio
+async def test_invalid_host_components_do_not_fall_back_to_a_previous_turn(host, sessions, monkeypatch):
+    _save(sessions, "s1", [_summary("old-request", 900)])
+    window = _window()
+    window.pop("request_id")
+    result = await _notify_query(host, monkeypatch,
+        context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=-1, total_tokens=-1), window)
+    assert result["usage"] is None and result["compact"] is None
+    assert result["receipt"].accepted
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("input_tokens,cache_tokens,expected", [(0, 0, None), (10, 0, 0), (10, 7, 7)])
+async def test_cache_presence_matches_current_notification_and_committed_summary(
+    host, sessions, monkeypatch, input_tokens, cache_tokens, expected,
+):
+    _save(sessions, "s1", [_summary("old-request", 900)])
+    update = context_usage.ContextUsageUpdate("s1", "current-request", input_tokens=input_tokens,
+        output_tokens=20, total_tokens=input_tokens + 20, cache_tokens=cache_tokens)
+    result = await _notify_query(host, monkeypatch, update, _window(request="current-window"))
+    assert result["usage"]["turn"]["cache_tokens"] == expected
+    summary = {"input_tokens": input_tokens, "output_tokens": 20, "total_tokens": input_tokens + 20}
+    if input_tokens > 0:
+        summary["cache_tokens"] = cache_tokens
+    _save(sessions, "s1", [{"role": "assistant", "event_type": "chat.usage_summary",
+                            "request_id": "current-request", "timestamp": 12, "usage": summary}])
+    restored = stats.read_session_usage("s1")
+    assert restored["turn"]["cache_tokens"] == result["usage"]["turn"]["cache_tokens"]
+
+
+@pytest.mark.parametrize("marker", [
+    {"depth": 1}, {"parent_invocation_id": "parent"}, {"member_name": "member"},
+    {"team_id": "team"}, {"subagent_id": "child"}, {"mode": "subagent"},
+])
+def test_usage_history_ignores_non_primary_turn_summaries(sessions, marker):
+    _save(sessions, "s1", [_window(), _summary("primary", 500), {**_summary("other", 999), **marker}])
+    result = stats.read_session_usage("s1")
+    assert result["turn"]["request_id"] == "primary" and result["turn"]["total_tokens"] == 500
+
+
+def test_invalid_committed_context_remains_an_error(sessions):
+    window = _window()
+    window.pop("request_id")
+    _save(sessions, "s1", [window, _summary("primary", 500)])
+    with pytest.raises(stats.SessionStatisticsError, match="invalid committed"):
+        stats.read_session_usage("s1")
