@@ -37,7 +37,6 @@ _STRUCTURED_PERMISSION_RULE_MAP_KEYS = frozenset({"paths", "commands", "patterns
 AUTO_PERMISSION_DEFAULT_OPTIONS = {
     "reviewer_timeout_ms": 60000,
     "reviewer_output_format": "json_object",
-    "reviewer_min_confidence": 0.7,
     "persistent_audit_enabled": False,
     "bounded_write_max_files": 3,
     "bounded_write_excluded_paths": JIUWENCLAW_PROTECTED_WRITE_PATHS,
@@ -115,8 +114,6 @@ def normalize_auto_permission_options(raw_options: Any) -> dict[str, Any]:
             normalized[key] = bool(raw_value)
         elif isinstance(default_value, int) and not isinstance(default_value, bool):
             normalized[key] = _positive_int(raw_value, default_value)
-        elif isinstance(default_value, float):
-            normalized[key] = _bounded_float(raw_value, default_value)
         elif key == "reviewer_output_format":
             normalized[key] = normalize_reviewer_output_format(raw_value)
         elif key == "bounded_write_excluded_paths":
@@ -298,16 +295,6 @@ def _positive_int(value: Any, default_value: int) -> int:
     except (TypeError, ValueError):
         return default_value
     return parsed if parsed > 0 else default_value
-
-
-def _bounded_float(value: Any, default_value: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default_value
-    if 0.0 <= parsed <= 1.0:
-        return parsed
-    return default_value
 
 
 def _normalize_string_tuple(

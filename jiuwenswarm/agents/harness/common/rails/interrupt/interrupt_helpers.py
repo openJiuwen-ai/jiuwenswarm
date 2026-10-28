@@ -897,7 +897,6 @@ def build_permission_rail(
                             ),
                         ),
                         timeout_ms=auto_options["reviewer_timeout_ms"],
-                        min_confidence=auto_options["reviewer_min_confidence"],
                         reviewer_output_format=auto_options["reviewer_output_format"],
                     )
             persistent_audit_writer = None
