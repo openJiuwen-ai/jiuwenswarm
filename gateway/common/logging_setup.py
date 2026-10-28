@@ -276,6 +276,19 @@ def _reconfigure_stdio_utf8() -> None:
             # 流已被使用 / 不支持重配置：忽略，保留原流，避免影响启动。
             pass
 
+
+_GATEWAY_LOGGING_CONFIGURED_ATTR = "_gateway_logging_configured"
+
+
+def _is_gateway_logging_configured(target: logging.Logger) -> bool:
+    """幂等标记放在 logger 实例上，模块 reload 后仍能生效。"""
+    return bool(getattr(target, _GATEWAY_LOGGING_CONFIGURED_ATTR, False))
+
+
+def _mark_gateway_logging_configured(target: logging.Logger) -> None:
+    setattr(target, _GATEWAY_LOGGING_CONFIGURED_ATTR, True)
+
+
 def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
     """配置 ``gateway`` 根日志：控制台 + 分组件文件 + 汇总 full.log。
 
@@ -287,11 +300,11 @@ def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
     独立安装（无母仓 handler）时由本函数完成配置。
     """
     root = logging.getLogger("gateway")
-    if getattr(root, "_gateway_logging_configured", False):
+    if _is_gateway_logging_configured(root):
         return root
 
     if logging.getLogger("jiuwenswarm").handlers:
-        root._gateway_logging_configured = True
+        _mark_gateway_logging_configured(root)
         return root
 
     install_runtime_log_filter()
@@ -370,7 +383,7 @@ def setup_gateway_logger(log_level: Optional[str] = None) -> logging.Logger:
     root.addHandler(stream_handler)
 
     install_source_record_masking()
-    root._gateway_logging_configured = True
+    _mark_gateway_logging_configured(root)
     return root
 
 

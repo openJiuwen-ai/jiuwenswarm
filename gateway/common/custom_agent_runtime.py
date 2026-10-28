@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/custom_agent_runtime.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Install user-uploaded third-party harness provider packages.
 
@@ -33,18 +34,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from gateway.common.external_cli_runtime import _safe_extract_wheel
 from gateway.common.paths import get_user_workspace_dir
 
 logger = logging.getLogger(__name__)
 
-PROVIDER_ENTRY_POINT_GROUP = "openjiuwen.harness_providers"
 _REGISTRY_FILE = "agents.json"
 # Agent names become directory names and config keys.
 _AGENT_NAME_PATTERN = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
 # Names the team already resolves to another backend; an uploaded provider
 # under one of them would never be reached.
-_BUILTIN_AGENT_NAMES = frozenset({"claude", "codex"})
 _REGISTRY_LOCK = threading.Lock()
 
 
@@ -112,52 +110,6 @@ def activate_custom_agent_paths() -> None:
         importlib.invalidate_caches()
 
 
-def install_custom_agent(wheel_path: Path, *, cli_executable: Path | None = None) -> CustomAgent:
-    """Install an uploaded provider wheel, replacing an agent of the same name.
-
-    Args:
-        wheel_path: The uploaded ``.whl`` file.
-        cli_executable: Optional vendor CLI executable to install beside it.
-
-    Returns:
-        The installed agent.
-
-    Raises:
-        CustomAgentError: When the wheel declares no single provider entry
-            point, the name is reserved or malformed, or the executable is
-            missing.
-    """
-    if cli_executable is not None and not cli_executable.is_file():
-        raise CustomAgentError(f"CLI executable not found: {cli_executable.name}")
-    root = custom_agents_root()
-    root.mkdir(parents=True, exist_ok=True)
-    staging = root / f".install-{uuid.uuid4().hex}"
-    staging_site_packages = staging / "site-packages"
-    staging_site_packages.mkdir(parents=True)
-    try:
-        try:
-            _safe_extract_wheel(wheel_path, staging_site_packages)
-        except RuntimeError as exc:
-            raise CustomAgentError(f"not a valid wheel: {exc}") from exc
-        agent = _describe_wheel(staging_site_packages)
-        if cli_executable is not None:
-            installed_cli = staging / "bin" / cli_executable.name
-            installed_cli.parent.mkdir()
-            shutil.copyfile(cli_executable, installed_cli)
-            installed_cli.chmod(0o755)
-            final_cli = root / agent.name / "bin" / cli_executable.name
-            agent = CustomAgent(**{**asdict(agent), "cli_path": str(final_cli)})
-        with _REGISTRY_LOCK:
-            _replace_directory(root / agent.name, staging)
-            registry = _read_registry()
-            registry[agent.name] = agent
-            _write_registry(registry)
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    logger.info("[custom-agent] installed %s (%s %s)", agent.name, agent.distribution, agent.version)
-    return agent
-
-
 def remove_custom_agent(name: str) -> None:
     """Uninstall custom agent ``name``.
 
@@ -171,58 +123,6 @@ def remove_custom_agent(name: str) -> None:
         _write_registry(registry)
     shutil.rmtree(custom_agents_root() / name, ignore_errors=True)
     logger.info("[custom-agent] removed %s", name)
-
-
-def team_mcp_server_command() -> list[str]:
-    """Return the argv starting the team MCP stdio server for this process layout."""
-    if getattr(sys, "frozen", False):
-        executable = "openjiuwen-team-mcp.exe" if os.name == "nt" else "openjiuwen-team-mcp"
-        return [str(Path(sys.executable).resolve().parent / executable)]
-    return [sys.executable, "-m", "openjiuwen.agent_teams.mcp"]
-
-
-def _describe_wheel(site_packages: Path) -> CustomAgent:
-    providers: list[tuple[str, importlib.metadata.Distribution]] = []
-    for dist_info in sorted(site_packages.glob("*.dist-info")):
-        distribution = importlib.metadata.Distribution.at(dist_info)
-        for entry in distribution.entry_points.select(group=PROVIDER_ENTRY_POINT_GROUP):
-            providers.append((entry.name, distribution))
-    if len(providers) != 1:
-        raise CustomAgentError(
-            f"the wheel must declare exactly one {PROVIDER_ENTRY_POINT_GROUP} entry point, found {len(providers)}"
-        )
-    name, distribution = providers[0]
-    if not _AGENT_NAME_PATTERN.fullmatch(name):
-        raise CustomAgentError(f"provider name {name!r} must match {_AGENT_NAME_PATTERN.pattern}")
-    if name in _reserved_agent_names():
-        raise CustomAgentError(f"provider name {name!r} is reserved by a built-in agent")
-    metadata = distribution.metadata
-    return CustomAgent(
-        name=name,
-        distribution=str(metadata["Name"] or ""),
-        version=str(metadata["Version"] or ""),
-        summary=str(metadata["Summary"] or ""),
-    )
-
-
-def _reserved_agent_names() -> frozenset[str]:
-    from openjiuwen.agent_teams.external.cli_agent.adapters import available_adapters
-    from openjiuwen.harness_providers.factory import PROVIDER_NAMES
-
-    return _BUILTIN_AGENT_NAMES | frozenset(available_adapters()) | frozenset(PROVIDER_NAMES)
-
-
-def _replace_directory(target: Path, staging: Path) -> None:
-    backup = target.parent / f".backup-{uuid.uuid4().hex}"
-    if target.exists():
-        os.replace(target, backup)
-    try:
-        os.replace(staging, target)
-    except OSError:
-        if backup.exists():
-            os.replace(backup, target)
-        raise
-    shutil.rmtree(backup, ignore_errors=True)
 
 
 def _read_registry() -> dict[str, CustomAgent]:
@@ -262,7 +162,6 @@ def _write_registry(registry: dict[str, CustomAgent]) -> None:
 
 
 __all__ = [
-    "PROVIDER_ENTRY_POINT_GROUP",
     "CustomAgent",
     "CustomAgentError",
     "activate_custom_agent_paths",
@@ -270,8 +169,6 @@ __all__ = [
     "custom_agent_site_packages",
     "custom_agents_root",
     "get_custom_agent",
-    "install_custom_agent",
     "list_custom_agents",
     "remove_custom_agent",
-    "team_mcp_server_command",
 ]

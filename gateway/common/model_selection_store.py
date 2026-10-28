@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/model_selection_store.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 """Safe persistence for stable per-session model selections."""
 
 from __future__ import annotations
@@ -32,12 +33,3 @@ def get_session_model_selection(session_id: str) -> ModelSelection | None:
         return ModelSelection.model_validate(raw) if isinstance(raw, dict) else None
     except (OSError, ValueError) as exc:
         raise ModelSelectionError(MODEL_GROUP_INVALID, "cannot read the session's model selection") from exc
-
-
-def set_session_model_selection(session_id: str, selection: ModelSelection) -> None:
-    from gateway.common.external_providers import provider
-
-    _metadata_path(session_id)  # Validate before entering the shared writer.
-    provider("session_metadata").update_session_model_selection(
-        session_id, selection.model_dump()
-    )

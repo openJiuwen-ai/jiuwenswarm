@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/windows_cli_paths.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Resolve preserved Windows npm CLIs without depending on installer-owned files."""
 
@@ -6,8 +7,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
-import sys
 from pathlib import Path
 
 
@@ -73,90 +72,3 @@ def resolve_preserved_cli_path(value: str | None, *, directory: bool = False) ->
         except (OSError, ValueError, KeyError, TypeError):
             continue
     return value
-
-
-def _configured_prefix() -> str | None:
-    explicit = os.environ.get("NPM_CONFIG_PREFIX") or os.environ.get("npm_config_prefix")
-    if explicit:
-        return explicit
-    configs = [Path(os.environ.get("NPM_CONFIG_USERCONFIG") or Path.home() / ".npmrc")]
-    if os.environ.get("NPM_CONFIG_GLOBALCONFIG"):
-        configs.append(Path(os.environ["NPM_CONFIG_GLOBALCONFIG"]))
-    for config in configs:
-        try:
-            matches = re.findall(
-                r"^\s*prefix\s*=\s*(.+?)\s*$",
-                config.read_text(encoding="utf-8-sig"),
-                re.MULTILINE | re.IGNORECASE,
-            )
-        except (OSError, UnicodeError):
-            continue
-        if matches:
-            return os.path.expandvars(matches[-1].strip().strip("\"'"))
-    return None
-
-
-def _inside_installation(value: str) -> bool:
-    executable_dir = Path(sys.executable).resolve().parent
-    install_dir = executable_dir
-    if executable_dir.name.lower() == "backend" and executable_dir.parent.name.lower() == "resources":
-        install_dir = executable_dir.parent.parent
-    try:
-        Path(value).expanduser().resolve().relative_to(install_dir)
-        return True
-    except (OSError, ValueError):
-        return False
-
-
-def configure_windows_npm_environment() -> None:
-    """Keep managed npm writes outside the install tree and preserve user overrides."""
-    if os.name != "nt":
-        return
-    root = windows_npm_root()
-    prefix = root / "global"
-    paths = os.environ.get("PATH", "").split(os.pathsep)
-    mappings = _preserved_prefixes()
-    saved_paths: list[str] = []
-    for _, saved in mappings:
-        for directory in (saved, saved / "node_modules" / ".bin"):
-            if directory.is_dir():
-                saved_paths.append(str(directory))
-    # Promote newer generations within our own entries, keeping unrelated PATH
-    # order intact and older working copies available as command fallbacks.
-    owned = {os.path.normcase(p) for p in saved_paths}
-    insertion = next((i for i, p in enumerate(paths) if os.path.normcase(p) in owned), len(paths))
-    paths = [p for p in paths if os.path.normcase(p) not in owned]
-    paths[insertion:insertion] = saved_paths
-    # Respect custom user prefixes outside the installer-owned tree. Replace
-    # stale/unsafe selections inside it without rewriting the user's npmrc.
-    selected = _configured_prefix()
-    managed_selection = not selected or _inside_installation(selected)
-    if selected and not managed_selection:
-        for source, _ in mappings:
-            try:
-                Path(os.path.expandvars(selected)).expanduser().resolve().relative_to(source.resolve())
-                managed_selection = True
-                break
-            except (OSError, ValueError):
-                continue
-    if selected and not managed_selection:
-        try:
-            managed_selection = Path(selected).expanduser().resolve() == prefix.resolve()
-        except (OSError, ValueError):
-            # A malformed user preference must not break application startup.
-            managed_selection = False
-    # This directory contains only npm/npx launchers, so bundled node keeps its
-    # process PATH priority for browser tools. npm uses its own pinned interpreter.
-    bin_dir = root / "bin"
-    if managed_selection and (prefix / "node.exe").is_file():
-        os.environ["NPM_CONFIG_PREFIX"] = str(prefix)
-        identity = os.path.normcase(str(prefix))
-        insertion = next(
-            (i for i, p in enumerate(paths) if os.path.normcase(p) in owned or os.path.normcase(p) == identity),
-            len(paths),
-        )
-        paths = [p for p in paths if os.path.normcase(p) != identity]
-        paths.insert(insertion, str(prefix))
-        if bin_dir.is_dir():
-            paths = [str(bin_dir), *[p for p in paths if os.path.normcase(p) != os.path.normcase(str(bin_dir))]]
-    os.environ["PATH"] = os.pathsep.join(paths)

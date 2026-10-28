@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/external_cli_runtime.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Manage optional external CLI Python runtimes for frozen applications."""
 
@@ -384,33 +385,6 @@ def install_external_cli_runtime(
     activate_external_cli_runtime_paths()
     _verify_installed_runtime(cli_agent)
     emit(f"{cli_agent} optional runtime installed successfully")
-
-
-def install_external_cli_runtime_from_artifacts(
-    cli_agent: str, artifact_directory: Path
-) -> None:
-    """Install a verified Windows runtime from previously downloaded wheels."""
-    import portalocker
-
-    entry = _runtime_entry(cli_agent)
-    if not _is_frozen_windows():
-        raise RuntimeError(
-            "elevated external CLI runtime installation requires frozen Windows"
-        )
-    platform_key = _runtime_platform_key()
-    artifacts = entry.get("platforms", {}).get(platform_key)
-    if not artifacts:
-        raise RuntimeError(f"{cli_agent} runtime is not available for {platform_key}")
-
-    activate_external_cli_runtime_paths()
-    _install_external_cli_runtime_artifacts_with_lock(
-        cli_agent,
-        platform_key,
-        artifacts,
-        artifact_directory,
-    )
-    activate_external_cli_runtime_paths()
-    _verify_installed_runtime(cli_agent)
 
 
 def _install_external_cli_runtime_artifacts_with_lock(

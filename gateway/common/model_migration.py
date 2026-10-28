@@ -1,13 +1,12 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/model_migration.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 """One-time, idempotent migration from unambiguous model names to stable IDs."""
 
 from __future__ import annotations
 
-import json
 from collections import defaultdict
 
 from gateway.common.model_catalog import ModelCatalog
-from gateway.common.paths import get_agent_sessions_dir
 
 
 def _name_map(catalog: ModelCatalog | None = None) -> dict[str, str]:
@@ -17,42 +16,6 @@ def _name_map(catalog: ModelCatalog | None = None) -> dict[str, str]:
             if name and model["model_id"] not in candidates[name]:
                 candidates[name].append(model["model_id"])
     return {name: ids[0] for name, ids in candidates.items() if len(ids) == 1}
-
-
-def migrate_legacy_model_selections() -> dict[str, int]:
-    from gateway.common.external_providers import provider
-
-    update_session_model_selection = (
-        provider("session_metadata").update_session_model_selection
-    )
-
-    mapping = _name_map()
-    report = {"sessions": 0, "cron": 0, "ambiguous": 0}
-    session_root = get_agent_sessions_dir()
-    if session_root.exists():
-        for directory in session_root.iterdir():
-            path = directory / "metadata.json"
-            if not path.is_file():
-                continue
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                if isinstance(data.get("model_selection"), dict):
-                    continue
-                old = str(data.get("model") or "").strip()
-                if not old:
-                    continue
-                model_id = mapping.get(old)
-                if not model_id:
-                    report["ambiguous"] += 1
-                    continue
-                update_session_model_selection(
-                    directory.name, {"type": "model", "id": model_id},
-                    expected_selection=("model_selection" in data, data.get("model_selection")),
-                )
-                report["sessions"] += 1
-            except (OSError, ValueError):
-                continue
-    return report
 
 
 async def migrate_legacy_cron_selections(store, *, catalog=None, user_id="") -> int:

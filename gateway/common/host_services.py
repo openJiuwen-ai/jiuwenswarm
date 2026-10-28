@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/host_services.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 """Optional host capabilities injected into the transport-neutral Runtime.
 
 The process CLI deliberately leaves these capabilities unset.  AgentServer may
@@ -90,14 +91,6 @@ async def send_runtime_push(message: dict[str, Any]) -> bool:
     return result if isinstance(result, bool) else True
 
 
-class RuntimeHostPushTransport:
-    """Structural push transport backed only by an explicitly installed host."""
-
-    async def send_push(self, message: dict[str, Any]) -> None:
-        if not await send_runtime_push(message):
-            raise RuntimeError("runtime push is unavailable without a resident host")
-
-
 def install_runtime_wake_handler(
     handler: RuntimeWakeHandler,
 ) -> RuntimeWakeHandler | None:
@@ -126,18 +119,6 @@ def restore_runtime_wake_handler(
         _runtime_wake_handler = (
             _runtime_wake_handlers[-1] if _runtime_wake_handlers else None
         )
-
-
-async def send_runtime_wake(message: Any) -> bool:
-    """Dispatch a wake request through an explicitly installed host adapter."""
-    with _runtime_host_handlers_lock:
-        handler = _runtime_wake_handler
-    if handler is None:
-        return False
-    result = handler(message)
-    if inspect.isawaitable(result):
-        await result
-    return True
 
 
 def install_runtime_xiaoyi_channel_provider(
@@ -173,6 +154,7 @@ def restore_runtime_xiaoyi_channel_provider(
 
 
 def get_runtime_xiaoyi_channel(channel_id: str = "xiaoyi") -> Any:
+    """Resolve the installed Xiaoyi channel provider, or ``None`` when absent."""
     with _runtime_host_handlers_lock:
         provider = _runtime_xiaoyi_channel_provider
     return provider(channel_id) if provider is not None else None
@@ -180,7 +162,6 @@ def get_runtime_xiaoyi_channel(channel_id: str = "xiaoyi") -> Any:
 
 __all__ = [
     "RuntimePushHandler",
-    "RuntimeHostPushTransport",
     "RuntimeWakeHandler",
     "RuntimeXiaoyiChannelProvider",
     "get_runtime_xiaoyi_channel",
@@ -191,5 +172,4 @@ __all__ = [
     "restore_runtime_push_handler",
     "restore_runtime_xiaoyi_channel_provider",
     "send_runtime_push",
-    "send_runtime_wake",
 ]

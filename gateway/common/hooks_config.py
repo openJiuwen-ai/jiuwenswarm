@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/hooks_config.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """Hooks 配置模型 —— 定义 config.yaml 中 hooks 段的 schema 与匹配逻辑."""
@@ -11,11 +12,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 logger = logging.getLogger(__name__)
-
-
-class HookType(str, Enum):
-    COMMAND = "command"
-    PROMPT = "prompt"
 
 
 class HookEvent(str, Enum):
@@ -40,55 +36,8 @@ class HookEvent(str, Enum):
 
 
 # 需要在 AgentServer Rail 层执行的事件（工具/Agent 生命周期）
-_AGENT_RAIL_EVENTS = frozenset({
-    HookEvent.PRE_TOOL_USE,
-    HookEvent.POST_TOOL_USE,
-    HookEvent.POST_TOOL_USE_FAILURE,
-    HookEvent.STOP,
-    HookEvent.PERMISSION_REQUEST,
-    HookEvent.PERMISSION_DENIED,
-    HookEvent.SUBAGENT_START,
-    HookEvent.SUBAGENT_STOP,
-    HookEvent.BEFORE_MODEL_CALL,
-    HookEvent.AFTER_MODEL_CALL,
-})
 
 # 需要在 Gateway 层执行的事件（session/用户交互）
-_GATEWAY_EVENTS = frozenset({
-    HookEvent.USER_PROMPT_SUBMIT,
-    HookEvent.SESSION_START,
-    HookEvent.SESSION_END,
-    HookEvent.NOTIFICATION,
-    HookEvent.CONFIG_CHANGE,
-    HookEvent.INSTRUCTIONS_LOADED,
-    HookEvent.SETUP,
-})
-
-
-def is_rail_event(event: HookEvent) -> bool:
-    return event in _AGENT_RAIL_EVENTS
-
-
-def is_gateway_event(event: HookEvent) -> bool:
-    return event in _GATEWAY_EVENTS
-
-
-@dataclass
-class CommandHookConfig:
-    type: str = "command"
-    command: str = ""
-    timeout: int = 30
-    shell: str = "bash"
-    status_message: str = ""
-
-
-@dataclass
-class PromptHookConfig:
-    type: str = "prompt"
-    prompt: str = ""
-    timeout: int = 15
-    model: str = ""
-    status_message: str = ""
 
 
 @dataclass

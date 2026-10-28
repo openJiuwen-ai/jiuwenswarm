@@ -1,11 +1,11 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/config.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 import json
 import logging
 import os
 import re
-import secrets
 import sys
 import threading
 import time
@@ -24,11 +24,7 @@ from gateway.common.kv_cache_affinity_config import (
     APPLICATION_KV_CACHE_CONFIG_KEY,
     KV_CACHE_AFFINITY_ENABLED_KEY,
     get_kv_cache_affinity_application_config,
-    set_default_model_provider_in_entries,
     validate_affinity_invariant,
-)
-from gateway.common.kv_cache_affinity_config import (
-    get_default_model_provider as resolve_default_model_provider,
 )
 from gateway.common.paths import (
     get_config_dir,
@@ -43,26 +39,14 @@ _CONFIG_MODULE_DIR = Path(__file__).parent
 CONFIG_YAML_PATH = get_config_file()
 SWARMFLOW_ENABLED_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 SWARMFLOW_BUDGET_CONFIG_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
-SWARMFLOW_WORKTREE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "worktree", "enabled")
-DEFAULT_SWARMFLOW_WORKTREE_ENABLED = False
-DEFAULT_SWARMFLOW_ENABLED = False
-TEAM_DISPATCH_MODE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
-TEAM_TASK_VERIFICATION_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
-TEAM_MEMBER_MESSAGING_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
-DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
-DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
-DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED = False
-EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
 # whose config.yaml predates this switch.
-DEFAULT_PROGRESSIVE_TOOL_ENABLED = False
 # Opt-in gate for the tool_search retrieval layer: the layer mounts only when
 # progressive_tool_enabled (AbilityManager deferred assignment) and this switch
 # are both true.
-DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE = False
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -277,39 +261,15 @@ def get_config():
     return apply_runtime_model_config(config_base)
 
 
-def get_configured_read_image_multimodal(
-    config: dict[str, Any] | None = None,
-) -> bool | None:
-    """Return the explicit native-image policy, or ``None`` for auto mode."""
-
-    resolved = config if isinstance(config, dict) else get_config()
-    react = resolved.get("react")
-    value = (
-        react.get("enable_read_image_multimodal")
-        if isinstance(react, dict)
-        else None
-    )
-    return value if isinstance(value, bool) else None
-
-
 def get_config_raw():
     """读 config.yaml 原始内容（不解析环境变量），供局部更新后写回。"""
     return _read_with_retry(CONFIG_YAML_PATH)
-
-
-def get_default_model_provider(config: dict[str, Any] | None) -> str:
-    return resolve_default_model_provider(config)
 
 
 def validate_persisted_kv_cache_affinity() -> tuple[bool, list[str]]:
     """Validate the persisted KVC invariant after a config write."""
     raw = get_config_raw()
     return validate_affinity_invariant(resolve_env_vars(raw))
-
-
-def set_config(config):
-    with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
-        yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
 
 
 def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -332,148 +292,6 @@ def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
 def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Return the canonical ``react.evolution.skill_evolution`` switch."""
     return _get_evolution_config(config).get("skill_evolution") is True
-
-
-def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether both Symphony and its evolution switch are enabled."""
-
-    from gateway.common.symphony_config import (
-        resolve_symphony_enabled,
-        resolve_symphony_evolution_enabled,
-    )
-
-    if not isinstance(config, dict):
-        return False
-    symphony = config.get("symphony")
-    if not isinstance(symphony, dict):
-        symphony = {}
-    evolution = symphony.get("evolution")
-    if not isinstance(evolution, dict):
-        evolution = {}
-    # enabled 位于 evolution.flow 下；旧配置（evolution.enabled）向后兼容
-    flow = evolution.get("flow")
-    flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
-    if flow_enabled is None:
-        flow_enabled = evolution.get("enabled")
-    return (
-        resolve_symphony_enabled(symphony.get("enabled"))
-        and resolve_symphony_evolution_enabled(flow_enabled)
-    )
-
-
-def coerce_config_bool(value: Any, default: bool) -> bool:
-    """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    if isinstance(value, (int, float)):
-        return bool(value)
-    if isinstance(value, str):
-        text = value.strip().lower()
-        if text in {"1", "true", "yes", "on"}:
-            return True
-        if text in {"0", "false", "no", "off", ""}:
-            return False
-    return default
-
-
-def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
-    """Return the TTSE config block from a full yaml or a react-section cache."""
-    if not isinstance(config, dict):
-        return {}
-    react_config = config.get("react")
-    if isinstance(react_config, dict) and isinstance(react_config.get("ttse"), dict):
-        return react_config["ttse"]
-    ttse_config = config.get("ttse")
-    if isinstance(ttse_config, dict):
-        return ttse_config
-    return {}
-
-
-def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
-    """Return whether TTSE (FACT/TIP) rail should be mounted.
-
-    Opt-in: missing / unset ``enabled`` is False.
-    Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
-    """
-    return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
-
-
-def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
-    """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
-
-    Expects ``api_key`` / ``base_url`` / ``model``. Returns an empty dict when
-    the block is missing or any required field is blank after strip (caller
-    should leave embedding disabled and fall back to BM25 / whole-bank paths).
-    """
-    ttse = _get_ttse_config(config)
-    raw = ttse.get("embedding")
-    if not isinstance(raw, dict):
-        return {}
-    api_key = str(raw.get("api_key") or "").strip()
-    base_url = str(raw.get("base_url") or "").strip()
-    model = str(raw.get("model") or "").strip()
-    if not (api_key and base_url and model):
-        return {}
-    return {"api_key": api_key, "base_url": base_url, "model": model}
-
-
-def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return ``react.subagent_runtime.enabled`` for persistent subagent tools."""
-    cfg = config or get_config()
-    react = cfg.get("react") if isinstance(cfg, dict) else None
-    runtime_cfg = react.get("subagent_runtime") if isinstance(react, dict) else None
-    return bool(runtime_cfg.get("enabled")) if isinstance(runtime_cfg, dict) else False
-
-
-def get_progressive_tool_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return whether the ProgressiveToolRail is enabled for an agent.
-
-    The switch is the top-level ``progressive_tool_enabled`` key in
-    ``config.yaml``.  A missing key keeps the historical enabled-by-default
-    behavior for workspaces initialized before this setting was introduced.
-    """
-    if not isinstance(config, dict):
-        return DEFAULT_PROGRESSIVE_TOOL_ENABLED
-
-    value = config.get("progressive_tool_enabled", DEFAULT_PROGRESSIVE_TOOL_ENABLED)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
-    return bool(value)
-
-
-def get_progressive_tool_optimize(config: dict[str, Any] | None = None) -> bool:
-    """Return the top-level ``progressive_tool_optimize`` switch.
-
-    Opt-in companion to ``progressive_tool_enabled``: the ``tool_search``
-    retrieval layer requires both switches so AbilityManager's deferred
-    assignment can stay armed while the retrieval layer stays off.
-    """
-    if not isinstance(config, dict):
-        return DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE
-
-    value = config.get("progressive_tool_optimize", DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
-    return bool(value)
-
-
-def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
-    """Return whether the ``tool_search`` progressive disclosure is enabled.
-
-    True only when both top-level switches are true: ``progressive_tool_enabled``
-    (AbilityManager deferred assignment) and ``progressive_tool_optimize`` (the
-    retrieval layer itself). ``true`` means our skill_index-framework
-    ``tool_search`` is mounted and deferred tools are hidden until discovered;
-    ``false`` disables it and every tool stays direct.
-    """
-
-    return get_progressive_tool_enabled(config) and get_progressive_tool_optimize(config)
 
 
 def update_progressive_tool_optimize_in_config(enabled: bool) -> None:
@@ -508,16 +326,6 @@ def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict
     return overrides
 
 
-def get_evolution_review_feedback_min_confidence(config: dict[str, Any] | None) -> float:
-    """Return the minimum confidence required for reviewer-driven evolution."""
-
-    raw = _get_evolution_config(config).get("review_feedback_min_confidence", 0.7)
-    try:
-        return max(0.0, min(1.0, float(raw)))
-    except (TypeError, ValueError):
-        return 0.7
-
-
 def get_evolution_auto_save_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return canonical ``react.evolution.auto_save`` without disk/env reads."""
     return _get_evolution_config(config).get("auto_save") is True
@@ -539,35 +347,6 @@ def update_skill_evolution_enabled_in_config(enabled: bool) -> None:
         return data
 
     update_config(mutator)
-
-
-def update_ttse_enabled_in_config(enabled: bool) -> None:
-    """Atomically update the canonical ``react.ttse.enabled`` switch."""
-
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        react = data.get("react")
-        if not isinstance(react, dict):
-            react = {}
-            data["react"] = react
-        ttse = react.get("ttse")
-        if not isinstance(ttse, dict):
-            ttse = {}
-            react["ttse"] = ttse
-        ttse["enabled"] = bool(enabled)
-        return data
-
-    update_config(mutator)
-
-
-def set_auto_memory_enabled(enabled: bool) -> None:
-    """Set auto-memory enabled status in config.
-
-    Args:
-        enabled: True to enable, False to disable.
-    """
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    data["auto_memory_enabled"] = enabled
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def load_yaml_round_trip(config_path: Path):
@@ -888,18 +667,6 @@ def update_preferred_language_in_config(lang: str) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def set_preferred_language_in_config_file(config_path: Path, lang: str) -> None:
-    """将 preferred_language 写入指定 config.yaml（用于 init 等尚未绑定全局路径的场景）。"""
-    lang = str(lang or "zh").strip().lower()
-    if lang not in ("zh", "en"):
-        lang = "zh"
-    if not config_path.exists():
-        return
-    data = load_yaml_round_trip(config_path)
-    data["preferred_language"] = lang
-    dump_yaml_round_trip(config_path, data)
-
-
 def update_browser_in_config(updates: dict[str, Any]) -> None:
     """只更新 browser 段（如 chrome_path）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -962,29 +729,6 @@ def _merge_config_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
             _merge_config_dict(child, value)
         else:
             target[key] = value
-
-
-def update_symphony_in_config(updates: dict[str, Any]) -> None:
-    """更新 symphony 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "symphony" not in data or data["symphony"] is None:
-        data["symphony"] = {}
-    symphony = data["symphony"]
-    _merge_config_dict(symphony, updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
-    """更新 symphony.skill_retrieval 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "symphony" not in data or data["symphony"] is None:
-        data["symphony"] = {}
-    symphony = data["symphony"]
-    if "skill_retrieval" not in symphony or symphony["skill_retrieval"] is None:
-        symphony["skill_retrieval"] = {}
-    section = symphony["skill_retrieval"]
-    _merge_config_dict(section, updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
@@ -1060,38 +804,6 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
-def update_enable_free_models_in_config(value: bool) -> None:
-    """原子更新 models.enable_free_models（历史兼容；前端已不再暴露此开关）。"""
-    def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        section = data.get("models")
-        if not isinstance(section, dict):
-            section = {}
-            data["models"] = section
-        section["enable_free_models"] = value
-        return data
-
-    update_config(mutator)
-
-
-def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
-    """更新 proactive_recommendation 配置段并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "proactive_recommendation" not in data or data["proactive_recommendation"] is None:
-        data["proactive_recommendation"] = {}
-    section = data["proactive_recommendation"]
-    _merge_config_dict(section, updates)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_trajectory_ui_in_config(enabled: bool) -> None:
-    """Update the trajectory UI feature switch and persist config.yaml."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "trajectory_ui" not in data or data["trajectory_ui"] is None:
-        data["trajectory_ui"] = {}
-    data["trajectory_ui"]["enabled"] = bool(enabled)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
     """Update the trajectory diagnosis feature switch and persist config.yaml.
 
@@ -1109,39 +821,12 @@ def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def update_team_organization_ui_in_config(enabled: bool) -> None:
-    """Persist the experimental Organization UI switch without changing runtime capabilities."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "experimental" not in data or data["experimental"] is None:
-        data["experimental"] = {}
-    data["experimental"]["team_organization_ui_enabled"] = bool(enabled)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_comfyui_workflow_enabled_in_config(enabled: bool) -> None:
-    """Persist the experimental ComfyUI workflow import switch."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "experimental" not in data or data["experimental"] is None:
-        data["experimental"] = {}
-    data["experimental"]["comfyui_workflow_enabled"] = bool(enabled)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 def update_task_full_duplex_in_config(enabled: bool) -> None:
     """Update the Task-chat Full-duplex entry switch in config.yaml."""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "experimental" not in data or data["experimental"] is None:
         data["experimental"] = {}
     data["experimental"]["task_full_duplex_enabled"] = bool(enabled)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_task_asr_in_config(enabled: bool) -> None:
-    """Update the task-chat speech transcription switch in config.yaml."""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "experimental" not in data or data["experimental"] is None:
-        data["experimental"] = {}
-    data["experimental"]["task_asr_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -1156,369 +841,10 @@ def update_updater_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def update_memory_enabled_in_config(mode: str, value: bool) -> None:
-    """更新 memory.enabled（记忆系统开关）并写回。"""
-    _update_memory_in_modes_config(mode, "enabled", value)
-
-
-def update_proactive_memory_in_config(mode: str, value: bool) -> None:
-    """更新 memory.proactive_memory（主动记忆开关）并写回。"""
-    _update_memory_in_modes_config(mode, "is_proactive", value)
-
-
-def _update_memory_in_modes_config(mode: str, item: str, value: bool) -> None:
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "modes" not in data:
-        data["modes"] = {}
-    if "claw" not in data["modes"]:
-        data["modes"]["claw"] = {}
-    if mode not in data["modes"]["claw"]:
-        data["modes"]["claw"][mode] = {}
-    if "memory" not in data["modes"]["claw"][mode]:
-        data["modes"]["claw"][mode]["memory"] = {}
-    data["modes"]["claw"][mode]["memory"][item] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 # ---------- 数字分身相关配置 ----------
-
-def get_permissions_owner_scopes() -> dict[str, Any]:
-    """读取 permissions.owner_scopes 及 deny_guidance_message."""
-    cfg = get_config() or {}
-    perm = cfg.get("permissions", {})
-    return {
-        # 模板把该键留空以躲开 _deep_merge 的裁剪，读到的可能是 None。
-        "owner_scopes": perm.get("owner_scopes") or {},
-        "deny_guidance_message": perm.get("deny_guidance_message", ""),
-    }
-
-
-def update_permissions_owner_scopes_in_config(
-    owner_scopes: dict[str, Any],
-    deny_guidance_message: str | None = None,
-) -> None:
-    """更新 permissions.owner_scopes（及可选 deny_guidance_message）并写回。"""
-    def _mutate(data):
-        if "permissions" not in data:
-            data["permissions"] = {}
-        data["permissions"]["owner_scopes"] = owner_scopes
-        if deny_guidance_message is not None:
-            data["permissions"]["deny_guidance_message"] = deny_guidance_message
-        return data
-
-    update_config(_mutate)
-
-
-def get_permissions_deny_guidance() -> str:
-    """读取 permissions.deny_guidance_message."""
-    cfg = get_config() or {}
-    return cfg.get("permissions", {}).get("deny_guidance_message", "")
-
-
-def update_permissions_deny_guidance_in_config(msg: str) -> None:
-    """更新 permissions.deny_guidance_message 并写回。"""
-    def _mutate(data):
-        if "permissions" not in data:
-            data["permissions"] = {}
-        data["permissions"]["deny_guidance_message"] = msg
-        return data
-
-    update_config(_mutate)
 
 
 # ---------- Web UI：permissions.tools / rules / approval_overrides ----------
-
-_VALID_PERM_LEVEL = frozenset({"allow", "ask", "deny"})
-_VALID_RULE_SEVERITY = frozenset({"LOW", "MEDIUM", "HIGH", "CRITICAL"})
-_RULE_MUTABLE_KEYS = frozenset({"tools", "pattern", "severity", "action", "description", "match_type"})
-
-
-def get_permissions_tools() -> dict[str, Any]:
-    """返回 ``permissions.tools``（原始结构，可能含 legacy dict）。"""
-    cfg = get_config() or {}
-    tools = (cfg.get("permissions") or {}).get("tools")
-    if not isinstance(tools, dict):
-        return {"tools": {}}
-    return {"tools": dict(tools)}
-
-
-def replace_permissions_tools_in_config(tools: Any) -> None:
-    """整表替换 ``permissions.tools``；值仅允许 ``allow|ask|deny``（或 legacy ``{\"*\": level}``）。"""
-    normalized = _validate_tools_map(tools)
-
-    def _mutate(data):
-        if "permissions" not in data:
-            data["permissions"] = {}
-        data["permissions"]["tools"] = normalized
-        return data
-
-    update_config(_mutate)
-
-
-def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, Any]:
-    """合并单条工具级别到 ``permissions.tools`` 并写回 YAML。
-
-    Args:
-        tool_name: 工具名（如 ``mcp_exec_command``），与 ``permissions.tools`` 键一致。
-        level: ``allow`` / ``ask`` / ``deny`` 字符串，或 legacy ``{\"*\": level}``。
-
-    Returns:
-        ``{\"tools\": {...}}`` 更新后的完整 tools 映射（便于前端刷新）。
-    """
-    name = str(tool_name).strip()
-    if not name:
-        raise ValueError("tool name must be non-empty")
-    piece = _validate_tools_map({name: level})
-    result = False
-
-    def _mutate(data):
-        nonlocal result
-        if "permissions" not in data:
-            data["permissions"] = {}
-        existing = data["permissions"].get("tools")
-        if not isinstance(existing, dict):
-            existing = {}
-        merged = {str(k): v for k, v in existing.items()}
-        merged[name] = piece[name]
-        data["permissions"]["tools"] = merged
-        result = {"tools": dict(merged)}
-        return data
-
-    update_config(_mutate)
-    return result
-
-
-def delete_permissions_tool_in_config(tool_name: str) -> bool:
-    """从 ``permissions.tools`` 中删除一个键；不存在则返回 False。"""
-    name = str(tool_name).strip()
-    if not name:
-        raise ValueError("tool name must be non-empty")
-    result = False
-
-    def _mutate(data):
-        nonlocal result
-        if "permissions" not in data:
-            return None
-        tools = data["permissions"].get("tools")
-        if not isinstance(tools, dict):
-            return None
-        key_to_drop = None
-        for k in tools:
-            if str(k).strip() == name:
-                key_to_drop = k
-                break
-        if key_to_drop is None:
-            return None
-        new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
-        data["permissions"]["tools"] = new_tools
-        result = True
-        return data
-
-    update_config(_mutate)
-    return result
-
-
-def _validate_tools_map(tools: Any) -> dict[str, str]:
-    if not isinstance(tools, dict):
-        raise ValueError("tools must be an object")
-    out: dict[str, str] = {}
-    for k, v in tools.items():
-        name = str(k).strip()
-        if not name:
-            raise ValueError("tool name must be non-empty")
-        if isinstance(v, dict) and isinstance(v.get("*"), str):
-            level = str(v["*"]).strip().lower()
-        elif isinstance(v, str):
-            level = v.strip().lower()
-        else:
-            raise ValueError(f"tools[{name!r}]: value must be allow|ask|deny or object {{'*': level}}")
-        if level not in _VALID_PERM_LEVEL:
-            raise ValueError(f"tools[{name!r}]: invalid level {level!r}")
-        out[name] = level
-    return out
-
-
-def get_permissions_rules() -> dict[str, Any]:
-    """返回 ``permissions.rules`` 列表（仅 dict 项）。"""
-    cfg = get_config() or {}
-    rules = (cfg.get("permissions") or {}).get("rules")
-    if not isinstance(rules, list):
-        return {"rules": []}
-    return {"rules": [r for r in rules if isinstance(r, dict)]}
-
-
-def get_permissions_approval_overrides() -> dict[str, Any]:
-    """返回 ``permissions.approval_overrides`` 列表（仅 dict 项）。"""
-    cfg = get_config() or {}
-    raw = (cfg.get("permissions") or {}).get("approval_overrides")
-    if not isinstance(raw, list):
-        return {"approval_overrides": []}
-    return {"approval_overrides": [x for x in raw if isinstance(x, dict)]}
-
-
-def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
-    """追加一条 ``permissions.rules`` 项，返回落盘后的规则（含 ``id``）。"""
-    if not isinstance(rule, dict):
-        raise ValueError("rule must be an object")
-    rid = str(rule.get("id") or "").strip() or f"ui_rule_{uuid.uuid4().hex[:12]}"
-    stored: dict[str, Any] = {"id": rid}
-    for key in _RULE_MUTABLE_KEYS:
-        if key in rule and rule[key] is not None:
-            stored[key] = rule[key]
-    if "tools" not in stored or "pattern" not in stored:
-        raise ValueError("tools and pattern are required")
-    stored["tools"] = _normalize_rule_tools(stored["tools"])
-    stored["pattern"] = str(stored["pattern"]).strip()
-    if not stored["tools"]:
-        raise ValueError("tools must be a non-empty list")
-    if not stored["pattern"]:
-        raise ValueError("pattern must be non-empty")
-    _normalize_rule_severity_action(stored)
-
-    result = False
-
-    def _mutate(data):
-        nonlocal result
-        if "permissions" not in data:
-            data["permissions"] = {}
-        rules = data["permissions"].get("rules")
-        if not isinstance(rules, list):
-            rules = []
-        if any(isinstance(r, dict) and str(r.get("id") or "").strip() == rid for r in rules):
-            raise ValueError(f"rule id already exists: {rid}")
-        rules.append(stored)
-        data["permissions"]["rules"] = rules
-        result = stored
-        return data
-
-    update_config(_mutate)
-    return result
-
-
-def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> dict[str, Any]:
-    """按 ``id`` 合并更新一条 rule。"""
-    rid = str(rule_id or "").strip()
-    if not rid:
-        raise ValueError("id is required")
-    if not isinstance(patch, dict):
-        raise ValueError("patch must be an object")
-
-    result = False
-
-    def _mutate(data):
-        nonlocal result
-        if "permissions" not in data:
-            data["permissions"] = {}
-        rules = data["permissions"].get("rules")
-        if not isinstance(rules, list):
-            rules = []
-        idx: int | None = None
-        for i, r in enumerate(rules):
-            if isinstance(r, dict) and str(r.get("id") or "").strip() == rid:
-                idx = i
-                break
-        if idx is None:
-            raise ValueError(f"rule not found: {rid}")
-
-        merged: dict[str, Any] = dict(rules[idx])
-        for k, v in patch.items():
-            if k == "id":
-                continue
-            if k not in _RULE_MUTABLE_KEYS:
-                continue
-            if v is None:
-                merged.pop(k, None)
-            else:
-                merged[k] = v
-        merged["id"] = rid
-        if "tools" in merged:
-            merged["tools"] = _normalize_rule_tools(merged["tools"])
-        if "pattern" in merged:
-            merged["pattern"] = str(merged["pattern"]).strip()
-        if not merged.get("tools"):
-            raise ValueError("tools must be a non-empty list")
-        if not merged.get("pattern"):
-            raise ValueError("pattern must be non-empty")
-        _normalize_rule_severity_action(merged)
-        rules[idx] = merged
-        data["permissions"]["rules"] = rules
-        result = merged
-        return data
-
-    update_config(_mutate)
-    return result
-
-
-def delete_permissions_rule_in_config(rule_id: str) -> bool:
-    """删除 ``permissions.rules`` 中指定 ``id``；若未找到返回 False。"""
-    rid = str(rule_id or "").strip()
-    if not rid:
-        raise ValueError("id is required")
-    result = False
-
-    def _mutate(data):
-        nonlocal result
-        if "permissions" not in data:
-            return None
-        rules = data["permissions"].get("rules")
-        if not isinstance(rules, list):
-            return None
-        new_rules = [r for r in rules if not (isinstance(r, dict) and str(r.get("id") or "").strip() == rid)]
-        if len(new_rules) == len(rules):
-            return None
-        data["permissions"]["rules"] = new_rules
-        result = True
-        return data
-
-    update_config(_mutate)
-    return result
-
-
-def delete_permissions_approval_override_in_config(override_id: str) -> bool:
-    """按 ``id`` 删除 ``approval_overrides`` 中一项；若未找到返回 False。"""
-    oid = str(override_id or "").strip()
-    if not oid:
-        raise ValueError("id is required")
-    result = False
-
-    def _mutate(data):
-        nonlocal result
-        if "permissions" not in data:
-            return None
-        ov = data["permissions"].get("approval_overrides")
-        if not isinstance(ov, list):
-            return None
-        new_ov = [x for x in ov if not (isinstance(x, dict) and str(x.get("id") or "").strip() == oid)]
-        if len(new_ov) == len(ov):
-            return None
-        data["permissions"]["approval_overrides"] = new_ov
-        result = True
-        return data
-
-    update_config(_mutate)
-    return result
-
-
-def _normalize_rule_tools(raw: Any) -> list[str]:
-    if isinstance(raw, str):
-        s = raw.strip()
-        return [s] if s else []
-    if isinstance(raw, list):
-        return [str(x).strip() for x in raw if isinstance(x, str) and str(x).strip()]
-    raise ValueError("tools must be a string or array of strings")
-
-
-def _normalize_rule_severity_action(rule: dict[str, Any]) -> None:
-    if "severity" in rule:
-        sev = str(rule["severity"]).strip().upper()
-        if sev not in _VALID_RULE_SEVERITY:
-            raise ValueError(f"invalid severity {sev!r}")
-        rule["severity"] = sev
-    if "action" in rule:
-        act = str(rule["action"]).strip().lower()
-        if act not in _VALID_PERM_LEVEL:
-            raise ValueError(f"invalid action {act!r}")
-        rule["action"] = act
 
 
 def _parse_custom_headers(value: str | dict | None) -> dict[str, Any] | None:
@@ -1805,23 +1131,6 @@ def _ensure_model_business_ids(models: dict[str, Any]) -> bool:
     return changed
 
 
-def migrate_model_business_ids() -> bool:
-    """Idempotently add IDs and atomically persist only a valid candidate config."""
-    changed = False
-
-    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
-        nonlocal changed
-        before = deepcopy(data.setdefault("models", {}))
-        models = _models_for_write(data)
-        changed = _ensure_model_business_ids(models) or before != models
-        from gateway.common.model_config_validation import raise_if_invalid
-        raise_if_invalid(models)
-        return data if changed else None
-
-    update_config(_mutate)
-    return changed
-
-
 def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return an ID-indexed, decrypted snapshot without mutating persisted config."""
     config = deepcopy(config if config is not None else get_config())
@@ -1844,130 +1153,6 @@ def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     return {"defaults": defaults, "agentos": agentos, "groups": groups, "by_id": by_id}
 
 
-def save_models_candidate(models: dict[str, Any]) -> dict[str, Any]:
-    """Validate and atomically replace only the models section."""
-    candidate = deepcopy(models)
-    _normalize_legacy_model_nulls(candidate)
-    _ensure_model_business_ids(candidate)
-    from gateway.common.model_config_validation import raise_if_invalid
-    raise_if_invalid(candidate)
-
-    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
-        data["models"] = candidate
-        return data
-
-    update_config(_mutate)
-    return candidate
-
-
-def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """Convert a flat frontend-style model entry into the nested config format.
-
-    If the entry already has a ``model_client_config`` dict, assume it is already
-    normalized and return as-is.  Otherwise promote flat fields into the nested
-    structure the rest of the system expects.
-    """
-    saved = deepcopy(_require_dict(entry, "model"))
-    for key in ("model_client_config", "model_config_obj", "model_detail"):
-        if saved.get(key) is not None:
-            _require_dict(saved[key], f"model.{key}")
-    for key in ("model_name", "api_base", "api_key", "client_provider", "model_provider"):
-        value = saved.get(key)
-        if value is not None and not isinstance(value, str):
-            raise ValueError(f"model.{key} must be a string")
-    if isinstance(saved.get("model_client_config"), dict):
-        return saved
-    mcc: dict[str, Any] = {}
-    mco: dict[str, Any] = {}
-    if "model_name" in saved:
-        mcc["model_name"] = str(saved.pop("model_name") or "")
-    if "api_base" in saved:
-        mcc["api_base"] = str(saved.pop("api_base") or "")
-    if "api_key" in saved:
-        mcc["api_key"] = saved.pop("api_key") or ""
-    provider = str(saved.pop("model_provider", saved.pop("client_provider", "")) or "")
-    if provider:
-        mcc["client_provider"] = provider
-    if "timeout" in saved:
-        mcc["timeout"] = saved.pop("timeout")
-    if "verify_ssl" in saved:
-        mcc["verify_ssl"] = bool(saved.pop("verify_ssl"))
-    if "endpoint_profile" in saved:
-        val = saved.pop("endpoint_profile")
-        if val:
-            mcc["endpoint_profile"] = str(val)
-    if "vendor_key" in saved:
-        val = saved.pop("vendor_key")
-        if val:
-            mcc["vendor_key"] = str(val)
-    if "plan" in saved:
-        val = saved.pop("plan")
-        if val:
-            mcc["plan"] = str(val)
-    temp = saved.pop("temperature", None)
-    if temp is not None:
-        mco["temperature"] = float(temp)
-    rl = saved.pop("reasoning_level", None)
-    if rl is not None and str(rl).strip():
-        mco["reasoning_level"] = str(rl).strip()
-    if mcc:
-        saved["model_client_config"] = mcc
-    if mco:
-        saved["model_config_obj"] = mco
-    return saved
-
-
-def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
-    """Merge an editable DTO while preserving omitted/write-only settings."""
-    merged = deepcopy(current)
-    for key, value in update.items():
-        if key in {"source", "is_agentos", "read_only", "write_only_fields"}:
-            continue
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_model_update(merged[key], value)
-        else:
-            merged[key] = deepcopy(value)
-    return merged
-
-
-def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
-    saved = _normalize_model_entry(entry)
-    model_config = saved.get("model_config_obj")
-    if isinstance(model_config, dict) and "reasoning_level" in model_config:
-        from gateway.common.reasoning_config import normalize_reasoning_level
-
-        raw_level = model_config["reasoning_level"]
-        level = normalize_reasoning_level(raw_level)
-        if raw_level is not None and str(raw_level).strip() and level is None:
-            raise ValueError("Invalid reasoning_level")
-        # PyYAML reads unquoted on/off as booleans; keep the editable DTO stable.
-        model_config["reasoning_level"] = DoubleQuotedScalarString(level or "")
-    saved.setdefault("model_id", _new_business_id("mdl"))
-
-    def _mutate(data):
-        nonlocal saved
-        candidate = _models_for_write(data)
-        _require_editable_model(candidate, saved["model_id"])
-        defaults = candidate.setdefault("defaults", [])
-        for index, current in enumerate(defaults):
-            if current.get("model_id") == saved["model_id"]:
-                _protect_model_key(saved, current)
-                saved = _merge_model_update(current, saved)
-                defaults[index] = saved
-                break
-        else:
-            _protect_model_key(saved, {})
-            defaults.append(saved)
-        if entry.get("is_default") is True:
-            for current in defaults:
-                current["is_default"] = current["model_id"] == saved["model_id"]
-        _validate_model_candidate(candidate)
-        return data
-
-    update_config(_mutate)
-    return saved
-
-
 def _require_editable_model(models: dict[str, Any], model_id: str) -> None:
     from gateway.common.model_errors import (
         MODEL_SELECTION_FORBIDDEN,
@@ -1978,70 +1163,11 @@ def _require_editable_model(models: dict[str, Any], model_id: str) -> None:
         raise ModelSelectionError(MODEL_SELECTION_FORBIDDEN, "AgentOS models are read-only")
 
 
-def _protect_model_key(update: dict[str, Any], current: dict[str, Any]) -> None:
-    """Preserve omitted credentials; encrypt changed keys with the installed provider."""
-    client = update.get("model_client_config") or {}
-    if "api_key" not in client:
-        return
-    key = client["api_key"]
-    previous = (current.get("model_client_config") or {}).get("api_key")
-    if key == previous or not key:
-        return
-    crypto = get_crypto_provider()
-    if crypto is not None:
-        resolved = _decrypt_model_entries([current])[0]
-        previous_plaintext = (resolved.get("model_client_config") or {}).get("api_key")
-        if previous and key == previous_plaintext:
-            client["api_key"] = previous
-        else:
-            client["api_key"] = crypto.encrypt(key)
-
-
 def _validate_model_candidate(candidate: dict[str, Any]) -> None:
     from gateway.common.model_config_validation import raise_if_invalid
 
     _ensure_model_business_ids(candidate)
     raise_if_invalid(candidate)
-
-
-def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
-    from gateway.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
-
-    saved = deepcopy(group)
-    saved.setdefault("model_group_id", _new_business_id("mgp"))
-    # Keep per-group timeouts; legacy routing strategies remain inactive in model-pool mode.
-    routing = saved.pop("routing", None)
-    if isinstance(routing, dict):
-        timeouts = {
-            key: routing[key]
-            for key in ("timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout")
-            if key in routing
-        }
-        if timeouts:
-            saved["routing"] = timeouts
-    for route in saved.get("routes") or []:
-        if isinstance(route, dict):
-            route.setdefault("route_id", _new_business_id("rte"))
-
-    def _mutate(data):
-        candidate = _models_for_write(data)
-        groups = candidate.setdefault("groups", [])
-        for index, current in enumerate(groups):
-            if current.get("model_group_id") == saved["model_group_id"]:
-                groups[index] = saved
-                break
-        else:
-            groups.append(saved)
-        if saved.get("is_default"):
-            for current in groups:
-                current["is_default"] = current["model_group_id"] == saved["model_group_id"]
-        _validate_model_candidate(candidate)
-        if saved.get("enabled", True) and not any(route.get("enabled", True) for route in saved["routes"]):
-            raise ModelSelectionError(MODEL_GROUP_INVALID, "enabled model group must contain an enabled route")
-        return data
-
-    update_config(_mutate)
-    return saved
 
 
 def delete_model_resource(resource_type: str, resource_id: str, *, cron_references_checked: bool = False) -> bool:
@@ -2157,7 +1283,7 @@ def get_available_models(
     # 登录送的模型始终叠加进列表（不再受 enable_free_models / Opencode Zen 开关约束；
     # Zen 已停用，免费模型来源就是登录）。
     try:
-        from jiuwenswarm.common.auth.model_catalog import list_login_model_entries
+        from gateway.auth.model_catalog import list_login_model_entries
 
         login_entries = list_login_model_entries(session_id)
     except Exception as exc:  # noqa: BLE001 — 登录模型拿不到不该影响已配置模型
@@ -2199,367 +1325,10 @@ def update_default_models_in_config(
     update_config(_mutate)
 
 
-def update_login_model_settings_in_config(context_windows: dict[str, int | None]) -> None:
-    from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SETTINGS_KEY
-
-    def _mutate(data):
-        if "models" not in data:
-            data["models"] = {}
-        models = data["models"]
-        settings = models.get(LOGIN_MODEL_SETTINGS_KEY)
-        if not isinstance(settings, dict):
-            settings = {}
-        for name, context_window in context_windows.items():
-            own = settings.get(name)
-            if context_window is None:
-                if isinstance(own, dict):
-                    own.pop("context_window", None)
-                    if not own:
-                        del settings[name]
-                continue
-            if not isinstance(own, dict):
-                own = {}
-                settings[name] = own
-            own["context_window"] = context_window
-        if settings:
-            models[LOGIN_MODEL_SETTINGS_KEY] = settings
-        else:
-            models.pop(LOGIN_MODEL_SETTINGS_KEY, None)
-        return data
-    update_config(_mutate)
-
-
-def update_default_model_provider_in_config(provider: str) -> bool:
-    """Update only the default model provider in config.yaml.
-
-    Returns True when a persisted model entry was changed. The default entry is
-    the first entry with ``is_default: true``; if none is marked, the first
-    ``models.defaults`` entry is used. This intentionally does not rewrite
-    non-default models or agent-specific model bindings.
-    """
-    normalized_provider = str(provider or "").strip()
-    if not normalized_provider:
-        return False
-
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    models = data.get("models")
-    if not isinstance(models, dict):
-        return False
-
-    defaults = models.get("defaults")
-    if isinstance(defaults, list) and defaults:
-        changed = set_default_model_provider_in_entries(
-            defaults,
-            normalized_provider,
-        )
-        if changed:
-            dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-        return changed
-
-    default_entry = models.get("default")
-    if isinstance(default_entry, dict):
-        mcc = default_entry.setdefault("model_client_config", {})
-        if not isinstance(mcc, dict):
-            mcc = {}
-            default_entry["model_client_config"] = mcc
-        if mcc.get("client_provider") == normalized_provider:
-            return False
-        mcc["client_provider"] = normalized_provider
-        dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-        return True
-
-    return False
-
-
-def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
-    def _mutate(data):
-        models = data.get("models") or {}
-        if not isinstance(models, dict):
-            models = {}
-        defaults = models.get("defaults")
-        if isinstance(defaults, list) and defaults:
-            return None
-        default_entry = models.get("default")
-        if isinstance(default_entry, dict):
-            if "is_default" not in default_entry:
-                default_entry["is_default"] = True
-            defaults_list = [default_entry]
-        else:
-            defaults_list = [{
-                "model_client_config": {
-                    "api_base": "${API_BASE}",
-                    "api_key": "${API_KEY}",
-                    "model_name": "${MODEL_NAME}",
-                    "client_provider": "${MODEL_PROVIDER}",
-                    "endpoint_profile": "${ENDPOINT_PROFILE:-openai}",
-                },
-                "model_config_obj": {},
-                "is_default": True,
-            }]
-        models["defaults"] = defaults_list
-        data["models"] = models
-        if "default" in data["models"]:
-            del data["models"]["default"]
-        return data
-
-    result = update_config(_mutate)
-    defs = (result.get("models") or {}).get("defaults")
-    return defs if isinstance(defs, list) else []
-
-
 def _require_dict(value: Any, field_name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise ValueError(f"{field_name} must be an object")
     return value
-
-
-def _require_non_empty_string(value: Any, field_name: str) -> str:
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError(f"{field_name} must be non-empty")
-    return text
-
-
-def _transform_front_team_model_config(model_raw: dict[str, Any]) -> dict[str, Any]:
-    model_client_config: dict[str, Any] = {}
-    model_request_config: dict[str, Any] = {}
-
-    # 从 models.defaults 列表中按 #index 查找完整配置
-    model_value = model_raw.get("model")
-    if model_value and isinstance(model_value, str) and "#" in model_value:
-        sep = model_value.rfind("#")
-        model_name_part = model_value[:sep]
-        index_part = model_value[sep + 1:]
-        try:
-            target_index = int(index_part)
-        except ValueError:
-            target_index = None
-        if target_index is not None:
-            defaults_list = get_config_raw().get("models", {}).get("defaults")
-            if isinstance(defaults_list, list) and 0 <= target_index < len(defaults_list):
-                entry = defaults_list[target_index]
-                if isinstance(entry, dict):
-                    mcc = entry.get("model_client_config")
-                    if isinstance(mcc, dict):
-                        model_client_config.update({
-                            k: v for k, v in mcc.items()
-                            if k not in ("model_name",) and v is not None
-                        })
-                        model_request_config["model"] = resolve_env_vars(str(mcc.get("model_name", model_name_part)))
-                    mco = entry.get("model_config_obj")
-                    if isinstance(mco, dict):
-                        model_request_config.update(mco)
-
-    # 前端字段覆盖（优先级高于 #index 解析）
-    if "provider" in model_raw and model_raw["provider"] is not None:
-        model_client_config["client_provider"] = model_raw["provider"]
-    if "api_base" in model_raw and model_raw["api_base"] is not None:
-        model_client_config["api_base"] = model_raw["api_base"]
-    if "api_key" in model_raw and model_raw["api_key"] is not None:
-        model_client_config["api_key"] = model_raw["api_key"]
-    if "model" in model_raw and model_raw["model"] is not None:
-        # 若包含 #index，提取纯 model_name
-        raw_model = model_raw["model"]
-        if isinstance(raw_model, str) and "#" in raw_model:
-            model_request_config["model"] = raw_model[:raw_model.rfind("#")]
-        else:
-            model_request_config["model"] = raw_model
-
-    if model_request_config:
-        from gateway.common.reasoning_injector import (
-            build_reasoning_model_request_kwargs,
-        )
-
-        model_request_config = build_reasoning_model_request_kwargs(
-            model_client_config=model_client_config,
-            model_config_obj=model_request_config,
-            model_name=str(
-                model_request_config.get("model")
-                or model_client_config.get("model_name")
-                or ""
-            ),
-        )
-
-    transformed: dict[str, Any] = {}
-    if model_client_config:
-        model_client_config.setdefault("timeout", 1800)
-        model_client_config.setdefault("verify_ssl", False)
-        model_client_config.setdefault("custom_headers", {})
-        transformed["model_client_config"] = model_client_config
-    if model_request_config:
-        transformed["model_request_config"] = model_request_config
-    return transformed
-
-
-def _transform_front_team_agent_spec(agent_key: str, agent_raw: Any) -> dict[str, Any]:
-    agent_config = _require_dict(agent_raw, f"agents.{agent_key}")
-    transformed: dict[str, Any] = {}
-
-    if "model" in agent_config:
-        model_raw = _require_dict(agent_config.get("model"), f"agents.{agent_key}.model")
-        transformed_model = _transform_front_team_model_config(model_raw)
-        if transformed_model:
-            transformed["model"] = transformed_model
-
-    for field_name in ("skills", "workspace", "max_iterations", "completion_timeout"):
-        if field_name in agent_config:
-            transformed[field_name] = deepcopy(agent_config[field_name])
-
-    return transformed
-
-
-def _resolve_front_team_agent_spec(
-    agents_raw: dict[str, Any],
-    agent_key: Any,
-    *,
-    field_name: str,
-) -> dict[str, Any]:
-    resolved_key = _require_non_empty_string(agent_key, field_name)
-    if resolved_key not in agents_raw:
-        raise ValueError(f"{field_name} references unknown agent_key: {resolved_key}")
-    return _transform_front_team_agent_spec(resolved_key, agents_raw[resolved_key])
-
-
-def _build_modes_team_mapping(front_payload: dict[str, Any]) -> dict[str, Any]:
-    agents_raw = _require_dict(front_payload.get("agents"), "agents")
-    teams_raw = front_payload.get("team")
-    if teams_raw is None:
-        return {}
-    if not isinstance(teams_raw, list):
-        raise ValueError("team must be an array")
-
-    team_mapping: dict[str, Any] = {}
-    seen_team_names: set[str] = set()
-
-    for team_index, team_item in enumerate(teams_raw):
-        team_raw = _require_dict(team_item, f"team[{team_index}]")
-        team_name = _require_non_empty_string(team_raw.get("team_name"), f"team[{team_index}].team_name")
-        if team_name in seen_team_names:
-            raise ValueError(f"duplicate team_name: {team_name}")
-        seen_team_names.add(team_name)
-
-        transformed_team: dict[str, Any] = {}
-        for key, value in team_raw.items():
-            if key in {"leader", "teammate", "predefined_members", EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY}:
-                continue
-            transformed_team[key] = value
-        transformed_team["team_name"] = team_name
-        _normalize_external_cli_team_config(
-            transformed_team,
-            publish_url=team_raw.get(EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY),
-            field_name=f"team[{team_index}].external_cli_agents",
-        )
-
-        leader_raw = _require_dict(team_raw.get("leader"), f"team[{team_index}].leader")
-        transformed_team["leader"] = {
-            key: leader_raw[key]
-            for key in ("member_name", "display_name", "persona")
-            if key in leader_raw
-        }
-        transformed_team["leader"]["agent_key"] = leader_raw.get("agent_key", "")
-        leader_agent_spec = _resolve_front_team_agent_spec(
-            agents_raw,
-            leader_raw.get("agent_key"),
-            field_name=f"team[{team_index}].leader.agent_key",
-        )
-
-        teammate_raw = team_raw.get("teammate")
-        teammate_agent_spec: dict[str, Any] | None = None
-        if teammate_raw is not None:
-            teammate_raw = _require_dict(teammate_raw, f"team[{team_index}].teammate")
-            teammate_agent_spec = _resolve_front_team_agent_spec(
-                agents_raw,
-                teammate_raw.get("agent_key"),
-                field_name=f"team[{team_index}].teammate.agent_key",
-            )
-            transformed_team["teammate"] = {"agent_key": teammate_raw.get("agent_key", "")}
-
-        predefined_members_raw = team_raw.get("predefined_members", [])
-        if predefined_members_raw is None:
-            predefined_members_raw = []
-        if not isinstance(predefined_members_raw, list):
-            raise ValueError(f"team[{team_index}].predefined_members must be an array")
-
-        transformed_members: list[dict[str, Any]] = []
-        transformed_agents: dict[str, Any] = {"leader": leader_agent_spec}
-        seen_member_names: set[str] = set()
-
-        for member_index, member_item in enumerate(predefined_members_raw):
-            member = _require_dict(
-                member_item,
-                f"team[{team_index}].predefined_members[{member_index}]",
-            )
-            member_name = _require_non_empty_string(
-                member.get("member_name"),
-                f"team[{team_index}].predefined_members[{member_index}].member_name",
-            )
-            if member_name in seen_member_names:
-                raise ValueError(
-                    f"duplicate member_name in team[{team_index}]: {member_name}"
-                )
-            seen_member_names.add(member_name)
-            transformed_member = {
-                key: member[key]
-                for key in ("member_name", "display_name", "role_type", "persona", "prompt_hint", "agent_key")
-                if key in member
-            }
-            transformed_member["member_name"] = member_name
-            transformed_members.append(transformed_member)
-
-            member_agent_spec = _resolve_front_team_agent_spec(
-                agents_raw,
-                member.get("agent_key"),
-                field_name=f"team[{team_index}].predefined_members[{member_index}].agent_key",
-            )
-            transformed_agents[member_name] = member_agent_spec
-
-        if transformed_members:
-            transformed_team["predefined_members"] = transformed_members
-
-        if teammate_agent_spec is not None:
-            transformed_agents["teammate"] = deepcopy(teammate_agent_spec)
-
-        transformed_team["agents"] = transformed_agents
-        team_mapping[team_name] = transformed_team
-
-    return team_mapping
-
-
-def _normalize_external_cli_team_config(
-    transformed_team: dict[str, Any],
-    *,
-    publish_url: Any,
-    field_name: str,
-) -> None:
-    external_cli_agents = transformed_team.get("external_cli_agents")
-    normalized_cli_agents = _normalize_external_cli_agents(external_cli_agents, field_name)
-    if normalized_cli_agents:
-        transformed_team["external_cli_agents"] = normalized_cli_agents
-    else:
-        transformed_team.pop("external_cli_agents", None)
-
-    if not _requires_external_transport(normalized_cli_agents):
-        transformed_team.pop("external_transport", None)
-        return
-
-    if isinstance(transformed_team.get("external_transport"), dict):
-        external_transport = transformed_team["external_transport"]
-    else:
-        external_transport = {}
-
-    transport_type = str(external_transport.get("type") or "").strip()
-    params = external_transport.get("params")
-    params = dict(params) if isinstance(params, dict) else {}
-    if transport_type and transport_type != "hybrid":
-        raise ValueError(f"{field_name} needs a cross-process agent but external_transport.type must be hybrid")
-
-    if not params.get("external_publish_url"):
-        url = str(publish_url or "").strip()
-        if not url:
-            raise ValueError(f"{field_name} needs a cross-process agent but external_cli_publish_url is empty")
-        params["external_publish_url"] = url
-
-    transformed_team["external_transport"] = {"type": "hybrid", "params": params}
 
 
 def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any]]:
@@ -2675,78 +1444,6 @@ def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str
     return normalized
 
 
-def _build_front_agent_registry(front_payload: dict[str, Any]) -> dict[str, Any]:
-    agents_raw = _require_dict(front_payload.get("agents"), "agents")
-    registry: dict[str, Any] = {}
-    for agent_key, agent_raw in agents_raw.items():
-        resolved_key = _require_non_empty_string(agent_key, f"agents.{agent_key}")
-        registry[resolved_key] = _transform_front_team_agent_spec(resolved_key, agent_raw)
-    return registry
-
-
-def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
-    """Replace ``modes.team`` using the frontend team-editor payload.
-
-    Keep legacy top-level ``team`` config intact for backward compatibility.
-
-    If team array is empty, delete ``modes.team`` from config.
-    """
-    if not isinstance(front_payload, dict):
-        raise ValueError("payload must be an object")
-
-    teams_raw = front_payload.get("team")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-
-    panel_cfg_modified = False
-    agent_registry = None
-    if "agents" in front_payload:
-        agent_registry = _build_front_agent_registry(front_payload)
-        panel_cfg = data.get("web_config_panel")
-        if not isinstance(panel_cfg, dict):
-            panel_cfg = {}
-            data["web_config_panel"] = panel_cfg
-        if agent_registry:
-            panel_cfg["agent_team_agents"] = agent_registry
-        else:
-            panel_cfg.pop("agent_team_agents", None)
-        panel_cfg_modified = True
-
-    # 空数组：删除 modes.team 配置项
-    if isinstance(teams_raw, list) and not teams_raw:
-        if "modes" in data and isinstance(data["modes"], dict) and "team" in data["modes"]:
-            del data["modes"]["team"]
-        _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
-        return
-
-    # 非空数组：正常构建并保存
-    team_mapping = _build_modes_team_mapping(front_payload)
-
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    # Merge web_config_panel back into reloaded data (it was written earlier in this function)
-    if panel_cfg_modified:
-        if "web_config_panel" not in data or not isinstance(data.get("web_config_panel"), dict):
-            data["web_config_panel"] = {}
-        if agent_registry:
-            data["web_config_panel"]["agent_team_agents"] = agent_registry
-        else:
-            data.get("web_config_panel", {}).pop("agent_team_agents", None)
-    if "modes" not in data or not isinstance(data["modes"], dict):
-        data["modes"] = {}
-    # The team editor payload carries no built-in model catalog, so the one
-    # configured for each CLI kind is carried over from the current config.
-    existing_teams = data["modes"].get("team")
-    if isinstance(existing_teams, dict):
-        for team_name, transformed_team in team_mapping.items():
-            existing_team = existing_teams.get(team_name)
-            if not isinstance(existing_team, dict):
-                continue
-            agents = transformed_team.get("external_cli_agents")
-            if isinstance(agents, list):
-                _carry_over_builtin_models(agents, existing_team.get("external_cli_agents"))
-    data["modes"]["team"] = team_mapping
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 def _ensure_config_object(parent: dict[str, Any], key: str, path: str) -> dict[str, Any]:
     value = parent.get(key)
     if value is None:
@@ -2767,32 +1464,6 @@ def update_swarmflow_enabled_in_config(enabled: bool) -> None:
         current = _ensure_config_object(current, segment, ".".join(path_so_far))
     current[SWARMFLOW_ENABLED_CONFIG_PATH[-1]] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def _set_config_path(path: tuple[str, ...], value: Any) -> None:
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    current = data
-    path_so_far: list[str] = []
-    for segment in path[:-1]:
-        path_so_far.append(segment)
-        current = _ensure_config_object(current, segment, ".".join(path_so_far))
-    current[path[-1]] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_team_scheduled_dispatch_in_config(enabled: bool) -> None:
-    """Update ``modes.team.jiuwen_team.dispatch_mode`` (scheduled / autonomous)."""
-    _set_config_path(TEAM_DISPATCH_MODE_CONFIG_PATH, "scheduled" if enabled else "autonomous")
-
-
-def update_team_task_verification_in_config(enabled: bool) -> None:
-    """Update ``modes.team.jiuwen_team.enable_task_verification`` in config.yaml."""
-    _set_config_path(TEAM_TASK_VERIFICATION_CONFIG_PATH, bool(enabled))
-
-
-def update_team_member_messaging_in_config(enabled: bool) -> None:
-    """Update ``modes.team.jiuwen_team.enable_member_messaging`` in config.yaml."""
-    _set_config_path(TEAM_MEMBER_MESSAGING_CONFIG_PATH, bool(enabled))
 
 
 def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> None:
@@ -2899,23 +1570,6 @@ def update_external_cli_builtin_models_in_config(catalogs: dict[str, list[dict[s
         changed = True
     if changed:
         dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def reset_external_cli_agents_in_config() -> None:
-    """Disable all external CLI agents and clear their transport configuration."""
-    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
-        current = data
-        for segment in EXTERNAL_CLI_AGENTS_CONFIG_PATH[:-1]:
-            nested = current.get(segment)
-            if not isinstance(nested, dict):
-                return None
-            current = nested
-
-        agents_removed = current.pop(EXTERNAL_CLI_AGENTS_CONFIG_PATH[-1], None) is not None
-        transport_removed = current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None) is not None
-        return data if agents_removed or transport_removed else None
-
-    update_config(_mutate)
 
 
 def update_swarmflow_budget_in_config(budget: str) -> None:
@@ -3191,52 +1845,6 @@ def _integration_type_for(server: dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 
-def upsert_subagent_in_config(name: str, enabled: bool = True) -> None:
-    """在 react.subagents.<name> 中添加或更新 agent 启用状态。
-
-    自动创建不存在的 react / subagents 段。
-    保留已有的其他 subagent 配置键（如 max_iterations 等）。
-    """
-    target = str(name or "").strip()
-    if not target:
-        raise ValueError("subagent name is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data or not isinstance(data["react"], dict):
-        data["react"] = {}
-    react = data["react"]
-    if "subagents" not in react or not isinstance(react["subagents"], dict):
-        react["subagents"] = {}
-    subagents = react["subagents"]
-    if target not in subagents or not isinstance(subagents[target], dict):
-        subagents[target] = {}
-    subagents[target]["enabled"] = bool(enabled)
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def remove_subagent_from_config(name: str) -> bool:
-    """从 react.subagents.<name> 中删除 agent 条目。
-
-    Returns:
-        True: 找到并删除
-        False: 条目不存在
-    """
-    target = str(name or "").strip()
-    if not target:
-        raise ValueError("subagent name is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    react = data.get("react")
-    if not isinstance(react, dict):
-        return False
-    subagents = react.get("subagents")
-    if not isinstance(subagents, dict):
-        return False
-    if target not in subagents:
-        return False
-    del subagents[target]
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
-
-
 def update_memory_forbidden_enabled_in_config(value: bool) -> None:
     """更新 memory.forbidden_memory_definition.enabled（记忆系统敏感信息过滤开关）并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
@@ -3245,24 +1853,6 @@ def update_memory_forbidden_enabled_in_config(value: bool) -> None:
     if "forbidden_memory_definition" not in data["memory"]:
         data["memory"]["forbidden_memory_definition"] = {}
     data["memory"]["forbidden_memory_definition"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_memory_forbidden_description_in_config(description: dict[str, str]) -> None:
-    """更新 memory.forbidden_memory_definition.description（禁止记忆内容描述）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "memory" not in data:
-        data["memory"] = {}
-    if "forbidden_memory_definition" not in data["memory"]:
-        data["memory"]["forbidden_memory_definition"] = {}
-    if "description" not in data["memory"]["forbidden_memory_definition"]:
-        data["memory"]["forbidden_memory_definition"]["description"] = {}
-    # 合并描述，保留其他语言的描述
-    current_desc = data["memory"]["forbidden_memory_definition"]["description"] or {}
-    if isinstance(current_desc, dict):
-        data["memory"]["forbidden_memory_definition"]["description"] = {**current_desc, **description}
-    else:
-        data["memory"]["forbidden_memory_definition"]["description"] = description
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -3280,17 +1870,6 @@ def update_memory_forbidden_in_config(updates: dict[str, Any]) -> None:
         else:
             section[k] = v
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
-def update_a2ui_in_config(updates: dict[str, Any]) -> None:
-    """更新 a2ui 配置段并写回 config.yaml。"""
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    if "a2ui" not in data:
-        data["a2ui"] = {}
-    section = data["a2ui"]
-    for key, value in updates.items():
-        section[key] = value
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
 
 
 # Recursion bound for :func:`_deep_merge`. This exists only to stop runaway
@@ -3377,7 +1956,6 @@ def _deep_merge(
         )
 
     return changes
-
 
 
 _LEGACY_AGENT_SUBMODE_KEYS: tuple[str, ...] = ("plan", "fast", "agent.plan", "agent.fast")
@@ -3545,23 +2123,6 @@ def get_model_names() -> list[str]:
     return [k for k, v in models.items() if isinstance(v, dict) and k not in skip]
 
 
-def add_or_update_model_in_config(name: str, model_config: dict[str, Any]) -> None:
-    """新增或更新一个模型配置，写入 config.yaml 的 models.<name> 节点。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "models" not in data:
-        data["models"] = {}
-    if name not in data["models"]:
-        data["models"][name] = model_config
-    else:
-        existing = data["models"][name]
-        for k, v in model_config.items():
-            if v is None and k in existing:
-                del existing[k]
-            else:
-                existing[k] = v
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-
-
 def get_model_config(name: str, index: int | None = None) -> dict[str, Any] | None:
     """获取指定模型的原始配置（不解析环境变量）。
 
@@ -3642,20 +2203,12 @@ _SANDBOX_RUNTIME_DEFAULTS: dict[str, Any] = {
 _SANDBOX_RUNTIME_KEYS: tuple[str, ...] = tuple(_SANDBOX_RUNTIME_DEFAULTS.keys())
 
 # Shared with jiuwenbox server / CLI / provider HTTP client.
-JIUWENBOX_API_TOKEN_ENV = "JIUWENBOX_API_TOKEN"
 
 # Process-lifetime cache for ``sandbox.use_random_token=true``. Must stay stable
 # across bootstrap and later ``/sandbox enable`` so parent env and the already
 # spawned jiuwenbox subprocess keep the same Bearer token. Cleared only on
 # process restart (or explicitly in unit tests via
 # :func:`_clear_sandbox_api_token_cache_for_tests`).
-_random_sandbox_api_token_cache: str | None = None
-
-
-def _clear_sandbox_api_token_cache_for_tests() -> None:
-    """Reset the random-token cache. Unit tests only."""
-    global _random_sandbox_api_token_cache
-    _random_sandbox_api_token_cache = None
 
 
 def _coerce_optional_positive_int(
@@ -3768,7 +2321,6 @@ def get_sandbox_runtime() -> dict[str, Any]:
 # ``preserve_file_sharing_mode`` 当前合法取值集合 = ``{"mount"}``; 空值表示
 # "未配置, 按默认走"。
 _VALID_PRESERVE_FILE_SHARING_MODES = ("mount",)
-_DEFAULT_PRESERVE_FILE_SHARING_MODE = "mount"
 
 
 def _normalize_preserve_file_sharing_mode(value: Any) -> str | None:
@@ -3793,7 +2345,6 @@ def _normalize_preserve_file_sharing_mode(value: Any) -> str | None:
 
 _VALID_SANDBOX_STARTUP_MODES = ("internal", "external")
 _DEFAULT_SANDBOX_STARTUP_MODE = "internal"
-_DEFAULT_SANDBOX_POLICY_FILE = "code-agent-policy.yaml"
 
 # YuanRong sandbox knobs under flat ``sandbox:`` (see get_sandbox_endpoint).
 _VALID_YUANRONG_EXECUTORS = ("default", "docker", "conch")
@@ -3815,10 +2366,6 @@ _YUANRONG_ENDPOINT_OPTIONAL_KEYS: tuple[str, ...] = (
 # Public re-exports for callers that need to fall back to / advertise defaults
 # (e.g. agent_ws_server 把缺省值持久化到 config.yaml, 让重启后 get_sandbox_endpoint
 # 能直接读到, 而不必每次再走一遍 fallback 逻辑)。
-DEFAULT_SANDBOX_STARTUP_MODE = _DEFAULT_SANDBOX_STARTUP_MODE
-DEFAULT_SANDBOX_POLICY_FILE = _DEFAULT_SANDBOX_POLICY_FILE
-DEFAULT_YUANRONG_SANDBOX_URL = _DEFAULT_YUANRONG_URL
-DEFAULT_YUANRONG_EXECUTOR = _DEFAULT_YUANRONG_EXECUTOR
 
 
 def _normalize_yuanrong_executor(value: Any) -> str:
@@ -3835,17 +2382,6 @@ def _normalize_sandbox_startup_mode(value: Any) -> str:
     if text not in _VALID_SANDBOX_STARTUP_MODES:
         return _DEFAULT_SANDBOX_STARTUP_MODE
     return text
-
-
-def get_sandbox_startup_mode() -> str:
-    """返回 ``sandbox.startup_mode``: ``internal`` (agent-server 拉起 jiuwenbox)
-    或 ``external`` (用户自己启动 jiuwenbox)。
-
-    未配置时默认 ``internal`` (当前 code-agent 模式预期行为)。
-    """
-    cfg = get_config() or {}
-    sandbox = cfg.get("sandbox") or {}
-    return _normalize_sandbox_startup_mode(sandbox.get("startup_mode"))
 
 
 def get_sandbox_startup_mode_explicit() -> str | None:
@@ -3868,95 +2404,6 @@ def get_sandbox_startup_mode_explicit() -> str | None:
     if text not in _VALID_SANDBOX_STARTUP_MODES:
         return None
     return text
-
-
-def get_sandbox_token_config() -> tuple[str, bool]:
-    """返回 ``(sandbox.token, sandbox.use_random_token)`` 的归一化结果。
-
-    - ``token``: 去空白后的字符串; 缺失 / 空串 → ``""``。
-    - ``use_random_token``: 缺省 ``False``。
-    """
-    cfg = get_config() or {}
-    sandbox = cfg.get("sandbox")
-    if not isinstance(sandbox, dict):
-        sandbox = {}
-    token = str(sandbox.get("token") or "").strip()
-    use_random = bool(sandbox.get("use_random_token", False))
-    return token, use_random
-
-
-def resolve_sandbox_api_token(*, startup_mode: str | None = None) -> str | None:
-    """解析 jiuwenswarm ↔ jiuwenbox 之间使用的 Bearer token。
-
-    规则:
-    - ``sandbox.token`` 非空且 ``use_random_token=true`` → ``ValueError`` (互斥)。
-    - ``use_random_token=true`` 且 ``startup_mode=external`` → ``ValueError``
-      (随机值无法注入用户自行拉起的进程)。
-    - 仅 ``token`` 非空 → 返回该值。
-    - 仅 ``use_random_token=true`` → 返回进程内缓存的随机值 (首次生成后复用,
-      **不写回** ``sandbox.token``)。
-    - 两者都未启用 → ``None`` (关闭认证, 与旧行为一致)。
-
-    Args:
-        startup_mode: 调用方已知的模式; ``None`` 时回落到
-            :func:`get_sandbox_startup_mode`。
-    """
-    global _random_sandbox_api_token_cache
-
-    token, use_random = get_sandbox_token_config()
-    if token and use_random:
-        raise ValueError(
-            "sandbox.token 与 sandbox.use_random_token 不能同时配置: "
-            "请只保留其中一个"
-        )
-
-    mode = (
-        _normalize_sandbox_startup_mode(startup_mode)
-        if startup_mode is not None
-        else get_sandbox_startup_mode()
-    )
-    if use_random and mode == "external":
-        raise ValueError(
-            "sandbox.use_random_token=true 仅适用于 startup_mode=internal: "
-            "external 模式下无法把随机 token 注入用户自行拉起的 jiuwenbox"
-        )
-
-    if token:
-        return token
-    if use_random:
-        if _random_sandbox_api_token_cache is None:
-            _random_sandbox_api_token_cache = secrets.token_urlsafe(32)
-        return _random_sandbox_api_token_cache
-    return None
-
-
-def sync_sandbox_api_token_environ(token: str | None) -> None:
-    """把解析出的 token 同步到当前进程的 ``JIUWENBOX_API_TOKEN``。
-
-    agent-server 派生的子进程 (MCP server / hybrid shell 宿主侧编排 /
-    jiuwenbox CLI 等) 会继承该环境变量, 以便现有 provider HTTP 客户端无需改
-    签名即可带上 ``Authorization: Bearer``。无 token 时显式 ``pop``, 避免继承
-    到过期值。
-    """
-    if token:
-        os.environ[JIUWENBOX_API_TOKEN_ENV] = token
-    else:
-        os.environ.pop(JIUWENBOX_API_TOKEN_ENV, None)
-
-
-def update_sandbox_startup_mode(mode: str) -> str:
-    """写入 ``sandbox.startup_mode`` 到 config.yaml; 返回归一化后的值。"""
-    normalized = _normalize_sandbox_startup_mode(mode)
-    if str(mode or "").strip().lower() not in _VALID_SANDBOX_STARTUP_MODES:
-        raise ValueError(
-            f"startup_mode must be one of {_VALID_SANDBOX_STARTUP_MODES}, got {mode!r}",
-        )
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
-        data["sandbox"] = {}
-    data["sandbox"]["startup_mode"] = normalized
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
-    return normalized
 
 
 def _looks_like_bare_filename(value: str) -> bool:
@@ -4028,36 +2475,6 @@ def resolve_sandbox_policy_path(value: str | None) -> Path | None:
             return None
         return (configs_dir / expanded).resolve()
     return Path(expanded).resolve()
-
-
-def get_sandbox_policy_file() -> str:
-    """返回 ``sandbox.policy_file`` 原始字符串 (空表示未配置, 由调用方走默认)。"""
-    cfg = get_config() or {}
-    sandbox = cfg.get("sandbox") or {}
-    return str(sandbox.get("policy_file") or "").strip()
-
-
-def get_sandbox_policy_path() -> Path | None:
-    """返回 ``sandbox.policy_file`` 解析后的绝对路径。
-
-    未配置时回落到 ``_DEFAULT_SANDBOX_POLICY_FILE`` (即 ``code-agent-policy.yaml``);
-    解析失败 (例如仅给文件名但 ``configs/`` 不可达) 返回 None。
-    """
-    raw = get_sandbox_policy_file() or _DEFAULT_SANDBOX_POLICY_FILE
-    return resolve_sandbox_policy_path(raw)
-
-
-def update_sandbox_policy_file(value: str) -> str:
-    """写入 ``sandbox.policy_file`` (仅文件名或绝对路径) 到 config.yaml; 返回归一化后的字符串。"""
-    text = str(value or "").strip()
-    if not text:
-        raise ValueError("policy_file must be non-empty")
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
-        data["sandbox"] = {}
-    data["sandbox"]["policy_file"] = text
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
-    return text
 
 
 def get_sandbox_endpoint() -> dict[str, Any]:
@@ -4207,46 +2624,6 @@ def update_sandbox_endpoint(
         result["executor"] = executor_value
     result.update(optional_writes)
     return result
-
-
-def get_sandbox_preserve_file_sharing_mode() -> str | None:
-    """返回 ``sandbox.preserve_file_sharing_mode`` (当前仅 ``"mount"``).
-
-    未配置返回 ``None`` (调用方按默认走)。 非法取值不在这里兜底, 直接由
-    :func:`_normalize_preserve_file_sharing_mode` 抛 ``ValueError``。
-    """
-    cfg = get_config() or {}
-    sandbox = cfg.get("sandbox") or {}
-    return _normalize_preserve_file_sharing_mode(sandbox.get("preserve_file_sharing_mode"))
-
-
-def resolve_preserve_file_sharing_mode_default() -> str:
-    """返回当前可用的 ``preserve_file_sharing_mode``.
-
-    优先取 yaml 已配置的值, 否则用默认 (``"mount"``)。 当前合法值只有
-    ``"mount"`` 一个, 函数保留是为了将来若引入新模式时调用点不必再改一遍。
-    """
-    configured = get_sandbox_preserve_file_sharing_mode()
-    return configured or _DEFAULT_PRESERVE_FILE_SHARING_MODE
-
-
-def update_sandbox_preserve_file_sharing_mode(mode: str) -> str:
-    """写入 ``sandbox.preserve_file_sharing_mode``; 返回归一化后的值.
-
-    空值与非法值都会抛 ``ValueError``——写入路径不允许 "保留旧值" 语义, 必须
-    给出明确的合法 mode (当前仅 ``"mount"``)。
-    """
-    normalized = _normalize_preserve_file_sharing_mode(mode)
-    if normalized is None:
-        raise ValueError(
-            f"preserve_file_sharing_mode must be one of {_VALID_PRESERVE_FILE_SHARING_MODES}"
-        )
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
-        data["sandbox"] = {}
-    data["sandbox"]["preserve_file_sharing_mode"] = normalized
-    _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
-    return normalized
 
 
 def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:

@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/file_download_token.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 """Web File Download Token Manager
@@ -40,9 +41,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_EXPIRES_SECONDS = 600
 _SECRET_ENV_KEY = "JIUWENSWARM_FILE_DOWNLOAD_SECRET"
 _SECRET_FILE_NAME = ".file_download_secret"
-_DOWNLOAD_HTTP_BASE_ENV_KEY = "JIUWENSWARM_AGENT_DOWNLOAD_HTTP_BASE"
 _UPLOAD_HTTP_BASE_ENV_KEY = "JIUWENSWARM_AGENT_UPLOAD_HTTP_BASE"
-_LEGACY_HTTP_BASE_ENV_KEY = "JIUWENSWARM_AGENT_HTTP_BASE"
 _VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
 _LEGACY_TOKEN_KEYS = frozenset({"path", "sid"})
 _ROUTED_DOWNLOAD_TOKEN_KEYS = frozenset(
@@ -252,38 +251,6 @@ def _is_legacy_no_expiration_payload(payload: dict[str, Any]) -> bool:
     return all(isinstance(payload[key], str) and payload[key] for key in keys)
 
 
-def generate_file_download_token(
-    file_path: str,
-    session_id: str = "",
-    expires_in: int | None = None,
-) -> str:
-    """签发文件下载令牌。
-
-    ``expires_in=None``（默认）表示不过期，供 ``send_file_to_user`` 等持久交付使用；
-    需要短期有效时显式传入秒数。
-    """
-    return WebFileDownloadManager.get_instance().generate_token(
-        file_path,
-        session_id,
-        expires_in,
-        agent_http_base=(
-            os.getenv(_DOWNLOAD_HTTP_BASE_ENV_KEY)
-            or os.getenv(_LEGACY_HTTP_BASE_ENV_KEY)
-        ),
-        agent_http_base_key="download_http_base",
-    )
-
-
-def generate_skill_content_image_token(
-    *, name: str, version: str | None, relative_path: str, session_id: str,
-    expires_in: int = _DEFAULT_EXPIRES_SECONDS,
-) -> str:
-    return WebFileDownloadManager.get_instance().generate_skill_content_image_token(
-        name=name, version=version, relative_path=relative_path,
-        session_id=session_id, expires_in=expires_in,
-    )
-
-
 def generate_file_upload_token(
     target_rel_path: str,
     session_id: str = "",
@@ -312,70 +279,3 @@ def validate_file_download_token(
     return WebFileDownloadManager.get_instance().validate_token(
         token, session_id=session_id, check_expiry=check_expiry,
     )
-
-
-def build_file_download_info(
-    file_path: str,
-    file_name: str,
-    session_id: str = "",
-    expires_in: int | None = None,
-    user_id: str = "",
-) -> dict[str, Any]:
-    """构建可投递的文件下载信息。
-
-    默认签发不过期令牌（``expires_in=None``），与 ``send_file_to_user`` 产物语义一致。
-    """
-    token = generate_file_download_token(file_path, session_id, expires_in)
-    download_url = WebFileDownloadManager.get_instance().generate_download_url(token, user_id)
-
-    file_size = 0
-    mime_type = "application/octet-stream"
-    try:
-        file_size = os.path.getsize(file_path)
-    except OSError:
-        pass
-
-    import mimetypes
-
-    guessed_type, _ = mimetypes.guess_type(file_name)
-    if guessed_type:
-        mime_type = guessed_type
-
-    return {
-        "name": file_name,
-        "size": file_size,
-        "mime_type": mime_type,
-        "download_url": download_url,
-        "download_token": token,
-    }
-
-
-def build_verified_asset_download_info(
-    asset: VerifiedDownloadAsset,
-    file_name: str,
-    session_id: str = "",
-    user_id: str = "",
-) -> dict[str, Any]:
-    """Build download metadata whose token is backed by a staged asset."""
-
-    manager = WebFileDownloadManager.get_instance()
-    token = manager.generate_verified_asset_token(
-        asset,
-        file_name=file_name,
-        session_id=session_id,
-    )
-    mime_type = "application/octet-stream"
-
-    import mimetypes
-
-    guessed_type, _ = mimetypes.guess_type(file_name)
-    if guessed_type:
-        mime_type = guessed_type
-
-    return {
-        "name": Path(file_name).name,
-        "size": asset.size_bytes,
-        "mime_type": mime_type,
-        "download_url": manager.generate_download_url(token, user_id),
-        "download_token": token,
-    }

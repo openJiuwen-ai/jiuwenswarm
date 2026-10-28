@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/browser_config.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Saved browser settings shared by the main agent and Swarm providers."""
 
@@ -6,8 +7,6 @@ from __future__ import annotations
 
 import logging
 import os
-import sys
-from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -25,12 +24,6 @@ def _decision_section(config: dict[str, Any] | None) -> dict[str, Any]:
     browser = config.get("browser", {}) if isinstance(config, dict) else {}
     raw = browser.get("decision") if isinstance(browser, dict) else None
     return resolve_env_vars(raw) if isinstance(raw, dict) else {}
-
-
-def browser_decision_mode(config: dict[str, Any] | None) -> str:
-    """The saved browser decision mode; anything unrecognised reads as llm."""
-    mode = _decision_section(config).get("mode", "llm")
-    return mode if mode in BROWSER_DECISION_MODES else "llm"
 
 
 def browser_decision_provider(config: dict[str, Any] | None) -> str:
@@ -128,81 +121,3 @@ def browser_decision_updates(
     if not os.environ.get(decision.api_key_env, "").strip():
         return {}, f"Jev API key is not configured ({decision.api_key_env})"
     return updates, None
-
-
-def apply_browser_decision_config(spec: Any, config: dict[str, Any] | None) -> Any:
-    """Apply optional policy without rebuilding runtime/security settings.
-
-    Unknown saved modes follow the UI's llm fallback. Explicit Jev modes still
-    require valid SDK configuration instead of silently disabling the policy.
-    """
-    browser = config.get("browser", {}) if isinstance(config, dict) else {}
-    raw = browser.get("decision", {}) if isinstance(browser, dict) else {}
-    if raw is None:
-        return spec
-    if not isinstance(raw, dict):
-        raise ValueError("browser.decision must be a mapping")
-    if not raw:
-        return spec
-    resolved = resolve_env_vars(raw)
-    if browser_decision_mode(config) == "llm":
-        if resolved.get("mode", "llm") != "llm":
-            logger.warning("browser.decision.mode is unrecognized; using llm")
-        kwargs = dict(spec.factory_kwargs or {})
-        settings = kwargs.get("settings")
-        previous = getattr(settings, "decision", None)
-        if previous is not None and previous.mode != "llm":
-            kwargs["settings"] = replace(
-                settings, decision=replace(previous, mode="llm")
-            )
-            spec.factory_kwargs = kwargs
-        return spec
-    try:
-        from openjiuwen.harness.tools.browser_move.decision import BrowserDecisionConfig
-    except ModuleNotFoundError:
-        # The installed openjiuwen predates Jev: keep the LLM-only browser agent.
-        logger.warning(
-            "browser.decision.mode=%s ignored: installed openjiuwen has no Jev support; using llm",
-            resolved.get("mode"),
-        )
-        return spec
-
-    try:
-        decision = BrowserDecisionConfig(**_sdk_decision_section(resolved))
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"browser.decision is invalid: {exc}") from exc
-    kwargs = dict(spec.factory_kwargs or {})
-    settings = kwargs.get("settings")
-    if settings is None:
-        raise ValueError(
-            "browser decision policy requires the existing runtime settings"
-        )
-    kwargs["settings"] = replace(settings, decision=decision)
-    spec.factory_kwargs = kwargs
-    return spec
-
-
-def resolve_chrome_path(config: dict[str, Any] | None) -> str:
-    """Resolve a string or platform-specific Chrome path from saved config."""
-    if not isinstance(config, dict):
-        return ""
-    browser = config.get("browser", {})
-    if not isinstance(browser, dict):
-        return ""
-    chrome_path = resolve_env_vars(browser).get("chrome_path", "")
-    if isinstance(chrome_path, str):
-        return chrome_path.strip()
-    if not isinstance(chrome_path, dict):
-        return ""
-    platform_key = {
-        "win32": "windows",
-        "cygwin": "windows",
-        "darwin": "macos",
-        "linux": "linux",
-        "linux2": "linux",
-    }.get(sys.platform, "default")
-    for key in (platform_key, "default"):
-        value = chrome_path.get(key, "")
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""

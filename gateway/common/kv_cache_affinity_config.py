@@ -1,4 +1,5 @@
 # Gateway 侧副本，源文件 jiuwenswarm/common/kv_cache_affinity_config.py；改动请同步两侧。
+# 本副本仅保留 gateway 实际引用的符号；同步母仓时请勿整体覆盖。
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
 """Canonical configuration and provider rules for KV cache affinity."""
@@ -9,18 +10,11 @@ import logging
 import os
 from typing import Any
 
-from openjiuwen.core.kv_cache import KVCacheAffinityConfig
 
 ASCEND_AFFINITY_PROVIDER = "AscendAffinity"
 APPLICATION_KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 KV_CACHE_AFFINITY_ENABLED_KEY = "enable_kv_cache_affinity"
 logger = logging.getLogger(__name__)
-KVC_CONFIG_KEYS = frozenset(
-    {
-        "kv_cache_affinity_enabled",
-        "model_provider",
-    }
-)
 
 
 def _kv_cache_mode(config_like: Any) -> str:
@@ -96,52 +90,6 @@ def has_kv_cache_affinity_capability(
     )
 
 
-def model_provider(model: Any | None) -> str:
-    """Resolve the effective provider from an OpenJiuwen Model or its client."""
-
-    for owner in (model, getattr(model, "_client", None)):
-        provider = _model_client_provider(getattr(owner, "model_client_config", None))
-        if provider:
-            return provider
-    return ""
-
-
-def build_kv_cache_affinity_config(
-    application_config: dict[str, Any] | None,
-    *,
-    provider: str,
-    model_client_config: Any = None,
-) -> KVCacheAffinityConfig:
-    """Build the shared Agent/Team KVC policy and fail closed by mode.
-
-    新声明下 KV 亲和由 ``extensions.kv_cache.mode=affinity`` 表达。
-    本函数以 mode 为正式能力声明，同时兼容旧 provider 名
-    ``AscendAffinity``。
-    """
-
-    affinity_enabled = is_affinity_enabled(application_config)
-
-    normalized_provider = normalize_provider(provider)
-    if affinity_enabled and not has_kv_cache_affinity_capability(
-        model_client_config,
-        provider=normalized_provider,
-    ):
-        logger.warning(
-            "KV cache affinity failed closed: model provider=%s mode=%s "
-            "requires extensions.kv_cache.mode=affinity (or legacy AscendAffinity)",
-            normalized_provider or "<empty>",
-            _kv_cache_mode(model_client_config) or "<empty>",
-        )
-        affinity_enabled = False
-    return KVCacheAffinityConfig(
-        enable_kv_cache_affinity=affinity_enabled,
-    )
-
-
-def parse_bool(value: Any) -> bool:
-    return str(value).strip().lower() in ("true", "1", "yes")
-
-
 def select_default_model_entry(
     models: list[dict[str, Any]],
 ) -> dict[str, Any] | None:
@@ -204,12 +152,6 @@ def get_default_model_client_config(
     return {"client_provider": str(os.getenv("MODEL_PROVIDER", "")).strip()}
 
 
-def get_default_model_provider(config: dict[str, Any] | None) -> str:
-    """Return the effective default provider without constructing a Model."""
-
-    return _model_client_provider(get_default_model_client_config(config))
-
-
 def _get_agentos_model_client_configs(
     config: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
@@ -228,33 +170,6 @@ def _get_agentos_model_client_configs(
             ):
                 agentos_configs.append(model_client_config)
     return agentos_configs
-
-
-def get_kv_cache_control_model_client_configs(
-    config: dict[str, Any] | None,
-) -> list[dict[str, Any]]:
-    """Return the authoritative model configs for KVC control policy.
-
-    A configured ``models.agentos`` list takes precedence as a whole. Generic
-    defaults are used only when no valid AgentOS model entry exists.
-    """
-
-    agentos_configs = _get_agentos_model_client_configs(config)
-    return agentos_configs or [get_default_model_client_config(config)]
-
-
-def get_kv_cache_control_model_client_config(
-    config: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """Return the first authoritative KVC control model configuration."""
-
-    return get_kv_cache_control_model_client_configs(config)[0]
-
-
-def get_kv_cache_control_model_provider(config: dict[str, Any] | None) -> str:
-    """Return the provider used to build application-level KVC policy."""
-
-    return _model_client_provider(get_kv_cache_control_model_client_config(config))
 
 
 def is_affinity_enabled(config: dict[str, Any] | None) -> bool:
@@ -300,16 +215,3 @@ def validate_affinity_invariant(
             f"mode={_kv_cache_mode(model_client_config) or '<empty>'}"
         )
     return not failures, failures
-
-
-def normalize_affinity_request(params: dict[str, Any]) -> None:
-    """Enforce switch/provider consistency on one mutable request payload."""
-    affinity_enabled = parse_bool(params.get("kv_cache_affinity_enabled"))
-    requested_provider = str(params.get("model_provider") or "").strip()
-    if affinity_enabled:
-        if requested_provider and requested_provider != ASCEND_AFFINITY_PROVIDER:
-            params["kv_cache_affinity_enabled"] = "false"
-        else:
-            params["model_provider"] = ASCEND_AFFINITY_PROVIDER
-    elif requested_provider and requested_provider != ASCEND_AFFINITY_PROVIDER:
-        params.setdefault("kv_cache_affinity_enabled", "false")

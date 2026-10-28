@@ -142,7 +142,7 @@ class ModelCatalog:
         AgentOS models are intentionally exposed as read-only catalog entries.
         Editing may include the decrypted API key of a user-configured model.
         """
-        from jiuwenswarm.common.auth.model_catalog import is_login_model
+        from gateway.auth.model_catalog import is_login_model
 
         hit = self.get_model(model_id)
         entry = deepcopy(hit["entry"])

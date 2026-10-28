@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import socket
@@ -16,6 +17,8 @@ from urllib.request import Request, urlopen
 
 from gateway.common.paths import get_user_workspace_dir
 from gateway.common.version import __version__
+
+logger = logging.getLogger(__name__)
 
 DOWNLOAD_CHUNK_SIZE = 1024 * 512
 
@@ -270,8 +273,8 @@ class PipExecutor(UpgradeExecutor):
                                 f"'{package}' is installed as an editable package. "
                                 "Use 'git pull && pip install -e .' to update instead."
                             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - probe is best effort
+            logger.debug("editable install probe failed for %s: %s", package, exc)
         return None
 
     @staticmethod
@@ -310,8 +313,8 @@ class PipExecutor(UpgradeExecutor):
                     stripped = line.strip()
                     if stripped.startswith("uv ") or stripped == "uv":
                         return True
-            except Exception:
-                pass
+            except Exception as exc:  # noqa: BLE001 - unreadable cfg means not uv-managed
+                logger.debug("failed to inspect %s: %s", cfg_file, exc)
 
         return False
 
@@ -381,8 +384,8 @@ class PipExecutor(UpgradeExecutor):
                         else:
                             web_argv = None
                         web_pid = int(web_data["pid"]) if web_data.get("pid") else None
-                except Exception:
-                    pass
+                except Exception as exc:  # noqa: BLE001 - stale info file is skippable
+                    logger.debug("failed to read web process info %s: %s", web_info_file, exc)
 
         frontend_port = int(os.getenv("FRONTEND_PORT", "5173"))
         restart_data = {
