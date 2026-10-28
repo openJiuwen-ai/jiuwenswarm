@@ -405,6 +405,10 @@ async def test_no_signals_finishes_normally_and_skips_attribution(monkeypatch: p
     assert finished["diagnose"].summary == "信号 0 条（规则模式 · Reward 已跳过：无任务产物）"
     assert finished["attribute"].status == "skipped"
     assert finished["attribute"].skip_reason == "诊断分析没有产出可归因的信号，已跳过归因"
+    assert finished["attribute"].summary == "已跳过归因 · 轨迹摘要已生成"
+    attribute = [event for event in events if event.stage_id == "attribute"]
+    assert [event.kind for event in attribute] == ["stage_started", "output_delta", "stage_finished"]
+    assert attribute[1].text_delta == "正在生成轨迹摘要"
 
 
 @pytest.mark.asyncio
