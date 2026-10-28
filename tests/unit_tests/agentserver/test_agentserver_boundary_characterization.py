@@ -768,6 +768,45 @@ async def test_manual_cancel_sends_result_without_cleaning_session(
 
 
 @pytest.mark.asyncio
+async def test_cancel_stops_a_streamed_answer_that_names_no_mode_to_a_plan_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trace: list[str] = []
+    agent = RecordingAgent(trace)
+    server, _, runtime = make_server(trace, agent=agent)
+    configure_message_path(monkeypatch, server, trace, agent)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *_args, **_kwargs: {"mode": "agent.plan"},
+    )
+    resumed = asyncio.Event()
+
+    async def resumed_turn(*_args: Any, **_kwargs: Any):
+        resumed.set()
+        await asyncio.Event().wait()
+        yield  # pragma: no cover
+
+    runtime.stream = resumed_turn
+    answer = AgentRequest(
+        request_id="plan-answer", channel_id="tui", session_id="plan-session", req_method=ReqMethod.CHAT_SEND,
+        is_stream=True, params={"request_id": "q-1", "source": "ask_user_interrupt",
+                                "answers": [{"selected_options": ["yes"]}]},
+    )
+    answering = asyncio.create_task(server._handle_stream_impl(RecordingWebSocket(trace), answer, asyncio.Lock()))
+    await asyncio.wait_for(resumed.wait(), 2)
+
+    await server.handle_message_for_test(
+        RecordingWebSocket(trace),
+        request_wire(request_id="stop", method=ReqMethod.CHAT_CANCEL, session_id="plan-session",
+                     params={"intent": "cancel", "session_id": "plan-session"}),
+        asyncio.Lock(),
+    )
+
+    assert answering.done()
+    answering.cancel()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("cleanup_error", "expected_ok", "expected_payload"),
     [

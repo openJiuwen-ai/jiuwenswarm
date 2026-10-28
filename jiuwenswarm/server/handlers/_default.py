@@ -118,6 +118,7 @@ async def handle_stream(ctx: RequestContext) -> None:
     resume_error = "resumed turn ended before its outcome was confirmed"
     current_task = asyncio.current_task()
     stream_stop_event = asyncio.Event()
+    request = AgentRuntime.normalize_request(request)
     uses_session_runtime = AgentRuntime.uses_session_runtime(request)
     if current_task is not None and not uses_session_runtime:
         services.session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event

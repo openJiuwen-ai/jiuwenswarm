@@ -4626,6 +4626,7 @@ class AgentWebSocketServer:
         resume_error = "resumed turn ended before its outcome was confirmed"
         current_task = asyncio.current_task()
         stream_stop_event = asyncio.Event()
+        request = AgentRuntime.normalize_request(request)
         uses_session_runtime = AgentRuntime.uses_session_runtime(request)
         if current_task is not None and (targeted_expert or not uses_session_runtime):
             self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event

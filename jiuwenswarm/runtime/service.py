@@ -1280,7 +1280,7 @@ class AgentRuntime:
             await self.start()
         elif self._closed:
             raise RuntimeStateError("runtime is already closed")
-        request = self._normalize_runtime_request(request)
+        request = self.normalize_request(request)
         params = request.params if isinstance(request.params, dict) else {}
         intent = str(params.get("intent") or "cancel").strip().lower()
         snapshot = (
@@ -1582,7 +1582,7 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
-        request = self._normalize_runtime_request(request)
+        request = self.normalize_request(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -2006,7 +2006,7 @@ class AgentRuntime:
         Do not enter the chat lane or foreground admission: an arriving user
         must be able to preempt this background execution.
         """
-        request = self._normalize_runtime_request(request)
+        request = self.normalize_request(request)
         if not request.session_id:
             raise ValueError("heartbeat session_id is required")
         # Adopt before initialization. The callback's stream starts Runtime
@@ -2092,7 +2092,7 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        request = self._normalize_runtime_request(request)
+        request = self.normalize_request(request)
         is_session_input = self._is_session_input_request(request)
         is_team_session_message = (
             self._request_targets_team(request)
@@ -3578,7 +3578,7 @@ class AgentRuntime:
         return is_team_mode(canonical)
 
     @staticmethod
-    def _normalize_runtime_request(request: AgentRequest) -> AgentRequest:
+    def normalize_request(request: AgentRequest) -> AgentRequest:
         """Resolve the effective mode before Runtime classification and dispatch."""
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
