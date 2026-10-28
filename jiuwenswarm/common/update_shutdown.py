@@ -22,15 +22,19 @@ def complete_shutdown_receipt(path: Path, *, ok: bool) -> None:
     previous = path.read_text(encoding="utf-8")
     if previous not in {"pending\n", "ok\n", "failed\n"} or ok and previous == "failed\n":
         raise RuntimeError("Update shutdown receipt cannot be marked successful")
-    descriptor, temporary = tempfile.mkstemp(prefix=path.name, dir=path.parent)
+    temporary = None
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", newline="\n", prefix=path.name, dir=path.parent, delete=False,
+        ) as stream:
+            temporary = Path(stream.name)
             stream.write("ok\n" if ok else "failed\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
     finally:
-        Path(temporary).unlink(missing_ok=True)
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def require_clean_shutdown(path: str | Path | None) -> None:

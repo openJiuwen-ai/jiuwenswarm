@@ -47,7 +47,9 @@ def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False)
     if legacy and hello.get("data_scope") not in (None, data_scope()):
         raise RuntimeError("Worker lifecycle refused a different data scope")
     pid = hello.get("pid")
-    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or pid == os.getpid():
+    if not isinstance(pid, int) or isinstance(pid, bool):
+        raise RuntimeError("Worker lifecycle refused an invalid PID")
+    if pid <= 0 or pid == os.getpid():
         raise RuntimeError("Worker lifecycle refused an invalid PID")
     try:
         process = psutil.Process(pid)
@@ -59,8 +61,9 @@ def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False)
         if not getattr(sys, "frozen", False):
             expected.add(os.path.normcase(str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
         argv = process.cmdline()
-        if (executable not in expected or argv[1:3] != ["-m", "jiuwenswarm.server.worker.main"]
-                or "--socket" not in argv
+        if executable not in expected or argv[1:3] != ["-m", "jiuwenswarm.server.worker.main"]:
+            raise RuntimeError("Worker lifecycle refused an unrelated process")
+        if ("--socket" not in argv
                 or argv[argv.index("--socket") + 1:argv.index("--socket") + 2] != [socket_path]):
             raise RuntimeError("Worker lifecycle refused an unrelated process")
         if legacy and not getattr(sys, "frozen", False):
@@ -80,7 +83,7 @@ def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False)
 
 def _alive(process: psutil.Process, created: float) -> bool:
     try:
-        if process.create_time() != created:
+        if psutil.Process(process.pid).create_time() != created:
             raise RuntimeError("Worker PID identity changed")
         return process.is_running() and process.status() != psutil.STATUS_ZOMBIE
     except psutil.NoSuchProcess:
@@ -108,16 +111,24 @@ async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: 
             if frame.get("kind") == "shutdown.done":
                 outcome = frame
                 break
-    except (OSError, RuntimeError, asyncio.IncompleteReadError, asyncio.TimeoutError) as exc:
+    except (OSError, RuntimeError, asyncio.IncompleteReadError) as exc:
         error = exc
     try:
         await _wait_exit(process, created, grace)
     except TimeoutError:
         if _alive(process, created):
-            children = [(child, child.create_time()) for child in process.children(recursive=True)]
-            for child, born in reversed(children):
-                if _alive(child, born):
-                    child.kill()
+            try:
+                children = process.children(recursive=True)
+            except (psutil.Error, OSError):
+                # Failure to inspect descendants must not skip the owned root.
+                children = []
+            for child in reversed(children):
+                try:
+                    born = child.create_time()
+                    if _alive(child, born):
+                        child.kill()
+                except (psutil.Error, OSError, RuntimeError):
+                    continue
             if _alive(process, created):
                 process.kill()
         await _wait_exit(process, created, deadline)

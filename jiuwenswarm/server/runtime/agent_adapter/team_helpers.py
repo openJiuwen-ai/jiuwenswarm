@@ -4385,6 +4385,20 @@ async def _consume_stream_with_query(
     async def _deliver(event: dict[str, Any]) -> None:
         """Broadcast one event and persist it when no waiter received it."""
         nonlocal writer
+        if event.get("event_type") == "chat.final" or (
+            event.get("event_type") == "chat.processing_status"
+            and event.get("is_processing") is False
+        ):
+            try:
+                from jiuwenswarm.server.runtime.session.session_token_usage import (
+                    get_session_token_usage,
+                )
+
+                usage = await asyncio.to_thread(get_session_token_usage, session_id)
+                if usage["revision"] > 0:
+                    event = {**event, "session_usage": usage}
+            except Exception:
+                logger.warning("[TeamHelpers] cumulative session usage unavailable", exc_info=True)
         delivered = await _broadcast_event(channel_id, session_id, event)
         if writer is None:
             return

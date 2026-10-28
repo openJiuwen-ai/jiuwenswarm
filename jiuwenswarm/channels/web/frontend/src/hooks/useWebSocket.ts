@@ -3427,6 +3427,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.final', ({ payload }) => {
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
+        }
         if (shouldIgnoreSessionOutput(payload)) return;
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
@@ -4617,6 +4620,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         usePlanStore.getState().setActive(sessionId, false);
       }),
       webClient.on('chat.processing_status', ({ payload }) => {
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
+        }
         // Organization background rounds own their lifecycle in useOrganizationEvents.
         // They must not close a concurrent foreground Owner request.
         if (isTeamOrganizationUiEnabled() && String(payload.source ?? '').startsWith('org_') &&
@@ -5131,6 +5137,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       webClient.on('chat.subtask_update', ({ payload }) => {
+        useSessionStore.getState().receiveSessionTokenUsage((payload as { session_usage?: unknown }).session_usage);
         const event = normalizeSubagentStatusEvent(payload);
         if (!event) return;
         let pendingAssignment = pendingSubagentAssignmentRef.current.get(event.subagent.subagent_id);
@@ -5561,6 +5568,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) {
           console.log('[usage_summary] filtered by session check');
           return;
+        }
+        if (payload.session_usage) {
+          useSessionStore.getState().receiveSessionTokenUsage(payload.session_usage);
         }
         const usage = payload.usage as UsageSummary | undefined;
         if (!usage) {

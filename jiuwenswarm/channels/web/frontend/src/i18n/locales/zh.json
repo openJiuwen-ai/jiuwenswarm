@@ -1769,6 +1769,12 @@
       "tools": "工具及连接器",
       "skills": "技能",
       "notReported": "未报告",
+      "cumulativeTitle": "累计 Token",
+      "mainAgentTokens": "主 Agent",
+      "otherAgentTokens": "子 Agent / 团队成员",
+      "inputTokens": "输入",
+      "outputTokens": "输出",
+      "partialReported": "部分调用未上报用量",
       "close": "关闭上下文详情",
       "noBreakdown": "后端未返回分类明细"
     },

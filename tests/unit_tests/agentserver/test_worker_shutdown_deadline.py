@@ -336,7 +336,9 @@ async def test_worker_process_forced_exit_does_not_start_another_wait_budget(mon
     monkeypatch.setattr(worker, "wait", wait)
     await asyncio.wait_for(worker.stop(timeout=0.04), 0.5)
     assert calls == ["terminate", "kill"]
-    assert len(budgets) == 2 and budgets[1] < 0.01
+    assert len(budgets) == 2
+    assert 0 < budgets[0] < .04
+    assert 0 < budgets[1] <= .04, "force-kill observation must share the original deadline"
     assert "exit could not be observed" in caplog.text
 
 

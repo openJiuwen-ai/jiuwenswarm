@@ -1785,6 +1785,12 @@
       "tools": "Tools & Connectors",
       "skills": "Skills",
       "notReported": "Not reported",
+      "cumulativeTitle": "Cumulative tokens",
+      "mainAgentTokens": "Main Agent",
+      "otherAgentTokens": "Subagents / team members",
+      "inputTokens": "Input",
+      "outputTokens": "Output",
+      "partialReported": "Some calls did not report usage",
       "close": "Close context details",
       "noBreakdown": "No category details returned by the backend"
     },

@@ -6,13 +6,15 @@
 A task's files - uploads from the composer and media the agent generated - can be
 given short names so they can be referenced with ``@name`` in the chat box. The
 registry is independent of any other feature: it lives next to the session's own
-data as ``<sessions>/<session_id>/session_assets.json`` and is served by three
+data as ``<sessions>/<session_id>/session_assets.json`` and is served by four
 stateless RPC methods:
 
 - ``session.assets.list``: the session's assets.
 - ``session.assets.register``: add files (idempotent per file path; the default
   name is the file name without extension, made unique).
 - ``session.assets.rename``: change an asset's name.
+- ``session.assets.remove``: drop one asset by id (idempotent; does not touch the
+  underlying file, only the registry entry).
 """
 from __future__ import annotations
 
@@ -172,6 +174,15 @@ class SessionAssetManager:
         target["name"] = name
         self._save(session_id, assets)
         return {"assets": assets}
+
+    async def handle_session_assets_remove(self, params: dict) -> dict:
+        session_id = str(params.get("session_id") or "")
+        asset_id = str(params.get("asset_id") or "").strip()
+        assets = self._load(session_id)
+        remaining = [a for a in assets if a["asset_id"] != asset_id]
+        if len(remaining) != len(assets):
+            self._save(session_id, remaining)
+        return {"assets": remaining}
 
 
 _MANAGER: SessionAssetManager | None = None

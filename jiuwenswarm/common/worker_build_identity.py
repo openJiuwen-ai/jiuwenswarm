@@ -11,6 +11,7 @@ import hashlib
 import json
 import os
 import secrets
+import shutil
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,9 +40,8 @@ def read_build_identity(path: Path) -> dict:
             raise ValueError("identity must be an object")
         if value.get("schema") == 1 and valid_digest(value.get("fingerprint")):
             return value
-        if value.get("schema") == 2 and all(valid_digest(value.get(key)) for key in (
-            "backend_build_id", "source_digest", "dependency_digest", "packaging_digest",
-        )):
+        keys = ("backend_build_id", "source_digest", "dependency_digest", "packaging_digest")
+        if value.get("schema") == 2 and all(valid_digest(value.get(key)) for key in keys):
             return value
     except (OSError, ValueError, TypeError) as exc:
         raise RuntimeError(f"Invalid Worker build identity: {path}") from exc
@@ -59,15 +59,16 @@ def _digest_files(root: Path, paths: list[Path]) -> str:
 def source_digest(root: Path) -> str:
     """Describe backend inputs without embedding checkout-specific paths."""
     paths = []
+    excluded = {"node_modules", "__pycache__", ".venv", "dist", "build", ".git"}
     for name in ("jiuwenswarm", "gateway", "jiuwenbox/src"):
         directory = root / name
         for current, children, files in os.walk(directory):
-            children[:] = [child for child in children if child not in {
-                "node_modules", "__pycache__", ".venv", "dist", "build", ".git",
-            }]
-            paths.extend(Path(current) / name for name in files if Path(name).suffix in {
-                ".py", ".yaml", ".yml", ".json", ".toml",
-            } and name != IDENTITY_FILENAME)
+            children[:] = [child for child in children if child not in excluded]
+            for filename in files:
+                if filename == IDENTITY_FILENAME:
+                    continue
+                if Path(filename).suffix in {".py", ".yaml", ".yml", ".json", ".toml"}:
+                    paths.append(Path(current) / filename)
     return _digest_files(root, paths)
 
 
@@ -76,14 +77,21 @@ def dependency_digest(root: Path) -> str:
 
 
 def packaging_digest(root: Path) -> str:
-    return _digest_files(root, [path for path in (root / "scripts").rglob("*") if path.is_file()
-        and path.suffix in {".py", ".spec", ".ps1", ".psm1", ".sh", ".iss", ".bat"}])
+    paths = []
+    suffixes = {".py", ".spec", ".ps1", ".psm1", ".sh", ".iss", ".bat"}
+    for path in (root / "scripts").rglob("*"):
+        if path.is_file() and path.suffix in suffixes:
+            paths.append(path)
+    return _digest_files(root, paths)
 
 
 def _revision(root: Path) -> str | None:
+    git = shutil.which("git")
+    if git is None:
+        return None
     try:
         return subprocess.check_output(
-            ["git", "-C", str(root), "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
+            [str(Path(git).resolve()), "-C", str(root), "rev-parse", "HEAD"], stderr=subprocess.DEVNULL,
             text=True, timeout=5,
         ).strip()
     except (OSError, subprocess.SubprocessError):

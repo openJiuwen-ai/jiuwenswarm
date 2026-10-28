@@ -207,7 +207,8 @@ class WorkerProcess:
             return
         deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
+        grace = deadline - min(1.0, max(0.0, timeout) / 2)
+        code = await self.wait(timeout=max(0.0, grace - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()

@@ -775,9 +775,12 @@ function signalServiceTree(child, signal) {
   try {
     if (process.platform === 'win32') {
       if (serviceProcesses.get('agent') === child) {
-        const { command, args } = serviceCommand('lifecycle', ['--detach-front', String(child.pid)]);
+        const { command, args } = serviceCommand('lifecycle', [
+          '--detach-front', String(child.pid), ...(signal === 'SIGKILL' ? ['--force'] : []),
+        ]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
         helper.on('error', error => console.error('[electron] Front detach helper failed', error));
+        helper.once('exit', code => { if (code !== 0) console.error('[electron] Front detach helper failed', { code }); });
         helper.unref();
         return true;
       }
@@ -2871,7 +2874,10 @@ function registerIpcHandlers() {
         shell: false,
       });
       helper.once('error', error => {
+        if (updateShutdownReceipt === receipt) updateShutdownReceipt = null;
         console.error('[electron] failed to launch backend update helper', error);
+        void dialog.showMessageBox({ type: 'error', message: 'Failed to launch update installer. Please try again.' })
+          .catch(error => console.error('[electron] failed to display update error', error));
         void completeShutdownReceipt(receipt, false).catch(error => console.error('[electron] update receipt failed', error));
       });
       helper.once('spawn', () => {
