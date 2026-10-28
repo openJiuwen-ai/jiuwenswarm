@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""团队流增量按 1 秒合并，避免一块一帧灌满本地连接。"""
+"""团队流增量按 100 毫秒合并，避免一块一帧灌满本地连接。"""
 
 from __future__ import annotations
 
@@ -22,12 +22,12 @@ async def test_first_reasoning_goes_out_and_later_text_waits(monkeypatch):
     coalescer = team_helpers._TeamDeltaCoalescer()
     first = {"event_type": "chat.reasoning", "role": "leader", "content": "你"}
     await coalescer.submit(None, "s1", first)
-    clock["now"] = 0.4
+    clock["now"] = 0.05
     await coalescer.submit(
         None, "s1", {"event_type": "chat.reasoning", "role": "leader", "content": "好"}
     )
     assert [item["content"] for item in sent] == ["你"]
-    clock["now"] = 1.0
+    clock["now"] = 0.1
     await coalescer.submit(
         None, "s1", {"event_type": "chat.reasoning", "role": "leader", "content": "啊"}
     )
@@ -62,7 +62,7 @@ async def test_tool_event_flushes_pending_text_first(monkeypatch):
     await coalescer.submit(
         None, "s1", {"event_type": "chat.reasoning", "role": "leader", "content": "先"}
     )
-    clock["now"] = 0.2
+    clock["now"] = 0.05
     await coalescer.submit(
         None, "s1", {"event_type": "chat.reasoning", "role": "leader", "content": "说"}
     )
@@ -102,7 +102,7 @@ async def test_concurrent_sources_do_not_share_a_bucket(monkeypatch):
             "stream_source_id": "page-2",
         },
     )
-    clock["now"] = 0.2
+    clock["now"] = 0.05
     await coalescer.submit(
         None, "s1",
         {
@@ -121,7 +121,7 @@ async def test_concurrent_sources_do_not_share_a_bucket(monkeypatch):
             "stream_source_id": "page-2",
         },
     )
-    clock["now"] = 1.0
+    clock["now"] = 0.1
     await coalescer.submit(
         None, "s1",
         {
@@ -148,12 +148,12 @@ async def test_other_speaker_expired_text_flushes_on_next_submit(monkeypatch):
         None, "s1",
         {"event_type": "chat.delta", "role": "teammate", "member_name": "甲", "content": "甲"},
     )
-    clock["now"] = 0.2
+    clock["now"] = 0.05
     await coalescer.submit(
         None, "s1",
         {"event_type": "chat.delta", "role": "teammate", "member_name": "甲", "content": "尾"},
     )
-    clock["now"] = 1.2
+    clock["now"] = 0.12
     await coalescer.submit(
         None, "s1",
         {"event_type": "chat.delta", "role": "teammate", "member_name": "乙", "content": "乙"},
@@ -172,7 +172,7 @@ async def test_usage_flushes_that_speaker_before_itself(monkeypatch):
         None, "s1",
         {"event_type": "chat.delta", "role": "leader", "member_name": "甲", "content": "先"},
     )
-    clock["now"] = 0.2
+    clock["now"] = 0.05
     await coalescer.submit(
         None, "s1",
         {"event_type": "chat.delta", "role": "leader", "member_name": "甲", "content": "说"},
@@ -192,6 +192,34 @@ async def test_usage_flushes_that_speaker_before_itself(monkeypatch):
         "chat.usage_metadata",
     ]
     assert sent[1]["content"] == "说"
+
+
+async def test_reasoning_tail_goes_out_before_first_delta(monkeypatch):
+    clock = _clock(monkeypatch)
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        team_helpers, "_broadcast_event", lambda _c, _s, event: sent.append(dict(event))
+    )
+    coalescer = team_helpers._TeamDeltaCoalescer()
+    await coalescer.submit(
+        None, "s1",
+        {"event_type": "chat.reasoning", "role": "leader", "content": "想"},
+    )
+    clock["now"] = 0.05
+    await coalescer.submit(
+        None, "s1",
+        {"event_type": "chat.reasoning", "role": "leader", "content": "完"},
+    )
+    await coalescer.submit(
+        None, "s1",
+        {"event_type": "chat.delta", "role": "leader", "content": "答"},
+    )
+    assert [item["event_type"] for item in sent] == [
+        "chat.reasoning",
+        "chat.reasoning",
+        "chat.delta",
+    ]
+    assert [item["content"] for item in sent] == ["想", "完", "答"]
 
 
 async def test_team_completed_flushes_pending_text_before_complete(monkeypatch):

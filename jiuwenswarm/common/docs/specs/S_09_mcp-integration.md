@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
 | 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch}.py |
-| 最近一次修订日期 | 2026-10-13 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-10-27 |
+| 关联 feature | F_01_deepresearch-mcp-delegation.md |
 
 ## 范围 / 边界
 
@@ -69,13 +69,20 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   `_PATCHED` 幂等。
 - **N9 patch 装配点唯一**：两个 patch 只在
   `server/runtime/agent_adapter/interface_deep.py` 的 DeepAdapter 构造时装配（[[S_01]] N6）。
+- **N10 DeepResearch 只读委派快照**：`snapshot_for_deepresearch(name)` 在原注册表锁内
+  一次读取来源配置、已缓存工具和当前连接参数，复用调用路径的存在/启用检查；返回配置和
+  工具的深拷贝，不发现工具、不启动 worker。返回值包含未脱敏连接凭据，仅供进程内授权
+  检查，不得写日志、持久化或直接传给 SDK。研究专用端点调用原请求级工具，每次 list/call
+  重验当前请求、来源身份、工具集合和权限；恢复仅保留首次来源与当前授权的交集。
 
 ## 接口契约
 
 | 模块 | 关键符号 | 语义要点 |
 |---|---|---|
 | `mcp_config.py` | `create_mcp_tool` / `build_mcp_server_config` / `build_enabled_mcp_server_configs` / `acquire_request_scoped_mcp_session` / `RequestScopedOfficeClawMcpTool` / `list_request_mcp_server_tools` / `validate_office_claw_mcp_config` / `bind_active_office_claw_mcp_tools` / `ensure_request_scoped_mcp_tool_allowed` / `preflight_mcp_server_reachable` | N1–N4 |
+| `mcp_config.py` | `RequestScopedOfficeClawMcpTool.server_name` | 只读返回原 `_server_name`；供来源匹配使用，不改变 worker key、请求绑定或工具权限 |
 | `mcp_server_registry.py` | `McpServerRegistry` / `GlobalMcpWorkerPool` / `get_mcp_server_registry` / `start_mcp_registry_runtime` / `snapshot_for_chat` / `acquire_worker` / `redact_mcp_config` / `extract_mcp_server_list` / `McpRegistrySettings` | N5 / N6 |
+| `mcp_server_registry.py` | `snapshot_for_deepresearch(name) -> tuple[dict, list, dict]` | N10；缺失抛 `UnknownMcpServerError`，停用抛 `DisabledMcpServerError` |
 | `mcp_call_timeout_patch.py` | `apply_mcp_call_timeout_patch` / `force_invalidate_mcp_client` / `is_retryable_mcp_dead_session_error` / `DEFAULT_CALL_TIMEOUT = 30.0` | N7 |
 | `mcp_tool_list_refresh_patch.py` | `apply_mcp_tool_list_refresh_patch` / `refresh_registered_mcp_tool_lists` / `resolve_mcp_tool_list_ttl_s` / `DEFAULT_MCP_TOOL_LIST_TTL_S = 60` | N8 |
 
@@ -86,6 +93,9 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   `server/handlers/mcp`、`server/runtime/tenant_agent_pool`、`interface_deep`。
 - 注册表消费：`server/handlers/mcp_servers`、`app_agentserver`（runtime 启停）、
   `interface_deep`。
+- DeepResearch 委派：`interface_deep._get_deepresearch_mcp_context` → 专用模块
+  `agents/harness/common/tools/deepresearch/mcp_search.py` → `snapshot_for_deepresearch`；
+  原生 SDK 只连接本任务临时端点，端点通过 `RequestScopedOfficeClawMcpTool` 复用原 worker。
 - patch 消费：`interface_deep`（唯一装配）+ `tests/unit_tests/common/test_mcp_call_timeout_patch.py`
   / `test_mcp_call_timeout_recovery.py` / `test_mcp_tool_list_refresh_patch.py`。
 
@@ -101,6 +111,8 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 | 扫描期工具列表失败 | 保留旧快照（N8） | `test_mcp_tool_list_refresh_patch.py` |
 | 配置变更（指纹变） | worker retire 重建 | registry 测试 |
 | list 接口回显配置 | 凭据脱敏 | `redact_mcp_config` 测试 |
+| 研究期间来源停用、删除或变更 | 专用端点拒绝继续委派 | `test_deepresearch_mcp_review_regressions.py` |
+| 研究恢复时新增连接或更换来源 | 不扩张首次来源集合 | 同上及 `test_deepresearch_mcp_search.py` |
 
 ## 修改检查单
 
@@ -110,6 +122,8 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 - 改扫描节奏 / 池 TTL → env 覆盖路径回归（N5/N6 的四个 env）。
 - 扩 stdio 白名单 → 安全评审（N2 是 fail-closed 边界，[[S_01]] 铁律 6）。
 - 改 OfficeClaw 启动身份 → pin 字段（N4）+ env 白名单同步。
+- 改研究快照/委派 → 核验撤权、凭据轮换、工具集合冻结、恢复隔离及原 MCP 回归；
+  不得将进程内明文快照混入对外脱敏列表接口（N10）。
 
 ## 与其它 spec 的关系
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextvars
+import copy
 import hashlib
 import io
 import json
@@ -22,11 +23,12 @@ import unicodedata
 import uuid
 import zipfile
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-from contextlib import contextmanager, suppress
+from contextlib import AsyncExitStack, contextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
+from urllib.parse import parse_qsl, urlsplit
 
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.sys_operation.cwd import get_cwd
@@ -93,6 +95,7 @@ logger = logging.getLogger(__name__)
 
 DEEPRESEARCH_CONFIG_PROTOCOL_VERSION = 1
 DEEPRESEARCH_CONFIG_MAX_BYTES = 64 * 1024
+DEEPRESEARCH_QUERY_FRAME_MAX_BYTES = 1024 * 1024
 DEEPRESEARCH_STOP_FRAME_PROTOCOL_VERSION = 1
 DEEPRESEARCH_GRACEFUL_STOP_TIMEOUT_SECONDS = 30.0
 # 修复A:停止-完成竞速交付报告的超时上限。markdown 产物管线含 HTML 样式
@@ -118,6 +121,11 @@ DEEPRESEARCH_OUTLINE_CACHE_TENANTS = 256
 DEEPRESEARCH_OUTLINE_CACHE_CONVERSATIONS = 128
 DEEPRESEARCH_OUTLINE_CACHE_TITLES = 128
 DEEPRESEARCH_OUTLINE_CACHE_TEXT_CHARS = 64 * 1024
+# brief 完成态 metadata 缓存上限：给 config frame 其余字段（LLM/搜索配置）留余量，
+# 确保不击穿 64KiB frame 上限（DEEPRESEARCH_CONFIG_MAX_BYTES）。
+DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS = 48 * 1024
+# 完成结果回传的顶级章节标题数量上限，与 execution.py 大纲卡章节解析截断一致。
+_COMPLETION_OUTLINE_SECTIONS_MAX = 20
 DEEPRESEARCH_ZIP_MAX_MEMBERS = 1024
 DEEPRESEARCH_ZIP_MEMBER_MAX_BYTES = 64 * 1024 * 1024
 DEEPRESEARCH_ZIP_TOTAL_MAX_BYTES = 128 * 1024 * 1024
@@ -242,6 +250,12 @@ _OUTLINE_JSON_CACHES: dict[
     tuple[str, str, str], dict[str, dict[str, Any]]
 ] = {}
 _OUTLINE_JSON_CACHES_GUARD = threading.Lock()
+# brief→professional 升级注入用：route key → 最近一份 brief 完成来源记录。
+# 不按 conversation 分桶——升级是全新 conversation（新 conversation_id），
+# 只能按会话取"最近一次 brief"。记录含 metadata、原 query/文件名与可升级性，
+# brief 完成即登记（含不可用路径），旧记录随之失去升级资格。
+_BRIEF_UPGRADE_RECORDS: dict[tuple[str, str, str], dict[str, Any]] = {}
+_BRIEF_UPGRADE_RECORDS_GUARD = threading.Lock()
 
 
 class _ReportPublicationCollision(FileExistsError):
@@ -489,6 +503,106 @@ def _clear_outline_json_cache(
             _OUTLINE_JSON_CACHES.pop(key, None)
 
 
+def _outline_sections_from_parts(
+    parts: list[str], *, max_sections: int | None = _COMPLETION_OUTLINE_SECTIONS_MAX
+) -> list[str]:
+    """按 sections 顺序提取一份完整有效大纲的顶级章节标题。
+
+    与 outline_interaction 中断标记同一解析口径（拼接分片后整体 json.loads）；
+    拼接不完整、解析失败或 sections/标题无效时返回空列表，调用方据此不
+    覆盖已有章节，也不从研究过程或报告正文猜测大纲。
+    """
+    if not isinstance(parts, list) or not parts:
+        return []
+    try:
+        outline = json.loads("".join(parts))
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(outline, dict):
+        return []
+    sections = outline.get("sections")
+    if not isinstance(sections, list) or not sections:
+        return []
+    titles: list[str] = []
+    for section in sections:
+        if not isinstance(section, dict):
+            return []
+        title = section.get("title")
+        if not isinstance(title, str) or not title.strip():
+            return []
+        titles.append(title.strip())
+    return titles if max_sections is None else titles[:max_sections]
+
+
+def _report_title_from_file_name(file_name: str) -> str:
+    """展示标题沿用完成文案的文件名派生口径，空值兜底「研究报告」。"""
+    stem = str(file_name or "").strip()
+    if not stem:
+        return "研究报告"
+    title = re.sub(r"\.(?:md|markdown)$", "", stem, flags=re.IGNORECASE)
+    return title.strip() or "研究报告"
+
+
+def _get_brief_upgrade_record(route: dict[str, object]) -> dict[str, Any] | None:
+    """取该会话最近一份 brief 来源记录的深拷贝快照；无记录返回 None。"""
+    key = _outline_cache_key(route)
+    with _BRIEF_UPGRADE_RECORDS_GUARD:
+        record = _BRIEF_UPGRADE_RECORDS.get(key)
+        return copy.deepcopy(record) if isinstance(record, dict) else None
+
+
+def _register_brief_upgrade_record(
+    route: dict[str, object],
+    *,
+    report_id: str,
+    original_query: str,
+    original_file_name: str,
+    metadata: Any,
+    report_path: str = "",
+) -> bool:
+    """brief 完成即登记来源记录；返回本次是否可升级。
+
+    metadata 缺失、无 brief_outline 或超限拒收时同样登记
+    （upgrade_available=False）并覆盖旧记录——后续升级由此不会读到上一份
+    brief 的缓存大纲。锁内 tenant LRU，容量边界沿用大纲缓存租户上限。
+    """
+    available = False
+    stored_metadata: dict[str, Any] | None = None
+    normalized_report_id = str(report_id or "").strip()
+    normalized_query = str(original_query or "").strip()
+    if normalized_report_id and normalized_query:
+        if isinstance(metadata, dict) and metadata and metadata.get("brief_outline"):
+            serialized = json.dumps(metadata, ensure_ascii=False)
+            if len(serialized) <= DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS:
+                stored_metadata = copy.deepcopy(metadata)
+                available = True
+            else:
+                logger.warning(
+                    "[deepresearch_stream] brief metadata too large to cache "
+                    "request_id=%s session_id=%s chars=%d limit=%d; "
+                    "brief upgrade will degrade to plain professional",
+                    _safe_log_correlation_id(route.get("request_id")),
+                    _safe_log_correlation_id(route.get("session_id")),
+                    len(serialized),
+                    DEEPRESEARCH_BRIEF_METADATA_CACHE_TEXT_CHARS,
+                )
+    record: dict[str, Any] = {
+        "report_id": normalized_report_id,
+        "original_query": normalized_query,
+        "original_file_name": str(original_file_name or "").strip(),
+        "metadata": stored_metadata,
+        "upgrade_available": available,
+    }
+    if report_path:
+        record["report_path"] = report_path
+    key = _outline_cache_key(route)
+    with _BRIEF_UPGRADE_RECORDS_GUARD:
+        while len(_BRIEF_UPGRADE_RECORDS) >= DEEPRESEARCH_OUTLINE_CACHE_TENANTS:
+            _BRIEF_UPGRADE_RECORDS.pop(next(iter(_BRIEF_UPGRADE_RECORDS)))
+        _BRIEF_UPGRADE_RECORDS[key] = record
+    return available
+
+
 def _map_provider_to_type(provider: str) -> str:
     value = provider.strip().lower()
     return _PROVIDER_TO_TYPE.get(value, value)
@@ -732,30 +846,46 @@ def _validate_deepresearch_search_config(config: dict[str, str]) -> str | None:
     )
 
 
-def _encode_deepresearch_config(config: dict[str, str]) -> bytes:
+def _encode_deepresearch_config(
+    config: dict[str, str], *, request_query: str | None = None
+) -> bytes:
     tls = normalize_child_tls_config(
         {
             "LLM_SSL_VERIFY": config.get("LLM_SSL_VERIFY", "false"),
             "TOOL_SSL_VERIFY": config.get("TOOL_SSL_VERIFY", "false"),
         }
     )
+    payload: dict[str, Any] = {
+        "version": DEEPRESEARCH_CONFIG_PROTOCOL_VERSION,
+        "config": config,
+        "tls": tls,
+    }
     frame = json.dumps(
-        {
-            "version": DEEPRESEARCH_CONFIG_PROTOCOL_VERSION,
-            "config": config,
-            "tls": tls,
-        },
+        payload,
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8") + b"\n"
     if len(frame) > DEEPRESEARCH_CONFIG_MAX_BYTES:
         raise ValueError("DeepResearch config frame exceeds 64 KiB")
+    if request_query is not None:
+        if not isinstance(request_query, str) or not request_query.strip():
+            raise ValueError("DeepResearch request query must be nonempty text")
+        payload["request_query"] = request_query
+        frame = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8") + b"\n"
+        if len(frame) > DEEPRESEARCH_QUERY_FRAME_MAX_BYTES:
+            raise ValueError("DeepResearch query frame exceeds 1 MiB")
     return frame
 
 
 def _config_secret_values(config: dict[str, str]) -> tuple[str, ...]:
     """Return request-scoped secret values without retaining ambient state."""
     values = set()
+    try:
+        for server in json.loads(config.get("MCP_SERVERS_JSON", "[]")):
+            values.update(value for value in server.get("headers", {}).values() if isinstance(value, str) and value)
+            values.update(value for _, value in parse_qsl(urlsplit(server.get("server_url", "")).query) if value)
+    except (ValueError, TypeError, AttributeError):
+        pass
     for key, value in config.items():
         is_secret = value and any(
             marker in str(key).upper() for marker in _SECRET_CONFIG_KEY_MARKERS
@@ -1315,7 +1445,8 @@ def _resolve_outline_interaction_feedback(
     Returns a JSON string ready for the SDK ``--feedback`` argument:
 
     * ``outline_confirm``       -> ``{"interrupt_feedback":"accepted","feedback":""}``
-    * ``outline_use_edited``    -> ``{"interrupt_feedback":"revise_outline","feedback":"<outline JSON string>"}``
+    * ``outline_use_edited``    -> revised Outline JSON plus an explicit revision
+      comment for the runner's public SDK ``revise_comment`` adapter.
     * user cancel/error status  -> ``{"interrupt_feedback":"cancel","feedback":""}``
 
     Raises ``ValueError`` on any malformed ``interaction_result`` (fail closed);
@@ -1380,19 +1511,56 @@ def _resolve_outline_interaction_feedback(
         # shallow copy whose nested ``sections`` list is still shared).
         new_sections = [dict(section) for section in sections]
         new_outline = {**cached_outline, "sections": new_sections}
+        title_changes: list[dict[str, object]] = []
         for page_num, edited_title in edited_titles.items():
             idx = page_num - 1
             if 0 <= idx < len(new_sections):
-                new_sections[idx]["title"] = edited_title
+                if not edited_title.strip():
+                    raise ValueError("edited outline title is empty")
+                section = new_sections[idx]
+                if section.get("title") != edited_title:
+                    title_changes.append({
+                        "section": page_num,
+                        "before": section.get("title"),
+                        "after": edited_title,
+                    })
+                    section["title"] = edited_title
+                    description = section.get("description") or ""
+                    section["description"] = f"{edited_title}\n\n{description}".strip()
+                    # The old analysis labels can exclude a newly added scope.
+                    # Let the SDK infer them again from the revised section.
+                    section["section_focus"] = ""
+                    section["focus_dimensions"] = []
             # Page count mismatch: skip out-of-range pages, do NOT add/remove
             # sections. Caller's contract: only matching indices update.
 
+        # The cached model thought can contain instructions to keep the old
+        # brief titles. Send a description of the edited structure instead.
+        new_outline["thought"] = "\n".join(
+            str(section.get("title") or "") for section in new_sections
+        )
         outline_json_str = json.dumps(new_outline, ensure_ascii=False)
+        packet = {
+            "interrupt_feedback": "revise_outline",
+            "feedback": outline_json_str,
+        }
+        if title_changes:
+            # Keep the edited JSON for verification/older runners. New runners
+            # use the SDK's feedback-refinement path, where the current user
+            # instruction explicitly overrides historical outline constraints.
+            packet["revision_comment"] = (
+                "用户已在大纲审阅界面确认以下修改，请据此修订并输出完整研究大纲。\n"
+                "具体修改（before 是旧标题，after 是用户确认的最终标题）：\n"
+                + json.dumps(title_changes, ensure_ascii=False)
+                + "\n确认后的全部章节标题（数量、顺序和标题文字必须保持）：\n"
+                + json.dumps([section["title"] for section in new_sections], ensure_ascii=False)
+                + "\n请同步更新变更章节的研究描述、时间范围、研究步骤和分析维度，"
+                "取消与新要求冲突的旧约束。未修改的章节保持原范围。"
+                "旧大纲中的 thought 和精简报告首版结构仅作历史参考，"
+                "不能覆盖本轮用户确认的修改。"
+            )
         return json.dumps(
-            {
-                "interrupt_feedback": "revise_outline",
-                "feedback": outline_json_str,
-            },
+            packet,
             ensure_ascii=False,
         )
 
@@ -2484,6 +2652,17 @@ def _has_completed_final_pipeline_node(state: RouterState) -> bool:
     )
 
 
+_deepresearch_upgrade_snapshot_ctx: contextvars.ContextVar[dict[str, Any] | None] = (
+    contextvars.ContextVar(
+        "jiuwenswarm_deepresearch_upgrade_snapshot", default=None
+    )
+)
+
+_deepresearch_brief_refresh_query_ctx: contextvars.ContextVar[str | None] = (
+    contextvars.ContextVar("jiuwenswarm_deepresearch_brief_refresh_query", default=None)
+)
+
+
 def _claim_interrupted_prompt(
     node: str, marker: Mapping[str, Any], query: str
 ) -> str:
@@ -2543,15 +2722,97 @@ def _synthesize_claim_interrupted_outcome(
     }
 
 
-async def _call_deepresearch_stream_impl(
-    *, _router_state: object | None = None, **kwargs: Any
-) -> str:
-    token = _deepresearch_router_state_ctx.set(_router_state)
+
+
+async def _push_materials_progress(content: str) -> None:
+    """Use the existing trusted route for bounded preparation status only."""
+    route = _get_route()
+    if not route.get("session_id") or not route.get("channel_id"):
+        return
     try:
-        stream_impl = getattr(deepresearch_stream, "_func")
-        return await stream_impl(**kwargs)
+        await WebSocketGatewayPushTransport().send_push({
+            "request_id": route.get("request_id", ""), "channel_id": route["channel_id"],
+            "session_id": route["session_id"], "is_complete": False,
+            "payload": {"event_type": "chat.reasoning", "content": content},
+        })
+    except Exception:  # Progress transport cannot change material failure semantics.
+        logger.warning("[deepresearch] material progress push unavailable")
+
+
+_materials_reference_ctx: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "deepresearch_materials_reference", default=None)
+_mcp_servers_ctx: contextvars.ContextVar[list[dict] | None] = contextvars.ContextVar(
+    "deepresearch_mcp_servers", default=None)
+
+
+# Both dedicated entry points must hand new research back to the same Skill.
+MODEL_RESEARCH_FALLBACK_ERRORS = frozenset({
+    "runner_missing", "runtime_python_missing", "runtime_python_invalid", "search_config_missing",
+})
+MODEL_RESEARCH_FALLBACK_HINT = (
+    "专用研究能力在启动前不可用，尚未启动研究或交付报告。"
+    '下一步必须重新调用 skill_tool(skill_name="deepresearch", relative_file_path="SKILL.md")，'
+    "从最新版 SKILL.md 的‘模型研究路径’第 1 步‘明确问题与范围’重新开始，"
+    "由当前主模型完整执行各步，最后保存并交付 Markdown。"
+    "不要用历史经验中的‘多子代理并行检索后汇总’替代该流程，"
+    "不要因降级自动派发子代理；历史经验与当前 Skill 冲突时以当前 Skill 为准。"
+    "不要重试 deepresearch_execute 或 deepresearch_stream，"
+    "不要把内部错误、接手通知或执行过程写进最终报告。"
+)
+
+
+def build_model_research_fallback(query: str, file_name: str) -> dict[str, str]:
+    """Point the main model at Skill step 1 rather than prescribing another plan."""
+    return {
+        "mode": "model_research", "query": query, "file_name": file_name,
+        "restart_from": "明确问题与范围",
+    }
+
+
+def _startup_error_outcome(
+    action: str, error_code: str, error: str, query: str, file_name: str,
+) -> str:
+    outcome = {"status": "error", "error_code": error_code, "error": error}
+    if action == "start" and query.strip() and error_code in MODEL_RESEARCH_FALLBACK_ERRORS:
+        outcome["fallback"] = build_model_research_fallback(query, file_name)
+        outcome["content"] = MODEL_RESEARCH_FALLBACK_HINT
+    return json.dumps(outcome, ensure_ascii=False)
+
+
+async def _call_deepresearch_stream_impl(
+    *,
+    _router_state: object | None = None,
+    _upgrade_brief_metadata: dict[str, Any] | None = None,
+    _brief_refresh_original_query: str | None = None,
+    _materials_reference: dict | None = None,
+    _mcp_servers: list[dict] | None = None,
+    **kwargs: Any,
+) -> str:
+    # _upgrade_brief_metadata：execution.py 已校验的升级 metadata 快照，经
+    # 私有通道下传（不进 LLM 可见的工具签名），注入时优先于缓存读取。
+    route_token = _deepresearch_router_state_ctx.set(_router_state)
+    snapshot_token = _deepresearch_upgrade_snapshot_ctx.set(_upgrade_brief_metadata)
+    refresh_token = _deepresearch_brief_refresh_query_ctx.set(_brief_refresh_original_query)
+    materials_token = _materials_reference_ctx.set(_materials_reference)
+    try:
+        async with AsyncExitStack() as stack:
+            from .mcp_search import search_mcp_gateway
+            try:
+                native_servers = await stack.enter_async_context(search_mcp_gateway(_mcp_servers))
+            except Exception:
+                return json.dumps({"status": "error", "error_code": "mcp_gateway_unavailable",
+                                   "error": "DeepResearch MCP authorization endpoint is unavailable"})
+            mcp_token = _mcp_servers_ctx.set(native_servers)
+            try:
+                stream_impl = getattr(deepresearch_stream, "_func")
+                return await stream_impl(**kwargs)
+            finally:
+                _mcp_servers_ctx.reset(mcp_token)
     finally:
-        _deepresearch_router_state_ctx.reset(token)
+        _materials_reference_ctx.reset(materials_token)
+        _deepresearch_brief_refresh_query_ctx.reset(refresh_token)
+        _deepresearch_upgrade_snapshot_ctx.reset(snapshot_token)
+        _deepresearch_router_state_ctx.reset(route_token)
 
 
 @tool(
@@ -2595,9 +2856,11 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     file_name: str = "",
     interaction_result: str = "",
     report_type: DeepResearchReportType | None = None,
+    upgrade_from_brief: bool = False,
 ) -> str:
     skill_started_ns = time.monotonic_ns()
     route = _get_route()
+    expected_outline_sections: list[str] = []
     if report_type is not None and report_type not in {"professional", "brief"}:
         return json.dumps(
             {
@@ -2611,25 +2874,21 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
         python_bin = resolve_python_executable()
     except DeepResearchRuntimeError as exc:
         code = str(exc)
-        return json.dumps(
-            {"status": "error", "error_code": code, "error": code},
-            ensure_ascii=False,
-        )
+        return _startup_error_outcome(action, code, code, query, file_name)
     script = _resolve_run_script()
     if not script:
-        return json.dumps(
-            {
-                "status": "error",
-                "error_code": "runner_missing",
-                "error": "run_deepsearch.py not found",
-            },
-            ensure_ascii=False,
+        return _startup_error_outcome(
+            action, "runner_missing", "run_deepsearch.py not found", query, file_name,
         )
 
     # 认领停止快照时按 claim node 推导的阶段提示(消费点 set/reset);
     # 其余路径保持 None。
     claim_stage_hint: int | None = None
-    if action == "start":
+    if (
+        action == "start"
+        and not upgrade_from_brief
+        and _deepresearch_brief_refresh_query_ctx.get() is None
+    ):
         # 停止恢复兜底（2026-10-15 19:52 回归实证）：停止后新请求中 skill
         # 激活态随请求重建而重置，deepresearch_execute 被
         # ProgressiveToolRail 过滤（stopped 文案指引的唯一入口成为死信），
@@ -2678,7 +2937,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             "run",
             "--config-stdin",
             "--query",
-            query,
+            "" if _deepresearch_brief_refresh_query_ctx.get() is not None else query,
         ]
         if conversation_id:
             argv.extend(("--conversation-id", conversation_id))
@@ -2722,6 +2981,11 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                     conversation_id=conversation_id,
                     route=route,
                 )
+                packet = json.loads(feedback)
+                if packet.get("interrupt_feedback") == "revise_outline":
+                    expected_outline_sections = _outline_sections_from_parts(
+                        [packet["feedback"]], max_sections=None
+                    )
             except ValueError as exc:
                 return json.dumps(
                     {
@@ -2755,6 +3019,13 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             ensure_ascii=False,
         )
 
+    materials_reference = _materials_reference_ctx.get()
+    if materials_reference:
+        if materials_reference.get("conversation_id") != conversation_id:
+            return json.dumps({"status": "error", "error_code": "materials_scope_invalid"})
+        argv.extend(("--materials-file", materials_reference["path"],
+                     "--materials-sha256", materials_reference["sha256"]))
+
     try:
         config = _build_deepresearch_request_config(
             interactive_ask=True,
@@ -2763,6 +3034,41 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
         )
         if report_type is not None:
             config["REPORT_TYPE"] = report_type
+        if (
+            upgrade_from_brief
+            and action == "start"
+            and report_type == "professional"
+        ):
+            # 仅 start 注入：resume 由 SDK checkpoint 续跑，StartNode 不重跑。
+            # 优先用 execution.py 传下的已校验快照（strict/手动同源绑定），
+            # 无快照时兜底读最新来源记录（覆盖低层工具直调的旧路径）。
+            upgrade_metadata = _deepresearch_upgrade_snapshot_ctx.get()
+            if not isinstance(upgrade_metadata, dict) or not upgrade_metadata:
+                record = _get_brief_upgrade_record(route)
+                candidate = (
+                    record.get("metadata") if isinstance(record, dict) else None
+                )
+                if record and record.get("upgrade_available"):
+                    if isinstance(candidate, dict) and candidate:
+                        upgrade_metadata = candidate
+            if isinstance(upgrade_metadata, dict) and upgrade_metadata:
+                config["METADATA"] = json.dumps(
+                    upgrade_metadata, ensure_ascii=False
+                )
+            else:
+                # 缓存缺失（超限/重启/会话不符/最新 brief 不可用）：降级普通
+                # professional，不阻断用户诉求。strict 路径的来源校验已在
+                # execution.py 完成并明确报错，不会进入该分支。
+                logger.warning(
+                    "[deepresearch_stream] brief upgrade requested but no usable "
+                    "brief metadata request_id=%s session_id=%s; falling back to "
+                    "plain professional run",
+                    _safe_log_correlation_id(route.get("request_id")),
+                    _safe_log_correlation_id(route.get("session_id")),
+                )
+        mcp_servers = _mcp_servers_ctx.get()
+        if mcp_servers:
+            config["MCP_SERVERS_JSON"] = json.dumps(mcp_servers, ensure_ascii=False)
         child_env = _build_deepresearch_child_env(
             interactive_ask=True,
             service_id=str(route.get("service_id") or "default"),
@@ -2770,13 +3076,23 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             runtime_config=config,
             executable=python_bin,
         )
-        config_frame = _encode_deepresearch_config(config)
+        if mcp_servers:
+            # Only the private loopback endpoint bypasses configured HTTP proxies.
+            bypass = child_env.get("NO_PROXY") or child_env.get("no_proxy") or ""
+            child_env["NO_PROXY"] = ",".join(filter(None, (bypass, "127.0.0.1")))
+            child_env["no_proxy"] = child_env["NO_PROXY"]
+        # Source report text can exceed Windows' command-line length limit.
+        # Keep it outside config/environment in the bounded stdin frame.
+        config_frame = _encode_deepresearch_config(
+            config,
+            request_query=(
+                query if action == "start" and _deepresearch_brief_refresh_query_ctx.get() is not None
+                else None
+            ),
+        )
     except DeepResearchRuntimeError as exc:
         code = str(exc)
-        return json.dumps(
-            {"status": "error", "error_code": code, "error": code},
-            ensure_ascii=False,
-        )
+        return _startup_error_outcome(action, code, code, query, file_name)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         return json.dumps(
             {
@@ -2788,13 +3104,8 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
         )
     search_error = _validate_deepresearch_search_config(config)
     if search_error:
-        return json.dumps(
-            {
-                "status": "error",
-                "error_code": "search_config_missing",
-                "error": search_error,
-            },
-            ensure_ascii=False,
+        return _startup_error_outcome(
+            action, "search_config_missing", search_error, query, file_name,
         )
 
     try:
@@ -2873,8 +3184,10 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 query=query,
                 conversation_id=conversation_id,
                 file_name=file_name,
+                report_type=report_type or "",
                 secrets=_config_secret_values(config),
                 skill_started_ns=skill_started_ns,
+                expected_outline_sections=expected_outline_sections,
             )
         finally:
             if stage_hint_token is not None:
@@ -3418,7 +3731,9 @@ async def _consume_stream(
     conversation_id: str,
     file_name: str,
     secrets: tuple[str, ...],
+    report_type: str = "",
     skill_started_ns: int | None = None,
+    expected_outline_sections: list[str] | None = None,
 ) -> dict[str, Any]:
     push = WebSocketGatewayPushTransport()
     cached_titles = (
@@ -3501,6 +3816,11 @@ async def _consume_stream(
             )
             return False
 
+    materials_reference = _materials_reference_ctx.get()
+    if materials_reference and action == "start":
+        from .materials import material_summary
+        await send({"event_type": "chat.reasoning", "content": material_summary(materials_reference)})
+
     outcome: dict[str, Any] = {
         "status": "error",
         "error_code": "terminal_marker_missing",
@@ -3541,6 +3861,12 @@ async def _consume_stream(
             result["timing"] = timing
         return result
 
+    # 大纲编辑后的重新生成不再触发 outline_interaction 中断（max-rounds 自动
+    # 确认），大纲 JSON 缓存停留在旧版；增量解析本调用累积的大纲分片，跟踪
+    # 最后一份完整有效大纲的章节标题，completed 时随结果回传给 execution.py。
+    latest_outline_sections: list[str] = []
+    outline_revision_verified = False
+
     async for raw in _iter_with_periodic_progress(
         _iter_ndjson_lines(
             proc.stdout,
@@ -3569,6 +3895,37 @@ async def _consume_stream(
         if not isinstance(chunk, dict):
             continue
         status_value = chunk.get("__deepsearch_status__") or chunk.get("status")
+        if expected_outline_sections:
+            content = chunk.get("content")
+            if chunk.get("agent") == "outline" and isinstance(content, str) and content:
+                # Support a whole JSON outline and the SDK's fragmented stream.
+                # Validate before forwarding the final fragment or any report.
+                actual_sections = _outline_sections_from_parts([content], max_sections=None)
+                if not actual_sections:
+                    actual_sections = _outline_sections_from_parts(
+                        [*state.outline_parts, content], max_sections=None
+                    )
+                if actual_sections:
+                    if actual_sections != expected_outline_sections:
+                        return {
+                            "status": "error",
+                            "conversation_id": outcome_cid,
+                            "error_code": "outline_revision_not_applied",
+                            "error": "DeepResearch 未采用您编辑后的大纲，已停止本次生成，未交付报告。",
+                        }
+                    outline_revision_verified = True
+            if not outline_revision_verified and (
+                status_value == "completed"
+                or str(chunk.get("agent") or "") in {
+                    "editor_team", "plan_reasoning", "sub_reporter", *FINAL_REPORT_NODES,
+                }
+            ):
+                return {
+                    "status": "error",
+                    "conversation_id": outcome_cid,
+                    "error_code": "outline_revision_unverified",
+                    "error": "DeepResearch 未返回可验证的编辑后大纲，已停止本次生成，未交付报告。",
+                }
         is_terminal = status_value in {
             "completed",
             "interrupted",
@@ -3824,6 +4181,41 @@ async def _consume_stream(
                 "conversation_id": chunk.get("conversation_id", outcome_cid),
                 "report_delivered": True,
             }
+            # brief→professional 升级：完成即登记来源记录（metadata 缺失/无效
+            # 同样登记为不可用并覆盖旧记录——升级不会读到上一份 brief 的缓存
+            # 大纲），成功才打标，execution.py 据此在完成文案里追问；
+            # brief_report 小描述随结果回传，供上层登记"最新完成的精简报告"
+            # （title 沿用文件名派生口径，身份只认 report_id）。
+            brief_metadata = (
+                final_result.get("metadata") if isinstance(final_result, dict) else None
+            )
+            if report_type == "brief":
+                brief_report_id = str(
+                    completed_outcome.get("conversation_id") or ""
+                ).strip()
+                brief_upgrade_available = _register_brief_upgrade_record(
+                    route,
+                    report_id=brief_report_id,
+                    original_query=_deepresearch_brief_refresh_query_ctx.get() or query,
+                    original_file_name=file_name,
+                    metadata=brief_metadata,
+                    report_path=str(primary_path),
+                )
+                if brief_upgrade_available:
+                    completed_outcome["brief_upgrade_available"] = True
+                if brief_report_id:
+                    completed_outcome["brief_report"] = {
+                        "v": 1,
+                        "report_id": brief_report_id,
+                        "report_type": "brief",
+                        "report_delivered": True,
+                        "title": _report_title_from_file_name(file_name),
+                        "upgrade_available": brief_upgrade_available,
+                    }
+            # SDK 最后生效大纲的顶级章节标题（编辑后重新生成与卡上旧版不同），
+            # execution.py 用它把完成文案「报告概览」与 state 同步成同一份章节。
+            if latest_outline_sections:
+                completed_outcome["outline_sections"] = list(latest_outline_sections)
             if html_style_status in {"applied", "fallback"}:
                 completed_outcome["html_style_status"] = html_style_status
                 if html_style_status == "fallback":
@@ -3899,6 +4291,16 @@ async def _consume_stream(
                 state.authoritative_section_indices.update(titles)
         for payload in route_chunk(chunk, state):
             await send(payload)
+        # 只跟踪专业版大纲流（brief 走 brief_outline，无大纲卡与「报告概览」）。
+        if chunk.get("agent") == "outline":
+            parsed_titles = _outline_sections_from_parts(state.outline_parts)
+            if parsed_titles:
+                latest_outline_sections = parsed_titles
+                # Edited outlines can arrive in fragments. Refresh the live
+                # section headers after assembly, before any research chunks.
+                titles = extract_deepresearch_section_titles("".join(state.outline_parts))
+                state.section_titles.update(titles)
+                state.authoritative_section_indices.update(titles)
     return outcome
 
 

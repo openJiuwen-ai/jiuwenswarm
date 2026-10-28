@@ -681,6 +681,13 @@ class McpServerRegistry:
                     raise exc
         return worker
 
+    async def snapshot_for_deepresearch(self, name: str) -> tuple[dict, list, dict]:
+        """Read one current delegation source atomically; do not start a worker."""
+        async with self._lock:
+            params = self._invoke_connect_params_locked(name)
+            return (copy.deepcopy(self._registry[name].config),
+                    copy.deepcopy(self._cache[name].tools), params)
+
     async def snapshot_for_chat(
         self, names: list[str]
     ) -> list[tuple[str, list[dict[str, Any]], dict[str, Any]]]:
