@@ -399,6 +399,7 @@ async def test_no_signals_finishes_normally_and_skips_attribution(monkeypatch: p
     assert result.trajectory_summary == "选中范围没有产生诊断信号，轨迹主要是任务收尾。"
     assert result.reward_failure_causes == []
     assert result.evolution_judge == []
+    assert all(event.kind != "reward" for event in events)
     finished = {event.stage_id: event for event in events if event.kind == "stage_finished"}
     assert finished["diagnose"].status == "completed"
     assert finished["diagnose"].summary == "信号 0 条（规则模式 · Reward 已跳过：无任务产物）"
@@ -447,6 +448,10 @@ async def test_only_perfect_signals_still_run_summary_only(monkeypatch: pytest.M
     assert result.trajectory_summary == "所有评分维度均已达标，轨迹无失败归因。"
     assert result.reward_failure_causes == [] and result.evolution_judge == []
     assert result.reward == _reward_payload("测试应当通过")
+    kinds = [(event.stage_id, event.kind) for event in events]
+    reward_at = kinds.index(("diagnose", "reward"))
+    assert reward_at < kinds.index(("diagnose", "stage_finished")) < kinds.index(("attribute", "stage_started"))
+    assert events[reward_at].reward == _reward_payload("测试应当通过")
     finished = next(event for event in events if event.stage_id == "attribute" and event.kind == "stage_finished")
     assert finished.status == "completed"
 
@@ -516,6 +521,9 @@ async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: py
     kinds = [(event.stage_id, event.kind) for event in events]
     assert ("task_parse", "stage_started") == kinds[0]
     assert ("attribute", "stage_finished") == kinds[-1]
+    reward_at = kinds.index(("diagnose", "reward"))
+    assert reward_at < kinds.index(("diagnose", "stage_finished")) < kinds.index(("attribute", "stage_started"))
+    assert events[reward_at].reward == _reward_payload("测试应当通过")
     task_lines = [event.text_delta for event in events if event.stage_id == "task_parse" and event.kind == "output_delta"]
     assert any("llm-1" in line for line in task_lines)
     assert any("iter 1" in line for line in task_lines)

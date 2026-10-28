@@ -1031,6 +1031,11 @@ class AttributionCoreEngine:
             )
         else:
             summary = text["diagnose_summary_rule"].format(count=len(diagnosis.signals))
+        # Publish the scorecard before this stage closes, so the host can show
+        # it before attribution streams findings underneath it.
+        payload = diagnosis.reward_payload
+        if isinstance(payload, Mapping):
+            queue.put_nowait(EngineEvent("diagnose", "reward", reward=dict(payload)))
         queue.put_nowait(EngineEvent("diagnose", "stage_finished", status="completed", summary=summary))
         return diagnosis
 

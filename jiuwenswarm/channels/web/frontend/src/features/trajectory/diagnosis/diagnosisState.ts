@@ -102,6 +102,12 @@ export function applyProgressEvent(record: DiagnosisRecord, event: DiagnosisProg
   if (event.diagnosis_id !== record.diagnosis_id) return { record, refetch: false };
   if (event.seq <= record.seq) return { record, refetch: false };
   if (event.seq !== record.seq + 1) return { record, refetch: true };
+  if (event.kind === 'reward') {
+    return {
+      record: { ...record, seq: event.seq, reward: event.reward ?? null },
+      refetch: false,
+    };
+  }
   if (event.kind === 'reward_failure_causes') {
     return {
       record: { ...record, seq: event.seq, reward_failure_causes: event.reward_failure_causes ?? [] },
