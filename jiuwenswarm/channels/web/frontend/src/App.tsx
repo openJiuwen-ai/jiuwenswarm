@@ -4665,9 +4665,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           onSelectExternalCliPath={selectExternalCliPath}
           onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
           externalCliInstallStatuses={externalCliInstallStatuses}
-          externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-            (status) => status?.status === 'running',
-          )}
           onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
           onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
           externalCliPendingChoices={externalCliPendingChoices}
