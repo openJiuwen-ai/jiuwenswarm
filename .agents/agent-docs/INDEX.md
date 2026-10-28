@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 15 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 14 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -17,16 +17,11 @@ generated: true
 |---|---|
 | [agent_teams](#module-1) | 1 |
 | [agent_teams/workflow](#module-2) | 3 |
-| [gateway](#module-3) | 1 |
-| [jiuwenswarm](#module-4) | 3 |
-| [jiuwenswarm/agents](#module-5) | 1 |
-| [jiuwenswarm/channels/web/frontend](#module-6) | 2 |
-| [jiuwenswarm/extensions](#module-7) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-8) | 1 |
-| [jiuwenswarm/observability](#module-9) | 1 |
-| [jiuwenswarm/runtime](#module-10) | 1 |
-| [jiuwenswarm/server](#module-11) | 1 |
-| [未分类](#module-12) | 8 |
+| [jiuwenswarm](#module-3) | 3 |
+| [jiuwenswarm/channels/web/frontend](#module-4) | 1 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-5) | 1 |
+| [jiuwenswarm/observability](#module-6) | 1 |
+| [未分类](#module-7) | 8 |
 
 <a id="module-1"></a>
 
@@ -48,14 +43,6 @@ generated: true
 
 <a id="module-3"></a>
 
-## gateway
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1650_enterprise-1030-integration](features/F_20261027_1650_enterprise-1030-integration.md) | feature | 1030 企业版同步 develop 的集成候选 | ZYQ5333 | gateway, jiuwenswarm/server, jiuwenswarm/runtime, jiuwenswarm/agents, jiuwenswarm/extensions, jiuwenswarm/channels/web/frontend | jiuwenswarm/runtime/service.py, jiuwenswarm/server/runtime/tenant_agent_pool.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, gateway/message_handler/message_handler.py, gateway/channel_manager/web/web_connect.py, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/common/schema/message.py, gateway/extensions/sdk/application_plugin.py, tests/unit_tests/common/test_enterprise_protocol_identity.py | 无独立 D：用户在当前会话明确授权从 release/1030 创建 integration 并整合主线。 |
-
-<a id="module-4"></a>
-
 ## jiuwenswarm
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -64,32 +51,15 @@ generated: true
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | agent_teams/workflow, jiuwenswarm | — | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | agent_teams/workflow, jiuwenswarm | — | — |
 
-<a id="module-5"></a>
-
-## jiuwenswarm/agents
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1650_enterprise-1030-integration](features/F_20261027_1650_enterprise-1030-integration.md) | feature | 1030 企业版同步 develop 的集成候选 | ZYQ5333 | gateway, jiuwenswarm/server, jiuwenswarm/runtime, jiuwenswarm/agents, jiuwenswarm/extensions, jiuwenswarm/channels/web/frontend | jiuwenswarm/runtime/service.py, jiuwenswarm/server/runtime/tenant_agent_pool.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, gateway/message_handler/message_handler.py, gateway/channel_manager/web/web_connect.py, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/common/schema/message.py, gateway/extensions/sdk/application_plugin.py, tests/unit_tests/common/test_enterprise_protocol_identity.py | 无独立 D：用户在当前会话明确授权从 release/1030 创建 integration 并整合主线。 |
-
-<a id="module-6"></a>
+<a id="module-4"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [SDD-0026](designs/proposals/SDD-0026-trajectory-observability-web-ui/design.md) | D | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | @alan_cheng | jiuwenswarm/channels/web/frontend | — | — |
-| [F_20261027_1650_enterprise-1030-integration](features/F_20261027_1650_enterprise-1030-integration.md) | feature | 1030 企业版同步 develop 的集成候选 | ZYQ5333 | gateway, jiuwenswarm/server, jiuwenswarm/runtime, jiuwenswarm/agents, jiuwenswarm/extensions, jiuwenswarm/channels/web/frontend | jiuwenswarm/runtime/service.py, jiuwenswarm/server/runtime/tenant_agent_pool.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, gateway/message_handler/message_handler.py, gateway/channel_manager/web/web_connect.py, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/common/schema/message.py, gateway/extensions/sdk/application_plugin.py, tests/unit_tests/common/test_enterprise_protocol_identity.py | 无独立 D：用户在当前会话明确授权从 release/1030 创建 integration 并整合主线。 |
 
-<a id="module-7"></a>
-
-## jiuwenswarm/extensions
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1650_enterprise-1030-integration](features/F_20261027_1650_enterprise-1030-integration.md) | feature | 1030 企业版同步 develop 的集成候选 | ZYQ5333 | gateway, jiuwenswarm/server, jiuwenswarm/runtime, jiuwenswarm/agents, jiuwenswarm/extensions, jiuwenswarm/channels/web/frontend | jiuwenswarm/runtime/service.py, jiuwenswarm/server/runtime/tenant_agent_pool.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, gateway/message_handler/message_handler.py, gateway/channel_manager/web/web_connect.py, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/common/schema/message.py, gateway/extensions/sdk/application_plugin.py, tests/unit_tests/common/test_enterprise_protocol_identity.py | 无独立 D：用户在当前会话明确授权从 release/1030 创建 integration 并整合主线。 |
-
-<a id="module-8"></a>
+<a id="module-5"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -97,7 +67,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-9"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm/observability
 
@@ -105,23 +75,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-10"></a>
-
-## jiuwenswarm/runtime
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1650_enterprise-1030-integration](features/F_20261027_1650_enterprise-1030-integration.md) | feature | 1030 企业版同步 develop 的集成候选 | ZYQ5333 | gateway, jiuwenswarm/server, jiuwenswarm/runtime, jiuwenswarm/agents, jiuwenswarm/extensions, jiuwenswarm/channels/web/frontend | jiuwenswarm/runtime/service.py, jiuwenswarm/server/runtime/tenant_agent_pool.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, gateway/message_handler/message_handler.py, gateway/channel_manager/web/web_connect.py, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/common/schema/message.py, gateway/extensions/sdk/application_plugin.py, tests/unit_tests/common/test_enterprise_protocol_identity.py | 无独立 D：用户在当前会话明确授权从 release/1030 创建 integration 并整合主线。 |
-
-<a id="module-11"></a>
-
-## jiuwenswarm/server
-
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [F_20261027_1650_enterprise-1030-integration](features/F_20261027_1650_enterprise-1030-integration.md) | feature | 1030 企业版同步 develop 的集成候选 | ZYQ5333 | gateway, jiuwenswarm/server, jiuwenswarm/runtime, jiuwenswarm/agents, jiuwenswarm/extensions, jiuwenswarm/channels/web/frontend | jiuwenswarm/runtime/service.py, jiuwenswarm/server/runtime/tenant_agent_pool.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, gateway/message_handler/message_handler.py, gateway/channel_manager/web/web_connect.py, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/InputArea.tsx, jiuwenswarm/common/schema/message.py, gateway/extensions/sdk/application_plugin.py, tests/unit_tests/common/test_enterprise_protocol_identity.py | 无独立 D：用户在当前会话明确授权从 release/1030 创建 integration 并整合主线。 |
-
-<a id="module-12"></a>
+<a id="module-7"></a>
 
 ## 未分类
 
