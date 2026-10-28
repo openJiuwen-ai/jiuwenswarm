@@ -156,6 +156,8 @@ JSON mode constrains response syntax, not the correctness of the approval decisi
 
 The reviewer returns only `outcome`, `reason_code`, and `rationale`. Manual display details are derived by the existing Host path; complete legacy manual details remain accepted. The generated `confidence` score is no longer requested or used as a threshold: an otherwise valid low-score allow can now allow, and a low-score deny retains its reason. Legacy `confidence` response values and `reviewer_min_confidence` configuration are ignored. JSON syntax, allowed outcomes, explicit manual/deny reasons, and final Host validation remain enforced.
 
+Complete normalized call arguments and trusted user intent share a 64 KiB UTF-8 JSON budget, checked before and after secret-value redaction. Oversized evidence requires manual review without truncation. This budget does not increase the retained intent window; longer accepted requests can add model cost and latency.
+
 ## What you will see
 
 - Approved automatically: the tool runs, and the interface displays a Smart Approval badge or reason.

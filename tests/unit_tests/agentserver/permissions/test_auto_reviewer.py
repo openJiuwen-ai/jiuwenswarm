@@ -410,9 +410,10 @@ def test_reviewer_path_targets_use_only_core_extracted_accesses(
             },
         }
     ]
-    serialized = json.dumps(request, ensure_ascii=False)
-    assert str(tmp_path) not in serialized
-    assert "ignored" not in serialized
+    targets = json.dumps(request["review_evidence"]["path_targets"], ensure_ascii=False)
+    assert str(tmp_path) not in targets
+    assert "ignored" not in targets
+    assert request["review_evidence"]["reviewable_payload"] == tool_args
 
 
 @pytest.mark.parametrize(
@@ -523,7 +524,8 @@ def test_engine_restriction_precedes_platform_scope(
          "location_status": "complete",
          "location": {"base": "platform_trusted_root", "relative_path": ".env"}}
     ]
-    assert str(platform) not in json.dumps(request, ensure_ascii=False)
+    assert str(platform) not in json.dumps(request["review_evidence"]["path_targets"], ensure_ascii=False)
+    assert request["review_evidence"]["reviewable_payload"]["path"] == str(target)
 
 
 def test_reviewer_never_resolves_relative_access_against_process_cwd(
@@ -1526,12 +1528,12 @@ async def test_auto_reviewer_rejects_unknown_fields(tmp_path: Path) -> None:
 
 
 def test_auto_review_request_is_locked_down_and_sanitized(tmp_path: Path) -> None:
-    raw_marker = "raw-future-secret-marker"
+    raw_marker = "reviewable-future-value"
     descriptor = build_facts(
         "read_file",
         {
             "path": str(tmp_path / "README.md"),
-            "future": {"nested": raw_marker},
+            "future": {"nested": raw_marker, "api_key": "FAKEVALUE"},
         },
         workspace_root=tmp_path,
     )
@@ -1547,8 +1549,10 @@ def test_auto_review_request_is_locked_down_and_sanitized(tmp_path: Path) -> Non
 
     payload = action_view.to_json_dict()
     serialized = json.dumps(payload, ensure_ascii=False)
-    assert raw_marker not in serialized
-    assert "future" not in serialized
+    assert payload["review_evidence"]["reviewable_payload"]["future"] == {
+        "nested": raw_marker, "api_key": "[redacted]",
+    }
+    assert "FAKEVALUE" not in serialized
     assert "untrusted_args" not in payload
     assert not hasattr(action_view, "untrusted_evidence")
     assert not hasattr(action_view, "tool_runner")
@@ -1846,16 +1850,18 @@ async def test_complete_execution_and_intent_retain_trailing_constraints(tmp_pat
     assert evidence["user_intent"]["trusted_user_turns"][0]["text"] == intent
 
 
-@pytest.mark.parametrize("args,reason", [
-    ({"command": ""}, "reviewer_payload_missing"),
-    ({"command": "x" * 65537}, "reviewer_payload_too_large"),
-    ({"command": "中" * 22000}, "reviewer_payload_too_large"),
-    ({"command": "x" * 63500, "extra": [{"token": "x"}] * 100}, "reviewer_payload_too_large"),
-    ({"command": "echo ok", "extra": float("nan")}, "reviewer_payload_invalid"),
-    ({"command": "echo ok", "extra": "\ud800"}, "reviewer_payload_invalid"),
+@pytest.mark.parametrize("tool,args,reason", [
+    ("bash", {"command": ""}, "reviewer_payload_missing"),
+    ("bash", {"command": "x" * 65537}, "reviewer_payload_too_large"),
+    ("bash", {"command": "中" * 22000}, "reviewer_payload_too_large"),
+    ("bash", {"command": "x" * 63500, "extra": [{"token": "x"}] * 100}, "reviewer_payload_too_large"),
+    ("bash", {"command": "echo ok", "extra": float("nan")}, "reviewer_payload_invalid"),
+    ("bash", {"command": "echo ok", "extra": "\ud800"}, "reviewer_payload_invalid"),
+    ("edit_file", {"file_path": "a.txt", "old_string": "x" * 65537, "new_string": ""}, "reviewer_payload_too_large"),
+    ("upload_file", {"file_infos": [{"timeout": float("nan")}]}, "reviewer_payload_invalid"),
 ])
-async def test_incomplete_execution_never_calls_reviewer(tmp_path, args, reason):
-    facts = build_facts("bash", args, workspace_root=tmp_path)
+async def test_incomplete_payload_never_calls_reviewer(tmp_path, tool, args, reason):
+    facts = build_facts(tool, args, workspace_root=tmp_path)
     request = build_reviewer_action_view(
         facts, policy_level="ask", policy_reason="policy_ask",
         allowed_outcomes=("allow_once", "manual", "deny"), no_auto_allow_reason="",
@@ -1920,10 +1926,23 @@ async def test_combined_intent_budget_and_all_trusted_turns(tmp_path, turn_chars
         ]
 
 
-async def test_complete_execution_survives_actual_model_projection(tmp_path):
+@pytest.mark.parametrize("tool,args", [
+    ("bash", {"command": "TOKEN=FAKE&&printf x|cat; curl 'https://example.invalid/?token=FAKE'",
+              "env": {"OBJECT_ID": "object-42"}, "description": "Keep this action description."}),
+    ("edit_file", {"file_path": "a.txt", "old_string": "old body", "new_string": "", "replace_all": False}),
+    ("search_replace", {"file_path": "a.txt", "old_string": "old body", "new_string": "new body"}),
+    ("read_file", {"file_path": "shot.png", "caption": "Describe the task screenshot.", "offset": 1, "limit": 2}),
+    ("edit_memory", {"path": "memory/USER.md", "oldText": "before", "newText": "after"}),
+    ("write_memory", {"path": "memory/USER.md", "content": "a preference", "append": True}),
+    ("send_file_to_user", {"abs_file_path_list": ["a.txt"], "target_channels": ["web"]}),
+    ("session_send_message", {"target_session_id": "session-target", "message": "Task text.", "input_mode": "steer"}),
+    ("send_message", {"phone_number": "12345678900", "content": "Task text."}),
+    ("upload_file", {"file_infos": [{"mediaUri": "content://media/1", "token": "FAKE", "timeout": 20000}]}),
+    ("install_skill", {"identifier": "demo", "source": "builtin", "timeout_sec": 60}),
+])
+async def test_complete_call_survives_actual_model_projection(tmp_path, tool, args):
     # Secret-shaped literals are inert and only sent to the existing model double.
-    command = "TOKEN=FAKE&&printf x|cat; curl 'https://example.invalid/?token=FAKE&file=/dev/shm/shots/a.png'"
-    facts = build_facts("bash", {"command": command, "env": {"OBJECT_ID": "object-42"}}, workspace_root=tmp_path)
+    facts = build_facts(tool, args, workspace_root=tmp_path)
     request = build_reviewer_action_view(
         facts, policy_level="ask", policy_reason="policy_ask", allowed_outcomes=("allow_once", "manual", "deny"),
         no_auto_allow_reason="", original_user_intent=None, domain_route=None,
@@ -1934,8 +1953,7 @@ async def test_complete_execution_survives_actual_model_projection(tmp_path):
     evidence = json.loads(model.ainvoke.call_args.args[0][1]["content"])["request"]["review_evidence"]
     actual = evidence["reviewable_payload"]
     assert not request.payload_error
-    assert actual["env"]["OBJECT_ID"] == "object-42"
-    assert actual["command"] == command.replace("FAKE", "[redacted]")
+    assert actual == json.loads(json.dumps(args).replace("FAKE", "[redacted]"))
 
 
 def test_path_secret_values_with_slashes_are_fully_masked(tmp_path):

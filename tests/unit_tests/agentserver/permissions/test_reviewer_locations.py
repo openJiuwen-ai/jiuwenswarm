@@ -146,13 +146,14 @@ def test_redacted_distinct_targets_are_not_deduplicated(tmp_path):
         "sk-FAKEONLY123456789.py",
     ],
 )
-async def test_controls_in_basename_never_reach_model(tmp_path, basename):
+async def test_controls_in_basename_keep_canonical_target_redacted(tmp_path, basename):
     model = _Transport()
     await IsolatedModelReviewerClient(model=model).assess(
         _view(tmp_path, [tmp_path / "work" / basename], malformed_access=True)
     )
     wire = model.messages[0][1]["content"]
-    target = json.loads(wire)["request"]["review_evidence"]["path_targets"][0]
+    evidence = json.loads(wire)["request"]["review_evidence"]
+    target = evidence["path_targets"][0]
     assert target["location_status"] == "redacted"
     if basename.startswith("sk-"):
         assert target["target"] == "[redacted].py"
@@ -160,8 +161,11 @@ async def test_controls_in_basename_never_reach_model(tmp_path, basename):
     else:
         assert target["target"] == "[redacted_target]"
         assert "location" not in target
-    assert basename not in wire
-    assert "\\u0000" not in wire
+    # Canonical identity stays bounded; full action evidence keeps the literal
+    # path, including unusual characters, rather than silently changing it.
+    assert basename not in json.dumps(target, ensure_ascii=False)
+    expected = str(tmp_path / "work" / basename).replace("sk-FAKEONLY123456789", "[redacted]")
+    assert evidence["reviewable_payload"]["file_path"] == expected
 
 
 def test_root_overlap_restriction_and_long_evidence(tmp_path):

@@ -341,7 +341,7 @@ def build_reviewer_action_view(
         },
         "path_targets": path_targets,
         "path_targets_incomplete": paths_incomplete,
-        "reviewable_payload": _payload_view(facts),
+        "reviewable_payload": dict(facts.untrusted_args),
         "user_intent": _intent_view(original_user_intent, facts=facts),
     }
     if domain_route is not None:
@@ -365,12 +365,10 @@ def build_reviewer_action_view(
 
 
 def _complete_payload_evidence(facts: ToolDecisionFacts, evidence: dict[str, Any]) -> str:
-    """Freeze complete execution/intent evidence; never review an executable prefix."""
+    """Freeze complete call/intent evidence; never review a partial action."""
     payload = evidence["reviewable_payload"]
     execution = facts.capability.category in {"shell", "code"}
     if execution:
-        payload = {key: value for key, value in facts.untrusted_args.items()
-                   if key not in {"description", "call_goal"}}
         if not facts.arguments_valid_object or not any(
             isinstance(payload.get(key), str) and payload[key].strip()
             for key in ("command", "cmd", "code", "script")
@@ -537,18 +535,6 @@ def _core_shell_view(command: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
         if program not in programs:
             programs.append(program)
     return operators, tuple(programs[:5])
-
-
-def _payload_view(facts: ToolDecisionFacts) -> dict[str, str]:
-    previews: dict[str, str] = {}
-    keys = ("query", "code", "patch", "content", "text", "message")
-    if facts.tool_name in {"glob", "grep"}:
-        keys += ("pattern",)
-    for key in keys:
-        value = facts.untrusted_args.get(key)
-        if isinstance(value, str) and value.strip():
-            previews[key] = value
-    return previews
 
 
 def _intent_view(
