@@ -585,8 +585,6 @@ if ($FrontendOnly) {
     } else {
         Write-Warning "gitcode-cli has no bundled Windows binary; the GitCode connector will use its existing pip fallback"
     }
-} else {
-    Write-Host "`n[4/6] Skipping PyInstaller (FrontendOnly)" -ForegroundColor Gray
 }
 
 # ── 5. Assemble final Electron app ────────────────────────────────────────────
