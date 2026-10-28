@@ -2,6 +2,10 @@
 
 import type { ComponentType } from 'react';
 import { A2UIRenderer, ComponentRegistry } from '@a2ui/react';
+// Material Symbols Outlined 字体（@fontsource 静态切片 latin-400）：@a2ui/react 的 Icon
+// 组件靠字体连字（ligature）把 "favorite" 等名称渲染为图标；宿主缺字体时连字不生效，
+// 界面显示裸文字。静态切片随包自带，离线可用。放在注册表模块与消费方同处归置。
+import '@fontsource/material-symbols-outlined/latin-400.css';
 import { A2UI_PROTOCOL_VERSION, type A2UIProtocolVersion } from './a2uiContent';
 import { CheckBoxWithDefaults } from './CheckBoxWithDefaults';
 import { DateTimeInputWithDefaults } from './DateTimeInputWithDefaults';

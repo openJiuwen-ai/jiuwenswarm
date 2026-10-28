@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_14 / session-lifecycle-and-upgrade |
 | 关联模块 | jiuwenswarm/common/{todo_generation, todo_snapshot, cleanup, cron_team_completion, git_safe_directory, updater, updater_restart_helper, upgrade_executor, version, version_source}.py |
-| 最近一次修订日期 | 2026-10-13 |
+| 最近一次修订日期 | 2026-10-21 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -44,6 +44,15 @@ version.__version__（唯一版本真源）
 - **N3 后台清理尽力而为**：保留期默认 30 天（`CLEANUP_PERIOD_DAYS`）；首次延迟 10min、
   之后每 24h 一轮；按目录 mtime 判过期；阻塞操作丢线程池且单步失败不中断循环；
   rmtree `ignore_errors=True`（可重复执行幂等）。装配点：`app_gateway` 启动。
+  安全约束：`CLEANUP_PERIOD_DAYS` **非正整数（0 / 负数 / 非数字）一律回落默认 30 天并
+  warning**——`days <= 0` 会让 cutoff 落在现在或未来而删除全部会话（与
+  `workspace/quota.py` 的非法值回落约定一致）；**超大值夹紧到 `MAX_CLEANUP_PERIOD_DAYS`
+  （36500 天 = 100 年）并 warning**——上界本身挡掉 `days*86400` 的 float 溢出（极大值
+  会让 cutoff 计算抛 OverflowError，被 `run_cleanup` 吞掉后整轮清理静默不执行），取夹紧
+  而非回落默认值是为保住"极大保留期 = 什么都别删"的原意；超过 int-str 位数上限
+  （CPython ≥3.11 默认 4300 位）的数字串同样按夹紧处理，不得退化成"非法 → 回落 30 天"；
+  告警里的配置值一律 `%r` 渲染 + 截断 32 字符（转义换行等控制字符，防日志被拆行伪造）；
+  rmtree 后回查目录是否真的消失，失败计 `errors` 并 warning（不再静默）。
 - **N4 cron 收轮三信号路径**：只有 **leader 的非占位 `chat.final`** 才算完成信号
   （三个结束路径：workflow 完成后 final / team.completed + 有文本 / 纯 harness 收尾）；
   **leader 提前 final 后若出现 `task.created` 会清除 final 锁存继续等待**；占位文案

@@ -1293,6 +1293,80 @@ def _remote_mcp_result_to_text(raw: Any) -> str:
     return str(raw)
 
 
+_MCP_SUMMARY_MAX_CHARS = 4_000
+
+
+def _mcp_binary_summary(mime_type: Any, data: Any) -> str:
+    label = str(mime_type) if mime_type else "unknown"
+    unit = "base64 chars" if isinstance(data, str) else "bytes"
+    return f"[binary content: {label}, {len(data)} {unit}]"
+
+
+def _redact_mcp_binary_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            if key in {"data", "blob"} and isinstance(item, (str, bytes, bytearray)):
+                mime_type = value.get("mimeType") or value.get("mime_type")
+                value[key] = _mcp_binary_summary(mime_type, item)
+                continue
+            value[key] = _redact_mcp_binary_fields(item)
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            value[index] = _redact_mcp_binary_fields(item)
+    return value
+
+
+def _mcp_non_text_summary(item: Any) -> Any:
+    mime_type = getattr(item, "mimeType", None) or getattr(item, "mime_type", None)
+    data = getattr(item, "data", None)
+    if data is not None:
+        if mime_type and str(mime_type).startswith("image/"):
+            unit = "base64 chars" if isinstance(data, str) else "bytes"
+            return f"[image content: {mime_type}, {len(data)} {unit}]"
+        return _mcp_binary_summary(mime_type, data)
+    if hasattr(item, "model_dump"):
+        dumped = item.model_dump(exclude_none=True)
+        return _redact_mcp_binary_fields(dumped)
+    return str(item)
+
+
+def _stringify_mcp_summary(value: Any) -> str:
+    text = str(value)
+    if len(text) <= _MCP_SUMMARY_MAX_CHARS:
+        return text
+    return text[:_MCP_SUMMARY_MAX_CHARS] + "...[truncated]"
+
+
+def _extract_mcp_result_text(result: Any) -> str | None:
+    """合并 CallToolResult 的全部 text block，并保留非 text block 摘要。
+
+    remote 路径已经由 openjiuwen 的 ``extract_mcp_tool_result_content`` 处理；
+    stdio 路径直接拿到原生 ``CallToolResult``，不能只取 ``content[-1]``，
+    否则正文后追加的元数据块、图片或二进制资源会让前面的文本丢失。
+    非 text block 一律生成有界摘要，禁止把 base64/blob 原文塞进模型上下文。
+    """
+    content = getattr(result, "content", None)
+    if not content:
+        return None
+    parts: list[str] = []
+    for item in content:
+        text = getattr(item, "text", None)
+        if isinstance(text, str):
+            if text:
+                parts.append(text)
+            continue
+        summary = _mcp_non_text_summary(item)
+        if summary is not None:
+            parts.append(
+                summary if isinstance(summary, str) else _stringify_mcp_summary(summary)
+            )
+    if parts:
+        return "\n".join(parts)
+    if all(isinstance(getattr(item, "text", None), str) for item in content):
+        return getattr(content[-1], "text", None)
+    return None
+
+
 async def _drain_queue_with_error(worker: _PooledMcpWorker, exc: BaseException) -> None:
     """Fail any already-queued callers when the worker cannot start."""
     while not worker.queue.empty():
@@ -2566,6 +2640,11 @@ class RequestScopedOfficeClawMcpTool(Tool):
         self._server_name = str(server_name or "")
         self._use_global_pool = bool(use_global_pool)
 
+    @property
+    def server_name(self) -> str:
+        """只读暴露工具所属来源，不改变请求级连接身份。"""
+        return self._server_name
+
     async def _acquire_mcp_session(self, *, force_rebuild: bool = False):
         if self._use_global_pool:
             from jiuwenswarm.common.mcp_server_registry import get_mcp_server_registry
@@ -2649,10 +2728,7 @@ class RequestScopedOfficeClawMcpTool(Tool):
                 # 池化进程可能在请求中途死掉（崩溃/stdin 关闭）：丢弃重建一次再重试。
                 session = await self._acquire_mcp_session(force_rebuild=True)
                 result = await session.call_tool(self._card.name, arguments=arguments)
-            result_content: str | None = None
-            if result.content:
-                result_content = getattr(result.content[-1], "text", None)
-            return {"result": result_content}
+            return {"result": _extract_mcp_result_text(result)}
         except Exception as exc:
             raise build_error(
                 StatusCode.TOOL_MCP_EXECUTION_ERROR,

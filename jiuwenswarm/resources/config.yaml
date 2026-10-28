@@ -24,6 +24,12 @@ sandbox:
   url: http://127.0.0.1:8321
   type: jiuwenbox
   policy_file: windows-policy.yaml
+  # 空闲 reaper 周期(秒):稳态沙箱数 ≈ 创建速率 × TTL,须与 Box 内存容量匹配
+  # (≈14.4MB/个)。两个键必须留在模板里——_deep_merge 会剔除 override 独有键,
+  # 缺席即 update_conf 写入的值永远到不了运行时(issue#5718)。部署时由
+  # update_conf 按 JIUWENBOX_IDLE_TTL_SECONDS/CHECK_INTERVAL_SECONDS 覆写。
+  idle_ttl_seconds: 180
+  idle_check_interval: 60
 
 a2ui:
   enabled: false
@@ -1722,6 +1728,24 @@ modes:
 
       storage:
         type: sqlite
+        # SQLite pool / WAL knobs → openjiuwen DatabaseConfig via StorageSpec.params.
+        # Omitted keys fall back to product defaults in config_loader
+        # (_SQLITE_STORAGE_DEFAULTS). Explicit values below override defaults.
+        params:
+          # connection_string: team.db   # relative → ~/.…/agent-teams/team.db
+          db_timeout: 5
+          db_enable_wal: true
+          read_pool_size: 16
+          write_pool_size: 2
+          wal_checkpoint_interval_s: 30.0
+
+      # Process-wide Team LLM admission (especially when enable_swarmflow is false).
+      # max_concurrent_llm_calls: concurrent member LLM calls across the process.
+      #   null/omitted → 4 when swarmflow off, 0 (disabled) when swarmflow on
+      #   0            → disable this rail
+      #   N>0          → hard ceiling (queues excess callers)
+      resource_admission:
+        max_concurrent_llm_calls:
 
       # ============================================================
       # Team 级共享记忆（TeamMemoryConfig）

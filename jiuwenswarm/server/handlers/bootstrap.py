@@ -6,12 +6,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_NORMAL
+from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
     _background_session_kvc_tasks,
@@ -23,6 +26,45 @@ from jiuwenswarm.server.handlers._shared import (
 from jiuwenswarm.server.runtime.agent_manager import ACP_DEFAULT_CAPABILITIES
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.session.project_store import Project
+
+
+@dataclass(frozen=True)
+class _SessionCreateProjectSnapshot:
+    """Worker-thread snapshot for session.create project binding + optional second read."""
+
+    project_id: str
+    project_dir: str
+    error: str | None
+    code: str | None
+    project: Project | None
+    second_read_done: bool
+
+
+def _load_session_create_project_snapshot(
+    raw_project_id: str,
+    raw_project_dir: str,
+) -> _SessionCreateProjectSnapshot:
+    """Two cache_bust reads stay sync; caller must await asyncio.to_thread(this, ...)."""
+    from jiuwenswarm.server.runtime.session import project_store
+
+    project_id, project_dir, p_err, p_code = project_store.resolve_session_project_binding(
+        raw_project_id, raw_project_dir
+    )
+    if p_err:
+        return _SessionCreateProjectSnapshot(
+            project_id or "", project_dir or "", p_err, p_code, None, False
+        )
+    if is_default_project_id(project_id):
+        return _SessionCreateProjectSnapshot(
+            project_id, project_dir, None, None, None, False
+        )
+    proj = project_store.get_project_by_id(project_id, cache_bust=True)
+    return _SessionCreateProjectSnapshot(
+        project_id, project_dir, None, None, proj, True
+    )
 
 
 async def handle_initialize(ctx: RequestContext) -> None:
@@ -129,17 +171,18 @@ async def handle_session_create(ctx: RequestContext) -> None:
 
             # 校验并解析 project_id / project_dir 绑定关系:
             # 一致性校验、按 project_id 自动补齐 project_dir、禁止单传 project_dir
-            from jiuwenswarm.server.runtime.session import project_store
-            from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE, is_default_project_id
-            project_id, project_dir, p_err, p_code = project_store.resolve_session_project_binding(
-                binding.project_id, binding.project_dir
+            # binding + 可选第二次 cache_bust 合并为一次 to_thread，不动 store API。
+            snap = await asyncio.to_thread(
+                _load_session_create_project_snapshot,
+                binding.project_id,
+                binding.project_dir,
             )
-            if p_err:
+            if snap.error:
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
                     ok=False,
-                    payload={"error": p_err, "code": p_code},
+                    payload={"error": snap.error, "code": snap.code},
                 )
                 wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
                 await ctx.sink.send_wire(wire)
@@ -156,6 +199,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
             #   marker=False 表示 gateway 注入的通道默认值(跳过校验)。
             # - 直连路径(非 gateway): marker 缺失,使用 binding.has_explicit_work_mode
             #   (此时 params 为原始值,binding 计算结果正确)。
+            # 仅 binding 成功后才 pop（失败早退路径不突变 params）
             explicit_work_mode_marker = params.pop("_work_mode_explicit", None)
             if isinstance(explicit_work_mode_marker, bool):
                 has_explicit_work_mode = explicit_work_mode_marker
@@ -163,8 +207,9 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 # marker 缺失:直连 AgentServer 调用方,params 为原始值,
                 # binding.has_explicit_work_mode 正确反映用户是否显式传了 work_mode
                 has_explicit_work_mode = binding.has_explicit_work_mode
-            if not is_default_project_id(project_id):
-                proj = project_store.get_project_by_id(project_id, cache_bust=True)
+            project_id, project_dir = snap.project_id, snap.project_dir
+            if snap.second_read_done:
+                proj = snap.project
                 if proj is not None:
                     project_work_mode = proj.work_mode or DEFAULT_WEB_WORK_MODE
                     if has_explicit_work_mode and project_work_mode != binding.work_mode:

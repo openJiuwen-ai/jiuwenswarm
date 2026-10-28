@@ -24,6 +24,7 @@ import threading
 import time
 import uuid
 from collections import Counter
+from contextlib import AbstractContextManager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -740,6 +741,47 @@ def _extract_requested_report_type(request: AgentRequest) -> DeepResearchReportT
     if not isinstance(value, str) or value not in _DEEPRESEARCH_REPORT_TYPES:
         raise ValueError(_INVALID_DEEPRESEARCH_REPORT_TYPE_MESSAGE)
     return cast(DeepResearchReportType, value)
+
+
+_DEEPRESEARCH_FOLLOWUP_ACTIONS = frozenset({"upgrade_latest_brief", "refresh_latest_brief"})
+
+
+def _extract_deepresearch_followup(request: AgentRequest) -> dict[str, Any] | None:
+    """Return the validated structured DeepResearch follow-up action, if any.
+
+    metadata 是服务端（relay）扩展通道：结构不合法时告警并按未携带处理
+    （请求继续，Main Agent 仍可走手动升级路径），不整体拒绝该消息。
+    """
+    metadata = request.metadata if isinstance(request.metadata, dict) else {}
+    value = metadata.get("deepresearch_followup")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or value.get("v") != 1:
+        logger.warning(
+            "[interface_deep] ignore invalid deepresearch_followup structure "
+            "request_id=%s",
+            request.request_id,
+        )
+        return None
+    action = value.get("action")
+    source_report_id = value.get("source_report_id")
+    valid_action = isinstance(action, str) and action in _DEEPRESEARCH_FOLLOWUP_ACTIONS
+    if (
+        not valid_action
+        or not isinstance(source_report_id, str)
+        or not source_report_id.strip()
+    ):
+        logger.warning(
+            "[interface_deep] ignore invalid deepresearch_followup action "
+            "request_id=%s",
+            request.request_id,
+        )
+        return None
+    return {
+        "v": 1,
+        "action": action,
+        "source_report_id": source_report_id.strip(),
+    }
 TodoModifyTool = CompatibleTodoModifyTool
 install_todo_modify_compat_patch()
 install_evolution_rail_kwargs_compat()
@@ -2489,6 +2531,8 @@ class _RequestMcpToolBuffers:
     # Discover every source before mutating the shared resource/ability managers.
     # The bool preserves fail-closed registration for identity-pinned system tools.
     pending_tools: list[tuple[RequestScopedOfficeClawMcpTool, bool]] = field(default_factory=list)
+    research_servers: list[dict[str, Any]] = field(default_factory=list, repr=False)
+    research_tool_names: dict[str, list[str]] = field(default_factory=dict)
 
 
 _SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
@@ -2536,6 +2580,8 @@ def _session_adapter_idle_ttl_default() -> int:
 
 
 class JiuWenSwarmDeepAdapter:
+    # 只有实际 Flash Adapter 延迟图片 SDK 初始化，其他 Adapter 在构造时完成。
+    _defer_image_sdk_imports: ClassVar[bool] = False
     SESSION_ADAPTER_IDLE_TTL_SEC = _session_adapter_idle_ttl_default()
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
     SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC = 30.0
@@ -2563,6 +2609,11 @@ class JiuWenSwarmDeepAdapter:
         agent_id: str | None = None,
         service_id: str | None = None,
     ) -> None:
+        if not self._defer_image_sdk_imports:
+            from jiuwenswarm.agents.harness.common.tools.image_tools import _ensure_image_dependencies
+
+            _ensure_image_dependencies()
+
         # Apply the MCP per-call timeout patch once per process: remote HTTP
         # call_tool/list_tools use asyncio.wait_for (not anyio.fail_after on
         # the transport; that collides with SDK cancel scopes). Timeout force-
@@ -2757,6 +2808,7 @@ class JiuWenSwarmDeepAdapter:
         # adapter. Used for safe short-name cleanup and diagnostics; invoke
         # allowlisting is enforced via bind_active_office_claw_mcp_tools.
         self._active_office_claw_mcp: OfficeClawMcpRegistration | None = None
+        self._deepresearch_mcp_snapshot = None
         # Tenant tip namespace for Track-B env reads (sync_agents_configs).
         # Defaults match unbound single-tenant; AgentManager / copy_tenant_env_bindings_from
         # overwrite for per-agent scopes.
@@ -3932,13 +3984,13 @@ class JiuWenSwarmDeepAdapter:
         if isinstance(awaiting, set):
             awaiting.discard(sid)
 
-    def _clear_cron_awaiting_if_interrupt_gone(self, session_id: str) -> None:
-        """审批续跑收尾：interrupt 已消费则解除 pin，允许空闲驱逐。
+    def _clear_hitl_awaiting_if_interrupt_gone(self, session_id: str) -> None:
+        """HITL 审批续跑收尾：interrupt 已消费则解除 pin，允许空闲驱逐。
 
         仍持有 live interrupt（含多工具连续审批中）时不清理。
         """
         sid = str(session_id or "").strip()
-        if not sid.startswith("cron_"):
+        if not sid:
             return
         if self._read_session_interrupt_state() is not None:
             return
@@ -5084,6 +5136,13 @@ class JiuWenSwarmDeepAdapter:
                 )
                 continue
             self._stage_request_mcp_tools(request, server_name, tool_defs, params, buffers)
+            if tool_defs:
+                from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import project_search_server
+                research_server = project_search_server(server_name, server_config, params)
+                if research_server:
+                    buffers.research_servers.append(research_server)
+                    buffers.research_tool_names[server_name] = [str(tool.get("name") or "").strip()
+                                                               for tool in tool_defs]
             if server_name == "office-claw" and not invocation_id:
                 env = params.get("env") if isinstance(params.get("env"), dict) else {}
                 invocation_id = str(env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip()
@@ -5091,45 +5150,58 @@ class JiuWenSwarmDeepAdapter:
 
     def _install_staged_request_mcp_tools(self, buffers: _RequestMcpToolBuffers) -> None:
         """Install a fully discovered generation without yielding to another request."""
-        for tool, strict in buffers.pending_tools:
-            card = tool.card
-            result = Runner.resource_mgr.add_tool(tool, tag="office-claw")
-            is_ok = getattr(result, "is_ok", None)
-            succeeded = bool(is_ok()) if callable(is_ok) else result is not False
-            if not succeeded:
-                if strict:
-                    raise RuntimeError(f"failed to register OfficeClaw MCP tool: {card.name}")
-                logger.warning("[JiuWenSwarmDeepAdapter] MCP add_tool failed: tool_id=%s", card.id)
-                continue
-            # Track before installing the card so failures can roll back only our resources.
-            buffers.tool_ids.append(card.id)
-            buffers.tool_names.append(card.name)
-            buffers.registered_tools.append(tool)
-            try:
-                self._install_office_claw_ability_card(card)
-            except OfficeClawMcpBuiltinNameConflict:
-                if strict:
-                    raise
-                # A user connector's built-in collision skips just that tool.
+        # Older agent-core versions keep per-tool INFO logs without this optimization.
+        logging_scope: AbstractContextManager[None]
+        try:
+            from openjiuwen.core.runner.resources_manager.registration_logging import batch_registration_logging
+        except ModuleNotFoundError as exc:
+            if exc.name != "openjiuwen.core.runner.resources_manager.registration_logging":
+                raise
+            logging_scope = nullcontext()
+        else:
+            logging_scope = batch_registration_logging()
+
+        with logging_scope:
+            for tool, strict in buffers.pending_tools:
+                card = tool.card
+                result = Runner.resource_mgr.add_tool(tool, tag="office-claw")
+                is_ok = getattr(result, "is_ok", None)
+                succeeded = bool(is_ok()) if callable(is_ok) else result is not False
+                if not succeeded:
+                    if strict:
+                        raise RuntimeError(f"failed to register OfficeClaw MCP tool: {card.name}")
+                    logger.warning("[JiuWenSwarmDeepAdapter] MCP add_tool failed: tool_id=%s", card.id)
+                    continue
+                # Track before installing the card so failures can roll back only our resources.
+                buffers.tool_ids.append(card.id)
+                buffers.tool_names.append(card.name)
+                buffers.registered_tools.append(tool)
                 try:
-                    Runner.resource_mgr.remove_tool(card.id)
-                except Exception as exc:
+                    self._install_office_claw_ability_card(card)
+                except OfficeClawMcpBuiltinNameConflict:
+                    if strict:
+                        raise
+                    # A user connector's built-in collision skips just that tool.
+                    try:
+                        Runner.resource_mgr.remove_tool(card.id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] MCP shadow-skip resource cleanup failed: "
+                            "tool_id=%s error=%s", card.id, exc,
+                        )
+                    buffers.tool_ids.pop()
+                    buffers.tool_names.pop()
+                    buffers.registered_tools.pop()
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] MCP shadow-skip resource cleanup failed: "
-                        "tool_id=%s error=%s", card.id, exc,
+                        "[JiuWenSwarmDeepAdapter] MCP tool shadows a built-in, skipped: tool_id=%s", card.id,
                     )
-                buffers.tool_ids.pop()
-                buffers.tool_names.pop()
-                buffers.registered_tools.pop()
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] MCP tool shadows a built-in, skipped: tool_id=%s", card.id,
-                )
 
     def _activate_empty_request_scoped_mcp_registration(
         self, registration: OfficeClawMcpRegistration,
     ) -> OfficeClawMcpRegistration:
         if replace_request_scoped_mcp_registration(registration, registration):
             self._active_office_claw_mcp = registration
+            self._deepresearch_mcp_snapshot = None
             set_agent_office_claw_tool_ids(self._instance, ())
             self._sync_office_claw_allowlist_to_progressive_rail(None)
         logger.info("[latency] stage=2 name=mcp request_id=%s", registration.request_id)
@@ -5180,6 +5252,20 @@ class JiuWenSwarmDeepAdapter:
                     self._stage_request_mcp_tools(
                         request, name, tool_defs, params, buffers, use_global_pool=True,
                     )
+                    reader = getattr(get_mcp_server_registry(), "get_server", None)
+                    try:
+                        policy = await reader(name) if callable(reader) else None
+                    except Exception:
+                        policy = None
+                    if policy and policy.get("enabled") and tool_defs:
+                        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import (
+                            project_search_server,
+                        )
+                        research_server = project_search_server(name, policy["config"], params)
+                        if research_server:
+                            buffers.research_servers.append(research_server)
+                            buffers.research_tool_names[name] = [str(tool.get("name") or "").strip()
+                                                                 for tool in tool_defs]
             # Preserve source priority: registry -> leftovers -> office-claw when
             # a registry list is present; otherwise office-claw -> connectors.
             if office_claw_config is not None and not server_names:
@@ -5201,12 +5287,20 @@ class JiuWenSwarmDeepAdapter:
                 return generation
             # There must be no await from this guard through publication: a slow
             # old discovery must never overwrite a newer request's tool bindings.
+            install_started = time.perf_counter()
             self._install_staged_request_mcp_tools(buffers)
+            install_ms = (time.perf_counter() - install_started) * 1000
             registration = _registration()
             if not replace_request_scoped_mcp_registration(generation, registration):
                 raise RuntimeError("request-scoped MCP generation superseded during install")
             self._active_office_claw_mcp = registration
             set_agent_office_claw_tool_ids(self._instance, registration.tool_ids)
+            from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import fully_admitted_servers
+            research_servers = fully_admitted_servers(
+                buffers.research_servers, buffers.research_tool_names,
+                [(tool.server_name, tool.card.name) for tool in registration.tool_instances],
+            )
+            self._deepresearch_mcp_snapshot = (registration, research_servers, frozenset(server_names))
             publish_live_office_claw_allowlist(registration.tool_ids)
             for tool in registration.tool_instances:
                 register_live_office_claw_tool_instance(tool, registration.tool_ids)
@@ -5217,8 +5311,9 @@ class JiuWenSwarmDeepAdapter:
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] request-scoped MCP registered: "
-                "request_id=%s session_id=%s tools=%s", request.request_id,
-                request.session_id, buffers.tool_names,
+                "request_id=%s session_id=%s tools=%s registered=%s skipped=%s install_ms=%.1f",
+                request.request_id, request.session_id, buffers.tool_names,
+                len(buffers.tool_ids), len(buffers.pending_tools) - len(buffers.tool_ids), install_ms,
             )
             logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
             return registration
@@ -5444,6 +5539,7 @@ class JiuWenSwarmDeepAdapter:
             and self._active_office_claw_mcp.request_id == registration.request_id
         ):
             self._active_office_claw_mcp = None
+            self._deepresearch_mcp_snapshot = None
             self._sync_office_claw_allowlist_to_progressive_rail(None)
             # Only clear the shared AM allowlist when we are cleaning the *current*
             # active registration. A superseded request's cleanup must not wipe the
@@ -9653,7 +9749,9 @@ class JiuWenSwarmDeepAdapter:
     ) -> DeepResearchExecutionRail | None:
         """Build the native HITL bridge for deepresearch_execute."""
         try:
-            rail = DeepResearchExecutionRail(model_provider=lambda: self._model)
+            rail = DeepResearchExecutionRail(model_provider=lambda: self._model,
+                                             materials_context_provider=self._get_deepresearch_material_context,
+                                             mcp_context_provider=self._get_deepresearch_mcp_context)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] DeepResearchExecutionRail create success"
             )
@@ -10396,6 +10494,52 @@ class JiuWenSwarmDeepAdapter:
             # disabled_tools is a security boundary. Refuse to initialize or
             # hot-reload with the blacklist silently disabled (fail closed).
             raise
+
+    async def _get_deepresearch_mcp_context(self) -> list[dict[str, Any]]:
+        from jiuwenswarm.agents.harness.common.tools.deepresearch.mcp_search import get_search_mcp_context
+
+        def request_state():
+            return (getattr(self, "_deepresearch_mcp_snapshot", None),
+                    self._active_office_claw_mcp, self._current_request_route)
+
+        def resolve_permission_config(**kwargs):
+            return self._resolve_permission_config_for_agent(**kwargs)
+
+        return await get_search_mcp_context(
+            self, registry_provider=get_mcp_server_registry,
+            owner_policy_provider=get_effective_permissions_config,
+            request_state=request_state,
+            resolve_permission_config=resolve_permission_config,
+        )
+
+    def _get_deepresearch_material_context(self) -> dict[str, Any] | None:
+        # Per-session adapter snapshot survives long-lived runner Task boundaries.
+        context = copy.deepcopy(self._current_request_route.get("materials_context"))
+        if context is None:
+            return None
+        if not context["files"]:
+            return context
+        try:
+            permission_config = self._resolve_permission_config_for_agent(
+                session_id=str(self._current_request_route.get("session_id") or "")
+            )
+        except Exception:
+            # Unknown policy must not authorize material reads or expose config data.
+            logger.warning("[DeepResearch] Material permission configuration unavailable")
+            permission_config = {}
+        enabled = permission_config.get("enabled") if isinstance(permission_config, dict) else None
+        engine = getattr(getattr(self, "_permission_rail", None), "_engine", None)
+        from openjiuwen.harness.security.models import PermissionLevel
+        for item in context["files"]:
+            if enabled is False:
+                # A disabled permission system intentionally has no PermissionRail.
+                item["read_allowed"] = True
+            elif enabled is not True or engine is None:
+                item["read_allowed"] = False
+            else:
+                level, _ = engine.check_tool_permission_directly("read_file", {"file_path": item.get("path", "")})
+                item["read_allowed"] = level == PermissionLevel.ALLOW
+        return context
 
     def _get_deepresearch_tool_context(self) -> dict[str, str]:
         """Return the adapter-owned route that survives runner task boundaries.
@@ -13878,37 +14022,67 @@ class JiuWenSwarmDeepAdapter:
                 return sid_attr.strip()
         return ""
 
-    async def _commit_cron_hitl_pause(self, session_id: str, request_id: str) -> None:
-        """审批卡发出前先把暂停状态落盘，调度器断开读取后仍能续跑同一条命令。"""
-        if not str(session_id or "").startswith("cron_") or self._instance is None:
+    async def _commit_hitl_pause_before_card(self, session_id: str, request_id: str) -> None:
+        """审批卡发出前先把暂停状态落盘，保证恢复请求能读到本轮上下文。"""
+        if self._instance is None:
             return
         session = getattr(self._instance, "_interaction_session", None)
         if session is None:
             return
         react_agent = getattr(self._instance, "react_agent", None)
         context_engine = getattr(react_agent, "context_engine", None) if react_agent is not None else None
+        committed = False
+        msg_count = 0
         if context_engine is not None:
             try:
-                await context_engine.save_contexts(session)
+                ctx = context_engine.get_context(session_id=session_id)
+                msg_count = len(list(ctx.get_messages() or [])) if ctx is not None else 0
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "[CRON-CTX] save contexts before permission card failed: "
+                    "[HITL-CTX] context probe before permission card failed: "
                     "session_id=%s request_id=%s error=%s",
                     session_id, request_id, exc,
                 )
+                ctx = None
+                msg_count = 0
+            if ctx is None or msg_count <= 0:
+                logger.info(
+                    "[HITL-CTX] checkpoint skip: no persistable context: "
+                    "session_id=%s request_id=%s msg_count=%s",
+                    session_id, request_id, msg_count,
+                )
+            else:
+                try:
+                    await context_engine.save_contexts(session)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[HITL-CTX] save contexts before permission card failed: "
+                        "session_id=%s request_id=%s error=%s",
+                        session_id, request_id, exc,
+                    )
+                else:
+                    try:
+                        await session.commit()
+                        committed = True
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[HITL-CTX] interrupt commit before permission card failed: "
+                            "session_id=%s request_id=%s error=%s",
+                            session_id, request_id, exc,
+                        )
         try:
-            await session.commit()
             self.mark_session_awaiting_tool_permission(session_id)
-            logger.info(
-                "[CRON-CTX] cron interrupt committed before permission card: "
-                "session_id=%s request_id=%s",
-                session_id, request_id,
-            )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
-                "[CRON-CTX] cron interrupt commit before permission card failed: "
+                "[HITL-CTX] mark awaiting permission failed: "
                 "session_id=%s request_id=%s error=%s",
                 session_id, request_id, exc,
+            )
+        if committed:
+            logger.info(
+                "[HITL-CTX] interrupt committed before permission card: "
+                "session_id=%s request_id=%s msg_count=%s",
+                session_id, request_id, msg_count,
             )
 
     async def _rehydrate_empty_cron_context(self, session_id: str, request_id: str) -> None:
@@ -19114,6 +19288,7 @@ class JiuWenSwarmDeepAdapter:
                 payload={"error_code": "invalid_request", "error": str(exc)},
                 metadata=request.metadata,
             )
+        deepresearch_followup = _extract_deepresearch_followup(request)
 
         if not self._is_session_scoped_adapter:
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import get_team_stopping_error
@@ -19255,7 +19430,16 @@ class JiuWenSwarmDeepAdapter:
         )
         from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
 
+        from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import context_from_request
+        material_context = context_from_request(
+            request.params,
+            scope="|".join(
+                str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)
+            ),
+            output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
+        )
         self._current_request_route = {
+            "materials_context": material_context,
             "session_id": session_id,
             "request_id": request.request_id or "",
             "channel_id": request.channel_id or "",
@@ -19409,6 +19593,7 @@ class JiuWenSwarmDeepAdapter:
                 request_id=request.request_id or "",
                 mode=mode,
                 requested_report_type=requested_report_type,
+                deepresearch_followup=deepresearch_followup,
             )
             perf_context_initialized = True
         except BaseException:
@@ -19770,13 +19955,13 @@ class JiuWenSwarmDeepAdapter:
                         type(exc).__name__,
                     )
                 try:
-                    self._clear_cron_awaiting_if_interrupt_gone(session_id)
+                    self._clear_hitl_awaiting_if_interrupt_gone(session_id)
                 except BaseException as exc:
                     if cleanup_error is None:
                         cleanup_error = exc
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] cleanup failed: "
-                        "step=cron_awaiting_clear error_type=%s",
+                        "step=hitl_awaiting_clear error_type=%s",
                         type(exc).__name__,
                     )
             if active_error is None and cleanup_error is not None:
@@ -19886,6 +20071,7 @@ class JiuWenSwarmDeepAdapter:
                 metadata=request.metadata or {},
             )
             return
+        deepresearch_followup = _extract_deepresearch_followup(request)
 
         # Start of this adapter's own share of the turn; reported on the
         # "entering runner streaming" line so the pre-dispatch work is visible.
@@ -20080,7 +20266,16 @@ class JiuWenSwarmDeepAdapter:
         )
         from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
 
+        from jiuwenswarm.agents.harness.common.tools.deepresearch.materials import context_from_request
+        material_context = context_from_request(
+            request.params,
+            scope="|".join(
+                str(v or "") for v in (request.service_id, request.workspace_key, request.agent_id, session_id)
+            ),
+            output_dir=self._deepresearch_artifact_output_dir(request.params.get("project_dir")),
+        )
         self._current_request_route = {
+            "materials_context": material_context,
             "session_id": session_id,
             "request_id": rid or "",
             "channel_id": cid or "",
@@ -20624,6 +20819,7 @@ class JiuWenSwarmDeepAdapter:
                 request_id=request.request_id or "",
                 mode=mode,
                 requested_report_type=requested_report_type,
+                deepresearch_followup=deepresearch_followup,
             )
             perf_context_initialized = True
             initialization_complete = True
@@ -21155,7 +21351,7 @@ class JiuWenSwarmDeepAdapter:
                             continue
                         if self._is_ask_user_payload(parsed):
                             hitl_pending_stream = True
-                            await self._commit_cron_hitl_pause(session_id, rid)
+                            await self._commit_hitl_pause_before_card(session_id, rid)
                         if accumulated_text:
                             yield AgentResponseChunk(
                                 request_id=rid,
@@ -21355,7 +21551,7 @@ class JiuWenSwarmDeepAdapter:
                                 continue
                             if self._is_ask_user_payload(parsed):
                                 hitl_pending_stream = True
-                                await self._commit_cron_hitl_pause(session_id, rid)
+                                await self._commit_hitl_pause_before_card(session_id, rid)
                             if parsed.get("event_type") == "chat.final":
                                 self._stream_content_run_kind = None
                             if parsed.get("event_type") == "chat.error":
@@ -21397,7 +21593,7 @@ class JiuWenSwarmDeepAdapter:
                             continue
                         if self._is_ask_user_payload(parsed):
                             hitl_pending_stream = True
-                            await self._commit_cron_hitl_pause(session_id, rid)
+                            await self._commit_hitl_pause_before_card(session_id, rid)
                         if parsed.get("event_type") == "chat.final":
                             self._stream_content_run_kind = None
                         if parsed.get("event_type") == "chat.error":
@@ -21471,7 +21667,7 @@ class JiuWenSwarmDeepAdapter:
                         continue
                     if self._is_ask_user_payload(parsed):
                         hitl_pending_stream = True
-                        await self._commit_cron_hitl_pause(session_id, rid)
+                        await self._commit_hitl_pause_before_card(session_id, rid)
                     if parsed.get("event_type") == "chat.final":
                         self._stream_content_run_kind = None
                     if parsed.get("event_type") == "chat.error":
@@ -21843,13 +22039,13 @@ class JiuWenSwarmDeepAdapter:
                         type(exc).__name__,
                     )
                 try:
-                    self._clear_cron_awaiting_if_interrupt_gone(session_id)
+                    self._clear_hitl_awaiting_if_interrupt_gone(session_id)
                 except BaseException as exc:
                     if cleanup_error is None:
                         cleanup_error = exc
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] cleanup failed: "
-                        "step=cron_awaiting_clear error_type=%s",
+                        "step=hitl_awaiting_clear error_type=%s",
                         type(exc).__name__,
                     )
             if active_error is None and cleanup_error is not None:

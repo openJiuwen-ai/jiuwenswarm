@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Deep 外层流增量按 1 秒合并，且不把不同来源拼进同一帧。"""
+"""Deep 外层流增量按 100 毫秒合并，且不把不同来源拼进同一帧。"""
 
 from __future__ import annotations
 
@@ -29,10 +29,10 @@ def test_first_reasoning_goes_out_and_later_text_waits(monkeypatch):
     clock = _clock(monkeypatch)
     merger = StreamDeltaCoalescer(enabled=True)
     sent = merger.push(_chunk("chat.reasoning", "你"))
-    clock["now"] = 0.4
+    clock["now"] = 0.05
     sent.extend(merger.push(_chunk("chat.reasoning", "好")))
     assert _texts(sent) == ["你"]
-    clock["now"] = 1.0
+    clock["now"] = 0.1
     sent.extend(merger.push(_chunk("chat.reasoning", "啊")))
     assert _texts(sent) == ["你", "好啊"]
 
@@ -42,9 +42,9 @@ def test_sources_do_not_share_a_bucket(monkeypatch):
     merger = StreamDeltaCoalescer(enabled=True)
     sent = merger.push(_chunk("chat.reasoning", "甲", stream_source_id="page-1"))
     sent.extend(merger.push(_chunk("chat.reasoning", "乙", stream_source_id="page-2")))
-    clock["now"] = 0.2
+    clock["now"] = 0.05
     sent.extend(merger.push(_chunk("chat.reasoning", "1", stream_source_id="page-1")))
-    clock["now"] = 1.0
+    clock["now"] = 0.1
     sent.extend(merger.push(_chunk("chat.reasoning", "2", stream_source_id="page-2")))
     assert _texts(sent) == ["甲", "乙", "1", "2"]
     assert [item.payload["stream_source_id"] for item in sent] == [
@@ -57,7 +57,7 @@ def test_task_event_flushes_pending_text_and_next_token_is_immediate(monkeypatch
     clock = _clock(monkeypatch)
     merger = StreamDeltaCoalescer(enabled=True)
     sent = merger.push(_chunk("chat.reasoning", "先"))
-    clock["now"] = 0.2
+    clock["now"] = 0.05
     sent.extend(merger.push(_chunk("chat.reasoning", "说")))
     sent.extend(merger.push(_chunk("task.update", "")))
     assert [item.payload["event_type"] for item in sent] == [
@@ -84,6 +84,32 @@ def test_stream_end_flushes_tail(monkeypatch):
     clock = _clock(monkeypatch)
     merger = StreamDeltaCoalescer(enabled=True)
     merger.push(_chunk("chat.delta", "已"))
-    clock["now"] = 0.2
+    clock["now"] = 0.05
     assert merger.push(_chunk("chat.delta", "发")) == []
     assert _texts(merger.flush()) == ["发"]
+
+
+def test_reasoning_tail_goes_out_before_first_delta(monkeypatch):
+    clock = _clock(monkeypatch)
+    merger = StreamDeltaCoalescer(enabled=True)
+    sent = merger.push(_chunk("chat.reasoning", "想"))
+    clock["now"] = 0.05
+    sent.extend(merger.push(_chunk("chat.reasoning", "完")))
+    sent.extend(merger.push(_chunk("chat.delta", "答")))
+    assert [(item.payload or {})["event_type"] for item in sent] == [
+        "chat.reasoning",
+        "chat.reasoning",
+        "chat.delta",
+    ]
+    assert _texts(sent) == ["想", "完", "答"]
+
+
+def test_type_switch_does_not_flush_another_source(monkeypatch):
+    clock = _clock(monkeypatch)
+    merger = StreamDeltaCoalescer(enabled=True)
+    sent = merger.push(_chunk("chat.reasoning", "甲", stream_source_id="page-1"))
+    clock["now"] = 0.05
+    merger.push(_chunk("chat.reasoning", "尾", stream_source_id="page-1"))
+    sent.extend(merger.push(_chunk("chat.delta", "乙", stream_source_id="page-2")))
+    assert _texts(sent) == ["甲", "乙"]
+    assert _texts(merger.flush()) == ["尾"]

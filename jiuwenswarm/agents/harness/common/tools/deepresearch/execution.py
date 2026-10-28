@@ -5,13 +5,15 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 import json
+import inspect
 import logging
 import re
 import time
 import uuid
 from contextvars import ContextVar, Token
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from typing import Any, Awaitable, Callable, Mapping
 
 from openjiuwen.core.foundation.tool import tool
@@ -24,13 +26,19 @@ from jiuwenswarm.common.schema.ask_user import (
 )
 from jiuwenswarm.perf.context import DeepResearchReportType
 
+from .brief_refresh import build_brief_refresh_query
 from .stream_router import _format_outline_card_markdown, stage_for_resume_node
 from .tools import (
+    MODEL_RESEARCH_FALLBACK_ERRORS,
+    MODEL_RESEARCH_FALLBACK_HINT,
+    build_model_research_fallback,
     _call_deepresearch_stream_impl,
     _deepresearch_stage_hint_ctx,
+    _get_brief_upgrade_record,
     _get_cached_outline_json,
     _get_route,
     _probe_resumable_checkpoint,
+    _report_title_from_file_name,
     _scan_resumable_checkpoint_by_query,
     salvage_deepresearch_report,
 )
@@ -40,8 +48,9 @@ logger = logging.getLogger(__name__)
 
 EXECUTION_SCHEMA = "openjiuwen.deepresearch.execute.v1"
 _STATE_SCHEMA_VERSION = 1
+MODEL_RESEARCH_HANDOFF_ERRORS = MODEL_RESEARCH_FALLBACK_ERRORS | {"materials_preparation_failed"}
 _IN_FLIGHT_PHASES = frozenset(
-    {"starting", "resuming_feedback", "resuming_outline", "resuming_stopped"}
+    {"preparing_materials", "starting", "resuming_feedback", "resuming_outline", "resuming_stopped"}
 )
 _QUESTION_NUMBER_PREFIX = re.compile(r"^\s*\d+[.、)]\s*")
 _OUTLINE_SECTION = re.compile(r"^\s*###\s+P\d+\s*:\s*(.+?)\s*$", re.MULTILINE)
@@ -67,6 +76,13 @@ class DeepResearchExecutionContext:
     save_state: Callable[[dict[str, Any]], None]
     request_id: str = ""
     requested_report_type: DeepResearchReportType | None = None
+    # 结构化升级动作（relay 校验后经请求上下文传入）：phase=new 启动 SDK 前
+    # 解析并强制 strict 绑定最新来源记录；非 Mapping 一律按未携带处理。
+    deepresearch_followup: Mapping[str, Any] | None = None
+    materials_context: dict[str, Any] | None = None
+    mcp_servers: list[dict[str, Any]] | None = field(default=None, repr=False)
+    mcp_context_provider: Callable[[], Any] | None = field(default=None, repr=False)
+    load_state: Callable[[], dict[str, Any] | None] | None = None
 
 
 _execution_context: ContextVar[DeepResearchExecutionContext | None] = ContextVar(
@@ -84,6 +100,11 @@ def bind_deepresearch_execution_context(
     agent_id: str = "jiuwenswarm",
     request_id: str = "",
     requested_report_type: DeepResearchReportType | None = None,
+    deepresearch_followup: Mapping[str, Any] | None = None,
+    materials_context: dict[str, Any] | None = None,
+    mcp_servers: list[dict[str, Any]] | None = None,
+    mcp_context_provider: Callable[[], Any] | None = None,
+    load_state: Callable[[], dict[str, Any] | None] | None = None,
 ) -> Token:
     """Bind state and resume input for one outer tool execution."""
     return _execution_context.set(
@@ -96,6 +117,15 @@ def bind_deepresearch_execution_context(
             save_state=save_state,
             request_id=request_id.strip(),
             requested_report_type=requested_report_type,
+            deepresearch_followup=(
+                dict(deepresearch_followup)
+                if isinstance(deepresearch_followup, Mapping)
+                else None
+            ),
+            materials_context=materials_context,
+            mcp_servers=mcp_servers,
+            mcp_context_provider=mcp_context_provider,
+            load_state=load_state,
         )
     )
 
@@ -520,11 +550,31 @@ async def _generate_options(
     return [[] for _ in questions]
 
 
+def _current_mcp_servers(context: DeepResearchExecutionContext, state: dict) -> list[dict] | None:
+    """Resume with current credentials for original sources only (never persist secrets)."""
+    from .mcp_search import source_identity
+    identities = state.get("mcp_source_identities") or {}
+    return [server for server in context.mcp_servers or []
+            if identities.get(server["server_name"]) == source_identity(server)] or None
+
+
 async def _call_sdk(
     context: DeepResearchExecutionContext,
     **kwargs: Any,
 ) -> str:
     """Measure one low-level SDK window without logging business content."""
+    if kwargs.get("_materials_reference") is None:
+        kwargs.pop("_materials_reference", None)
+    provider = getattr(context, "mcp_context_provider", None)
+    if kwargs.get("_mcp_servers") and callable(provider):
+        from .mcp_search import source_identity
+        identities = {source_identity(server) for server in kwargs["_mcp_servers"]}
+        current = provider()
+        if inspect.isawaitable(current):
+            current = await current
+        kwargs["_mcp_servers"] = [server for server in current or [] if source_identity(server) in identities] or None
+    if kwargs.get("_mcp_servers") is None:
+        kwargs.pop("_mcp_servers", None)
     started = time.monotonic()
     outcome_status = "exception"
     try:
@@ -660,6 +710,59 @@ def _outline_sections(outline_text: str) -> list[str]:
     ]
 
 
+def _validated_outline_sections(value: object) -> list[str]:
+    """校验流式回传的 outline_sections；不可用返回空列表，调用方不覆盖原值。"""
+    if not isinstance(value, list) or not value:
+        return []
+    titles: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            return []
+        title = item.strip()
+        if not title:
+            return []
+        titles.append(title)
+    return titles
+
+
+def _upgrade_file_name(original_file_name: str) -> str:
+    """升级执行的文件名从来源记录派生（同源约束），已带「完整版」则保留。"""
+    stem = str(original_file_name or "").strip()
+    if not stem:
+        return "完整版"
+    stem = _report_title_from_file_name(stem)
+    if "完整版" in stem:
+        return stem
+    return f"{stem}完整版"
+
+
+def _validated_brief_report(value: object) -> dict[str, Any]:
+    """校验流式回传的 brief_report 小描述；不可用返回空 dict，调用方不附带。"""
+    if not isinstance(value, Mapping):
+        return {}
+    report_id = value.get("report_id")
+    title = value.get("title")
+    upgrade_available = value.get("upgrade_available")
+    if (
+        value.get("v") != 1
+        or value.get("report_type") != "brief"
+        or value.get("report_delivered") is not True
+    ):
+        return {}
+    if not isinstance(report_id, str) or not report_id.strip():
+        return {}
+    if not isinstance(title, str) or not isinstance(upgrade_available, bool):
+        return {}
+    return {
+        "v": 1,
+        "report_id": report_id.strip(),
+        "report_type": "brief",
+        "report_delivered": True,
+        "title": title.strip() or "研究报告",
+        "upgrade_available": upgrade_available,
+    }
+
+
 def _outline_review_interaction(outline_text: str) -> dict[str, Any]:
     """The outline review ask-user card shared by all entry paths."""
     return {
@@ -685,10 +788,11 @@ def _outline_review_interaction(outline_text: str) -> dict[str, Any]:
 
 
 def _completion_content(
-    state: Mapping[str, Any], html_style_status: Any = None
+    state: Mapping[str, Any],
+    html_style_status: Any = None,
+    brief_upgrade_available: bool = False,
 ) -> str:
-    file_name = str(state.get("file_name") or "研究报告").strip()
-    title = re.sub(r"\.(?:md|markdown)$", "", file_name, flags=re.IGNORECASE)
+    title = _report_title_from_file_name(str(state.get("file_name") or ""))
     lines = [
         "✅ **深度研究已完成！**",
         "",
@@ -724,6 +828,20 @@ def _completion_content(
             "报告已通过系统自动交付，您可以直接查看完整内容。",
         ]
     )
+    # brief→professional 升级追问：仅精简报告且 metadata 缓存成功时附带的
+    # 话术（缓存缺失不承诺"沿用大纲"，直接不问）。rail 以本文案强收尾，
+    # Main Agent 在工具完成后没有下一轮 LLM，追问只能由工具侧拼装。
+    if (
+        str(state.get("requested_report_type") or "") == "brief"
+        and brief_upgrade_available
+    ):
+        lines.extend(
+            [
+                "",
+                "📄 以上为精简版报告。如需基于此报告大纲生成完整的专业版深度研究报告，"
+                "请回复「生成完整报告」。",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -738,6 +856,24 @@ def _outline_feedback(user_input: Any) -> tuple[str, str]:
         return '{"interrupt_feedback":"accepted","feedback":""}', interaction_result
     # The low-level tool resolves edited outline feedback from the canonical result.
     return "", interaction_result
+
+
+def _model_research_fallback_result(state: dict[str, Any]) -> dict[str, Any]:
+    """Return an unavailable-engine result for the main model, not a report."""
+    query = str(state.get("original_query") or state.get("query") or "")
+    content = MODEL_RESEARCH_FALLBACK_HINT
+    if state.get("error_code") == "materials_preparation_failed":
+        content = "本次材料准备失败，交由模型研究继续处理。" + content + (
+            "不得绕过已有文件权限或网络限制；使用正常授权工具处理可读取的材料，"
+            "不可用的核心材料不得声称已读取。保留原始研究目标，必要时请求用户补充材料，"
+            "并在报告中客观说明证据缺口，不编造材料内容。"
+        )
+    return _result(
+        "error", state,
+        error_code=str(state.get("error_code") or ""),
+        fallback=build_model_research_fallback(query, str(state.get("file_name") or "")),
+        content=content,
+    )
 
 
 def _terminal_error(
@@ -904,7 +1040,20 @@ async def _handle_outcome(
         ):
             html_style_phase = None
             html_style_reason_code = None
-        content = _completion_content(state, html_style_status)
+        # 大纲编辑后 SDK 重新生成（max-rounds 自动确认，无中断标记，JSON 缓存
+        # 停留旧版）：出现过大纲卡时，把流式回传的最后生效章节标题先同步进
+        # state 再生成完成摘要，「报告概览」与持久化/返回的 state 因此用同一
+        # 份章节；字段缺失或无效时保持原值。
+        latest_outline_sections = _validated_outline_sections(
+            outcome.get("outline_sections")
+        )
+        if latest_outline_sections and state.get("outline_presented") is True:
+            state = {**state, "outline_sections": latest_outline_sections}
+        content = _completion_content(
+            state,
+            html_style_status,
+            brief_upgrade_available=outcome.get("brief_upgrade_available") is True,
+        )
         completed_updates: dict[str, Any] = {"conversation_id": conversation_id}
         if html_style_status is not None:
             completed_updates["html_style_status"] = html_style_status
@@ -923,6 +1072,11 @@ async def _handle_outcome(
         )
         if workflow_usage is not None:
             result_fields["workflow_llm_token_usage"] = workflow_usage
+        # brief 完成小描述（tools.py 回传，经校验才透传）：上层据此登记
+        # "最新完成的精简报告"；无效时静默省略，不影响既有完成处理。
+        brief_report = _validated_brief_report(outcome.get("brief_report"))
+        if brief_report:
+            result_fields["brief_report"] = brief_report
         return _result("completed", state, **result_fields)
     if status in {"cancelled", "stopped"}:
         # 两种来源、同一处置——均按优雅停止口径收尾（phase 回落 new 并保留
@@ -937,6 +1091,11 @@ async def _handle_outcome(
         return _stopped_result(context, state, conversation_id)
     error_code = str(outcome.get("error_code") or "deepresearch_failed")
     error = str(outcome.get("error") or "DeepResearch 执行失败。")
+    if action == "start" and status == "error" and error_code in MODEL_RESEARCH_FALLBACK_ERRORS:
+        state = _persist(
+            context, state, "error", error_code=error_code, model_research_fallback=True,
+        )
+        return _model_research_fallback_result(state)
     diagnostics: dict[str, Any] = {}
     returncode = outcome.get("returncode")
     if isinstance(returncode, int) and not isinstance(returncode, bool):
@@ -973,6 +1132,8 @@ async def _resume_stopped_conversation(
         outcome = await _call_sdk(
             context,
             action="resume",
+            _materials_reference=state.get("materials_reference"),
+            _mcp_servers=_current_mcp_servers(context, state),
             conversation_id=claimed_cid,
             node="stopped",
             file_name=str(state.get("file_name") or ""),
@@ -1024,7 +1185,7 @@ def _query_matches_stopped_claim(query: str, state: Mapping[str, Any]) -> bool:
     incoming = str(query or "").strip()
     if not incoming:
         return True
-    original = str(state.get("query") or "").strip()
+    original = str(state.get("original_query") or state.get("query") or "").strip()
     if not original:
         return True
     return incoming == original
@@ -1067,8 +1228,16 @@ async def _run_sdk_step(
     if node:
         sdk_kwargs = dict(sdk_kwargs)
         sdk_kwargs["node"] = node
+    if state.get("brief_refresh_original_query"):
+        sdk_kwargs["_brief_refresh_original_query"] = state["brief_refresh_original_query"]
+    if state.get("materials_reference") is not None:
+        sdk_kwargs["_materials_reference"] = state["materials_reference"]
+    sdk_kwargs["_mcp_servers"] = _current_mcp_servers(context, state)
     outcome = await _call_sdk(context, action=action, **sdk_kwargs)
     return await _handle_outcome(context, state, outcome, action=action, node=node)
+
+
+_material_execution_locks = weakref.WeakValueDictionary()
 
 
 @tool(
@@ -1079,6 +1248,9 @@ async def _run_sdk_step(
         "resumes the same SDK conversation, and directly delivers the terminal result. "
         "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
         "single-page concise reports; infer from the user's original wording. "
+        "upgrade_from_brief: set true only when the user confirms expanding the "
+        "just-delivered brief report in the same session into a full professional "
+        "report; it reuses the cached brief outline and skips intent recognition. "
         "Optional conversation_id claims a previous DeepResearch conversation "
         "that was interrupted while waiting for outline review: when its "
         "generated outline is still cached, the outline review card is shown "
@@ -1096,7 +1268,36 @@ async def deepresearch_execute(
     query: str,
     file_name: str = "",
     report_type: DeepResearchReportType | None = None,
+    upgrade_from_brief: bool = False,
     conversation_id: str = "",
+) -> dict[str, Any]:
+    context = _execution_context.get()
+    if context is None or not (context.materials_context or (context.state or {}).get("materials_prepared")):
+        return await _execute_workflow(
+            query, file_name, report_type, conversation_id,
+            upgrade_from_brief=upgrade_from_brief,
+        )
+    key = (str((context.materials_context or {}).get("scope") or ""), context.tool_call_id)
+    lock = _material_execution_locks.setdefault(key, asyncio.Lock())
+    if lock.locked():
+        latest = context.load_state() if context.load_state else context.state
+        return _result("in_progress", dict(latest or {}), error_code="execution_uncertain")
+    async with lock:
+        latest = context.load_state() if context.load_state else context.state
+        token = _execution_context.set(replace(context, state=latest))
+        try:
+            return await _execute_workflow(
+                query, file_name, report_type, conversation_id,
+                upgrade_from_brief=upgrade_from_brief,
+            )
+        finally:
+            _execution_context.reset(token)
+
+
+async def _execute_workflow(
+    query: str, file_name: str = "", report_type: DeepResearchReportType | None = None,
+    conversation_id: str = "",
+    *, upgrade_from_brief: bool = False,
 ) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
     context = _execution_context.get()
@@ -1109,6 +1310,7 @@ async def deepresearch_execute(
             "state": {},
         }
     state = dict(context.state or {})
+    new_workflow = not state
     if not state:
         state = {
             "schema_version": _STATE_SCHEMA_VERSION,
@@ -1177,6 +1379,9 @@ async def deepresearch_execute(
     if phase in {"completed", "cancelled"}:
         return _result(phase, state, content="DeepResearch 任务已经结束。")
     if phase == "error":
+        if (state.get("model_research_fallback") is True
+                and state.get("error_code") in MODEL_RESEARCH_HANDOFF_ERRORS):
+            return _model_research_fallback_result(state)
         # 修复点3.2：error 相位 claim-or-fresh。3.1 修复前取消转译的
         # stopped 写入（phase=new）会被同一 revision 上的 error 覆盖写
         # 吞掉，error 相位下可能实际存有可恢复的停止快照。带
@@ -1235,6 +1440,140 @@ async def deepresearch_execute(
         )
 
     if phase == "new":
+        followup = context.deepresearch_followup
+        is_followup = followup is not None or upgrade_from_brief
+        if new_workflow and context.mcp_servers and is_followup:
+            # 追问同样启动新研究：记录本次信源身份，续跑时再读取当前凭证。
+            from .mcp_search import source_identity
+            state["mcp_server_names"] = [server["server_name"] for server in context.mcp_servers]
+            state["mcp_source_identities"] = {
+                server["server_name"]: source_identity(server) for server in context.mcp_servers
+            }
+        if followup is not None and followup.get("action") == "refresh_latest_brief":
+            record = _get_brief_upgrade_record(_get_route())
+            if record is None or not str(record.get("original_query") or "").strip():
+                return _terminal_error(
+                    context, state, error_code="brief_refresh_unavailable",
+                    content="最新精简报告的来源不可用，请重新生成精简报告后再补充。",
+                )
+            if str(record.get("report_id") or "") != str(followup.get("source_report_id") or ""):
+                return _terminal_error(
+                    context, state, error_code="brief_refresh_target_changed",
+                    content="最新精简报告已变化，本次补充未执行；请刷新后基于最新报告重新发起。",
+                )
+            source_query = str(record["original_query"])
+            try:
+                source_path = str(record.get("report_path") or "").strip()
+                if not source_path:
+                    raise ValueError("brief report path missing")
+                refresh_query = await asyncio.to_thread(
+                    build_brief_refresh_query, source_query, source_path, query
+                )
+            except (OSError, ValueError):
+                return _terminal_error(
+                    context, state, error_code="brief_refresh_unavailable",
+                    content="无法读取最新精简报告的正文，本次未生成补充报告；请重新生成精简报告后再试。",
+                )
+            # A fresh identity and filename preserve the source and avoid claiming
+            # an unrelated stopped workflow. Resume uses this bound source state.
+            title = _report_title_from_file_name(str(record.get("original_file_name") or ""))
+            title = re.sub(r"（补充版-[0-9a-f]+）$", "", title) or "研究报告"
+            state = _persist(
+                context, state, "starting",
+                conversation_id=str(uuid.uuid4()),
+                query=refresh_query,
+                file_name=f"{title}（补充版-{uuid.uuid4().hex[:8]}）",
+                requested_report_type="brief",
+                source_brief_report_id=str(record["report_id"]),
+                brief_refresh_original_query=source_query,
+            )
+            return await _guard_user_stop(
+                context, state,
+                _run_sdk_step(
+                    context, state, action="start", query=refresh_query,
+                    conversation_id=state["conversation_id"], file_name=state["file_name"],
+                    report_type="brief", upgrade_from_brief=False,
+                ),
+            )
+        # A new brief upgrade must not claim a stopped run with the same topic.
+        # Existing upgrade workflows still use the normal resume branches below.
+        if context.deepresearch_followup is not None or upgrade_from_brief:
+            # 升级来源统一解析（strict 结构化上下文与手动 upgrade_from_brief 共用）：
+            # query、文件名、metadata 必须出自同一份来源记录，避免模型自选 query
+            # 与缓存注入的 metadata 混源；结构化动作强制 professional。
+            followup = context.deepresearch_followup
+            upgrade_record: dict[str, Any] | None = None
+            if followup is not None or upgrade_from_brief:
+                upgrade_record = _get_brief_upgrade_record(_get_route())
+            if followup is not None:
+                # strict：来源必须与该会话最新登记的可用记录完全一致；不一致明确
+                # 失败，不静默降级为普通 professional（承诺复用大纲就必须复用）。
+                source_report_id = str(followup.get("source_report_id") or "").strip()
+                if (
+                    upgrade_record is None
+                    or upgrade_record.get("upgrade_available") is not True
+                    or not str(upgrade_record.get("original_query") or "").strip()
+                ):
+                    return _terminal_error(
+                        context,
+                        state,
+                        error_code="brief_upgrade_unavailable",
+                        content=(
+                            "最新精简报告的升级上下文不完整或不可用，"
+                            "请重新生成精简报告后再发起升级。"
+                        ),
+                    )
+                if str(upgrade_record.get("report_id") or "") != source_report_id:
+                    return _terminal_error(
+                        context,
+                        state,
+                        error_code="brief_upgrade_target_changed",
+                        content=(
+                            "最新精简报告已变化，本次升级未执行；"
+                            "请刷新后基于最新报告重新发起。"
+                        ),
+                    )
+            if (
+                upgrade_record is not None
+                and upgrade_record.get("upgrade_available") is True
+                and str(upgrade_record.get("original_query") or "").strip()
+            ):
+                # 快照同源覆盖（strict 与手动共用）：升级来源一旦在启动时确定，
+                # 本次任务持续使用同一份快照；附加要求由专业版大纲审阅编辑承载。
+                state = {
+                    **state,
+                    "query": str(upgrade_record["original_query"]),
+                    "file_name": _upgrade_file_name(
+                        str(upgrade_record.get("original_file_name") or "")
+                    ),
+                    "requested_report_type": "professional",
+                    "source_brief_report_id": str(
+                        upgrade_record.get("report_id") or ""
+                    ),
+                }
+                upgrade_from_brief = True
+            state = _persist(
+                context, state, "starting", conversation_id=str(uuid.uuid4())
+            )
+            upgrade_metadata: dict[str, Any] | None = None
+            if upgrade_from_brief and upgrade_record is not None:
+                candidate = upgrade_record.get("metadata")
+                upgrade_metadata = candidate if isinstance(candidate, dict) else None
+            return await _guard_user_stop(
+                context,
+                state,
+                _run_sdk_step(
+                    context,
+                    state,
+                    action="start",
+                    query=str(state.get("query") or query),
+                    conversation_id=str(state.get("conversation_id") or ""),
+                    file_name=str(state.get("file_name") or file_name),
+                    report_type=state.get("requested_report_type"),
+                    upgrade_from_brief=upgrade_from_brief,
+                    _upgrade_brief_metadata=upgrade_metadata,
+                ),
+            )
         claimed_cid = str(state.get("conversation_id") or "").strip()
         probe = (
             _probe_resumable_checkpoint(claimed_cid) if claimed_cid else None
@@ -1417,6 +1756,14 @@ async def deepresearch_execute(
                 state,
                 interaction=_outline_review_interaction(outline_text),
             )
+        # A claimed checkpoint returned above. Its original source identities
+        # cannot be reconstructed from today's connections, so keep them empty.
+        if new_workflow and context.mcp_servers:
+            from .mcp_search import source_identity
+            state["mcp_server_names"] = [server["server_name"] for server in context.mcp_servers]
+            state["mcp_source_identities"] = {
+                server["server_name"]: source_identity(server) for server in context.mcp_servers
+            }
         if claimed_cid:
             # 修复7：认领失败先止损——报告若已随此前运行落盘（收尾阶段被
             # 停/交付前崩溃后快照已清理），且用户仍在追问同一主题，直接
@@ -1443,6 +1790,7 @@ async def deepresearch_execute(
                             state, salvage.get("html_style_status")
                         ),
                     )
+        if claimed_cid and not state.get("materials_reference"):
             # 认领失败：checkpointer.db 与内存缓存均无该会话可恢复的中断状态
             # （已完结/已清理/不存在），或旧会话为停止快照但用户已更换主题；
             # 绝不复用旧会话的 id 发起新跑，换成全新 id 从头执行。换主题时
@@ -1473,6 +1821,30 @@ async def deepresearch_execute(
             )
         else:
             state = _persist(context, state, "starting")
+        from .materials import MaterialsError, MaterialsPolicyError, MATERIALS_POLICY, prepare_materials
+        material_context = context.materials_context
+        if material_context and not state.get("materials_prepared"):
+            state = _persist(context, state, "preparing_materials",
+                             original_query=str(material_context.get("original_query") or state["query"]))
+            from .tools import _push_materials_progress
+            try:
+                await _push_materials_progress("正在准备本次研究材料。")
+                reference = await prepare_materials(material_context, str(state["conversation_id"]))
+            except asyncio.CancelledError:
+                _persist(context, state, "cancelled")
+                raise
+            except MaterialsPolicyError as exc:
+                return _terminal_error(context, state, error_code="materials_preparation_failed", content=str(exc))
+            except (MaterialsError, OSError, ValueError):
+                state = _persist(context, state, "error", error_code="materials_preparation_failed",
+                                 model_research_fallback=True)
+                return _model_research_fallback_result(state)
+            original_query = str(material_context.get("original_query") or state["query"])
+            sdk_query = original_query
+            if reference and any(r["status"] == "ready" for r in reference["results"]):
+                sdk_query = MATERIALS_POLICY + "\n\n<原始研究请求>\n" + original_query + "\n</原始研究请求>"
+            state = _persist(context, state, "starting", materials_prepared=True,
+                             materials_reference=reference, original_query=original_query, query=sdk_query)
         return await _guard_user_stop(
             context,
             state,
@@ -1484,6 +1856,7 @@ async def deepresearch_execute(
                 conversation_id=str(state.get("conversation_id") or ""),
                 file_name=str(state.get("file_name") or file_name),
                 report_type=state.get("requested_report_type"),
+                upgrade_from_brief=False,
             ),
         )
     if phase == "wait_feedback":
@@ -1516,6 +1889,7 @@ async def deepresearch_execute(
                 context,
                 state,
                 action="resume",
+                query=str(state.get("query") or query),
                 node="feedback_handler",
                 conversation_id=str(state.get("conversation_id") or ""),
                 feedback=feedback,
@@ -1551,6 +1925,7 @@ async def deepresearch_execute(
                 context,
                 state,
                 action="resume",
+                query=str(state.get("query") or query),
                 node="outline_interaction",
                 conversation_id=str(state.get("conversation_id") or ""),
                 feedback=feedback,

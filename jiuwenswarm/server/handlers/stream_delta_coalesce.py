@@ -3,9 +3,9 @@
 """把 Deep 外层流的增量按时间片合并后再写上 WebSocket。
 
 复杂任务的外层模型推理原来一块一帧。团队流已在 team_helpers 合并，
-这里不重复处理团队请求。第一块仍马上发出，连续增量攒满 1 秒再拼成一帧；
-工具、任务和结束事件先把攒着的字冲出去，避免文字和这些事件错序。
-并行页面用 stream_source_id 分桶，避免把不同来源拼进同一帧。
+这里不重复处理团队请求。第一块仍马上发出，连续增量攒满 100 毫秒再拼成一帧。
+同一来源从思考切到正文（或反过来）时，先把另一种已经攒着的字发出去。
+工具、任务和结束事件也会先冲出缓存。并行页面用 stream_source_id 分桶。
 """
 
 from __future__ import annotations
@@ -16,7 +16,8 @@ from dataclasses import dataclass, replace
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 
 _DELTA_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
-_FLUSH_SECONDS = 1.0
+# 100 毫秒仍像流式。心跳靠帧数下降和发送缓冲让路，不必收成 1 秒一帧。
+_FLUSH_SECONDS = 0.1
 
 
 @dataclass
@@ -46,7 +47,8 @@ class StreamDeltaCoalescer:
             return self._boundary(chunk)
         now = time.monotonic()
         key = _bucket_key(chunk.payload)
-        ready = self._take_expired(now, skip=key)
+        ready = self._take_other_kind(key)
+        ready.extend(self._take_expired(now, skip=key))
         bucket = self._buckets.get(key)
         if bucket is None:
             self._buckets[key] = _HeldDelta(template=chunk, parts=[], since=now)
@@ -70,6 +72,20 @@ class StreamDeltaCoalescer:
     def _boundary(self, chunk: AgentResponseChunk) -> list[AgentResponseChunk]:
         ready = self._take_all()
         ready.append(chunk)
+        return ready
+
+    def _take_other_kind(self, key: tuple[str, str, str, str]) -> list[AgentResponseChunk]:
+        """同一来源的另一种增量先出去，避免正文插到思考尾部前面。"""
+        ready: list[AgentResponseChunk] = []
+        for other in list(self._buckets):
+            if other == key or not _same_speaker(key, other):
+                continue
+            bucket = self._buckets.get(other)
+            if bucket is None or not bucket.parts:
+                continue
+            merged = self._release(bucket)
+            if merged is not None:
+                ready.append(merged)
         return ready
 
     def _take_expired(
@@ -134,3 +150,10 @@ def _bucket_key(payload: dict) -> tuple[str, str, str, str]:
         str(payload.get("role") or ""),
         str(payload.get("member_name") or ""),
     )
+
+
+def _same_speaker(
+    key: tuple[str, str, str, str],
+    other: tuple[str, str, str, str],
+) -> bool:
+    return key[1:] == other[1:]
