@@ -65,6 +65,10 @@ _ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
 _ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
 _ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
 _ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
+# Removing a composer attachment chip should also drop the session-asset
+# registry entry it created (see session_assets.py). The pinned protocol
+# package does not define this member yet.
+_ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
 
 logger = logging.getLogger(__name__)
 
