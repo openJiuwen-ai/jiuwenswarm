@@ -438,13 +438,14 @@ class DeepResearchExecutionRail(DeepAgentRail):
         # 不进入 bind_deepresearch_execution_context，阻止报告交付后重复执行（issue #5131）。
         # workflow_id not in states：进行中 workflow 的续跑不走短路，避免吞掉用户答复
         # 与残留 state（atomgit-bot 审查 Issue 2）。
-        args = _tool_args(ctx)
+        # not is_upgrade：升级/追问会用 original_query 覆盖本次 query，与已交付 brief
+        # 条目同键，命中短路会把「升级专业版」当成已完成吞掉（renquanjia 审查 CR-005）。
         hit = _lookup_delivery(
             ctx.session,
             query=str(args.get("query") or ""),
             file_name=str(args.get("file_name") or ""),
         )
-        if hit is not None and workflow_id not in states:
+        if hit is not None and not is_upgrade and workflow_id not in states:
             from jiuwenswarm.agents.harness.common.tools.deepresearch.execution import (
                 _completion_content,
                 _persist_delivered_state,
@@ -481,11 +482,15 @@ class DeepResearchExecutionRail(DeepAgentRail):
                 tool_call_id,
                 str(hit.get("conversation_id") or ""),
             )
-            # _skip_tool：阻止 AbilityManager 真实执行 deepresearch_execute（renquanjia 审查 Issue 5）。
-            # _deepresearch_short_circuit：标记短路供 after_tool_call early-return，
-            # 避免二次 force_finish 与空 delivery 记录。
-            ctx.extra["_skip_tool"] = True
-            ctx.extra["_deepresearch_short_circuit"] = workflow_id
+            # 跳过工具方法体靠上面的 request_force_finish：@rail wrapper 在 before
+            # 钩子之后检查 has_force_finish_request 并直接 return None
+            # （openjiuwen/core/single_agent/rail/base.py:613-615）。因此不能写共享
+            # ctx.extra["_skip_tool"]——该标记由 AbilityManager 按名 pop
+            # （ability_manager.py:653），本调用根本不走到 pop，标记会残留并被同轮
+            # 并行 tool call 误消费（工具静默返回空结果）。
+            # 短路标记挂在 per-tool-call 的 ctx 上（同 flash 选择器不用共享标记的
+            # 做法），供 after_tool_call early-return（openJiuwen-bot 审查 Issue 9）。
+            ctx._deepresearch_short_circuit = workflow_id
             return
 
         model = self._model_provider() if callable(self._model_provider) else None
@@ -540,7 +545,7 @@ class DeepResearchExecutionRail(DeepAgentRail):
         if _tool_name(ctx) != _TOOL_NAME:
             return
         try:
-            if ctx.extra.pop("_deepresearch_short_circuit", None) is not None:
+            if getattr(ctx, "_deepresearch_short_circuit", None) is not None:
                 return
             payload = _result_payload(ctx.inputs.tool_result)
             if payload is None or payload.get("schema_version") != EXECUTION_SCHEMA:

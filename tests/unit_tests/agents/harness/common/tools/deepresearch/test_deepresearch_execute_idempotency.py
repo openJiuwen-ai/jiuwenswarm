@@ -81,8 +81,14 @@ def test_second_turn_same_topic_returns_already_delivered_without_rerun(monkeypa
     assert payload["kind"] == "completed"
     # 完成文案含真实 file_name（Issue 1/6），不回落默认「研究报告」
     assert "ai_chip_report" in payload["content"]
-    # Issue 8：_skip_tool 必须为 True，否则 AbilityManager 仍会真实执行 deepresearch_execute
-    assert ctx.extra.get("_skip_tool") is True
+    # 跳过真实执行依赖 before_tool_call 的 force_finish：@rail wrapper 在
+    # before 钩子后检查 has_force_finish_request 并 return None，工具方法体
+    # 不会执行（openjiuwen/core/single_agent/rail/base.py:613-615）。
+    assert ctx.force_finish_requests
+    # 不得写共享 ctx.extra["_skip_tool"]：该标记由 AbilityManager 按名 pop
+    # （ability_manager.py:653），短路调用自身不会走到 pop（方法体被跳过），
+    # 标记会残留在共享 extra 里被同轮并行 tool call 误消费。
+    assert "_skip_tool" not in ctx.extra
     # Issue 3：tool_msg 必须设为精简完成文案，含真实 file_name 且不含内部 state/conversation_id
     assert ctx.inputs.tool_msg is not None
     assert "ai_chip_report" in ctx.inputs.tool_msg.content
@@ -117,8 +123,8 @@ def test_short_circuit_skips_in_flight_workflow_resume():
     ctx = _build_callback_ctx(sess, tool_call_id="wf_new", args={
         "query": "深度研究AI芯片行业", "file_name": "ai_chip_report", "report_type": "brief"})
     asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
-    # 进行中 workflow 不短路：_skip_tool 未设，tool_result 未被改写为 completed
-    assert ctx.extra.get("_skip_tool") is None
+    # 进行中 workflow 不短路：未请求 force_finish，tool_result 未被改写为 completed
+    assert ctx.force_finish_requests == []
     assert ctx.inputs.tool_result is None or not isinstance(ctx.inputs.tool_result, dict) \
         or ctx.inputs.tool_result.get("kind") != "completed"
 
@@ -134,7 +140,27 @@ def test_empty_query_or_file_name_not_matched():
         "query": "", "file_name": "", "report_type": "brief"})
     asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
     # 空键不命中：不短路
-    assert ctx.extra.get("_skip_tool") is None
+    assert ctx.force_finish_requests == []
+
+
+def test_upgrade_from_brief_not_short_circuited():
+    """CR-005：已交付 brief 后「升级为专业版」不得被幂等短路吞掉。
+
+    upgrade_from_brief 走 execution.py 的升级链路，会用 original_query 覆盖本次
+    query，与已交付 brief 条目的 query 天然相同；若短路不排除升级路径，专业版
+    报告不会生成，用户只收到旧精简报告正文并被 force_finish。
+    """
+    sess = _fake_session(delivery_index={
+        "wf_1": {"query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+                 "conversation_id": "ad256fe6-...", "html_style_status": "applied",
+                 "delivered_at": 1791601751.0},
+    })
+    ctx = _build_callback_ctx(sess, tool_call_id="wf_upgrade", args={
+        "query": "深度研究AI芯片行业", "file_name": "ai_chip_report",
+        "report_type": "professional", "upgrade_from_brief": True})
+    asyncio.run(rail.DeepResearchExecutionRail(model_provider=lambda: None).before_tool_call(ctx))
+    assert ctx.inputs.tool_result is None
+    assert ctx.force_finish_requests == []
 
 
 def test_different_topic_not_blocked():
@@ -178,6 +204,7 @@ def test_short_circuit_skips_after_tool_call_side_effects():
     assert idx["wf_1"]["query"] == real_entry["query"]
     assert idx["wf_1"]["file_name"] == real_entry["file_name"]
     assert "_deepresearch_short_circuit" not in ctx.extra
+    assert "_skip_tool" not in ctx.extra
 
 
 def test_terminal_completed_updates_tool_msg_to_completion_content():
