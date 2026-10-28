@@ -9,11 +9,241 @@ import time
 
 import psutil
 import pytest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["lookup", "spawn_before", "spawn_after", "connect", "connect_timeout"])
+async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path, phase):
+    from jiuwenswarm.server.supervisor import identity, worker_process as worker_module
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    children = []
+    monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
+
+    async def lookup(*args, **kwargs):
+        if phase == "lookup":
+            entered.set()
+            await release.wait()
+        return None
+
+    class ObservedWorker(WorkerProcess):
+        async def spawn(self):
+            if phase == "spawn_before":
+                entered.set()
+                await release.wait()
+            await super().spawn()
+            children.append(self)
+            if phase == "spawn_after":
+                entered.set()
+                await release.wait()
+
+    async def slow_connect(*args, **kwargs):
+        if phase == "connect_timeout":
+            raise TimeoutError("IPC unavailable")
+        entered.set()
+        await release.wait()
+        raise TimeoutError("IPC unavailable")
+
+    monkeypatch.setattr(supervisor_module, "try_connect", lookup)
+    monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: False)
+    monkeypatch.setattr(supervisor_module, "connect_with_retry", slow_connect)
+    monkeypatch.setattr(supervisor_module, "WorkerProcess", ObservedWorker)
+    monkeypatch.setattr(worker_module, "build_worker_command", lambda *a, **kw: [
+        getattr(sys, "_base_executable", sys.executable), "-c", "import time; time.sleep(60)"])
+    front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True, max_restarts=0)
+    start = None
+    stop = None
+    try:
+        start = asyncio.create_task(front.run_until_ipc_ready())
+        if phase == "connect_timeout":
+            with pytest.raises(RuntimeError, match="IPC unavailable"):
+                await asyncio.wait_for(start, 5)
+        else:
+            await asyncio.wait_for(entered.wait(), 5)
+            stop = asyncio.create_task(front.stop(terminate_worker=True))
+            while not front._stopping:
+                await asyncio.sleep(0)
+            release.set()
+            await asyncio.wait_for(stop, 3)
+            await asyncio.wait_for(start, 3)
+        assert len(children) == (0 if phase in {"lookup", "spawn_before"} else 1)
+        assert all(child.returncode is not None for child in children)
+        assert front._process is None and front._conn is None
+    finally:
+        release.set()
+        for task in (start, stop, front._loop_task):
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+        for child in children:
+            await child.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reused", [False, True])
+async def test_published_pid_retains_the_identity_checked_during_hello(monkeypatch, tmp_path, reused):
+    from jiuwenswarm.server.supervisor import identity
+
+    pid = 987654
+    lookup_count = 0
+    killed = Mock()
+
+    def lookup(value=None):
+        nonlocal lookup_count
+        if value is None:
+            return SimpleNamespace(username=lambda: "test-user")
+        lookup_count += 1
+        created = 2 if reused and lookup_count > 1 else 1
+        return SimpleNamespace(pid=pid, create_time=lambda: created, username=lambda: "test-user",
+            exe=lambda: sys.executable,
+            cmdline=lambda: [sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", str(tmp_path / "worker")],
+            wait=lambda **kw: 0, kill=killed)
+
+    hello = {"kind": "hello", "protocol": 2, "pid": pid, "process_created": 1,
+             "deployment_scope": identity.deployment_scope(), "data_scope": identity.data_scope(),
+             "code_identity": "a" * 64, "stub": True}
+    peer = SimpleNamespace(recv=AsyncMock(return_value=hello), send=AsyncMock(), close=AsyncMock())
+    monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=peer))
+    monkeypatch.setattr(psutil, "Process", lookup)
+    front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True)
+    monkeypatch.setattr(front, "_start_side_tasks", Mock())
+    await front._bring_up()
+    assert front._worker_create_time == 1 and lookup_count == 1
+    if reused:
+        with pytest.raises(RuntimeError, match="PID identity changed"):
+            front._reap_validated_worker(deadline=time.monotonic() + .1)
+    else:
+        front._reap_validated_worker(deadline=time.monotonic() + .1)
+    killed.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [False, True])
+@pytest.mark.parametrize("protocol", [1, 2])
+async def test_public_complete_stop_during_unverified_hello_does_not_terminate_peer(
+    monkeypatch, tmp_path, busy, protocol,
+):
+    from pathlib import Path
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.ipc.client import connect_with_retry
+
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
+    path = str(tmp_path / "worker")
+    worker = WorkerProcess(path, host="127.0.0.1", port=0, stub=True)
+    connection = None
+    start = None
+    pending = asyncio.Event()
+    release = asyncio.Event()
+    try:
+        await worker.spawn()
+        connection = await connect_with_retry(path, timeout=15)
+        hello = await asyncio.wait_for(connection.recv(), 5)
+        legacy = {key: value for key, value in hello.items() if key not in {
+            "deployment_scope", "process_created",
+        }}
+        legacy["protocol"] = protocol
+
+        async def delayed_hello():
+            pending.set()
+            await release.wait()
+            return legacy
+
+        async def close():
+            release.set()
+            await connection.close()
+
+        peer = SimpleNamespace(recv=delayed_hello, send=AsyncMock(wraps=connection.send), close=close)
+        constructor = Mock(side_effect=AssertionError("Must not replace an unknown peer"))
+        monkeypatch.setattr(supervisor_module, "WorkerProcess", constructor)
+        monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=None if busy else peer))
+        monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: True)
+        monkeypatch.setattr(supervisor_module, "connect_with_retry", AsyncMock(return_value=peer))
+        front = RuntimeSupervisor(Readiness(), socket_path=path, stub=True)
+        start = asyncio.create_task(front.run_until_ipc_ready())
+        await asyncio.wait_for(pending.wait(), 5)
+        assert front._worker_pid is None and front._validated_conn is None
+        with pytest.raises(RuntimeError, match="validation incomplete; termination refused"):
+            await asyncio.wait_for(front.stop(terminate_worker=True), 2)
+        await asyncio.wait_for(start, 2)
+        peer.send.assert_not_awaited()
+        constructor.assert_not_called()
+        assert front._conn is None and front._validated_conn is None
+        assert worker.returncode is None
+    finally:
+        release.set()
+        if start is not None and not start.done():
+            start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        if connection is not None:
+            await connection.close()
+        await worker.stop(timeout=2)
+
+
+@pytest.mark.asyncio
+async def test_complete_stop_cannot_reuse_an_old_connections_validation():
+    front = RuntimeSupervisor(Readiness())
+    peer = SimpleNamespace(send=AsyncMock(), close=AsyncMock())
+    front._conn = peer
+    front._validated_conn = SimpleNamespace()
+    front._worker_pid = 123
+    front._worker_create_time = 1
+    reaper = Mock(side_effect=AssertionError("Must not reap before current peer validation"))
+    front._reap_validated_worker = reaper
+    with pytest.raises(RuntimeError, match="validation incomplete; termination refused"):
+        await front.stop(terminate_worker=True)
+    peer.send.assert_not_awaited()
+    reaper.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_complete_stop_can_reap_its_own_child_without_sending_unverified_ipc(monkeypatch, tmp_path):
+    from pathlib import Path
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.ipc.client import connect_with_retry
+
+    monkeypatch.setenv("PYTHONPATH", str(Path(__file__).resolve().parents[3]))
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path / "data")
+    monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
+    monkeypatch.setattr(supervisor_module, "_FINAL_SHUTDOWN_TIMEOUT", .1)
+    worker = WorkerProcess(str(tmp_path / "worker"), host="127.0.0.1", port=0, stub=True)
+    peer = None
+    native = None
+    try:
+        await worker.spawn()
+        peer = await connect_with_retry(worker.socket_path, timeout=15)
+        hello = await peer.recv()
+        native = psutil.Process(hello["pid"])
+        peer.send = AsyncMock(wraps=peer.send)
+        front = RuntimeSupervisor(Readiness())
+        front._conn = peer
+        front._process = worker
+        front._owns_process = True
+        await asyncio.wait_for(front.stop(terminate_worker=True), .6)
+        peer.send.assert_not_awaited()
+        assert await worker.wait(timeout=2) is not None
+        await asyncio.to_thread(native.wait, 2)
+        assert not native.is_running() or native.status() == psutil.STATUS_ZOMBIE
+    finally:
+        if peer is not None:
+            await peer.close()
+        if native is not None and native.is_running():
+            native.kill()
+            await asyncio.to_thread(native.wait, 2)
+        await worker.stop(timeout=2)
 
 
 @pytest.mark.parametrize("result", [{"ok": True, "absent": True}, {"kind": "shutdown.done", "ok": True}])
@@ -59,6 +289,7 @@ async def test_final_shutdown_bounds_missing_ack_and_stuck_cleanup(monkeypatch, 
 
     supervisor = RuntimeSupervisor(Readiness())
     supervisor._conn = Connection()
+    supervisor._validated_conn = supervisor._conn
     supervisor._process = Process()
     supervisor._loop_task = asyncio.create_task(asyncio.Event().wait())
     started = time.monotonic()
@@ -144,6 +375,7 @@ async def test_missing_shutdown_ack_forces_validated_native_child_exit(monkeypat
     worker._proc = proc
     supervisor = RuntimeSupervisor(Readiness())
     supervisor._conn = Connection()
+    supervisor._validated_conn = supervisor._conn
     supervisor._process = worker
     supervisor._worker_pid = proc.pid
     supervisor._worker_create_time = psutil.Process(proc.pid).create_time()
