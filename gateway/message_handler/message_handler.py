@@ -23,16 +23,16 @@ from openjiuwen_protocol.e2a.constants import (
     E2A_WIRE_INTERNAL_METADATA_KEYS,
 )
 from openjiuwen_protocol.hooks import GatewayChatHookContext, GatewayHookEvents
-from openjiuwen_protocol.message import TEAM_ATTACH_ONLY_PARAM
-
-from gateway.channel_manager.base import ChannelType
-from gateway.common.config import get_evolution_auto_save_enabled
-from gateway.common.event_names import (
+from openjiuwen_protocol.message import (
     PROMPT_SUGGESTION_READY_EVENT,
     SESSION_REQUEST_COMPLETED_EVENT,
+    TEAM_ATTACH_ONLY_PARAM,
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
     TOPIC_STARTERS_READY_EVENT,
 )
+
+from gateway.channel_manager.base import ChannelType
+from gateway.common.config import get_evolution_auto_save_enabled
 from gateway.common.hooks_config import load_hooks_config
 from gateway.common.host_services import (
     install_runtime_wake_handler,

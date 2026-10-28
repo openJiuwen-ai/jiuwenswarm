@@ -12,7 +12,7 @@ import pytest
 from openjiuwen_protocol.e2a.gateway_normalize import message_to_e2a_or_fallback
 from openjiuwen_protocol.message import Message, ReqMethod
 
-from gateway.common.e2a.agent_compat import e2a_to_agent_request
+from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
 from gateway.im_pipeline.im_inbound import (
     IMConversationProcessor,
     IMInboundPipeline,

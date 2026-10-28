@@ -20,9 +20,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from gateway.common import external_providers
-from gateway.common.mcp_oauth import McpOAuthError as _GatewayMcpOAuthError
 from gateway.channel_manager.web import mcp_oauth_http
-from jiuwenswarm.common.mcp_oauth import McpOAuthError as _ServerMcpOAuthError
 from jiuwenswarm.server.runtime.mcp import oauth_flow, registry
 from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
 from jiuwenswarm.server.runtime.mcp.oauth_flow import OAuthFlowManager
@@ -67,21 +65,8 @@ def oauth_callback(tmp_path, monkeypatch):
     started = agent.start("canva", "http://127.0.0.1:19000/")
     authorize_query = parse_qs(urlsplit(started["auth_url"]).query)
     monkeypatch.setattr(oauth_flow, "_manager", gateway)
-
-    class _RemoteRegistryShell:
-        """server 侧 registry 在 gateway 进程的等价壳。
-
-        跨进程时异常类型只可能是 gateway 自己的 ``McpOAuthError``（母仓类身份
-        不会穿过进程边界），这里把 server 侧异常转成 gateway 侧类型。
-        """
-
-        async def complete_oauth_callback_async(self, query):
-            try:
-                return await registry.complete_oauth_callback_async(query)
-            except _ServerMcpOAuthError as exc:
-                raise _GatewayMcpOAuthError(str(exc)) from exc
-
-    monkeypatch.setitem(external_providers._providers, "mcp_registry", _RemoteRegistryShell())
+    # McpOAuthError 由 openjiuwen_protocol.mcp_oauth 统一提供，两侧异常类型同一
+    monkeypatch.setitem(external_providers._providers, "mcp_registry", registry)
     app = FastAPI()
     mcp_oauth_http.attach_mcp_oauth_routes(app)
     with TestClient(app) as client:

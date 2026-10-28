@@ -86,9 +86,9 @@ from openjiuwen_protocol.e2a.wire_codec import (
     parse_agent_server_wire_chunk,
     parse_agent_server_wire_unary,
 )
+from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
 
 from gateway.common.client.agent_client import AgentServerClient
-from gateway.common.e2a.agent_compat import e2a_to_agent_request
 from gateway.routing.container_files import AgentFileDownloadChunk
 
 logger = logging.getLogger(__name__)

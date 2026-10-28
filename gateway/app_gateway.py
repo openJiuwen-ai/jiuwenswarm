@@ -39,7 +39,14 @@ def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import Message, Mode, ReqMethod
+from openjiuwen_protocol.message import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+    Message,
+    Mode,
+    ReqMethod,
+)
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
 from gateway.common.media_capability_config import (
@@ -93,11 +100,6 @@ from gateway.channel_manager.web.media import (
 from gateway.common.debug_dump import (
     install_async_dump_handler,
     install_crash_exit_handler,
-)
-from gateway.common.event_names import (
-    PROMPT_SUGGESTION_READY_EVENT,
-    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
-    TOPIC_STARTERS_READY_EVENT,
 )
 from gateway.common.paths import (
     apply_free_search_runtime_defaults,
