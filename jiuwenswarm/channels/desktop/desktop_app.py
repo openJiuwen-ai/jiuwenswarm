@@ -3653,10 +3653,12 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
         for child in children:
             try:
                 argv = child.cmdline()
-                if "-m" in argv and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
+                if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
                     retained.add(child.pid)
             except psutil.NoSuchProcess:
-                pass
+                continue
+            except psutil.Error as exc:
+                raise RuntimeError("Desktop process tree ownership could not be established") from exc
         for child in children:
             try:
                 ancestor = child.ppid()
@@ -3665,7 +3667,9 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
                 if ancestor in retained:
                     retained.add(child.pid)
             except psutil.NoSuchProcess:
-                pass
+                continue
+            except psutil.Error as exc:
+                raise RuntimeError("Desktop process tree ownership could not be established") from exc
         kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
         # 先杀子孙，再杀父进程，避免子孙变成孤儿
         for child in reversed(children):
@@ -3679,8 +3683,10 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
             kill_fn(parent)
         except psutil.NoSuchProcess:
             pass
-    except Exception:  # noqa: BLE001
+    except psutil.NoSuchProcess:
         pass
+    except psutil.Error as exc:
+        raise RuntimeError("Desktop process tree termination incomplete") from exc
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:

@@ -545,7 +545,6 @@ class RuntimeSupervisor:
                 if self._stopping or self._terminating:
                     raise RuntimeError("Worker startup cancelled by supervisor stop")
                 await self._migrate_legacy_workers()
-                expected_identity = await asyncio.to_thread(code_identity)
                 for attempt in range(2):
                     if self._stopping or self._terminating:
                         raise RuntimeError("Worker startup cancelled by supervisor stop")
@@ -608,7 +607,7 @@ class RuntimeSupervisor:
                             self._fatal = True
                             self._fatal_reason = "resident Worker execution profile mismatch"
                             raise RuntimeError(self._fatal_reason)
-                        expected = launch_identity or expected_identity
+                        expected = launch_identity or await asyncio.to_thread(code_identity)
                         if protocol != PROTOCOL_VERSION or hello.get("code_identity") != expected:
                             if existing is None or attempt:
                                 raise RuntimeError("new Worker build identity did not match its parent")
@@ -1275,22 +1274,29 @@ class RuntimeSupervisor:
             # A Popen handle establishes ownership of our own child even before
             # HELLO, but does not authorize IPC commands on an unverified peer.
             conn = None
+        # IPC and graceful exit must leave time for forced exit observation.
+        grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 2)
         if conn is not None:
             self._shutdown_done = asyncio.get_running_loop().create_future()
             try:
                 await asyncio.wait_for(
-                    conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, deadline - time.monotonic())
+                    conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, grace - time.monotonic())
                 )
                 if self._loop_task is not None:
                     outcome = await asyncio.wait_for(
-                        asyncio.shield(self._shutdown_done), timeout=max(0.0, deadline - time.monotonic())
+                        asyncio.shield(self._shutdown_done), timeout=max(0.0, grace - time.monotonic())
                     )
                     if not outcome.get("ok"):
                         logger.error("[Supervisor] Worker shutdown incomplete: %s", outcome.get("error"))
             except (OSError, RuntimeError, asyncio.TimeoutError):
                 logger.warning("[Supervisor] Worker shutdown acknowledgement missing or shutdown deadline exhausted")
-        if process is not None and await process.wait(timeout=max(0.0, deadline - time.monotonic())) is None:
-            await process.stop(timeout=max(0.0, deadline - time.monotonic()))
+        if process is not None:
+            if conn is None:
+                # No validated peer received a shutdown request. Stop only the
+                # Popen-owned child now instead of waiting for an impossible ACK.
+                await process.stop(timeout=max(0.0, deadline - time.monotonic()))
+            elif await process.wait(timeout=max(0.0, grace - time.monotonic())) is None:
+                await process.stop(timeout=max(0.0, deadline - time.monotonic()))
         if self._worker_pid is not None and self._worker_create_time is not None:
             await asyncio.to_thread(self._reap_validated_worker, deadline=deadline)
         self._process = None
@@ -1305,8 +1311,9 @@ class RuntimeSupervisor:
                 raise RuntimeError("Worker PID identity changed during final exit")
             if terminate:
                 process.terminate()
+            grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 2)
             try:
-                process.wait(timeout=max(0.0, deadline - time.monotonic()))
+                process.wait(timeout=max(0.0, grace - time.monotonic()))
             except psutil.TimeoutExpired as exc:
                 if process.create_time() != self._worker_create_time:
                     raise RuntimeError("Worker PID identity changed during final exit") from exc
@@ -1314,10 +1321,10 @@ class RuntimeSupervisor:
                 process.kill()
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
-                except psutil.TimeoutExpired:
-                    logger.error(
-                        "[Supervisor] validated Worker exit could not be observed before the shutdown deadline"
-                    )
+                except psutil.TimeoutExpired as exit_error:
+                    raise RuntimeError(
+                        "Validated Worker exit could not be observed before the shutdown deadline"
+                    ) from exit_error
         except psutil.NoSuchProcess:
             pass
         self._owns_process = False

@@ -1,5 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Nested release scripts must use the selected sources, not their own checkout."""
+import ast
 import json
 import os
 import runpy
@@ -115,3 +116,36 @@ def test_shell_rsi_gate_uses_release_verifier(tmp_path, wrapper):
     result = json.loads(report.read_text(encoding="utf-8"))
     assert Path(result["receiver"]).resolve() == receiver.resolve()
     assert Path(result["verifier"]).resolve() == verifier.resolve()
+
+
+def test_metadata_contract_is_shared_by_separate_release_and_frozen_builds(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    root = Path(__file__).resolve().parents[3]
+    source = tmp_path / "application sources"
+    release = tmp_path / "release scripts"
+    helper_path = source / "jiuwenswarm/common/worker_build_identity.py"
+    helper_path.parent.mkdir(parents=True)
+    shutil.copyfile(root / "jiuwenswarm/common/worker_build_identity.py", helper_path)
+    config_path = release / "scripts/build_config.py"
+    config_path.parent.mkdir(parents=True)
+    shutil.copyfile(root / "scripts/build_config.py", config_path)
+    monkeypatch.setenv("WORKSWARM_SOURCE_ROOT", str(source))
+    monkeypatch.setenv("SOURCE_DATE_EPOCH", "1767225600")
+    compatibility = tmp_path / "compatibility.json"
+    runpy.run_path(str(config_path))["write_build_metadata"](compatibility, "fixture-version")
+
+    tree = ast.parse((root / "scripts/jiuwenswarm.spec").read_text(encoding="utf-8"))
+    stamp = next(node for node in tree.body if isinstance(node, ast.Expr)
+                 and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Subscript)
+                 and isinstance(node.value.func.slice, ast.Constant)
+                 and node.value.func.slice.value == "write_build_metadata")
+    frozen = tmp_path / "frozen.json"
+    namespace = {"_identity_helper": runpy.run_path(str(helper_path)), "_build_metadata_file": frozen,
+                 "build_config": SimpleNamespace(version="fixture-version")}
+    exec(compile(ast.Module(body=[stamp], type_ignores=[]), "frozen-metadata", "exec"), namespace)
+    assert json.loads(frozen.read_text(encoding="utf-8")) == {
+        "version": "fixture-version", "build_date": "2026-01-01",
+    }
+    assert frozen.read_bytes() == compatibility.read_bytes()
+    assert not (source / "scripts").exists()

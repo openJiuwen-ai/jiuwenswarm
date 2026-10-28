@@ -13,8 +13,6 @@ from jiuwenswarm.server.ipc.client import connect, endpoint_is_listening, try_co
 from jiuwenswarm.server.supervisor.worker_process import default_socket_path, legacy_socket_paths
 from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
 
-logger = logging.getLogger(__name__)
-
 
 def detach_front_process(pid: int, *, force: bool = False, timeout: float = 5.0) -> None:
     """Stop an owned Front subtree; unknown survivors cannot mean success."""
