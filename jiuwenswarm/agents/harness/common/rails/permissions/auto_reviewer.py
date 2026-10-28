@@ -14,10 +14,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
+from openjiuwen.core.foundation.llm.model import Model
+from openjiuwen.core.foundation.llm.schema.config import LLMApiMode, LLMAuthMode, ProviderType
+from openjiuwen.core.foundation.llm.utils.endpoint_profiles import normalize_model_client_config
+
 from openjiuwen.harness.security.permission_engine.toolguard.shell_ast import (
     parse_shell_for_permission,
 )
 
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+    normalize_reviewer_output_format,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
     redact_reviewer_intent,
     redact_reviewable_payload_text,
@@ -206,21 +213,24 @@ class IsolatedModelReviewerClient:
     boundary isolates reviewer input and does not accept Agent runtime handles.
     """
 
-    __slots__ = ("_display_language_getter", "_model")
+    __slots__ = ("_display_language_getter", "_model", "output_format")
 
     def __init__(
         self,
         *,
         model: Any,
         display_language_getter: Callable[[], object] | None = None,
+        output_format: str = "json_object",
     ) -> None:
         if model is None:
             raise ValueError("reviewer_model_required")
         self._model = model
         self._display_language_getter = display_language_getter
+        self.output_format = normalize_reviewer_output_format(output_format)
 
     async def assess(self, request: "ReviewerActionView") -> str:
         """Return model text from a fresh two-message reviewer context."""
+        format_kwargs = self._format_kwargs()
         payload = {
             "request": request.to_json_dict(),
             "schema": dict(ISOLATED_AUTO_REVIEWER_SCHEMA),
@@ -240,11 +250,11 @@ class IsolatedModelReviewerClient:
         ]
         ainvoke = getattr(self._model, "ainvoke", None)
         if callable(ainvoke):
-            result = await ainvoke(messages, temperature=0.0, top_p=1.0)
+            result = await ainvoke(messages, temperature=0.0, top_p=1.0, **format_kwargs)
             return _model_result_text(result)
         invoke = getattr(self._model, "invoke", None)
         if callable(invoke):
-            result = invoke(messages, temperature=0.0, top_p=1.0)
+            result = invoke(messages, temperature=0.0, top_p=1.0, **format_kwargs)
         elif callable(self._model):
             result = self._model(messages)
         else:
@@ -252,6 +262,23 @@ class IsolatedModelReviewerClient:
         if inspect.isawaitable(result):
             result = await result
         return _model_result_text(result)
+
+    def _format_kwargs(self) -> dict[str, object]:
+        """Fill the built-in Chat transport's missing format without changing its config."""
+        if self.output_format == "prompt" or type(self._model) is not Model:
+            return {}
+        config = self._model.model_client_config
+        if config is None:
+            return {}
+        config = normalize_model_client_config(config)
+        if (
+            config.client_provider != ProviderType.OpenAI
+            or config.api_mode not in {None, LLMApiMode.ChatCompletions}
+            or config.auth_mode == LLMAuthMode.OpenAIAccountOAuth
+            or getattr(self._model.model_config, "response_format", None) is not None
+        ):
+            return {}
+        return {"response_format": {"type": "json_object"}}
 
     def _display_language(self) -> str:
         getter = self._display_language_getter
@@ -597,11 +624,13 @@ class AutoReviewer:
         client: ReviewerClient,
         timeout_ms: int = 60000,
         min_confidence: float = 0.7,
+        reviewer_output_format: str | None = None,
     ) -> None:
         self.client = client
         self.update_runtime_options(
             timeout_ms=timeout_ms,
             min_confidence=min_confidence,
+            reviewer_output_format=reviewer_output_format,
         )
         self._client_lock = asyncio.Lock()
 
@@ -610,10 +639,13 @@ class AutoReviewer:
         *,
         timeout_ms: int,
         min_confidence: float,
+        reviewer_output_format: str | None = None,
     ) -> None:
         """Install normalized reviewer settings without replacing its client."""
         timeout_seconds = max(int(timeout_ms), 1) / 1000.0
         normalized_confidence = min(max(float(min_confidence), 0.0), 1.0)
+        if reviewer_output_format is not None and isinstance(self.client, IsolatedModelReviewerClient):
+            self.client.output_format = normalize_reviewer_output_format(reviewer_output_format)
         self.timeout_seconds = timeout_seconds
         self.min_confidence = normalized_confidence
 

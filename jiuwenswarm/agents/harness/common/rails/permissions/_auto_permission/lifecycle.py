@@ -150,6 +150,7 @@ class AutoPermissionLifecycleMixin:
             self.auto_reviewer.update_runtime_options(
                 timeout_ms=timeout_ms,
                 min_confidence=min_confidence,
+                reviewer_output_format=auto_options["reviewer_output_format"],
             )
         self.permission_config = permission_config
         self.auto_options = auto_options

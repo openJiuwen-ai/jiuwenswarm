@@ -310,6 +310,7 @@ def test_auto_mode_keeps_only_current_option_allowlist() -> None:
         "bounded_write_max_files",
         "persistent_audit_enabled",
         "reviewer_min_confidence",
+        "reviewer_output_format",
         "reviewer_timeout_ms",
     }
     assert normalized["auto"]["bounded_write_max_files"] == 5
@@ -336,3 +337,14 @@ def test_auto_mode_invalid_bounded_write_options_fall_back_to_safe_defaults() ->
         normalized["auto"]["bounded_write_excluded_paths"]
         == JIUWENCLAW_PROTECTED_WRITE_PATHS
     )
+
+
+@pytest.mark.parametrize("value,expected", [
+    ("json_object", "json_object"), ("prompt", "prompt"),
+    (" PROMPT ", "json_object"), ("unknown", "json_object"), (None, "json_object"),
+])
+def test_reviewer_output_format_uses_existing_runtime_normalization(value, expected):
+    raw = {"mode": "auto", "auto": {"reviewer_output_format": value}}
+    normalized = normalize_permissions_for_runtime(raw)
+    assert normalized["auto"]["reviewer_output_format"] == expected
+    assert raw["auto"]["reviewer_output_format"] == value

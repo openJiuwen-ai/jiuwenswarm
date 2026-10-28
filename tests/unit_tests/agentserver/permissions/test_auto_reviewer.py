@@ -14,6 +14,10 @@ from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
+
+from openjiuwen.core.foundation.llm.model import Model
+from openjiuwen.core.foundation.llm.schema.config import ModelClientConfig, ModelRequestConfig
 
 import pytest
 
@@ -26,6 +30,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import (
     IsolatedModelReviewerClient,
     ReviewerActionView,
     ReviewerOutcome,
+    build_isolated_reviewer_model,
     build_reviewer_action_view,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
@@ -1629,3 +1634,148 @@ async def test_auto_reviewer_unexpected_exception_falls_back_to_manual(
     assert assessment.outcome == ReviewerOutcome.MANUAL
     assert assessment.status == "aborted"
     assert assessment.fallback_reason == "client_exception"
+
+
+@pytest.mark.parametrize("provider", ["OpenAI", "DeepSeek"])
+@pytest.mark.parametrize("mode,configured,expected", [
+    ("json_object", None, {"type": "json_object"}),
+    ("prompt", None, None),
+    ("json_object", {"type": "text"}, {"type": "text"}),
+    ("json_object", {"type": "json_schema", "json_schema": {"name": "existing", "schema": {"type": "object"}}},
+     {"type": "json_schema", "json_schema": {"name": "existing", "schema": {"type": "object"}}}),
+    ("prompt", {"type": "json_object"}, {"type": "json_object"}),
+])
+async def test_json_mode_reaches_chat_transport_without_mutating_agent(monkeypatch, provider, mode, configured, expected):
+    original = Model(
+        model_client_config=ModelClientConfig(client_provider=provider, api_key="synthetic-test-key",
+                                             api_base="https://models.example.invalid/v1"),
+        model_config=ModelRequestConfig(model="reviewer-test", response_format=configured),
+    )
+    original_config = original.model_config.model_dump()
+    model = build_isolated_reviewer_model(original)
+    send = AsyncMock(return_value=SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="{}"), finish_reason="stop")], usage=None,
+    ))
+    monkeypatch.setattr(model._client, "_create_async_openai_client", lambda **_: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=send)),
+    ))
+    assert await IsolatedModelReviewerClient(model=model, output_format=mode).assess(
+        ReviewerActionView({}, "ask", {}),
+    ) == "{}"
+    assert send.call_args.kwargs.get("response_format") == expected
+    assert send.await_count == 1
+    assert model is not original and model.model_config is not original.model_config
+    assert model.model_config.model_dump() == original.model_config.model_dump() == original_config
+    assert "tools" not in send.call_args.kwargs
+
+
+@pytest.mark.parametrize("api_mode,auth_mode", [
+    ("responses", "api_key"), (None, "openai_account_oauth"),
+    ("chat_completions", "openai_account_oauth"),
+])
+async def test_non_chat_dispatch_does_not_receive_chat_format(monkeypatch, api_mode, auth_mode):
+    from openjiuwen.core.foundation.llm import AssistantMessage
+
+    model = Model(
+        model_client_config=ModelClientConfig(client_provider="OpenAI", api_key="synthetic-test-key",
+            api_base="https://models.example.invalid/v1", api_mode=api_mode, auth_mode=auth_mode),
+        model_config=ModelRequestConfig(model="reviewer-test"),
+    )
+    send = AsyncMock(return_value=AssistantMessage(content="{}"))
+    if auth_mode == "openai_account_oauth":
+        monkeypatch.setattr(model._client, "_invoke_once", send)
+    else:
+        model.model_config.text = {"format": {"type": "json_object"}}
+        monkeypatch.setattr(model._client, "_make_responses_transport",
+                            lambda **_: SimpleNamespace(create_response=send))
+    assert await IsolatedModelReviewerClient(model=model).assess(ReviewerActionView({}, "ask", {})) == "{}"
+    body = send.call_args.kwargs["body"]
+    assert "response_format" not in body
+    if auth_mode == "api_key":
+        assert body["text"] == {"format": {"type": "json_object"}}
+
+
+async def test_anthropic_keeps_its_existing_output_config(monkeypatch):
+    model = Model(
+        model_client_config=ModelClientConfig(client_provider="Anthropic", api_key="synthetic-test-key",
+            api_base="https://models.example.invalid", api_mode="anthropic_messages"),
+        model_config=ModelRequestConfig(model="reviewer-test"),
+    )
+    configured = {"format": {"type": "json_schema", "schema": {"type": "object"}}}
+    model.model_config.output_config = configured
+    send = AsyncMock(return_value=SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="{}")], usage=None, stop_reason="end_turn",
+    ))
+    monkeypatch.setattr(model._client, "_create_async_anthropic_client", lambda **_: SimpleNamespace(
+        messages=SimpleNamespace(create=send),
+    ))
+    assert await IsolatedModelReviewerClient(model=model).assess(ReviewerActionView({}, "ask", {})) == "{}"
+    assert "response_format" not in send.call_args.kwargs
+    assert send.call_args.kwargs["output_config"] == configured
+
+
+async def test_format_change_preserves_custom_model_and_client():
+    model = RecordingIsolatedReviewerModel()
+    client = IsolatedModelReviewerClient(model=model)
+    reviewer = AutoReviewer(client=client)
+    reviewer.update_runtime_options(timeout_ms=2000, min_confidence=0.7, reviewer_output_format="prompt")
+    assert reviewer.client is client and client.output_format == "prompt"
+    await reviewer.assess(ReviewerActionView({}, "ask", {}))
+    assert model.calls[0][1] == {"temperature": 0.0, "top_p": 1.0}
+
+
+async def test_runtime_format_change_does_not_change_an_in_flight_request(monkeypatch):
+    model = Model(
+        model_client_config=ModelClientConfig(client_provider="OpenAI", api_key="synthetic-test-key",
+            api_base="https://models.example.invalid/v1"),
+        model_config=ModelRequestConfig(model="reviewer-test"),
+    )
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def send(**_):
+        started.set()
+        await release.wait()
+        return SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=_valid_response(None, outcome="manual")), finish_reason="stop",
+        )], usage=None)
+
+    create = AsyncMock(side_effect=send)
+    monkeypatch.setattr(model._client, "_create_async_openai_client", lambda **_: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=create)),
+    ))
+    client = IsolatedModelReviewerClient(model=model)
+    reviewer = AutoReviewer(client=client)
+    view = ReviewerActionView({}, "ask", {})
+    running = asyncio.create_task(reviewer.assess(view))
+    await started.wait()
+    reviewer.update_runtime_options(timeout_ms=60000, min_confidence=0.7, reviewer_output_format="prompt")
+    release.set()
+    assert (await running).outcome == "manual"
+    assert (await reviewer.assess(view)).outcome == "manual"
+    assert create.call_args_list[0].kwargs["response_format"] == {"type": "json_object"}
+    assert "response_format" not in create.call_args_list[1].kwargs
+    assert getattr(model.model_config, "response_format", None) is None
+
+
+@pytest.mark.parametrize("response,reason", [
+    ("", "invalid_json"), ("not JSON", "invalid_json"), ("{}", "missing_field"),
+    (RuntimeError("unsupported response_format"), "client_exception"),
+])
+async def test_chat_format_failure_uses_manual_fallback_without_retry(monkeypatch, response, reason):
+    model = Model(
+        model_client_config=ModelClientConfig(client_provider="OpenAI", api_key="synthetic-test-key",
+            api_base="https://models.example.invalid/v1"),
+        model_config=ModelRequestConfig(model="reviewer-test"),
+    )
+    if isinstance(response, Exception):
+        send = AsyncMock(side_effect=response)
+    else:
+        send = AsyncMock(return_value=SimpleNamespace(choices=[SimpleNamespace(
+            message=SimpleNamespace(content=response), finish_reason="stop",
+        )], usage=None))
+    monkeypatch.setattr(model._client, "_create_async_openai_client", lambda **_: SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=send)),
+    ))
+    result = await AutoReviewer(client=IsolatedModelReviewerClient(model=model)).assess(ReviewerActionView({}, "ask", {}))
+    assert result.outcome == "manual" and result.fallback_reason == reason
+    assert send.await_count == 1
