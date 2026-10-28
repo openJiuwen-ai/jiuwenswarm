@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway.auth import model_catalog as _model_catalog
 from gateway.auth.model_catalog import LoginModel
 from gateway.cron.controller import CronController
 from gateway.cron.store import CronJobStore
@@ -43,7 +44,7 @@ def _patch_model_sources(
 ) -> None:
     """登录模型目录 + 自配模型查找的内存桩（测试不依赖本机登录/配置状态）。"""
     monkeypatch.setattr(
-        "gateway.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *a, **k: [
             LoginModel(model_name=name, display_name=name) for name in login_models
         ],

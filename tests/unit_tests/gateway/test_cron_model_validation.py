@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import pytest
 
+from gateway.auth import model_catalog as _model_catalog
 from gateway.auth.model_catalog import LoginModel
 from gateway.cron.models import (
     CronJob,
@@ -33,7 +34,7 @@ def _no_free_models(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: [],
     )
     monkeypatch.setattr(
-        "gateway.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: [],
     )
 
@@ -243,7 +244,7 @@ def test_validate_cron_model_accepts_login_free_model(
     )
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
-        "gateway.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["GLM-5.2", "Kimi-K2.6"]),
     )
     assert validate_cron_model("GLM-5.2") == "GLM-5.2"
@@ -260,7 +261,7 @@ def test_validate_cron_model_accepts_login_free_model_index_suffix(
     )
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
-        "gateway.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["GLM-5.2"]),
     )
     assert validate_cron_model("GLM-5.2#3") == "GLM-5.2"
@@ -288,7 +289,7 @@ def test_validate_cron_model_config_model_wins_over_login(
         lambda name, index=None: _user_model_entry(),
     )
     monkeypatch.setattr(
-        "gateway.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["my-model"]),
     )
     assert validate_cron_model("my-model") == "my-model"
@@ -311,7 +312,7 @@ def test_resolve_cron_model_reports_source(monkeypatch: pytest.MonkeyPatch) -> N
         lambda name, index=None: None,
     )
     monkeypatch.setattr(
-        "gateway.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["GLM-5.2"]),
     )
     assert resolve_cron_model("GLM-5.2") == ("GLM-5.2", "login")
