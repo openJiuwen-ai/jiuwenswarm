@@ -1,12 +1,12 @@
 ---
 title: 设计文档索引
-author: alan_cheng
-author_email: chengshuo5@huawei.com
+author: Yoggaboomin
+author_email: yutao131@huawei.com
 generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-10-26T21:36+08:00 -->
+<!-- generated-at: 2026-10-28T11:36+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -20,10 +20,13 @@ generated: true
 |---|---|
 | [agent_teams](#module-1) | 1 |
 | [agent_teams/workflow](#module-2) | 3 |
-| [jiuwenswarm](#module-3) | 3 |
-| [jiuwenswarm/channels/web/frontend](#module-4) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-5) | 1 |
-| [jiuwenswarm/observability](#module-6) | 1 |
+| [gateway](#module-3) | 1 |
+| [jiuwenswarm](#module-4) | 3 |
+| [jiuwenswarm/agents/harness](#module-5) | 1 |
+| [jiuwenswarm/channels/web/frontend](#module-6) | 1 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-7) | 1 |
+| [jiuwenswarm/observability](#module-8) | 1 |
+| [jiuwenswarm/server](#module-9) | 1 |
 
 <a id="module-1"></a>
 
@@ -49,6 +52,10 @@ generated: true
 
 <a id="module-3"></a>
 
+## gateway
+
+<a id="module-4"></a>
+
 ## jiuwenswarm
 
 ### 开发后 (archive)
@@ -59,7 +66,11 @@ generated: true
 | [SDD-0010](archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | shipped | @chenchunzhou | observability | 2026-08-06 |
 | [SDD-0028](archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | swarmflow verify / fork 可观测与前端呈现 | shipped | @xiajing | observability | 2026-09-29 |
 
-<a id="module-4"></a>
+<a id="module-5"></a>
+
+## jiuwenswarm/agents/harness
+
+<a id="module-6"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -69,7 +80,7 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0026](proposals/SDD-0026-trajectory-observability-web-ui/design.md) | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | draft | @alan_cheng | observability | 2026-09-15 |
 
-<a id="module-5"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -79,7 +90,7 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
 
-<a id="module-6"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/observability
 
@@ -88,3 +99,7 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [SDD-0025](proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | draft | @alan_cheng | observability | 2026-09-15 |
+
+<a id="module-9"></a>
+
+## jiuwenswarm/server
