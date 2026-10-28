@@ -189,11 +189,11 @@ def test_e2a_to_agent_request_roundtrip():
 
 def test_e2a_to_agent_request_preserves_user_id_for_agentos_routing():
     env = e2a_from_agent_fields(
-        request_id="cron-snapshot",
+        request_id="cron-command-ack",
         channel_id="web",
         session_id="session-1",
-        req_method=ReqMethod.CRON_JOBS_SYNC,
-        params={"jobs": []},
+        req_method=ReqMethod.CRON_COMMAND_ACK,
+        params={"command_id": "cmd-1", "data": {}},
         user_id="alice",
     )
 
