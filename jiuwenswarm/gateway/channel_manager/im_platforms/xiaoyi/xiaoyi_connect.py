@@ -335,6 +335,8 @@ class XiaoyiChannel(BaseChannel):
         self._accumulated_texts: dict[str, str] = {}  # Accumulated text per session for push notification
         # V2 Stream Routing: agent_id → (顶层 sessionId, task_id, push_id, ts) 活跃映射，出站判定 ws vs push 用
         self._active_push_sessions: dict[str, tuple[str, str, str, float]] = {}
+        # A /join receipt keeps the platform task alive across asynchronous Team messages.
+        self._team_task_holds: set[tuple[str, str]] = set()
         # V2: team 投递 ws 活跃窗口——最近 N 秒内有该 agent_id 的 inbound 视为手机端在线，走 ws；超窗走 push。
         # 手机端收到 final 或长时间无消息会主动关 ws（网关无法直接感知手机 ws 状态），靠 inbound 活跃度间接判断。
         self._team_ws_alive_window: float = float(
@@ -466,6 +468,7 @@ class XiaoyiChannel(BaseChannel):
         self._push_flush_tasks.clear()
         self._push_merge_buffers.clear()
         self._active_push_sessions.clear()
+        self._team_task_holds.clear()
         # V2: 取消活跃映射超时清理任务
         if self._active_push_cleanup_task and not self._active_push_cleanup_task.done():
             self._active_push_cleanup_task.cancel()
@@ -497,7 +500,10 @@ class XiaoyiChannel(BaseChannel):
                     if entry[3] < cutoff
                 ]
                 for aid in stale:
-                    self._active_push_sessions.pop(aid, None)
+                    entry = self._active_push_sessions.pop(aid, None)
+                    if entry:
+                        hold_key = (entry[0], entry[1])
+                        self._team_task_holds.discard(hold_key)
                 if stale:
                     logger.info("[XiaoyiChannel] 清理 %d 个 stale 活跃映射条目", len(stale))
         except asyncio.CancelledError:
@@ -585,6 +591,32 @@ class XiaoyiChannel(BaseChannel):
         """非 team 模式原有单值投递路径（保留兼容）."""
         logger.info(f"XiaoyiChannel 发送消息: {msg}")
         session_id, task_id = self._extract_platform_receive_info(msg)
+        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
+        agent_id = str(metadata.get("im_sender_user_id") or "")
+        active = self._active_push_sessions.get(agent_id) if agent_id else None
+        member_lifecycle_event = bool(
+            metadata.get("member_name")
+            and msg.event_type in {None, EventType.CHAT_PROCESSING_STATUS}
+        )
+        hold_team_task = bool(
+            active
+            and active[0] == session_id
+            and active[1] == task_id
+            and (
+                (
+                    metadata.get("xiaoyi_team_task_hold")
+                    and msg.event_type == EventType.CHAT_FINAL
+                )
+                or member_lifecycle_event
+            )
+        )
+        if hold_team_task:
+            self._team_task_holds.add((session_id, task_id))
+            logger.info(
+                "[XiaoyiChannel] hold team task: sid=%s task_id=%s",
+                (session_id or "")[:8],
+                task_id,
+            )
         # Handle chat.file event
         if self.config.mode == "xiaoyi_claw" and msg.event_type == EventType.CHAT_FILE:
             files = msg.payload.get("files", {}) if isinstance(msg.payload, dict) else {}
@@ -660,6 +692,16 @@ class XiaoyiChannel(BaseChannel):
                 self._clear_session_timeout(session_id)
                 self._mark_session_completed(session_id)
                 self._accumulated_texts.pop(session_id, None)
+                hold_key = (session_id, task_id)
+                if hold_key in self._team_task_holds:
+                    self._team_task_holds.discard(hold_key)
+                    for aid, entry in list(self._active_push_sessions.items()):
+                        if entry[0] == session_id and entry[1] == task_id:
+                            self._active_push_sessions.pop(aid, None)
+                    flush_task = self._ws_flush_tasks.pop(task_id, None)
+                    if flush_task and not flush_task.done():
+                        flush_task.cancel()
+                    self._ws_flush_buffers.pop(task_id, None)
 
             logger.warning(f"XiaoyiChannel 发送错误消息: session={session_id}, error={error_text}")
             return
@@ -684,7 +726,7 @@ class XiaoyiChannel(BaseChannel):
         if not self.config.enable_streaming:
             append = False
             last_chunk = True
-            final = True
+            final = not hold_team_task
         else:
             # 流式模式：按事件类型计算增量与是否结束
             is_delta = msg.event_type == EventType.CHAT_DELTA
@@ -708,7 +750,7 @@ class XiaoyiChannel(BaseChannel):
             append = True
             final = False
             last_chunk = last_chunk
-            final = is_final
+            final = bool(is_final and not hold_team_task)
 
         # Get accumulated text for this session (for push notification)
         accumulated_text = self._accumulated_texts.get(session_id, "")
@@ -752,6 +794,7 @@ class XiaoyiChannel(BaseChannel):
             ]
             for aid in _aid_to_clean:
                 self._active_push_sessions.pop(aid, None)
+            self._team_task_holds.discard((session_id, task_id))
 
     # ==================== V2 Stream Routing: team 双通道投递 ====================
 
@@ -768,6 +811,70 @@ class XiaoyiChannel(BaseChannel):
         EventType.CHAT_TOOL_RESULT,
         EventType.CHAT_PROCESSING_STATUS,
     })
+
+    async def _finalize_held_team_task(
+        self,
+        agent_id: str,
+        session_id: str,
+        task_id: str,
+        *,
+        status_text: str,
+        status_state: str,
+    ) -> None:
+        """Close one held /join task after its Team round reaches a terminal state."""
+        hold_key = (session_id, task_id)
+        if hold_key not in self._team_task_holds:
+            return
+
+        for url_key in list(self._ws_connections.keys()):
+            await self._send_status_update_with_state(
+                task_id,
+                session_id,
+                status_text,
+                status_state,
+                url_key,
+                is_final=True,
+            )
+
+        active = self._active_push_sessions.get(agent_id)
+        owns_active_route = bool(
+            active
+            and active[0] == session_id
+            and active[1] == task_id
+        )
+        if owns_active_route:
+            self._active_push_sessions.pop(agent_id, None)
+            await self._stop_session_heartbeat(session_id)
+            self._clear_task_timeout(session_id)
+            self._clear_session_timeout(session_id)
+            self._mark_session_completed(session_id)
+            self._clear_session_waiting_for_push(session_id, task_id)
+            self._accumulated_texts.pop(session_id, None)
+
+        flush_task = self._ws_flush_tasks.pop(task_id, None)
+        if flush_task and not flush_task.done():
+            flush_task.cancel()
+        self._ws_flush_buffers.pop(task_id, None)
+        self._team_task_holds.discard(hold_key)
+        logger.info(
+            "[XiaoyiChannel] released held team task: sid=%s task_id=%s state=%s",
+            (session_id or "")[:8],
+            task_id,
+            status_state,
+        )
+
+    @staticmethod
+    def _is_team_terminal_status(msg: Message) -> bool:
+        """Return whether a Team processing-status frame closes the round."""
+        if msg.event_type != EventType.CHAT_PROCESSING_STATUS:
+            return False
+        payload = msg.payload
+        if not isinstance(payload, dict):
+            return False
+        return bool(
+            payload.get("is_processing") is False
+            and payload.get("is_complete") is True
+        )
 
     async def _send_team(self, msg: Message, routing_target: RoutingTarget) -> None:
         """team 模式双通道投递：活跃会话走 ws 流式，非活跃走 push webhook 全文 final."""
@@ -801,6 +908,20 @@ class XiaoyiChannel(BaseChannel):
             msg.event_type, routing_target.intent, (agent_id or "")[:8], len(content),
             ws_active, (f"{now - last_seen:.1f}s" if last_seen else "none"), bool(delivery.push_id),
         )
+
+        # A Team round terminal has no user-visible content of its own. Close a
+        # held /join task here; members without a hold must not fall through
+        # and emit an empty final frame.
+        if self._is_team_terminal_status(msg):
+            if (ws_session, ws_task) in self._team_task_holds:
+                await self._finalize_held_team_task(
+                    agent_id,
+                    ws_session,
+                    ws_task,
+                    status_text=get_status_text_for_event(msg.event_type, msg.payload),
+                    status_state="completed",
+                )
+            return
 
         # status_update / file 类事件透传（不参与 push 合并）
         if should_send_as_status_update(msg.event_type):
@@ -850,6 +971,18 @@ class XiaoyiChannel(BaseChannel):
                 logger.warning("[XiaoyiChannel] _send_team drop: no ws/push/legacy available agent_id=%s",
                                (agent_id or "")[:8])
 
+        if (
+            msg.event_type == EventType.CHAT_ERROR
+            and (ws_session, ws_task) in self._team_task_holds
+        ):
+            await self._finalize_held_team_task(
+                agent_id,
+                ws_session,
+                ws_task,
+                status_text=get_status_text_for_event(msg.event_type, msg.payload),
+                status_state="failed",
+            )
+
     def _resolve_active_ws(
             self, agent_id: str, delivery: XiaoyiDeliveryTarget
     ) -> tuple[str, str, float]:
@@ -894,7 +1027,11 @@ class XiaoyiChannel(BaseChannel):
         return str(content)
 
     async def _send_ws_to_user(
-            self, session_id: str, task_id: str, msg: Message, content: str
+            self,
+            session_id: str,
+            task_id: str,
+            msg: Message,
+            content: str,
     ) -> None:
         """活跃会话 ws 流式投递（复用 _send_text_response）。
 
@@ -911,6 +1048,14 @@ class XiaoyiChannel(BaseChannel):
 
         # team.message 是完整的逻辑消息（monitor 转发全文，非流式 delta），
         if msg.event_type == EventType.TEAM_MESSAGE:
+            last_chunk = True
+            is_final = False
+        elif (
+            msg.event_type in {EventType.CHAT_FINAL, EventType.CHAT_ERROR}
+            and (session_id, task_id) in self._team_task_holds
+        ):
+            # Leader finals and held-task errors keep task cleanup centralized
+            # in _finalize_held_team_task(), which emits the only final status.
             last_chunk = True
             is_final = False
 
@@ -1326,6 +1471,12 @@ class XiaoyiChannel(BaseChannel):
         # ts 用于超时清理，避免异常断开的 stale 条目累积（多用户长期运行）
         if agent_id:
             self._active_push_sessions[agent_id] = (top_session_id, task_id, push_id, time.time())
+            # A new platform request supersedes any /join response task still held
+            # for the previous request.
+            self._team_task_holds = {
+                key for key in self._team_task_holds
+                if key[0] not in {top_session_id, conversation_id}
+            }
             if push_id:
                 self.config.push_id = push_id  # 内存态保持最新，供 cron 推送兜底
 
@@ -1542,7 +1693,14 @@ class XiaoyiChannel(BaseChannel):
             await self._send_agent_response(session_id, task_id, response, url_key)
 
     async def _send_status_update_with_state(
-            self, task_id: str, session_id: str, message: str, state: str, url_key: str
+            self,
+            task_id: str,
+            session_id: str,
+            message: str,
+            state: str,
+            url_key: str,
+            *,
+            is_final: bool = False,
     ) -> None:
         """发送状态更新消息（A2A 格式），支持自定义状态."""
         response = {
@@ -1551,7 +1709,7 @@ class XiaoyiChannel(BaseChannel):
             "result": {
                 "taskId": task_id,
                 "kind": "status-update",
-                "final": False,
+                "final": is_final,
                 "status": {
                     "message": {
                         "role": "agent",
