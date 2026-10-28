@@ -211,6 +211,9 @@ function RecordCards({
     if (anchor === null || tabs === null || pane === null) return;
     const scroller = scrollBox(tabs);
     if (scroller === null) return;
+    // The two tab panels are the same element type, so React can reuse the section and keep the
+    // previous pane's inline min-height. Measure the incoming content without that leftover.
+    pane.style.minHeight = '';
     const shift = () => tabs.getBoundingClientRect().top - anchor;
     const delta = shift();
     if (Math.abs(delta) < 1) return;
@@ -315,6 +318,7 @@ function RecordCards({
 
       {pane.value === 'details' ? (
         <section
+          key={pane.value}
           ref={paneRef}
           role="tabpanel"
           className={css.resultPane}
@@ -351,6 +355,7 @@ function RecordCards({
         </section>
       ) : (
         <section
+          key={pane.value}
           ref={paneRef}
           role="tabpanel"
           className={css.resultPane}
