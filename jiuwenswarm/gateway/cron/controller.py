@@ -535,6 +535,12 @@ class CronController:
         existing = await self._store.get_job(job_id)
         if existing is None:
             raise KeyError("job not found")
+        # proactive.tick 的开关由 config 的 proactive_recommendation.enabled 驱动。
+        # 服务端统一拒绝（web/TUI/E2A 三入口共用此判定），客户端不依赖本地预检。
+        if str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
+            raise ValueError(
+                "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
+            )
         if enabled and not await self._scheduler.project_execution_allowed(
             existing.project_id, existing.user_id
         ):

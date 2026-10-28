@@ -495,3 +495,20 @@ async def test_hide_commit_rejection_restores_original_enabled_jobs():
     assert jobs["disabled"].enabled is False
     assert scheduler.reload.await_count == 2
     assert "project" not in scheduler.hiding_projects
+
+
+@pytest.mark.asyncio
+async def test_toggle_job_rejects_proactive_tick_with_explicit_error() -> None:
+    """toggle 对 proactive.tick 服务端显式拒绝（D-20261028-1105 D-04）。
+
+    guard 覆盖 web/TUI/E2A 三个入口，客户端不再依赖本地预检；静默丢弃
+    enabled 返回假成功的既有路径就此关闭。"""
+    cc = _make_controller()
+    cc._store.get_job = AsyncMock(return_value=SimpleNamespace(
+        id="proactive-1", mode="proactive.tick", project_id="default", user_id=None,
+    ))
+
+    with pytest.raises(ValueError, match="主动推荐定时任务"):
+        await cc.toggle_job("proactive-1", True)
+
+    assert cc._store.update_calls == []
