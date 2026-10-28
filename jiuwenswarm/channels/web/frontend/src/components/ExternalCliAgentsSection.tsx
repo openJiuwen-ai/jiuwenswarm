@@ -1215,7 +1215,7 @@ export function ExternalCliAgentsSection({
             <Loader2 className="settings-spinner h-3.5 w-3.5" />
             {t('config.externalCli.installPhase.running')}
           </span>
-        ) : !enabled ? (
+        ) : installed && !enabled ? (
           <span
             className="inline-flex items-center gap-1 text-xs text-danger"
             data-testid="settings-panel-external-cli-agent-status"
