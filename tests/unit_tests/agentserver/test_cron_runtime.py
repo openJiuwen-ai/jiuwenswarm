@@ -332,49 +332,59 @@ async def test_cron_tools_update_job_clears_mcp_with_empty_list(tmp_path, monkey
 
 
 @pytest.mark.asyncio
-async def test_cron_tools_read_gateway_snapshot_after_local_store_is_empty(tmp_path, monkeypatch) -> None:
-    """AgentOS jobs remain manageable after an AgentServer process restart."""
-    tools, _ = _make_cron_tools(tmp_path, monkeypatch)
-    job = _make_job("gateway-only-job", name="from-gateway")
-    monkeypatch.setattr(cron_tools_module, "_gateway_jobs_snapshots", {"user-a": {job.id: job}})
+async def test_cron_tools_manage_jobs_over_ack_roundtrip_after_local_store_is_empty(
+    tmp_path, monkeypatch,
+) -> None:
+    """AgentOS jobs remain manageable after an AgentServer process restart.
 
-    assert await tools._local_store.list_jobs() == []
+    With the per-turn snapshot retired (D-20261028-1105), the ack round trip
+    is the only read path: a restarted AgentServer (empty local store) lists
+    and reads jobs by querying the Gateway store directly.
+    """
+    tools = CronTools()
+    tools._local_store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    gateway_jobs = {"gateway-only-job": {"id": "gateway-only-job", "name": "from-gateway"}}
+
+    async def _send(payload: dict) -> bool:
+        action = payload["body"]["action"]
+        if action == "list":
+            data = list(gateway_jobs.values())
+        else:
+            data = gateway_jobs.get(str(payload["body"]["data"].get("job_id") or ""))
+        cron_tools_module.resolve_gateway_cron_command_ack(
+            payload["body"]["command_id"], {"data": data},
+        )
+        return True
+
+    monkeypatch.setattr(cron_tools_module, "send_runtime_push", _send)
     token = tools.push_cron_route(CronToolRoute(request_id="req-a", user_id="user-a"))
     try:
         jobs = await tools.list_jobs()
-    finally:
-        tools.reset_cron_route(token)
-
-    assert [row["id"] for row in jobs] == ["gateway-only-job"]
-    token = tools.push_cron_route(CronToolRoute(request_id="req-a", user_id="user-a"))
-    try:
+        assert [row["id"] for row in jobs] == ["gateway-only-job"]
         assert (await tools.get_job("gateway-only-job"))["name"] == "from-gateway"
     finally:
         tools.reset_cron_route(token)
 
 
 @pytest.mark.asyncio
-async def test_cron_tools_keep_agentos_snapshots_and_pending_views_user_scoped(tmp_path, monkeypatch) -> None:
-    """Concurrent AgentOS users on one AgentServer must never share cron views."""
+async def test_cron_tools_keep_pending_views_user_scoped(tmp_path, monkeypatch) -> None:
+    """Concurrent AgentOS users on one AgentServer must never share cron views.
+
+    Pending projections are scoped per request route; with the snapshot
+    retired the non-ack local view is empty, so only pending entries show.
+    """
     tools, _ = _make_cron_tools(tmp_path, monkeypatch)
-    job_a = _make_job("job-a", name="A", user_id="user-a")
-    job_b = _make_job("job-b", name="B", user_id="user-b")
-    monkeypatch.setattr(
-        cron_tools_module,
-        "_gateway_jobs_snapshots",
-        {"user-a": {job_a.id: job_a}, "user-b": {job_b.id: job_b}},
-    )
 
     token_a = tools.push_cron_route(CronToolRoute(request_id="req-a", user_id="user-a"))
     try:
         tools._pending_view_for_route()["pending-a"] = _make_job("pending-a", name="pending A")
-        assert {row["id"] for row in await tools.list_jobs()} == {"pending-a", "job-a"}
+        assert [row["id"] for row in await tools.list_jobs()] == ["pending-a"]
     finally:
         tools.reset_cron_route(token_a)
 
     token_b = tools.push_cron_route(CronToolRoute(request_id="req-b", user_id="user-b"))
     try:
-        assert [row["id"] for row in await tools.list_jobs()] == ["job-b"]
+        assert await tools.list_jobs() == []
     finally:
         tools.reset_cron_route(token_b)
 
@@ -415,43 +425,39 @@ async def test_cron_tools_runtime_host_transport_waits_for_gateway_ack(
 
 
 @pytest.mark.asyncio
-async def test_cron_tools_delete_missing_job_returns_false_without_push(
+async def test_cron_tools_delete_missing_job_submits_without_local_view(
     tmp_path, monkeypatch,
 ) -> None:
-    """与迁移前 store 契约一致：job 不存在时 delete 返回 False，不提交 Gateway。"""
+    """非 ack 传输下无本地视图时 delete 直接提交，裁决权在 Gateway
+    （fire-and-forget 取舍，D-20261028-1105 §9.2）。"""
     tools, push = _make_cron_tools(tmp_path, monkeypatch)
 
-    assert await tools.delete_job("no-such-job") is False
-    assert push.payloads == []
+    assert await tools.delete_job("no-such-job") is True
+    assert [p["body"]["action"] for p in push.payloads] == ["delete"]
 
 
 @pytest.mark.asyncio
-async def test_cron_tools_toggle_missing_job_raises_key_error(
+async def test_cron_tools_toggle_missing_job_submits_without_local_view(
     tmp_path, monkeypatch,
 ) -> None:
-    """与迁移前 store 契约一致：job 不存在时 toggle 抛 KeyError（不假成功）。"""
+    """非 ack 传输下无本地视图时 toggle 提交并报告 submitted，不做本地
+    not-found 拒绝（fire-and-forget 取舍，D-20261028-1105 §9.2）。"""
     tools, push = _make_cron_tools(tmp_path, monkeypatch)
 
-    with pytest.raises(KeyError):
-        await tools.toggle_job("no-such-job", True)
-    assert push.payloads == []
+    toggled = await tools.toggle_job("no-such-job", True)
+    assert toggled["gateway_mutation_status"] == "submitted"
+    assert [p["body"]["action"] for p in push.payloads] == ["toggle"]
 
 
 @pytest.mark.asyncio
 async def test_cron_tools_delete_and_toggle_existing_job_still_push(
     tmp_path, monkeypatch,
 ) -> None:
-    """job 存在（Gateway 快照可见）时 delete/toggle 照常提交 Gateway 单源。"""
+    """非 ack 传输下 delete/toggle 照常提交 Gateway 单源（保护与存在性由服务端裁决）。"""
     tools, push = _make_cron_tools(tmp_path, monkeypatch)
-    job = _make_job("job-live", name="live")
-    monkeypatch.setattr(
-        cron_tools_module, "_gateway_jobs_snapshots", {"user-a": {job.id: job}}
-    )
 
     token = tools.push_cron_route(CronToolRoute(request_id="req-op", user_id="user-a"))
     try:
-        # 先 toggle 后 delete：delete 会把 job 记入 pending_deletes，
-        # 同 scope 内后续 toggle 将不可见（与迁移前删除语义一致）。
         toggled = await tools.toggle_job("job-live", False)
         assert toggled["gateway_mutation_status"] == "submitted"
         assert await tools.delete_job("job-live") is True
@@ -463,21 +469,45 @@ async def test_cron_tools_delete_and_toggle_existing_job_still_push(
 
 
 @pytest.mark.asyncio
-async def test_cron_tools_missing_agentos_snapshot_still_forwards_mutations(
+async def test_cron_tools_update_existing_prefers_pending_then_gateway_get(
     tmp_path, monkeypatch,
 ) -> None:
-    """AgentOS snapshot sync is best-effort; Gateway remains authoritative."""
-    tools, push = _make_cron_tools(tmp_path, monkeypatch)
-    monkeypatch.setattr(cron_tools_module, "_gateway_jobs_snapshots", {})
-    token = tools.push_cron_route(CronToolRoute(request_id="req-missing", user_id="user-a"))
+    """ack 直连下 update 的 existing 前置读：pending view 命中则短路，
+    未命中走普通 get 权威读（D-20261028-1105 D-02/D-03）。"""
+    tools = CronTools()
+    tools._local_store = CronJobStore(path=tmp_path / "cron_jobs.json")
+    gateway_job = {"id": "job-live", "name": "live", "work_mode": "work"}
+    get_calls: list[str] = []
+
+    async def _send(payload: dict) -> bool:
+        action = payload["body"]["action"]
+        if action == "get":
+            get_calls.append(str(payload["body"]["data"].get("job_id") or ""))
+            data = dict(gateway_job)
+        else:
+            data = dict(gateway_job)
+        cron_tools_module.resolve_gateway_cron_command_ack(
+            payload["body"]["command_id"], {"data": data},
+        )
+        return True
+
+    monkeypatch.setattr(cron_tools_module, "send_runtime_push", _send)
+    token = tools.push_cron_route(CronToolRoute(request_id="req-u", user_id="user-a"))
     try:
-        assert await tools.delete_job("job-live") is True
-        toggled = await tools.toggle_job("job-toggle", False)
+        # pending view 命中：不发 get，同轮 create→update 短路。
+        tools._pending_view_for_route()["job-live"] = _make_job("job-live", name="pending")
+        result = await tools.update_job("job-live", {"description": "x"})
+        assert get_calls == []
+        assert result["id"] == "job-live"
+
+        # pending scope 生命周期结束后（被回收/清除）：普通 get 权威读
+        # 提供 existing 视图。
+        tools._pending_view_for_route().pop("job-live", None)
+        result = await tools.update_job("job-live", {"description": "y"})
+        assert get_calls == ["job-live"]
+        assert result["id"] == "job-live"
     finally:
         tools.reset_cron_route(token)
-
-    assert toggled["gateway_mutation_status"] == "submitted"
-    assert [p["body"]["action"] for p in push.payloads] == ["delete", "toggle"]
 
 
 @pytest.mark.asyncio
@@ -1435,3 +1465,36 @@ class TestBuildToolsAllowCreate:
         result = await unified._func(action="list")
 
         assert result == {"jobs": [{"id": "job-1"}]}
+
+
+@pytest.mark.asyncio
+async def test_agent_ws_cron_jobs_sync_tombstone_returns_ok(monkeypatch) -> None:
+    """Tombstone（D-20261028-1105 D-06）：旧 Gateway 发来的 CRON_JOBS_SYNC 帧被
+    识别短路、直接回 ok，不安装快照，也不落入通用 chat 执行路径。"""
+    from jiuwenswarm.server import agent_ws_server as ws_module
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.common.schema.message import ReqMethod
+
+    server = object.__new__(AgentWebSocketServer)
+    sent: list[Any] = []
+
+    async def _send_wire_payload(ws, wire) -> None:
+        sent.append(wire)
+
+    monkeypatch.setattr(ws_module, "send_wire_payload", _send_wire_payload)
+    request = SimpleNamespace(
+        request_id="req-sync",
+        req_method=ReqMethod.CRON_JOBS_SYNC,
+        channel_id="web",
+        params={"jobs": [{"id": "j1"}]},
+        user_id="alice",
+        metadata=None,
+        agent_ref=None,
+    )
+
+    ok = await server._handle_gateway_cron_callback(
+        ws=SimpleNamespace(), request=request, send_lock=asyncio.Lock(),
+    )
+
+    assert ok is True
+    assert len(sent) == 1

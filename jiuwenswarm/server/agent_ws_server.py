@@ -2209,15 +2209,17 @@ class AgentWebSocketServer:
 
         params = request.params if isinstance(request.params, dict) else {}
         from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
-            install_gateway_jobs_snapshot,
             resolve_gateway_cron_command_ack,
             resolve_gateway_run_ack,
         )
 
         if request.req_method == ReqMethod.CRON_JOBS_SYNC:
-            install_gateway_jobs_snapshot(
-                params.get("jobs", []), user_id=request.user_id
-            )
+            # Tombstone (D-20261028-1105): the per-turn snapshot push has been
+            # retired; cron tools read the Gateway store over the ack round
+            # trip.  Keep consuming the method for one release so a not-yet
+            # upgraded Gateway's sync frames get an ok instead of falling
+            # through to the generic chat path.
+            pass
         elif request.req_method == ReqMethod.CRON_COMMAND_ACK:
             resolve_gateway_cron_command_ack(
                 str(params.get("command_id") or ""),

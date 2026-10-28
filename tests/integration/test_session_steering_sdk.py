@@ -439,7 +439,6 @@ async def test_gateway_websocket_runtime_harness_sdk(tmp_path, monkeypatch, orig
     client = WebSocketAgentServerClient()
     monkeypatch.setattr(MessageHandler, "_instance", None)
     gateway = MessageHandler(client)
-    gateway._sync_agentos_cron_jobs = AsyncMock()
     gateway._broadcast_task_global_running = AsyncMock()
     gateway._trigger_before_chat_request_hook = AsyncMock()
     observed = []
