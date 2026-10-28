@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -70,6 +70,39 @@ class TestRunNowBillingTrace:
         svc._runs[first] = object()
         svc._runs[second] = object()
         assert svc._next_run_now_id(job_id, 1793162095) == f"{job_id}:1793162097"
+
+    def test_run_now_skips_pending_wake_event(self) -> None:
+        """定时轮 run_id 在 wake 前只在 _events：立即执行必须避让。"""
+        svc = _TestableScheduler.__new__(_TestableScheduler)
+        svc._runs = {}
+        svc._last_run_now_ts = {}
+        job_id = "1d96c179c1f6421fb999a6ac935dc8c9"
+        svc._events = [
+            (0.0, 1, SimpleNamespace(job_id=job_id, run_id=f"{job_id}:1793162095"))
+        ]
+        assert svc._next_run_now_id(job_id, 1793162095) == f"{job_id}:1793162096"
+
+    def test_scheduled_id_avoids_occupied_run(self) -> None:
+        """立即执行/活跃 run 占用某秒时，定时轮顺延 1 秒且 run_id 同步。"""
+        svc = _TestableScheduler.__new__(_TestableScheduler)
+        svc._runs = {}
+        svc._run_tasks = {}
+        svc._events = []
+        job = _make_job(
+            job_id="daily-930",
+            cron_expr="30 9 * * *",
+            timezone="Asia/Shanghai",
+            wake_offset_seconds=0,
+        )
+        now_ts = datetime(2026, 7, 24, 9, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+
+        push_dt, wake_dt, run_id = svc.compute_next_run(job, now_ts=now_ts)
+        svc._runs[run_id] = object()
+        push2, wake2, run2 = svc.compute_next_run(job, now_ts=now_ts)
+
+        assert run2 != run_id
+        assert push2 == push_dt + timedelta(seconds=1)
+        assert wake2 == wake_dt + timedelta(seconds=1)
 
 
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.device_tool_planner import (
