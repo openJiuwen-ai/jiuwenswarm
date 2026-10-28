@@ -296,6 +296,14 @@ function AssetPublishDrawer({
     // Review lists (files, excluded, normalizations) carry plain strings: paths and notes.
     // Only map a string when it is one of the known codes; otherwise show it verbatim.
     if (typeof value === 'string') return known[value]?.[zh ? 0 : 1] ?? value;
+    // Dependencies are descriptive objects ({kind, path, embedded, source}) with no error code.
+    // Summarize them instead of falling through to the generic failure text.
+    if (value && typeof value === 'object' && !issue?.code && !issue?.message) {
+      const summary = Object.entries(value as Record<string, unknown>)
+        .filter(([, item]) => item !== null && item !== undefined && item !== '')
+        .map(([key, item]) => `${key}: ${typeof item === 'object' ? JSON.stringify(item) : String(item)}`);
+      if (summary.length) return summary.join(', ');
+    }
     const code = issue?.code;
     if (code && known[code]) return known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '');
     // Prefer the Hub's own guidance when it is short enough; it is more specific than any code table.
