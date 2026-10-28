@@ -69,7 +69,10 @@ async def record_model_token_usage(
     attribution = _mapping(getattr(inputs, "context_usage_attribution", None))
     if not attribution:
         attribution = _mapping(getattr(ctx, "context_usage_attribution", None))
-    build_context = getattr(getattr(ctx, "agent", None), "_usage_build_context", None)
+    agent = getattr(ctx, "agent", None)
+    build_context = getattr(agent, "_usage_build_context", None)
+    if build_context is None:
+        build_context = getattr(agent, "_build_context", None)
     role = fallback_role or getattr(build_context, "role", None)
     role = getattr(role, "value", role)
     if is_subagent:
@@ -78,6 +81,7 @@ async def record_model_token_usage(
         product_session_id
         or attribution.get("product_session_id")
         or attribution.get("parent_session_id")
+        or getattr(build_context, "session_id", None)
         or getattr(inputs, "conversation_id", None)
         or ""
     ).strip()
@@ -172,7 +176,10 @@ def install_session_token_usage_subagent_hook() -> None:
 
     def create_subagent_with_usage(self, *args, **kwargs):  # type: ignore[no-untyped-def]
         subagent = original(self, *args, **kwargs)
-        product_id = getattr(getattr(self, "_build_context", None), "session_id", None)
+        build_context = getattr(self, "_usage_build_context", None)
+        if build_context is None:
+            build_context = getattr(self, "_build_context", None)
+        product_id = getattr(build_context, "session_id", None)
         if not product_id:
             invocation_id = current_usage_invocation_id()
             configured = self.configured_rails() if hasattr(self, "configured_rails") else []

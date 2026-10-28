@@ -168,3 +168,26 @@ async def test_model_call_without_response_does_not_create_usage_ledger(tmp_path
     )
     await record_model_token_usage(ctx)
     assert not (tmp_path / "sess_usage" / "session_token_usage.sqlite3").exists()
+
+
+@pytest.mark.asyncio
+async def test_model_usage_uses_agent_build_context_session_id(tmp_path, monkeypatch):
+    from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import record_model_token_usage
+    from jiuwenswarm.server.runtime.session import lifecycle, session_history
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path)
+    ctx = SimpleNamespace(
+        agent=SimpleNamespace(_build_context=SimpleNamespace(session_id="sess_usage", role="leader")),
+        extra={},
+        inputs=SimpleNamespace(
+            context_usage_request_id="build-context-call",
+            context_usage_attribution={},
+            conversation_id=None,
+            response=SimpleNamespace(usage_metadata={"input_tokens": 10, "output_tokens": 2}),
+        ),
+    )
+
+    await record_model_token_usage(ctx)
+
+    assert SessionTokenUsageLedger(tmp_path / "sess_usage", "sess_usage").snapshot()["revision"] == 1

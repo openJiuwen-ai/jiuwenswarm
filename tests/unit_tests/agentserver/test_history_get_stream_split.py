@@ -190,7 +190,7 @@ async def test_web_cursor_stream_emits_exact_snapshot_metadata(monkeypatch, tmp_
 
 @pytest.mark.asyncio
 async def test_web_cursor_stream_omits_unrecorded_session_usage(monkeypatch):
-    from jiuwenswarm.server.runtime.session import session_token_usage
+    from jiuwenswarm.server.control import history_service
 
     server = agent_ws_server_module.AgentWebSocketServer.__new__(
         agent_ws_server_module.AgentWebSocketServer
@@ -207,8 +207,8 @@ async def test_web_cursor_stream_omits_unrecorded_session_usage(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        session_token_usage,
-        "get_session_token_usage",
+        history_service,
+        "load_history_session_usage",
         lambda session_id: {
             "schema_version": 1,
             "revision": 0,
