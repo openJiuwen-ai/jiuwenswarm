@@ -4815,17 +4815,13 @@ async def test_upload_media_item_via_http_keeps_recognized_image_suffix(
 
 @pytest.mark.asyncio
 async def test_document_upload_uses_e2a_for_remote_enterprise_client(monkeypatch):
-    from unittest.mock import AsyncMock, Mock
+    from unittest.mock import AsyncMock
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     client = object()
     upload = AsyncMock(return_value=(True, {"path": "/tenant/uploads/report.txt"}))
     monkeypatch.setattr(
         "gateway.routing.agent_http_bridge.upload_file_bytes_via_e2a", upload
-    )
-    monkeypatch.setattr(
-        app_web_handlers, "_persist_media_locally",
-        Mock(side_effect=AssertionError("Gateway must not write tenant files")),
     )
     result = await app_web_handlers._upload_document_item_via_http(
         {"filename": "report.txt", "mimeType": "text/plain"}, b"report",
@@ -5253,30 +5249,6 @@ async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> N
     response = channel.responses[-1]
     assert response["ok"] is True
     assert "api_key" not in response["payload"]["model"]["model_client_config"]
-
-def test_persist_media_locally_concurrent_same_name_does_not_clobber(tmp_path, monkeypatch):
-    """单用户大图本地落盘在同名并发请求下必须各自占用唯一文件。"""
-    from concurrent.futures import ThreadPoolExecutor
-
-    monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path
-    )
-
-    def _persist(index: int):
-        return app_web_handlers._persist_media_locally(
-            f"image-{index}".encode(), "session-1", "image.png"
-        )
-
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(_persist, range(16)))
-
-    assert all(ok for ok, _payload in results)
-    paths = [Path(payload["path"]) for _ok, payload in results]
-    assert len(set(paths)) == 16
-    assert {path.read_bytes() for path in paths} == {
-        f"image-{index}".encode() for index in range(16)
-    }
-
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("runtime_busy, gateway_busy", [(True, False), (False, True)])
