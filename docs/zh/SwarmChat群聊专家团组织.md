@@ -37,14 +37,22 @@ sequenceDiagram
     participant Owner as Owner 后台
 
     User->>Gate: 发送带 mentions 的群消息
-    alt 被点名的专家团不少于两个，且 Owner 也在其中
+    alt 被点名的专家团不少于两个，没有单个专家，且 Owner 也在其中
         Gate->>Gate: 记下组织计划，mentions 保持不变
+    else 同时点了单个专家
+        Gate->>Gate: 不记计划，记下直接回复
     else 其他情况
         Gate->>Group: 不记计划，之后走单团
     end
     Group->>Proxy: 只唤醒 mentions 里的代理
     Proxy->>Proxy: run_team
-    alt 这个代理属于一条活计划
+    alt 这条消息是直接回复，且这个代理还在一条活组织里
+        Proxy-->>Proxy: 先不跑，等那条组织发完结果
+        Owner->>User: Owner 写入 expert-result 群消息
+        Proxy->>User: 然后走单团，写入 execution-result，不新开组织
+    else 这条消息是直接回复
+        Proxy->>User: 单团结束写入 execution-result，或单个专家自己回复
+    else 这个代理属于一条活计划
         Proxy->>Org: 拉起或复用实例，并加入组织
         Proxy-->>Proxy: 立刻返回“组织已在进行”
         Owner->>Org: 建根任务和每个成员的子任务，并代为认领
@@ -66,7 +74,7 @@ sequenceDiagram
 群消息进入团队回合时，mentions 多于一个才会调用 `record_organization_plan`。计划真正写入还要同时满足：
 
 1. 这个会话是已保存的群。
-2. mentions 里至少有两个专家团（`agent_group`）。单个专家不计数。
+2. mentions 里至少有两个专家团（`agent_group`），并且没有同时 @ 单个专家（`agent_template`）。只要点名了专家团又点了单个专家，这条消息不记组织计划，并记下直接回复标记。被点名的专家团如果还在一条没出结果的组织里，要等那条组织先把结果发到群里，再走原来的单团路径。这条直接回复不新开组织，也不复用组织实例。不在那条组织里的单个专家可以马上回复。
 3. 群上还没有 Owner，或者已有 Owner 也在这次 mentions 里。Owner 不在时，这条消息留在各代理自己的单团路径。
 
 第一次没有 Owner 时，mentions 里的第一个专家团成为 Owner。计划号就是这条消息的 `client_message_id`。mentions 和正文都不改写。
@@ -79,9 +87,9 @@ sequenceDiagram
 
 ## 4. run_team 的分叉
 
-`RunTeam.invoke` 先处理 `update` 和 `cancel`。对其余 `start` / `continue`，用 `pending_organization_plan` 查找包含这个代理、状态为 `pending` 或 `running` 的计划。
+`RunTeam.invoke` 先处理 `update` 和 `cancel`。对其余 `start` / `continue`，先看这个代理还欠哪一条消息，按到达顺序处理。欠的是一条还没发结果的组织时，这次调用加入那条组织。欠的是直接回复、而这个代理还在一条活组织里时，这次调用只返回等待，不建单团。组织结果发出之后，这条直接回复才走原来的单团后台执行。否则用这条消息自己的计划；没有时，才用包含这个代理、状态为 `pending` 或 `running` 的最早计划。
 
-找到计划时调用 `run_organization_member`，不创建 `GroupExecutions`。找不到时，已托管的群走原来的单团后台执行：创建执行记录，跑完后 `GroupExecutions.finish` 用 `execution-result-{execution_id}` 发群消息。单专家团和单个专家团的群聊仍走这条路径。
+找到计划时调用 `run_organization_member`，不创建 `GroupExecutions`。找不到时，已托管的群走原来的单团后台执行：创建执行记录，跑完后 `GroupExecutions.finish` 用 `execution-result-{execution_id}` 发群消息。单专家团和单个专家团的群聊仍走这条路径。直接回复不复用组织实例。组织还在进行时，被点名的专家团代理仍然不能自己发群消息；那条组织的结果发出之后，这条直接回复才可以自己发。不在组织里的单个专家不受这条等待限制。
 
 同一次组织里，同一个代理重叠的 `run_team` 会并到同一次实例准备。Owner 的后台等待每个计划只有一份。
 
@@ -136,7 +144,7 @@ Owner 后台在实例都尝试加入后做这些事，不把机械步骤交给�
 | `failed` | 准备失败，或结果等待结束时组织没有完成。 |
 | `expired` | 没有活的 Owner 后台，且计划年龄超过 62 分钟。 |
 
-同一条用户消息的重复 `run_team` 进入那条消息自己的计划。这个代理如果还没加入更早的活计划，这次 `run_team` 先加入那条计划，不会因为历史里已经有更新的 @ 就把它跳过。更早的计划已经接过之后，新的多 @ 才返回“已排队”，后台等到更早的计划结束后再启动，不会被旧计划接走。单 @ 在组织仍进行时仍留在当前组织路径，不另开私有团队。同一条多 @ 消息的计划已经是 `failed`、`expired` 或 `done` 时，这次 `run_team` 直接停住：不加入组织，不创建单团执行，也不发群消息。另一条没有这条计划的消息，仍按单团、追问或新的多 @ 计划处理。
+同一条用户消息的重复 `run_team` 进入那条消息自己的计划。这个代理如果还没加入更早的活计划，这次 `run_team` 先加入那条计划，不会因为历史里已经有更新的 @ 就把它跳过。后一问和仍未结束的计划有共同成员时，记下后一问就为它的 Owner 挂上排队，不依赖成员再接手一次。不在上一问里的成员同样得到“已排队”，不会去绑定还留在上一问里的实例。提前接手失败不会把这一问从队列里去掉。更早的计划已经接过之后，新的多 @ 也返回“已排队”，后台等到更早的计划结束后再由 Owner 启动。单 @ 在组织仍进行时仍留在当前组织路径，不另开私有团队。同一条多 @ 消息的计划已经是 `failed`、`expired` 或 `done` 时，这次 `run_team` 直接停住：不加入组织，不创建单团执行，也不发群消息。另一条没有这条计划的消息，仍按单团、追问或新的多 @ 计划处理。
 
 ## 8. 代码位置
 

@@ -127,12 +127,18 @@ class GroupMessageTool(GroupSendMessageTool):
         self.card.input_params["required"] = ["content"]
 
     async def invoke(self, inputs, **kwargs):
-        from jiuwenswarm.agents.swarm.group_org_bootstrap import group_reply_block_reason
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            group_reply_block_reason,
+            triggering_plan_id,
+        )
 
+        member_name = str(getattr(self.backend, "member_name", "") or "")
+        message_id = await triggering_plan_id(self.backend, member_name)
         blocked = group_reply_block_reason(
             self.context.session_id,
-            str(getattr(self.backend, "member_name", "") or ""),
+            member_name,
             str(getattr(self.backend, "team_name", "") or ""),
+            message_id=message_id,
         )
         if blocked:
             return ToolOutput(success=False, error=blocked)
@@ -233,13 +239,21 @@ class GroupTaskPolicyRail(DeepAgentRail):
             return
         if read_group(self.context.session_id) is None:
             return
-        from jiuwenswarm.agents.swarm.group_org_bootstrap import group_reply_block_reason
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            group_reply_block_reason,
+            triggering_plan_id,
+        )
 
         backend = get_team_backend(self.context)
+        member_name = str(
+            getattr(backend, "member_name", "") or self.context.member_name or ""
+        )
+        message_id = await triggering_plan_id(backend, member_name)
         blocked = group_reply_block_reason(
             self.context.session_id,
-            str(getattr(backend, "member_name", "") or self.context.member_name or ""),
+            member_name,
             str(getattr(backend, "team_name", "") or ""),
+            message_id=message_id,
         )
         if blocked:
             from openjiuwen.core.foundation.llm import ToolMessage

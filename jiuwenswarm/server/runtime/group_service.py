@@ -247,6 +247,39 @@ def add_group_organization_plan(group_id: str, plan: dict) -> bool:
     return True
 
 
+def group_direct_routes(group_id: str) -> list[dict]:
+    """Messages that must stay off every organization, oldest first."""
+    try:
+        state = read_group(group_id)
+    except GroupError:
+        return []
+    routes = (state or {}).get("direct_routes")
+    if not isinstance(routes, list):
+        return []
+    return [
+        item
+        for item in routes
+        if isinstance(item, dict) and str(item.get("plan_id") or "").strip()
+    ]
+
+
+def add_group_direct_route(group_id: str, route: dict) -> bool:
+    """Remember one direct-reply message. A repeated message id is ignored."""
+    state = read_group(group_id)
+    if state is None:
+        return False
+    routes = group_direct_routes(group_id)
+    if any(item.get("plan_id") == route.get("plan_id") for item in routes):
+        return False
+    routes = [*routes, copy.deepcopy(route)]
+    if len(routes) > 100:
+        routes = routes[-100:]
+    state["direct_routes"] = routes
+    state["updated_at"] = time.time()
+    _save(state)
+    return True
+
+
 def update_group_organization_plan(
     group_id: str, plan_id: str, **fields
 ) -> None:
