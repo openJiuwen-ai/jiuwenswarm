@@ -56,7 +56,7 @@ def object_prefix(group_id: str, bot_id: str, user_id: str) -> str:
 
 def _obs_http_client() -> PoolManager:
     """Share the OBS-only TLS policy between SDK and presigned-URL requests."""
-    verify = os.getenv("JIUWENCLAW_SSL_VERIFY", "false").strip().lower() not in {
+    verify = os.getenv("JIUWENSWARM_SSL_VERIFY", "false").strip().lower() not in {
         "", "0", "false", "no", "off",
     }
     return PoolManager(
@@ -76,7 +76,7 @@ class AttachmentStore:
         endpoint = os.getenv("OBS_URL", "").strip()
         access = os.getenv("OBS_ACCESS_KEY", "").strip()
         secret = os.getenv("OBS_SECRET_KEY", "").strip()
-        bucket = os.getenv("OBS_BUCKET", "jiuwenclaw").strip()
+        bucket = os.getenv("OBS_BUCKET", "jiuwenswarm").strip()
         if not all((endpoint, access, secret, bucket)):
             raise RuntimeError(
                 "OBS_URL, OBS_ACCESS_KEY, OBS_SECRET_KEY and OBS_BUCKET are required"

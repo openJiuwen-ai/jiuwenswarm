@@ -24,9 +24,9 @@ def test_obs_sdk_and_attachment_reader_share_verification_policy(monkeypatch, va
     monkeypatch.setenv("OBS_SECRET_KEY", "test-secret")
     monkeypatch.setenv("OBS_BUCKET", "test-bucket")
     if value is None:
-        monkeypatch.delenv("JIUWENCLAW_SSL_VERIFY", raising=False)
+        monkeypatch.delenv("JIUWENSWARM_SSL_VERIFY", raising=False)
     else:
-        monkeypatch.setenv("JIUWENCLAW_SSL_VERIFY", value)
+        monkeypatch.setenv("JIUWENSWARM_SSL_VERIFY", value)
     sdk_pool = Mock()
     response = Mock(status=200)
     response.read.return_value = b"attachment"
@@ -60,7 +60,7 @@ def test_obs_sdk_and_attachment_reader_share_verification_policy(monkeypatch, va
 @pytest.mark.parametrize("verify", ["false", "true"])
 def test_obs_policy_does_not_change_internal_mtls_or_global_tls(monkeypatch, mode, verify):
     monkeypatch.setenv("JIUWENSWARM_LINK_MTLS_MODE", mode)
-    monkeypatch.setenv("JIUWENCLAW_SSL_VERIFY", verify)
+    monkeypatch.setenv("JIUWENSWARM_SSL_VERIFY", verify)
     original_context_factory = ssl._create_default_https_context
     pool = obs_files._obs_http_client()
     try:
@@ -81,7 +81,7 @@ def test_verification_switch_never_changes_explicit_obs_protocol(monkeypatch, sc
     monkeypatch.setenv("OBS_SECURE", secure)
     monkeypatch.setenv("OBS_ACCESS_KEY", "test-access")
     monkeypatch.setenv("OBS_SECRET_KEY", "test-secret")
-    monkeypatch.setenv("JIUWENCLAW_SSL_VERIFY", "false")
+    monkeypatch.setenv("JIUWENSWARM_SSL_VERIFY", "false")
     sdk = Mock()
     monkeypatch.setattr(obs_files, "Minio", sdk)
     store = AttachmentStore.from_env()
