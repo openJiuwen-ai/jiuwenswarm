@@ -61,6 +61,7 @@ class SshChannelEndpoint:
 
     ip: str = ""
     port: int = 0
+    auth_enabled: bool = False
 
 
 @dataclass(frozen=True)
@@ -138,7 +139,9 @@ def load_ssh_channel_endpoint(config: dict[str, Any]) -> SshChannelEndpoint | No
         return None
     if not ip or port <= 0:
         return None
-    return SshChannelEndpoint(ip=ip, port=port)
+    auth = ssh.get("auth")
+    auth_enabled = bool(auth.get("enabled", False)) if isinstance(auth, dict) else False
+    return SshChannelEndpoint(ip=ip, port=port, auth_enabled=auth_enabled)
 
 
 def read_mapping_path(config: Any, *path: str) -> Mapping[str, Any]:

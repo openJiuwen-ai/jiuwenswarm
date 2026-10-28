@@ -45,6 +45,23 @@ def _text_setting(settings: dict, key: str, default: str | None = None) -> str:
     return value
 
 
+def _restart_policy(value: object) -> dict[str, int] | None:
+    if value is None:
+        return None
+    error = 'gateway.adx.restart_policy requires attempts and ordered positive backoff seconds'
+    fields = {'maxAttempts', 'initialBackoffSeconds', 'maxBackoffSeconds'}
+    if not isinstance(value, dict) or set(value) != fields:
+        raise ValueError(error)
+    for number in value.values():
+        if isinstance(number, bool) or not isinstance(number, int) or number <= 0:
+            raise ValueError(error)
+    if value['maxAttempts'] > 4294967295 or value['maxBackoffSeconds'] > 18446744073709551615:
+        raise ValueError(error)
+    if value['initialBackoffSeconds'] > value['maxBackoffSeconds']:
+        raise ValueError(error)
+    return dict(value)
+
+
 def load_router_config(config: dict) -> AdxRouterConfig:
     settings = (config.get('gateway') or {}).get('adx') or {}
     if not isinstance(settings, dict) or settings.keys() - {
@@ -83,17 +100,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     ssh_known_hosts = settings.get('ssh_known_hosts', '')
     if not isinstance(ssh_known_hosts, str) or any(ord(char) < 32 for char in ssh_known_hosts):
         raise ValueError('gateway.adx.ssh_known_hosts must be a local known_hosts path')
-    restart_policy = settings.get('restart_policy')
-    if restart_policy is not None:
-        fields = {'maxAttempts', 'initialBackoffSeconds', 'maxBackoffSeconds'}
-        if (not isinstance(restart_policy, dict) or set(restart_policy) != fields
-                or any(isinstance(value, bool) or not isinstance(value, int) or value <= 0
-                       for value in restart_policy.values())
-                or restart_policy['maxAttempts'] > 4294967295
-                or restart_policy['initialBackoffSeconds'] > restart_policy['maxBackoffSeconds']
-                or restart_policy['maxBackoffSeconds'] > 18446744073709551615):
-            raise ValueError('gateway.adx.restart_policy requires attempts and ordered positive backoff seconds')
-        restart_policy = dict(restart_policy)
+    restart_policy = _restart_policy(settings.get('restart_policy'))
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
         router=load_agentos_config(config, require_frontend_endpoint=False),

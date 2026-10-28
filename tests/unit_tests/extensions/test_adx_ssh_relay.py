@@ -134,7 +134,11 @@ async def test_restart_policy_and_rootfs_mounts_are_forwarded_only_when_configur
 async def test_delete_evidence_requires_acknowledged_native_response(monkeypatch,tmp_path,caplog):
     import httpx
     from gateway.extensions.adx.control_client import AdxControlClient,AdxControlError
-    caplog.set_level('INFO',logger='gateway.extensions.adx.control_client')
+    from gateway.extensions.adx.control_client import logger
+    caplog.set_level('INFO',logger=logger.name)
+    # The full suite configures non-propagating application loggers.
+    monkeypatch.setattr(logger,'handlers',[caplog.handler])
+    monkeypatch.setattr(logger,'propagate',False)
     client=AdxControlClient(settings(monkeypatch,tmp_path))
     await client.http.aclose()
     requests=[]
@@ -155,3 +159,37 @@ async def test_delete_evidence_requires_acknowledged_native_response(monkeypatch
         await client.delete_sandbox('test-unknown')
     assert 'environment.delete.ok' not in caplog.text
     await client.close()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_switch_waits_for_background_ssh_setup(monkeypatch, tmp_path):
+    from gateway.extensions.adx.router_client import AdxRouterClient
+    from gateway.extensions.agentos.agentos_router.config import load_ssh_channel_endpoint
+
+    config = settings(monkeypatch, tmp_path)
+    endpoint = load_ssh_channel_endpoint({'channels': {'ssh': {
+        'enabled': True, 'listen_host': '127.0.0.1', 'listen_port': 2222,
+        'auth': {'enabled': True},
+    }}})
+    client = AdxRouterClient(replace(config, router=replace(config.router, ssh_channel=endpoint)))
+    create = AsyncMock()
+    monkeypatch.setattr(client._agent_manager, 'get_or_create_agent', create)
+    monkeypatch.setattr(client, '_uses_direct_yuanrong', lambda _: True)
+    task = asyncio.create_task(client.thirdagent_switch(user_id='alice', agent_type='jiuwenswarm'))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done(), 'Authenticated switch must wait for its SSH issuer'
+        create.assert_not_awaited()
+        issuer = SimpleNamespace(issue_ephemeral_key=lambda **kwargs: 'ephemeral-test-key')
+        client.set_key_issuer(issuer)
+        result = await asyncio.wait_for(task, timeout=1)
+        assert result['ok'] and result['payload']['ssh_private_key'] == 'ephemeral-test-key'
+        client.set_key_issuer(None)
+        monkeypatch.setattr(client, '_ssh_key_ready_timeout', 0.01)
+        result = await client.thirdagent_switch(user_id='alice', agent_type='jiuwenswarm')
+        assert not result['ok'] and result['code'] == 'SSH_NOT_READY'
+        create.assert_not_awaited()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await client.shutdown()

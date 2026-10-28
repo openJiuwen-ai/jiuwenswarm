@@ -456,12 +456,11 @@ def _build_adx_extra_params() -> dict[str, Any]:
     workspace = _resolve_workspace_dir()
     if workspace is None:
         raise ValueError("ADX sandbox requires a workspace directory")
-    extra = {
-        key: endpoint[key]
-        for key in ("image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "user",
-                    "group", "network", "connection", "env", "create_timeout", "schedule_timeout")
-        if key in endpoint
-    }
+    setting_keys = (
+        "image", "runtime", "cpu", "cpu_limit", "memory", "mem_limit", "idle_timeout", "user",
+        "group", "network", "connection", "env", "create_timeout", "schedule_timeout",
+    )
+    extra = {key: endpoint[key] for key in setting_keys if key in endpoint}
     mounts = list(endpoint.get("mounts") or [])
     if is_agentos_runtime():
         user_dir = os.environ.get("JIUWENSWARM_USER_DIRECTORY", "").strip()
