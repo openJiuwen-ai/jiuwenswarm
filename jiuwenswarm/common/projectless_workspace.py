@@ -80,7 +80,9 @@ def get_projectless_tasks_dir() -> Path:
 
     ``JIUWENSWARM_TASKS_DIR`` remains the authoritative deployment override.
     Enterprise defaults to the existing tenant workspace (shared across Pods).
-    Personal defaults to the platform's configured Documents directory.
+    Personal defaults to the platform's configured Documents directory:
+    Windows honors the user's configured Documents known folder, Linux honors
+    ``user-dirs.dirs``, and macOS uses ``~/Documents``.
     """
     configured = os.environ.get(_TASKS_DIR_ENV, "").strip()
     if not configured:

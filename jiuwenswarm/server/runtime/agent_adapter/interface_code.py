@@ -1996,8 +1996,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _resolve_code_graph_cache_dir(self, raw_cache: object) -> str:
         """Port agent_os: relative paths follow the existing agent workspace."""
-        from pathlib import Path
-
         workspace = self._agent_workspace_dir or self._project_dir
         base = Path(workspace) if workspace else Path.cwd()
         path = Path(str(raw_cache)).expanduser() if raw_cache else Path(".code_graph_cache")

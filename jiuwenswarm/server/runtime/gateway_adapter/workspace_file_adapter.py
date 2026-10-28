@@ -184,7 +184,10 @@ class WorkspaceFileAdapter(GatewayAdapter):
         )
 
     async def _handle_workspace(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.common.workspace.service import WorkspaceError, WorkspaceService
+        from jiuwenswarm.enterprise.capabilities.workspace.service import (
+            WorkspaceError,
+            WorkspaceService,
+        )
         from jiuwenswarm.enterprise.capabilities.workspace.quota import resolve_effective_quota, snapshot_to_dict
         from jiuwenswarm.common.utils import get_multi_tenant_user_workspace_dir
         from jiuwenswarm.enterprise.tenant.tenant_agent_pool import TenantAgentPool

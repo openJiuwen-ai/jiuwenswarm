@@ -1,9 +1,8 @@
-"""Extension SDK exports; contract modules resolve to gateway_protocol.
+"""兼容入口：扩展 SDK 契约的唯一实现位于 ``gateway.extensions.sdk``。
 
-惰性机制保留：transport 相关契约仍按需 import；纯契约模块已迁
-``gateway_protocol.{types,sdk}``，此处的旧路径仅为过渡期兼容
-（与 common/e2a 转发别名同模式，同一对象非副本）。
-ExtensionLoader/Manager/Registry 为实现类，仍由本仓扩展框架提供。
+第三方扩展仍可按 ``from jiuwenswarm.extensions.sdk import BaseExtension`` 导入，
+本模块只做惰性转发，不再保留第二份类定义（避免 BaseExtension / CryptoUtility
+等基类出现两套类身份）。
 """
 
 from __future__ import annotations
@@ -11,60 +10,17 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-_EXPORTS = {
-    "ExtensionLoader": ("jiuwenswarm.extensions.loader", "ExtensionLoader"),
-    "ExtensionManager": ("jiuwenswarm.extensions.manager", "ExtensionManager"),
-    "ExtensionRegistry": ("jiuwenswarm.extensions.registry", "ExtensionRegistry"),
-    "AgentServerClientExtension": (
-        "gateway_protocol.sdk.agent_server_client",
-        "AgentServerClientExtension",
-    ),
-    "ApplicationPluginExtension": (
-        "gateway.extensions.sdk.application_plugin",
-        "ApplicationPluginExtension",
-    ),
-    "ApplicationPluginServices": (
-        "gateway.extensions.sdk.application_plugin",
-        "ApplicationPluginServices",
-    ),
-    "FrontendContribution": (
-        "gateway.extensions.sdk.application_plugin",
-        "FrontendContribution",
-    ),
-    "ManifestApplicationPlugin": (
-        "gateway.extensions.sdk.application_plugin",
-        "ManifestApplicationPlugin",
-    ),
-    "WebSocketRouteContribution": (
-        "gateway.extensions.sdk.application_plugin",
-        "WebSocketRouteContribution",
-    ),
-    "BaseExtension": ("gateway_protocol.sdk.base", "BaseExtension"),
-    "CryptoUtility": (
-        "gateway_protocol.sdk.crypto_utility",
-        "CryptoUtility",
-    ),
-    "ThirdAgentExtension": (
-        "gateway_protocol.sdk.third_agent",
-        "ThirdAgentExtension",
-    ),
-    "ExtensionConfig": ("gateway_protocol.types", "ExtensionConfig"),
-    "ExtensionMetadata": ("gateway_protocol.types", "ExtensionMetadata"),
-}
+_GATEWAY_SDK = import_module("gateway.extensions.sdk")
+
+__all__ = list(_GATEWAY_SDK.__all__)
 
 
 def __getattr__(name: str) -> Any:
-    target = _EXPORTS.get(name)
-    if target is None:
-        raise AttributeError(name)
-    module_name, attribute = target
-    value = getattr(import_module(module_name), attribute)
-    globals()[name] = value
-    return value
+    try:
+        return getattr(_GATEWAY_SDK, name)
+    except AttributeError:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from None
 
 
 def __dir__() -> list[str]:
-    return sorted(set(globals()) | set(_EXPORTS))
-
-
-__all__ = list(_EXPORTS)
+    return sorted(set(globals()) | set(_GATEWAY_SDK.__all__))

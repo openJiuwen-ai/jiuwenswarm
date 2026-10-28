@@ -195,9 +195,6 @@ def load_history_query(params: dict[str, Any]) -> dict[str, Any] | None:
         request_cursor = params.get("cursor")
         if request_cursor is not None and not isinstance(request_cursor, str):
             raise InvalidHistoryCursor("history cursor must be null or a string")
-        # Query-string / gateway may pass "" for a dropped null; treat as first page.
-        if isinstance(request_cursor, str) and not request_cursor.strip():
-            request_cursor = None
         return load_history_cursor_page(
             str(session_id or ""),
             request_cursor,

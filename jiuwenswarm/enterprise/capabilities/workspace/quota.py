@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from jiuwenswarm.common.workspace.service import measure_used_bytes
+from jiuwenswarm.enterprise.capabilities.workspace.service import measure_used_bytes
 
 logger = logging.getLogger(__name__)
 

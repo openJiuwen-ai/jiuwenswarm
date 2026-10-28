@@ -557,7 +557,7 @@ async def _wait_for_web_channel_listening(
             )
             return
         await asyncio.sleep(0.01)
-    raise TimeoutError("WebChannel did not bind its listening socket within 5s")
+    raise TimeoutError(f"WebChannel did not bind its listening socket within {timeout:.0f}s")
 
 
 def _running_under_supervisor() -> bool:
@@ -588,6 +588,27 @@ def _exec_gateway_restart() -> None:
         # and the gateway lock.
         logger.info("[App] requesting Gateway restart from supervisor")
         os._exit(GATEWAY_RESTART_EXIT_CODE)  # pylint: disable=protected-access  # public API; underscore is historical
+    if os.environ.get(SUPERVISOR_PID_ENV):
+        # Env says we were spawned by a supervisor, yet the parent check in
+        # _running_under_supervisor failed. execv exits 0, which that live
+        # supervisor reads as "Gateway stopped" and tears the WHOLE stack
+        # down (AgentServer included) — log the deciding values so a later
+        # post-mortem does not have to guess.
+        import psutil
+
+        try:
+            parent = psutil.Process(os.getppid())
+            parent_desc = f"alive, created {parent.create_time():.0f}"
+        except psutil.Error:
+            parent_desc = "not running"
+        logger.warning(
+            "[App] %s=%s but parent pid %s is %s; execv restart will be read "
+            "as a stop by the supervisor",
+            SUPERVISOR_PID_ENV,
+            os.environ.get(SUPERVISOR_PID_ENV),
+            os.getppid(),
+            parent_desc,
+        )
     logger.info("[App] .env updated, restarting Gateway...")
     os.execv(sys.executable, [sys.executable, *sys.argv])
 
@@ -1619,9 +1640,12 @@ class GatewayServer(BaseWebChannel):
             default_mode = Mode.CODE_NORMAL if route.channel_id == "tui" else Mode.AGENT
             mode = Mode.from_raw(params.get("mode"), default=default_mode)
 
-            # 确保 mode 被设置到 params 中，以便后续转发到 AgentServer
+            # 确保 mode 被设置到 params 中，以便后续转发到 AgentServer。
+            # Issue #4876: params.mode 传非字符串（数组/对象等）时不能原样透传，
+            # 用 from_raw 的解析结果（含默认值兜底）覆盖；字符串值保持原样不动。
             params = dict(params)
-            params.setdefault("mode", mode.value)
+            if not isinstance(params.get("mode"), str):
+                params["mode"] = mode.value
 
             # 连接级 agent_type 为 SSOT，注入后续转发请求
             # （3rdagent.switch 由 TUI local_handler 写回 ws._gateway_agent_type）
@@ -2381,6 +2405,7 @@ async def _run(
         path=web_path,
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
+    register_3rdagent_web_method(web_channel)
 
     async def show_prompt_suggestion(session_id: str, request_id: str, payload: dict[str, Any]) -> None:
         """Forward a suggestion AgentServer already checked and recorded."""
@@ -2447,10 +2472,16 @@ async def _run(
         )
     )
 
+    async def _media_normalizer(params: dict[str, Any], session_id: str | None) -> None:
+        # A1g：小图落盘经 E2A 到 AgentServer，闭包捕获启动装配的 client
+        await normalize_chat_media_attachments(
+            params, session_id, agent_client=client, user_id=None
+        )
+
     extension_registry.bind_application_plugins(
         web_channel,
         agent_client=client,
-        media_attachment_normalizer=normalize_chat_media_attachments,
+        media_attachment_normalizer=_media_normalizer,
     )
     log_startup_stage("web_handlers_registered")
 
@@ -2798,6 +2829,7 @@ async def _run(
             "wecom",
             "wechat",
             "ssh",
+            "web_proxy",
         ]:
             if _should_restart_channel(channel_name, _last_channels_conf, conf) or channel_name in restart_pending:
                 if channel_name in restart_pending and not _should_restart_channel(
@@ -3326,7 +3358,6 @@ async def _run(
                     from gateway.extensions.auth.ssh_key_registry import (
                         KeyRegistry,
                     )
-                    from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
 
                     ssh_config = SshChannelConfig.from_dict({**ssh_conf, "enabled": True})
                     ssh_channel = SshChannel(
@@ -3913,10 +3944,8 @@ def main() -> None:
 
     # gateway 进程注入点装配（bridge 已退役）：session_metadata 与
     # mcp_registry 两域注册 WS 远端实现——gateway 仓不再加载任何
-    # server 侧模块；team/mcp_state/mcp_credential 域在本进程零消费，
-    # 保持未注册（调用得到 ExternalProviderUnregistered 降级）。
-    # a2ui 配置面板字段已下沉 common.a2ui_web_config，config.get/set
-    # 不再依赖 provider("a2ui")。
+    # server 侧模块；a2ui/team/mcp_state/mcp_credential 域在本进程
+    # 零消费，保持未注册（调用得到 ExternalProviderUnregistered 降级）。
     from gateway.routing.mcp_remote import install as _install_mcp_registry_remote
     from gateway.routing.session_metadata_remote import (
         install as _install_session_metadata_remote,

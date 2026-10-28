@@ -5,8 +5,6 @@
 本模块仅保留 ``jiuwenswarm.common.schema.agent`` 旧 import 路径兼容，re-export openjiuwen-protocol
 包的同一对象（含原模块从兄弟模块引入的符号，保持命名空间一致）；
 唯一真源在协议包，本仓不持有实现。过渡期结束后随 common 副本收敛一并删除。
-
-``AgentRef`` 与线协议 dataclass 均在协议包；routing/ipc 消费方继续从本模块 import。
 """
 
 from __future__ import annotations
