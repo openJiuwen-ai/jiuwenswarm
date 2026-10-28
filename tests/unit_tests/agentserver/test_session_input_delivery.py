@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, UserMessage
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, ToolMessage, UserMessage
 from openjiuwen.core.session import InteractiveInput
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, InvokeInputs, ModelCallInputs
 from openjiuwen.harness.prompts import SystemPromptBuilder
@@ -338,7 +338,8 @@ class MessageContext:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("long_reply", [False, True])
-async def test_native_steer_keeps_hidden_result_as_unfinished_reference(long_reply):
+@pytest.mark.parametrize("prior_tool_calls", [0, 2])
+async def test_native_steer_keeps_hidden_result_as_unfinished_reference(long_reply, prior_tool_calls):
     guard, ctx = _guard_and_context()
     original = UserMessage(content="Calculate 99 * 99")
     unrelated = AssistantMessage(content="Unrelated earlier answer")
@@ -348,6 +349,21 @@ async def test_native_steer_keeps_hidden_result_as_unfinished_reference(long_rep
     entries = [QueuedSessionInput("Read the image too", str(i)) for i in range(2)]
     for entry in entries:
         await guard.publish_input_received(entry)
+    for index in range(prior_tool_calls):
+        call_id = f"earlier-read-{index}"
+        tool_reply = AssistantMessage(
+            content=f"Reading existing result {index}",
+            tool_calls=[ToolCall(
+                id=call_id, type="function", name="read_file",
+                arguments=json.dumps({"file_path": f"result-{index}.txt"}),
+            )],
+        )
+        ctx.inputs = ModelCallInputs(response=tool_reply)
+        await guard.after_model_call(ctx)
+        ctx.context.messages.extend([
+            tool_reply, ToolMessage(content=f"Existing result {index}", tool_call_id=call_id),
+        ])
+    preserved_messages = list(ctx.context.messages)
     answer = "99 * 99 = 9801" + (" long existing result" * 1000 if long_reply else "")
     response = AssistantMessage(content=answer, reasoning_content="private reasoning")
     ctx.inputs = ModelCallInputs(response=response)
@@ -355,7 +371,7 @@ async def test_native_steer_keeps_hidden_result_as_unfinished_reference(long_rep
     ctx.context.messages.append(response)
     await _consume(guard, ctx, entries)
     assert ctx.context.replacements == 1
-    assert ctx.context.messages[:2] == [unrelated, original]
+    assert ctx.context.messages[:-1] == preserved_messages
     reference = ctx.context.messages[-1]
     assert reference.role == "user"
     assert reference.metadata["_openjiuwen_message_source_kind"] == "session_input_undelivered"
@@ -364,6 +380,9 @@ async def test_native_steer_keeps_hidden_result_as_unfinished_reference(long_rep
     assert data == {"original_request_id": "original-query", "original_request": original.content, "reply": answer}
     assert "private reasoning" not in reference.content
     assert _note(ctx)[1]["original_request"]["text"] == original.content
+    if prior_tool_calls:
+        quoted = _note(ctx)[1]["quoted_prior_output"][0]["text"]
+        assert quoted.startswith("Reading existing result 0\n\nReading existing result 1\n\n")
     assert not any(message.role == "assistant" and message.content == answer for message in ctx.context.messages)
     # A replayed callback cannot replace unrelated history or add another reference.
     await _consume(guard, ctx, entries)

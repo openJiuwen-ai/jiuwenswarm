@@ -551,9 +551,8 @@ class SessionInputGuard(AgentRail):
                     continue
                 text = "\n\n".join(part for part in (entry.undelivered_response_text, content) if part)
                 entry.undelivered_response_text = text[:_MAX_UNDELIVERED_RESPONSE_CHARS]
-                entry.undelivered_response_full_text = "\n\n".join(
-                    part for part in (entry.undelivered_response_full_text, content) if part
-                )
+                # Context matching targets one response, not all preceding tool steps.
+                entry.undelivered_response_full_text = content
                 entry.undelivered_response_truncated |= len(text) > _MAX_UNDELIVERED_RESPONSE_CHARS
         if not getattr(response, "tool_calls", None):
             self.accepting = False
