@@ -57,6 +57,17 @@ class OpenAICompatibleEmbeddingProvider(EmbeddingProvider):
         self.dims = 1024
         self._client = None
 
+    def config_fingerprint(self) -> str:
+        """Same fingerprint as the core embedding client.
+
+        Team rails and the single-agent adapter share one bank. A different
+        fingerprint makes consult delete and rebuild the semantic index.
+        """
+        import hashlib
+
+        api_key_hash = hashlib.sha256((self.api_key or "").encode()).hexdigest()[:16]
+        return f"{self.id}:{self.model or ''}:{self.base_url or ''}:{api_key_hash}"
+
     def _get_client(self):
         """Get or create HTTP client."""
         if self._client is None:

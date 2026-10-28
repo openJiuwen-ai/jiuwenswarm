@@ -632,6 +632,23 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
 
 
+def shared_ttse_bank_path(workspace: Path | str) -> Path:
+    """One FACT/TIP bank for single-agent and expert-team on the same service.
+
+    Standard layout is ``<service_*>/agent_*/agent/jiuwenclaw_workspace``.
+    The bank is then ``<service_*>/.ttse/bank.json``, so every agent under that
+    service reads and writes the same file. Leader experience is a category in
+    that bank, not a second directory. Any other workspace keeps
+    ``<workspace>/.ttse/bank.json``.
+    """
+    ws = Path(workspace)
+    agent_dir = ws.parent
+    service = agent_dir.parent.parent
+    if agent_dir.name == "agent" and service.name.startswith("service_"):
+        return service / ".ttse" / "bank.json"
+    return ws / ".ttse" / "bank.json"
+
+
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return ``react.subagent_runtime.enabled`` for persistent subagent tools.
 
