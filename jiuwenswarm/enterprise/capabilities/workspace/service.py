@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.workspace.zones import (
+from jiuwenswarm.enterprise.capabilities.workspace.zones import (
     classify_zone,
     is_deletable,
     normalize_relative_path,

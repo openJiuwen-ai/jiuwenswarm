@@ -39,7 +39,7 @@ a4p:
   enabled: false
 
 symphony:
-  enabled:       # null = 跟随程序默认；用户切换后保存 true/false
+  enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
   paths:
     skills_root: ""
     graph_dir: ""
@@ -63,7 +63,7 @@ symphony:
     # Core Flow 沉淀：分组签名 = 轨迹全部成功边（确定性、不漂移），
     # 一条新轨迹最多触发一个技能包的完整蒸馏；达标（成功次数 + 成功率）即 verified。
     flow:
-      enabled:                   # null = 跟随程序默认；true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
+      enabled: null              # null = 跟随程序默认；true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
       min_successes: 3           # 同一结构至少成功几次且成功率达标后才可安装
       min_pack_success_rate: 0.8  # pack 成功率阈值
 
@@ -390,52 +390,52 @@ models:
   # 这里留空而不是写 [] 或示例条目：本模板同时充当升级时的键白名单，
   # 缺席的键会被 _deep_merge 从用户配置里删除，而写成映射/列表又会连同
   # 用户手工添加的条目一起被覆盖。留空值即"未配置"，用户填什么保留什么。
-  agentos: []
+  agentos:
   video:
-    model_client_config:
-      api_base: ${VIDEO_API_BASE}
-      api_key: ${VIDEO_API_KEY}
-      model_name: ${VIDEO_MODEL_NAME}
-      client_provider: ${VIDEO_PROVIDER}
+      model_client_config:
+        api_base: ${VIDEO_API_BASE}
+        api_key: ${VIDEO_API_KEY}
+        model_name: ${VIDEO_MODEL_NAME}
+        client_provider: ${VIDEO_PROVIDER}
         # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
-      endpoint_profile: ${VIDEO_ENDPOINT_PROFILE:-openai_compatible}
-      timeout: 1800
-      verify_ssl: true
-    model_config_obj: {}
+        endpoint_profile: ${VIDEO_ENDPOINT_PROFILE:-openai_compatible}
+        timeout: 1800
+        verify_ssl: true
+      model_config_obj: {}
   audio:
-    model_client_config:
-      api_base: ${AUDIO_API_BASE}
-      api_key: ${AUDIO_API_KEY}
-      model_name: ${AUDIO_MODEL_NAME}
-      client_provider: ${AUDIO_PROVIDER}
+      model_client_config:
+        api_base: ${AUDIO_API_BASE}
+        api_key: ${AUDIO_API_KEY}
+        model_name: ${AUDIO_MODEL_NAME}
+        client_provider: ${AUDIO_PROVIDER}
         # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
-      endpoint_profile: ${AUDIO_ENDPOINT_PROFILE:-openai_compatible}
-      verify_ssl: true
-      timeout: 1800
-    model_config_obj: {}
+        endpoint_profile: ${AUDIO_ENDPOINT_PROFILE:-openai_compatible}
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj: {}
   vision:
-    model_client_config:
-      api_base: ${VISION_API_BASE}
-      api_key: ${VISION_API_KEY}
-      model_name: ${VISION_MODEL_NAME}
-      client_provider: ${VISION_PROVIDER}
+      model_client_config:
+        api_base: ${VISION_API_BASE}
+        api_key: ${VISION_API_KEY}
+        model_name: ${VISION_MODEL_NAME}
+        client_provider: ${VISION_PROVIDER}
         # 端点方言；若走 DashScope 多模态口填 dashscope，否则 openai/openai_compatible。
-      endpoint_profile: ${VISION_ENDPOINT_PROFILE:-openai_compatible}
-      verify_ssl: true
-      timeout: 1800
-    model_config_obj: {}
+        endpoint_profile: ${VISION_ENDPOINT_PROFILE:-openai_compatible}
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj: {}
   image_gen:
-    model_client_config:
-      api_base: ${IMAGE_GEN_API_BASE}
-      api_key: ${IMAGE_GEN_API_KEY}
-      model_name: ${IMAGE_GEN_MODEL_NAME}
-      client_provider: ${IMAGE_GEN_PROVIDER}
+      model_client_config:
+        api_base: ${IMAGE_GEN_API_BASE}
+        api_key: ${IMAGE_GEN_API_KEY}
+        model_name: ${IMAGE_GEN_MODEL_NAME}
+        client_provider: ${IMAGE_GEN_PROVIDER}
         # 多模态生成(生图)走 DashScope SDK 必须带 endpoint_profile=dashscope，
         # 否则 OpenAIModelClient 拒绝该操作。client_provider 仍为 OpenAI。
-      endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
-      verify_ssl: true
-      timeout: 1800
-    model_config_obj: {}
+        endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj: {}
   # ---- AgentOS 备份模型（可选，不预置；需手动添加）----
   # 此处不预置任何 agentos 条目：jiuwenswarm-init 生成的 config.yaml 不含 agentos 字段。
   # 如需启用备份模型，请手动在 config.yaml 添加 models.agentos 列表段（见文档）。
@@ -485,12 +485,12 @@ models:
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:
-  codex:
-    command: npx
-    args: ["@zed-industries/codex-acp@latest"]
-    cwd:
-    env:
-      OPENAI_API_KEY: ${OPENAI_API_KEY}    # 仅由此 env 注入子进程（不读 workspace .env / 父进程）
+   codex:
+     command: npx
+     args: ["@zed-industries/codex-acp@latest"]
+     cwd:
+     env:
+       OPENAI_API_KEY: ${OPENAI_API_KEY}   # 仅由此 env 注入子进程（不读 workspace .env / 父进程）
 
 # ============================================================
 # Agent 配置（可被 team.agents / modes.team.<name>.agents 引用）
@@ -701,9 +701,9 @@ react:
   enable_task_loop: true
   # read_file 图片输入策略：null=自动探测，false=纯文本，true=启用多模态。
   # 必须在模板中显式声明，否则配置迁移会将用户或 Benchmark 写入的值当作废弃字段删除。
-  enable_read_image_multimodal:
+  enable_read_image_multimodal: null
   # 单轮任务循环等待上限（秒）；null 表示不限时，避免长任务被静默截断
-  completion_timeout:
+  completion_timeout: null
   # 主 Agent 内层 ReAct 轮次上限。不配则无上限；显式配置后即使开启 task_loop 也会生效。
   # max_iterations: 50
   model_name: ${MODEL_NAME}
@@ -1544,7 +1544,7 @@ updater:
   # 桌面端版本检查源类型：gitcode / github
   desktop_release_api_type: "gitcode"
   repo_owner: openJiuwen
-  repo_name: jiuwenswarm
+  repo_name: jiuwenswarm 
   release_api_url: ""
   # Windows/macOS use .exe/.dmg; multiple candidates prefer a unique WorkSwarm name.
   # One pattern per platform, each falling back to asset_name_pattern below when
@@ -1683,9 +1683,9 @@ modes:
       - skill_retrieval
 
     embedding_config:
-      model_name:
-      base_url:
-      api_key:
+      model_name: null
+      base_url: null
+      api_key: null
   team:
     jiuwen_team:
       team_name: jiuwen_team
@@ -1701,7 +1701,7 @@ modes:
       # teams created after the change.
       swarmflow_progressive_tool: false
       external_cli_agents: []
-      external_transport:
+      external_transport: null
 
       # Team-level token budget ceiling for swarmflow runs.
       # Unset / null = unbounded (no ceiling).  Set to a positive integer to
@@ -1776,7 +1776,7 @@ modes:
       #   max_agents_total: L3 — global agent admission across all runs (>=1).
       swarmflow_concurrency:
         max_workflows: 16
-        agents_per_run:
+        agents_per_run: null
         max_agents_total: 64
 
       # Enable the host-managed worktree capability used by team members and

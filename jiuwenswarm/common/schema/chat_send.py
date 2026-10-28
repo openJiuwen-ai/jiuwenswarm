@@ -60,9 +60,6 @@ class ChatSendParams(TypedDict, total=False):
     将逐步废弃，未来统一只用 content。新代码应优先读 content；query 保留为兼容过渡。
     """
 
-    agent_template_name: NotRequired[str]
-    """当前会话期望的专家包名。缺省保持，非空装载或切换，空串卸下。团队模式忽略。"""
-
     skills: NotRequired[list[str]]
     """用户选中的 skill 名列表（可选）。
 

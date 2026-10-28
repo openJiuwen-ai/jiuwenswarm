@@ -174,7 +174,7 @@ async def test_file_routes_registered(app):
 @pytest.mark.asyncio
 async def test_import_reuses_quota_gate(app, monkeypatch):
     from jiuwenswarm.common import obs_files
-    from jiuwenswarm.common.workspace import quota
+    from jiuwenswarm.enterprise.capabilities.workspace import quota
     from types import SimpleNamespace
 
     monkeypatch.setenv("WORKSPACE_QUOTA_ENABLED", "true")

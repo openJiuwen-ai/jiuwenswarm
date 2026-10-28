@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 import uuid
 from pathlib import Path
@@ -137,7 +136,6 @@ class RuntimeSupervisor:
         self._fatal_reason = ""
         self._unhealthy_reason = ""
         self._restart_count = 0
-        self._reattach_blocked = False
         self._generation = 0
         self._peer_generation: int | None = None
         self._last_rx = 0.0
@@ -455,8 +453,8 @@ class RuntimeSupervisor:
             try:
                 await self._bring_up()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[Supervisor] worker bring-up failed: %r", exc)
-                if not await self._schedule_restart(repr(exc)):
+                logger.warning("[Supervisor] worker bring-up failed: %s", exc)
+                if not await self._schedule_restart(str(exc)):
                     break
                 continue
             self._ipc_ready.set()
@@ -514,36 +512,9 @@ class RuntimeSupervisor:
             )
         await self._stop_spawned_process()
 
-    def _remove_stale_socket(self) -> None:
-        """Drop leftover endpoint artifacts so a fresh Worker can claim them.
-
-        The ``.owner.lock`` lease is removed as well: a wedged owner holds it
-        while never accepting, which would make the replacement Worker's
-        ``IpcServer.start`` fail on lease acquisition. The ``.startup.lock``
-        election file is left alone; an unlocked leftover is harmless and
-        unlinking a lock file this process may hold breaks mutual exclusion.
-        """
-        if os.name == "nt" or self._owns_process:
-            return
-        for stale in (Path(self._socket_path), Path(self._socket_path + ".owner.lock")):
-            try:
-                stale.unlink()
-                logger.warning(
-                    "[Supervisor] removed stale runtime worker artifact: %s", stale
-                )
-            except FileNotFoundError:
-                pass
-            except OSError:
-                logger.warning(
-                    "[Supervisor] failed to remove stale runtime worker artifact: %s",
-                    stale,
-                    exc_info=True,
-                )
-
     async def _bring_up(self) -> None:
         await self._cancel_side_tasks()
         launch_identity = None
-        spawned = False
         async with self._session_lock:
             from filelock import FileLock
 
@@ -562,45 +533,31 @@ class RuntimeSupervisor:
                         raise TimeoutError("worker election timed out") from None
                     await asyncio.sleep(0.025)
             try:
-                existing = None
-                if not self._reattach_blocked:
-                    existing = await try_connect(self._socket_path, timeout=0.05)
+                existing = await try_connect(self._socket_path, timeout=0.05)
                 if existing is not None:
                     self._conn = existing
                     logger.info("[Supervisor] reattached to resident runtime worker")
-                elif not self._reattach_blocked and endpoint_is_listening(self._socket_path):
-                    # The lifetime lease can precede IPC listening, and the
-                    # previous Front may still be detaching. Wait within
-                    # this election's existing deadline without spawning.
-                    try:
+                else:
+                    if endpoint_is_listening(self._socket_path):
+                        # The lifetime lease can precede IPC listening, and the
+                        # previous Front may still be detaching. Wait within
+                        # this election's existing deadline without spawning.
                         self._conn = await connect_with_retry(
                             self._socket_path,
                             timeout=max(0.001, deadline - time.monotonic()),
                         )
-                    except TimeoutError:
-                        # The lease holder never bound the endpoint: a wedged
-                        # previous owner. Abandon the endpoint so the retry
-                        # spawns a fresh Worker instead of waiting again.
-                        self._reattach_blocked = True
-                        self._remove_stale_socket()
-                        raise
-                    logger.info("[Supervisor] reattached to resident runtime worker")
-                else:
-                    # A stale endpoint (previous Front died hard, or a resident
-                    # Worker that stopped answering) must not block a fresh
-                    # spawn.
-                    self._remove_stale_socket()
-                    process = WorkerProcess(
-                        self._socket_path, host=self._host, port=self._port,
-                        stub=self._stub, stub_ready_delay=self._stub_ready_delay,
-                        stub_exit_on_request=self._stub_exit_on_request,
-                    )
-                    await process.spawn()
-                    spawned = True
-                    launch_identity = getattr(process, "launch_identity", None)
-                    self._process = process
-                    self._owns_process = True
-                    self._conn = await connect_with_retry(self._socket_path, timeout=self._connect_timeout)
+                        logger.info("[Supervisor] reattached to resident runtime worker")
+                    else:
+                        process = WorkerProcess(
+                            self._socket_path, host=self._host, port=self._port,
+                            stub=self._stub, stub_ready_delay=self._stub_ready_delay,
+                            stub_exit_on_request=self._stub_exit_on_request,
+                        )
+                        await process.spawn()
+                        launch_identity = getattr(process, "launch_identity", None)
+                        self._process = process
+                        self._owns_process = True
+                        self._conn = await connect_with_retry(self._socket_path, timeout=self._connect_timeout)
             finally:
                 election.release()
         conn = self._conn
@@ -619,38 +576,11 @@ class RuntimeSupervisor:
             if hello.get("data_scope") != data_scope() or hello.get("code_identity") != identity:
                 self._fatal = True
                 self._fatal_reason = "resident Worker belongs to a different deployment or code version"
-                # The mismatched resident is a leftover this Front cannot use;
-                # abandoning the endpoint lets the next start spawn a fresh
-                # Worker instead of failing against it forever.
-                self._reattach_blocked = True
-                self._remove_stale_socket()
                 raise RuntimeError(self._fatal_reason)
             if bool(hello.get("stub")) != self._stub:
                 self._fatal = True
                 self._fatal_reason = "resident Worker execution profile mismatch"
-                self._reattach_blocked = True
-                self._remove_stale_socket()
                 raise RuntimeError(self._fatal_reason)
-        except asyncio.TimeoutError:
-            self._conn = None
-            try:
-                await conn.close()
-            except Exception:  # noqa: BLE001
-                logger.debug("[Supervisor] ipc close after hello timeout failed", exc_info=True)
-            if not spawned:
-                # The resident endpoint accepted the connection but never sent
-                # the hello frame: it is stale or wedged (e.g. a leftover
-                # listener on a workspace shared across pods). Block
-                # reattachment and drop the endpoint artifacts so the retry
-                # spawns a fresh Worker instead of repeating the doomed
-                # reattach.
-                self._reattach_blocked = True
-                self._remove_stale_socket()
-                raise RuntimeError(
-                    f"resident runtime worker did not answer hello within "
-                    f"{_HELLO_TIMEOUT:.0f}s"
-                ) from None
-            raise
         except Exception:
             self._conn = None
             try:
