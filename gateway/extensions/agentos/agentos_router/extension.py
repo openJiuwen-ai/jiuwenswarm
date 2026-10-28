@@ -22,7 +22,7 @@ from gateway.extensions.yuanrong_frontend_client import (
 )
 from jiuwenswarm.common.client.agent_client import AgentServerClient
 from jiuwenswarm.common.client.third_agent import ThirdAgent
-from jiuwenswarm.common.config import get_config
+from gateway.common.config import get_config
 
 
 class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):

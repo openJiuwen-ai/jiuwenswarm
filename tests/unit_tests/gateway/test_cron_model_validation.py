@@ -96,11 +96,11 @@ def test_validate_cron_model_resolves_user_model(
         return None
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         fake_get_model_config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_names", lambda: ["我的模型"]
+        "gateway.common.config.get_model_names", lambda: ["我的模型"]
     )
     assert validate_cron_model("my-model") == "my-model"
     # alias 也解析为 canonical model_name
@@ -112,7 +112,7 @@ def test_validate_cron_model_resolves_environment_model_name(
 ) -> None:
     monkeypatch.setenv("MODEL_NAME", "deployed-model")
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config_raw",
+        "gateway.common.config.get_config_raw",
         lambda: {"models": {"defaults": [_environment_model_entry()]}},
     )
 
@@ -125,7 +125,7 @@ def test_validate_cron_model_uses_environment_default(
 ) -> None:
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config_raw",
+        "gateway.common.config.get_config_raw",
         lambda: {
             "models": {
                 "defaults": [_environment_model_entry("${MODEL_NAME:-fallback-model}")]
@@ -142,7 +142,7 @@ def test_validate_cron_model_rejects_empty_environment_model_name(
 ) -> None:
     monkeypatch.delenv("MODEL_NAME", raising=False)
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config_raw",
+        "gateway.common.config.get_config_raw",
         lambda: {"models": {"defaults": [_environment_model_entry()]}},
     )
 
@@ -157,7 +157,7 @@ def test_validate_cron_model_rejects_whitespace_only_model_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_config_raw",
+        "gateway.common.config.get_config_raw",
         lambda: {"models": {"defaults": [_environment_model_entry("   ")]}},
     )
 
@@ -172,10 +172,10 @@ def test_validate_cron_model_accepts_zen_free_model_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     assert validate_cron_model(
         "deepseek-v4-flash-free",
         zen_entries=[_zen_free_entry()],
@@ -186,10 +186,10 @@ def test_validate_cron_model_accepts_zen_free_model_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     assert validate_cron_model(
         "DeepSeek V4 Flash",
         zen_entries=[_zen_free_entry()],
@@ -200,11 +200,11 @@ def test_validate_cron_model_unknown_model_still_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_names",
+        "gateway.common.config.get_model_names",
         lambda: ["my-model"],
     )
     # 调用方带来的 Zen 行里没有这个名字 → 仍拒绝
@@ -217,10 +217,10 @@ def test_validate_cron_model_zen_cache_empty_still_rejected(
 ) -> None:
     """免费模型缓存为空（Zen 不可达/开关关闭）时，免费模型 id 仍被拒绝。"""
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     with pytest.raises(ValueError, match="Unknown model 'deepseek-v4-flash-free'"):
         validate_cron_model("deepseek-v4-flash-free")
 
@@ -239,10 +239,10 @@ def test_validate_cron_model_accepts_login_free_model(
 ) -> None:
     """登录免费模型命中登录模型目录即放行，返回目录里的规范名。"""
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     calls: list[int] = []
 
     def _counting_get_models(*args, **kwargs):
@@ -264,10 +264,10 @@ def test_validate_cron_model_accepts_login_free_model_index_suffix(
 ) -> None:
     """名字带 "#index" 通道侧全局序号后缀时取前半段匹配（与 passthrough 一致）。"""
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
         _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["GLM-5.2"]),
@@ -280,10 +280,10 @@ def test_validate_cron_model_login_catalog_empty_still_rejected(
 ) -> None:
     """未登录/活动未生效（登录模型目录为空）时，免费模型名仍被拒绝。"""
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     with pytest.raises(ValueError, match="Unknown model 'GLM-5.2'"):
         validate_cron_model("GLM-5.2")
 
@@ -293,7 +293,7 @@ def test_validate_cron_model_config_model_wins_over_login(
 ) -> None:
     """同名时自配模型优先（与 get_available_models 的去重规则一致）。"""
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: _user_model_entry(),
     )
     monkeypatch.setattr(
@@ -310,13 +310,13 @@ def test_resolve_cron_model_reports_source(monkeypatch: pytest.MonkeyPatch) -> N
     assert resolve_cron_model("   ") == (None, "")
     # 自配模型
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: _user_model_entry(),
     )
     assert resolve_cron_model("my-model") == ("my-model", "config")
     # 登录模型（自配查不到时）
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
     monkeypatch.setattr(
@@ -326,13 +326,13 @@ def test_resolve_cron_model_reports_source(monkeypatch: pytest.MonkeyPatch) -> N
     assert resolve_cron_model("GLM-5.2") == ("GLM-5.2", "login")
     # 同名时自配优先（来源仍是 config）
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: _user_model_entry(),
     )
     assert resolve_cron_model("my-model") == ("my-model", "config")
     # Zen 免费模型：调用方传入 AgentServer 返回的行
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.get_model_config",
+        "gateway.common.config.get_model_config",
         lambda name, index=None: None,
     )
     assert resolve_cron_model(

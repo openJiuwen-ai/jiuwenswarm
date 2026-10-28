@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from gateway.extensions.sdk import AgentServerClientExtension
 from gateway.extensions.yuanrong_frontend_client import YuanrongFrontendAgentClient
-from jiuwenswarm.common.config import get_config
+from gateway.common.config import get_config
 
 
 class YuanrongAgentServerClientExtension(AgentServerClientExtension):

@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 
-from jiuwenswarm.common.config import (
+from gateway.common.config import (
     get_config,
 )
 from jiuwenswarm.common.config_panel import tui_models_handlers

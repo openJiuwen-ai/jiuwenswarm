@@ -7,7 +7,7 @@ from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
 )
 from gateway.extensions.sdk.agent_server_client import AgentServerClientExtension
-from jiuwenswarm.common.config import get_config
+from gateway.common.config import get_config
 
 
 class AdxRouter(AgentServerClientExtension):

@@ -233,7 +233,7 @@ class HookExecutor:
         使用 openjiuwen 的 Model 基础设施，默认使用轻量模型。
         Model.invoke() 是 async 方法，直接 await 即可。
         """
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
         from openjiuwen.core.foundation.llm import Model, ModelClientConfig
 
         config_base = get_config()

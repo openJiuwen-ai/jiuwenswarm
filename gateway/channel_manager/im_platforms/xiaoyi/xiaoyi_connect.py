@@ -1366,7 +1366,7 @@ class XiaoyiChannel(BaseChannel):
 
         # 将最近一次可回发的小艺身份写入 config.yaml，供 cron 推送时使用
         try:
-            from jiuwenswarm.common.config import update_xiaoyi_runtime_in_config
+            from gateway.common.config import update_xiaoyi_runtime_in_config
 
             rpc_id = message.get("id")
             conf_update: dict[str, Any] = {

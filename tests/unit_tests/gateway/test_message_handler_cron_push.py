@@ -175,8 +175,8 @@ async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, 
     from gateway.cron.controller import CronController
     from gateway.cron.store import CronJobStore
 
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_config", lambda *a, **k: None)
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_config", lambda *a, **k: None)
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries", lambda: []
     )

@@ -41,7 +41,7 @@ from openjiuwen.extensions.external_provider.openai_auth.openai_account_models i
     OpenAIAccountModelListError,
 )
 
-from jiuwenswarm.common.config import (
+from gateway.common.config import (
     get_config,
     get_config_raw,
     get_default_models,
@@ -1090,7 +1090,7 @@ def _remove_custom_external_cli_agent(cli_agent: str) -> None:
     Raises:
         ValueError: When ``cli_agent`` is not an installed custom agent.
     """
-    from jiuwenswarm.common.config import (
+    from gateway.common.config import (
         EXTERNAL_CLI_AGENTS_CONFIG_PATH,
         update_external_cli_agents_in_config,
     )
@@ -3487,7 +3487,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             browser_decision_state,
             browser_decision_updates,
         )
-        from jiuwenswarm.common.config import update_browser_decision_in_config
+        from gateway.common.config import update_browser_decision_in_config
 
         decision_updates, error = browser_decision_updates(
             set_params.get("decision_mode"), set_params.get("decision_provider"), get_config(),
@@ -5950,7 +5950,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _memory_forbidden_set(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.config import update_memory_forbidden_in_config
+        from gateway.common.config import update_memory_forbidden_in_config
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return

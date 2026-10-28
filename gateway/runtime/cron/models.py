@@ -283,7 +283,7 @@ def resolve_cron_model(
     value = str(raw).strip()
     if not value:
         return None, ""
-    from jiuwenswarm.common.config import (
+    from gateway.common.config import (
         get_model_config,
         get_model_names,
         resolve_env_vars,

@@ -1282,7 +1282,7 @@ def test_get_model_names_skips_empty_name_entries(tmp_path, monkeypatch):
     """
     import yaml
 
-    from jiuwenswarm.common.config import get_model_names
+    from gateway.common.config import get_model_names
 
     cfg = tmp_path / "config.yaml"
     cfg.write_text(
@@ -1318,13 +1318,13 @@ def test_get_model_names_skips_empty_name_entries(tmp_path, monkeypatch):
         encoding="utf-8",
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.CONFIG_YAML_PATH", cfg, raising=False,
+        "gateway.common.config.CONFIG_YAML_PATH", cfg, raising=False,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.config._CONFIG_YAML_PATH", cfg, raising=False,
+        "gateway.common.config._CONFIG_YAML_PATH", cfg, raising=False,
     )
 
-    import jiuwenswarm.common.config as cfg_mod
+    import gateway.common.config as cfg_mod
 
     monkeypatch.setattr(cfg_mod, "CONFIG_YAML_PATH", cfg)
     monkeypatch.setattr(cfg_mod, "_CONFIG_YAML_PATH", cfg)
@@ -1343,7 +1343,7 @@ def test_model_meta_index_field_matches_raw_defaults_position():
     """Bug #2665: _model_meta must include the _raw_defaults index
     so the frontend can send the correct index for model switching.
     """
-    from jiuwenswarm.common.config import resolve_env_vars
+    from gateway.common.config import resolve_env_vars
 
     defaults = [
         {
