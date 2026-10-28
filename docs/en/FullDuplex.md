@@ -12,9 +12,11 @@ Historical queued tasks in other conversations are not started, probed or change
 Conversations already activated in this process can still finish their tasks. Executions with
 unknown outcomes are reconciled without automatically replaying dispatched operations.
 
-After Core emits a confirmation card, waiting for the user's answer is not subject to the
-ordinary 20-second execution settlement deadline. The card stays valid; resumption still waits
-for the old invocation to settle. Repeating the same recorded answer to the same card returns
+After normal output ends or Core emits a confirmation card, Full-duplex waits for actual
+execution settlement without an additional duplex deadline. Waiting beyond 20 seconds alone
+does not make a task unknown. The card stays valid; resumption still waits for the old invocation
+to settle. Explicit cancellation retains its separate stop-confirmation mechanism.
+Repeating the same recorded answer to the same card returns
 its recorded state without resuming execution again. Consent does not transfer to another card
 or a different answer.
 

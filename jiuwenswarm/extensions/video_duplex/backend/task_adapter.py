@@ -199,7 +199,7 @@ class AgentTaskExecutor:
                 result["files"] = files
             return result
         except InteractionPending:
-            await self.wait_settled(task, waiting_for_answer=True)
+            await self.wait_settled(task)
             raise
         except Exception as exc:
             current = self.store.read(task["id"])
@@ -219,30 +219,13 @@ class AgentTaskExecutor:
         )
         return bool(payload.get("pending"))
 
-    async def wait_settled(self, task, *, waiting_for_answer=False):
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import ExecutionUncertain
-
-        if waiting_for_answer:
-            # A suspended turn can retain its execution while the user considers
-            # the card. Keep that lease until Core confirms settlement; the
-            # ordinary output-cleanup deadline must not expire a live question.
-            while not self.store.read(task["id"])["execution_settled"]:
-                await asyncio.sleep(0.05)
-            return
-        try:
-            async with asyncio.timeout(20):
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.05)
-        except TimeoutError as exc:
-            # Ask Core once before declaring the outcome unknown (#5486).
-            try:
-                if await self.cancel(task, probe=True):
-                    return
-            except Exception:
-                pass
-            raise ExecutionUncertain(
-                "Execution cleanup is unconfirmed; no work was replayed"
-            ) from exc
+    async def wait_settled(self, task):
+        """Retain ownership until Core confirms settlement, including suspended turns."""
+        # Stream closure is not execution completion. Match ordinary chat by
+        # waiting for the actual execution fact without an extra duplex deadline.
+        # User cancellation and service shutdown can still cancel this observer.
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.05)
 
     @staticmethod
     def answer_input(task):
