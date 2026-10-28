@@ -12,7 +12,7 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import { canStartNewVersion, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -117,7 +117,6 @@ const messages = {
     expired: '检查结果已过期，请重新检查。',
     invalid: '请检查发布名称、展示名称或版本（1.0.0 / 七位小写提交号）。',
     edit: '返回修改',
-    recheck: '检查新版本',
     identity: '远端更新权限由 Hub 最终校验。',
     versionHint: '例如 1.0.0 或 abcdef0',
     loginAgain: '重新登录',
@@ -215,7 +214,6 @@ const messages = {
     expired: 'Package review expired. Check the package again.',
     invalid: 'Check the package name, display name and version (1.0.0 or seven lowercase hex characters).',
     edit: 'Back to editing',
-    recheck: 'Check a new version',
     identity: 'Hub makes the final decision on update permissions.',
     versionHint: 'For example 1.0.0 or abcdef0',
     loginAgain: 'Sign in again',
@@ -311,6 +309,19 @@ function AssetPublishDrawer({
   };
   const panel = useRef<HTMLElement | null>(null);
   const [review, setReview] = useState(false);
+  // Whether the user is looking at the result view. Only an explicit action opens it (picking a
+  // history record, or a submission that starts), so opening the drawer still lands on the form.
+  const [viewingResult, setViewingResult] = useState(false);
+  // A submission in flight must stay visible, and must not shrink back to the form once the poll
+  // settles, so take the result view as soon as one is locked.
+  useEffect(() => {
+    if (state.submissionLocked && state.record) setViewingResult(true);
+  }, [state.submissionLocked, state.record]);
+  // Leave the result view when the record goes away (a new package check, sign-out, ...), otherwise
+  // the flag survives and the next record that arrives would cover the form unasked.
+  useEffect(() => {
+    if (!state.record) setViewingResult(false);
+  }, [state.record]);
   const [switchingAccount, setSwitchingAccount] = useState(false);
   const [loginError, setLoginError] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
@@ -421,6 +432,18 @@ function AssetPublishDrawer({
     tags: 'tagsHelp',
   };
   const recordState = state.record ? localRecordState(state.record) : null;
+  // The result view is shown when the user opened it, while a submission is in flight, or after a
+  // submission this session started (`attempted` is reset by a definitive rejection, by
+  // invalidate() (edit) and by prepare(), so a failed attempt cannot leave the card armed).
+  const showResult =
+    Boolean(state.record) && (viewingResult || state.submissionLocked || state.attempted);
+  // Both "back to editing" buttons must leave the same way; when only one of them reset the state,
+  // the card could pop back over the form on the next record update.
+  const backToForm = () => {
+    state.edit({});
+    setViewingResult(false);
+    setReview(false);
+  };
   const ResultIcon =
     recordState === 'failed'
       ? CircleAlert
@@ -501,12 +524,12 @@ function AssetPublishDrawer({
       closeTestId="asset-publish-close"
       footer={
         <>
-          {!review && !state.record && invalid && (
+          {!review && !showResult && invalid && (
             <p className="asset-publish-footer-validation" data-testid="asset-publish-validation">
               {text('invalid')}
             </p>
           )}
-          {!review && !state.record && (
+          {!review && !showResult && (
             <>
               <button type="button" onClick={onClose} data-testid="asset-publish-cancel">
                 {text('cancel')}
@@ -522,16 +545,13 @@ function AssetPublishDrawer({
               </button>
             </>
           )}
-          {review && !state.record && (
+          {review && !showResult && (
             <>
               <button
                 type="button"
                 data-testid="asset-publish-edit"
                 disabled={state.busy || state.attempted}
-                onClick={() => {
-                  state.edit({});
-                  setReview(false);
-                }}
+                onClick={backToForm}
               >
                 {text('edit')}
               </button>
@@ -540,16 +560,28 @@ function AssetPublishDrawer({
                 className="asset-publish-primary"
                 data-testid="asset-publish-commit"
                 disabled={state.busy || !state.draft?.can_submit || !!state.draft?.errors?.length || !state.loggedIn}
-                onClick={() => void state.commit()}
+                onClick={() => {
+                  void state.commit();
+                }}
               >
                 {text(state.busy ? 'busy' : state.attempted ? 'retry' : 'commit')}
               </button>
             </>
           )}
-          {state.record && (
-            <button type="button" onClick={onClose} data-testid="asset-publish-done">
-              {text('close')}
-            </button>
+          {showResult && (
+            <>
+              <button
+                type="button"
+                data-testid="asset-publish-result-edit"
+                disabled={state.submissionLocked || state.busy}
+                onClick={backToForm}
+              >
+                {text('edit')}
+              </button>
+              <button type="button" onClick={onClose} data-testid="asset-publish-done">
+                {text('close')}
+              </button>
+            </>
           )}
         </>
       }
@@ -673,7 +705,7 @@ function AssetPublishDrawer({
           {text(state.error as MessageKey)}
         </p>
       )}
-      {!review && !state.record && (
+      {!review && !showResult && (
         <form
           id="asset-publish-form"
           data-testid="asset-publish-form"
@@ -785,7 +817,7 @@ function AssetPublishDrawer({
           ))}
         </form>
       )}
-      {review && !state.record && (
+      {review && !showResult && (
         <section data-testid="asset-publish-review">
           <h3 data-testid="asset-publish-review-title">{text('check')}</h3>
           <p data-testid="asset-publish-review-visibility">
@@ -824,7 +856,7 @@ function AssetPublishDrawer({
           )}
         </section>
       )}
-      {state.record && recordState && (
+      {state.record && showResult && recordState && (
         <section
           aria-live="polite"
           className="asset-publish-result-card"
@@ -860,19 +892,6 @@ function AssetPublishDrawer({
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
             <p data-testid="asset-publish-observed-note">{text('observed')}</p>
-            {canStartNewVersion(state.record) && (
-              <button
-                type="button"
-                data-testid="asset-publish-new-version"
-                disabled={state.submissionLocked || state.busy}
-                onClick={() => {
-                  state.edit({});
-                  setReview(false);
-                }}
-              >
-                {text('recheck')}
-              </button>
-            )}
           </footer>
         </section>
       )}
@@ -908,7 +927,10 @@ function AssetPublishDrawer({
                 data-testid="asset-publish-record"
                 disabled={state.submissionLocked || state.busy}
                 data-variant={record.operation_id}
-                onClick={() => state.setRecord(record)}
+                onClick={() => {
+                  state.setRecord(record);
+                  setViewingResult(true);
+                }}
               >
                 <span className="asset-publish-record-main">
                   <strong>{record.result?.version || record.version || text('empty')}</strong>
