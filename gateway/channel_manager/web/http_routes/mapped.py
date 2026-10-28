@@ -680,6 +680,40 @@ _HARNESS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
 
 _PROJECT_QUERY = ("filter", "work_mode", "include_hidden", "limit", "cron_id")
 
+# 会话归档/恢复/归档列表（企业版 HTTP 默认传输；WebSocket 仍走 register_method）
+_SESSION_LIFECYCLE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
+    WebHttpMappedRoute(
+        "POST", "/sessions/actions/archive", "session.archive",
+        "sessions", "归档会话（body.session_ids）",
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/sessions/actions/unarchive", "session.unarchive",
+        "sessions", "取消归档（body.session_ids）",
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        # 勿用 /sessions/archived：会与 core 的 /sessions/{session_id} 抢路由。
+        "GET", "/archived-sessions", "session.archived.list",
+        "sessions", "归档会话列表",
+        query_keys=("work_mode", "project_id", "keyword", "limit", "offset"),
+    ),
+    WebHttpMappedRoute(
+        "POST", "/projects/{project_id}/sessions/actions/archive",
+        "project.sessions.archive",
+        "projects", "项目下批量归档会话",
+        path_to_param={"project_id": "project_id"},
+        accept_body=True,
+    ),
+    WebHttpMappedRoute(
+        "POST", "/projects/{project_id}/sessions/actions/delete-archived",
+        "project.sessions.delete_archived",
+        "projects", "项目下批量删除已归档会话",
+        path_to_param={"project_id": "project_id"},
+        accept_body=True,
+    ),
+)
+
 _PROJECT_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     WebHttpMappedRoute(
         "GET", "/projects", "project.list",
@@ -821,6 +855,7 @@ _EXPERT_PACKAGE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
 
 WORKSPACE_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     *_PERMISSIONS_ROUTES,
+    *_SESSION_LIFECYCLE_ROUTES,
     *_PROJECT_ROUTES,
     *_SKILLS_ROUTES,
     *_EXPERT_PACKAGE_ROUTES,
