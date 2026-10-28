@@ -630,8 +630,31 @@ export function ExternalCliAgentsSection({
   const postInstallDetectRanRef = useRef<Partial<Record<ExternalCliAgentKind, boolean>>>({});
   const installNow = useCallback(
     async (cliAgent: ExternalCliAgentKind) => {
+      const enabledKey = externalCliKey(cliAgent, 'enabled');
+      const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
+      const cliPathKey = externalCliKey(cliAgent, 'cli_path');
+      // Snapshot the pre-install drafts: the optimistic rewrite below must
+      // not survive a failed commit, or the card keeps showing an unpersisted
+      // "enabled + built-in" state and the user's external path stays gone.
+      const prevEnabled = draftValues[enabledKey];
+      const prevUseBuiltin = draftValues[useBuiltinKey];
+      const prevCliPath = draftValues[cliPathKey];
+      let committed = false;
       try {
+        // Reflect the user's intent in draftValues immediately so the card
+        // switches to built-in CLI mode right away. Without this, deferred
+        // agents (install still running) keep showing the old external-CLI
+        // state until the replay save settles after install success.
+        // Exempt the path clear from the detect-result wipe so the card
+        // does not flash "not installed" before the install status lands.
+        if (prevCliPath) {
+          commitEchoAgentsRef.current.add(cliAgent);
+        }
+        onChange(enabledKey, 'true');
+        onChange(useBuiltinKey, 'true');
+        onChange(cliPathKey, '');
         await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '', force: true });
+        committed = true;
         userInitiatedInstallRef.current.add(cliAgent);
         postInstallDetectRanRef.current[cliAgent] = false;
         // The commit only queues the install. When it finishes instantly (deps
@@ -643,10 +666,21 @@ export function ExternalCliAgentsSection({
           onInstallStatusChange(cliAgent, status);
         }
       } catch (error) {
+        // A failed commit leaves the optimistic rewrite in place: restore the
+        // pre-install drafts so the card reflects the persisted state again,
+        // and drop the echo exemption (nothing was committed). Failures after
+        // the commit itself (e.g. the status probe) must keep the new drafts,
+        // since the choice is already persisted at that point.
+        if (!committed) {
+          onChange(enabledKey, prevEnabled ?? '');
+          onChange(useBuiltinKey, prevUseBuiltin ?? '');
+          onChange(cliPathKey, prevCliPath ?? '');
+          commitEchoAgentsRef.current.delete(cliAgent);
+        }
         setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
       }
     },
-    [commit, onInstallStatusChange, onInstallStatusGet, setAgentError],
+    [commit, draftValues, onChange, onInstallStatusChange, onInstallStatusGet, setAgentError],
   );
 
   /**
