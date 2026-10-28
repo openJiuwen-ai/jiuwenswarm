@@ -782,6 +782,57 @@ async def test_explicit_gateway_detach_is_not_repeated_on_ipc_drop() -> None:
         await server.close()
 
 
+async def _spawn_stub_worker(
+    path: str, *, bind_timeout: float = 10.0
+) -> asyncio.subprocess.Process:
+    """Spawn a stub Worker subprocess and wait until it binds its IPC endpoint.
+
+    Startup runs a fresh interpreter plus JiuwenSwarm module imports, so a
+    loaded CI runner can exceed a fixed 50x0.05s poll. The bound endpoint is
+    owned by the Worker; the caller must tear it down afterwards. When the
+    Worker never binds, it is reaped here so the failure path cannot leak a
+    live subprocess or a held IPC endpoint.
+    """
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "jiuwenswarm.server.worker.main",
+        "--socket",
+        path,
+        "--stub",
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    deadline = time.monotonic() + bind_timeout
+    while time.monotonic() < deadline:
+        if endpoint_is_listening(path):
+            return proc
+        if proc.returncode is not None:
+            break
+        await asyncio.sleep(0.05)
+    exit_code = proc.returncode
+    state = "exited early" if exit_code is not None else "still starting"
+    if exit_code is None:
+        proc.terminate()
+        try:
+            await asyncio.wait_for(proc.wait(), 2)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await asyncio.wait_for(proc.wait(), 2)
+    else:
+        await proc.wait()
+    stderr_tail = ""
+    try:
+        raw = await asyncio.wait_for(proc.stderr.read(), 1)
+        stderr_tail = raw.decode("utf-8", errors="replace").strip()[-1000:]
+    except (OSError, asyncio.TimeoutError):
+        pass
+    raise AssertionError(
+        f"stub worker did not bind a socket ({state}, returncode={exit_code})"
+        + (f"\nstderr:\n{stderr_tail}" if stderr_tail else "")
+    )
+
+
 async def _shutdown_resident_worker(path: str) -> None:
     """Ask a listening Worker to exit, then drop the IPC connection."""
     conn = await connect(path)
@@ -868,16 +919,7 @@ async def test_unix_socket_is_owner_only() -> None:
 @pytest.mark.asyncio
 async def test_supervisor_reattaches_without_spawning() -> None:
     path = _socket_path()
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "jiuwenswarm.server.worker.main",
-        "--socket",
-        path,
-        "--stub",
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    proc = await _spawn_stub_worker(path)
     readiness = Readiness()
     readiness.mark_runtime_warming()
     supervisor = RuntimeSupervisor(
@@ -887,12 +929,6 @@ async def test_supervisor_reattaches_without_spawning() -> None:
         max_restarts=0,
     )
     try:
-        for _ in range(50):
-            if endpoint_is_listening(path):
-                break
-            await asyncio.sleep(0.05)
-        else:
-            raise AssertionError("stub worker did not bind a socket")
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
         assert supervisor.owns_process is False
         assert supervisor.worker_instance
@@ -1015,16 +1051,7 @@ def test_worker_lifecycle_owns_runtime_construct() -> None:
 @pytest.mark.asyncio
 async def test_recover_from_failed_restarts_resident_worker() -> None:
     path = _socket_path()
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        "-m",
-        "jiuwenswarm.server.worker.main",
-        "--socket",
-        path,
-        "--stub",
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
+    proc = await _spawn_stub_worker(path)
     readiness = Readiness()
     readiness.mark_runtime_warming()
     supervisor = RuntimeSupervisor(
@@ -1034,12 +1061,6 @@ async def test_recover_from_failed_restarts_resident_worker() -> None:
         max_restarts=3,
     )
     try:
-        for _ in range(50):
-            if endpoint_is_listening(path):
-                break
-            await asyncio.sleep(0.05)
-        else:
-            raise AssertionError("stub worker did not bind a socket")
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
         assert await readiness.wait_agent_ready(2) is True
         assert supervisor.owns_process is False
