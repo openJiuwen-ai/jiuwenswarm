@@ -2,7 +2,6 @@
 
 企业版并且配了数据库地址：用数据库表。企业版没配地址就报错。
 个人版交给 runtime：本地文件，或配置指定的 etcd。
-个人版不创建按群、机器人、用户分范围的任务仓库。
 """
 
 from __future__ import annotations
@@ -15,16 +14,6 @@ from gateway.enterprise import is_enterprise
 from gateway.runtime.cron.store_base import CronJobStoreBackend
 
 logger = logging.getLogger(__name__)
-
-
-def enterprise_cron_enabled() -> bool:
-    """企业版且配了数据库地址时，才允许写入定时任务。
-
-    没配地址时工厂启动会失败。控制器再查一次，避免没连上库仍把任务写进文件。
-    """
-    if not is_enterprise():
-        return False
-    return bool(os.getenv("GATEWAY_DB_HOST", "").strip())
 
 
 def _require_enterprise_database_host() -> None:

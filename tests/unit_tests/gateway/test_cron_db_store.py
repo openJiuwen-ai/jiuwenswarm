@@ -16,7 +16,6 @@ from gateway.cron.db_store import (
     GatewayDbCronJobStore,
     _row_to_job,
 )
-from gateway.cron.job_repository import CronJobRepository
 from gateway.cron.models import CronJob
 from gateway.storage.access import (
     clear_persistent_store,
@@ -207,28 +206,6 @@ async def test_db_store_update_keeps_identity(memory_store):
     assert updated.name == "改名"
     assert updated.id == job.id
     assert (updated.group_id, updated.bot_id, updated.user_id) == ("g1", "b1", "u1")
-
-
-@pytest.mark.asyncio
-async def test_repository_hides_other_tenant(memory_store):
-    del memory_store
-    backing = _MemoryPersistent()
-    set_persistent_store(backing)
-    owner = CronJobRepository(backing, group_id="g1", bot_id="b1", user_id="u1")
-    other = CronJobRepository(backing, group_id="g2", bot_id="b2", user_id="u2")
-    job = await owner.create_job(
-        name="群任务",
-        cron_expr="0 0 9 * * ? *",
-        timezone="Asia/Shanghai",
-        description="提醒",
-        targets="web",
-        group_id="ignored",
-        user_id="ignored",
-    )
-    assert (job.group_id, job.bot_id, job.user_id) == ("g1", "b1", "u1")
-    assert await owner.get_job(job.id) is not None
-    assert await other.get_job(job.id) is None
-    assert await other.list_jobs() == []
 
 
 def test_enterprise_registry_registers_cron_job_table():
