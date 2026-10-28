@@ -18,6 +18,84 @@ def management_call():
     })
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["", "not json", '{"tool":{"name":[],"arguments":{}}}',
+    '{"tool":{"name":"jiuwen_task_modify","arguments":{"job_id":"a","revision":0,"instruction":"change"}}}'])
+async def test_invalid_proposal_is_corrected_without_user_error(monkeypatch, invalid):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": [{"job_id": "a", "revision": 1}]}))
+    step = AsyncMock(side_effect=[invalid, '{"response":"已查询当前任务。"}'])
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询任务")
+    assert "error" not in result
+    assert result["response"] == "已查询当前任务。"
+    assert manager.operate.await_count == 1
+    assert json.loads(step.call_args.args[0][-1]["content"])["applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_duplicate_write_reuses_receipt_without_dispatch(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "a", "revision": 1}]}, {"state": "cancelling"},
+    ]))
+    write = json.dumps({"tool": {"name": "jiuwen_task_cancel", "arguments": {"job_id": "a"}}})
+    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[write, write, '{"response":"正在停止。"}']))
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
+    assert "error" not in result
+    assert manager.operate.await_count == 2
+    assert result["receipts"][1]["receipt"] == result["receipts"][2]["receipt"]
+
+
+@pytest.mark.asyncio
+async def test_operational_exception_is_not_replayed_as_validation_error(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "a", "revision": 1}]}, RuntimeError("connection lost after dispatch"),
+    ]))
+    step = AsyncMock(return_value=json.dumps({"tool": {
+        "name": "jiuwen_task_cancel", "arguments": {"job_id": "a"},
+    }}))
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "取消任务")
+    assert result["state"] == "incomplete"
+    assert result["error"] == "connection lost after dispatch"
+    assert manager.operate.await_count == 2
+    assert step.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_revision_conflict_can_query_then_correct_without_replaying_old_write(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(side_effect=[
+        {"jobs": [{"job_id": "a", "revision": 1}]},
+        {"state": "rejected", "applied": False, "error": "revision changed"},
+        {"jobs": [{"job_id": "a", "revision": 2}]},
+        {"state": "accepted"},
+    ]))
+    def modification(revision):
+        return json.dumps({"tool": {"name": "jiuwen_task_modify", "arguments": {
+            "job_id": "a", "revision": revision, "instruction": "change",
+        }}})
+
+    monkeypatch.setattr(queue_manager, "request_step", AsyncMock(side_effect=[
+        modification(1), json.dumps({"tool": {"name": "jiuwen_task_query", "arguments": {}}}),
+        modification(2), '{"response":"修改已受理。"}',
+    ]))
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "修改任务")
+    assert "error" not in result
+    assert manager.operate.await_count == 4
+    assert manager.operate.await_args_list[1].args[2].arguments["revision"] == 1
+    assert manager.operate.await_args_list[3].args[2].arguments["revision"] == 2
+
+
+@pytest.mark.asyncio
+async def test_invalid_proposal_correction_budget_is_bounded(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(return_value="invalid")
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询任务")
+    assert result["state"] == "incomplete"
+    assert step.await_count == 4
+    assert manager.operate.await_count == 1
+
+
 def test_qwen_exposes_queue_manager_and_preserves_voice_approval_answers():
     names = {t["function"]["name"] for t in qwen_omni_tools(queue_manager=True)}
     assert names == {"jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_answer"}
@@ -140,3 +218,63 @@ async def test_text_manager_changes_real_queue_order(tmp_path, monkeypatch):
         assert result["receipts"][-1]["receipt"]["operation"]["state"] == "reordered"
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_management_is_cancellable_and_does_not_repeat_operations(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pending_step(messages):
+        entered.set()
+        await release.wait()
+        return json.dumps({"response": "队列为空"})
+
+    monkeypatch.setattr(queue_manager, "request_step", pending_step)
+    pending = asyncio.create_task(queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "查询队列",
+    ))
+    await entered.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert manager.operate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_management_still_stops_after_six_model_decisions(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(return_value=json.dumps({
+        "tool": {"name": "jiuwen_task_query", "arguments": {}},
+    }))
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询队列")
+    assert result["state"] == "incomplete"
+    assert "operation limit" in result["error"]
+    assert step.await_count == 6
+
+
+@pytest.mark.asyncio
+async def test_model_request_preserves_configured_network_timeout(monkeypatch):
+    from jiuwenswarm.common import config
+    from openjiuwen.core.foundation import llm
+
+    monkeypatch.delenv("DUPLEX_QUEUE_MANAGER_MODEL", raising=False)
+    monkeypatch.setattr(config, "get_default_models", lambda: [{
+        "model_client_config": {
+            "model_name": "test-model", "client_provider": "OpenAI",
+            "api_key": "test-only", "api_base": "https://example.invalid", "timeout": 77,
+        },
+    }])
+    received = []
+    invoke = AsyncMock(return_value=SimpleNamespace(content='{"response":"done"}'))
+
+    def model(**kwargs):
+        received.append(kwargs["model_client_config"])
+        return SimpleNamespace(invoke=invoke)
+
+    monkeypatch.setattr(llm, "Model", model)
+    assert await queue_manager.request_step([]) == '{"response":"done"}'
+    assert received[0].timeout == 77
+    invoke.assert_awaited_once_with([])

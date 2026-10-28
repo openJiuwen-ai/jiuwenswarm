@@ -329,6 +329,7 @@
     }
   },
   "videoLive": {
+    "qwenOnly": "当前仅支持 Qwen 全双工，请前往设置配置 Qwen Omni Realtime。",
     "modelFallback": "视频模型",
     "subtitle": "实时多屏音视频问答",
     "status": { "connecting": "正在连接 Full-duplex 模型并申请麦克风权限…", "speaking": "模型正在回答…" },
@@ -762,7 +763,8 @@
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
-      "toolOptimize": "工具检索优化"
+      "toolOptimize": "工具检索优化",
+      "designMode": "设计模式"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -938,6 +940,10 @@
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
         "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI 工作流集成",
+        "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中。"
       },
       "progressive_tool_optimize": {
         "title": "启用工具检索优化",
@@ -1119,6 +1125,7 @@
         "interrupted": "已中断"
       },
       "outletsPending": "诊断完成后在这里给出优化建议",
+      "detailsPending": "评估结果和诊断发现会显示在这里",
       "stageStatus": {
         "pending": "等待中",
         "running": "进行中",
@@ -1142,8 +1149,10 @@
       "suggestions": "诊断建议",
       "noSuggestions": "本次诊断没有可执行的优化建议",
       "details": "诊断详情",
+      "resultTabs": "诊断详情和诊断建议",
+      "suggestionsReady": "已有建议",
       "dismiss": "关闭提示",
-      "note": "诊断说明",
+      "note": "用户反馈",
       "object": "诊断对象",
       "objectAgents": "Agent",
       "objectFull": "全部轨迹",
@@ -1208,6 +1217,8 @@
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
       "objectSummary": "轨迹摘要",
+      "sectionExpand": "展开",
+      "sectionCollapse": "收起",
       "findingCauses": "{{count}} 条产物归因",
       "findingSkill": "{{count}} 条技能归因",
       "findingExperience": "{{count}} 条经验归因",
@@ -1229,6 +1240,9 @@
       "ttseTriggeredNotice": "已触发TTSE，将在后台完成经验生成和保存",
       "ttseReady": "可生成经验",
       "skillFillPrefix": "根据以下优化建议对相应skill进行演进：",
+      "skillSelectAll": "全选",
+      "skillSelectOne": "选择 {{name}}",
+      "skillFillSelected": "填入所选（{{count}}）",
       "artifactFillPrefix": "请根据以下建议进行优化：",
       "ttseResult": {
         "triggered": "已触发",

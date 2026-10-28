@@ -2,8 +2,10 @@ type FailureScope = 'session' | 'task';
 
 /** Keep the service's actual error while explaining its effect and a useful next step. */
 export function describeDuplexError(raw: string, scope: FailureScope = 'session'): string {
-  const detail = raw.trim() || '服务未提供具体原因';
-  if (detail.startsWith('原因：') && detail.includes('结果：') && detail.includes('解决方式：')) return detail;
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('原因：') && trimmed.includes('结果：') && trimmed.includes('解决方式：')) return trimmed;
+  // Drop trailing sentence punctuation so the template below does not print "。。".
+  const detail = trimmed.replace(/[。.！!]+$/u, '') || '服务未提供具体原因';
 
   const task = scope === 'task';
   let result = task ? '本次任务未完成，无法使用任务结果' : '本次语音交互可能未完成';
@@ -23,6 +25,9 @@ export function describeDuplexError(raw: string, scope: FailureScope = 'session'
     } else {
       action = '请检查服务额度和限流状态，额度恢复后重试';
     }
+  } else if (/选屏框.*未选择屏幕/.test(detail)) {
+    result = '屏幕共享未开启';
+    action = '请重新开启，并在系统弹出的选屏框中点选要共享的屏幕';
   } else if (/not.?supported|不支持/i.test(detail)) {
     // A runtime capability gap (#5283): the service logs hold nothing useful.
     result = '当前运行环境不支持该功能';

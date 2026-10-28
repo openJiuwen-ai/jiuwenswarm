@@ -105,7 +105,7 @@ test('queue manager receipt text reaches both chat and speech without creating a
   await pending;
   assert.deepEqual(answers, ['已将飞书排在微信前面。']);
   assert.deepEqual(speech, answers);
-  assert.equal(requests[0].options.timeoutMs, 90_000);
+  assert.equal(requests[0].options.timeoutMs, 0);
   provider.stop();
 });
 

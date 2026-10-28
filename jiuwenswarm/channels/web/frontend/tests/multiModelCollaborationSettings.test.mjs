@@ -253,6 +253,7 @@ test('collaboration and other experimental sections retain their order', () => {
     'multi-model-collaboration',
     'tool-optimize',
     'computer-control',
+    'design-mode',
   ]);
 });
 

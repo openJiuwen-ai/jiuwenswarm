@@ -34,6 +34,7 @@ export interface WsEvent {
 export type WebMessage = WsRequest | WsResponse | WsEvent;
 
 export interface WebRequestOptions {
+  /** Zero disables the request deadline; abort and connection errors still reject. */
   timeoutMs?: number;
   signal?: AbortSignal;
   /** 对应协议里请求消息的顶层 is_stream 字段（如 command.goal 的 set/resume） */

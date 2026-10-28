@@ -395,6 +395,23 @@ test('a plain "Not supported" error and a missing getDisplayMedia also fall back
   assert.ok(session);
 });
 
+test('macOS screen recording denied by the system falls back to voice with a settings hint (#5758)', async () => {
+  const started = await shareScreenWith(new DOMException('Permission denied by system', 'NotAllowedError'));
+  assert.equal(started, true);
+  assert.ok(session);
+  assert.ok(toastStore.getSnapshot().some((notice) => notice.content.startsWith('没有屏幕录制权限，已仅开启语音') && !notice.closing));
+});
+
+test('a macOS desktop shell without the system screen picker falls back to voice (#5758)', async () => {
+  window.__JIUWEN_DESKTOP_SCREEN_CAPTURE__ = false;
+  try {
+    assert.equal(await shareScreenWith(new DOMException('cancelled', 'NotAllowedError')), true);
+    assert.ok(session);
+  } finally {
+    delete window.__JIUWEN_DESKTOP_SCREEN_CAPTURE__;
+  }
+});
+
 test('cancelling the screen picker still starts no voice session', async () => {
   const started = await shareScreenWith(new DOMException('cancelled', 'NotAllowedError'));
   assert.equal(started, false);

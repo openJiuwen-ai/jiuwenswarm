@@ -443,7 +443,7 @@ export class JoyAIProvider {
             ...(approvalContext ? { approval_context: approvalContext } : {}),
             ...(requestKind === 'user' && this.restoreToken ? { restore_token: this.restoreToken } : {}),
           },
-          { timeoutMs: requestKind === 'user' ? 90_000 : 60_000 },
+          { timeoutMs: requestKind === 'user' ? 0 : 60_000 },
         );
         if (frameDataUrl) this.lastFrameRequestAt = Date.now();
         try {

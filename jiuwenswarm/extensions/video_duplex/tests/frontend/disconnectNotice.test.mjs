@@ -52,3 +52,8 @@ test('duplex errors explain the actual cause, impact and next step', () => {
   assert.match(unsupported, /结果：当前运行环境不支持该功能/);
   assert.doesNotMatch(unsupported, /服务日志/);
 });
+
+test('screen picker errors read as one sentence and a picker timeout is not called a cancel (#5758)', () => {
+  assert.equal(describeDuplexError('已取消选择屏幕。').startsWith('原因：已取消选择屏幕。结果'), true);
+  assert.match(describeDuplexError('系统选屏框 60 秒内未选择屏幕，已自动关闭'), /结果：屏幕共享未开启。解决方式：请重新开启，并在系统弹出的选屏框中点选要共享的屏幕。$/);
+});

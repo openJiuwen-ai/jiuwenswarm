@@ -247,7 +247,6 @@ test('normalizes interface source variants and bilingual display fields', () => 
     id: 'python-code-reviewer',
     runtimePackageName: 'python-code-reviewer',
     displayName: 'Python Code Reviewer',
-    searchNames: ['Python 代码检视专家', 'Python Code Reviewer'],
     description: 'Reviews Python code',
     category: 'Engineering',
     source: 'builtin',
@@ -692,7 +691,7 @@ test('agent detail does not display summary data when the full detail request fa
   assert.equal(failed.detailError, 'Hub timeout');
 });
 
-test('mine experts match both display languages and exclude description, tags and ids', () => {
+test('mine experts match visible names and exclude hidden names, description, tags and ids', () => {
   const item = normalizeAgentTemplateListItem({
     id: 'hidden-package-6', source: 'local', installed: true,
     displayName: { zh: '工程顾问', en: 'Quality Advisor' },
@@ -700,8 +699,8 @@ test('mine experts match both display languages and exclude description, tags an
     tags: [{ zh: 'hidden-tag' }],
   }, 'zh');
   const search = query => buildCatalogViewModel([item], { scope: 'mine', category: '', query }).totalItems;
-  for (const q of ['工程', ' QUALITY ', 'ＱＵＡＬＩＴＹ']) assert.equal(search(q), 1, q);
-  for (const q of ['生成', 'hidden', '6']) assert.equal(search(q), 0, q);
+  for (const q of ['工程', ' 工程 ']) assert.equal(search(q), 1, q);
+  for (const q of ['生成', 'hidden', '6', ' QUALITY ', 'ＱＵＡＬＩＴＹ']) assert.equal(search(q), 0, q);
 });
 
 // Different display names can lose the same characters during slug conversion (#5498).
@@ -737,4 +736,25 @@ test('expert package IDs stay distinct for non-Latin names created in the same m
   const ids = ['专家', '测试', '专家'].map(deriveAgentId);
   assert.equal(new Set(ids).size, ids.length);
   for (const id of ids) assert.match(id, /^agent-/);
+});
+
+
+test('mine search excludes hidden English names from Chinese cards (#4473)', () => {
+  const raw = {
+    id: 'hidden-s-6', source: 'local', installed: true,
+    displayName: { zh: '案件整理顾问', en: 'Casework Organizer' },
+    displayDescription: { zh: 'description-only' },
+    tags: [{ zh: 'tag-only' }], category: 'category-only',
+  };
+  const search = (locale, query) => buildCatalogViewModel(
+    [normalizeAgentTemplateListItem(raw, locale)], { scope: 'mine', category: '', query },
+  ).items.length;
+  for (const query of ['s', 'Casework', 'hidden', '6', 'description-only', 'tag-only']) {
+    assert.equal(search('zh', query), 0, query);
+  }
+  assert.equal(search('zh', '案件'), 1);
+  assert.equal(search('en', '案件'), 0);
+  for (const query of ['s', ' CASEWORK ', 'ＣＡＳＥＷＯＲＫ']) assert.equal(search('en', query), 1);
+  const fallback = normalizeAgentTemplateListItem({ ...raw, displayName: { en: 'Casework Organizer' } }, 'zh');
+  assert.equal(buildCatalogViewModel([fallback], { scope: 'mine', category: '', query: 'Casework' }).items.length, 1);
 });
