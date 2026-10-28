@@ -30,7 +30,7 @@
   <a href="https://github.com/openJiuwen-ai/jiuwenswarm/releases">
     <img src="https://img.shields.io/pypi/v/workswarm.svg" alt="Release" />
   </a>
-  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13-blue.svg" alt="Python 3.11, 3.12, 3.13" />
+  <img src="https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue.svg" alt="Python 3.11, 3.12, 3.13, 3.14" />
   <img src="https://img.shields.io/badge/os-Windows%20%7C%20macOS%20%7C%20Linux%20%7C%20HarmonyOS-lightgrey.svg" alt="OS Support" />
 </p>
 
@@ -69,7 +69,7 @@ On Linux, install via [Command Line](#pip) or [from source](#from-source) below.
 
 ### Command Line
 
-Requires Python `>=3.11,<3.14`.
+Requires Python `>=3.11,<3.15`.
 
 ```bash
 # Install JiuwenSwarm
