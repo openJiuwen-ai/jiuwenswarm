@@ -516,6 +516,8 @@ def register_video_live_handler(
                                 reply_language == "match" and not re.search(r"[\u4e00-\u9fff]", question or instruction)
                             ) else "队列管理未全部完成，请查看任务列表和定时任务确认已执行的操作。"
                         )
+                        if queue_management.get("error_source") == "model":
+                            response_text += " " + str(queue_management.get("error") or "")
                     # Only the manager's receipt-based answer reaches chat/TTS.
                     # Never speak JoyAI's unconfirmed acknowledgement or ask it
                     # to issue another operation for the same request.

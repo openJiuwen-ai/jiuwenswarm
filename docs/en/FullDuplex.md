@@ -85,6 +85,13 @@ still require the UI; both providers retain explicit voice approval answers thro
 New tasks still use `jiuwen_delegate`. The realtime model must initiate the management call: spoken promises
 without a tool call are not automatically executed.
 
+Invalid model output, tool arguments, unqueried task IDs and stale observed revisions receive
+up to three silent correction attempts in addition to the six normal decisions. Duplicate
+write proposals reuse their recorded receipts without executing again. The management model
+can query and correct queue or task revision conflicts. Provider and network errors are
+returned directly; writes are not automatically replayed. If correction fails or an outcome
+is uncertain, the incomplete state and earlier receipts remain available.
+
 Scheduled jobs go to that same text model instead of a fixed "query scheduled jobs" delegation.
 The manager reads the user's real cron jobs, next runs and timezones with `jiuwen_cron_query`,
 changes name, cron expression, timezone, description, enabled state, push channel, mode or
