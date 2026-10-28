@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.extensions.loader import ExtensionLoader
+from gateway.extensions.loader import ExtensionLoader
 from jiuwenswarm.extensions.runtime_management_extension.extension import (
     register_extensions,
     runtime_client_requested,

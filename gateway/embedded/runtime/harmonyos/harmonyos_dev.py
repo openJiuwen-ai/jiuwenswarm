@@ -810,7 +810,7 @@ def _parse_node_major(version: Any) -> int | None:
 
 def _builtin_harmonyos_dev_suite_dir() -> Path:
     # Copied under gateway/embedded, one level deeper than the AgentServer original.
-    package_root = Path(__file__).resolve().parents[4]
+    package_root = Path(__file__).resolve().parents[4] / "jiuwenswarm"
     return (
         package_root
         / "resources"

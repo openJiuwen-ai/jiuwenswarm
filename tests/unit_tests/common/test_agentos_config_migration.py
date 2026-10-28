@@ -6,6 +6,7 @@ from pathlib import Path
 import zipfile
 
 import pytest
+import portalocker
 from ruamel.yaml import YAML
 
 from jiuwenswarm.common import config as config_module

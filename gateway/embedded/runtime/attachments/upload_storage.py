@@ -62,7 +62,9 @@ def safe_upload_filename(filename: str, *, fallback: str) -> str:
 def safe_session_dirname(session_id: str | None) -> str:
     """Return the directory name for a session's upload folder."""
     text = str(session_id or "default").strip() or "default"
-    return _UNSAFE_SESSION_CHARS.sub("_", text)[:_MAX_SESSION_ID_CHARS]
+    name = _UNSAFE_SESSION_CHARS.sub("_", text)[:_MAX_SESSION_ID_CHARS]
+    name = name.rstrip(". ").strip()
+    return name if name and name not in {".", ".."} else "default"
 
 
 def unique_upload_path(path: Path) -> Path:

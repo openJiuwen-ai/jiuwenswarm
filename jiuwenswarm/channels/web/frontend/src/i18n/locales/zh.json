@@ -161,7 +161,7 @@
       "editPlaceholder": "编辑文本内容…",
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
-      "duration": "时长",
+      "duration": "视频时长",
       "count": "生成数量",
       "browseFiles": "浏览文件",
       "dropHint": "或者拖拽到区域内",
@@ -179,6 +179,7 @@
       "videoTitle": "视频参数",
       "imageTitle": "图片参数",
       "durationValue": "{{seconds}} 秒",
+      "durationUnit": "秒",
       "loading": "正在读取生成参数…",
       "loadError": "无法读取生成参数：{{message}}",
       "saveError": "参数未保存：{{message}}"

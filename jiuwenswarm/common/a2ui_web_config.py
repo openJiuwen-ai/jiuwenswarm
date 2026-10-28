@@ -47,6 +47,15 @@ def _a2ui_enabled_from_raw(raw_config: dict[str, object] | None) -> bool:
     env_enabled = os.getenv("JIUWENSWARM_A2UI_ENABLED")
     if env_enabled is not None:
         enabled = _to_bool(env_enabled, enabled)
+    # Preserve the runtime parser's supported-protocol contract without importing
+    # server modules into the Gateway process.
+    protocol_version = str(
+        os.getenv("JIUWENSWARM_A2UI_PROTOCOL_VERSION")
+        or section.get("protocol_version")
+        or "0.8"
+    ).strip()
+    if protocol_version != "0.8":
+        raise ValueError(f"Unsupported A2UI protocol version: {protocol_version}")
     return enabled
 
 

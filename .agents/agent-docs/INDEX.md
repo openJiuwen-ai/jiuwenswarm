@@ -1,7 +1,7 @@
 ---
 title: D/F/B/S 文档总索引
-author: ZYQ5333
-author_email: zhangyaqing8@huawei.com
+author: alan_cheng
+author_email: chengshuo5@huawei.com
 generated: true
 ---
 
@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 19 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 15 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -26,7 +26,7 @@ generated: true
 | [jiuwenswarm/observability](#module-9) | 1 |
 | [jiuwenswarm/runtime](#module-10) | 1 |
 | [jiuwenswarm/server](#module-11) | 1 |
-| [未分类](#module-12) | 12 |
+| [未分类](#module-12) | 8 |
 
 <a id="module-1"></a>
 
@@ -135,7 +135,3 @@ generated: true
 | [team_permission_design](designs/archive/team_permission_design.md) | D | Team 模式 Permissions 设计方案 | 待确认 | — | — | — |
 | [team_plan_design](designs/archive/team_plan_design.md) | D | Team Plan 模式设计文档 | 待确认 | — | — | — |
 | [team_worktree_isolation_agenttool_cn](designs/archive/team_worktree_isolation_agenttool_cn.md) | D | Team Teammate Worktree Isolation 设计文档 | 待确认 | — | — | — |
-| [B_20261026_1602_code-multimodal-loading](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261026_1602_code-multimodal-loading.md) | B | 配置多模态模型后，Code 未按 Work 规则加载工具 | 待确认 | — | — | 待核实 |
-| [B_20261026_1606_issue-5753-session-project-binding](bugfix/jiuwenswarm/server/runtime/session/B_20261026_1606_issue-5753-session-project-binding.md) | B | Issue #5753：普通会话发送消息后混入全局项目目录 | 待确认 | — | — | 待核实 |
-| [B_20261026_2035_gateway-contract-collection](bugfix/tests/unit_tests/common/B_20261026_2035_gateway-contract-collection.md) | B | Gateway 拆包后协议契约测试无法收集 | 待确认 | — | — | 待核实 |
-| [S_01_multimodal-tool-loading](specs/jiuwenswarm/server/runtime/agent_adapter/S_01_multimodal-tool-loading.md) | S | Work / Code 多模态工具加载契约 | 待确认 | — | — | — |

@@ -117,14 +117,14 @@
   opacity: 1;
 }
 
-/* defaultButton 沉淀：右上角浮现的单个主操作按钮，
-   结构为 .page-card__actions > .page-card__default-button，
-   视觉与全局悬浮操作（胶囊主按钮）一致，业务差异通过调用方 className 追加 */
+/* defaultButton：悬停浮现的主操作按钮（.page-card__actions > .page-card__default-button）。
+   必须留在文档流中（勿 absolute），否则长标题会伸到按钮下方，hover 时被「安装」等盖住（#5474）。
+   未 hover 时仍占位，标题提前 ellipsis；视觉与胶囊主按钮一致，业务差异用 className 追加。 */
 .page-card__actions {
-  position: absolute;
-  top: 36px;
-  right: 24px;
   display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  align-self: flex-start;
   gap: 8px;
   opacity: 0;
   pointer-events: none;

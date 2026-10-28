@@ -27,6 +27,55 @@ files:
 
 # 1030 集成候选记录
 
+## 同名文件旧主线回退检查（2026-10-28）
+
+对 b901e8cb6 到候选的全部变更中仍两侧存在的文件，逐路径比较候选 blob 与主线历史 blob，
+找到 10 个完整等于旧主线内容的候选。此检测不覆盖局部混合回退，不能当作全量语义审查。
+恢复 5 个无企业差异依据的文件到 b901e8cb6（这些文件与检查时 upstream/develop 396819cad 内容亦一致）：
+
+- scripts/installer.iss：恢复 XinchenZzz 在 49aefe967 引入的 Windows CLI/SDK/配置升级保全。
+  d31b42ac1 的主线父提交已有 PreserveWindowsCli，但合并结果未保留；e99b50320、d52c933d9 延续旧结果。
+- team/bootstrap.py：恢复 a54fd726a 的 install_expert_catalog 注册，避免专家目录实现存在但启动未装配。
+- PageCard.css / PageCard.tsx：恢复 52ef4929c 的主操作按钮文档流占位，避免长标题悬停时被按钮遮盖。
+- test_run_channel_isolation.py：恢复 7d9b024e9 的权限能力绑定、异常恢复和 SDK 回调测试；当前实现已支持这些契约。
+
+另外 5 个候选保留：common/client/agent_client.py、third_agent.py、common/schema/event_base.py、
+common/security/base_crypto.py 为 gateway_protocol 共享类型身份的企业契约；extensions/agent_client/extension.py
+仍用于 Yuanrong 客户端注册，后续随新增主线 6fb32fce0 一起迁移，不直接覆盖。
+检查 scripts/docs/.github/.gitcode 相对已合入基线的剩余净差异，安装器恢复后无其他变更。
+最新主线新增的 desktop-electron-packaging.md / check_layering.py 增量不算本轮历史遗漏。
+
+验证：后端定向 60 passed / 37 skipped（Windows、PowerShell、平台工具条件），日志
+/private/tmp/integration-stale-file-tests.log；前端 agent-management 82 passed，日志
+/private/tmp/integration-stale-ui.log。未在 Windows 编译或执行安装/升级。
+本轮只续写现有记录，未重新生成索引或批量修改署名。
+
+## 历史删除残留修复（2026-10-28）
+
+本轮仅清理已合入基线 b901e8cb6 的历史残留，不扩大为新增主线提交的合并。
+旧 A4P 文档最初来自 yukuanj 的 b9bd54256，经回退后由 4d2135fc2 重新引入；
+企业侧 4bcb7661e 是单父批量同步，未保留对应主线合并祖先。
+主线 571bec10f 删除旧文档并迁移六个 A4P 模块；后续三方合并的共同祖先无旧文件，
+企业侧旧副本被当作新增保留。本文档现删除，旧 A4P 六模块与 Hook 两别名一并删除；
+Runtime organization/ops 处理器转用 common.a4p 包，聊天中间件改用 gateway_protocol.hooks。
+新增 Runtime A4P 分发回归并验证 WebSocket/中间件 Hook 行为；旧推送测试桩定位到 common.host_services 唯一总线。
+
+本轮回归：168 个文件，4014 passed / 3 skipped，64.67 秒。日志 /private/tmp/integration-deletion-final.log；清单 /private/tmp/integration-deletion-recovery-tests.txt。环境沿用前轮，未做部署/E2E 验收。
+推送前远端已推进到 2a9252424（250 文件企业迁移/修复）；以普通 merge 保留该批提交。最终合并版本定向复验 A4P、聊天 Hook、插件加载共 134 passed，3.03 秒，日志 /private/tmp/integration-deletion-remote-final.log。4014 项结果对应合并远端增量前的修复版本，不能当作最终合并版本全量通过。
+
+
+按全仓历史扫描（关闭重命名检测，将迁移旧路径也计入）相对已合入 b901e8cb6 的删除残留清零。
+此前相对最新 833536d7b 找出的另外 20 个扩展文件不是历史漏删：删除/迁移它们的 6fb32fce0
+在 2026-10-28 新增且尚未进入 integration。当前 Gateway/Runtime 插件装配、ADX/AgentOS 和
+Yuanrong 客户端仍消费这些文件，故本轮保持，下一轮合并新主线时按其迁移同时更新消费方。
+这纠正了上一轮将最新主线迁移候选与历史残留并列而未充分区分基线的判断。
+
+后续同步约定建议：长期集成分支使用普通 merge 保存祖先，不 squash develop 的同步提交；
+每轮固定同步前 SHA 和上游 SHA，分别检查主线删除/重命名清单与 PR 净差异。
+对“上游不存在但企业存在”的文件逐项确认是企业新增、明确保留还是迁移残留；
+引用检查包含 Python 导入、动态加载和 extension.yaml。祖先包含检查与 UT 通过均不能替代内容复核。
+release/1030 修复回流 integration；1110 特性继续在开发线，避免反向混入客户 release。
+
 ## 当前 PR 冲突处理（2026-10-27，基线 b901e8cb6）
 
 本节替代上一轮的当前基线和“不 push”交付状态，历史验证证据保留。
@@ -393,3 +442,18 @@ ERROR tests/unit_tests/agentserver/test_model_recipe_preparation.py::test_cold_t
 ERROR tests/unit_tests/agentserver/test_model_recipe_preparation.py::test_cold_typed_selection_rejects_access_before_any_provider_construction
 ERROR tests/unit_tests/agentserver/test_model_recipe_preparation.py::test_duplicate_name_and_alias_skip_invalid_recipes_without_changing_index_identity
 ```
+
+### 2026-10-28 A2UI 来源及局部主线回退复查
+
+- `common/a2ui_web_config.py` 首次出现在 `ae186a1cb54936d87c78a31cdfda85493d0cca89`，Git 作者/提交者为 wangxin，两个父提交均不存在该文件。Gateway 移除本地 server provider 桥后，共享配置面板仍需读取 A2UI 字段，因此保留 common 辅助模块；补回主线配置解析的协议版本校验。实际 config.get 在未注册 A2UI provider 时通过回归。
+- 以实际已合入主线 `b901e8cb6` 比较全部差异路径，并检查删除路径、旧文件匹配、Python 缺失函数及局部差异。`common/utils.py` 遗漏日志安全加载、64KiB 日志保护、邮箱正则性能修复、后台写日志、配置字段补齐及 common MCP manifest 引用；这些遗漏在 `d52c933d9` 已存在。恢复主线逻辑，保留企业租户路径和日志热更新，并使热更新同步队列内部 sink 和代理级别。
+- 恢复测试误删的 portalocker 导入、staticmethod；去掉 COMMITTER 末尾换行和 model_routing_registry 文档翻译这两处无必要差异。未改其他文档作者、标题或索引。
+- 回归：首轮相关 UT 198 passed；扩大 common + A2UI + utils + startup logging 为 1108 passed / 34 skipped / 1 failed，额外配置页回归 8 passed。唯一扩大回归失败为 test_external_cli_config_read 子进程将 PYTHONPATH 重置为仓库根目录，隔离测试依赖的 openjiuwen_protocol 不在该解释器安装环境中，报 ModuleNotFoundError；未修改测试绕过，不能宣称全绿。新增测试覆盖 48 组 A2UI 运行时/面板解析一致性及队列日志动态级别。
+- fetch 后 upstream/develop 为 `4f0348f3e`，较 b901e8cb6 新增16个提交，尚未在本次局部修复中合入。这些属于后续同步，不作为历史遗漏删除相关文件。此次排查不等于对全部企业新增代码逐行语义验收；合入前仍需最新主线同步及独立完整环境回归。
+
+### 2026-10-28 最新主线同步与提交整理
+
+- 先快进保留远端团队 integration `25d56b315`（包含同步至 `396819cad`），再合入 upstream/develop `4f8eaaa78`，无文本冲突。
+- 回归修复：鸿蒙测试重复导入、扩展加载器迁移引用、处理状态协议枚举；embedded 副本补回上传点目录保护和鸿蒙资源根路径；设计前端测试补浏览器/Vite 环境；片段排序 UT 隔离音轨与媒体探测外部依赖。
+- 后端 design、gateway、a2ui、日志、配置迁移、utils 回归：最后大范围2358通过/2跳过/1失败；剩余视频合成排序测试补齐外部依赖隔离后，整个 test_clip_handler.py 11通过。设计前端14组共94通过。不是全仓或端到端验收。
+- 用户明确要求合并杂乱提交：保留整理前历史备份，并以 `4f8eaaa78` 为父提交生成一个企业汇总提交；通过 Git tree 对比保证整理不改变代码内容。只改写 integration 分支，release/1030 与 enterprise-verify 不变。后续协作者须基于新 integration 继续，避免再次合入旧 integration 历史。

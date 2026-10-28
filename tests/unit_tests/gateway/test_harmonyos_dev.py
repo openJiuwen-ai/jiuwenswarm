@@ -8,8 +8,6 @@ from pathlib import Path
 
 import pytest
 
-from gateway.channel_manager.tui.harmonyos import harmonyos_dev
-from gateway.channel_manager.tui.harmonyos.harmonyos_dev import (
 from gateway.embedded.runtime.harmonyos import harmonyos_dev
 from gateway.embedded.runtime.harmonyos.harmonyos_dev import (
     CommandResult,
@@ -82,7 +80,6 @@ async def test_project_init_returns_tui_context_without_shared_mcp_config(
 
     monkeypatch.setattr(harmonyos_dev, "detect_executable", fake_detect)
     monkeypatch.setattr(
-        "gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
         "gateway.embedded.runtime.harmonyos.harmonyos_project.get_user_workspace_dir",
         lambda: state_root,
     )
@@ -111,7 +108,6 @@ async def test_project_init_succeeds_when_devecocli_is_unavailable(
 
     monkeypatch.setattr(harmonyos_dev, "detect_executable", fake_detect)
     monkeypatch.setattr(
-        "gateway.channel_manager.tui.harmonyos.harmonyos_project.get_user_workspace_dir",
         "gateway.embedded.runtime.harmonyos.harmonyos_project.get_user_workspace_dir",
         lambda: tmp_path / "state",
     )

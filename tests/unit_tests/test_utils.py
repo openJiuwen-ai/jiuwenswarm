@@ -990,6 +990,7 @@ class TestCleanupStaleOpenjiuwenDescs:
         if openjiuwen_imports:
             assert cleanup_call < min(openjiuwen_imports)
 
+    @staticmethod
     @pytest.mark.parametrize("workspace_ready", [False, True])
     def test_agentserver_runtime_backend_cleans_before_openjiuwen_import(monkeypatch, workspace_ready):
         """Cleanup precedes SDK readers; a prepared workspace avoids duplicate repair."""

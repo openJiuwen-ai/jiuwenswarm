@@ -331,9 +331,24 @@ def _load_logging_config_from_yaml() -> dict[str, Any]:
         cf = get_config_file()
         if not cf.exists():
             return {}
-        rt = YAML()
-        with open(cf, "r", encoding="utf-8") as f:
-            data = rt.load(f) or {}
+        # Logging reads values only. Round-trip comment preservation makes
+        # importing this module parse the entire config on the Front startup path.
+        rt = YAML(typ="safe")
+        content = cf.read_text(encoding="utf-8")
+        section = re.search(r'(?m)^(?:logging|[\"\']logging[\"\'])\s*:', content)
+        if section is None:
+            # A valid flow mapping need not have a standalone logging section.
+            data = rt.load(content) or {}
+        else:
+            boundary = re.search(r"(?m)^[^\s#]", content[section.end():])
+            end = section.end() + boundary.start() if boundary else len(content)
+            try:
+                data = rt.load(content[section.start():end]) or {}
+            except Exception:
+                # A logging alias may reference an anchor from another section.
+                data = YAML(typ="safe").load(content) or {}
+        if not isinstance(data, dict):
+            return {}
         raw = data.get("logging")
         if isinstance(raw, dict):
             return raw
@@ -905,8 +920,6 @@ def ensure_config_migrated_from_template(
 
     from jiuwenswarm.common.config import migrate_config_from_template
     from jiuwenswarm.common.version import get_runtime_version_label
-    from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
-    from jiuwenswarm.common._build_config import VERSION
 
     root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
     config_path = root / "config" / "config.yaml"
@@ -917,27 +930,7 @@ def ensure_config_migrated_from_template(
         logger.warning(f"跳过配置迁移: {e}")
         return False
 
-    # 版本号短路：已同步则跳过（不跑 _deep_merge、不读模板内容）
-    # config 不存在时交由 migrate_config_from_template 内部 exists() 优雅处理，不在此抛 FileNotFoundError
-    if not config_path.exists():
-        try:
-            return migrate_config_from_template(template_path, config_path)
-        except (TimeoutError, portalocker.exceptions.LockException) as exc:
-            logger.warning("跳过配置迁移，获取配置写锁失败: %s", exc)
-            return False
-
-    user_data = load_yaml_round_trip(config_path)
-    if isinstance(user_data, dict) and user_data.get("config_version") == VERSION:
-        logger.debug(f"config 版本 {VERSION} 一致，跳过迁移: {config_path}")
-        return False
-
-    if isinstance(user_data, dict) and user_data.get("config_version"):
-        logger.info(
-            f"config 版本 {user_data.get('config_version')} != 程序 {VERSION}，开始迁移"
-        )
-    else:
-        logger.info(f"config 无版本号(未迁移)，开始迁移到 {VERSION}")
-
+    # The migration skips a missing config file and writes only on change.
     try:
         migrated = migrate_config_from_template(template_path, config_path)
     except (TimeoutError, portalocker.exceptions.LockException) as exc:
@@ -1485,7 +1478,7 @@ def _ensure_mcp_builtins(
                 "MCP seed contains unexpected root files: "
                 + ", ".join(sorted(unexpected_root_files))
             )
-        from jiuwenswarm.server.runtime.mcp.package_manifest import iter_mcp_packages
+        from jiuwenswarm.common.mcp_package_manifest import iter_mcp_packages
 
         package_dirs = [
             path for path in tmp_dir.iterdir()
@@ -2604,7 +2597,7 @@ _SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
     # 匹配 GitLab Personal Access Token（glpat- 前缀）。
     re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
     # 匹配邮箱地址（避免日志中泄露个人身份信息）。
-    re.compile(r"\b[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b"),
+    re.compile(r"(?<![a-zA-Z0-9._%+-])[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[A-Za-z]{2,}\b"),
     # 匹配中国大陆手机号（可带 +86 或 86 前缀，支持空格/短横线分隔）。
     re.compile(r"(?<!\d)(?:\+?86[-\s]?)?1[3-9]\d{9}(?!\d)"),
     # 匹配中国身份证号（18 位，最后一位可为 X/x）。
@@ -2866,7 +2859,7 @@ class SensitiveDataFilter(logging.Filter):
         sanitized = True
         try:
             message = record.getMessage()
-            record.msg = _sanitize_log_text(message)
+            record.msg = _sanitize_record_text(message)
             record.args = ()
         except Exception:
             # Never block logging because of desensitization failure.
@@ -2888,10 +2881,10 @@ class SensitiveDataFilter(logging.Filter):
                 # 兼容层，未来版本可能移除；改用 exc_info[1]（异常实例）是
                 # 官方推荐写法，面向未来且行为等价（None 时输出 "NoneType: None"）。
                 formatted = "".join(_traceback.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_log_text(formatted)
+                record.exc_text = _sanitize_record_text(formatted)
                 record.exc_info = None
             elif record.exc_text:
-                record.exc_text = _sanitize_log_text(record.exc_text)
+                record.exc_text = _sanitize_record_text(record.exc_text)
         except Exception:
             # 同样不因脱敏失败而阻断日志输出。
             sanitized = False
@@ -2943,7 +2936,7 @@ def install_source_record_masking() -> None:
         try:
             # message 脱敏（含 %s/format 格式化后的最终文本）。
             msg = record.getMessage()
-            record.msg = _sanitize_log_text(msg)
+            record.msg = _sanitize_record_text(msg)
             record.args = ()
             # traceback 脱敏：traceback 由 Formatter.formatException 从
             # record.exc_text 单独渲染，getMessage 覆盖不到。此处提前渲染并脱敏，
@@ -2953,10 +2946,10 @@ def install_source_record_masking() -> None:
                 import traceback as _tb
 
                 formatted = "".join(_tb.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_log_text(formatted)
+                record.exc_text = _sanitize_record_text(formatted)
                 record.exc_info = None
             elif record.exc_text:
-                record.exc_text = _sanitize_log_text(record.exc_text)
+                record.exc_text = _sanitize_record_text(record.exc_text)
             record.jiuwen_sensitive_sanitized = True
         except Exception:
             # 永不因脱敏失败而阻断日志输出。但记录失败（计数 + 首次 stderr 提示），
@@ -2975,6 +2968,25 @@ def install_source_record_masking() -> None:
 
     logging.setLogRecordFactory(_sanitizing_record_factory)
     _source_record_masking_installed = True
+
+
+def _sanitize_record_text(text: str) -> str:
+    """Bound regex/JSON work per log record without truncating a credential.
+
+    Oversized payloads belong in session history rather than operational logs.
+    Omitting the whole payload also avoids breaking serialized JSON or exposing
+    a partial credential at a truncation boundary. Public mask_sensitive keeps
+    its full-text behavior.
+    """
+    if len(text) > 64 * 1024:
+        if text.lstrip().startswith(("{", "[")):
+            return json.dumps({
+                "log_payload_omitted": True,
+                "original_characters": len(text),
+                "character_limit": 64 * 1024,
+            }, separators=(",", ":"))
+        return f"[log payload omitted: {len(text)} characters exceeds 65536 character limit]"
+    return _sanitize_log_text(text)
 
 
 def _reconfigure_stdio_utf8() -> None:
@@ -3102,6 +3114,9 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     # 源头脱敏：覆盖 jiuwenswarm 命名空间之外的第三方 logger（openjiuwen/openai/
     # httpx 等），在 LogRecord 创建时统一脱敏，保证任何来源的 api_key 都不明文落盘。
     install_source_record_masking()
+    from jiuwenswarm.common.background_logging import wrap_log_handlers
+
+    wrap_log_handlers(root)
     return root
 
 
@@ -3148,14 +3163,22 @@ def update_log_levels(
     root = logging.getLogger("jiuwenswarm")
     root.setLevel(levels.logger)
 
-    for h in root.handlers:
-        if isinstance(h, SafeRotatingFileHandler):
+    from jiuwenswarm.common.background_logging import _QueuedHandler
+
+    def update_handler(h: logging.Handler) -> None:
+        if isinstance(h, _QueuedHandler):
+            for target in h.handlers:
+                update_handler(target)
+            h.setLevel(min(target.level for target in h.handlers))
+        elif isinstance(h, SafeRotatingFileHandler):
             attr = _FILE_HANDLER_LEVEL_MAP.get(Path(h.baseFilename).name)
             if attr is not None:
                 h.setLevel(getattr(levels, attr))
         elif isinstance(h, logging.StreamHandler):
             h.setLevel(levels.console)
 
+    for h in root.handlers:
+        update_handler(h)
     return root
 
 

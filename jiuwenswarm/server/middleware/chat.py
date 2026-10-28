@@ -15,8 +15,8 @@ from typing import Any
 from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+from gateway_protocol.hooks import AgentServerHookEvents
+from gateway_protocol.hooks import AgentServerChatHookContext
 
 logger = logging.getLogger(__name__)
 

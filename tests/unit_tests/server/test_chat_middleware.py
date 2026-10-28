@@ -64,7 +64,8 @@ async def test_non_chat_hook_returns_without_calling_extensions(monkeypatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_chat_hook_passes_params_to_extensions(monkeypatch) -> None:
+@pytest.mark.parametrize("entry", ["middleware", "websocket"])
+async def test_chat_hook_passes_params_to_extensions(monkeypatch, entry) -> None:
     seen: list[object] = []
 
     class _Registry:
@@ -80,7 +81,12 @@ async def test_chat_hook_passes_params_to_extensions(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "jiuwenswarm.extensions.registry", registry)
 
     request = _request(ReqMethod.CHAT_SEND, session_id="sess-1", params={"query": "你好"})
-    await trigger_before_chat_request(request)
+    if entry == "middleware":
+        await trigger_before_chat_request(request)
+    else:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+        server = object.__new__(AgentWebSocketServer)
+        await server._trigger_before_chat_request_hook(request)
 
     assert len(seen) == 1
     assert seen[0][1]["query"] == "你好"
@@ -164,6 +170,3 @@ def test_websocket_still_calls_the_three_steps_on_the_server() -> None:
     assert "await self._trigger_before_chat_request_hook(request)" in text
     assert "await self._ensure_auto_team_binding_for_chat(request)" in text
     assert "await self._try_record_implicit_feedback(request)" in text
-    assert "await trigger_before_chat_request(request)" in text
-    assert "return await ensure_auto_team_binding(request)" in text
-    assert "await try_record_implicit_feedback(request)" in text

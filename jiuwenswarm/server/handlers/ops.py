@@ -263,7 +263,7 @@ async def handle_agent_reload_config(ctx: RequestContext) -> None:
         if reload_scopes:
             reload_kwargs["reload_scopes"] = reload_scopes
         if isinstance(config_payload, dict) and "a4p" in config_payload:
-            from jiuwenswarm.agents.harness.common.a4p_runtime import get_a4p_config
+            from jiuwenswarm.agents.harness.common.a4p.runtime import get_a4p_config
 
             # 网关带来的快照可能比本进程里刚改过的 a4p 配置旧，以本进程为准。
             config_payload = {**config_payload, "a4p": get_a4p_config()}
