@@ -1535,9 +1535,10 @@ class Director:
             if parsed.get("language_lock"):
                 analysis["language_lock"] = str(parsed.get("language_lock"))[:16]
                 audio["language_lock"] = analysis["language_lock"]
-            if isinstance(parsed.get("bgm_lock"), dict):
+            bgm_lock = parsed.get("bgm_lock")
+            if isinstance(bgm_lock, dict):
                 analysis["bgm_lock"] = {
-                    str(k): str(v)[:280] for k, v in parsed["bgm_lock"].items()
+                    str(k): str(v)[:280] for k, v in bgm_lock.items()
                 }
                 audio["bgm_lock"] = analysis["bgm_lock"]
             if "include_speech" in parsed:
@@ -3424,9 +3425,10 @@ class Director:
             if parsed.get("language_lock"):
                 analysis["language_lock"] = str(parsed.get("language_lock"))[:16]
                 patched.append("language_lock")
-            if isinstance(parsed.get("bgm_lock"), dict):
+            bgm_lock = parsed.get("bgm_lock")
+            if isinstance(bgm_lock, dict):
                 analysis["bgm_lock"] = {
-                    str(k): str(v)[:280] for k, v in parsed["bgm_lock"].items()
+                    str(k): str(v)[:280] for k, v in bgm_lock.items()
                 }
                 patched.append("bgm_lock")
             audio = dict(analysis.get("audio") or {})
