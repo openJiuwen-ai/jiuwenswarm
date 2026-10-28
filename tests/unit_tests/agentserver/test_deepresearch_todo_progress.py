@@ -5,17 +5,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-
-from openjiuwen.harness.tools.todo import TodoItem
+import pytest_asyncio
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from openjiuwen.harness.tools.todo import TodoItem
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     TaskExecutionRail,
@@ -24,12 +25,62 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
     DEEPRESEARCH_STAGES,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
-    _TrustedParent,
     _open_windows_parent,
+    _TrustedParent,
     _verify_named_parent,
     deepresearch_todo_path,
     persist_deepresearch_task_update,
 )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def isolate_files(tmp_path, monkeypatch):
+    from openjiuwen.core.sys_operation.local._rw_lock_manager import (
+        ReadWriteLockManager,
+    )
+    from openjiuwen.harness.tools.todo_store import _BINDING
+    token = _BINDING.set(None)
+    await ReadWriteLockManager.stop()
+    monkeypatch.setattr(ReadWriteLockManager, "_lock_dir", tmp_path / "locks")
+    yield
+    _BINDING.reset(token)
+    await ReadWriteLockManager.stop()
+
+
+def _seed_plan(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"plan_id": "P", "revision": 1, "todos": [
+        {"id": f"deepresearch_stage_{i}", "content": title, "activeForm": title, "status": "pending"}
+        for i, title in enumerate(DEEPRESEARCH_STAGES, 1)]}))
+
+
+async def _persist(payload, *, todo_path):
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(todo_path.parent.parent))
+    return await persist_deepresearch_task_update(payload, todo_path=todo_path,
+        target=(tool, todo_path.parent.name, "P", asyncio.current_task()))
+
+
+@pytest.mark.asyncio
+async def test_bound_callback_does_not_recreate_missing_stages(tmp_path, monkeypatch):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import todo_progress
+
+    path = tmp_path / "todo/session/todo.json"
+    _seed_plan(path)
+    document = json.loads(path.read_text())
+    document["todos"].pop()
+    path.write_text(json.dumps(document))
+    original = path.read_bytes()
+    warning = Mock()
+    monkeypatch.setattr(todo_progress.logger, "warning", warning)
+    assert not await _persist(_stage_snapshot(None), todo_path=path)
+    assert path.read_bytes() == original
+    warning.assert_called_once_with(
+        "[deepresearch_stream] skip Todo persistence: canonical stages missing or changed"
+    )
 
 
 def _stage_snapshot(active_stage: int | None) -> dict:
@@ -112,26 +163,29 @@ def test_deepresearch_todo_path_cannot_escape_tenant_workspace(
         )
 
 
-def test_persist_deepresearch_task_update_ignores_incomplete_snapshots(tmp_path):
+@pytest.mark.asyncio
+async def test_persist_deepresearch_task_update_ignores_incomplete_snapshots(tmp_path):
     todo_path = tmp_path / "session-1" / "todo.json"
 
     for active_stage in range(1, len(DEEPRESEARCH_STAGES) + 1):
-        assert not persist_deepresearch_task_update(
+        assert not await _persist(
             _stage_snapshot(active_stage=active_stage),
             todo_path=todo_path,
         )
         assert not todo_path.exists()
 
 
-def test_persist_deepresearch_task_update_retains_completed_four_stage_plan(tmp_path):
+@pytest.mark.asyncio
+async def test_persist_deepresearch_task_update_retains_completed_four_stage_plan(tmp_path):
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
+    _seed_plan(todo_path)
 
-    assert persist_deepresearch_task_update(
+    assert await _persist(
         _stage_snapshot(active_stage=None),
         todo_path=todo_path,
     )
 
-    items = json.loads(todo_path.read_text(encoding="utf-8"))
+    items = json.loads(todo_path.read_text(encoding="utf-8"))["todos"]
     assert len(items) == 4
     assert [item["id"] for item in items] == [
         f"deepresearch_stage_{index}" for index in range(1, 5)
@@ -180,10 +234,12 @@ async def test_skill_complete_with_empty_todo_emits_no_task_update():
     session.write_stream.assert_not_awaited()
 
 
-def test_persist_deepresearch_task_update_publishes_with_atomic_replace(
+@pytest.mark.asyncio
+async def test_persist_deepresearch_task_update_publishes_with_atomic_replace(
     tmp_path, monkeypatch
 ):
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
+    _seed_plan(todo_path)
     replacements = []
     real_replace = os.replace
 
@@ -197,7 +253,7 @@ def test_persist_deepresearch_task_update_publishes_with_atomic_replace(
         tracked_replace,
     )
 
-    assert persist_deepresearch_task_update(
+    assert await _persist(
         _stage_snapshot(active_stage=None),
         todo_path=todo_path,
     )
@@ -205,7 +261,7 @@ def test_persist_deepresearch_task_update_publishes_with_atomic_replace(
     source, destination, kwargs = replacements[0]
     if kwargs:
         assert destination == todo_path.name
-        assert source.startswith(".deepresearch-todo-")
+        assert source.startswith(".todo.json-")
         assert kwargs["src_dir_fd"] == kwargs["dst_dir_fd"]
     else:
         assert destination == todo_path
@@ -213,7 +269,8 @@ def test_persist_deepresearch_task_update_publishes_with_atomic_replace(
         assert not source.exists()
 
 
-def test_persist_rejects_symlink_session_directory(tmp_path):
+@pytest.mark.asyncio
+async def test_persist_rejects_symlink_session_directory(tmp_path):
     external = tmp_path / "external"
     external.mkdir()
     todo_root = tmp_path / "todo"
@@ -226,7 +283,7 @@ def test_persist_rejects_symlink_session_directory(tmp_path):
         pytest.skip("symlink creation requires privilege on this platform")
 
     with pytest.raises(OSError):
-        persist_deepresearch_task_update(
+        await _persist(
             _stage_snapshot(active_stage=None),
             todo_path=todo_root / "session-1" / "todo.json",
         )
@@ -234,7 +291,8 @@ def test_persist_rejects_symlink_session_directory(tmp_path):
     assert not (external / "todo.json").exists()
 
 
-def test_persist_fails_closed_when_named_parent_is_swapped_after_open(
+@pytest.mark.asyncio
+async def test_persist_fails_closed_when_named_parent_is_swapped_after_open(
     tmp_path, monkeypatch
 ):
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
@@ -268,22 +326,23 @@ def test_persist_fails_closed_when_named_parent_is_swapped_after_open(
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", track_absolute_temp)
 
     with pytest.raises(OSError):
-        persist_deepresearch_task_update(
+        await _persist(
             _stage_snapshot(active_stage=None),
             todo_path=todo_path,
         )
 
     assert list(external.iterdir()) == []
-    assert list(detached.glob(".deepresearch-todo-*")) == []
+    assert list(detached.glob(".todo.json-*.tmp")) == []
     assert not (detached / "todo.json").exists()
     assert named_temp_dirs == []
 
 
-def test_direct_persist_rejects_dotdot_parent_without_writing(tmp_path):
+@pytest.mark.asyncio
+async def test_direct_persist_rejects_dotdot_parent_without_writing(tmp_path):
     todo_path = tmp_path / "safe" / ".." / "escaped" / "todo.json"
 
     with pytest.raises(OSError):
-        persist_deepresearch_task_update(
+        await _persist(
             _stage_snapshot(active_stage=None),
             todo_path=todo_path,
         )
@@ -322,7 +381,8 @@ def test_windows_parent_chain_detects_identity_swap(tmp_path):
 
 
 @pytest.mark.parametrize("leaf_type", ["symlink", "fifo", "hardlink", "oversize"])
-def test_existing_untrusted_todo_leaf_does_not_block_safe_publish(
+@pytest.mark.asyncio
+async def test_existing_untrusted_todo_leaf_does_not_block_safe_publish(
     leaf_type, tmp_path
 ):
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
@@ -346,7 +406,7 @@ def test_existing_untrusted_todo_leaf_does_not_block_safe_publish(
         todo_path.write_bytes(b"x" * (1_048_576 + 1))
 
     with pytest.raises(OSError):
-        persist_deepresearch_task_update(
+        await _persist(
             _stage_snapshot(active_stage=None),
             todo_path=todo_path,
         )
@@ -355,33 +415,36 @@ def test_existing_untrusted_todo_leaf_does_not_block_safe_publish(
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
-def test_persist_cleans_owned_temp_after_serialization_baseexception(
+@pytest.mark.asyncio
+async def test_persist_cleans_owned_temp_after_serialization_baseexception(
     error_type, tmp_path, monkeypatch
 ):
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
+    _seed_plan(todo_path)
 
     def fail_dump(*_args, **_kwargs):
         raise error_type("failed")
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress."
-        "json.dump",
+        "openjiuwen.harness.tools.todo_store.json.dumps",
         fail_dump,
     )
 
     with pytest.raises(error_type):
-        persist_deepresearch_task_update(
+        await _persist(
             _stage_snapshot(active_stage=None),
             todo_path=todo_path,
         )
-    assert list(todo_path.parent.glob(".deepresearch-todo-*")) == []
+    assert list(todo_path.parent.glob(".todo.json-*.tmp")) == []
 
 
 @pytest.mark.parametrize("error_type", [RuntimeError, KeyboardInterrupt])
-def test_persist_cleans_owned_temp_after_replace_baseexception(
+@pytest.mark.asyncio
+async def test_persist_cleans_owned_temp_after_replace_baseexception(
     error_type, tmp_path, monkeypatch
 ):
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
+    _seed_plan(todo_path)
 
     def fail_replace(*_args, **_kwargs):
         raise error_type("failed")
@@ -392,31 +455,32 @@ def test_persist_cleans_owned_temp_after_replace_baseexception(
         fail_replace,
     )
 
+    from openjiuwen.core.sys_operation.local._atomic_file import _replace_file
     with pytest.raises(error_type):
-        persist_deepresearch_task_update(
-            _stage_snapshot(active_stage=None),
-            todo_path=todo_path,
-        )
-    assert list(todo_path.parent.glob(".deepresearch-todo-*")) == []
+        _replace_file(todo_path, b"new", "600")
+    assert list(todo_path.parent.glob(".todo.json-*.tmp")) == []
 
 
-def test_incomplete_snapshot_does_not_replace_retained_completed_plan(tmp_path):
+@pytest.mark.asyncio
+async def test_incomplete_snapshot_does_not_replace_retained_completed_plan(tmp_path):
     todo_path = tmp_path / "todo" / "session-1" / "todo.json"
+    _seed_plan(todo_path)
 
-    assert persist_deepresearch_task_update(
+    assert await _persist(
         _stage_snapshot(active_stage=None),
         todo_path=todo_path,
     )
     retained = todo_path.read_text(encoding="utf-8")
 
-    assert not persist_deepresearch_task_update(
+    assert not await _persist(
         _stage_snapshot(active_stage=1),
         todo_path=todo_path,
     )
     assert todo_path.read_text(encoding="utf-8") == retained
 
 
-def test_persist_deepresearch_task_update_ignores_other_snapshots(tmp_path):
+@pytest.mark.asyncio
+async def test_persist_deepresearch_task_update_ignores_other_snapshots(tmp_path):
     todo_path = tmp_path / "session-1" / "todo.json"
     payload = {
         "event_type": "task.update",
@@ -427,5 +491,5 @@ def test_persist_deepresearch_task_update_ignores_other_snapshots(tmp_path):
         }],
     }
 
-    assert not persist_deepresearch_task_update(payload, todo_path=todo_path)
+    assert not await _persist(payload, todo_path=todo_path)
     assert not todo_path.exists()

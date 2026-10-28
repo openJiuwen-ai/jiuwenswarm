@@ -491,10 +491,22 @@ class AgentHTTPServer:
 
     async def _dispatch_request(self, sink: Any, request: Any) -> None:
         """分发构造造好的``AgentRequest``，发给pipeline"""
+        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.todo_snapshot import (
+            TODO_SNAPSHOT_MODE,
+            resolve_todo_snapshot_mode,
+        )
+        from jiuwenswarm.extensions.identity_provider import IdentityStore
         from jiuwenswarm.server.pipeline import dispatch_parsed_request
 
         ctx = self._make_ctx(sink, request)
-        await dispatch_parsed_request(ctx, request)
+        identity = IdentityStore.get_identity()
+        mode = resolve_todo_snapshot_mode(get_config(), identity.app_id if identity else None)
+        token = TODO_SNAPSHOT_MODE.set(mode)
+        try:
+            await dispatch_parsed_request(ctx, request)
+        finally:
+            TODO_SNAPSHOT_MODE.reset(token)
 
     async def invoke_unary(
         self,

@@ -1,6 +1,5 @@
 """Regression coverage for checklist creation and execution-plan ownership."""
 
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -13,16 +12,39 @@ from openjiuwen.harness.tools.todo import TodoItem, TodoStatus
 from jiuwenswarm.agents.harness.common.rails import concurrent_safe_rails as module
 
 
-class LocalFiles:
-    async def write_file(self, path, content, **kwargs):
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(content, encoding="utf-8")
-        return SimpleNamespace(code=0)
+from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+from openjiuwen.core.sys_operation.local._rw_lock_manager import ReadWriteLockManager
+import pytest_asyncio
+import json
+import hashlib
 
-    async def read_file(self, path, **kwargs):
-        return SimpleNamespace(code=0, data=SimpleNamespace(
-            content=Path(path).read_text(encoding="utf-8")))
+class LocalFiles(FsOperation):
+    def __init__(self):
+        super().__init__("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+
+@pytest_asyncio.fixture(autouse=True)
+async def isolate_todo_context(tmp_path, monkeypatch):
+    from openjiuwen.harness.tools.todo_store import _BINDING
+    token = _BINDING.set(None)
+    await ReadWriteLockManager.stop()
+    monkeypatch.setattr(ReadWriteLockManager, "_lock_dir", tmp_path / "locks")
+    yield
+    _BINDING.reset(token)
+    await ReadWriteLockManager.stop()
+
+
+def business_tool(tool):
+    """Retain isolated plan-algorithm mocks; satisfy the snapshot boundary."""
+    tool._load_todos = tool.load_todos
+    if hasattr(tool, "save_todos"):
+        tool._save_todos = tool.save_todos
+    items = tool.load_todos.return_value
+    raw = json.dumps([t.to_dict() for t in items])
+    tool.get_file_path = lambda sid: f"/test/{id(tool)}/{sid}/todo.json"
+    tool.fs = SimpleNamespace(read_file=AsyncMock(return_value=SimpleNamespace(code=0,
+        data=SimpleNamespace(content=raw, exists=True, content_sha256=hashlib.sha256(raw.encode()).hexdigest()))))
+    return tool
 
 
 def make_agent(tmp_path, fs=None):
@@ -63,7 +85,7 @@ async def test_registered_create_instance_is_reset_and_new_round_replaces_list(t
     with pytest.raises(Exception, match="already rebuilt"):
         await creator._create_from_list("session", [{"id": "bad", "content": "Duplicate"}])
     await second.before_invoke(ctx)
-    await creator._create_from_list("session", [{"id": "new", "content": "New task"}])
+    await creator._create_from_list("session", [{"id": "new", "content": "New task"}], plan_action="new")
     todos = await creator.load_todos("session")
     assert [todo.id for todo in todos] == ["new"]
     # Explicit status updates retain the original behavior.
@@ -78,7 +100,7 @@ async def test_checklist_retains_original_outer_execution_plan_bridge():
     tool = SimpleNamespace(load_todos=AsyncMock(return_value=[
         TodoItem(id="week", content="Wait for next week", status=TodoStatus.PENDING),
     ]))
-    rail._find_todo_tool = lambda: tool
+    rail._find_todo_tool = lambda: business_tool(tool)
     state = SimpleNamespace(task_plan=None)
     agent = SimpleNamespace(load_state=lambda session: state, save_state=Mock())
     ctx = AgentCallbackContext(agent=agent, session=SimpleNamespace(get_session_id=lambda: "s"))
@@ -106,7 +128,7 @@ async def test_after_task_iteration_persists_memory_completion_before_disk_refre
         load_todos=AsyncMock(return_value=disk_todos),
         save_todos=AsyncMock(),
     )
-    rail._find_todo_tool = lambda: tool
+    rail._find_todo_tool = lambda: business_tool(tool)
     # Executor already marked the current round's task completed in memory.
     state = SimpleNamespace(task_plan=TaskPlan(tasks=[
         TodoItem(id="a", content="Done earlier", status=TodoStatus.COMPLETED),
@@ -153,7 +175,7 @@ async def test_persistent_reminder_stays_pending_outside_the_plan():
         save_todos=AsyncMock(),
     )
     rail = module.ConcurrentSafeTaskPlanningRail()
-    rail._find_todo_tool = lambda: tool
+    rail._find_todo_tool = lambda: business_tool(tool)
     state = SimpleNamespace(task_plan=TaskPlan(tasks=[
         TodoItem(
             id="submit_test_report",
@@ -189,7 +211,7 @@ async def test_reminder_only_file_clears_the_execution_plan():
     )
     tool = SimpleNamespace(load_todos=AsyncMock(return_value=[reminder]))
     rail = module.ConcurrentSafeTaskPlanningRail()
-    rail._find_todo_tool = lambda: tool
+    rail._find_todo_tool = lambda: business_tool(tool)
     state = SimpleNamespace(task_plan=TaskPlan(tasks=[reminder.model_copy(deep=True)]))
     agent = SimpleNamespace(load_state=lambda session: state, save_state=Mock())
     ctx = AgentCallbackContext(
@@ -208,7 +230,7 @@ async def test_inner_callback_syncs_owner_plan_without_mutating_context():
     rail = module.ConcurrentSafeTaskPlanningRail()
     todo = TodoItem(id="task", content="Task", status=TodoStatus.COMPLETED)
     tool = SimpleNamespace(load_todos=AsyncMock(return_value=[todo]))
-    rail._find_todo_tool = lambda: tool
+    rail._find_todo_tool = lambda: business_tool(tool)
     state = SimpleNamespace(task_plan=TaskPlan(tasks=[
         TodoItem(id="task", content="Task", status=TodoStatus.IN_PROGRESS),
     ]))
@@ -232,7 +254,7 @@ async def test_existing_plan_sync_preserves_terminal_todos():
         TodoItem(id="cancelled", content="Cancelled", status=TodoStatus.CANCELLED),
     ]
     tool = SimpleNamespace(load_todos=AsyncMock(return_value=todos), save_todos=AsyncMock())
-    rail._find_todo_tool = lambda: tool
+    rail._find_todo_tool = lambda: business_tool(tool)
     state = SimpleNamespace(task_plan=TaskPlan(tasks=[
         TodoItem(id="done", content="Done", status=TodoStatus.COMPLETED),
         TodoItem(id="cancelled", content="Cancelled", status=TodoStatus.IN_PROGRESS),

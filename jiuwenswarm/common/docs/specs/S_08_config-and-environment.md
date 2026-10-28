@@ -28,6 +28,11 @@ Default）要配置源，否则合并 YAML 模板 + 用户 override 并经 `reso
 
 ## 不变量
 
+- **Todo输出配置**：`todo.snapshot_modes`按宿主身份提供者确认的应用`app_id`映射到
+  `legacy`或`versioned`；缺省legacy，不接受请求/模型参数覆盖或按客户端名称自动启用。
+  WS连接建立时固定选择，HTTP请求进入时固定选择；本请求内配置变化不改变输出。
+  实时和历史共用此上下文。既有版本消费者停用增强需先明确状态/连接切换，不能热降级。
+
 - **N1 配置缓存双重键**：合并结果按 `(path, mtime_ns)` 缓存（省 ~150ms/次）；
   `get_config()` 按 `(sid, aid)` ns + overlay 内容 hash 做 TTL + 版本号缓存。
   **返回共享引用，消费方禁止原地修改**——要改走 `update_config` / `set_config`。

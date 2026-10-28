@@ -190,6 +190,82 @@ def _stream_patches(proc: _Proc, *, route: dict[str, str] | None = None):
     )
 
 
+@pytest.mark.asyncio
+async def test_flash_todo_capture_finishes_before_research_process_starts():
+    proc = _Proc([])
+    entered, release = asyncio.Event(), asyncio.Event()
+    spawn = AsyncMock(return_value=proc)
+    target = object()
+    route = {"session_id": "flash-todo", "workspace_key": "default"}
+
+    async def capture(_path):
+        entered.set()
+        await release.wait()
+        return target
+
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=route):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", capture))
+        stack.enter_context(patch.object(dt, "_consume_stream", consume))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        task = asyncio.create_task(dt.deepresearch_stream._func(action="start", query="q"))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        spawn.assert_not_awaited()
+        release.set()
+        await task
+        spawn.assert_awaited_once()
+        assert consume.await_args.kwargs["todo_context"][1] is target
+
+
+@pytest.mark.asyncio
+async def test_flash_resume_keeps_captured_todo_owner_and_revised_outline(tmp_path):
+    proc = _Proc([])
+    target = object()
+    route = {"session_id": "flash-todo", "workspace_key": "default"}
+    titles = ["章节甲", "章节乙"]
+    feedback = json.dumps({
+        "interrupt_feedback": "revise_outline",
+        "feedback": _completion_outline_json(titles),
+    }, ensure_ascii=False)
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=route):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+        stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", AsyncMock(return_value=target)))
+        stack.enter_context(patch.object(dt, "_resolve_outline_interaction_feedback", return_value=feedback))
+        stack.enter_context(patch.object(dt, "_consume_stream", consume))
+        await dt.deepresearch_stream._func(
+            action="resume", node="outline_interaction", conversation_id="C1",
+            interaction_result="revise", report_type="professional",
+        )
+    assert consume.await_args.kwargs["todo_context"][1] is target
+    assert consume.await_args.kwargs["expected_outline_sections"] == titles
+    assert consume.await_args.kwargs["report_type"] == "professional"
+
+
+@pytest.mark.asyncio
+async def test_flash_todo_capture_failure_does_not_start_research():
+    proc, spawn = _Proc([]), AsyncMock()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "flash-todo"}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                        AsyncMock(side_effect=ValueError("missing Todo"))))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "error" and result["error_code"] == "stream_failed"
+    spawn.assert_not_awaited()
+
+
 def test_config_frame_accepts_exact_limit_and_rejects_one_byte_over():
     base = _valid_config()
     fixed_size = len(dt._encode_deepresearch_config({**base, "padding": ""}))
@@ -1889,6 +1965,49 @@ def _race_route() -> dict[str, str]:
         "service_id": "default",
         "agent_id": "default",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("delivery", ["stream", "stop_race"])
+async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery):
+    frame = {
+        "__deepsearch_status__": "completed", "conversation_id": "C1",
+        "final_result": {
+            "response_content": "<html><body>研究报告</body></html>",
+            "response_content_type": "text/html",
+        },
+    }
+    path = tmp_path / "todo.json"
+    proc = _Proc([
+        json.dumps({"__deepsearch_status__": "started", "conversation_id": "C1"}),
+        json.dumps({"agent": "outline", "content": "# 1. Scope"}),
+        json.dumps({"agent": "sub_reporter", "section_idx": "1", "section_total": 1,
+                    "event": "summary_response", "content": "SUCCESS"}),
+        json.dumps(frame),
+    ])
+    push, persist = AsyncMock(), AsyncMock()
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route=_race_route()):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool", return_value=(None, None)))
+        stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=path))
+        stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
+        stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
+        stack.enter_context(patch.object(dt, "_write_report_html", AsyncMock(return_value="/out/report.html")))
+        warning = stack.enter_context(patch.object(dt.logger, "warning"))
+        if delivery == "stream":
+            result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        else:
+            result = await dt._deliver_race_completed_report(
+                chunk=frame, route=_race_route(), file_name="report", conversation_id="C1", secrets=(),
+            )
+    assert result["status"] == "completed", result
+    persist.assert_not_awaited()
+    warning.assert_any_call("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
+    assert not path.exists()
+    payloads = [call.args[0]["payload"] for call in push.send_push.await_args_list]
+    assert any(p.get("event_type") == "task.update" for p in payloads)
+    assert any(p.get("event_type") == "chat.file" for p in payloads)
 
 
 @pytest.mark.asyncio
@@ -4472,7 +4591,7 @@ async def test_ordered_stage_gateway_updates_reach_completed_todo_snapshot(tmp_p
         "agent_id": "default",
     }
     push = AsyncMock()
-    persist = Mock(return_value=True)
+    persist = AsyncMock(return_value=True)
     patches = _stream_patches(proc, route=route)
     with ExitStack() as stack:
         for item in patches:
@@ -4480,6 +4599,7 @@ async def test_ordered_stage_gateway_updates_reach_completed_todo_snapshot(tmp_p
         stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
         stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", AsyncMock(return_value=object())))
         stack.enter_context(
             patch.object(
                 dt,
@@ -4508,7 +4628,7 @@ async def test_ordered_stage_gateway_updates_reach_completed_todo_snapshot(tmp_p
         )
     assert active == sorted(active, key=lambda value: 99 if value is None else value)
     assert active[-1] is None
-    assert persist.called
+    assert persist.await_count > 0
 
 
 @pytest.mark.asyncio

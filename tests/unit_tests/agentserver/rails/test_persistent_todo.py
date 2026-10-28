@@ -115,10 +115,10 @@ class _TodoFile:
     def __init__(self, todos: list[TodoItem]) -> None:
         self.todos = todos
 
-    async def load_todos(self, _session_id: str) -> list[TodoItem]:
+    async def _load_todos(self, _session_id: str) -> list[TodoItem]:
         return list(self.todos)
 
-    async def save_todos(self, _session_id: str, todos: list[TodoItem]) -> None:
+    async def _save_todos(self, _session_id: str, todos: list[TodoItem]) -> None:
         self.todos = list(todos)
 
 
@@ -230,10 +230,10 @@ async def test_modify_to_in_progress_clears_persistent_mark() -> None:
 
     tool = object.__new__(CompatibleTodoModifyTool)
 
-    async def save_todos(_session_id: str, todos: list[TodoItem]) -> None:
+    async def _save_todos(_session_id: str, todos: list[TodoItem]) -> None:
         saved.append(list(todos))
 
-    tool.save_todos = save_todos  # type: ignore[method-assign]
+    tool._save_todos = _save_todos  # type: ignore[method-assign]
     tool._validate_single_in_progress = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
 
     await tool._update_todos(  # pylint: disable=protected-access
@@ -259,17 +259,24 @@ def _reminder_and_plan() -> tuple[TodoItem, TodoItem]:
 
 
 def _modify_tool(todos: list[TodoItem]) -> CompatibleTodoModifyTool:
-    tool = object.__new__(CompatibleTodoModifyTool)
-
-    async def load_todos(_session_id: str) -> list[TodoItem]:
-        return todos
-
-    async def save_todos(_session_id: str, updated: list[TodoItem]) -> None:
-        todos[:] = list(updated)
-
-    tool.load_todos = load_todos  # type: ignore[method-assign]
-    tool.save_todos = save_todos  # type: ignore[method-assign]
-    return tool
+    # In-memory FS exercises the real transaction and compatibility invoke;
+    # file publication itself is tested separately against the local backend.
+    import hashlib
+    from types import SimpleNamespace
+    class MemoryFile:
+        mode = "sandbox"  # each fixture owns an independent backend
+        def __init__(self):
+            self.raw = json.dumps([t.to_dict() for t in todos])
+        async def read_file(self, *_args, **_kwargs):
+            return SimpleNamespace(code=0, data=SimpleNamespace(content=self.raw, exists=True,
+                content_sha256=hashlib.sha256(self.raw.encode()).hexdigest()))
+        async def write_file(self, _path, content, *, options, **_kwargs):
+            assert options["expected_content_sha256"] == hashlib.sha256(self.raw.encode()).hexdigest()
+            self.raw = content
+            todos[:] = [TodoItem.from_dict(t) for t in json.loads(content)["todos"]]
+            return SimpleNamespace(code=0, data=SimpleNamespace(conflict=False, atomic_replace=True))
+    fs = MemoryFile()
+    return CompatibleTodoModifyTool(SimpleNamespace(fs=lambda: fs), "/test")
 
 
 @pytest.mark.asyncio
@@ -292,7 +299,7 @@ async def test_unrelated_turn_cannot_cancel_or_delete_reminder() -> None:
     )
     assert reminder.status == TodoStatus.PENDING
     assert is_persistent_todo(reminder)
-    assert plan.status == TodoStatus.CANCELLED
+    assert next(todo for todo in held if todo.id == plan.id).status == TodoStatus.CANCELLED
     assert "Kept 1 reminder" in cancelled["message"]
 
     reminder.status = TodoStatus.PENDING

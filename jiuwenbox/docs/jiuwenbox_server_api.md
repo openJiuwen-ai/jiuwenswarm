@@ -1212,3 +1212,14 @@ print(resp.text)
 - `sandbox.exec` 和 `sandbox.exec_background` 中的 `workdir`、`env`、`timeout_seconds` 仍然有效。
 - CLI 后台任务命令：`sandbox bg-exec`、`sandbox bg-get`、`sandbox bg-list`、`sandbox bg-kill`（除 `sandbox exec` 外，CLI 默认输出 JSON）
 - 文档示例中的时间、PID、ID 仅为示意。
+
+
+## 文件快照与条件提交
+
+`POST /api/v1/sandboxes/{sandbox_id}/file-snapshot` 沿用现有鉴权、READY 状态和路径策略。请求包含 `operation`（`read` 或 `compare_replace`）、绝对 `path`、`options`；写入内容使用 `content_base64`，沿用已有文件大小上限。
+
+读取返回 `ok`、`exists`、原始字节 `content_sha256`、`content_size`、`content_base64`。`missing_ok=true` 时缺文件作为 `exists=false` 返回，读取不创建目标文件。
+
+条件提交必须提供 `expected_exists` 和 `expected_content_sha256`；实际 daemon/Windows runner 在同一文件锁下比较并替换。成功返回 `ok=true, atomic_replace=true`；冲突返回 `ok=false, error="conflict"`。传输结果未知为 `outcome_unknown`，不得自动重放。没有 capabilities 握手，也不降级为普通上传或 exec。
+
+权限及路径检查、临时文件清理在实际文件端完成。该接口没有改变沙箱隔离策略。

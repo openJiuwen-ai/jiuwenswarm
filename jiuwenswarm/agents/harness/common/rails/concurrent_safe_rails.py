@@ -279,48 +279,54 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
 
         session_id = ctx.session.get_session_id()
 
-        try:
-            todos = await tool.load_todos(session_id)
-        except Exception:
-            logger.debug("ConcurrentSafeTaskPlanningRail: no todos for sync")
-            return
+        from openjiuwen.harness.tools.todo_store import bind_todo_batch, transact
+        bind_todo_batch(ctx, tool)
 
-        if not todos:
-            return
+        async def apply():
+            try:
+                todos = await tool._load_todos(session_id)
+            except Exception:
+                logger.debug("ConcurrentSafeTaskPlanningRail: no todos for sync")
+                return
 
-        status_by_task_id = {
-            task.id: task.status
-            for task in plan.tasks
-        }
-        changed = False
-        skipped_terminal_overwrite = 0
+            if not todos:
+                return
 
-        for todo in todos:
-            if is_persistent_todo(todo):
-                continue
-            desired = status_by_task_id.get(todo.id)
-            if desired is None or todo.status == desired:
-                continue
-            if todo.status in (TodoStatus.COMPLETED, TodoStatus.CANCELLED):
-                skipped_terminal_overwrite += 1
-                continue
-            todo.status = desired
-            changed = True
+            status_by_task_id = {
+                task.id: task.status
+                for task in plan.tasks
+            }
+            changed = False
+            skipped_terminal_overwrite = 0
 
-        if skipped_terminal_overwrite:
+            for todo in todos:
+                if is_persistent_todo(todo):
+                    continue
+                desired = status_by_task_id.get(todo.id)
+                if desired is None or todo.status == desired:
+                    continue
+                if todo.status in (TodoStatus.COMPLETED, TodoStatus.CANCELLED):
+                    skipped_terminal_overwrite += 1
+                    continue
+                todo.status = desired
+                changed = True
+
+            if skipped_terminal_overwrite:
+                logger.info(
+                    "ConcurrentSafeTaskPlanningRail: skipped %d terminal todo overwrite(s)",
+                    skipped_terminal_overwrite,
+                )
+
+            if not changed:
+                return
+
+            await tool._save_todos(session_id, todos)
             logger.info(
-                "ConcurrentSafeTaskPlanningRail: skipped %d terminal todo overwrite(s)",
-                skipped_terminal_overwrite,
+                "ConcurrentSafeTaskPlanningRail: synced %d todos from TaskPlan",
+                len(todos),
             )
 
-        if not changed:
-            return
-
-        await tool.save_todos(session_id, todos)
-        logger.info(
-            "ConcurrentSafeTaskPlanningRail: synced %d todos from TaskPlan",
-            len(todos),
-        )
+        await transact(tool, session_id, apply)
 
     async def _refresh_task_plan_from_todos(self, ctx: AgentCallbackContext) -> None:
         """Overwrite TaskPlan from persisted todos."""
@@ -345,6 +351,8 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             return
 
         if not todos:
+            if getattr(todos, "snapshot", None) is not None:
+                await self._clear_task_plan(ctx)
             return
         execution_todos = [todo for todo in todos if not is_persistent_todo(todo)]
         if not execution_todos:

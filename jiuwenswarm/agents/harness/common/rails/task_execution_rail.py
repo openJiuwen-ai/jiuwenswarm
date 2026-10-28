@@ -39,8 +39,10 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     get_todo_generation_token,
     remember_turn_user_query,
     snapshot_includes_persistent_todos,
+    is_persistent_todo,
 )
 from jiuwenswarm.common.todo_generation import todo_item_generation_token
+from jiuwenswarm.common.todo_snapshot import versioned_todo_output
 from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
 from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
@@ -1261,7 +1263,6 @@ async def fire_artifact_hook(
     失败后永久跳过该文件。
     """
     try:
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
         from jiuwenswarm.extensions.hook_event import (
             AgentServerHookEvents,
         )
@@ -1269,6 +1270,7 @@ async def fire_artifact_hook(
             ArtifactPostProcessHookContext,
             ImageArtifactHookContext,
         )
+        from jiuwenswarm.extensions.registry import ExtensionRegistry
     except ImportError as exc:
         logger.warning(
             "%s skip artifact post-process hook, import failed: %s",
@@ -1360,6 +1362,7 @@ class TaskExecutionRail(DeepAgentRail):
     def __init__(self) -> None:
         super().__init__()
         self._todo_map: dict[str, dict[str, Any]] = {}
+        self._todo_snapshot_revision = -1
         self._todo_map_before_tool: dict[str, dict[str, Any]] = {}
         self._active_tasks: dict[str, TaskExecutionContext] = {}
         self._todo_started: set[str] = set()
@@ -1379,7 +1382,6 @@ class TaskExecutionRail(DeepAgentRail):
         # StreamEventRail 执行（priority 大者先），workspace 须从副本直读
         self._skill_turbo_request_metadata: dict | None = None
         # 并行工作工具同时 auto_advance 写 todo.json 时串行化，避免丢更新
-        self._todo_write_lock = asyncio.Lock()
         # 后项已在磁盘标 completed/in_progress、但前面还有未完成项时
         # 暂不发 task.start/complete，等前缀完成后按列表顺序补发。
         self._todo_complete_deferred: set[str] = set()
@@ -1471,6 +1473,7 @@ class TaskExecutionRail(DeepAgentRail):
             self._todo_generation_token or "none",
         )
         self._todo_map = {}
+        self._todo_snapshot_revision = -1
         self._todo_map_before_tool = {}
         self._active_tasks = {}
         self._todo_started = set()
@@ -1892,38 +1895,30 @@ class TaskExecutionRail(DeepAgentRail):
         if todo_path is None or not todo_path.exists():
             return
 
-        async with self._todo_write_lock:
-            try:
-                with open(todo_path, "r", encoding="utf-8") as f:
-                    items = json.load(f)
-                if not isinstance(items, list):
-                    return
-            except (OSError, ValueError):
-                return
+        from openjiuwen.harness.schema.task import TodoStatus
+        from openjiuwen.harness.tools.todo import TodoModifyTool
+        from openjiuwen.harness.tools.todo_store import transact
+        tool = TodoModifyTool(self._deep_agent.deep_config.sys_operation, str(todo_path.parent.parent))
 
-            changed = False
+        async def advance():
+            items = await tool._load_todos(session_id)
             for item in items:
-                if item.get("id") == raw_id and str(
-                    item.get("status", "pending")
-                ).lower() in self._BINDING_PENDING:
-                    item["status"] = "in_progress"
-                    changed = True
-                    break
-
-            if not changed:
-                return
-
-            try:
-                with open(todo_path, "w", encoding="utf-8") as f:
-                    json.dump(items, f, ensure_ascii=False, indent=2)
-            except OSError:
-                logger.warning(
-                    "[TaskExecutionRail] auto_advance: failed to write "
-                    "todo.json session_id=%s task_id=%s",
-                    session_id,
-                    raw_id,
-                )
-                return
+                if item.id == raw_id:
+                    if item.status.value not in self._BINDING_PENDING:
+                        return {"changed": False}
+                    item.status = TodoStatus.IN_PROGRESS
+                    await tool._save_todos(session_id, items)
+                    return {"changed": True}
+                if item.status not in (TodoStatus.COMPLETED, TodoStatus.CANCELLED) and not is_persistent_todo(item):
+                    return {"changed": False}
+            return {"changed": False}
+        try:
+            result = await transact(tool, session_id, advance)
+        except (OSError, ValueError, RuntimeError) as exc:
+            logger.warning("Todo auto advance failed: %s", exc)
+            return
+        if not result["changed"]:
+            return
 
         if raw_id not in self._todo_started:
             task["status"] = "in_progress"
@@ -1935,7 +1930,7 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_map[raw_id]["status"] = "in_progress"
         _ACTIVE_TASK_ID.set(f"todo:{raw_id}")
 
-        await self._emit_task_update_event(session, parent_request_id)
+        await self._emit_task_update_event(session, parent_request_id, snapshot=result.todo_snapshot)
 
         logger.info(
             "[TaskExecutionRail] auto_advance: pending→in_progress "
@@ -2103,9 +2098,18 @@ class TaskExecutionRail(DeepAgentRail):
             return []
         with open(todo_path, "r", encoding="utf-8") as handle:
             data = json.load(handle)
-        if not isinstance(data, list):
-            return []
-        return data
+        from openjiuwen.harness.tools.todo_store import decode_snapshot
+        snapshot = decode_snapshot(json.dumps(data))
+        self._todo_snapshot_revision = max(self._todo_snapshot_revision, snapshot.revision)
+        from openjiuwen.harness.tools.todo_store import bound_todo_tool, observe_plan
+        tool, bound_session = bound_todo_tool()
+        if (tool is not None and bound_session == session_id
+                and Path(tool.get_file_path(session_id)).resolve() == todo_path.resolve()):
+            observe_plan(tool, session_id, snapshot)
+        if versioned_todo_output():
+            meta = {"plan_id": snapshot.plan_id, "revision": snapshot.revision}
+            return [{**row, "todo_meta": meta} for row in snapshot.todos]
+        return snapshot.todos
 
     def _load_todo_from_json(
         self, session_id: str
@@ -2113,11 +2117,15 @@ class TaskExecutionRail(DeepAgentRail):
         # 执行地图：旧代条目和用户记下的待办都不进 _todo_map，
         # 因此不会被绑定，也不会在新一轮首帧回放。
         data = self._read_todo_file(session_id)
-        return filter_todos_for_execution(data, self._todo_generation_token)
+        return filter_todos_for_execution(
+            data, None if any("todo_meta" in row for row in data) else self._todo_generation_token
+        )
 
     def _load_todo_for_display(self, session_id: str) -> list[dict[str, Any]]:
         data = self._read_todo_file(session_id)
-        return filter_todos_for_display(data, self._todo_generation_token)
+        return filter_todos_for_display(
+            data, None if any("todo_meta" in row for row in data) else self._todo_generation_token
+        )
 
     def _get_todo_workspace_path(
         self, session_id: str
@@ -2153,6 +2161,7 @@ class TaskExecutionRail(DeepAgentRail):
             else:
                 normalized_status = str(status).lower()
             mapped[task_id] = {
+                **({"todo_meta": item["todo_meta"]} if "todo_meta" in item else {}),
                 "content": item.get(
                     "content", item.get("activeForm", "")
                 ),
@@ -2355,8 +2364,22 @@ class TaskExecutionRail(DeepAgentRail):
         tool_name = str(getattr(ctx.inputs, "tool_name", "") or "")
         defer_start_on_create = tool_name == "todo_create"
 
+        result = getattr(ctx.inputs, "tool_result", None)
+        snapshot = getattr(result, "todo_snapshot", None)
         try:
-            todo_items = self._load_todo_from_json(session_id)
+            if snapshot is not None:
+                if snapshot["revision"] < self._todo_snapshot_revision:
+                    return
+                self._todo_snapshot_revision = snapshot["revision"]
+                todo_items = snapshot["todos"]
+                if versioned_todo_output():
+                    meta = {key: snapshot[key] for key in ("plan_id", "revision")}
+                    todo_items = [{**row, "todo_meta": meta} for row in todo_items]
+                todo_items = filter_todos_for_execution(
+                    todo_items, None if versioned_todo_output() else self._todo_generation_token
+                )
+            else:
+                todo_items = self._load_todo_from_json(session_id)
         except Exception as exc:
             logger.warning(
                 "[TaskExecutionRail] Failed to load todo.json: %s",
@@ -2459,12 +2482,13 @@ class TaskExecutionRail(DeepAgentRail):
         include_persistent = snapshot_includes_persistent_todos(
             tool_name,
             self._parse_work_tool_args(ctx),
-            self._read_todo_file(session_id),
+            snapshot["todos"] if snapshot is not None else self._read_todo_file(session_id),
         )
         await self._emit_task_update_event(
             ctx.session,
             parent_request_id,
             include_persistent=include_persistent,
+            snapshot=snapshot,
         )
 
     async def _flush_serial_todo_transitions(
@@ -2560,6 +2584,8 @@ class TaskExecutionRail(DeepAgentRail):
                         "parent_request_id": context.parent_request_id,
                         "timestamp": context.start_time,
                         "source": source,
+                        **({"todo_meta": task["todo_meta"]}
+                           if versioned_todo_output() and "todo_meta" in task else {}),
                     },
                 )
             )
@@ -2619,6 +2645,8 @@ class TaskExecutionRail(DeepAgentRail):
                         "error": error,
                         "timestamp": timestamp,
                         "source": source,
+                        **({"todo_meta": task["todo_meta"]}
+                           if versioned_todo_output() and "todo_meta" in task else {}),
                         "parent_request_id": parent_request_id,
                     },
                 )
@@ -2667,9 +2695,13 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_complete_deferred.discard(normalized_task_id)
         self._todo_start_deferred.discard(normalized_task_id)
 
-        tasks = self._format_tasks_for_update(
-            self._overlay_serial_todo_statuses(todo_items), source="todo"
-        )
+        if versioned_todo_output():
+            from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+            visible_items = format_todos_for_frontend(todo_items)
+        else:
+            visible_items = self._overlay_serial_todo_statuses(todo_items)
+        tasks = self._format_tasks_for_update(visible_items, source="todo")
+        meta = task.get("todo_meta") if versioned_todo_output() else None
         complete = OutputSchema(
             type="task.complete",
             index=0,
@@ -2690,6 +2722,7 @@ class TaskExecutionRail(DeepAgentRail):
                 "timestamp": timestamp,
                 "source": "todo",
                 "parent_request_id": parent_request_id,
+                **({"todo_meta": meta} if meta is not None else {}),
             },
         )
         update = OutputSchema(
@@ -2709,6 +2742,7 @@ class TaskExecutionRail(DeepAgentRail):
                 ),
                 "timestamp": timestamp,
                 "parent_request_id": parent_request_id,
+                **({"todo_meta": meta} if meta is not None else {}),
             },
         )
         return [complete, update]
@@ -2719,16 +2753,28 @@ class TaskExecutionRail(DeepAgentRail):
         parent_request_id: str | None = None,
         *,
         include_persistent: bool = False,
+        snapshot: dict | None = None,
     ) -> None:
         """Send full task list snapshot (all todos) to the frontend."""
         session_id = session.get_session_id()
-        # 执行快照不含用户记下的待办。查询/修改提醒时改走展示列表，
-        # 且不把展示列表写回 _todo_map。
-        if include_persistent:
-            todo_items = self._load_todo_for_display(session_id)
+        if snapshot is None:
+            from openjiuwen.harness.tools.todo_store import decode_snapshot
+            path = self._get_todo_workspace_path(session_id)
+            if path is None:
+                return
+            try:
+                snapshot = decode_snapshot(path.read_bytes()).document()
+            except (OSError, ValueError):
+                return
+        if versioned_todo_output():
+            from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+            todo_items = format_todos_for_frontend(snapshot["todos"])
+        elif include_persistent:
+            todo_items = filter_todos_for_display(snapshot["todos"], self._todo_generation_token)
         else:
-            todo_items = self._load_todo_from_json(session_id)
-        todo_items = self._overlay_serial_todo_statuses(todo_items)
+            todo_items = filter_todos_for_execution(snapshot["todos"], self._todo_generation_token)
+        if not versioned_todo_output():
+            todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"
         )
@@ -2757,6 +2803,8 @@ class TaskExecutionRail(DeepAgentRail):
             "timestamp": time.time(),
         }
 
+        if versioned_todo_output():
+            payload["todo_meta"] = {key: snapshot[key] for key in ("plan_id", "revision")}
         if parent_request_id:
             payload["parent_request_id"] = parent_request_id
 
