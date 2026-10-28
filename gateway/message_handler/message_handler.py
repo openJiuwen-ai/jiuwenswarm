@@ -137,9 +137,6 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "evolution_interrupt",
 })
 _A2UI_OPEN_TAG_MARKER = "<a2ui-json>"
-# 只有会进入 Agent turn 的流式请求才需要刷新 AgentServer 的 cron 工具视图。
-# 读取类流(history.get 等)不产生 turn,却会按任务属主触发项目准入 RPC。
-_CRON_SNAPSHOT_STREAM_METHODS = frozenset({"chat.send", "command.goal"})
 # before_chat_request 钩子可改写的用户可见参数：变更时实时回推前端
 # （chat.message_updated），避免前端气泡/模型显示停留在改写前的值。
 _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
@@ -5219,7 +5216,6 @@ class MessageHandler(ABC):
             extra={"session_id": session_id} if session_id else {},
         )
         try:
-            await self._sync_agentos_cron_jobs(env)
             await self._apply_session_login_owner(env)
             async for chunk in self.agent_client.send_request_stream(env):
                 _proc_count += 1
@@ -5407,66 +5403,6 @@ class MessageHandler(ABC):
                         cancelled,
                         session_id,
                     )
-
-    async def _sync_agentos_cron_jobs(self, env: "E2AEnvelope") -> None:
-        """Provide the routed AgentServer an ephemeral view of Gateway cron jobs.
-
-        Gateway remains the sole persistent job-store owner.  This one-way E2A
-        request occurs before an Agent turn so cron tools can list/update jobs
-        after an AgentServer restart without reading a user-local cron file.
-        Failure is non-fatal for ordinary chat; mutation attempts will still
-        report their Gateway delivery failure through the existing path.
-        """
-        # 读取类流不进入 Agent turn,不会调用 cron 工具;对它们刷新快照只会
-        # 为任务列表付出按属主路由的准入 RPC。
-        if str(getattr(env, "method", "") or "") not in _CRON_SNAPSHOT_STREAM_METHODS:
-            return
-        from gateway.routing.e2a_proxy import is_agentos_routing_client
-
-        if not is_agentos_routing_client(self.agent_client):
-            return
-        controller = self._cron_controller
-        if controller is None:
-            return
-        user_id = str(getattr(env, "user_id", "") or "").strip()
-        if not user_id:
-            logger.warning(
-                "[Cron] skip AgentOS cron snapshot without user_id: request_id=%s",
-                env.request_id,
-            )
-            return
-        try:
-            jobs = await controller.list_jobs(user_id=user_id)
-            from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-            from openjiuwen_protocol.message import ReqMethod
-
-            snapshot_env = e2a_from_agent_fields(
-                request_id=f"cron-jobs-sync-{env.request_id}",
-                channel_id=env.channel or "web",
-                session_id=env.session_id,
-                req_method=ReqMethod.CRON_JOBS_SYNC,
-                params={"jobs": jobs},
-                is_stream=False,
-                timestamp=time.time(),
-                user_id=user_id,
-            )
-            response = await send_agent_request_with_timeout(
-                self.agent_client,
-                snapshot_env,
-                label="cron.jobs.sync",
-            )
-            if not response.ok:
-                logger.warning(
-                    "[Cron] AgentOS cron snapshot rejected: request_id=%s payload=%s",
-                    env.request_id,
-                    response.payload,
-                )
-        except Exception as exc:  # noqa: BLE001 - must not block normal chat
-            logger.warning(
-                "[Cron] AgentOS cron snapshot sync failed: request_id=%s error=%s",
-                env.request_id,
-                exc,
-            )
 
     async def _send_stream_cancelled_notification(
         self, request_id: str | None, channel_id: str, session_id: str | None
