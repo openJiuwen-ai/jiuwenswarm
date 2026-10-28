@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -15,6 +15,11 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
 from jiuwenswarm.gateway.cron.store import CronJob, CronJobStore
+from jiuwenswarm.common.invocation_context.billing_trace import (
+    MAX_CORE_LEN,
+    MAX_TRACE_ID_LEN,
+    build_cron_trace_id,
+)
 
 import time
 
@@ -40,6 +45,66 @@ def _make_job(job_id="job-1", name="test", **overrides):
     }
     defaults.update(overrides)
     return CronJob(**defaults)
+
+
+class TestRunNowBillingTrace:
+    """立即执行 run_id 必须与定时轮同格式，否则 FINISH consumedPoints 恒为 0。"""
+
+    def test_run_now_id_is_billing_compatible_and_unique(self) -> None:
+        svc = _TestableScheduler.__new__(_TestableScheduler)
+        svc._runs = {}
+        svc._last_run_now_ts = {}
+        job_id = "1d96c179c1f6421fb999a6ac935dc8c9"
+
+        first = svc._next_run_now_id(job_id, 1793162095)
+        second = svc._next_run_now_id(job_id, 1793162095)
+
+        assert first == f"{job_id}:1793162095"
+        assert second == f"{job_id}:1793162096"  # 同秒内连续立即执行不重复
+        assert first.count(":") == 1  # 不再插入 uuid 段
+        trace = build_cron_trace_id(first)
+        assert len(trace) - len("cron_") <= MAX_CORE_LEN
+        assert len(trace) <= MAX_TRACE_ID_LEN
+
+        # 活跃 run 占用同秒 id 时继续顺延
+        svc._runs[first] = object()
+        svc._runs[second] = object()
+        assert svc._next_run_now_id(job_id, 1793162095) == f"{job_id}:1793162097"
+
+    def test_run_now_skips_pending_wake_event(self) -> None:
+        """定时轮 run_id 在 wake 前只在 _events：立即执行必须避让。"""
+        svc = _TestableScheduler.__new__(_TestableScheduler)
+        svc._runs = {}
+        svc._last_run_now_ts = {}
+        job_id = "1d96c179c1f6421fb999a6ac935dc8c9"
+        svc._events = [
+            (0.0, 1, SimpleNamespace(job_id=job_id, run_id=f"{job_id}:1793162095"))
+        ]
+        assert svc._next_run_now_id(job_id, 1793162095) == f"{job_id}:1793162096"
+
+    def test_scheduled_id_avoids_occupied_run(self) -> None:
+        """立即执行/活跃 run 占用某秒时，定时轮顺延 1 秒且 run_id 同步。"""
+        svc = _TestableScheduler.__new__(_TestableScheduler)
+        svc._runs = {}
+        svc._run_tasks = {}
+        svc._events = []
+        job = _make_job(
+            job_id="daily-930",
+            cron_expr="30 9 * * *",
+            timezone="Asia/Shanghai",
+            wake_offset_seconds=0,
+        )
+        now_ts = datetime(2026, 7, 24, 9, 0, 0, tzinfo=ZoneInfo("Asia/Shanghai")).timestamp()
+
+        push_dt, wake_dt, run_id = svc.compute_next_run(job, now_ts=now_ts)
+        svc._runs[run_id] = object()
+        push2, wake2, run2 = svc.compute_next_run(job, now_ts=now_ts)
+
+        assert run2 != run_id
+        assert push2 == push_dt + timedelta(seconds=1)
+        assert wake2 == wake_dt + timedelta(seconds=1)
+
+
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.device_tool_planner import (
     CronDeviceToolPlan,
 )
