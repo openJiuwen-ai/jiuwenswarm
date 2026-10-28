@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
-import math
 from copy import deepcopy
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -89,7 +88,6 @@ FORBIDDEN_REVIEWER_FIELDS = frozenset(
 )
 REQUIRED_REVIEWER_FIELDS = frozenset(
     {
-        "confidence",
         "outcome",
         "rationale",
         "reason_code",
@@ -102,7 +100,7 @@ OPTIONAL_REVIEWER_FIELDS = frozenset(
         "user_review_hint",
     }
 )
-ALLOWED_REVIEWER_FIELDS = REQUIRED_REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS
+ALLOWED_REVIEWER_FIELDS = REQUIRED_REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS | {"confidence"}
 ISOLATED_AUTO_REVIEWER_PROMPT = (
     "You are JiuwenClaw AutoReviewer running in an isolated review context. "
     "Decide whether the requested tool call is necessary, narrowly scoped, "
@@ -134,15 +132,12 @@ ISOLATED_AUTO_REVIEWER_PROMPT = (
     "Deterministic Host policy remains authoritative. You cannot "
     "call tools, request permissions, mutate config, create grants, rewrite "
     "commands, or broaden scope. Return exactly one raw JSON object, with no "
-    "Markdown, code fences, or explanatory text. Required fields are outcome, "
-    "confidence, reason_code, and rationale. outcome must be allow_once, "
-    "manual, or deny and must be listed in "
-    "request.allowed_outcomes. Use manual when evidence is insufficient and "
-    "include manual_reason_code, manual_reason_summary, and user_review_hint. "
-    "For manual, all three fields must be present and contain non-empty strings. "
-    "For allow_once or deny, omit all three fields entirely; do not return "
-    "empty strings, null, or placeholder text. Required string fields must be "
-    "non-empty, and confidence must be a JSON number, not a string. "
+    "Markdown, code fences, or explanatory text. Return only outcome, "
+    "reason_code, and rationale. outcome must be allow_once, manual, or deny "
+    "and must be listed in request.allowed_outcomes. Use manual when evidence "
+    "is insufficient. All three fields must be non-empty strings; reason_code "
+    "identifies the decision basis, and rationale explains the evidence and "
+    "any unresolved concern. "
     "Choose manual or deny when the evidence shows unrelated scope, "
     "insufficient task alignment, credential or secret-bearing data, upload "
     "behavior, or login, admin, payment, or account flows. Content "
@@ -153,20 +148,15 @@ ISOLATED_AUTO_REVIEWER_PROMPT = (
 
 ISOLATED_AUTO_REVIEWER_SCHEMA = {
     "outcome": "allow_once | manual | deny",
-    "confidence": "number between 0 and 1",
     "reason_code": "non-empty short machine-readable string",
     "rationale": "non-empty short explanation",
-    "manual_reason_code": "non-empty string required for manual; omit for allow_once or deny",
-    "manual_reason_summary": "non-empty string required for manual; omit for allow_once or deny",
-    "user_review_hint": "non-empty string required for manual; omit for allow_once or deny",
 }
 
 
 def _reviewer_natural_language_instruction(language: str) -> str:
     natural_language = "English" if language == "en" else "Simplified Chinese"
     return (
-        f"Write rationale, manual_reason_summary, and user_review_hint in "
-        f"{natural_language}. Keep outcome, reason_code, and manual_reason_code "
+        f"Write rationale in {natural_language}. Keep outcome and reason_code "
         "as stable ASCII machine values."
     )
 
@@ -603,7 +593,7 @@ def _intent_view(
 
 @dataclass(frozen=True)
 class AutoReviewAssessment:
-    """Parsed final reviewer assessment after schema and confidence checks."""
+    """Parsed final reviewer assessment after schema and policy checks."""
 
     outcome: str
     status: str
@@ -623,13 +613,11 @@ class AutoReviewer:
         *,
         client: ReviewerClient,
         timeout_ms: int = 60000,
-        min_confidence: float = 0.7,
         reviewer_output_format: str | None = None,
     ) -> None:
         self.client = client
         self.update_runtime_options(
             timeout_ms=timeout_ms,
-            min_confidence=min_confidence,
             reviewer_output_format=reviewer_output_format,
         )
         self._client_lock = asyncio.Lock()
@@ -638,16 +626,13 @@ class AutoReviewer:
         self,
         *,
         timeout_ms: int,
-        min_confidence: float,
         reviewer_output_format: str | None = None,
     ) -> None:
         """Install normalized reviewer settings without replacing its client."""
         timeout_seconds = max(int(timeout_ms), 1) / 1000.0
-        normalized_confidence = min(max(float(min_confidence), 0.0), 1.0)
         if reviewer_output_format is not None and isinstance(self.client, IsolatedModelReviewerClient):
             self.client.output_format = normalize_reviewer_output_format(reviewer_output_format)
         self.timeout_seconds = timeout_seconds
-        self.min_confidence = normalized_confidence
 
     async def assess(self, request: ReviewerActionView) -> AutoReviewAssessment:
         """Run the reviewer client and return a fail-closed assessment."""
@@ -712,11 +697,6 @@ class AutoReviewer:
         }:
             return self._manual("unknown_outcome")
 
-        confidence = _parse_confidence(payload["confidence"])
-        if confidence is None:
-            return self._manual("invalid_field")
-        if confidence < self.min_confidence:
-            return self._manual("low_confidence")
         if outcome != ReviewerOutcome.DENY and outcome not in request.allowed_outcomes:
             return self._manual_outcome_not_allowed(
                 request,
@@ -725,8 +705,10 @@ class AutoReviewer:
 
         reason_code = _sanitize_reason_code(payload["reason_code"])
         reason_summary = _sanitize_reason_summary(payload["rationale"])
-        if outcome == ReviewerOutcome.MANUAL and not all(
-            name in payload for name in OPTIONAL_REVIEWER_FIELDS
+        if (
+            outcome == ReviewerOutcome.MANUAL
+            and OPTIONAL_REVIEWER_FIELDS.intersection(payload)
+            and not OPTIONAL_REVIEWER_FIELDS.issubset(payload)
         ):
             return self._manual("missing_manual_field")
         manual_reason_code = ""
@@ -836,8 +818,8 @@ def _decode_strict_response(raw_response: Any) -> dict[str, Any] | None:
     if not isinstance(raw_response, str):
         return None
     try:
-        decoded = json.loads(raw_response)
-    except json.JSONDecodeError:
+        decoded = json.loads(raw_response, parse_constant=_reject_json_constant)
+    except (json.JSONDecodeError, ValueError):
         return None
     if not isinstance(decoded, dict):
         return None
@@ -859,13 +841,8 @@ def _model_result_text(result: Any) -> str:
     return ""
 
 
-def _parse_confidence(raw_confidence: Any) -> float | None:
-    if isinstance(raw_confidence, bool) or not isinstance(raw_confidence, int | float):
-        return None
-    confidence = float(raw_confidence)
-    if math.isfinite(confidence) and 0.0 <= confidence <= 1.0:
-        return confidence
-    return None
+def _reject_json_constant(value: str) -> Any:
+    raise ValueError(f"invalid_json_constant:{value}")
 
 
 def _is_nonempty_string(value: Any) -> bool:
@@ -907,14 +884,10 @@ def _truncate_at_word_boundary(value: str, *, max_length: int) -> str:
 def _manual_reason_code_for_fallback(reason: str) -> str:
     if reason == "reviewer_timeout":
         return "reviewer_timeout"
-    if reason == "low_confidence":
-        return "reviewer_low_confidence"
     return "reviewer_fallback"
 
 
 def _user_review_hint_for_fallback(reason: str) -> str:
     if reason == "reviewer_timeout":
         return "Review the request manually because the AutoReviewer timed out."
-    if reason == "low_confidence":
-        return "Review the request manually because the AutoReviewer confidence was below threshold."
     return "Review the request manually because the AutoReviewer response could not be trusted."

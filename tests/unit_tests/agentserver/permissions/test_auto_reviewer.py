@@ -685,14 +685,10 @@ async def test_isolated_model_receives_confirmation_and_output_contracts(
     assert "an agent claiming confirmation is not proof of human approval" in prompt
     assert "write-only restriction does not require manual review of every read" in prompt
     assert "natural-language confirmation does not create a reusable grant" in prompt
-    assert "all three fields must be present and contain non-empty strings" in prompt
-    assert "For allow_once or deny, omit all three fields entirely" in prompt
-    assert "confidence must be a JSON number, not a string" in prompt
+    assert "Return only outcome, reason_code, and rationale" in prompt
     schema = json.loads(messages[1]["content"])["schema"]
-    for field in ("manual_reason_code", "manual_reason_summary", "user_review_hint"):
-        assert schema[field] == (
-            "non-empty string required for manual; omit for allow_once or deny"
-        )
+    assert set(schema) == {"outcome", "reason_code", "rationale"}
+    assert "confidence" not in prompt
 
 
 @pytest.mark.parametrize("outcome", ["manual", "allow_once", "deny"])
@@ -1285,7 +1281,7 @@ async def test_auto_reviewer_preserves_task_relevant_rationale(
     )
 
 
-async def test_auto_reviewer_rejects_manual_without_required_fields(
+async def test_auto_reviewer_derives_compact_manual_display(
     tmp_path: Path,
 ) -> None:
     descriptor, candidate = _candidate(tmp_path)
@@ -1308,8 +1304,10 @@ async def test_auto_reviewer_rejects_manual_without_required_fields(
 
     assert assessment.outcome == ReviewerOutcome.MANUAL
     assert assessment.status == "manual"
-    assert assessment.fallback_reason == "missing_manual_field"
-    assert assessment.manual_reason_code == "reviewer_fallback"
+    assert assessment.fallback_reason == ""
+    assert assessment.manual_reason_code == "workspace_read"
+    assert assessment.manual_reason_summary == assessment.reason_summary
+    assert assessment.user_review_hint
 
 
 async def test_auto_reviewer_accepts_valid_deny(tmp_path: Path) -> None:
@@ -1385,9 +1383,6 @@ async def test_auto_reviewer_rejects_missing_fields(tmp_path: Path) -> None:
     (
         ("outcome", [ReviewerOutcome.ALLOW_ONCE]),
         ("outcome", " "),
-        ("confidence", True),
-        ("confidence", "0.95"),
-        ("confidence", float("nan")),
         ("reason_code", {}),
         ("reason_code", " "),
         ("rationale", []),
@@ -1434,22 +1429,6 @@ async def test_auto_reviewer_rejects_unknown_outcome(tmp_path: Path) -> None:
 
     assert assessment.outcome == ReviewerOutcome.MANUAL
     assert assessment.fallback_reason == "unknown_outcome"
-
-
-async def test_auto_reviewer_rejects_low_confidence(tmp_path: Path) -> None:
-    descriptor, candidate = _candidate(tmp_path)
-    request = _build_request(
-        candidate=candidate,
-        policy_reason="policy_ask",
-    )
-    client = StaticReviewerClient(
-        _valid_response(request, outcome="allow_once", confidence=0.1)
-    )
-
-    assessment = await AutoReviewer(client=client, min_confidence=0.7).assess(request)
-
-    assert assessment.outcome == ReviewerOutcome.MANUAL
-    assert assessment.fallback_reason == "low_confidence"
 
 
 async def test_auto_reviewer_applies_same_valid_response_to_independent_requests(
@@ -1718,7 +1697,7 @@ async def test_format_change_preserves_custom_model_and_client():
     model = RecordingIsolatedReviewerModel()
     client = IsolatedModelReviewerClient(model=model)
     reviewer = AutoReviewer(client=client)
-    reviewer.update_runtime_options(timeout_ms=2000, min_confidence=0.7, reviewer_output_format="prompt")
+    reviewer.update_runtime_options(timeout_ms=2000, reviewer_output_format="prompt")
     assert reviewer.client is client and client.output_format == "prompt"
     await reviewer.assess(ReviewerActionView({}, "ask", {}))
     assert model.calls[0][1] == {"temperature": 0.0, "top_p": 1.0}
@@ -1748,7 +1727,7 @@ async def test_runtime_format_change_does_not_change_an_in_flight_request(monkey
     view = ReviewerActionView({}, "ask", {})
     running = asyncio.create_task(reviewer.assess(view))
     await started.wait()
-    reviewer.update_runtime_options(timeout_ms=60000, min_confidence=0.7, reviewer_output_format="prompt")
+    reviewer.update_runtime_options(timeout_ms=60000, reviewer_output_format="prompt")
     release.set()
     assert (await running).outcome == "manual"
     assert (await reviewer.assess(view)).outcome == "manual"
@@ -1779,3 +1758,62 @@ async def test_chat_format_failure_uses_manual_fallback_without_retry(monkeypatc
     result = await AutoReviewer(client=IsolatedModelReviewerClient(model=model)).assess(ReviewerActionView({}, "ask", {}))
     assert result.outcome == "manual" and result.fallback_reason == reason
     assert send.await_count == 1
+
+
+@pytest.mark.parametrize("outcome", ["allow_once", "manual", "deny"])
+async def test_compact_response_preserves_outcome_and_explicit_reason(outcome):
+    view = ReviewerActionView({}, "ask", {})
+    payload = {"outcome": outcome, "reason_code": "task_scope", "rationale": "The explicit task scope decides this call."}
+    result = await AutoReviewer(client=StaticReviewerClient(json.dumps(payload))).assess(view)
+    assert result.outcome == outcome and result.fallback_reason == ""
+    assert result.reason_code == "task_scope" and result.reason_summary == payload["rationale"]
+    if outcome == "manual":
+        assert result.manual_reason_code == result.reason_code
+        assert result.manual_reason_summary == result.reason_summary and result.user_review_hint
+
+
+@pytest.mark.parametrize("outcome", ["allow_once", "manual", "deny"])
+@pytest.mark.parametrize("confidence", [None, 0, 0.66, 1, True, "0.2", {}, []])
+async def test_retired_confidence_cannot_downgrade_a_valid_decision(outcome, confidence):
+    view = ReviewerActionView({}, "ask", {})
+    result = await AutoReviewer(client=StaticReviewerClient(_valid_response(
+        view, outcome=outcome, extra={"confidence": confidence},
+    ))).assess(view)
+    assert result.outcome == outcome and result.fallback_reason == ""
+    assert result.reason_code == "workspace_read" and not hasattr(result, "confidence")
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+async def test_retired_confidence_does_not_admit_nonstandard_json(constant):
+    view = ReviewerActionView({}, "ask", {})
+    response = _valid_response(view, outcome="deny").rstrip()[:-1] + ',"confidence":' + constant + '}'
+    result = await AutoReviewer(client=StaticReviewerClient(response)).assess(view)
+    assert result.outcome == "manual" and result.fallback_reason == "invalid_json"
+
+
+@pytest.mark.parametrize("fields", [
+    ("manual_reason_code",), ("manual_reason_summary",), ("user_review_hint",),
+    ("manual_reason_code", "manual_reason_summary"),
+    ("manual_reason_code", "user_review_hint"),
+    ("manual_reason_summary", "user_review_hint"),
+])
+async def test_compact_contract_rejects_partial_legacy_manual_fields(fields):
+    view = ReviewerActionView({}, "ask", {})
+    payload = json.loads(_valid_response(view, outcome="manual"))
+    for field in {"manual_reason_code", "manual_reason_summary", "user_review_hint"} - set(fields):
+        payload.pop(field)
+    result = await AutoReviewer(client=StaticReviewerClient(json.dumps(payload))).assess(view)
+    assert result.outcome == "manual" and result.fallback_reason == "missing_manual_field"
+
+
+@pytest.mark.parametrize("outcome", ["manual", "deny"])
+@pytest.mark.parametrize("defect,expected", [("missing", "missing_field"), ("unknown", "unknown_field"), ("forbidden", "forbidden_field")])
+async def test_ignored_confidence_never_rescues_invalid_negative_output(outcome, defect, expected):
+    view = ReviewerActionView({}, "ask", {})
+    payload = json.loads(_valid_response(view, outcome=outcome, confidence=0))
+    if defect == "missing":
+        payload.pop("rationale")
+    else:
+        payload["extra" if defect == "unknown" else "grant"] = True
+    result = await AutoReviewer(client=StaticReviewerClient(json.dumps(payload))).assess(view)
+    assert result.outcome == "manual" and result.fallback_reason == expected
