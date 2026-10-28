@@ -194,9 +194,9 @@ async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, 
         assert user_id == "huawei-openid"
         return credential_ref
 
-    monkeypatch.setattr("jiuwenswarm.common.auth.service.live_session", live_session)
+    monkeypatch.setattr("gateway.auth.service.live_session", live_session)
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.login_credentials.credential_ref_for_user",
+        "gateway.auth.login_credentials.credential_ref_for_user",
         credential_ref_for_user,
     )
     store = CronJobStore(path=tmp_path / "cron_jobs.json")

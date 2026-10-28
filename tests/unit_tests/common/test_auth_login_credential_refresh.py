@@ -9,8 +9,8 @@ import time
 import httpx
 import pytest
 
-from jiuwenswarm.common.auth import login_credentials as lc
-from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user, placeholder_api_key
+from gateway.auth import login_credentials as lc
+from gateway.auth.login_credentials import credential_ref_for_user, placeholder_api_key
 from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 
 API_BASE = "https://apig.example.com/v1"
@@ -179,8 +179,8 @@ async def test_background_task_survives_push_failures():
 
 @pytest.fixture
 def gateway_auth(tmp_path, monkeypatch):
-    from jiuwenswarm.common.auth import service as service_mod
-    from jiuwenswarm.common.auth import session_store as store_mod
+    from gateway.auth import service as service_mod
+    from gateway.auth import session_store as store_mod
 
     monkeypatch.setattr(store_mod, "auth_dir", lambda: tmp_path)
     monkeypatch.setattr(lc, "_ref_key_cache", b"k" * 32)
@@ -195,7 +195,7 @@ def gateway_auth(tmp_path, monkeypatch):
         def refresh(self, credential):
             Flow.calls += 1
             if Flow.result == "fresh":
-                from jiuwenswarm.common.auth.account_kit import Credential
+                from gateway.auth.account_kit import Credential
 
                 return Credential(id_token="id-new", refresh_token=credential.refresh_token,
                                   expires_at=time.time() + 3600)
@@ -207,7 +207,7 @@ def gateway_auth(tmp_path, monkeypatch):
 
 
 def _login(store, ttl_s: float, user_id: str = "openid-1"):
-    from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
+    from gateway.auth.account_kit import Credential, LoginOutcome
 
     return store.create(LoginOutcome(
         credential=Credential(id_token="id-old", refresh_token="rt", expires_at=time.time() + ttl_s),

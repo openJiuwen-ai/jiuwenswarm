@@ -101,8 +101,8 @@ def _login_model_auth_for_job(job: CronJob) -> dict[str, Any] | None:
     ``login_required`` 报错，任务以明确原因失败，而不是静默换默认模型。
     """
     from gateway.auth.passthrough import refreshed_credential_for_ref
-    from jiuwenswarm.common.auth.apig import resolve_apig_config
-    from jiuwenswarm.common.auth.login_credentials import is_credential_ref
+    from gateway.auth.apig import resolve_apig_config
+    from gateway.auth.login_credentials import is_credential_ref
 
     ref = str(getattr(job, "credential_ref", "") or "").strip()
     if not ref or not is_credential_ref(ref):

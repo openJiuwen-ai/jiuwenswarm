@@ -285,7 +285,7 @@ async def _refresh_expired_login_credential(msg) -> None:
     """
     try:
         from gateway.auth.passthrough import expired_login_session
-        from jiuwenswarm.common.auth.service import get_auth_service
+        from gateway.auth.service import get_auth_service
 
         params = msg.params if isinstance(msg.params, dict) else {}
         session = expired_login_session(params, _auth_session_id(msg))
