@@ -2304,7 +2304,7 @@ class CronSchedulerService:
             channels_cfg: dict = {}
             ch_cfg: dict = {}
             try:
-                from jiuwenswarm.common.config import get_config_raw
+                from gateway.common.config import get_config_raw
 
                 cfg = get_config_raw() or {}
                 channels_cfg = cfg.get("channels") or {}

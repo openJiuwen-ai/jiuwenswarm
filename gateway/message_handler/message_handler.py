@@ -70,7 +70,7 @@ from gateway.runtime.session_input import (
     resolve_session_input_mode,
     validate_session_input,
 )
-from jiuwenswarm.common.config import get_evolution_auto_save_enabled
+from gateway.common.config import get_evolution_auto_save_enabled
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.host_services import (
     install_runtime_wake_handler,
@@ -428,7 +428,7 @@ class MessageHandler(ABC):
 
         # 初始化 Gateway hooks handler
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
             config_base = get_config()
             self._gateway_hooks_config = load_hooks_config(config_base)
             self._gateway_hook_handler = GatewayHookHandler(self._gateway_hooks_config)
@@ -462,7 +462,7 @@ class MessageHandler(ABC):
 
         # 直接使用 jiuwenswarm.config 的 get_config_raw/set_config/update_channel_in_config
         # 避免在此处重复实现 config 模块加载逻辑。
-        from jiuwenswarm.common.config import get_config_raw, update_channel_in_config
+        from gateway.common.config import get_config_raw, update_channel_in_config
 
         self._get_config_raw = get_config_raw
         self._update_channel_in_config = update_channel_in_config

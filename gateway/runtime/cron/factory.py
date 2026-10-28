@@ -33,7 +33,7 @@ async def create_gateway_cron_store(
     """
     if config is None:
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
 
             config = get_config()
         except Exception:

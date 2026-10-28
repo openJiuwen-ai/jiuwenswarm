@@ -254,7 +254,7 @@ def get_models(session_id: str | None = None, allow_refresh: bool = True) -> lis
 
 def login_model_settings(config: Mapping[str, Any] | None = None) -> dict[str, Any]:
     if config is None:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         try:
             config = get_config()

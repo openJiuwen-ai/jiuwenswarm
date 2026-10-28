@@ -1,28 +1,9 @@
-"""Trusted deployment context for AgentOS-only Runtime behavior."""
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-from __future__ import annotations
+"""config 域拆分过渡：jiuwenswarm.common.agentos_runtime 是 gateway.common.agentos_runtime 的模块别名。"""
 
-import os
+import sys
 
-RUNTIME_PROFILE_ENV = "JIUWENSWARM_RUNTIME_PROFILE"
-AGENTOS_DEFAULT_WORKSPACE = "/home/agentos/workspace"
+import gateway.common.agentos_runtime as _real
 
-
-def is_agentos_runtime() -> bool:
-    return os.getenv(RUNTIME_PROFILE_ENV, "").strip().lower() == "agentos"
-
-
-def is_agentos_workspace_fallback(
-    *, channel_id: str | None, project_dir: str | None, project_id: str | None,
-) -> bool:
-    """A cloud Web cwd hint is not a persistent project binding.
-
-    Only the known default workspace is special. Legacy directory-only sessions
-    and all other channels keep their existing binding rules.
-    """
-    return (
-        is_agentos_runtime()
-        and channel_id == "web"
-        and (project_id or "").strip() in {"", "default", "default_code"}
-        and (project_dir or "").strip().rstrip("/") == AGENTOS_DEFAULT_WORKSPACE
-    )
+sys.modules[__name__] = _real

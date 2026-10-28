@@ -105,7 +105,7 @@ def _import_acp_channel_entry(monkeypatch: pytest.MonkeyPatch):
         return {}
 
     fake_config_module.get_config = get_default_config
-    monkeypatch.setitem(sys.modules, "jiuwenswarm.common.config", fake_config_module)
+    monkeypatch.setitem(sys.modules, "gateway.common.config", fake_config_module)
     return existing_module
 
 
@@ -138,7 +138,7 @@ def test_load_acp_channel_config_reads_channels_acp(monkeypatch: pytest.MonkeyPa
         }
 
     fake_config_module.get_config = get_custom_config
-    monkeypatch.setitem(sys.modules, "jiuwenswarm.common.config", fake_config_module)
+    monkeypatch.setitem(sys.modules, "gateway.common.config", fake_config_module)
 
     conf = module.load_acp_channel_config()
 

@@ -178,7 +178,7 @@ def _load_gateway_runtime_config(
     channel configuration. Evolution config propagation is optional for the
     same reason: it may fail independently without changing the loaded config.
     """
-    import jiuwenswarm.common.config as config_module
+    import gateway.common.config as config_module
 
     try:
         if config_module.migrate_legacy_heartbeat_probe_config():
@@ -1920,7 +1920,7 @@ async def _run(
     from gateway.heartbeat import HeartbeatControllerProxy
     from gateway.message_handler.message_handler import MessageHandler
     from gateway.routing.agent_client import WebSocketAgentServerClient
-    from jiuwenswarm.common.config import get_config
+    from gateway.common.config import get_config
     from jiuwenswarm.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
     from jiuwenswarm.common.updater import UpdaterService
 
