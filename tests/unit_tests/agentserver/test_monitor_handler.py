@@ -300,6 +300,7 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
                 "cli_agent": None,
             }
         ],
+        "departed_members": [],
         "tasks": [
             {
                 "task_id": "task-1",
@@ -316,13 +317,14 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
 
 
 @pytest.mark.anyio
-async def test_get_team_snapshot_drops_shut_down_members_and_keeps_dormant() -> None:
+async def test_get_team_snapshot_moves_shut_down_members_to_departed() -> None:
     handler = TeamMonitorHandler(
         _FakeMonitor(
             members=[
                 _FakeMember("worker-1"),
-                _FakeMember("retired", status="shut_down"),
+                _FakeMember("retired", display_name="Retired", status="shut_down"),
                 _FakeMember("sleeper", status="dormant"),
+                _FakeMember("leaving", status="shutdown_requested"),
             ],
             leader_member_name=None,
         ),
@@ -332,7 +334,8 @@ async def test_get_team_snapshot_drops_shut_down_members_and_keeps_dormant() -> 
     snapshot = await handler.get_team_snapshot()
 
     assert snapshot is not None
-    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper"]
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper", "leaving"]
+    assert [(m["member_id"], m["name"]) for m in snapshot["departed_members"]] == [("retired", "Retired")]
 
 
 @pytest.mark.anyio
@@ -368,6 +371,7 @@ async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> N
                 "cli_agent": None,
             },
         ],
+        "departed_members": [],
         "tasks": [],
         "team_id": "team-1",
     }
@@ -1317,6 +1321,7 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     shared.create_cur_session_tables.assert_awaited()
     assert snapshot["team_id"] == "team-sess-1"
     assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper"]
+    assert [m["member_id"] for m in snapshot["departed_members"]] == ["retired"]
     assert len(snapshot["tasks"]) == 1
     out = snapshot["tasks"][0]
     assert out["task_id"] == "uuid-1"

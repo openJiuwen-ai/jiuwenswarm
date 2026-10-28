@@ -14,6 +14,7 @@ import {
   getBoardTaskTitle,
   getMemberDisplayName,
   getTaskColumnKey,
+  isKnownTaskAssignee,
   type TaskColumnKey,
   type TeamMember,
 } from './shared';
@@ -547,7 +548,7 @@ function BoardTaskCard({
   hideAssignee: boolean;
   workflowRuns: WorkflowRun[];
 }) {
-  const assigneeExists = Boolean(task.assignee && members.some((member) => member.member_id === task.assignee));
+  const assigneeExists = isKnownTaskAssignee(task.assignee, members);
   const assigneeName = getMemberDisplayName(task.assignee || '');
   const title = getBoardTaskTitle(task);
   const content = getBoardTaskContent(task);

@@ -404,6 +404,14 @@ export function ToolPanel({
         if (mergedMembers.length > 0) {
           setTeamMembers(sessionId, mergedMembers);
         }
+        // 离队目录：历史回放为底，叠加恢复期间实时记下的；已回到名册的成员不再算离队。
+        const rosterIds = new Set(mergedMembers.map(member => member.member_id));
+        const mergedDepartedMembers = mergeById(
+          historyState.departedMembers,
+          current?.teamDepartedMembers ?? [],
+          member => member.member_id,
+        ).filter(member => !rosterIds.has(member.member_id));
+        useSessionStore.getState().setTeamDepartedMembers(sessionId, mergedDepartedMembers);
 
         const mergedTaskEvents = mergeById(historyState.taskEvents, current?.teamTaskEvents ?? [], event => event.task_id);
         // Always apply — an empty restored list must clear stale events too.

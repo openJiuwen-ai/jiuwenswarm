@@ -10,6 +10,7 @@ import { normalizeFinalContent } from '../utils/finalContent';
 import { ownerTeamId } from './teamOrganization/conversation';
 import { useTeamSelectorStore } from '../stores/teamSelectorStore';
 import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
+import { isDepartedTeamMemberStatus } from './teamMemberDeparture';
 import {
   mergeTaskTimeline,
   toTaskTimelineEntry,
@@ -58,6 +59,8 @@ interface TeamTaskEvent {
 
 export interface TeamHistoryPanelState {
   members: TeamMember[];
+  /** 回放结束时已离队的成员：不进名册，只供按 member_id 查名字 / 头像。 */
+  departedMembers: TeamMember[];
   tasks: TeamTask[];
   taskEvents: TeamTaskEvent[];
   /** 子话题时间线用的任务流转事件，按时间升序、逐条保留。 */
@@ -733,7 +736,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         continue;
       }
       const memberStatus = pickString(event, ['new_status', 'status']);
-      if (memberStatus === 'shut_down') {
+      if (isDepartedTeamMemberStatus(memberStatus)) {
         applyMemberShutdown(memberId);
         continue;
       }
@@ -807,6 +810,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
 
   return {
     members: Array.from(members.values()),
+    departedMembers: Array.from(retiredMembers.values(), (member) => ({ ...member, status: 'shut_down' })),
     tasks: Array.from(tasks.values()),
     taskEvents: Array.from(taskEvents.values()),
     taskTimeline: mergeTaskTimeline([], taskTimeline),

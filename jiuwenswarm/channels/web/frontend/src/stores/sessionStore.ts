@@ -668,6 +668,8 @@ export interface SessionRuntime {
   teamTaskTimeline: TeamTaskTimelineEntry[];
   teamTasks: TeamTask[];
   teamMembers: TeamMember[];
+  /** 已离队（shut_down）成员目录：不在名册上，只供任务卡片等按 member_id 查名字 / 头像。 */
+  teamDepartedMembers: TeamMember[];
   teamConnectionPresentation: TeamConnectionPresentation | null;
   teamLeaderMemberIds: string[];
   teamHumanShareCommands: HumanShareCommand[];
@@ -745,6 +747,7 @@ function createEmptyRuntime(
     teamTaskTimeline: [],
     teamTasks: [],
     teamMembers: [],
+    teamDepartedMembers: [],
     teamConnectionPresentation: sessionId ? loadTeamConnectionPresentation(sessionId) : null,
     teamLeaderMemberIds: [],
     teamHumanShareCommands: [],
@@ -824,6 +827,9 @@ interface SessionState {
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
+  setTeamDepartedMembers: (sessionId: string, members: TeamMember[]) => void;
+  /** 成员离队时把它的身份记进离队目录（同 member_id 覆盖）。 */
+  rememberDepartedTeamMember: (sessionId: string, member: TeamMember) => void;
   setTeamConnectionPresentation: (sessionId: string, presentation: TeamConnectionPresentation | null) => void;
   clearTeamConnectionPresentation: (sessionId: string, memberId?: string) => void;
   setTeamLeaderMemberIds: (sessionId: string, memberIds: string[]) => void;
@@ -1436,6 +1442,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamMembers: members,
             teamMemberContextCompression: nextCompression,
           },
+        },
+      };
+    });
+  },
+
+  setTeamDepartedMembers: (sessionId, members) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamDepartedMembers: members },
+        },
+      };
+    });
+  },
+
+  rememberDepartedTeamMember: (sessionId, member) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const others = (runtime.teamDepartedMembers ?? []).filter((item) => item.member_id !== member.member_id);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamDepartedMembers: [...others, member] },
         },
       };
     });
