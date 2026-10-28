@@ -943,8 +943,41 @@ async def test_officeclaw_session_create_persists_explicit_adapter(
         (sessions_root / manager.session_id / "metadata.json").read_text(encoding="utf-8"),
     )
     assert metadata["mode"] == metadata["adapter_mode"] == expected
+    assert metadata.get("todo_initialized") is (False if expected == "flash" else None)
     assert prewarm.await_args.kwargs["mode"] == expected
     assert prewarm.await_args.kwargs["adapter_mode"] == expected
+
+
+@pytest.mark.asyncio
+async def test_direct_channel_flash_session_create_records_todo_origin(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.server.handlers import _shared
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        check_todo_initialization,
+    )
+
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": False}})
+    server = AgentWebSocketServerHarness()
+    manager = FakeAgentManager(session_id="direct_flash_create")
+    server.set_agent_manager_for_test(manager)
+    monkeypatch.setattr(server, "_tenant_pool", lambda: types.SimpleNamespace(
+        prewarm_session_in_background=AsyncMock(),
+    ))
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+    patch_shared_name(monkeypatch, "encode_agent_response_for_wire", fake_encode_agent_response_for_wire)
+    patch_session_roots(monkeypatch, sessions_root)
+    request = AgentRequest(
+        request_id="direct-flash-create", channel_id="chat-service", req_method=ReqMethod.SESSION_CREATE,
+        params={"create_token": "direct-flash", "mode": "flash"},
+    )
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+    assert fake_ws.sent[0]["ok"] is True
+    path = sessions_root / manager.session_id / "metadata.json"
+    assert json.loads(path.read_text())["todo_initialized"] is False
+    check_todo_initialization(manager.session_id, file_exists=False, committing=True, sessions_root=sessions_root)
+    assert json.loads(path.read_text())["todo_initialized"] is True
 
 
 @pytest.mark.asyncio

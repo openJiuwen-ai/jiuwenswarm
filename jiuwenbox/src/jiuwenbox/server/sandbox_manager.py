@@ -21,6 +21,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # Cap stdout/stderr at this many chars per audit event. Large model
 # completions can dump megabytes, which is fine to keep in the runtime
@@ -1013,6 +1014,39 @@ class SandboxManager:
             duration_ms=int((time.monotonic() - start) * 1000),
         )
         return result
+
+    async def file_snapshot(
+        self,
+        sandbox_id: str,
+        payload: dict[str, Any],
+        content: bytes = b"",
+    ) -> tuple[dict[str, Any], bytes]:
+        async with self._lock:
+            ref = self._get_sandbox(sandbox_id)
+            if ref.phase != SandboxPhase.READY:
+                raise SandboxStateError(
+                    f"Cannot access snapshot in sandbox '{sandbox_id}': state is {ref.phase.value}"
+                )
+            self._mark_active(ref)
+        operation = payload["operation"]
+        await self._enforce_path_policy(
+                sandbox_id,
+                payload["path"],
+                op="write" if operation == "compare_replace" else "read",
+            )
+        response, raw = await self.runtime.file_snapshot(sandbox_id, payload, content)
+        self.audit.log(
+                AuditEventType.FILE_TRANSFER,
+                sandbox_id,
+                direction="upload" if operation == "compare_replace" else "download",
+                operation=operation,
+                sandbox_path=payload["path"],
+                size=len(content) if content else len(raw),
+                ok=response.get("ok") is True,
+                error=response.get("error"),
+                path="snapshot_ipc",
+            )
+        return response, raw
 
     async def upload_file_to_sandbox(
         self,

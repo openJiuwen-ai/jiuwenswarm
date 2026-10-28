@@ -108,12 +108,15 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
       };
     }
     try {
-      const parsed: unknown = isHistoryJson ? parseHistoryFileContent(content) : JSON.parse(content);
+      let parsed: unknown = isHistoryJson ? parseHistoryFileContent(content) : JSON.parse(content);
+      if (isTodoJson && parsed && typeof parsed === 'object' && 'todos' in parsed) {
+        parsed = (parsed as { todos: unknown }).todos;
+      }
       return { parsed, invalid: false };
     } catch {
       return { parsed: null as unknown, invalid: true };
     }
-  }, [isJson, isHistoryJson, content]);
+  }, [isJson, isHistoryJson, isTodoJson, content]);
 
   const historyPreview = useMemo(() => {
     if (!isHistoryJson || !historyChatPreview || !Array.isArray(jsonParseResult.parsed)) {

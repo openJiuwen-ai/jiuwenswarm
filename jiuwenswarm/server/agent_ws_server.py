@@ -1321,6 +1321,13 @@ class AgentWebSocketServer:
         # 触发身份获取（写入当前连接 context；无 provider 时身份为 null，连接继续）。
         # 其后 asyncio.create_task(_handle_message) 自动 copy_context，身份传播到各请求任务。
         identity_token = None
+        identity = None
+        from jiuwenswarm.common.todo_snapshot import (
+            TODO_SNAPSHOT_MODE,
+            resolve_todo_snapshot_mode,
+        )
+
+        todo_mode_token = TODO_SNAPSHOT_MODE.set("legacy")
         try:
             from jiuwenswarm.extensions.identity_provider import IdentityStore
             identity_token = await IdentityStore.fetch_and_store()
@@ -1352,6 +1359,8 @@ class AgentWebSocketServer:
         tasks: set[asyncio.Task] = set()
 
         try:
+            # Resolve once from the host identity, never from client/model params.
+            TODO_SNAPSHOT_MODE.set(resolve_todo_snapshot_mode(get_config(), identity.app_id if identity else None))
             async for raw in ws:
                 async def _run(raw=raw):
                     try:
@@ -1396,6 +1405,7 @@ class AgentWebSocketServer:
         except Exception as e:
             logger.exception("[AgentWebSocketServer] 连接处理异常 (%s): %s", remote, e)
         finally:
+            TODO_SNAPSHOT_MODE.reset(todo_mode_token)
             if identity_token is not None:
                 try:
                     from jiuwenswarm.extensions.identity_provider import IdentityStore

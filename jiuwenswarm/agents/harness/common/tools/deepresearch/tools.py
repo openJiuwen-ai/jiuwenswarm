@@ -67,6 +67,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.tls import (
 from jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress import (
     deepresearch_todo_path,
     persist_deepresearch_task_update,
+    capture_deepresearch_todo_target,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.usage import (
     normalize_workflow_llm_token_usage,
@@ -3108,6 +3109,27 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             action, "search_config_missing", search_error, query, file_name,
         )
 
+    # Flash must bind its Todo owner before starting the research process.
+    # The same target also survives the cancellation/completion delivery path.
+    from openjiuwen.harness.tools.todo_store import bound_todo_tool
+
+    bound_tool, _ = bound_todo_tool()
+    todo_context = None
+    if getattr(bound_tool, "snapshot_guard", None) is not None:
+        try:
+            todo_path = deepresearch_todo_path(
+                session_id=str(route.get("session_id") or ""),
+                workspace_key=str(route.get("workspace_key") or "default"),
+            )
+            todo_target = await capture_deepresearch_todo_target(todo_path)
+            if todo_target is None:
+                raise ValueError("Flash Todo owner is unavailable")
+            todo_context = (todo_path, todo_target)
+        except (OSError, ValueError, RuntimeError, TypeError) as exc:
+            logger.warning("[deepresearch_stream] Todo owner unavailable type=%s", type(exc).__name__)
+            return json.dumps({"status": "error", "error_code": "stream_failed",
+                               "error": f"DeepResearch stream failed: {type(exc).__name__}"}, ensure_ascii=False)
+
     try:
         progress_artifact = _create_progress_artifact()
     except OSError as exc:
@@ -3188,6 +3210,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 secrets=_config_secret_values(config),
                 skill_started_ns=skill_started_ns,
                 expected_outline_sections=expected_outline_sections,
+                **({"todo_context": todo_context} if todo_context is not None else {}),
             )
         finally:
             if stage_hint_token is not None:
@@ -3212,6 +3235,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                         file_name=file_name,
                         conversation_id=conversation_id,
                         secrets=_config_secret_values(config),
+                        **({"todo_context": todo_context} if todo_context is not None else {}),
                     ),
                     timeout=DEEPRESEARCH_RACE_DELIVERY_TIMEOUT_SECONDS,
                 )
@@ -3489,6 +3513,7 @@ async def _deliver_race_completed_report(
     file_name: str,
     conversation_id: str,
     secrets: tuple[str, ...],
+    todo_context: tuple | None = None,
 ) -> dict[str, Any] | None:
     """修复A：交付停止-完成竞速窗口内捕获的 completed 终局帧。
 
@@ -3519,17 +3544,25 @@ async def _deliver_race_completed_report(
     resolved_cid = str(safe_chunk.get("conversation_id") or conversation_id)
 
     push = WebSocketGatewayPushTransport()
-    todo_path: Path | None = None
-    try:
-        todo_path = deepresearch_todo_path(
-            session_id=str(route["session_id"]),
-            workspace_key=str(route.get("workspace_key") or "default"),
-        )
-    except Exception as exc:  # pylint: disable=broad-exception-caught
-        logger.warning(
-            "[deepresearch_stream] resolve todo path failed type=%s",
-            type(exc).__name__,
-        )
+    if todo_context is not None:
+        todo_path, todo_target = todo_context
+    else:
+        todo_path: Path | None = None
+        try:
+            todo_path = deepresearch_todo_path(
+                session_id=str(route["session_id"]),
+                workspace_key=str(route.get("workspace_key") or "default"),
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            logger.warning(
+                "[deepresearch_stream] resolve todo path failed type=%s",
+                type(exc).__name__,
+            )
+
+        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+
+    if todo_path is not None and todo_target is None:
+        logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
 
     async def send(payload: dict[str, Any]) -> bool:
         try:
@@ -3538,9 +3571,9 @@ async def _deliver_race_completed_report(
             return False
         if not isinstance(safe_payload, dict):
             return False
-        if todo_path is not None and safe_payload.get("event_type") == "task.update":
+        if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
-                persist_deepresearch_task_update(safe_payload, todo_path=todo_path)
+                await persist_deepresearch_task_update(safe_payload, todo_path=todo_path, target=todo_target)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "[deepresearch_stream] persist todo failed type=%s",
@@ -3734,6 +3767,7 @@ async def _consume_stream(
     report_type: str = "",
     skill_started_ns: int | None = None,
     expected_outline_sections: list[str] | None = None,
+    todo_context: tuple | None = None,
 ) -> dict[str, Any]:
     push = WebSocketGatewayPushTransport()
     cached_titles = (
@@ -3769,27 +3803,35 @@ async def _consume_stream(
             ),
         )
     outcome_cid = conversation_id
-    todo_path: Path | None = None
-    if route.get("session_id"):
-        try:
-            todo_path = deepresearch_todo_path(
-                session_id=str(route["session_id"]),
-                workspace_key=str(route.get("workspace_key") or "default"),
-            )
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            logger.warning(
-                "[deepresearch_stream] resolve todo path failed type=%s",
-                type(exc).__name__,
-            )
+    if todo_context is not None:
+        todo_path, todo_target = todo_context
+    else:
+        todo_path: Path | None = None
+        if route.get("session_id"):
+            try:
+                todo_path = deepresearch_todo_path(
+                    session_id=str(route["session_id"]),
+                    workspace_key=str(route.get("workspace_key") or "default"),
+                )
+            except Exception as exc:  # pylint: disable=broad-exception-caught
+                logger.warning(
+                    "[deepresearch_stream] resolve todo path failed type=%s",
+                    type(exc).__name__,
+                )
+
+        todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
+
+    if todo_path is not None and todo_target is None:
+        logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
 
     async def send(payload: dict[str, Any]) -> bool:
         safe_payload = _redact_json_value(payload, secrets)
         if not isinstance(safe_payload, dict):
             raise _StreamProtocolInvalid("Gateway payload is not an object")
-        if todo_path is not None and safe_payload.get("event_type") == "task.update":
+        if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
-                persist_deepresearch_task_update(
-                    safe_payload, todo_path=todo_path
+                await persist_deepresearch_task_update(
+                    safe_payload, todo_path=todo_path, target=todo_target
                 )
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(

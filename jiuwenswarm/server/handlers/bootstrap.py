@@ -368,6 +368,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
             try:
                 init_session_metadata(
                     session_id=session_id,
+                    new_todo_object=adapter_mode == "flash",
                     channel_id=channel_id,
                     user_id=params.get("user_id", ""),
                     title=params.get("title", ""),

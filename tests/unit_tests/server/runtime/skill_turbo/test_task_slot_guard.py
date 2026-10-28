@@ -96,7 +96,7 @@ def test_cap_keeps_existing_key_on_reclaim() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rail_task_update_releases_slot(monkeypatch) -> None:
+async def test_rail_task_update_releases_slot() -> None:
     """外层 rail 发自身 task.update（写流成功）= 槽位被外层夺回，注销登记。"""
     from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
         TaskExecutionRail,
@@ -105,20 +105,21 @@ async def test_rail_task_update_releases_slot(monkeypatch) -> None:
     claim_task_slot("sess-rail", ["task_leaked"])
 
     rail = TaskExecutionRail()
-    monkeypatch.setattr(rail, "_load_todo_from_json", lambda _sid: [])
     session = SimpleNamespace(
         get_session_id=lambda: "sess-rail",
         write_stream=AsyncMock(),
     )
 
-    await rail._emit_task_update_event(session)
+    await rail._emit_task_update_event(
+        session, snapshot={"plan_id": "plan-rail", "revision": 1, "todos": []}
+    )
 
     session.write_stream.assert_awaited_once()
     assert peek_leaked_task_slot("sess-rail") is None
 
 
 @pytest.mark.asyncio
-async def test_rail_task_update_failure_keeps_slot(monkeypatch) -> None:
+async def test_rail_task_update_failure_keeps_slot() -> None:
     """写流失败 = 槽位未被夺回，登记保留（turbo 侧终止性出口仍可关账）。"""
     from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
         TaskExecutionRail,
@@ -127,12 +128,14 @@ async def test_rail_task_update_failure_keeps_slot(monkeypatch) -> None:
     claim_task_slot("sess-rail", ["task_leaked"])
 
     rail = TaskExecutionRail()
-    monkeypatch.setattr(rail, "_load_todo_from_json", lambda _sid: [])
     session = SimpleNamespace(
         get_session_id=lambda: "sess-rail",
         write_stream=AsyncMock(side_effect=RuntimeError("stream down")),
     )
 
-    await rail._emit_task_update_event(session)
+    await rail._emit_task_update_event(
+        session, snapshot={"plan_id": "plan-rail", "revision": 1, "todos": []}
+    )
 
+    session.write_stream.assert_awaited_once()
     assert peek_leaked_task_slot("sess-rail") == frozenset({"task_leaked"})

@@ -78,6 +78,10 @@ async def dispatch_parsed_request(
 
 处理顺序：bind_log_session → acp_client_capabilities 透传 → BEFORE_CHAT_REQUEST hook → dispatch_with_context（命中 HANDLERS return）→ _ensure_auto_team_binding_for_chat → 默认路径 _handle_stream / _handle_unary。
 
+Todo输出策略在进入此流水线前由宿主绑定：WS按连接身份，HTTP按已有宿主身份，读取
+`todo.snapshot_modes[app_id]`，缺省legacy。请求的channel/client名称、params或metadata
+不能启用versioned。请求内固定选择，实时与历史共享；退出时恢复调用者上下文。
+
 ### context.RequestContext（frozen dataclass）
 
 ```python

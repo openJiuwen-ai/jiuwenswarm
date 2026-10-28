@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
+import base64
 import logging
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, File, Query, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
@@ -23,7 +24,12 @@ from jiuwenbox.models.sandbox import (
     SandboxRef,
     SandboxSpec,
 )
-from jiuwenbox.server.sandbox_manager import SandboxBackgroundExecRequest, SandboxExecRequest, SandboxListRequest
+from jiuwenbox.server.sandbox_manager import (
+    SandboxBackgroundExecRequest,
+    SandboxExecRequest,
+    SandboxListRequest,
+)
+from jiuwenbox.supervisor.daemon_ipc import MAX_FILE_BYTES
 
 router = APIRouter(tags=["sandboxes"])
 configure_logging()
@@ -57,6 +63,34 @@ class ListFilesQuery(BaseModel):
     max_depth: int | None = None
     include_files: bool = True
     include_dirs: bool = True
+
+
+class FileSnapshotRequest(BaseModel):
+    operation: Literal["read", "compare_replace"]
+    path: str = ""
+    options: dict[str, Any] = Field(default_factory=dict)
+    content_base64: str = Field(default="", max_length=((MAX_FILE_BYTES + 2) // 3) * 4)
+
+
+@router.post("/sandboxes/{sandbox_id}/file-snapshot")
+async def file_snapshot(sandbox_id: str, request: FileSnapshotRequest):
+    """Conditional publish executes inside the sandbox's existing security context."""
+    try:
+        content = base64.b64decode(request.content_base64, validate=True)
+    except ValueError:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "bad_request"})
+    if request.operation != "compare_replace" and content:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "bad_request"})
+    if len(content) > MAX_FILE_BYTES:
+        return JSONResponse(status_code=413, content={"ok": False, "error": "too_large"})
+    response, raw = await _mgr().file_snapshot(
+        sandbox_id,
+        {"operation": request.operation, "path": request.path, "options": request.options},
+        content,
+    )
+    if response.get("ok") and request.operation == "read":
+        response = {**response, "content_base64": base64.b64encode(raw).decode("ascii")}
+    return response
 
 
 @router.post("/sandboxes", response_model=SandboxRef, status_code=201)
