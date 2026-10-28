@@ -1901,13 +1901,13 @@ class TaskExecutionRail(DeepAgentRail):
         tool = TodoModifyTool(self._deep_agent.deep_config.sys_operation, str(todo_path.parent.parent))
 
         async def advance():
-            items = await tool.load_todos(session_id)
+            items = await tool._load_todos(session_id)
             for item in items:
                 if item.id == raw_id:
                     if item.status.value not in self._BINDING_PENDING:
                         return {"changed": False}
                     item.status = TodoStatus.IN_PROGRESS
-                    await tool.save_todos(session_id, items)
+                    await tool._save_todos(session_id, items)
                     return {"changed": True}
                 if item.status not in (TodoStatus.COMPLETED, TodoStatus.CANCELLED) and not is_persistent_todo(item):
                     return {"changed": False}
@@ -2106,7 +2106,7 @@ class TaskExecutionRail(DeepAgentRail):
         if (tool is not None and bound_session == session_id
                 and Path(tool.get_file_path(session_id)).resolve() == todo_path.resolve()):
             observe_plan(tool, session_id, snapshot)
-        if snapshot.versioned and versioned_todo_output():
+        if versioned_todo_output():
             meta = {"plan_id": snapshot.plan_id, "revision": snapshot.revision}
             return [{**row, "todo_meta": meta} for row in snapshot.todos]
         return snapshot.todos
@@ -2695,9 +2695,13 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_complete_deferred.discard(normalized_task_id)
         self._todo_start_deferred.discard(normalized_task_id)
 
-        tasks = self._format_tasks_for_update(
-            self._overlay_serial_todo_statuses(todo_items), source="todo"
-        )
+        if versioned_todo_output():
+            from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+            visible_items = format_todos_for_frontend(todo_items)
+        else:
+            visible_items = self._overlay_serial_todo_statuses(todo_items)
+        tasks = self._format_tasks_for_update(visible_items, source="todo")
+        meta = task.get("todo_meta") if versioned_todo_output() else None
         complete = OutputSchema(
             type="task.complete",
             index=0,
@@ -2718,6 +2722,7 @@ class TaskExecutionRail(DeepAgentRail):
                 "timestamp": timestamp,
                 "source": "todo",
                 "parent_request_id": parent_request_id,
+                **({"todo_meta": meta} if meta is not None else {}),
             },
         )
         update = OutputSchema(
@@ -2737,6 +2742,7 @@ class TaskExecutionRail(DeepAgentRail):
                 ),
                 "timestamp": timestamp,
                 "parent_request_id": parent_request_id,
+                **({"todo_meta": meta} if meta is not None else {}),
             },
         )
         return [complete, update]
@@ -2760,11 +2766,13 @@ class TaskExecutionRail(DeepAgentRail):
                 snapshot = decode_snapshot(path.read_bytes()).document()
             except (OSError, ValueError):
                 return
-        generation = None if versioned_todo_output() else self._todo_generation_token
-        if include_persistent:
-            todo_items = filter_todos_for_display(snapshot["todos"], generation)
+        if versioned_todo_output():
+            from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+            todo_items = format_todos_for_frontend(snapshot["todos"])
+        elif include_persistent:
+            todo_items = filter_todos_for_display(snapshot["todos"], self._todo_generation_token)
         else:
-            todo_items = filter_todos_for_execution(snapshot["todos"], generation)
+            todo_items = filter_todos_for_execution(snapshot["todos"], self._todo_generation_token)
         if not versioned_todo_output():
             todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(

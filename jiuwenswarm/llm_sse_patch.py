@@ -18,7 +18,10 @@
 
 4. 华为 MaaS x-span-id 注入：调用华为云 ModelArts MaaS 时，在 HTTP 请求头注入
    ``x-span-id``（uuid4 hex），便于 MaaS 侧做链路追踪与本地日志对齐。仅当
-   ``api_base`` 识别为 MaaS 端点时触发，非 MaaS 调用零开销透传。
+   ``api_base`` 识别为 MaaS 端点时触发，非 MaaS 调用零开销透传；调用方或
+   ``before_model_http`` 扩展已提供该头时保留其值。新核心的 ``maas``
+   endpoint profile 会无条件覆盖该头，这里一并接管其 ``inject_x_span_id``，
+   保证最终请求头里至多一个 ``x-span-id`` 且优先使用调用方/扩展的值。
 
 5. before_model_http 扩展埋点：模型 HTTP 出口的公共事件点。按清单包装各模型
    客户端的 ``invoke`` / ``stream`` / ``generate_image``，在真正发出 HTTP 之前
@@ -107,12 +110,15 @@ _AUTH_HEADER_PATCH_APPLIED = False
 _RESPONSE_ASSEMBLY_PATCH_APPLIED = False
 _GLM_XML_SANITIZE_PATCH_APPLIED = False
 _MAAS_SPAN_ID_PATCH_APPLIED = False
+_MAAS_PROFILE_SPAN_PATCH_APPLIED = False
 _MODEL_HTTP_HOOK_PATCH_APPLIED = False
 _HUAWEI_MAAS_PLACEHOLDER_API_KEY = "huawei-maas-session"
 
 # before_model_http 埋点：扩展口袋的保留键，防止扩展弄坏鉴权与 thinking。
 # 请求头按大小写不敏感匹配（HTTP header 名本身大小写不敏感）。
-_RESERVED_HOOK_HEADERS = frozenset({"authorization", "x-span-id"})
+# x-span-id 不在此列：扩展可以注入自己的链路 id，MaaS 自动注入仅在扩展与
+# 调用方都没提供时兜底（见 _maybe_inject_maas_span_id）。
+_RESERVED_HOOK_HEADERS = frozenset({"authorization"})
 _RESERVED_HOOK_EXTRA_BODY_KEYS = frozenset(
     {"thinking", "enable_thinking", "reasoning_effort"}
 )
@@ -570,19 +576,104 @@ def apply_glm_tool_xml_sanitize_patch() -> None:
     logger.info("[llm_sse_patch] OpenAIModelClient GLM XML 标签清洗补丁已应用")
 
 
+# ── MaaS x-span-id 策略 ─────────────────────────────────────────────
+# 三个入口覆盖不同配置路径，共用下面这组函数保证语义一致：
+#   1. before_model_http 合并层：对所有头按大小写不敏感去重（调用方非空优先）；
+#   2. invoke/stream 包装：client_provider=OpenAI + MaaS api_base 时兜底注入；
+#   3. endpoint profile transform：endpoint_profile=maas 时兜底注入。
+# 优先级：请求级（调用方 > 扩展，均需非空） > 配置级 custom_headers > 自动 uuid4。
+# 兜底注入统一走 _write_span_id，保证最终请求头里只有一个 x-span-id
+# （HTTP 头名大小写不敏感，多个变体会被 httpx 合并成 "a, b"）。
+_SPAN_HEADER = "x-span-id"
+
+
+def _span_id_value(headers: Any) -> str | None:
+    """返回第一个非空 ``x-span-id`` 值（键名大小写不敏感）；空/纯空白视为未提供。"""
+    for key, value in (headers or {}).items():
+        if str(key).lower() != _SPAN_HEADER:
+            continue
+        text = "" if value is None else str(value)
+        if text.strip():
+            return text
+    return None
+
+
+def _write_span_id(headers: dict[str, str], value: str) -> dict[str, str]:
+    """清掉所有同名（任意大小写）键后写入唯一 ``x-span-id``。"""
+    for stale in [item for item in headers if str(item).lower() == _SPAN_HEADER]:
+        del headers[stale]
+    headers[_SPAN_HEADER] = value
+    return headers
+
+
+def _ensure_span_id(headers: dict[str, str]) -> dict[str, str]:
+    """已有非空值时原样保留，否则兜底生成 uuid4（并清掉同名空键）。"""
+    if _span_id_value(headers) is not None:
+        return headers
+    return _write_span_id(headers, uuid.uuid4().hex)
+
+
+def _patch_maas_profile_span_id() -> bool:
+    """兼容 openjiuwen ``maas`` endpoint profile 的 ``inject_x_span_id``。
+
+    新核心把华为 MaaS 的建链能力从 ``HuaweiMaasModelClient`` 迁到
+    ``endpoint_profiles``：``maas`` profile 的 ``inject_x_span_id`` 会在
+    ``_build_request_headers`` 末尾无条件覆盖 ``x-span-id``（源码注释写明
+    "replaces any caller-provided value"）。若不接管，扩展/调用方注入的链路
+    id 在 MaaS 主路径上会被静默丢弃。
+
+    旧核心没有该模块时静默跳过（debug 日志），兼容由 ``invoke``/``stream``
+    包装的注入兜底完成。幂等：使用独立的
+    ``_MAAS_PROFILE_SPAN_PATCH_APPLIED`` 模块标志。
+    """
+    global _MAAS_PROFILE_SPAN_PATCH_APPLIED
+    if _MAAS_PROFILE_SPAN_PATCH_APPLIED:
+        return True
+
+    try:
+        from openjiuwen.core.foundation.llm.utils import endpoint_profiles
+    except ImportError:
+        logger.debug(
+            "[llm_sse_patch] endpoint_profiles 不可用，跳过 MaaS profile x-span-id 兼容"
+        )
+        return False
+
+    transforms = getattr(endpoint_profiles, "REQUEST_HEADER_TRANSFORMS", None)
+    if not isinstance(transforms, dict) or "inject_x_span_id" not in transforms:
+        logger.debug(
+            "[llm_sse_patch] 未找到 inject_x_span_id transform，跳过 x-span-id 兼容"
+        )
+        return False
+
+    transforms["inject_x_span_id"] = _ensure_span_id
+    _MAAS_PROFILE_SPAN_PATCH_APPLIED = True
+    return True
+
+
 def apply_huawei_maas_span_id_patch() -> None:
     """Patch 4: 华为 MaaS x-span-id 注入。
 
     调用华为云 ModelArts MaaS 时，在请求头注入 ``x-span-id``（uuid4 hex）便于
     MaaS 侧链路追踪。通过包装 ``invoke`` / ``stream`` 出口，复用原 custom_headers
     合并链路（``_build_request_headers``），非 MaaS 端点零开销透传。
-    每次 ``invoke`` / ``stream`` 调用（含重试触发的重新调用）都会生成独立 span_id。
+    每次 ``invoke`` / ``stream`` 调用（含重试触发的重新调用）都会生成独立 span_id，
+    除非调用方或 ``before_model_http`` 扩展已提供 ``x-span-id``——此时保留其值，
+    不覆盖（扩展注入的链路 id 优先）。
+
+    同时接管 openjiuwen ``maas`` endpoint profile 的 ``inject_x_span_id``：新核心
+    在 ``_build_request_headers`` 末尾会无条件覆盖 ``x-span-id``，这里替换为
+    「已有非空值则保留」的实现，保证扩展/调用方注入的链路 id 在 MaaS 主路径
+    上不被覆盖（见 ``_patch_maas_profile_span_id``）。旧核心无该模块时静默跳过。
 
     生产 OfficeClaw + Huawei MaaS 链路依赖该补丁，与渠道类型无关，必须无条件应用。
 
     幂等：使用独立的 ``_MAAS_SPAN_ID_PATCH_APPLIED`` 标志。
     """
     global _MAAS_SPAN_ID_PATCH_APPLIED
+
+    # endpoint profile 头兼容与 invoke/stream 包装相互独立，先于早退安装
+    _patch_maas_profile_span_id()
+
     if _MAAS_SPAN_ID_PATCH_APPLIED:
         return
 
@@ -603,10 +694,10 @@ def apply_huawei_maas_span_id_patch() -> None:
         api_base = getattr(mcc, "api_base", "") if mcc is not None else ""
         if not _is_huawei_maas_api_base(api_base):
             return
-        existing = kwargs.get("custom_headers")
-        headers = dict(existing or {})
-        headers["x-span-id"] = uuid.uuid4().hex
-        kwargs["custom_headers"] = headers
+        headers = dict(kwargs.get("custom_headers") or {})
+        if _span_id_value(headers) is not None:
+            return
+        kwargs["custom_headers"] = _write_span_id(headers, uuid.uuid4().hex)
 
     async def _invoke_with_maas_span(self: Any, *args, **kwargs):
         _maybe_inject_maas_span_id(self, kwargs)
@@ -654,12 +745,17 @@ def apply_huawei_maas_span_id_patch() -> None:
 def _merge_model_http_hook_ctx(ctx: Any, kwargs: dict) -> None:
     """把扩展写入的 ``headers`` / ``extra_body`` 口袋合并进本次调用 kwargs。
 
-    - ``headers`` 逐键 setdefault 进 ``kwargs["custom_headers"]``（调用方显式
-      传入的值优先），经 ``_build_request_headers`` 进入最终请求头；
+    - ``headers`` 逐键合并进 ``kwargs["custom_headers"]``，经
+      ``_build_request_headers`` 进入最终请求头。头名按大小写不敏感去重
+      （HTTP 头名不区分大小写，``X-Foo`` 与 ``x-foo`` 并存会被 httpx 合并成
+      ``"a, b"``）：同名已存在非空值时保留调用方值；调用方值为空/纯空白时
+      由扩展值覆盖并沿用扩展键名；扩展值为空/纯空白时跳过；
     - ``extra_body`` 逐键 setdefault 进 ``kwargs["extra_body"]``，经
       ``_build_request_params`` 进入 ``params["extra_body"]``，最终由 SDK
       摊开进请求 JSON 正文；
-    - 保留键（``Authorization`` / ``x-span-id`` / thinking 族）扩展写了也丢弃；
+    - 保留键（``Authorization`` / thinking 族）扩展写了也丢弃。``x-span-id``
+      不在保留键内，额外约定它优先于 MaaS 自动注入的 span id（见
+      ``apply_huawei_maas_span_id_patch``）；
     - 含 CR/LF 的头值、非 latin-1 头值（httpx 发送时仅接受 latin-1，中文等
       需扩展侧先行 URL 编码）、无法 JSON 序列化的正文字段一律跳过，防扩展
       写出非法值弄坏本次请求；
@@ -668,6 +764,10 @@ def _merge_model_http_hook_ctx(ctx: Any, kwargs: dict) -> None:
     headers = getattr(ctx, "headers", None)
     if headers:
         merged = dict(kwargs.get("custom_headers") or {})
+        # HTTP 头名大小写不敏感，按小写建立索引做通用去重，避免 X-Foo 与 x-foo
+        # 并存后被 httpx 合并成 "a, b"。规则对所有头一致：调用方非空值优先；
+        # 扩展空值忽略；调用方空值时允许扩展值覆盖（沿用扩展的键名）。
+        existing_keys = {str(key).lower(): key for key in merged}
         for key, value in headers.items():
             name = str(key or "").strip()
             if not name or name.lower() in _RESERVED_HOOK_HEADERS:
@@ -682,7 +782,16 @@ def _merge_model_http_hook_ctx(ctx: Any, kwargs: dict) -> None:
                 text.encode("latin-1")
             except UnicodeEncodeError:
                 continue
-            merged.setdefault(name, text)
+            if not text.strip():
+                continue
+            lowered = name.lower()
+            current_key = existing_keys.get(lowered)
+            if current_key is not None:
+                if str(merged[current_key]).strip():
+                    continue
+                del merged[current_key]
+            merged[name] = text
+            existing_keys[lowered] = name
         kwargs["custom_headers"] = merged
     extra_body = getattr(ctx, "extra_body", None)
     if extra_body:

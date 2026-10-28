@@ -27,6 +27,26 @@ _DEFAULT_AGENT_WORKSPACE = {"stable_base": True}
 _DEFAULT_TEAM_WORKSPACE = {"enabled": True}
 _DEFAULT_TRANSPORT = {"type": "inprocess"}
 
+# SQLite pool / WAL knobs forwarded into openjiuwen ``DatabaseConfig`` via
+# ``StorageSpec.params`` (see agent_teams.tools.database.config.DatabaseConfig).
+# Product defaults prefer a short busy timeout and background WAL checkpoint so
+# commit paths do not stall under multi-member write bursts.
+_SQLITE_STORAGE_DEFAULTS: dict[str, Any] = {
+    "db_timeout": 5,
+    "db_enable_wal": True,
+    "read_pool_size": 16,
+    "write_pool_size": 2,
+    "write_cache_size_kb": 65536,
+    "read_cache_size_kb": 8192,
+    "mmap_size_mb": 256,
+    "wal_autocheckpoint": 1000,
+    # >0 moves checkpoint off the write path (PASSIVE background task).
+    "wal_checkpoint_interval_s": 30.0,
+}
+_SQLITE_STORAGE_PARAM_KEYS = frozenset(_SQLITE_STORAGE_DEFAULTS.keys()) | {
+    "connection_string",
+}
+
 
 class TeamTemplateNotFoundError(ValueError):
     """Raised when a bound team references a template that no longer exists."""
@@ -342,24 +362,103 @@ def _build_default_model_dict(
     }
 
 
+def _coerce_storage_param_value(key: str, value: Any) -> Any:
+    """Best-effort type coerce for DatabaseConfig fields from YAML."""
+    if key in {"db_timeout", "read_pool_size", "write_pool_size",
+               "write_cache_size_kb", "read_cache_size_kb", "mmap_size_mb",
+               "wal_autocheckpoint"}:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return value
+    if key == "wal_checkpoint_interval_s":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
+    if key == "db_enable_wal":
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+    return value
+
+
 def _resolve_storage_config(storage_raw: dict[str, Any]) -> dict[str, Any]:
+    """Normalize storage for TeamAgentSpec / DatabaseConfig.
+
+    For sqlite: merge product defaults for pool/WAL knobs, keep explicit
+    ``params`` overrides, and resolve ``connection_string`` to an absolute path.
+    Non-sqlite types (including ``memory``) pass ``params`` through unchanged
+    (aside from deepcopy) so WAL/pool knobs are not injected where they do not
+    apply.
+    """
     storage_dict = deepcopy(storage_raw)
-    storage_params = storage_dict.get("params", {})
-    if "connection_string" not in storage_params:
-        return storage_dict
+    storage_type = str(storage_dict.get("type", "sqlite") or "sqlite").strip().lower()
+    storage_dict["type"] = storage_type or "sqlite"
 
-    db_path = resolve_team_sqlite_db_path({"storage": storage_dict})
-    if db_path is None:
-        return storage_dict
+    raw_params = storage_dict.get("params")
+    storage_params: dict[str, Any] = (
+        dict(raw_params) if isinstance(raw_params, dict) else {}
+    )
 
-    storage_params["connection_string"] = str(db_path)
+    if storage_dict["type"] == "sqlite":
+        merged = dict(_SQLITE_STORAGE_DEFAULTS)
+        for key, value in storage_params.items():
+            if key not in _SQLITE_STORAGE_PARAM_KEYS and key != "connection_string":
+                # Unknown keys are ignored (not forwarded): DatabaseConfig.model_validate
+                # rejects extras. Log so typos like timeout vs db_timeout are visible.
+                logger.debug(
+                    "[TeamConfigLoader] ignoring unknown sqlite storage.params key=%r",
+                    key,
+                )
+                continue
+            merged[key] = _coerce_storage_param_value(key, value)
+        # Always re-apply explicit connection_string (may be empty → default path).
+        if "connection_string" in storage_params:
+            merged["connection_string"] = storage_params.get("connection_string") or ""
+        storage_params = merged
+        storage_dict["params"] = storage_params
 
-    db_dir = db_path.parent
-    if not db_dir.exists():
-        db_dir.mkdir(parents=True, exist_ok=True)
-        logger.info("[TeamConfigLoader] Created database directory: %s", db_dir)
+        db_path = resolve_team_sqlite_db_path({"storage": storage_dict})
+        if db_path is not None:
+            storage_params["connection_string"] = str(db_path)
+            db_dir = db_path.parent
+            if not db_dir.exists():
+                db_dir.mkdir(parents=True, exist_ok=True)
+                logger.info("[TeamConfigLoader] Created database directory: %s", db_dir)
+        logger.info(
+            "[TeamConfigLoader] sqlite storage params: db_timeout=%s read_pool=%s "
+            "write_pool=%s wal_checkpoint_interval_s=%s connection_string=%s",
+            storage_params.get("db_timeout"),
+            storage_params.get("read_pool_size"),
+            storage_params.get("write_pool_size"),
+            storage_params.get("wal_checkpoint_interval_s"),
+            storage_params.get("connection_string"),
+        )
+    else:
+        storage_dict["params"] = storage_params
 
     return storage_dict
+
+
+def build_team_database_config(config_base: dict[str, Any] | None = None) -> Any:
+    """Build openjiuwen ``DatabaseConfig`` from modes.team storage (full params).
+
+    Used by TeamMonitor fallback paths that previously only passed
+    ``connection_string`` and silently dropped pool/WAL knobs.
+    """
+    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
+    if config_base is None:
+        config_base = get_config()
+    team_raw = _resolve_team_raw_for_storage(config_base)
+    storage_raw = team_raw.get("storage", {}) if isinstance(team_raw, dict) else {}
+    if not isinstance(storage_raw, dict) or not storage_raw:
+        storage_raw = {"type": "sqlite", "params": {}}
+    resolved = _resolve_storage_config(storage_raw)
+    params = resolved.get("params") if isinstance(resolved.get("params"), dict) else {}
+    payload = {"db_type": resolved.get("type", "sqlite"), **params}
+    return DatabaseConfig.model_validate(payload)
 
 
 def _build_agent_defaults() -> tuple[dict[str, Any], int, float]:

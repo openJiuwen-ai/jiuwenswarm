@@ -70,10 +70,16 @@ async def env(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env):
+@pytest.mark.parametrize("has_marker", [False, True])
+async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env, has_marker):
     from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
 
     creator, _, session, path = env
+    if not has_marker:
+        metadata_path = path.parent.parent / "sessions/s/metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata.pop("todo_initialized")
+        metadata_path.write_text(json.dumps(metadata))
     registered = {}
     rail = FlashTodoRail()
     rail.set_workspace(SimpleNamespace(get_node_path=lambda _node: creator.workspace))
@@ -87,12 +93,70 @@ async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env):
     ctx = SimpleNamespace(extra={}, session=session)
     await rail.before_invoke(ctx)
     tool = registered["todo"]
-    result = await tool.invoke({"action": "create", "tasks": [{"id": "A", "content": "Flash"}]}, session=session)
+    result = await tool.invoke({"action": "create", "tasks": [
+        {"id": "A", "content": "Flash"}, {"id": "B", "content": "Keep"},
+    ]}, session=session)
     assert json.loads(path.read_text()) == result.todo_snapshot
+    completed, appended = await asyncio.gather(
+        tool.invoke({"action": "modify", "modify_action": "update",
+                     "todos": [{"id": "A", "status": "completed"}]}, session=session),
+        tool.invoke({"action": "modify", "modify_action": "append",
+                     "todos": [{"id": "C", "content": "Added", "status": "pending"}]}, session=session),
+    )
+    saved = json.loads(path.read_text())
+    assert [(row["id"], row["status"]) for row in saved["todos"]] == [
+        ("A", "completed"), ("B", "pending"), ("C", "pending"),
+    ]
+    assert saved["todos"][1] == result.todo_snapshot["todos"][1]
+    assert {completed.todo_snapshot["revision"], appended.todo_snapshot["revision"]} == {2, 3}
     path.unlink()
     await rail.before_invoke(ctx)
     with pytest.raises(Exception, match="first initialization"):
         await tool.invoke({"action": "create", "plan_action": "rebuild", "tasks": [{"id": "A", "content": "bad"}]}, session=session)
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("had_legacy_todo", [False, True])
+async def test_unknown_legacy_empty_and_lost_file_share_the_accepted_initialization_boundary(env, had_legacy_todo):
+    creator, _, session, path = env
+    metadata_path = path.parent.parent / "sessions/s/metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop("todo_initialized")
+    metadata_path.write_text(json.dumps(metadata))
+    if had_legacy_todo:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps([{"id": "previous", "content": "Previous"}]))
+        path.unlink()
+    result = await creator.invoke({"tasks": [{"id": "A", "content": "New"}]}, session=session)
+    assert result.todo_snapshot == json.loads(path.read_text())
+    assert json.loads(metadata_path.read_text())["todo_initialized"] is True
+    path.unlink()
+    creator.reset_invoke_marker("s")
+    with pytest.raises(Exception, match="first initialization"):
+        await creator.invoke({"tasks": [{"id": "B", "content": "must not recreate"}]}, session=session)
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_legacy_session_with_existing_todo_can_modify_and_records_origin(env):
+    _, modifier, session, path = env
+    metadata_path = path.parent.parent / "sessions/s/metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop("todo_initialized")
+    metadata_path.write_text(json.dumps(metadata))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps([{"id": "A", "content": "old", "status": "in_progress"}]))
+    result = await modifier.invoke({"action": "update", "todos": [{"id": "A", "status": "completed"}]},
+                                   session=session)
+    assert result.todo_snapshot == json.loads(path.read_text())
+    assert result.todo_snapshot["plan_id"] == "legacy"
+    assert result.todo_snapshot["revision"] == 1
+    assert result.todo_snapshot["todos"][0]["status"] == "completed"
+    assert json.loads(metadata_path.read_text())["todo_initialized"] is True
+    path.unlink()
+    with pytest.raises(Exception, match="first initialization"):
+        await modifier.invoke({"action": "update", "todos": [{"id": "A", "status": "pending"}]}, session=session)
     assert not path.exists()
 
 

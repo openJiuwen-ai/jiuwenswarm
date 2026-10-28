@@ -129,7 +129,15 @@ def build_tool_permission_approval_sender() -> ApprovalSender:
         tool_args = payload.get("tool_args")
         skill_name = str(payload.get("skill_name") or "").strip()
         reason = str(payload.get("reason") or "").strip()
-        question_parts = [
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            build_permission_intent_headline,
+        )
+
+        headline = build_permission_intent_headline(tool_name, tool_args)
+        question_parts = []
+        if headline:
+            question_parts += [headline, "\n\n"]
+        question_parts += [
             f"**工具 `{tool_name}` 需要授权才能执行**\n\n",
             f"> 发起方：子 Agent `{request.agent_scope_id}`"
             f"（当前 Skill：`{skill_name}`）",

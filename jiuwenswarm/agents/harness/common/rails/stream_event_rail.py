@@ -62,8 +62,11 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
 )
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
+    filter_todos_for_execution,
     get_todo_generation_token,
+    snapshot_includes_persistent_todos,
 )
+from jiuwenswarm.common.todo_output import versioned_todo_output
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
     extract_call_goal,
@@ -1664,8 +1667,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             generation_token = get_todo_generation_token(session)
         except Exception:
             generation_token = None
-        if snapshot is None:
-            todos_data = filter_todos_for_display(todos_data, generation_token)
+        if not versioned_todo_output() and (generation_token or tool_name):
+            if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
+                todos_data = filter_todos_for_display(todos_data, generation_token)
+            else:
+                todos_data = filter_todos_for_execution(todos_data, generation_token)
 
         # Parent StreamEventRail only: team-member rails use their own
         # workspace and must not feed request_summaries.tasks.
@@ -1689,11 +1695,15 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
 
         if snapshot is not None:
+            from dataclasses import replace
+
             from openjiuwen.harness.tools.todo_store import decode_snapshot
 
             from jiuwenswarm.common.todo_snapshot import project_todo_snapshot
 
-            todos = project_todo_snapshot(decode_snapshot(snapshot), generation_token)
+            # Legacy items were already filtered using the tool intent above;
+            # a second generation filter would hide cross-turn reminders.
+            todos = project_todo_snapshot(replace(decode_snapshot(snapshot), todos=todos_data))
             payload = {"todos": todos}
             if todos.todo_meta is not None:
                 payload["todo_meta"] = todos.todo_meta

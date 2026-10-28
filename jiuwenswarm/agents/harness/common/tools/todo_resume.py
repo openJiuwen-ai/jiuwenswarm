@@ -327,6 +327,10 @@ def snapshot_includes_persistent_todos(
     Listing always does. Create/modify does only when the call touched a
     reminder, so a skill plan's own snapshot stays on the execution map.
     """
+    if tool_name == "todo":
+        payload = _coerce_arguments(arguments) or {}
+        action = str(payload.get("action") or "").strip().lower()
+        tool_name = f"todo_{action}"
     if tool_name in _DISPLAY_TODO_TOOLS:
         return True
     persistent_ids = _persistent_ids(items)

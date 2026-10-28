@@ -26,10 +26,42 @@ _A2UI_CONFIG_DEFAULT_PAYLOAD: dict[str, str] = {
 
 _A2UI_CHANNEL_ID = "web"
 
+# relay-claw 走 officeclaw channel，a2ui 对其原生生效（与 web 同等）。
+_A2UI_CHANNEL_IDS = frozenset({"web", "officeclaw"})
+
+# a2ui 流式 probe（pending render chunk）机制的适用渠道：目前仅 web 前端。
+# officeclaw (relay-claw) 用 parseA2UIContent（本仓库 channels/web/frontend
+# a2uiContent.ts，relay-claw 经 vendor 同步使用）从累积文本提取 <a2ui-json> 块，
+# probe 插入的 <a2ui-json>\n 会与 agent 原始块重复、污染 content 致前端提取失败。
+# 与 _A2UI_CHANNEL_IDS（能原生渲染 a2ui 的渠道）有意双轨：新增渠道时
+# 「能渲染」不自动等于「需要 probe」，两侧必须各自显式声明，防语义搭便车。
+_A2UI_PROBE_CHANNEL_IDS = frozenset({"web"})
+
 
 def is_a2ui_channel(channel: str | None) -> bool:
     """Return whether the channel can natively run A2UI."""
-    return str(channel or "").strip().lower() == _A2UI_CHANNEL_ID
+    return str(channel or "").strip().lower() in _A2UI_CHANNEL_IDS
+
+
+def is_a2ui_probe_channel(channel: str | None) -> bool:
+    """Return whether the channel consumes A2UI streaming probe (pending render) chunks."""
+    return str(channel or "").strip().lower() in _A2UI_PROBE_CHANNEL_IDS
+
+
+# 仅这些渠道走服务端 A2UI repair/retry/重发（finalize_assistant_response_if_a2ui）。
+# officeclaw (relay-claw) 故意排除，完全跳过服务端 finalize（含校验）：
+# 1. 服务端 repair 后整段 chat.final 重发会与已累积 delta 产生重复块；
+# 2. 该重发帧落在 wire 终结块之后被 relay-claw 消费方 break 丢弃；
+# 3. 破损 a2ui 内容原样透传，由前端做文本降级显示（本仓库 a2uiContent.ts
+#    extractTextFromMalformedA2UI :173-211 正则文本打捞 + invalidA2UIFallback
+#    :162 固定错误文案降级——是降级显示而非 JSON 修复）。
+# 完全跳过 = 不 repair/不校验/不重发，从根上消除重发帧时序丢失与重复块。
+_A2UI_FINALIZE_REPAIR_CHANNEL_IDS = frozenset({"web"})
+
+
+def should_finalize_repair(channel: str | None) -> bool:
+    """Return whether the channel runs server-side A2UI repair/retry/resend."""
+    return str(channel or "").strip().lower() in _A2UI_FINALIZE_REPAIR_CHANNEL_IDS
 
 
 def _to_bool(value: Any) -> bool:
@@ -71,15 +103,27 @@ def build_user_prompt_if_a2ui_event(
 
     Returns ``None`` when the payload is not an A2UI client event or when A2UI is
     disabled, allowing the normal user prompt builder to continue unchanged.
+    client_event 形态但被渠道/开关门控挡下时留 warning：此时 dict 会走普通
+    prompt 路径被 json.dumps 进提示词（模型可解读但非成品 prompt），日志便于定位
+    前后端开关不一致（如 env 单侧强开、YAML truthy 变体、关开关瞬间的竞态）。
     """
+    if not isinstance(content, dict) or content.get("type") != "a2ui.client_event":
+        return None
+
     if not is_a2ui_channel(channel):
+        logger.warning(
+            "A2UI client event received on non-a2ui channel %r; "
+            "falling back to raw-dict prompt (channel gate)",
+            channel,
+        )
         return None
 
     a2ui_config = _get_runtime_a2ui_config()
     if not a2ui_config.enabled:
-        return None
-
-    if not isinstance(content, dict) or content.get("type") != "a2ui.client_event":
+        logger.warning(
+            "A2UI client event received while a2ui disabled; "
+            "falling back to raw-dict prompt (feature gate)",
+        )
         return None
 
     return _build_a2ui_client_event_prompt(content, channel, language)
@@ -96,6 +140,13 @@ async def finalize_assistant_response_if_a2ui(
 ) -> str:
     """Validate/repair assistant A2UI content while keeping host modules generic."""
     if not is_a2ui_channel(channel):
+        return content
+
+    # officeclaw (relay-claw) 完全跳过服务端 finalize（含校验）：不 repair、不校验、
+    # 不重发。破损 a2ui 内容原样透传，由前端做文本降级显示（本仓库 a2uiContent.ts
+    # extractTextFromMalformedA2UI :173-211 正则文本打捞 + invalidA2UIFallback :162
+    # 固定错误文案降级——是降级显示而非 JSON 修复）。
+    if not should_finalize_repair(channel):
         return content
 
     try:

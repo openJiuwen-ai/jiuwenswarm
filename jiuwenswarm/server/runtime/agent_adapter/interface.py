@@ -80,7 +80,9 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.server.runtime.a2ui.integration import (
     finalize_assistant_response_if_a2ui,
     is_a2ui_channel,
+    is_a2ui_probe_channel,
 )
+from jiuwenswarm.server.runtime.a2ui.protocol import is_a2ui_client_event
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
@@ -130,6 +132,33 @@ def _permission_response_key(request: AgentRequest) -> str | None:
     if not isinstance(request_id, str):
         return None
     return request_id or None
+
+
+def _is_a2ui_client_event_request(request: AgentRequest) -> bool:
+    """True when this request carries an A2UI client event in params.content.
+
+    此类请求的 inputs["query"] 已由 build_user_prompt 转成可读 a2ui prompt；
+    team 分支若再用 raw_query 覆写，raw_query = query if isinstance(query, str)
+    else "" 为空字符串——用空串覆写转换后成品 prompt。
+    """
+    params = request.params if isinstance(request.params, dict) else {}
+    return is_a2ui_client_event(params.get("content"))
+
+
+def _should_skip_team_raw_override(inputs: dict[str, Any], request: AgentRequest) -> bool:
+    """team raw_query 覆写的豁免判定（可单测纯函数）。
+
+    豁免两类结构化请求：
+    - InteractiveInput：ask_user/HITL 续答（既有先例）
+    - A2UI client_event：query 已是转换后 a2ui prompt（str），但 raw_query 取自
+      params.content（dict），raw_query = query if isinstance(query, str) else ""
+      为空字符串——不豁免时用空串覆写转换后成品 prompt。
+    """
+    from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+    if isinstance(inputs.get("query"), InteractiveInput):
+        return True
+    return _is_a2ui_client_event_request(request)
 
 
 def _is_team_permission_interactive_resume(
@@ -3441,12 +3470,20 @@ class JiuWenSwarm:
             from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
             team_query_is_interactive_input = isinstance(inputs.get("query"), InteractiveInput)
-            if not team_query_is_interactive_input:
+            # a2ui client_event / InteractiveInput 请求豁免 raw_query 覆写（判定见纯函数）
+            skip_raw_override = _should_skip_team_raw_override(inputs, request)
+            if not skip_raw_override:
                 inputs["query"] = raw_query
-            logger.info(
-                "[JiuWenSwarm] Team模式使用原始query: %s",
-                raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
-            )
+                logger.info(
+                    "[JiuWenSwarm] Team模式使用原始query: %s",
+                    raw_query[:100] if isinstance(raw_query, str) and raw_query else type(inputs.get("query")).__name__,
+                )
+            else:
+                # 豁免分支：query 是成品 prompt，单独文案避免与原始 query 混淆
+                logger.info(
+                    "[JiuWenSwarm] Team模式豁免raw_query覆写(a2ui client_event/InteractiveInput)，保留转换后query: type=%s",
+                    type(inputs.get("query")).__name__,
+                )
 
         # cloud memory: before chat hook
         if memory_mode == "cloud":
@@ -3694,7 +3731,11 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
-        a2ui_probe_enabled = is_a2ui_channel(cid)
+        # probe 渠道白名单收口在 integration._A2UI_PROBE_CHANNEL_IDS（当前仅 web）。
+        # officeclaw (relay-claw) 不发 a2ui probe pending chunk：relay-claw 前端用
+        # parseA2UIContent 从文本提取 <a2ui-json> 块，probe 插入的 <a2ui-json>\n
+        # 会与 agent 原始块重复，污染累积 content 致前端提取失败。
+        a2ui_probe_enabled = is_a2ui_probe_channel(cid)
         _yielded_from_queue = 0
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",

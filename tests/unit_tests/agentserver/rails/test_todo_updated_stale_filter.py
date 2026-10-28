@@ -21,6 +21,7 @@ web_search won the race) did not pop — the intermittent symptom.
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -118,6 +119,71 @@ def test_token_roundtrip_and_filter() -> None:
     ]
     assert [d["id"] for d in filter_todos_by_generation(dicts, token)] == ["d2", "d3"]
     assert todo_item_generation_token(dicts[0]) == "gen-old"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["committed", "loaded"])
+@pytest.mark.parametrize("reminder_generation", ["old", "current"])
+@pytest.mark.parametrize(
+    "mode,tool_name,arguments,expected_ids,expected_status",
+    [
+        ("legacy", "todo_modify", {"todos": [{"id": "A"}]}, ["A"], ["in_progress"]),
+        ("legacy", "todo_list", {}, ["R", "A"], ["pending", "pending"]),
+        ("legacy", "todo", {"action": "list"}, ["R", "A"], ["pending", "pending"]),
+        ("legacy", "todo", {"action": "modify", "todos": [{"id": "A"}]}, ["A"], ["in_progress"]),
+        ("legacy", "todo", {"action": "modify", "todos": [{"id": "R"}]}, ["R", "A"], ["pending", "pending"]),
+        ("versioned", "todo_modify", {"todos": [{"id": "A"}]}, ["R", "A", "old"],
+         ["pending", "in_progress", "completed"]),
+    ],
+)
+async def test_committed_todo_updated_respects_consumer_and_tool_intent(
+    monkeypatch, source, reminder_generation, mode, tool_name, arguments, expected_ids, expected_status,
+):
+    from openjiuwen.harness.tools.todo_store import decode_snapshot
+
+    from jiuwenswarm.agents.harness.common.rails import stream_event_rail
+    from jiuwenswarm.common.todo_output import TODO_SNAPSHOT_MODE
+
+    snapshot = {"plan_id": "P", "revision": 8, "todos": [
+        {"id": "R", "content": "reminder", "status": "pending", "generation_token": reminder_generation,
+         "meta_data": {"persistent": True}},
+        {"id": "A", "content": "active", "status": "in_progress", "generation_token": "current"},
+        {"id": "old", "content": "old", "status": "completed", "generation_token": "old"},
+    ]}
+    rail = object.__new__(stream_event_rail.JiuSwarmStreamEventRail)
+    rail._member_name = "member"  # Avoid unrelated perf recording.
+    session = _FakeSession()
+    session.update_state({TODO_GENERATION_TOKEN_SESSION_KEY: "current"})
+    emitted = []
+
+    async def write_stream(schema):
+        emitted.append(schema.payload)
+
+    session.write_stream = write_stream
+    if source == "loaded":
+        class Loaded(list):
+            pass
+
+        items = Loaded(snapshot["todos"])
+        items.snapshot = decode_snapshot(snapshot)
+
+        async def load(_session_id):
+            return items
+
+        monkeypatch.setattr(rail, "_get_todo_tool", lambda: SimpleNamespace(load_todos=load))
+    token = TODO_SNAPSHOT_MODE.set(mode)
+    try:
+        await rail._emit_todo_updated(
+            session, "sess-1", tool_name=tool_name, arguments=json.dumps(arguments),
+            snapshot=snapshot if source == "committed" else None,
+        )
+    finally:
+        TODO_SNAPSHOT_MODE.reset(token)
+    assert len(emitted) == 1
+    assert [row["id"] for row in emitted[0]["todos"]] == expected_ids
+    assert [row["status"] for row in emitted[0]["todos"]] == expected_status
+    assert emitted[0].get("todo_meta") == ({"plan_id": "P", "revision": 8} if mode == "versioned" else None)
+    assert [row["id"] for row in snapshot["todos"]] == ["R", "A", "old"]
 
 
 @pytest.mark.asyncio

@@ -105,6 +105,8 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.AVATAR_PROMPT,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
+    registry.CONTEXT_OVERFLOW_RECOVERY,
+    registry.TEAM_ADMISSION,
     registry.PERSONAL_CONTEXT,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
@@ -158,6 +160,8 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_AGENT_MODE,
     registry.STRUCTURED_ASK_USER,
     registry.CONTEXT_PROCESSOR,
+    registry.CONTEXT_OVERFLOW_RECOVERY,
+    registry.TEAM_ADMISSION,
     registry.PERSONAL_CONTEXT,
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
@@ -367,6 +371,22 @@ def _context_processor_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _team_admission_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Attribute params for process-wide Team LLM admission."""
+    from jiuwenswarm.agents.harness.team.rails.team_admission_rail import (
+        resolve_team_admission_limit,
+        resolve_team_section_for_admission,
+    )
+
+    team_key = ""
+    if isinstance(config, dict):
+        team_key = str(config.get("team_name") or "").strip()
+    team_cfg = resolve_team_section_for_admission(config, team_key=team_key or None)
+    return {
+        "max_concurrent_llm_calls": resolve_team_admission_limit(team_cfg),
+    }
+
+
 def _permission_params(config: dict[str, Any]) -> dict[str, Any]:
     """Attribute params for the permission-interrupt rail."""
     return {
@@ -421,6 +441,11 @@ _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
         )
     },
     registry.CONTEXT_PROCESSOR: _context_processor_params,
+    registry.CONTEXT_OVERFLOW_RECOVERY: lambda c: {
+        "context_engine_enabled": get_context_engine_enabled(c),
+        "max_recovery_attempts": 3,
+    },
+    registry.TEAM_ADMISSION: _team_admission_params,
     registry.CODE_PROJECT_MEMORY: lambda c: {
         "additional_directories": _additional_directories(c)
     },

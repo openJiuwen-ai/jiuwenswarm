@@ -115,10 +115,10 @@ class _TodoFile:
     def __init__(self, todos: list[TodoItem]) -> None:
         self.todos = todos
 
-    async def load_todos(self, _session_id: str) -> list[TodoItem]:
+    async def _load_todos(self, _session_id: str) -> list[TodoItem]:
         return list(self.todos)
 
-    async def save_todos(self, _session_id: str, todos: list[TodoItem]) -> None:
+    async def _save_todos(self, _session_id: str, todos: list[TodoItem]) -> None:
         self.todos = list(todos)
 
 
@@ -230,10 +230,10 @@ async def test_modify_to_in_progress_clears_persistent_mark() -> None:
 
     tool = object.__new__(CompatibleTodoModifyTool)
 
-    async def save_todos(_session_id: str, todos: list[TodoItem]) -> None:
+    async def _save_todos(_session_id: str, todos: list[TodoItem]) -> None:
         saved.append(list(todos))
 
-    tool.save_todos = save_todos  # type: ignore[method-assign]
+    tool._save_todos = _save_todos  # type: ignore[method-assign]
     tool._validate_single_in_progress = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
 
     await tool._update_todos(  # pylint: disable=protected-access

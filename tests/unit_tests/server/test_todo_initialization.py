@@ -27,17 +27,52 @@ def test_first_initialization_is_consumed_before_commit_and_survives_reload(tmp_
     metadata.check_todo_initialization("s", file_exists=True, committing=True, sessions_root=tmp_path)
 
 
-def test_old_session_without_todo_record_cannot_claim_new_object(tmp_path):
+def test_legacy_session_can_initialize_once_without_an_existing_marker(tmp_path):
     metadata._write_metadata_sync("s", {"session_id": "s"}, sessions_root=str(tmp_path))
     metadata._write_metadata_sync("s", {"todo_initialized": False}, sessions_root=str(tmp_path))
+    metadata.check_todo_initialization("s", file_exists=False, sessions_root=tmp_path)
+    assert "todo_initialized" not in json.loads((tmp_path / "s/metadata.json").read_text())
+    metadata.check_todo_initialization("s", file_exists=False, committing=True, sessions_root=tmp_path)
+    assert json.loads((tmp_path / "s/metadata.json").read_text())["todo_initialized"] is True
     with pytest.raises(ValueError, match="first initialization"):
         metadata.check_todo_initialization("s", file_exists=False, sessions_root=tmp_path)
-    metadata.check_todo_initialization("s", file_exists=True, committing=True, sessions_root=tmp_path)
-    assert json.loads((tmp_path / "s/metadata.json").read_text())["todo_initialized"] is True
 
 
-def test_only_one_competing_initializer_can_consume_the_record(tmp_path):
-    new_session(tmp_path)
+def test_implicit_external_flash_chat_can_initialize_without_a_new_client_field(tmp_path, monkeypatch):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.handlers import _shared
+
+    monkeypatch.setattr(_shared, "_sessions_dir_for_request", lambda _request: tmp_path)
+    request = AgentRequest(
+        request_id="external-request", channel_id="chat-service", session_id="external",
+        req_method=ReqMethod.CHAT_SEND, params={"mode": "flash"},
+    )
+    _shared._sync_chat_request_metadata(request, None, "flash", explicit_mode_provided=True, adapter_mode="flash")
+    stored = json.loads((tmp_path / "external/metadata.json").read_text())
+    assert "todo_initialized" not in stored
+    metadata.check_todo_initialization("external", file_exists=False, committing=True, sessions_root=tmp_path)
+    assert json.loads((tmp_path / "external/metadata.json").read_text())["todo_initialized"] is True
+    with pytest.raises(ValueError, match="first initialization"):
+        metadata.check_todo_initialization("external", file_exists=False, sessions_root=tmp_path)
+
+
+@pytest.mark.parametrize("value", [None, "false", 0, 1])
+def test_invalid_initialization_marker_is_not_reset(tmp_path, value):
+    path = tmp_path / "s/metadata.json"
+    metadata._write_metadata_sync("s", {"session_id": "s", "todo_initialized": value}, sessions_root=str(tmp_path))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="marker is invalid"):
+        metadata.check_todo_initialization("s", file_exists=False, committing=True, sessions_root=tmp_path)
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("has_marker", [False, True])
+def test_only_one_competing_initializer_can_consume_the_record(tmp_path, has_marker):
+    if has_marker:
+        new_session(tmp_path)
+    else:
+        metadata._write_metadata_sync("s", {"session_id": "s"}, sessions_root=str(tmp_path))
 
     def claim():
         try:

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_14 / session-lifecycle-and-upgrade |
 | 关联模块 | jiuwenswarm/common/{todo_generation, todo_snapshot, cleanup, cron_team_completion, git_safe_directory, updater, updater_restart_helper, upgrade_executor, version, version_source}.py |
-| 最近一次修订日期 | 2026-10-27 |
+| 最近一次修订日期 | 2026-10-28 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -38,11 +38,17 @@ version.__version__（唯一版本真源）
   `todo_resume.py`（agents 侧）。
 - **N2 todo 快照安全读取**：session_id 严格白名单正则；通过 SDK Todo 编解码读取旧数组或
   `{plan_id, revision, todos}`。读取失败返回`None`，不发送伪空表。默认legacy过滤generation、
-  cancelled并应用原串行状态遮罩，不输出`todo_meta`，历史空表沿原发送条件处理。
+  cancelled并应用原串行状态遮罩，不输出`todo_meta`。历史成功读取合法空表时发送空数组，
+  文件不存在、损坏或不可读时不伪造空表；实时 todo.updated 按工具调用意图区分执行视图
+  与提醒查询视图，查询可保留跨代提醒，普通执行不混入提醒。
   显式versioned保留内容对应的版本、真实状态及合法空表，不因generation隐藏已提交条目。
   `todo_output`通过连接/请求上下文选择展示方式，不影响文件提交或写入资格。
   TaskExecutionRail 的 task.update/start/complete 同样按输出策略决定是否携带元信息；
-  task.update 从提交快照或文件读取时均保留提醒过滤，只有显式展示提醒的调用才计入提醒。
+  legacy 的 task.update 从提交快照或文件读取时均保留提醒过滤，只有显式展示提醒的调用才计入提醒。
+  显式 versioned 时 task.update 与 todo.updated 对同次提交使用一致的展示清单和真实状态；
+  已取消条目按 Todo 展示规则过滤，不改变底层文件。
+  事务内的提醒包装及受影响写入使用配套 SDK 的 `_load_todos` / `_save_todos`，不经过
+  旧公开 I/O 缓存装饰器，候选状态不能作为已提交读取结果对外发布；不修改 Relay 扩展。
 - **N3 后台清理尽力而为**：保留期默认 30 天（`CLEANUP_PERIOD_DAYS`）；首次延迟 10min、
   之后每 24h 一轮；按目录 mtime 判过期；阻塞操作丢线程池且单步失败不中断循环；
   rmtree `ignore_errors=True`（可重复执行幂等）。装配点：`app_gateway` 启动。

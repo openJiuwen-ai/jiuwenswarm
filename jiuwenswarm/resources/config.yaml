@@ -1728,6 +1728,24 @@ modes:
 
       storage:
         type: sqlite
+        # SQLite pool / WAL knobs → openjiuwen DatabaseConfig via StorageSpec.params.
+        # Omitted keys fall back to product defaults in config_loader
+        # (_SQLITE_STORAGE_DEFAULTS). Explicit values below override defaults.
+        params:
+          # connection_string: team.db   # relative → ~/.…/agent-teams/team.db
+          db_timeout: 5
+          db_enable_wal: true
+          read_pool_size: 16
+          write_pool_size: 2
+          wal_checkpoint_interval_s: 30.0
+
+      # Process-wide Team LLM admission (especially when enable_swarmflow is false).
+      # max_concurrent_llm_calls: concurrent member LLM calls across the process.
+      #   null/omitted → 4 when swarmflow off, 0 (disabled) when swarmflow on
+      #   0            → disable this rail
+      #   N>0          → hard ceiling (queues excess callers)
+      resource_admission:
+        max_concurrent_llm_calls:
 
       # ============================================================
       # Team 级共享记忆（TeamMemoryConfig）

@@ -862,6 +862,19 @@ def _write_metadata_sync(
     return to_write
 
 
+def _write_todo_origin_locked(path: Path, metadata: dict[str, Any]) -> None:
+    """Publish the origin marker while the caller holds the metadata lock."""
+    temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            json.dump(metadata, stream, ensure_ascii=False, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def check_todo_initialization(
     session_id: str,
     *,
@@ -871,8 +884,9 @@ def check_todo_initialization(
 ) -> None:
     """Validate/consume the session's Todo origin before a possible publication.
 
-    The marker is recorded before writing Todo. An unknown write outcome must
-    therefore never grant another initialization after restart or file loss.
+    Legacy callers may create a first Todo without an origin marker. Once a
+    commit is attempted, the recorded marker prevents reinitialization after
+    restart or file loss, including unknown write outcomes.
     """
     if file_exists and not committing:
         return
@@ -888,20 +902,14 @@ def check_todo_initialization(
         if not isinstance(metadata, dict):
             raise TypeError("Todo session lifecycle is invalid")
         initialized = metadata.get(_TODO_INITIALIZED_KEY)
-        if not file_exists and initialized is not False:
+        if _TODO_INITIALIZED_KEY in metadata and not isinstance(initialized, bool):
+            raise ValueError("Todo initialization marker is invalid")
+        if not file_exists and initialized is True:
             raise ValueError("Todo file is missing; first initialization cannot be confirmed")
         if not committing or initialized is True:
             return
         metadata[_TODO_INITIALIZED_KEY] = True
-        temporary = path.with_name(f"{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
-        try:
-            with temporary.open("w", encoding="utf-8") as stream:
-                json.dump(metadata, stream, ensure_ascii=False, indent=2)
-                stream.flush()
-                os.fsync(stream.fileno())
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        _write_todo_origin_locked(path, metadata)
     # A subsequent queued write merges the disk marker under the same lock.
     with _CACHE_LOCK:
         _METADATA_CACHE.pop(_metadata_cache_key(session_id, _normalize_sessions_root_s(sessions_root)), None)

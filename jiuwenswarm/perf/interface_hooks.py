@@ -109,6 +109,7 @@ def set_perf_summary_context(
     service_id: str | None = None,
     agent_id: str | None = None,
     requested_report_type: DeepResearchReportType | None = None,
+    deepresearch_followup: dict[str, Any] | None = None,
 ) -> None:
     """Bind perf request context at parent-agent request entry.
 
@@ -128,6 +129,7 @@ def set_perf_summary_context(
             service_id=service_id,
             agent_id=agent_id,
             requested_report_type=requested_report_type,
+            deepresearch_followup=deepresearch_followup,
             begin_perf_collection=perf_enabled,
         )
         if not perf_enabled:
