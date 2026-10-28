@@ -75,7 +75,7 @@ def test_agentos_team_placeholder_fallback_keeps_global_index(monkeypatch):
 
 
 def test_agentos_team_wire_projection_and_explicit_member_model(monkeypatch):
-    from jiuwenswarm.gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
+    from gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
 
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
     config = _agentos_test_config()
@@ -507,6 +507,15 @@ def test_team_organization_defaults_off_without_switch(experimental):
     )
 
     assert spec["enable_organization"] is False
+
+
+@pytest.mark.parametrize(("team_value", "expected"), [(True, True), (False, False), (None, False)])
+def test_member_messaging_flag_reaches_team_spec(team_value, expected):
+    """``modes.team.jiuwen_team.enable_member_messaging`` becomes the spec field (core F_126)."""
+    team_extra = {} if team_value is None else {"enable_member_messaging": team_value}
+    spec = load_team_spec_dict(config_base=_organization_switch_config({}, team_extra))
+
+    assert spec["enable_member_messaging"] is expected
 
 
 def test_legacy_template_enable_organization_cannot_override_switch():

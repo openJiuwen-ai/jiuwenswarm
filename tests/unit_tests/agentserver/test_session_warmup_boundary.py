@@ -308,7 +308,7 @@ async def test_real_external_child_skips_deep_bootstrap_and_history(monkeypatch)
     parent = JiuWenSwarmDeepAdapter()
     binding = {"kind": "external_harness", "agent_template_name": "codex-expert", "provider_name": "codex"}
     monkeypatch.setattr(deep_module, "persist_external_harness_binding", lambda *_: None)
-    monkeypatch.setattr(deep_module, "load_persisted_external_harness_binding", lambda _: None)
+    monkeypatch.setattr(deep_module, "load_persisted_external_harness_binding", AsyncMock(return_value=None))
     monkeypatch.setattr(parent, "_requested_model_name", lambda _: pytest.fail("external execution must skip model routing"))
     request = _request()
     request.params["model_selection"] = {"type": "invalid", "id": "missing"}

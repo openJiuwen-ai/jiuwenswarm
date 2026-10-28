@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.gateway.cron.controller import CronController
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.controller import CronController
+from gateway.cron.store import CronJobStore
 
 _LOGIN_REF = "0123456789abcdef0123456789abcdef"
 _AUTH_SESSION = "auth-session-1"
@@ -75,7 +75,7 @@ def _patch_login_session(
     user_id: str = "openid-1",
 ) -> None:
     """服务端登录会话（华为账号，与路由 user_id 独立）的内存桩。"""
-    from jiuwenswarm.common.auth.service import ModelAuthRequired
+    from gateway.auth.service import ModelAuthRequired
 
     def fake_live_session(session_id, allow_refresh=True):
         if not logged_in or not session_id:
@@ -83,10 +83,10 @@ def _patch_login_session(
         return SimpleNamespace(user_id=user_id)
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.service.live_session", fake_live_session
+        "gateway.auth.service.live_session", fake_live_session
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.login_credentials.credential_ref_for_user",
+        "gateway.auth.login_credentials.credential_ref_for_user",
         lambda uid: _LOGIN_REF,
     )
 

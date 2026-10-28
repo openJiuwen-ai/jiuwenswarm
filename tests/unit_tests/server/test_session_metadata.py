@@ -111,6 +111,49 @@ class TestAutoTitle:
         assert _auto_title("   ") == ""
 
 
+@pytest.mark.parametrize("initialized", [True, False], ids=["existing-session", "implicit-create"])
+@pytest.mark.parametrize(
+    ("user_content", "expected_title"),
+    [
+        ("/debug 帮我写一个排序算法", "帮我写一个排序算法"),
+        (" \t/debug\nhello\nworld  ", "hello world"),
+        (
+            '<system-reminder>plan guidance</system-reminder>\n'
+            '<file-content path="notes.txt">context</file-content>\n/debug hello',
+            "hello",
+        ),
+        ("/debug " + "a" * 60, "a" * 50 + "..."),
+        ("explain /debug flag", "explain /debug flag"),
+        ("/debugfoo hello", "/debugfoo hello"),
+        ("/debug", "/debug"),
+        ("/debug   ", "/debug"),
+        ("ordinary message", "ordinary message"),
+    ],
+    ids=[
+        "debug", "whitespace", "injected-tags", "truncate", "literal",
+        "lookalike", "bare", "bare-spaces", "ordinary",
+    ],
+)
+def test_auto_title_strips_only_debug_directive(sessions_dir, initialized, user_content, expected_title):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata,
+        update_session_metadata,
+    )
+
+    session_id = "sess_debug_title"
+    if initialized:
+        init_session_metadata(session_id=session_id)
+
+    update_session_metadata(
+        session_id=session_id,
+        user_content=user_content,
+        sync_write=True,
+    )
+
+    data = json.loads((sessions_dir / session_id / "metadata.json").read_text(encoding="utf-8"))
+    assert data["title"] == expected_title
+
+
 # ===========================================================================
 # init_session_metadata
 # ===========================================================================
@@ -2015,7 +2058,7 @@ class _FakeWebChannel:
 @pytest.fixture()
 def registered_channel(sessions_dir):
     """注册所有 web handler，返回 _FakeWebChannel（含 session.get_metadata）"""
-    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+    from gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )
@@ -3287,3 +3330,52 @@ class TestCanonicalModeBoundary:
         meta = get_session_metadata("s_code_team")
         assert meta["mode"] == "team.code.normal"
         assert "wire_mode" not in meta
+
+
+class TestGetAllSessionsMetadataLifecycleVisibility:
+    """Archive/delete are accepted before their directory changes, so the flat
+    active list must already hide them (otherwise a slow or abandoned cleanup
+    keeps a deleted Session visible forever)."""
+
+    @staticmethod
+    def test_hides_logically_deleted_and_archived(sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_all_sessions_metadata,
+            init_session_metadata,
+        )
+
+        for sid in ("live", "gone", "archived", "archiving"):
+            init_session_metadata(session_id=sid, channel_id="web")
+
+        def fake_state(kind, resource_id):
+            if kind != "session":
+                return {}
+            if resource_id == "gone":
+                return {"deleted": True}
+            if resource_id == "archived":
+                return {
+                    "operation": {"kind": "archive", "status": "completed"},
+                }
+            if resource_id == "archiving":
+                return {
+                    "operation": {"kind": "archive", "status": "running"},
+                }
+            return {}
+
+        monkeypatch.setattr(lc, "state", fake_state)
+        # A completed archive lives in sessions_archived; the existing path
+        # check hides it.  Keep the pending one only in the active area.
+        (sessions_dir.parent / "sessions_archived" / "archived").mkdir(parents=True)
+        monkeypatch.setattr(
+            lc,
+            "session_paths",
+            lambda sid, sessions_root=None: (
+                sessions_dir / sid,
+                sessions_dir.parent / "sessions_archived" / sid,
+            ),
+        )
+
+        sessions, total = get_all_sessions_metadata()
+        assert total == 1
+        assert [item["session_id"] for item in sessions] == ["live"]

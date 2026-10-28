@@ -38,7 +38,6 @@ type DesignerRunStore = {
   restart: (graph: DesignerExecutionGraph) => Promise<void>;
   cancel: (graph: DesignerExecutionGraph | null) => Promise<void>;
   patchNodeOutput: (nodeId: string, outputRef: AssetRef) => void;
-  chooseOutput: (nodeId: string, choice: 'original' | 'new') => Promise<void>;
   /** Local upload preview: mark node completed with the uploaded asset. */
   applyUploadedOutput: (nodeId: string, outputRef: AssetRef) => void;
   /** Clear upload-produced preview on a node. */
@@ -364,18 +363,6 @@ export const useDesignerRunStore = create<DesignerRunStore>((set, get) => ({
       run,
       nodeStates,
     });
-  },
-
-  chooseOutput: async (nodeId, choice) => {
-    const runId = get().run?.run_id;
-    if (!runId) return;
-    try {
-      const result = await designerGraphClient.chooseOutput({ runId, nodeId, choice });
-      get().applyRun(result.run);
-    } catch (error) {
-      set({ runError: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
   },
 }));
 

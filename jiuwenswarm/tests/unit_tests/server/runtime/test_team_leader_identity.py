@@ -86,6 +86,7 @@ def test_agent_group_leader_identity_prefers_member_display_name(
     (leader_dir / "manifest.json").write_text(
         json.dumps(
             {
+                "package_type": "agent_template",
                 "name": "leader-template",
                 "display_name": {"zh": "中文负责人", "en": "Chinese Lead"},
             }
@@ -98,7 +99,7 @@ def test_agent_group_leader_identity_prefers_member_display_name(
         "resolve_agent_group_dir",
         lambda _name: group_dir,
     )
-    import jiuwenswarm.agents.swarm.agent_group as agent_group
+    import openjiuwen.agent_teams.experts as agent_group
 
     monkeypatch.setattr(
         agent_group,

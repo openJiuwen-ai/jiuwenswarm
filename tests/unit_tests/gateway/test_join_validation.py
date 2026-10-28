@@ -11,18 +11,18 @@ from __future__ import annotations
 from types import SimpleNamespace
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse
-from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.gateway.message_handler.command_parser.slash_command import (
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from openjiuwen_protocol.message import Message
+from gateway.message_handler.command_parser.slash_command import (
     ParsedChannelControl,
     ParsedControlAction,
 )
-from jiuwenswarm.gateway.message_handler.join_exit_handlers import (
+from gateway.message_handler.join_exit_handlers import (
     JoinExitHandlers,
     _join_err_team_not_exist,
 )
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
-from jiuwenswarm.gateway.routing.session_sharing import SessionSharingRegistry
+from gateway.message_handler.message_handler import MessageHandler
+from gateway.routing.session_sharing import SessionSharingRegistry
 
 
 # ── copy helper ──

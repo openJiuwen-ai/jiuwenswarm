@@ -47,7 +47,7 @@ ws://<advertise_host>:<北向端口>/<path>?user_id=<uid>
 
 ### 3.1 Web 代理（每个 agent_type 一个北向端口）
 
-文件：`jiuwenswarm/gateway/channel_manager/protocol/web_proxy/web_proxy_connect.py`
+文件：`gateway/channel_manager/protocol/web_proxy/web_proxy_connect.py`
 
 每个 `agent_type` 一个北向端口（由注册中心经 etcd 下发），端口上跑一个只做反向代理的 ASGI 应用。
 

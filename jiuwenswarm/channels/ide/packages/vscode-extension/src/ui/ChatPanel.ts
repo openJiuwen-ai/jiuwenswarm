@@ -229,10 +229,11 @@ export class ChatPanel implements vscode.Disposable {
       }
 
       case 'toggle_skill': {
-        const skillId = msg.skillId as string;
+        const skillId = (msg.skillId as string) || '';
+        const skillName = (msg.name as string) || skillId;
         const enabled = msg.enabled as boolean;
-        if (skillId !== undefined && enabled !== undefined) {
-          this.toggleSkill(skillId, enabled);
+        if (skillName && enabled !== undefined) {
+          this.toggleSkill(skillName, enabled, skillId || skillName);
         }
         break;
       }
@@ -240,8 +241,13 @@ export class ChatPanel implements vscode.Disposable {
       case 'switch_model': {
         const model = (msg.model as string) || null;
         this.activeModel = model;
-        this.debug(`ACTION→ switch_model ${model}`);
+        this.debug(`ACTION�+' switch_model ${model}`);
         this.postToWebview({ type: 'model_changed', model });
+        break;
+      }
+
+      case 'refresh_models': {
+        void this.refreshModels();
         break;
       }
 
@@ -338,6 +344,12 @@ export class ChatPanel implements vscode.Disposable {
       // Auto-open the Swarm Map panel when the first agent spawns
       if (snap.lanes.length === 1 && snap.lanes[0].status !== 'SHUTDOWN') {
         this.swarmMapPanel?.show();
+      }
+      // Leader/peer messages addressed to the user are chat content too, not
+      // just swarm-map activity. Forward them so the transcript is not empty.
+      const teamText = this.extractUserFacingTeamMessage(rawTeamEvent);
+      if (teamText) {
+        this.postToWebview({ type: 'team_message', content: teamText });
       }
       return;
     }
@@ -473,6 +485,29 @@ export class ChatPanel implements vscode.Disposable {
     this.debug(`CONV  → event_type=${et} request_id=${converted.request_id}`);
     this.postToWebview({ type: 'jiuwen_event', event: converted });
     this.trackTokenUsage(converted);
+  }
+
+  /**
+   * Returns the text of a team event when the message is addressed to the user
+   * (leader-to-user, or a p2p message whose target is `user`), otherwise null.
+   * Mirrors the WebUI's `teamEventUtils` predicate so both clients show the
+   * same leader feedback in the transcript.
+   */
+  private extractUserFacingTeamMessage(rawTeamEvent: string): string | null {
+    try {
+      const parsed = JSON.parse(rawTeamEvent) as Record<string, unknown>;
+      const event = (parsed.event as Record<string, unknown> | undefined) || parsed;
+      const content = typeof event.content === 'string' ? event.content : '';
+      if (!content.trim()) return null;
+      const fromMember = typeof event.from_member === 'string' ? event.from_member : '';
+      const toMember = typeof event.to_member === 'string' ? event.to_member : '';
+      const eventType = typeof event.type === 'string' ? event.type : '';
+      const toUser = fromMember === 'team_leader'
+        || (eventType === 'team.message.p2p' && toMember === 'user');
+      return toUser ? content : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -760,6 +795,25 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
+  private async refreshModels(): Promise<void> {
+    if (!this.session.sessionId || !this.ws.isConnected()) return;
+    try {
+      const { models, activeModel } = await this.session.listModels();
+      const modelList = models.map((m) => ({
+        model_name: (m.model_name as string) || '',
+        alias: (m.alias as string) || '',
+        model_provider: (m.model_provider as string) || '',
+      }));
+      this.postToWebview({
+        type: 'models_updated',
+        models: modelList,
+        activeModel: activeModel || undefined,
+      });
+    } catch {
+      this.debug('models.list refresh failed');
+    }
+  }
+
   private async renameSession(title: string): Promise<void> {
     try {
       this.debug(`ACTION→ session.rename title=${title}`);
@@ -793,11 +847,14 @@ export class ChatPanel implements vscode.Disposable {
     }
   }
 
-  private async toggleSkill(skillId: string, enabled: boolean): Promise<void> {
+  private async toggleSkill(skillName: string, enabled: boolean, key: string): Promise<void> {
     try {
-      this.debug(`ACTION→ toggle_skill ${skillId} enabled=${enabled}`);
-      await this.session.toggleSkill(skillId, enabled);
-      this.postToWebview({ type: 'skill_toggled', skillId, enabled });
+      this.debug(`ACTION toggle_skill ${skillName} enabled=${enabled}`);
+      const payload = await this.session.toggleSkill(skillName, enabled);
+      if (payload && payload.success === false) {
+        throw new Error(String(payload.detail || 'Failed to toggle skill'));
+      }
+      this.postToWebview({ type: 'skill_toggled', skillId: key, enabled });
     } catch (e) {
       this.debug(`toggle_skill failed: ${e}`);
       this.postToWebview({ type: 'skills_error', message: String(e) });
@@ -827,7 +884,24 @@ export class ChatPanel implements vscode.Disposable {
   // ──────────────────────────────────────────
   private async openFile(filePath: string, line: number): Promise<void> {
     try {
-      const uri = vscode.Uri.file(filePath);
+      const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      let resolved = filePath;
+      if (!path.isAbsolute(resolved) && root) {
+        resolved = path.join(root, resolved);
+      }
+      let uri = vscode.Uri.file(resolved);
+      if (!fs.existsSync(resolved)) {
+        // Bare/relative references from the model may not include the full path.
+        const base = path.basename(filePath);
+        // Escape glob metacharacters so names like a[1].ts or foo?.txt are literal.
+        const globBase = base.replace(/([*?[\]{}()!+@\\])/g, '\\$1');
+        const matches = await vscode.workspace.findFiles(`**/${globBase}`, '**/node_modules/**', 5);
+        if (matches.length === 0) {
+          this.debug(`open_file: not found: ${filePath}`);
+          return;
+        }
+        uri = matches[0];
+      }
       const doc = await vscode.workspace.openTextDocument(uri);
       // Open in a real editor group (not over the chat webview). If the file is
       // already visible in some group, showTextDocument reuses that editor.

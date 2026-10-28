@@ -186,6 +186,7 @@ class SessionRuntimeLifecyclePort(Protocol):
         context: SessionLifecycleContext,
         *,
         reason: str,
+        channel_id: str | None = None,
     ) -> None:
         """Pause one Team Session generation."""
         ...

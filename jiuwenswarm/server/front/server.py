@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.server.front.admission import ExecutionAdmission, RuntimeBackend
 from jiuwenswarm.server.front.connection import ConnectionHandler, process_handshake
 from jiuwenswarm.server.front.event_forwarder import EventForwarder

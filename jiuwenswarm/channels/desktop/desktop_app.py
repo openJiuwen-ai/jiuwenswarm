@@ -441,7 +441,7 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-        base = [sys.executable, "-m", "jiuwenswarm.gateway.app_gateway"]
+        base = [sys.executable, "-m", "gateway.app_gateway"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -1240,7 +1240,7 @@ class DesktopRuntime:
         ``wait`` seconds for a still-shutting-down Gateway from an upgrade
         restart to release the lock, then raises if a live holder remains.
         """
-        from jiuwenswarm.instance_manager.lock import GatewayLock
+        from gateway.gateway_lock import GatewayLock
 
         workspace = get_user_workspace_dir()
         holder = GatewayLock.find_holder(workspace)
@@ -2244,7 +2244,9 @@ class DesktopRuntime:
             logger.error("[desktop] local file picker unavailable")
             return []
 
-        from jiuwenswarm.channels.web.file_picker import (
+        # M0-b：file_picker 已迁 gateway 仓侧；desktop 仅需"记住上次目录"两个
+        # 纯函数——本地副本（与 gateway 侧状态文件同路径，行为等价）。
+        from jiuwenswarm.channels.desktop.picker_dir_state import (
             remember_file_picker_dir,
             resolve_file_picker_initial_dir,
         )
@@ -2334,7 +2336,7 @@ class DesktopRuntime:
             logger.warning("[desktop] failed to stat selected file %s: %s", path, exc)
             return None
 
-        from jiuwenswarm.channels.web.file_picker import attachment_mime_type
+        from jiuwenswarm.channels.desktop.picker_dir_state import attachment_mime_type
 
         mime_type = attachment_mime_type(filename)
         absolute = str(path)

@@ -1,4 +1,4 @@
-/** 内置 slash 与 Gateway 受控指令对齐时参见仓库 `jiuwenswarm/gateway/slash_command.py`（SSOT）与 `docs/zh/CLI_COMMANDS.md`。 */
+/** 内置 slash 与 Gateway 受控指令对齐时参见仓库 `gateway/slash_command.py`（SSOT）与 `docs/zh/CLI_COMMANDS.md`。 */
 import type { SlashCommand } from "./types.js";
 import { createBranchCommand } from "./builtins/branch.js";
 import { createBtwCommand } from "./builtins/btw.js";

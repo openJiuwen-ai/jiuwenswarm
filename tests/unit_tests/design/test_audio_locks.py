@@ -119,10 +119,11 @@ def test_audio_nodes_not_created_when_brief_wants_bgm(monkeypatch) -> None:
         if str((n.get("config") or {}).get("role") or "") == "clip"
         or str((n.get("config") or {}).get("pipeline") or "") == "clip"
     )
-    prompt = str(((clip.get("config") or {}).get("generate") or {}).get("prompt") or "")
-    excerpt = str((clip.get("config") or {}).get("skill_excerpt") or "")
-    blob = prompt + excerpt
-    assert "Do NOT generate music" in blob or "NOT in this clip" in blob or "dialogue only" in blob.lower()
+    cfg = clip.get("config") or {}
+    assert cfg.get("clip_embedded_audio") is True
+    assert "糟了，今天是情人节" in str(cfg.get("speech_line"))
+    prompt = str((cfg.get("generate") or {}).get("prompt") or "")
+    assert "LOCK" not in prompt
 
 
 def test_director_adds_no_audio_nodes_without_music_backend(monkeypatch) -> None:

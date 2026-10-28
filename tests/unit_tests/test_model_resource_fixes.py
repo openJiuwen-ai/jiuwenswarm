@@ -7,10 +7,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_errors import ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
 
@@ -124,7 +124,9 @@ def test_reasoning_resource_detail_recovers_legacy_yaml_booleans(catalog_state, 
 @pytest.mark.parametrize("runtime", ["server"])
 @pytest.mark.parametrize("level, mode", [("on", "enabled"), ("off", "disabled"), (True, "enabled"), (False, "disabled")])
 def test_stable_selection_translates_reasoning_before_core_compilation(catalog_state, runtime, level, mode):
-    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+    from jiuwenswarm.server.runtime.model_compiler_adapter import (
+        compile_model_selection,
+    )
 
     entry = catalog_state["models"]["defaults"][0]
     entry["model_client_config"].update({"model_name": "Qwen3.8-Flash", "api_base": "https://example.com/v1"})
@@ -152,7 +154,9 @@ def test_stable_selection_translates_reasoning_before_core_compilation(catalog_s
 @pytest.mark.parametrize("source", ["defaults", "agentos", "source", "model_source"])
 async def test_model_get_returns_plaintext_key_only_for_user_configured_models(catalog_state, monkeypatch, source):
     from jiuwenswarm.common.auth.model_catalog import LOGIN_MODEL_SOURCE
-    from jiuwenswarm.common.config_panel.model_resource_handlers import _resource_payload
+    from jiuwenswarm.common.config_panel.model_resource_handlers import (
+        _resource_payload,
+    )
 
     crypto = SimpleNamespace(decrypt=lambda value: value.removeprefix("enc:"))
     monkeypatch.setattr(config_module, "get_crypto_provider", lambda: crypto)
@@ -189,9 +193,12 @@ def test_agentos_resource_is_read_only(catalog_state, operation):
     assert caught.value.code == "MODEL_SELECTION_FORBIDDEN"
 
 
-def test_group_save_preserves_route_identity_and_drops_routing(catalog_state):
+def test_group_save_preserves_route_identity_and_group_timeouts(catalog_state):
     group = config_module.upsert_model_group_resource({
-        "display_name": "pool", "routing": {"strategy": "ordered-failover"},
+        "display_name": "pool", "routing": {
+            "strategy": "ordered-failover", "timeout_seconds": 420,
+            "stream_first_chunk_timeout": 280, "stream_idle_timeout": 90,
+        },
         "routes": [{"model_id": "mdl_a"}, {"model_id": "mdl_a"}],
     })
     ids = [route["route_id"] for route in group["routes"]]
@@ -199,8 +206,44 @@ def test_group_save_preserves_route_identity_and_drops_routing(catalog_state):
     group["routes"].reverse()
     saved = config_module.upsert_model_group_resource(group)
     assert [route["route_id"] for route in saved["routes"]] == ids[::-1]
-    assert "routing" not in saved
+    assert saved["routing"] == {
+        "timeout_seconds": 420,
+        "stream_first_chunk_timeout": 280,
+        "stream_idle_timeout": 90,
+    }
     assert len(catalog_state["models"]["groups"]) == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, float("nan"), float("inf"), "bad", True])
+def test_group_save_rejects_invalid_timeout(catalog_state, value):
+    with pytest.raises(ModelSelectionError) as caught:
+        config_module.upsert_model_group_resource({
+            "display_name": "pool", "routes": [{"model_id": "mdl_a"}],
+            "routing": {"timeout_seconds": value},
+        })
+    assert caught.value.code == "MODEL_GROUP_INVALID"
+
+
+def test_group_save_accepts_numeric_timeout_from_environment(catalog_state):
+    saved = config_module.upsert_model_group_resource({
+        "display_name": "configured", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": "75"},
+    })
+    assert saved["routing"]["timeout_seconds"] == "75"
+
+
+def test_groups_keep_independent_timeout_overrides(catalog_state):
+    first = config_module.upsert_model_group_resource({
+        "display_name": "fast", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": 75},
+    })
+    second = config_module.upsert_model_group_resource({
+        "display_name": "slow", "routes": [{"model_id": "mdl_a"}],
+        "routing": {"timeout_seconds": 420},
+    })
+    groups = {group["model_group_id"]: group for group in catalog_state["models"]["groups"]}
+    assert groups[first["model_group_id"]]["routing"]["timeout_seconds"] == 75
+    assert groups[second["model_group_id"]]["routing"]["timeout_seconds"] == 420
 
 
 def test_only_explicit_default_edit_normalizes_flags(catalog_state):
@@ -271,7 +314,9 @@ def test_corrupt_cron_reference_file_returns_explicit_error(tmp_path, monkeypatc
 @pytest.mark.asyncio
 async def test_shared_registration_and_reload(catalog_state, monkeypatch):
     from jiuwenswarm.common.config_panel.models_handlers import register_models_handlers
-    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import _ConfigRpcChannel
+    from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
+        _ConfigRpcChannel,
+    )
 
     channel = _ConfigRpcChannel("web")
     reload_models = AsyncMock(return_value=True)
@@ -336,7 +381,9 @@ def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime)
 
 def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
     # A5：gateway 生产（cron/controller）统一用 common 版 resolver
-    from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver as GatewayResolver
+    from jiuwenswarm.common.model_routing_registry import (
+        ModelSelectionResolver as GatewayResolver,
+    )
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a",
@@ -348,7 +395,9 @@ def test_gateway_resolver_rejects_all_disabled_routes(catalog_state):
 
 
 def test_hot_edit_recompiles_same_selection(catalog_state, monkeypatch):
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     compiled = []
 
@@ -368,7 +417,9 @@ def test_hot_edit_recompiles_same_selection(catalog_state, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_reference_check_fails_closed_on_store_error(catalog_state, monkeypatch):
-    from jiuwenswarm.common.config_panel.model_resource_handlers import find_resource_references
+    from jiuwenswarm.common.config_panel.model_resource_handlers import (
+        find_resource_references,
+    )
 
     store = SimpleNamespace(list_jobs=AsyncMock(side_effect=RuntimeError("etcd unavailable")), aclose=AsyncMock())
     from types import SimpleNamespace as _NS
@@ -418,7 +469,9 @@ def test_delete_model_prunes_group_routes_instead_of_failing(catalog_state):
 
 def test_deleted_session_selection_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     catalog_state["models"]["defaults"] = [catalog_state["models"]["defaults"][1]]
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
@@ -435,7 +488,9 @@ def test_deleted_session_selection_uses_current_default(catalog_state, monkeypat
 @pytest.mark.parametrize("cron", [True, False])
 def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._is_cron_execution = cron
@@ -447,7 +502,9 @@ def test_deleted_explicit_selection_only_falls_back_for_cron(catalog_state, cron
 
 def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     catalog_state["models"]["groups"] = [{
         "model_group_id": "mgp_a", "routes": [{"route_id": "current", "model_id": "mdl_a"}],
@@ -465,7 +522,9 @@ def test_deleted_session_route_uses_current_default(catalog_state, monkeypatch):
 
 def test_session_then_spec_then_default_group_priority(catalog_state, monkeypatch):
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
 
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._session_instance_agent_definition = {"model_selection": {"type": "model", "id": "mdl_b"}}

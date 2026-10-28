@@ -44,6 +44,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler
+import portalocker
 from ruamel.yaml import YAML
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
@@ -903,22 +904,21 @@ def ensure_config_migrated_from_template(
     """将模板新增的配置项合并进用户 config.yaml（保留用户已有值）。
 
     AgentOS 配置由部署模板管理，跳过包内默认模板的结构同步。
-    版本号短路：用户 config.config_version == 程序 VERSION 时跳过迁移；
-    不一致时迁移，迁移成功后由 migrate_config_from_template 把 config_version 写回程序版本。
+    每次启动检查模板新增项；迁移成功后由 migrate_config_from_template
+    把 config_version 写回应用版本与打包日期。版本号相同也不能证明模板内容未变化。
 
-    合并为纯增量操作：只补齐模板新增项，不会删除用户 config.yaml 中
+    合并只补齐模板新增项，不会删除用户 config.yaml 中
     模板里没有的配置项（模板是示例文档而非 schema，其中本就包含留给
     用户填写的开放式配置节）。因此本函数可以每次启动安全调用。
 
-    Merges newly added template keys into the user's config.yaml. The merge is
-    purely additive: keys the operator added that the template does not contain
-    are preserved, so this is safe to call on every start.
+    Merges newly added template keys. Existing values and operator-added keys
+    are preserved.
     """
     if is_agentos_runtime():
         return False
 
-    from jiuwenswarm.common.config import migrate_config_from_template, load_yaml_round_trip
-    from jiuwenswarm.common._build_config import VERSION
+    from jiuwenswarm.common.config import migrate_config_from_template
+    from jiuwenswarm.common.version import get_runtime_version_label
 
     root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
     config_path = root / "config" / "config.yaml"
@@ -929,27 +929,16 @@ def ensure_config_migrated_from_template(
         logger.warning(f"跳过配置迁移: {e}")
         return False
 
-    # 版本号短路：已同步则跳过（不跑 _deep_merge、不读模板内容）
-    # config 不存在时交由 migrate_config_from_template 内部 exists() 优雅处理，不在此抛 FileNotFoundError
-    if not config_path.exists():
-        return migrate_config_from_template(template_path, config_path)
-
-    user_data = load_yaml_round_trip(config_path)
-    if isinstance(user_data, dict) and user_data.get("config_version") == VERSION:
-        logger.debug(f"config 版本 {VERSION} 一致，跳过迁移: {config_path}")
+    # The migration skips a missing config file and writes only on change.
+    try:
+        migrated = migrate_config_from_template(template_path, config_path)
+    except (TimeoutError, portalocker.exceptions.LockException) as exc:
+        logger.warning("跳过配置迁移，获取配置写锁失败: %s", exc)
+        return False
+    if not migrated:
         return False
 
-    if isinstance(user_data, dict) and user_data.get("config_version"):
-        logger.info(
-            f"config 版本 {user_data.get('config_version')} != 程序 {VERSION}，开始迁移"
-        )
-    else:
-        logger.info(f"config 无版本号(未迁移)，开始迁移到 {VERSION}")
-
-    if not migrate_config_from_template(template_path, config_path):
-        return False
-
-    logger.info(f"已从模板合并新增配置项: {config_path} (config_version -> {VERSION})")
+    logger.info(f"已同步配置模板: {config_path} (config_version = {get_runtime_version_label()})")
     return True
 
 
@@ -1092,6 +1081,7 @@ def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
     workspace_dir: Optional[Path] = None,
+    migrate_config: bool = True,
 ) -> CopyDiffResult:
     package_root = _find_package_root()
     if not package_root:
@@ -1284,7 +1274,8 @@ def prepare_workspace(
 
     from jiuwenswarm.common.config import migrate_config_from_template, set_preferred_language_in_config_file
 
-    migrate_config_from_template(config_yaml_src, config_yaml_dest)
+    if migrate_config:
+        migrate_config_from_template(config_yaml_src, config_yaml_dest)
     # Runtime MCP repairs must leave an existing AgentOS deployment config intact.
     # Fresh initialization and an explicit language choice can still set the language.
     if config_initialized or preferred_language is not None or not is_agentos_runtime():
@@ -1567,7 +1558,7 @@ def prepare_runtime_workspace(
         )
     )
     if workspace_preparation_needed:
-        prepare_workspace(overwrite=False, workspace_dir=workspace_dir)
+        prepare_workspace(overwrite=False, workspace_dir=workspace_dir, migrate_config=False)
 
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)
@@ -2390,6 +2381,8 @@ def resolve_git_branch(project_dir: str | None) -> str:
                 [git_bin, "rev-parse", "--abbrev-ref", "HEAD"],
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=5,
                 cwd=project_dir,
             )
@@ -2680,21 +2673,36 @@ def _sanitize_log_text(text: str) -> str:
     serialized JSON corrupts them. Plain text retains the existing redaction.
     """
     decoder = json.JSONDecoder()
-    # Logger prefixes precede a JSON object/array. A bounded scan also handles
-    # embedded JSON in messages without quadratic work on arbitrary page text.
-    for match in list(re.finditer(r'[\{\[]', text))[:32]:
+    start_pattern = re.compile(r'[\{\[]')
+    chunks: list[str] = []
+    copy_from = 0
+    search_from = 0
+    candidates = 0
+    # Limit each unconsumed segment to 32 candidates, resetting after success.
+    # Scan the original text iteratively so shallow fragments do not grow the
+    # call stack or repeatedly scan and copy the remaining suffix.
+    while candidates < 32:
+        match = start_pattern.search(text, search_from)
+        if match is None:
+            break
+        start = match.start()
+        search_from = start + 1
+        candidates += 1
         try:
-            value, end = decoder.raw_decode(text, match.start())
+            value, end = decoder.raw_decode(text, start)
         except (ValueError, RecursionError):
             continue
         if not isinstance(value, (dict, list)):
             continue
-        return (
-            _sanitize_plain_log_text(text[:match.start()])
-            + json.dumps(_sanitize_log_value(value), ensure_ascii=False, separators=(",", ":"))
-            + _sanitize_log_text(text[end:])
+        chunks.append(_sanitize_plain_log_text(text[copy_from:start]))
+        chunks.append(
+            json.dumps(_sanitize_log_value(value), ensure_ascii=False, separators=(",", ":"))
         )
-    return _sanitize_plain_log_text(text)
+        copy_from = end
+        search_from = end
+        candidates = 0
+    chunks.append(_sanitize_plain_log_text(text[copy_from:]))
+    return "".join(chunks)
 
 
 _SAFE_AUTHORIZATION_OUTCOMES = ("allow", "deny", "block", "cancel")
@@ -2990,6 +2998,15 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     for handler in root.handlers[:]:
         handler.close()
         root.removeHandler(handler)
+
+    # M0-c：gateway 升为顶层包后，其模块 logger（``gateway.*``）不再位于
+    # ``jiuwenswarm`` 命名空间之下——std logging 无 reparent 机制，显式把
+    # ``gateway`` logger 挂回 ``jiuwenswarm`` 树，保持 gateway.log / 控制台
+    # 路由不变（否则 gateway 日志全部丢失）。
+    gateway_logger = logging.getLogger("gateway")
+    gateway_logger.setLevel(logging.NOTSET)
+    gateway_logger.propagate = True
+    gateway_logger.parent = root
 
     formatter = logging.Formatter(
         fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",

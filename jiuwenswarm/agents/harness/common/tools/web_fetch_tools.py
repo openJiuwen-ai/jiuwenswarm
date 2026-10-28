@@ -124,7 +124,7 @@ def _apply_free_search_proxy(url: str, kwargs: dict[str, object]) -> bool:
     return True
 
 
-def _decode_response_text(response: requests.Response) -> str:
+def decode_response_text(response: requests.Response) -> str:
     raw = response.content or b""
     if not raw:
         return ""
@@ -189,7 +189,7 @@ def _clip_text(value: str, max_chars: int) -> str:
     return f"{value[:max_chars]}\n...[truncated]"
 
 
-def _strip_tags(value: str) -> str:
+def strip_tags(value: str) -> str:
     value = re.sub(r"<[^>]+>", " ", value)
     return unescape(re.sub(r"\s+", " ", value)).strip()
 
@@ -221,9 +221,22 @@ def _check_fetch_url(url: str) -> None:
         raise ValueError(reason)
 
 
-def _fetch_response(url: str, timeout_seconds: int, *, public_https: bool) -> requests.Response:
+def fetch_response(
+    url: str,
+    timeout_seconds: int,
+    *,
+    public_https: bool,
+    allow_redirects: bool = True,
+) -> requests.Response:
     if not public_https:
-        return _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+        if allow_redirects:
+            # Keep the legacy call shape: requests follows redirects by default, and existing
+            # callers and tests treat an absent argument as that default.
+            return _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+        return _http_get(
+            url, headers=_REQUEST_HEADERS, timeout=timeout_seconds,
+            allow_redirects=False,
+        )
     # URL eligibility only: no DNS, peer or firewall policy. Keep requests' limit.
     for _ in range(requests.models.DEFAULT_REDIRECT_LIMIT + 1):
         _check_fetch_url(url)
@@ -243,34 +256,34 @@ def _fetch_via_jina_reader_sync(
     url: str, timeout_seconds: int, *, public_https: bool = False,
 ) -> dict[str, str | int]:
     reader_url = f"https://r.jina.ai/{url}"
-    response = _fetch_response(reader_url, timeout_seconds, public_https=public_https)
+    response = fetch_response(reader_url, timeout_seconds, public_https=public_https)
     response.raise_for_status()
     return {
         "url": url,
         "status_code": response.status_code,
         "title": "",
-        "content": _decode_response_text(response).strip(),
+        "content": decode_response_text(response).strip(),
     }
 
 
 def _fetch_webpage_sync(
     url: str, timeout_seconds: int, *, public_https: bool = False,
 ) -> dict[str, str | int]:
-    response = _fetch_response(url, timeout_seconds, public_https=public_https)
+    response = fetch_response(url, timeout_seconds, public_https=public_https)
     if response.status_code in {401, 403, 429}:
         response.close()
         return _fetch_via_jina_reader_sync(url, timeout_seconds, public_https=public_https)
     response.raise_for_status()
 
-    text = _decode_response_text(response)
+    text = decode_response_text(response)
     content_type = response.headers.get("Content-Type", "")
     title_match = re.search(r"<title[^>]*>(.*?)</title>", text, flags=re.IGNORECASE | re.DOTALL)
-    title = _strip_tags(title_match.group(1)) if title_match else ""
+    title = strip_tags(title_match.group(1)) if title_match else ""
 
     if "html" in content_type.lower():
         text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
         text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-        text = _strip_tags(text)
+        text = strip_tags(text)
     else:
         text = re.sub(r"\s+", " ", text).strip()
 

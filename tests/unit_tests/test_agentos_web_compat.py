@@ -5,18 +5,18 @@ import json
 import unittest
 from unittest.mock import patch
 
+from gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
+from gateway.common.mode_matrix import NEW_CANONICAL_MODE_RESOLUTION
 from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
-from jiuwenswarm.common.mode_matrix import NEW_CANONICAL_MODE_RESOLUTION
-from jiuwenswarm.gateway.channel_manager.web.agentos_compat import project_agentos_web_frame
 
 
 class AgentOSWebCompatibilityTest(unittest.TestCase):
     def test_web_send_projects_only_for_agentos_router(self):
-        from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
-        from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+        from gateway.channel_manager.web.web_connect import WebChannel
+        from gateway.routing.base_ws_channel import BaseWsChannel
 
         router_type = type("AgentOSRouterClient", (), {
-            "__module__": "jiuwenswarm.extensions.agentos.agentos_router.router_client",
+            "__module__": "gateway.extensions.agentos.agentos_router.router_client",
         })
         frame = {"type": "res", "payload": {"sessions": [
             {"session_id": "s", "mode": "team.code.normal", "work_mode": "code"},

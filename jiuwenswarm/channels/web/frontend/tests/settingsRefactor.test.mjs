@@ -271,11 +271,11 @@ function translationAt(locale, key) {
   return key.split('.').reduce((value, part) => value?.[part], locale);
 }
 
-test('registry definition preserves the nine-module order and fails invalid registrations', () => {
+test('registry definition preserves the ten-module order and fails invalid registrations', () => {
   const definition = source('src/features/settings/registry/openSourceDefinition.ts');
   assert.match(
     definition,
-    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*archivedTasksModule,\s*experimentalModule/,
+    /generalModule,\s*modelsModule,\s*voiceModule,\s*agentModule,\s*browserModule,\s*channelsModule,\s*personalContextSettingsModule,\s*recommendationModule,\s*archivedTasksModule,\s*experimentalModule/,
   );
   assert.doesNotMatch(definition, /securityModule/);
   for (const removedPath of [
@@ -1134,13 +1134,17 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   assert.deepEqual(
     findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')).sort(),
     [
+      'moa_jev_enabled',
       'multi_model_collaboration_enabled',
       'symphony_evolution_enabled',
       'kv_cache_affinity_enabled',
+      'comfyui_workflow_enabled',
       'team_organization_ui_enabled',
       'team_scheduled_dispatch_enabled',
       'team_task_verification_enabled',
+      'team_member_messaging_enabled',
       'proactive_recommendation_enabled',
+      'progressive_tool_optimize',
     ].sort(),
   );
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
@@ -1148,6 +1152,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
+    'comfyui_workflow_enabled',
     'external_cli_agent_claude_cli_path',
     'external_cli_agent_claude_enabled',
     'external_cli_agent_claude_use_builtin',
@@ -1155,20 +1160,18 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'external_cli_agent_codex_enabled',
     'external_cli_agent_codex_use_builtin',
     'kv_cache_affinity_enabled',
-    'moa_jev_api_base',
-    'moa_jev_api_key',
-    'moa_jev_api_key_clear',
     'moa_jev_enabled',
-    'moa_jev_model_name',
     'moa_verifier_interval',
     'multi_model_collaboration_enabled',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
+    'progressive_tool_optimize',
     'rsi_enabled',
     'symphony_evolution_enabled',
     'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_member_messaging_enabled',
     'team_organization_ui_enabled',
     'team_scheduled_dispatch_enabled',
     'team_task_verification_enabled',
@@ -1512,11 +1515,13 @@ test('SettingRow exposes a business-agnostic subSettings slot for dependent rows
   ]);
   // Provider, model and credential are edited together with existing values prefilled.
   const jevSettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
+  const jevPanel = source('src/features/settings/modules/models/JevSettings.tsx');
+  const jevDialog = source('src/features/settings/modules/models/JevConfigDialog.tsx');
   assert.match(jevSettings, /useSettingsConfig\(\)/);
-  assert.match(jevSettings, /config=\{config\}/);
-  assert.match(jevSettings, /FormDialog/);
-  assert.match(jevSettings, /values\.provider === 'custom'/);
-  assert.match(browserDefinition, /component: 'custom', render: JevKeySettings/);
+  assert.match(jevSettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
+  assert.match(jevDialog, /FormDialog/);
+  assert.match(jevDialog, /values\.provider === 'custom'/);
+  assert.match(jevPanel, /<JevKeySettings disabled=\{disabled\}/);
   assert.match(sourceProvider, /jev_key_configured: value\?\.jev_key_configured === true/);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
     assert.match(browserDefinition, new RegExp(`\{ value: '${mode}', labelKey: 'settingsPanel\.browser\.decision`));
@@ -1988,14 +1993,15 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
 });
 
 test('Jev browser settings preserve mode, independent provider credentials and readback', () => {
-  const definition = source('src/features/settings/modules/browser/definition.ts');
+  const definition = source('src/features/settings/modules/models/JevSettings.tsx');
   const provider = source('src/features/settings/services/SettingsSourceProvider.tsx');
   const keySettings = source('src/features/settings/modules/browser/JevKeySettings.tsx');
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/browser/definition.ts')), [
     'chrome_path', 'headless', 'decision_mode',
   ]);
+  assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/models/JevSettings.tsx')), []);
   for (const mode of ['llm', 'shadow', 'hybrid']) {
-    assert.ok(definition.includes(`value: '${mode}'`));
+    assert.ok(source('src/features/settings/modules/browser/definition.ts').includes(`value: '${mode}'`));
   }
   const presets = source('src/features/settings/modules/browser/jevSettings.ts');
   for (const name of ['openrouter', 'typesafe', 'custom']) {
@@ -2007,9 +2013,12 @@ test('Jev browser settings preserve mode, independent provider credentials and r
     assert.deepEqual(buildConfigSavePayload({ [field]: '' }), { config: { [field]: '' } });
     assert.ok(presets.includes(field));
   }
-  assert.match(definition, /component: 'custom', render: JevKeySettings/);
+  assert.match(definition, /<SettingsSourceProvider source="browser"/);
+  assert.match(definition, /<JevKeySettings disabled=\{disabled\}/);
+  assert.doesNotMatch(definition, /CollaborationJevSettings/);
+  assert.match(source('src/features/settings/modules/models/definition.ts'), /id: 'jev'/);
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
-  assert.match(keySettings, /config=\{config\}/);
+  assert.match(keySettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
   assert.match(keySettings, /decision_mode: 'llm'/);
   assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
   assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);

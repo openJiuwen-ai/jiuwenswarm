@@ -12,8 +12,12 @@ from unittest.mock import Mock
 
 import pytest
 
-from jiuwenswarm.runtime import mode_catalog, model_catalog, session_catalog
-from jiuwenswarm.runtime import permission_catalog
+from jiuwenswarm.runtime import (
+    mode_catalog,
+    model_catalog,
+    permission_catalog,
+    session_catalog,
+)
 from jiuwenswarm.runtime.permission_catalog import (
     PermissionCatalogError,
     PermissionLayerSnapshot,
@@ -226,7 +230,21 @@ def test_catalogs_have_no_transport_dependencies(catalog_module: object) -> None
     assert imported_names.isdisjoint({"AgentRequest", "AgentResponse", "ReqMethod"})
     lowered_source = source.lower()
     assert "agent_ws_server" not in lowered_source
-    assert "jiuwenswarm.gateway" not in lowered_source
+    # gateway.common 是无状态纯组件的唯一真源，目录允许引用；其余 gateway 子包禁止。
+    gateway_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    } | {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    assert all(
+        not module.startswith("gateway") or module.startswith("gateway.common")
+        for module in gateway_modules
+    )
     assert "websocket" not in lowered_source
     assert "wire codec" not in lowered_source
 

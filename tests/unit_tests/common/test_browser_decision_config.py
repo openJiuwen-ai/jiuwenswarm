@@ -13,7 +13,7 @@ from openjiuwen.harness.tools.browser_move.playwright_runtime.config import (
     RuntimeSettings,
 )
 
-from jiuwenswarm.agents.harness.common.browser_config import (
+from jiuwenswarm.common.browser_config import (
     apply_browser_decision_config,
     browser_decision_state,
     browser_decision_updates,
@@ -99,7 +99,7 @@ def test_disabling_invalid_custom_endpoint_remains_possible():
 @pytest.mark.parametrize("mode", ["LLM", " llm ", "typo", "HYBRID", "", None, 1, ["hybrid"]])
 def test_unrecognized_mode_matches_llm_settings_view(settings, mode, monkeypatch):
     warning = Mock()
-    monkeypatch.setattr("jiuwenswarm.agents.harness.common.browser_config.logger.warning", warning)
+    monkeypatch.setattr("jiuwenswarm.common.browser_config.logger.warning", warning)
     config = {"browser": {"decision": {"mode": mode}}}
     spec = SimpleNamespace(factory_kwargs={"settings": settings})
     assert browser_decision_state(config)["decision_mode"] == "llm"

@@ -11,15 +11,35 @@ from types import SimpleNamespace
 
 import pytest
 
-
 RUNTIME_DIR = Path(__file__).parents[3] / "jiuwenswarm" / "runtime"
 PROJECT_ROOT = Path(__file__).parents[3]
+# 无状态共享件以 gateway 为唯一真源，runtime 允许引用；其余 gateway 子包属传输层。
+# 扩展治理层 registry/manager/loader 同为单份实现（进程内单例，双份会状态分裂）。
+ALLOWED_IMPORT_PREFIXES = (
+    "gateway.common",
+    "gateway.extensions.registry",
+    "gateway.extensions.manager",
+    "gateway.extensions.loader",
+    "gateway.extensions.sdk",
+    "gateway.extensions.types",
+    "gateway.extensions.callback_compat",
+)
+ALLOWED_IMPORT_MODULES = ("gateway", "gateway.extensions")
 FORBIDDEN_IMPORT_PREFIXES = (
-    "jiuwenswarm.gateway",
+    "gateway",
     "jiuwenswarm.server.agent_ws_server",
     "websockets",
 )
 FORBIDDEN_RUNTIME_TYPES = {"CliAgentPool", "CoreAgentBackend"}
+
+
+def _is_forbidden_import(module: str) -> bool:
+    if module in ALLOWED_IMPORT_MODULES or any(
+        module == allowed or module.startswith(allowed + ".")
+        for allowed in ALLOWED_IMPORT_PREFIXES
+    ):
+        return False
+    return module.startswith(FORBIDDEN_IMPORT_PREFIXES)
 
 
 def _runtime_sources() -> list[Path]:
@@ -69,7 +89,7 @@ def test_runtime_public_api_has_no_transport_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 imported = [node.module]
             for module in imported:
-                if module.startswith(FORBIDDEN_IMPORT_PREFIXES):
+                if _is_forbidden_import(module):
                     violations.append(f"{source.name}:{node.lineno}: {module}")
 
     assert violations == []
@@ -119,7 +139,7 @@ def test_runtime_execution_dependencies_have_no_transport_imports() -> None:
             elif isinstance(node, ast.ImportFrom) and node.module:
                 modules = [node.module]
             for module in modules:
-                if module.startswith(FORBIDDEN_IMPORT_PREFIXES) or module.startswith(
+                if _is_forbidden_import(module) or module.startswith(
                     "jiuwenswarm.server.gateway_push"
                 ):
                     violations.append(f"{source}:{node.lineno}: {module}")
@@ -132,14 +152,32 @@ import asyncio
 import sys
 from jiuwenswarm.runtime import AgentRuntime
 
+ALLOWED = (
+    'gateway',
+    'gateway.extensions',
+    'gateway.common',
+    'gateway.extensions.registry',
+    'gateway.extensions.manager',
+    'gateway.extensions.loader',
+    'gateway.extensions.sdk',
+    'gateway.extensions.types',
+    'gateway.extensions.callback_compat',
+)
+
+def _is_transport(name):
+    if name.startswith('jiuwenswarm.server.agent_ws_server'):
+        return True
+    if not name.startswith('gateway.'):
+        return False
+    return not any(name == a or name.startswith(a + '.') for a in ALLOWED)
+
 async def main():
     runtime = AgentRuntime()
     try:
         await runtime.start()
         names = sorted(
             name for name in sys.modules
-            if name.startswith('jiuwenswarm.gateway')
-            or name.startswith('jiuwenswarm.server.agent_ws_server')
+            if _is_transport(name)
         )
         print('TRANSPORT_MODULES=' + repr(names))
     finally:

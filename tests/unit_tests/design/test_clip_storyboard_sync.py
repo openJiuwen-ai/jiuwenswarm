@@ -221,6 +221,15 @@ async def test_storyboard_handler_writes_only_the_table(tmp_path, monkeypatch):
     assert parse_storyboard_shots(text)[0]["character_action"] == "Door opens"
 
 
+@pytest.mark.asyncio
+async def test_storyboard_handler_rejects_graph_not_built_by_director():
+    node = {"id": "n_sb", "type": "text", "config": {"role": "storyboard", "prompt": "单镜头分镜"}}
+    graph = {"nodes": [node], "edges": [], "metadata": {}}
+    ctx = NodeExecutionContext(graph=graph, run_id="r", node_id="n_sb", run={})
+    with pytest.raises(RuntimeError, match="not built by the Director chain; rebuild the graph"):
+        await StoryboardNodeHandler().execute(node, ctx)
+
+
 def test_clip_prompt_leads_with_storyboard_beat(tmp_path):
     graph = _graph_with_storyboard(tmp_path, {"clip_action": "ignored stale"})
     prompt = build_clip_prompt(graph, graph["nodes"][1], _ctx(graph))

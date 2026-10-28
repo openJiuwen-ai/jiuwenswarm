@@ -17,14 +17,18 @@ import pytest
 from aiohttp import web
 from yarl import URL
 
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthResult
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.protocol.web_proxy import (
+    web_proxy_listen,
+)
+from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+    _TEST_NET_1,
     WEB_PROXY_COOKIE_NAME,
     WEB_PROXY_USER_COOKIE,
     WebProxyChannelConfig,
-    new_web_proxy_client_session,
     _append_tail,
+    _ensure_http_proxy_session,
+    _ensure_proxy_session,
     _filter_response_headers,
     _final_response_headers,
     _forward_headers,
@@ -33,18 +37,18 @@ from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect im
     _merge_request_query,
     _retry_after_seconds,
     _sandbox_creating_response,
-    _TEST_NET_1,
-    _ensure_http_proxy_session,
-    _ensure_proxy_session,
+    new_web_proxy_client_session,
 )
-from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
+from gateway.channel_manager.protocol.web_proxy.web_proxy_listen import (
     WebPortManager,
     _manager_for,
+    _request_target_summary,
     build_agent_port_app,
     handle_3rdagent_web,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.extensions.auth.credential_authenticator import AuthResult
 
 
 def _free_port() -> int:
@@ -149,6 +153,32 @@ def test_merge_request_query_noop_without_business_query() -> None:
     url = "http://yr:8888/serverless/v1/http?instance=x&port=3080"
     assert _merge_request_query(url, "") == url
     assert _merge_request_query(url, "token=secret&port=1") == url
+
+
+def test_request_target_summary_keeps_bundle_payload_out_of_logs() -> None:
+    tail = "__agentbox_plugins_/" + "A" * 4000
+    upstream = (
+        f"http://yr:8888/serverless/v1/http/{tail}"
+        "?instance=x&port=3080&sessionId=s1"
+    )
+    kind, path_length, query_length, digest = _request_target_summary(
+        tail, upstream
+    )
+    assert kind == "plugin_bundle"
+    assert path_length == len(tail)
+    assert query_length == len("instance=x&port=3080&sessionId=s1")
+    assert len(digest) == 12
+    assert tail not in digest
+
+
+def test_request_target_summary_regular_path() -> None:
+    kind, path_length, query_length, digest = _request_target_summary(
+        "api/foo", "http://yr:8888/serverless/v1/http/api/foo?instance=x"
+    )
+    assert kind == "regular"
+    assert path_length == len("api/foo")
+    assert query_length == len("instance=x")
+    assert len(digest) == 12
 
 
 def test_forward_headers_sets_non_loopback_xff_and_strips_iam(monkeypatch) -> None:
@@ -258,7 +288,7 @@ class _FakeIamClient:
         channel: str = "file-api",
         allow_query_token: bool = True,
     ) -> AuthResult:
-        from jiuwenswarm.extensions.agentos.auth.common import (
+        from gateway.extensions.auth.common import (
             extract_token_from_path_and_headers,
         )
 
@@ -426,6 +456,10 @@ async def test_http_proxy_session_force_closes_and_stays_off_ws_session() -> Non
         assert http_session is not ws_session
         assert http_session.connector.force_close is True
         assert ws_session.connector.force_close is False
+        assert http_session.timeout.total is None
+        assert ws_session.timeout.total is None
+        assert http_session.timeout.connect == 30
+        assert http_session.timeout.sock_connect == 30
     finally:
         await http_sessions[0].close()
         await ws_session.close()
@@ -481,6 +515,93 @@ async def test_port_http_forwards_root_and_assets_without_rewrite() -> None:
         http_session = ctx.channel.web_proxy_http_session
         assert http_session is not None and http_session.connector.force_close is True
         assert ctx.channel.web_proxy_session is None
+
+
+@pytest.mark.asyncio
+async def test_http_proxy_logs_bundle_summary_not_full_path(monkeypatch) -> None:
+    tail = "__agentbox_plugins_/" + "A" * 4000
+
+    async def upstream_handler(request: web.Request) -> web.Response:
+        return web.Response(text="ok")
+
+    messages: list[str] = []
+
+    def _capture_info(message, *args, **kwargs) -> None:
+        messages.append(message % args if args else message)
+
+    monkeypatch.setattr(web_proxy_listen.logger, "info", _capture_info)
+    async with _proxied_upstream(upstream_handler) as ctx:
+        resp = await ctx.client.get(f"/{tail}?user_id=u1")
+        assert resp.status_code == 200
+
+    assert messages
+    log_text = "\n".join(messages)
+    assert tail not in log_text
+    assert "target_kind=plugin_bundle" in log_text
+    assert f"path_len={len(tail)}" in log_text
+    assert "target_digest=" in log_text
+
+
+@pytest.mark.asyncio
+async def test_port_http_returns_upstream_redirect_without_following() -> None:
+    upstream_paths: list[str] = []
+
+    async def upstream_handler(request: web.Request) -> web.Response:
+        upstream_paths.append(request.path)
+        return web.Response(status=302, headers={"Location": "/login"})
+
+    async with _proxied_upstream(upstream_handler) as ctx:
+        resp = await ctx.client.get("/old?user_id=u1")
+        assert resp.status_code == 302
+        assert resp.headers["location"] == "/login"
+
+    assert upstream_paths == ["/old"]
+
+
+@pytest.mark.asyncio
+async def test_http_proxy_upstream_header_timeout_releases(monkeypatch) -> None:
+    async def upstream_handler(request: web.Request) -> web.Response:
+        await asyncio.sleep(2)
+        return web.Response(text="late")
+
+    monkeypatch.setattr(
+        web_proxy_listen, "_UPSTREAM_HEADER_TIMEOUT_SECONDS", 0.1
+    )
+    async with _proxied_upstream(
+        upstream_handler, with_releaser=True
+    ) as ctx:
+        resp = await ctx.client.get("/?user_id=u1")
+        assert resp.status_code == 504
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not ctx.releases and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert ("u1", "openclaw") in ctx.releases
+
+
+@pytest.mark.asyncio
+async def test_http_proxy_upstream_body_timeout_releases(monkeypatch) -> None:
+    async def upstream_handler(request: web.Request) -> web.StreamResponse:
+        response = web.StreamResponse(headers={"Content-Type": "text/plain"})
+        await response.prepare(request)
+        await asyncio.sleep(2)
+        try:
+            await response.write(b"late")
+        except Exception:
+            pass
+        return response
+
+    monkeypatch.setattr(
+        web_proxy_listen, "_UPSTREAM_BODY_TIMEOUT_SECONDS", 0.1
+    )
+    async with _proxied_upstream(
+        upstream_handler, with_releaser=True
+    ) as ctx:
+        resp = await ctx.client.get("/?user_id=u1")
+        assert resp.status_code == 504
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not ctx.releases and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert ("u1", "openclaw") in ctx.releases
 
 
 @pytest.mark.asyncio
@@ -873,6 +994,98 @@ async def test_port_ws_proxy_pumps_text() -> None:
         while not releases and asyncio.get_running_loop().time() < deadline:
             await asyncio.sleep(0.01)
         assert releases == [("u1", "openclaw")]
+    finally:
+        await _close_manager(channel)
+        await runner.cleanup()
+
+
+@pytest.mark.asyncio
+async def test_ws_proxy_logs_bundle_summary_not_full_path(monkeypatch) -> None:
+    tail = "__agentbox_plugins_/" + "A" * 4000
+
+    async def upstream_ws(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse()
+        await ws.prepare(request)
+        async for _ in ws:
+            pass
+        return ws
+
+    runner, upstream_port = await _upstream(upstream_ws)
+
+    async def resolver(user_id: str, agent_type: str, protocol: str) -> str | None:
+        assert user_id == "u1"
+        assert agent_type == "openclaw"
+        assert protocol in {"http", "ws"}
+        return f"http://127.0.0.1:{upstream_port}"
+
+    messages: list[str] = []
+
+    def _capture_info(message, *args, **kwargs) -> None:
+        messages.append(message % args if args else message)
+
+    monkeypatch.setattr(web_proxy_listen.logger, "info", _capture_info)
+    base = _free_range(1)
+    channel = _proxy_channel(resolver=resolver, auth_enabled=False)
+    sent = _capture_send(channel)
+    try:
+        await _listen(channel, {"openclaw": base})
+        await handle_3rdagent_web(
+            channel, _FakeWs("/ws"), "1", {"agent_type": "openclaw"}, user_id="u1"
+        )
+        port = sent[-1]["payload"]["port"]
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(
+                f"http://127.0.0.1:{port}/{tail}?user_id=u1"
+            ):
+                pass
+    finally:
+        await _close_manager(channel)
+        await runner.cleanup()
+
+    log_text = "\n".join(messages)
+    assert "[WebProxy] WS tunnel" in log_text
+    assert tail not in log_text
+    assert "target_kind=plugin_bundle" in log_text
+    assert f"path_len={len(tail)}" in log_text
+    assert "target_digest=" in log_text
+
+
+@pytest.mark.asyncio
+async def test_ws_proxy_upstream_handshake_timeout_releases(monkeypatch) -> None:
+    async def upstream_handler(request: web.Request) -> web.Response:
+        await asyncio.sleep(2)
+        return web.Response(text="not a websocket")
+
+    runner, upstream_port = await _upstream(upstream_handler)
+
+    async def resolver(user_id: str, agent_type: str, protocol: str) -> str | None:
+        assert user_id == "u1"
+        assert agent_type == "openclaw"
+        assert protocol in {"http", "ws"}
+        return f"http://127.0.0.1:{upstream_port}"
+
+    releases: list[tuple[str, str]] = []
+
+    async def releaser(user_id: str, agent_type: str) -> None:
+        releases.append((user_id, agent_type))
+
+    base = _free_range(1)
+    channel = _proxy_channel(resolver=resolver, releaser=releaser, auth_enabled=False)
+    sent = _capture_send(channel)
+    monkeypatch.setattr(web_proxy_listen, "_WS_HANDSHAKE_TIMEOUT_SECONDS", 0.1)
+    try:
+        await _listen(channel, {"openclaw": base})
+        await handle_3rdagent_web(
+            channel, _FakeWs("/ws"), "1", {"agent_type": "openclaw"}, user_id="u1"
+        )
+        port = sent[-1]["payload"]["port"]
+        async with aiohttp.ClientSession() as session:
+            with pytest.raises(aiohttp.ClientError):
+                await session.ws_connect(f"http://127.0.0.1:{port}/ws?user_id=u1")
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not releases and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
+        assert ("u1", "openclaw") in releases
     finally:
         await _close_manager(channel)
         await runner.cleanup()

@@ -308,17 +308,45 @@
     padding: 8px 10px;
     border-radius: var(--radius);
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     gap: 10px;
     border: 1px solid transparent;
     background: var(--bg3);
     transition: border-color 0.1s;
+    min-width: 0;
+    box-sizing: border-box;
   }
   .skill-item:hover { border-color: var(--border); }
-  .skill-info { flex: 1; min-width: 0; }
-  .skill-name { font-size: 12px; font-weight: 600; color: var(--text); }
-  .skill-desc { font-size: 11px; color: var(--text-muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .skill-trigger { font-size: 10px; color: var(--accent); font-family: monospace; margin-top: 2px; }
+  .skill-info { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+  .skill-name {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
+  .skill-desc {
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 2px;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .skill-trigger {
+    font-size: 10px;
+    color: var(--accent);
+    font-family: monospace;
+    margin-top: 2px;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+  }
   .skill-toggle-btn {
     font-size: 10px;
     padding: 3px 8px;
@@ -921,6 +949,13 @@
     flex-wrap: wrap;
   }
   #attachment-preview.has-items { display: flex; }
+  #attachment-error {
+    display: none;
+    padding: 0 0 6px 0;
+    font-size: 11px;
+    color: var(--error-text);
+  }
+  #attachment-error.visible { display: block; }
   .attachment-thumb {
     position: relative;
     width: 48px;
@@ -1128,7 +1163,7 @@
     box-shadow: 0 4px 12px rgba(0,0,0,0.35);
   }
   #skill-popup.hidden { display: none; }
-  .skill-item {
+  #skill-popup .skill-item {
     padding: 5px 10px;
     cursor: pointer;
     font-size: 12px;
@@ -1137,9 +1172,9 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  .skill-item:hover, .skill-item.active { background: var(--accent); color: #fff; }
-  .skill-item .sk-desc { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
-  .skill-item.active .sk-desc { color: rgba(255,255,255,0.7); }
+  #skill-popup .skill-item:hover, #skill-popup .skill-item.active { background: var(--accent); color: #fff; }
+  #skill-popup .skill-item .sk-desc { color: var(--text-muted); font-size: 11px; margin-left: 6px; }
+  #skill-popup .skill-item.active .sk-desc { color: rgba(255,255,255,0.7); }
   /* ── Preset prompt picker popup (!) ── */
   #prompt-popup {
     position: absolute;
@@ -1384,18 +1419,26 @@
 
   /* ── Resend button on user messages ── */
   .resend-btn {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 10px;
-    padding: 0;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 2px 7px;
+    border-radius: 10px;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
     line-height: 1;
+    align-self: flex-end;
+    margin-top: 2px;
   }
-  .msg:hover .resend-btn { opacity: 0.6; }
-  .resend-btn:hover { opacity: 1 !important; color: var(--accent); }
+  .msg:hover .resend-btn { opacity: 0.95; }
+  .resend-btn:hover {
+    opacity: 1 !important;
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--bg3);
+  }
 
   /* ── Session title inline edit ── */
   .session-title-input {
@@ -1609,6 +1652,7 @@
 
 <div id="input-area">
   <div id="attachment-preview"></div>
+  <div id="attachment-error" role="status" aria-live="polite"></div>
   <div id="input-row">
     <div id="mention-popup" class="hidden"></div>
     <div id="skill-popup" class="hidden"></div>
@@ -1624,7 +1668,7 @@
   <input type="file" id="image-input" accept="image/png,image/jpeg,image/webp,image/gif" multiple style="display:none">
   <div id="input-meta">
     <!-- Attach button — leftmost -->
-    <button id="attach-btn" disabled title="Add Image" onclick="document.getElementById('image-input').click()">+</button>
+    <button id="attach-btn" disabled title="Images: up to 10 MB each" onclick="document.getElementById('image-input').click()">+</button>
     <!-- Mode selector -->
     <div id="mode-wrap">
       <button id="mode-btn" onclick="toggleModeDropdown()" title="Coding mode — choose how the agent works">
@@ -1692,6 +1736,7 @@ let state = {
   skills: [],
   showDebug: false,
   streaming: false,
+  stopRequested: false, // set when the user clicks ■; final turn is classified as stopped
   models: [],
   activeModel: null,
   turns: [],
@@ -1793,6 +1838,9 @@ function handleHostMessage(msg) {
     case 'jiuwen_event':
       handleJiuwenEvent(msg.event);
       break;
+    case 'team_message':
+      appendTeamLeaderMessage(msg.content);
+      break;
     case 'error':
       showError(msg.message);
       break;
@@ -1857,6 +1905,11 @@ function handleHostMessage(msg) {
     case 'model_changed':
       state.activeModel = msg.model;
       if (msg.models) { state.models = msg.models; }
+      updateModelDisplay(state.models, state.activeModel);
+      break;
+    case 'models_updated':
+      if (msg.models) { state.models = msg.models; }
+      if (msg.activeModel) { state.activeModel = msg.activeModel; }
       updateModelDisplay(state.models, state.activeModel);
       break;
     case 'memory':
@@ -1975,7 +2028,11 @@ function updateModelDisplay(models, activeModel) {
 function toggleModelDropdown() {
   var dd = document.getElementById('model-dropdown');
   if (!dd) return;
+  var opening = !dd.classList.contains('visible');
   dd.classList.toggle('visible');
+  // Models are configured outside the IDE. Re-fetch when the picker opens so a
+  // session created before the model was configured does not keep the placeholder.
+  if (opening) send({ type: 'refresh_models' });
 }
 
 function closeModelDropdown() {
@@ -1992,11 +2049,11 @@ function handleImageInput(files) {
   const maxSize = 10 * 1024 * 1024; // 10 MB
   Array.from(files).forEach(function(file) {
     if (!validTypes.includes(file.type)) {
-      console.warn('[webview] Unsupported image type:', file.type);
+      showAttachmentError('Unsupported image type: ' + (file.type || file.name) + '. Use PNG, JPEG, WebP or GIF.');
       return;
     }
     if (file.size > maxSize) {
-      console.warn('[webview] Image too large:', file.name, file.size);
+      showAttachmentError('"' + file.name + '" is ' + fmtBytes(file.size) + ', above the 10 MB image limit.');
       return;
     }
     // Create a blob URL immediately for preview (avoids embedding large base64 in DOM)
@@ -2013,6 +2070,24 @@ function handleImageInput(files) {
   });
 }
 
+var attachmentErrorTimer = null;
+
+function showAttachmentError(message) {
+  var el = document.getElementById('attachment-error');
+  if (!el) {
+    console.warn('[webview] ' + message);
+    return;
+  }
+  el.textContent = message;
+  el.classList.add('visible');
+  if (attachmentErrorTimer) clearTimeout(attachmentErrorTimer);
+  attachmentErrorTimer = setTimeout(function() {
+    el.classList.remove('visible');
+    el.textContent = '';
+    attachmentErrorTimer = null;
+  }, 5000);
+}
+
 function readFileAsBase64(file, callback) {
   var reader = new FileReader();
   reader.onload = function(e) {
@@ -2021,7 +2096,7 @@ function readFileAsBase64(file, callback) {
     callback(base64);
   };
   reader.onerror = function() {
-    console.warn('[webview] Failed to read file:', file.name);
+    showAttachmentError('Failed to read image: ' + file.name);
   };
   reader.readAsDataURL(file);
 }
@@ -2299,13 +2374,28 @@ function updateSkills(skills) {
         (skill.trigger    ? '<div class="skill-trigger">' + escapeHtml(skill.trigger)    + '</div>' : '') +
       '</div>' +
       '<button class="skill-toggle-btn' + (enabled ? ' enabled' : '') + '" ' +
-        'onclick="toggleSkill(' + JSON.stringify(skill.skill_id) + ',' + !enabled + ')" ' +
+        'data-skill-key="' + escapeHtml(skillKey(skill)) + '" ' +
+        'data-enable="' + (!enabled ? '1' : '0') + '" ' +
         'title="' + (enabled ? 'Disable' : 'Enable') + '">' +
         (enabled ? 'ON' : 'OFF') +
       '</button>';
     el.appendChild(item);
   });
 }
+
+// Delegate the toggle click instead of embedding skill names in inline JS.
+// Names can contain quotes/HTML; data attributes go through escapeHtml().
+(function initSkillToggleDelegation() {
+  var list = document.getElementById('skills-list');
+  if (!list) return;
+  list.addEventListener('click', function(e) {
+    var btn = e.target && e.target.closest ? e.target.closest('.skill-toggle-btn') : null;
+    if (!btn || !list.contains(btn)) return;
+    var key = btn.getAttribute('data-skill-key') || '';
+    if (!key) return;
+    toggleSkill(key, btn.getAttribute('data-enable') === '1');
+  });
+})();
 
 function showSkillsError(message) {
   var msg = escapeHtml(message || 'Failed to load skills');
@@ -2320,19 +2410,30 @@ function showSkillsError(message) {
     '</div>';
 }
 
+// The server's skills.toggle expects `name`; the list's skill_id may be empty
+// for local/builtin skills, so use name as the stable key.
+function skillKey(skill) {
+  return (skill && (skill.skill_id || skill.name)) || '';
+}
+
 function toggleSkill(skillId, enable) {
+  var skill = (state.skills || []).find(function(s) { return skillKey(s) === skillId; });
   // Optimistic update: reflect change immediately before server confirms
-  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
-  if (idx >= 0) {
-    state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enable });
+  if (skill) {
+    skill.enabled = enable;
     updateSkills(state.skills);
   }
-  send({ type: 'toggle_skill', skillId: skillId, enabled: enable });
+  send({
+    type: 'toggle_skill',
+    skillId: skillId,
+    name: (skill && (skill.name || skill.skill_id)) || skillId,
+    enabled: enable,
+  });
 }
 
 function onSkillToggled(skillId, enabled) {
   // Update in-memory state and re-render
-  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
+  var idx = state.skills.findIndex(function(s) { return skillKey(s) === skillId; });
   if (idx >= 0) {
     state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enabled });
     updateSkills(state.skills);
@@ -2501,20 +2602,24 @@ function startRenameSession() {
   htEl.parentNode.insertBefore(inp, htEl);
   inp.focus();
   inp.select();
-  function save() {
+  var finished = false;
+  function finish(commit) {
+    if (finished) return;
+    finished = true;
     var val = inp.value.trim();
-    if (val && val !== current) {
+    if (commit && val && val !== current) {
       state.sessionTitle = val;
       send({ type: 'rename_session', title: val });
     }
-    htEl.textContent = val || current;
+    // Escape restores the original title; Enter/click commits the edited value.
+    htEl.textContent = commit ? (val || current) : current;
     htEl.style.display = '';
     inp.remove();
   }
-  inp.addEventListener('blur', save);
+  inp.addEventListener('blur', function() { finish(true); });
   inp.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter') { e.preventDefault(); save(); }
-    if (e.key === 'Escape') { htEl.style.display = ''; inp.remove(); }
+    if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+    if (e.key === 'Escape') { e.preventDefault(); finish(false); }
   });
 }
 
@@ -2592,15 +2697,30 @@ function copyDebugLog() {
 // ─────────────────────────────────────────────
 // JiuwenSwarm event handlers
 // ─────────────────────────────────────────────
+function isTeamMode() {
+  return state.mode === 'code.team';
+}
+
 function handleJiuwenEvent(evt) {
   const et = evt.event_type;
   const rid = evt.request_id;
   const payload = evt.payload || {};
+  // In team mode the wire also carries each teammate's private stream (role
+  // "teammate") under the same (or no) request id. Only the leader's output is
+  // the user-facing answer; member activity belongs to the Swarm Map.
+  const teammateChat = isTeamMode()
+    && (payload.role === 'teammate' || (payload.member_name && payload.role !== 'leader'));
 
   if (et === 'chat.delta') {
-    appendDelta(rid, payload.text || '');
+    if (!teammateChat) appendDelta(rid, payload.text || '');
   } else if (et === 'chat.reasoning') {
-    appendThinking(rid, payload.text || '');
+    if (!teammateChat) appendThinking(rid, payload.text || '');
+  } else if (et === 'chat.processing_status_deferred') {
+    // The team runtime acknowledges the send with an empty chat.final before
+    // the leader starts producing text. Remember that this turn is deferred so
+    // finalizeTurn() does not close the assistant bubble prematurely.
+    const dpt = state.pendingTurns[rid] || getActivePendingTurn();
+    if (dpt) dpt.deferred = true;
   } else if (et === 'chat.llm_call_start') {
     showThinkingPill(rid, payload);
   } else if (et === 'chat.llm_call_end') {
@@ -2682,11 +2802,20 @@ function handleJiuwenEvent(evt) {
     renderTokenCounter(state.lastTokenTotal);
     updateTokenBar();
   } else if (et === 'chat.final') {
-    finalizeTurn(rid, payload);
+    // Team mode emits one chat.final per leader segment (delegation, progress,
+    // result), each under a rid that may not match the chat.send turn. They are
+    // milestones, not end-of-turn; the turn ends on chat.processing_status.
+    if (!teammateChat) {
+      finalizeTurn(rid, payload);
+      // The history file is created/updated by the turn; refresh so the menu's
+      // "Copy Logs Path"/"Export" items get the current path without reopening.
+      send({ type: 'list_sessions' });
+    }
   } else if (et === 'chat.processing_status' && payload.is_processing === false) {
-    // Stream ended but no chat.final was sent by gateway — release the UI
+    // Stream ended but no chat.final was sent by gateway - release the UI
     if (state.streaming) {
       finalizeTurn(rid, payload);
+      send({ type: 'list_sessions' });
     }
   } else if (et === 'history.message') {
     renderHistoryMessage(payload);
@@ -2708,6 +2837,7 @@ function handleJiuwenEvent(evt) {
 // Called when we send a message — create a user turn and an empty assistant turn
 function beginTurn(requestId, userContent) {
   const msgs = document.getElementById('messages');
+  state.stopRequested = false;
 
   // User message
   const userEl = document.createElement('div');
@@ -2748,6 +2878,8 @@ function beginTurn(requestId, userContent) {
     textContent: '',
     thinkingEl: null,
     typingEl: typingEl,
+    // Set on this turn only when the user clicks the stop button.
+    stopRequested: false,
     // metrics tracking
     startTime: Date.now(),
     firstTokenTime: null,
@@ -2779,9 +2911,35 @@ function beginTurn(requestId, userContent) {
   scrollToBottom();
 }
 
+// Leader/peer messages addressed to the user arrive as team events. Append
+// them to the live assistant turn so the transcript shows the leader's answer
+// (the WebUI does the same via teamEventUtils). Content already streamed or
+// finalised for this turn is not duplicated.
+function appendTeamLeaderMessage(text) {
+  if (!text || !String(text).trim()) return;
+  var pt = getActivePendingTurn();
+  if (!pt) return;
+  var incoming = String(text).trim();
+  if (pt.textContent && pt.textContent.indexOf(incoming) !== -1) return;
+  if (pt.typingEl) {
+    pt.typingEl.remove();
+    pt.typingEl = null;
+  }
+  var prefix = pt.textContent ? '\n\n' : '';
+  var span = document.createElement('span');
+  span.className = 'chunk-text';
+  span.textContent = prefix + incoming;
+  pt.streamEl.appendChild(span);
+  pt.textContent += prefix + incoming;
+  scrollToBottom();
+}
+
 function appendDelta(rid, text) {
   promoteThinkingPill(rid);
-  const pt = state.pendingTurns[rid];
+  let pt = state.pendingTurns[rid];
+  // Team/leader streams can arrive without the chat.send request id (the server
+  // uses its own turn rid). Map them to the live turn so the answer is visible.
+  if (!pt) pt = getActivePendingTurn();
   if (!pt) return;
   // First real content removes the typing spinner and records TTFT
   if (pt.typingEl) {
@@ -2811,7 +2969,8 @@ function appendDelta(rid, text) {
 
 function appendThinking(rid, text) {
   promoteThinkingPill(rid);
-  const pt = state.pendingTurns[rid];
+  let pt = state.pendingTurns[rid];
+  if (!pt) pt = getActivePendingTurn();
   if (!pt || !text) return;
   pt.reasonedInCall = true;
   if (!pt.firstTokenTime) {
@@ -2883,6 +3042,7 @@ function showThinkingPill(rid, payload) {
 /** First streamed token for a call: flip the pill from "Thinking…" to "Generating…". */
 function promoteThinkingPill(rid) {
   var pt = state.pendingTurns[rid];
+  if (!pt) pt = getActivePendingTurn();
   if (!pt) return;
   if (pt.thinkingPillEl && pt.thinkingPillEl.textContent !== 'Generating…') {
     pt.thinkingPillEl.textContent = 'Generating…';
@@ -3102,17 +3262,34 @@ function renderAskUserQuestion(rid, payload) {
     btn.addEventListener('click', function() {
       card.querySelectorAll('.question-btn').forEach(function(b) { b.disabled = true; });
       card.classList.add('answered');
-      sendAnswerForInterrupt(pt, rid, source, btn.dataset.value);
+      sendAnswerForInterrupt(pt, rid, source, mapInterruptAnswerValue(pt, btn.dataset.value));
     });
   });
 
   pt.streamEl.appendChild(card);
   pt.pendingQuestion = card;
+  pt.planApprovalKind = payload.plan_approval_kind || payload.planApprovalKind || null;
   scrollToBottom();
+}
+
+// The WebUI sends plan_execute / plan_skip / plan_revise for plan approval.
+// The generic ask-user card only has approve/reject options, and a plain
+// "reject" keeps the agent in plan mode instead of finishing the turn (the
+// source of the stuck stop-button state). Map the two generic values.
+function mapInterruptAnswerValue(pt, value) {
+  if (pt && pt.planApprovalKind === 'plan_approval') {
+    if (value === 'reject') return 'plan_skip';
+    if (value === 'approve') return 'plan_execute';
+  }
+  return value;
 }
 
 function sendAnswerForInterrupt(pt, rid, source, optionValue) {
   pt.questionAnswered = true;
+  // The user chose to continue this turn, so a previous stop click no longer
+  // applies; let the resumed stream finish as completed.
+  pt.stopRequested = false;
+  pt.stopped = false;
   const statusEl = pt.pendingQuestion ? pt.pendingQuestion.querySelector('.question-status') : null;
   if (statusEl) statusEl.textContent = 'Answer sent — waiting for the agent to continue…';
   send({
@@ -3465,9 +3642,58 @@ function attachIntermediateLlmResponses(events) {
   return out;
 }
 
+function displayTextFromFinalPayload(payload) {
+  var raw = payload && typeof payload.content === 'string' ? payload.content : '';
+  if (!raw) return '';
+  if (raw.indexOf('team.leader:') === 0) {
+    try {
+      var leader = JSON.parse(raw.slice('team.leader:'.length));
+      if (leader && typeof leader.content === 'string') return leader.content;
+    } catch (e) { /* fall through to raw */ }
+    return raw;
+  }
+  if (raw.indexOf('team.event:') === 0) {
+    try {
+      var parsed = JSON.parse(raw.slice('team.event:'.length));
+      var ev = parsed.event || (parsed.payload && parsed.payload.event) || parsed;
+      var from = ev && ev.from_member;
+      var to = ev && ev.to_member;
+      var type = ev && ev.type;
+      var toUser = from === 'team_leader' || (type === 'team.message.p2p' && to === 'user');
+      if (ev && typeof ev.content === 'string' && toUser) return ev.content;
+    } catch (e) { /* fall through to raw */ }
+  }
+  return raw;
+}
+
+function appendRawTurnText(pt, text) {
+  if (!text) return;
+  var lastChild = pt.streamEl.lastElementChild;
+  if (lastChild && lastChild.classList.contains('chunk-text')) {
+    lastChild.textContent += text;
+  } else {
+    var span = document.createElement('span');
+    span.className = 'chunk-text';
+    span.textContent = text;
+    pt.streamEl.appendChild(span);
+  }
+  pt.textContent += text;
+}
+
 function finalizeTurn(rid, payload) {
   hideThinkingPill(rid);
-  const pt = state.pendingTurns[rid];
+  payload = payload || {};
+  const finalPayloadText = displayTextFromFinalPayload(payload);
+  // chat.processing_status(is_processing=false) is the terminal frame for team
+  // turns; an empty chat.final right after the send is only a deferred ack.
+  const terminalStatus = payload.event_type !== 'chat.final'
+    && (payload.is_processing === false || payload.is_complete === true);
+  let pt = state.pendingTurns[rid];
+  // Team mode can emit the leader's answer under a member/leader request id.
+  // Fall back to the latest live turn so it is not left blank.
+  if (!pt && (terminalStatus || finalPayloadText.trim())) {
+    pt = getActivePendingTurn();
+  }
   if (pt) {
     if (pt.typingEl) {
       pt.typingEl.remove();
@@ -3489,6 +3715,12 @@ function finalizeTurn(rid, payload) {
       }
     });
 
+    // Team mode often delivers the leader's answer only in chat.final, without
+    // any chat.delta chunks. Render it so the turn is not left blank.
+    if (!String(pt.textContent || '').trim() && finalPayloadText.trim()) {
+      appendRawTurnText(pt, finalPayloadText);
+    }
+
     // Premature final: when an interrupt question is awaiting an answer, the server
     // emits chat.final for the original turn BEFORE the user responds. Don't finalize
     // then — the resumed stream (keyed by the question's request_id) continues this
@@ -3498,9 +3730,39 @@ function finalizeTurn(rid, payload) {
       return;
     }
 
+    // Deferred team acknowledgement: the server sends an empty chat.final right
+    // after chat.send (before the runtime starts), then streams the leader's real
+    // answer later under a different/no request id. Keep the turn alive.
+    if (pt.deferred && !terminalStatus && !payload.stopped
+        && !finalPayloadText.trim() && !String(pt.textContent || '').trim()) {
+      scrollToBottom();
+      return;
+    }
+
+    // Team turns emit several per-leader chat.final milestones; only the
+    // processing_status terminal frame ends the turn. Keep accumulating leader
+    // output in the single assistant bubble and separate segments for readability.
+    if (isTeamMode() && !terminalStatus && !payload.stopped) {
+      pt.deferred = false;
+      const incoming = finalPayloadText.trim();
+      const shown = String(pt.textContent || '');
+      if (incoming && shown.indexOf(incoming) === -1) {
+        // A leader segment that only exists in chat.final (no deltas): append it.
+        if (shown.trim() && !/\n\s*$/.test(shown)) appendRawTurnText(pt, '\n\n');
+        appendRawTurnText(pt, incoming);
+      } else if (incoming && shown.trim() && !/\n\s*$/.test(shown)) {
+        // Same segment already streamed: leave a paragraph break for the next one.
+        appendRawTurnText(pt, '\n\n');
+      }
+      scrollToBottom();
+      return;
+    }
+
     // ── Live metrics ──
     pt.hasFinal = true;
-    if (payload.stopped) pt.stopped = true;
+    // The local stop click may race the server's final; the flag makes sure the
+    // turn is still classified as stopped if the final arrives afterwards.
+    if (payload.stopped || pt.stopRequested) pt.stopped = true;
 
     // Record the final response text as a 'final' event so the trajectory
     // shows the turn's response as its own entry. Live streaming never emits a
@@ -3508,7 +3770,7 @@ function finalizeTurn(rid, payload) {
     // timeline has no response entry to display. Intermediate calls stream no
     // text deltas, so fall back to the chat.final payload content.
     const finalText = (pt.textContent ? pt.textContent.trim() : '')
-      || (payload && payload.content ? String(payload.content).trim() : '')
+      || finalPayloadText.trim()
       || '';
     if (finalText) {
       const lastE = pt.events[pt.events.length - 1];
@@ -3982,13 +4244,21 @@ inputEl.addEventListener('input', function() {
 
 sendBtn.addEventListener('click', function() {
   if (state.streaming) {
+    state.stopRequested = true;
     send({ type: 'stop' });
     // Finalize all pending turns immediately — Gateway handles backend cancellation.
-    // Without this, the UI stays stuck in streaming mode because the Gateway's
-    // interrupt_result event is not handled by the webview.
+    // A turn waiting on an interrupt would otherwise keep the early-return path in
+    // finalizeTurn and leave the UI stuck in streaming mode.
     Object.keys(state.pendingTurns).forEach(function(rid) {
+      var pt = state.pendingTurns[rid];
+      if (pt) {
+        pt.stopRequested = true;
+        pt.questionAnswered = true;
+      }
       finalizeTurn(rid, { stopped: true });
     });
+    // No live turn (e.g. it was already finalized server-side) — still release UI.
+    if (state.streaming) setStreaming(false);
   } else {
     submitMessage();
   }
@@ -4592,6 +4862,7 @@ function clearMessages() {
   msgs.innerHTML = '';
   state.pendingTurns = {};
   state.streaming = false;
+  state.stopRequested = false;
   state.rewindable = false;
   _historyPendingAssistant = null;
   document.getElementById('input').disabled = false;
@@ -4646,9 +4917,11 @@ function scrollToBottom() {
 // Custom hover tooltips (native title= is unreliable in JetBrains' JCEF)
 // ─────────────────────────────────────────────
 var _tipEl = null;
+var _tipTarget = null;
 function showHoverTooltip(target) {
   var text = target.getAttribute('data-tooltip');
   if (!text) return;
+  _tipTarget = target;
   if (!_tipEl) {
     _tipEl = document.createElement('div');
     _tipEl.className = 'custom-tooltip';
@@ -4666,20 +4939,58 @@ function showHoverTooltip(target) {
   _tipEl.style.top = Math.round(y) + 'px';
 }
 function hideHoverTooltip() {
+  _tipTarget = null;
   if (_tipEl) _tipEl.style.display = 'none';
 }
+// Native `title=` tooltips are unreliable in JetBrains' JCEF, so route every
+// titled element (header icons, menus, delete/refresh, attach, etc.) through the
+// same custom tooltip used by stat chips. The title is migrated to data-tooltip
+// on first hover and re-synced if the app updates it afterwards.
+function findTooltipTarget(node) {
+  if (!node || !node.closest) return null;
+  var t = node.closest('[data-tooltip], [title]');
+  if (!t) return null;
+  // The copy button already renders its tooltip via CSS.
+  if (t.classList && t.classList.contains('copy-btn')) return null;
+  var title = t.getAttribute('title');
+  if (title !== null) {
+    if (t.getAttribute('data-tooltip') !== title) {
+      t.setAttribute('data-tooltip', title);
+    }
+    t.removeAttribute('title');
+  }
+  return t;
+}
 document.addEventListener('mouseover', function(e) {
-  var t = (e.target && e.target.closest)
-    ? e.target.closest('.stat-badge[data-tooltip], .stat-chip[data-tooltip], .traj-toggle[data-tooltip]')
-    : null;
+  var t = findTooltipTarget(e.target);
   if (t) showHoverTooltip(t);
 });
 document.addEventListener('mouseout', function(e) {
-  var t = (e.target && e.target.closest)
-    ? e.target.closest('.stat-badge[data-tooltip], .stat-chip[data-tooltip], .traj-toggle[data-tooltip]')
-    : null;
+  var t = findTooltipTarget(e.target);
   if (t) hideHoverTooltip();
 });
+
+// Keep the visible tooltip in sync when the app changes an element's title while
+// the pointer is still over it (e.g. session delete flips to "Click again to
+// confirm" after the first click).
+var _tooltipObserver = new MutationObserver(function(mutations) {
+  for (var i = 0; i < mutations.length; i++) {
+    var el = mutations[i].target;
+    if (!el || !el.getAttribute) continue;
+    var title = el.getAttribute('title');
+    if (title === null) continue;
+    el.setAttribute('data-tooltip', title);
+    el.removeAttribute('title');
+    if (_tipTarget === el) showHoverTooltip(el);
+  }
+});
+if (document.body) {
+  _tooltipObserver.observe(document.body, {
+    attributes: true,
+    attributeFilter: ['title'],
+    subtree: true,
+  });
+}
 
 function generateId() {
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
@@ -4809,31 +5120,44 @@ function openToolFile(ev) {
   if (path) send({ type: 'open_file', path: path, line: 0 });
 }
 
+function applyInlineEmphasis(html) {
+  // Protect code spans and file links: filenames often contain underscores,
+  // which must not be turned into <em> tags.
+  return html.split(/(<a\b[^>]*>[\s\S]*?<\/a>|<code>[\s\S]*?<\/code>)/g)
+    .map(function(part, idx) {
+      if (idx % 2 === 1) return part;
+      return part
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/_([^_]+)_/g, '<em>$1</em>');
+    }).join('');
+}
+
 function renderInline(line) {
-  line = line.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  line = line.replace(/_([^_]+)_/g, '<em>$1</em>');
   // Pattern 1: backtick-wrapped file paths — run before generic backtick handler
-  line = line.replace(/`((?:(?:\.{1,2}\/)?(?:[\w\-]+\/)+)?[\w.\-]+\.\w{2,6}(?::\d+)?)`/g, function(_, raw) {
-    var m = raw.match(/^(.*?):(\d+)$/);
-    var filePath = m ? m[1] : raw;
+  line = line.replace(/`([^`\n]+)`/g, function(_, raw) {
+    var text = raw.trim();
+    if (!text || text.indexOf('://') !== -1) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
+    var m = text.match(/^(.*?):(\d+)$/);
+    var filePath = m ? m[1] : text;
     var lineNum = m ? m[2] : '0';
-    var hasSlash = filePath.indexOf('/') !== -1;
+    var hasSlash = /[\/\\]/.test(filePath);
     var hasLine = !!m;
-    if (!hasSlash && !hasLine) return '<code>' + escapeHtml(raw) + '</code>';
+    var looksLikeFile = /\.[A-Za-z0-9]{2,10}$/.test(filePath);
+    if (!looksLikeFile || (!hasSlash && !hasLine)) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
     return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
          + '" onclick="openFileLink(this)"><code>' + escapeHtml(raw) + '</code></a>';
-  });
-  // Generic backtick handler for remaining non-file spans
-  line = line.replace(/`([^`]+)`/g, function(_, c) {
-    return '<code>' + escapeHtml(c) + '</code>';
   });
   // Pattern 2: bare path/to/file.ext:N outside backticks and existing HTML
   line = line.replace(/(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g, function(_, filePath, lineNum) {
     return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
          + '" onclick="openFileLink(this)">' + escapeHtml(filePath) + ':' + lineNum + '</a>';
   });
-  return line;
+  return applyInlineEmphasis(line);
 }
 
 // ─────────────────────────────────────────────

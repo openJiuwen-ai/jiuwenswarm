@@ -36,6 +36,9 @@ def preload_code_graph_grammars() -> bool:
     logger.info("Downloading Code Graph grammars (setup, not the coding agent).")
     env = os.environ.copy()
     env["OPENJIUWEN_CODE_GRAPH_ALLOW_PARSER_DOWNLOAD"] = "1"
+    # The child is this same interpreter; pin its stream encoding so the parent
+    # decodes it deterministically instead of depending on UTF-8 mode.
+    env["PYTHONIOENCODING"] = "utf-8"
     try:
         completed = subprocess.run(
             [sys.executable, "-c", _PRELOAD_SNIPPET],
@@ -43,6 +46,8 @@ def preload_code_graph_grammars() -> bool:
             timeout=_PRELOAD_TIMEOUT_SECONDS,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env=env,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

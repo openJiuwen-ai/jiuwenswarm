@@ -12,21 +12,21 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.gateway.cron.models import CronJob, CronRunState
-from jiuwenswarm.gateway.cron.scheduler import (
+from openjiuwen_protocol.e2a.agent_models import AgentResponse, AgentResponseChunk
+from openjiuwen_protocol.message import ReqMethod
+from gateway.cron.models import CronJob, CronRunState
+from gateway.cron.scheduler import (
     CRON_INTERRUPT_RESULT_TEXT,
     CronSchedulerService,
     _Event,
 )
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.cron_team_completion import (
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
-from jiuwenswarm.gateway.cron import scheduler as cron_scheduler_module
-from jiuwenswarm.gateway.cron.store import CronJobStore
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.cron import scheduler as cron_scheduler_module
+from gateway.cron.store import CronJobStore
+from gateway.message_handler.message_handler import MessageHandler
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -527,6 +527,18 @@ class TestCronLastSessionId:
         await svc.on_wake(job, info["run_id"])
         await svc.run_tasks[info["run_id"]]
         assert [request.method for request in agent.unary_requests].count("session.create") == 1
+
+    @pytest.mark.asyncio
+    async def test_run_now_rejects_xiaoyi_target(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="xiaoyi")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        with pytest.raises(ValueError, match="not supported for target: xiaoyi"):
+            await svc.trigger_run_now_info(job.id)
+
+        assert not agent.unary_requests
 
     @pytest.mark.asyncio
     async def test_run_now_info_does_not_allocate_session_for_proactive_tick(self, tmp_path):
@@ -1125,6 +1137,16 @@ class TestReloadKeepsDueUnconsumedEvents:
         await svc.reload()
 
         assert all(ev.run_id != stale_run_id for _, _, ev in svc.events)
+
+    @pytest.mark.asyncio
+    async def test_reload_does_not_schedule_xiaoyi_target(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, targets="xiaoyi")
+        svc = _make_scheduler(store)
+
+        await svc.reload()
+
+        assert not [ev for _, _, ev in svc.events if ev.job_id == job.id]
 
     @pytest.mark.asyncio
     async def test_reload_drops_due_events_for_removed_job(self, tmp_path):
@@ -2317,7 +2339,7 @@ class TestUnaryCronJobTimeoutOverride:
 
     @pytest.mark.asyncio
     async def test_timeout_passed_through_and_cancel_invoked(self, tmp_path):
-        from jiuwenswarm.gateway.routing.agent_client import AgentServerUnaryTimeout
+        from gateway.routing.agent_client import AgentServerUnaryTimeout
 
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, targets="web")
@@ -2739,7 +2761,7 @@ class TestExtractTextFromAgentPayload:
 
     @staticmethod
     def _call(payload):
-        from jiuwenswarm.gateway.cron.scheduler import _extract_text_from_agent_payload
+        from gateway.cron.scheduler import _extract_text_from_agent_payload
         return _extract_text_from_agent_payload(payload)
 
     def test_error_payload_returns_raw_error(self):
@@ -3151,7 +3173,7 @@ async def test_disable_project_jobs_preserves_other_jobs(tmp_path):
 @pytest.mark.asyncio
 async def test_project_gate_discards_response_crossing_hide(tmp_path, monkeypatch):
     import asyncio
-    from jiuwenswarm.gateway.routing import e2a_proxy
+    from gateway.routing import e2a_proxy
 
     svc = _make_scheduler(CronJobStore(path=tmp_path / "cron_jobs.json"))
     entered, release = asyncio.Event(), asyncio.Event()
@@ -3184,13 +3206,13 @@ def _patch_login_credential_lookup(
     ``fresh`` 为 refreshed_credential_for_ref 的返回值（None=凭据已撤销/拿不到）。
     """
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref",
+        "gateway.auth.passthrough.refreshed_credential_for_ref",
         lambda ref: fresh
         if fresh is not None
         else {"credential_ref": ref, "revoked": True},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.apig.resolve_apig_config",
+        "gateway.auth.apig.resolve_apig_config",
         lambda allow_refresh=True: SimpleNamespace(
             invoke_base_url="https://apig.example.com/v1"
         ),

@@ -22,10 +22,13 @@ await build({
     contents: `
       import { createElement } from 'react';
       import { SettingsSourceProvider } from './src/features/settings/services/SettingsSourceProvider';
-      import { JevKeySettings } from './src/features/settings/modules/browser/JevKeySettings';
+      import { JevSettings } from './src/features/settings/modules/models/JevSettings';
+      import { browserModule } from './src/features/settings/modules/browser/definition';
+      import { experimentalModule } from './src/features/settings/modules/experimental/definition';
       export { SettingsSaveQueue } from './src/features/settings/services/SettingsSaveQueue';
       export { SettingsUnsavedChangesRegistry } from './src/features/settings/services/SettingsUnsavedChangesRegistry';
-      export const Fixture = () => createElement(SettingsSourceProvider, { source: 'browser' }, createElement(JevKeySettings));
+      export { browserModule, experimentalModule };
+      export const Fixture = () => createElement(SettingsSourceProvider, { source: 'config' }, createElement(JevSettings, {disabled: false}));
     `,
     resolveDir: process.cwd(), loader: 'ts',
   },
@@ -37,16 +40,21 @@ await build({
     setup(builder) {
       const ui = ['Button', 'Input', 'Switch', 'FieldError', 'Loading', 'Select', 'Dialog', 'HelpTips', 'RadioGroup', 'Textarea']
         .map((name) => `export { ${name} } from './src/components/ui/${name}/${name}';`).join('\n');
-      builder.onResolve({ filter: /(?:^|\/)ui$|SettingsServicesProvider$|^\.\.\/\.\.\/components$|^react-i18next$/ }, (args) => ({
+      builder.onResolve({ filter: /(?:^|\/)ui$|SettingsServicesProvider$|^\.\.\/\.\.\/components$|^react-i18next$|^\.\/ExperimentalSettings$|^\.\/A4PSettings$/ }, (args) => ({
         path: args.path, namespace: 'boundary',
       }));
       builder.onLoad({ filter: /.*/, namespace: 'boundary' }, ({ path }) => ({
         contents: path === 'react-i18next'
           ? 'const t = key => key; export const useTranslation = () => ({ t });'
+          : path === './ExperimentalSettings'
+            ? ['A2UISetting', 'ExternalCliCustomAgentsItem', 'ProactiveLimitsSetting', 'RSISetting', 'TrajectoryDiagnosisSetting', 'TrajectoryUiSetting']
+              .map(name => `export const ${name} = () => null;`).join('\n')
+          : path === './A4PSettings' ? 'export const A4PSettings = () => null;'
           : path.endsWith('SettingsServicesProvider')
             ? 'export const useSettingsServices = () => globalThis.jevFixture;'
             : path === '../../components'
               ? `export { SettingRow } from './src/features/settings/components/SettingRow';
+                 export { SettingsSection } from './src/features/settings/components/SettingsSection';
                  export { SettingsConfirmDialog } from './src/features/settings/components/SettingsConfirmDialog';`
               : ui,
         loader: 'js', resolveDir: process.cwd(),
@@ -54,7 +62,7 @@ await build({
     },
   }],
 });
-const { Fixture, SettingsSaveQueue, SettingsUnsavedChangesRegistry } = await import('../node_modules/.cache/jev-settings-dialog.mjs');
+const { Fixture, SettingsSaveQueue, SettingsUnsavedChangesRegistry, browserModule, experimentalModule } = await import('../node_modules/.cache/jev-settings-dialog.mjs');
 const get = (id, variant) => document.querySelector(`[data-testid="${id}"]${variant ? `[data-variant="${variant}"]` : ''}`);
 const field = (name) => get('settings-browser-jev-dialog-field-input', name);
 async function click(id, variant) {
@@ -76,7 +84,10 @@ async function choose(provider) {
 }
 async function mount(run, rejectSave = false) {
   const calls = [];
-  const config = { jev_openrouter_api_key: 'router-key', jev_typesafe_api_key: 'typesafe-key' };
+  const config = {
+    jev_openrouter_api_key: 'router-key', jev_typesafe_api_key: 'typesafe-key',
+    moa_jev_enabled: 'true',
+  };
   let browser = {
     chrome_path: '', headless: false, decision_mode: 'hybrid', decision_provider: 'openrouter',
     decision_model: 'typesafe/jev-1.13', decision_api_base: 'https://openrouter.ai/api/alpha',
@@ -180,7 +191,38 @@ test('clearing the active credential disables Jev first and preserves other prov
     assert.equal(browser().decision_mode, 'llm');
     assert.equal(config.jev_openrouter_api_key, '');
     assert.equal(config.jev_typesafe_api_key, 'typesafe-key');
+    assert.equal(config.moa_jev_enabled, 'false');
     assert.deepEqual(calls.filter(({ method }) => method === 'path.set' || method === 'config.save_all').map(({ method }) => method), ['path.set', 'config.save_all']);
+  });
+});
+
+test('one shared Jev configuration is shown; mode and switches stay in their original modules', async () => {
+  const browserItems = browserModule.sections.flatMap(section => section.items);
+  assert.deepEqual(browserItems.map(item => item.id), ['browser-path', 'browser-run-mode', 'browser-decision-mode']);
+  const collaboration = experimentalModule.sections.find(section => section.id === 'multi-model-collaboration');
+  assert.deepEqual(collaboration.items[0].subItems.items[0], {
+    id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled',
+  });
+  assert.equal(collaboration.items[0].subItems.items[1].render.name, 'CollaborationVerifierInterval');
+  await mount(async ({ calls, config, browser }) => {
+    await click('settings-browser-jev-dialog-cancel-btn');
+    assert.ok(get('settings-models-jev-panel'));
+    assert.equal(get('settings-select', 'browser-decision-mode'), null);
+    assert.equal(document.querySelector('[role="switch"]'), null);
+    assert.equal(get('settings-collaboration-jev-configure-btn'), null);
+    assert.equal(document.querySelectorAll('[data-testid="settings-browser-jev-configure-btn"]').length, 1);
+    await click('settings-browser-jev-configure-btn');
+    await input('api_key', 'updated-shared-key');
+    await click('settings-browser-jev-dialog-save-btn');
+    assert.equal(config.moa_jev_api_key, undefined);
+    assert.equal(config.jev_openrouter_api_key, 'updated-shared-key');
+    assert.equal(config.jev_typesafe_api_key, 'typesafe-key');
+    assert.equal(config.multi_model_collaboration_enabled, undefined);
+    assert.equal(config.moa_jev_enabled, 'true');
+    assert.equal(browser().decision_provider, 'openrouter');
+    assert.equal(calls.filter(({ method }) => method === 'path.set').length, 1);
+    await click('settings-browser-jev-configure-btn');
+    assert.equal(field('api_key').value, 'updated-shared-key');
   });
 });
 

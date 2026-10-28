@@ -1820,6 +1820,15 @@ const isElectronBuild = process.env.ELECTRON === 'true'
 export default defineConfig({
   base: isElectronBuild ? './' : '/',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
+  build: {
+    rollupOptions: {
+      // 双入口：主应用 + 下载气泡页（Electron 以独立 WebContentsView 悬浮加载）。
+      input: {
+        main: path.resolve(__dirname, 'index.html'),
+        bubble: path.resolve(__dirname, 'bubble.html'),
+      },
+    },
+  },
   optimizeDeps: {
     include: ['exceljs', 'jszip', 'saxes', 'ssf', 'onnxruntime-web/wasm'],
   },

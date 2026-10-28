@@ -10,7 +10,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from gateway.channel_manager.web.trace_update import (
+    CommittedTraceUpdate as GatewayCommittedTraceUpdate,
+)
+from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.observability.gateway_hints import TrajectoryGatewayHintBridge
 from jiuwenswarm.observability.models import CommittedTraceUpdate
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -88,7 +91,7 @@ async def test_gateway_routes_cross_process_hint_into_webchannel_coalescer() -> 
 
     assert scheduled == [
         (
-            CommittedTraceUpdate(
+            GatewayCommittedTraceUpdate(
                 session_id="session-1",
                 trace_id="b" * 32,
                 revision=21,

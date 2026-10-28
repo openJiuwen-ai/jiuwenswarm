@@ -5,6 +5,7 @@ import { webRequest } from '../../services/webClient';
 /** Canvas uploads keep the pre-existing 32 MiB ceiling; chunks stay at 512 KiB. */
 export const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024;
 export const DESIGNER_UPLOAD_CHUNK_BYTES = 512 * 1024;
+export const DESIGNER_UPLOAD_TOO_LARGE = 'file_too_large';
 // ``file.upload_chunk`` resolves a relative target under the user workspace
 // (~/.jiuwenswarm). Keep uploads under ``agent/`` so the app_web preview root
 // (/file-api/raw-file) accepts the persisted path in production builds.
@@ -113,7 +114,7 @@ export async function uploadDesignerAsset(file: File): Promise<{
     throw new Error('empty_file');
   }
   if (file.size > DESIGNER_UPLOAD_MAX_BYTES) {
-    throw new Error('file_too_large');
+    throw new Error(DESIGNER_UPLOAD_TOO_LARGE);
   }
   const uploadToken = uploadId();
   const filename = safeUploadFilename(file.name);

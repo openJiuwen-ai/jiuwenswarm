@@ -86,6 +86,9 @@ def reconcile_builtin_models(
 
 async def _probe_models(cli_agent: str, cli_path: str | None) -> dict[str, list[str]]:
     """Read one CLI's model list through its harness provider."""
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    cli_path = resolve_preserved_cli_path(cli_path)
     if cli_agent == "claude":
         from openjiuwen.harness_providers.claudecode import ClaudeCodeHarness, ClaudeCodeHarnessConfig
 

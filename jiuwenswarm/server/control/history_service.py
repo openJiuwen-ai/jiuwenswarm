@@ -8,7 +8,7 @@ import logging
 import math
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.control.responses import build_error_response
 from jiuwenswarm.server.runtime.session.session_history import (

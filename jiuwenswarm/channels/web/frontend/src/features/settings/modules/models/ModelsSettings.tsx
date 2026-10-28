@@ -18,8 +18,9 @@ import { FreeModelsSettings } from './FreeModelsSettings';
 import { ModelDialog } from './ModelDialog';
 import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
-import { getVendorLabel } from './ModelProviderSelect';
-import { displayModelProtocol, parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
+import { JevSettings } from './JevSettings';
+import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
+import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
 import {
   extractModelSelectionReferences,
   formatModelSelectionReferenceScopes,
@@ -112,11 +113,12 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   };
 }
 
-export type ModelSettingsTabId = 'models' | 'groups';
+export type ModelSettingsTabId = 'models' | 'groups' | 'jev';
 
 type ModelsSettingsProps = {
   tabs: readonly SettingsTabDefinition<ModelSettingsTabId>[];
   defaultTab: ModelSettingsTabId;
+  disabled?: boolean;
 };
 
 function modelIdentity(model: ModelEntry, index: number): string {
@@ -157,7 +159,7 @@ export function parseModelsPayload(payload: unknown): {
   return { models: normalizedModels, modelGroups, activeModel };
 }
 
-export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
+export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSettingsProps) {
   const { t } = useTranslation();
   const { isConnected, request, saveQueue } = useSettingsServices();
   const setAvailableModels = useSessionStore((state) => state.setAvailableModels);
@@ -489,25 +491,11 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
     }
   };
 
-  const getCardPresentation = (model: ModelEntry) => {
-    const customName = model.alias?.trim() || model.model_name;
-    const protocol = displayModelProtocol(model);
-    const protocolLabel = t(`settingsPanel.models.protocols.${protocol}`);
-    if (model.model_provider === 'OpenAIAccount') {
-      return {
-        customName,
-        metadata: [t('settingsPanel.models.openaiAccount'), protocolLabel, model.model_name].join(' · '),
-        logo: getModelLogoUrl(model),
-      };
-    }
-    const vendorKey = model.vendor_key?.trim();
-    const providerLabel = vendorKey ? getVendorLabel(vendorKey, t) : t('settingsPanel.models.customVendor');
-    return {
-      customName,
-      metadata: [providerLabel, protocolLabel, model.model_name].join(' · '),
-      logo: getModelLogoUrl(model),
-    };
-  };
+  const getCardPresentation = (model: ModelEntry) => ({
+    customName: getModelDisplayName(model),
+    metadata: formatModelMetadata(model, t),
+    logo: getModelLogoUrl(model),
+  });
 
   const renderModelCard = (model: ModelEntry, index: number) => {
     if (isRuntimeGrantedModel(model)) return null;
@@ -658,6 +646,8 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
             </div>
           </SettingsSection>
         </div>
+        ) : activeTab === 'jev' ? (
+        <JevSettings disabled={disabled} />
         ) : (
         <ModelGroupsSettings
           models={models}
@@ -688,6 +678,7 @@ export function ModelsSettings({ tabs, defaultTab }: ModelsSettingsProps) {
       {groupDialog ? (
         <ModelGroupDialog
           models={models}
+          modelGroups={modelGroups}
           group={groupDialog.group}
           saving={saving}
           onClose={() => setGroupDialog(null)}

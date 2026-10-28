@@ -7,43 +7,48 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import math
 import re
 import time
 import weakref
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
+from openjiuwen.agent_teams import observability as team_observability
 from openjiuwen.agent_teams.agent.team_agent import TeamAgent
-from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+from openjiuwen.agent_teams.models.pool import materialize_model_group
+from openjiuwen.agent_teams.runtime.background_task_controller import (
+    BackgroundTaskController,
+)
 from openjiuwen.agent_teams.runtime.pool import RuntimeState
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
-from openjiuwen.agent_teams.context import reset_session_id, set_session_id
-from openjiuwen.agent_teams import observability as team_observability
-from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
-from openjiuwen.harness import DeepAgent
-from openjiuwen.harness_protocol.state import HarnessState
 from openjiuwen.core.foundation.llm import CompiledModelSelection
-from openjiuwen.agent_teams.models.pool import materialize_model_group
+from openjiuwen.core.runner import Runner
+from openjiuwen.harness import DeepAgent
 from openjiuwen.harness.rails import (
     EvolutionInterruptRail,
     SkillEvolutionRail,
     TeamSkillCreateRail,
     TeamSkillEvolutionRail,
 )
-from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
-from jiuwenswarm.common.cron_team_completion import (
+from openjiuwen.harness_protocol.state import HarnessState
+
+from gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
+from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
 from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
 configure_agent_teams_home()
 
+from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
 from jiuwenswarm.agents.harness.team.config_loader import (
     get_effective_team_model_entries,
     load_team_spec_dict,
@@ -53,9 +58,9 @@ from jiuwenswarm.agents.harness.team.distributed_runtime import (
     extract_pg_endpoint,
     fallback_distributed_to_local,
     is_distributed_mode,
-    missing_distributed_dependencies,
     is_pg_available,
     is_postgresql_storage,
+    missing_distributed_dependencies,
     normalize_distributed_transport_fields,
     parse_port,
     run_command,
@@ -63,15 +68,12 @@ from jiuwenswarm.agents.harness.team.distributed_runtime import (
     runtime_role,
     try_start_pg_cluster,
 )
-from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
-from jiuwenswarm.agents.harness.team.remote_member_bootstrap import release_a2x_reservations_for_session
-from jiuwenswarm.common.config import (
-    get_config,
-    get_evolution_auto_save_enabled,
-    get_skill_evolution_enabled,
-    get_symphony_evolution_enabled,
+from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+    TeamMonitorHandler,
 )
-from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
+from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
+    release_a2x_reservations_for_session,
+)
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     MemberInfo,
     RuntimeInfo,
@@ -79,7 +81,13 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     build_member_rails,
     get_default_model_name,
 )
-from jiuwenswarm.agents.harness.observability_runtime import build_observability_config
+from jiuwenswarm.common.config import (
+    get_config,
+    get_evolution_auto_save_enabled,
+    get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
+)
+from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.observability.config import load_trajectory_store_settings
 from jiuwenswarm.observability.runtime import (
     shutdown_trajectory_runtime,
@@ -1299,11 +1307,11 @@ class TeamManager:
         selection: SwarmModelSelection,
     ) -> CompiledModelSelection:
         """Resolve a stable Team selection through the server-side boundary."""
+        from gateway.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.common.model_errors import (
             TEAM_MODEL_SELECTION_STALE,
             ModelSelectionError,
         )
-        from jiuwenswarm.common.model_selection import ResolvedModelGroup
         from jiuwenswarm.server.runtime.model_compiler_adapter import (
             compile_model_selection,
         )
@@ -1312,7 +1320,8 @@ class TeamManager:
         )
 
         try:
-            resolved = ModelSelectionResolver().resolve(
+            resolver = ModelSelectionResolver()
+            resolved = resolver.resolve(
                 SwarmModelSelection(
                     type=selection.type,
                     id=selection.id,
@@ -1320,17 +1329,35 @@ class TeamManager:
                 )
             )
             # Team routes across the whole group. Groups saved from the UI
-            # carry no routing strategy, which would compile to the first
-            # route only; default them to ordered failover. A manually
+            # carry no routing settings, which would compile to the first
+            # route only or use IntelliRouter's 30-second timeout. A manually
             # selected route keeps compiling to that single model.
-            if (
-                isinstance(resolved, ResolvedModelGroup)
-                and selection.route_id is None
-                and not (resolved.routing or {}).get("strategy")
-            ):
-                resolved = resolved.model_copy(
-                    update={"routing": {**(resolved.routing or {}), "strategy": "ordered-failover"}}
-                )
+            if isinstance(resolved, ResolvedModelGroup) and selection.route_id is None:
+                routing = dict(resolved.routing or {})
+                if not routing.get("strategy"):
+                    routing["strategy"] = "ordered-failover"
+                catalog_config = getattr(getattr(resolver, "catalog", None), "config", {}) or {}
+                models_config = catalog_config.get("models") or {}
+                for key, config_key, default in (
+                    ("timeout_seconds", "group_routing_timeout_seconds", 360),
+                    ("stream_first_chunk_timeout", "group_stream_first_chunk_timeout_seconds", 300),
+                    ("stream_idle_timeout", "group_stream_idle_timeout_seconds", 120),
+                ):
+                    raw_timeout = routing.get(key)
+                    if raw_timeout is None:
+                        raw_timeout = models_config.get(config_key, default)
+                    try:
+                        timeout = float(raw_timeout)
+                        if not math.isfinite(timeout) or timeout <= 0:
+                            raise ValueError("timeout must be positive and finite")
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            "Invalid model group %s value %r; using %s seconds",
+                            key, raw_timeout, default,
+                        )
+                        timeout = float(default)
+                    routing[key] = timeout
+                resolved = resolved.model_copy(update={"routing": routing})
             compiled = compile_model_selection(resolved)
         except ModelSelectionError:
             # Stable catalog / permission failures are meaningful to callers.
@@ -1354,7 +1381,8 @@ class TeamManager:
         """Replace a persisted reference only when its resource was deleted."""
         from jiuwenswarm.common.model_catalog import ModelCatalog
         from jiuwenswarm.server.runtime.model_routing_registry import (
-            ModelExecutionContext, ModelSelectionResolver,
+            ModelExecutionContext,
+            ModelSelectionResolver,
         )
 
         selected = SwarmModelSelection.model_validate(selection)
@@ -1651,8 +1679,13 @@ class TeamManager:
         template_id = str(metadata.get("team_template_id") or "").strip()
         template_snapshot: dict[str, Any] | None = None
         if team_name:
-            from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
-            from jiuwenswarm.server.runtime.team_entity_store import ensure_team_entity, ensure_team_entity_for_binding
+            from jiuwenswarm.server.runtime.team_binding_store import (
+                get_team_binding_store,
+            )
+            from jiuwenswarm.server.runtime.team_entity_store import (
+                ensure_team_entity,
+                ensure_team_entity_for_binding,
+            )
 
             binding = get_team_binding_store().get(team_name)
             if binding is not None:
@@ -1707,7 +1740,9 @@ class TeamManager:
             team_name = str(metadata.get("team_name") or "").strip()
             if team_name:
                 try:
-                    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+                    from jiuwenswarm.server.runtime.team_binding_store import (
+                        get_team_binding_store,
+                    )
                     stored_team = get_team_binding_store().get_team_selection(team_name)
                 except Exception:
                     stored_team = None
@@ -1837,6 +1872,7 @@ class TeamManager:
             spec.dispatch_mode = dispatch_mode
             if dispatch_mode != "scheduled":
                 spec.enable_task_verification = False
+                spec.enable_member_messaging = False
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":
@@ -1853,7 +1889,7 @@ class TeamManager:
         *,
         request_metadata: dict[str, Any] | None,
     ) -> None:
-        from jiuwenswarm.common.mode_matrix import is_team_plan_mode
+        from gateway.common.mode_matrix import is_team_plan_mode
 
         mode = (request_metadata or {}).get("mode")
         if is_team_plan_mode(mode):

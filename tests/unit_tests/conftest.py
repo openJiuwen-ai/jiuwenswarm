@@ -78,6 +78,19 @@ def allow_macos_pytest_temp_sources(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _offline_hot_lists(request, monkeypatch):
+    """Topic Starter generations in unit tests never reach Weibo or Baidu: both lists read as down."""
+    if not os.path.basename(str(request.node.path)).startswith("test_topic_"):
+        return
+    from jiuwenswarm.agents.harness.common.recommendation import topic_news as topic_hot_list
+
+    async def unreachable(_url, _timeout, _headers):
+        raise ConnectionError("hot lists are not reachable from unit tests")
+
+    monkeypatch.setattr(topic_hot_list, "fetch_feed_text", unreachable)
+
+
 def _stub_get_config_file() -> Path:
     return _STUB_CONFIG
 

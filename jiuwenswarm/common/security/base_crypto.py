@@ -1,22 +1,15 @@
-from typing import Protocol, runtime_checkable, Optional
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+"""转发别名（security 域拆分过渡）：真源已迁 ``gateway.extensions.base_crypto``。
 
-@runtime_checkable
-class CryptoProvider(Protocol):
-    def encrypt(self, plaintext: str, **kwargs) -> str:
-        pass
+CryptoProvider 注入点的实现与装配（``_RegistryCryptoBridge`` 的注册）都在
+gateway 的 extensions 治理层；母仓消费方（config 凭据加解密、config_panel、
+agents memory rail）经本路径取用，B3 拆仓时随 shim 收敛退役。
+"""
 
-    def decrypt(self, ciphertext: str, **kwargs) -> str:
-        pass
-
-
-_default_provider: Optional[CryptoProvider] = None
-
-
-def set_crypto_provider(provider: CryptoProvider) -> None:
-    global _default_provider
-    _default_provider = provider
-
-
-def get_crypto_provider() -> Optional[CryptoProvider]:
-    return _default_provider
+from gateway.extensions.base_crypto import *  # noqa: F401,F403
+from gateway.extensions.base_crypto import (  # noqa: F401
+    CryptoProvider,
+    get_crypto_provider,
+    set_crypto_provider,
+)

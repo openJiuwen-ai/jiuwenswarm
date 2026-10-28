@@ -903,6 +903,35 @@ class TestHandleMcpConnect:
         assert rolled_back == ["context7"]  # entry rolled back
         assert len(applied) == 0
 
+    @pytest.mark.anyio
+    async def test_connect_host_oauth_returns_auth_required(self) -> None:
+        """Host-managed OAuth (Canva) returns the auth_required sentinel."""
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server._mask_sensitive_fields = lambda item: item
+        ws = _FakeWS()
+        request = _make_request(req_method=ReqMethod.MCP_CONNECT, params={"name": "canva"})
+        with patch(
+            "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
+            return_value={
+                "name": "canva",
+                "integration_type": "remote-mcp",
+                "auth_required": True,
+                "auth_pending": True,
+                "host_oauth": True,
+                "step_index": 0,
+                "steps_total": 1,
+                "auth_url": None,
+                "credential_kind": "oauth",
+            },
+        ):
+            await server._handle_mcp_connect(ws, request, asyncio.Lock())
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "auth_required"
+        assert payload["host_oauth"] is True
+        assert payload["credential_kind"] == "oauth"
+        assert payload["auth_pending"] is True
+
 
 class TestHandleMcpDisconnect:
     @pytest.mark.anyio

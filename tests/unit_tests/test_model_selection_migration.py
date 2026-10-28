@@ -7,7 +7,7 @@ import pytest
 from jiuwenswarm.common.model_config_validation import validate_models_config
 from jiuwenswarm.common.model_errors import MODEL_SELECTION_DISABLED, ModelSelectionError
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from jiuwenswarm.common.model_selection import ModelSelection, ResolvedModelGroup
+from gateway.common.model_selection import ModelSelection, ResolvedModelGroup
 from jiuwenswarm.common.config import _merge_model_update
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
@@ -159,6 +159,23 @@ def test_default_group_wins_and_keeps_route_order():
     assert resolved.routes[0].model.model_description == "primary model"
     assert resolved.routing == {"strategy": "ordered-failover", "num_retries": 3}
     assert "routing" not in catalog.list_public_groups()[0]
+
+
+def test_public_group_exposes_only_its_timeout_overrides():
+    config = _config()
+    config["models"]["groups"][0]["routing"].update({
+        "timeout_seconds": 75,
+        "stream_first_chunk_timeout": 55,
+        "stream_idle_timeout": 20,
+    })
+
+    public = ModelCatalog(config).list_public_groups()[0]
+
+    assert public["routing"] == {
+        "timeout_seconds": 75,
+        "stream_first_chunk_timeout": 55,
+        "stream_idle_timeout": 20,
+    }
 
 
 def test_explicit_disabled_group_does_not_fall_back():

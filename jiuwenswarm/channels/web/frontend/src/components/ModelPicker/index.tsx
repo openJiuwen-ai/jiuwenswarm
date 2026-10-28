@@ -10,6 +10,10 @@ import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { ModelEntry, ModelGroup, ModelSelection } from '../../types';
 import { getModelSelectionLabel } from '../../features/settings/modules/models/modelGroupAdapters';
 import { getVendorLabel } from '../../features/settings/modules/models/ModelProviderSelect';
+import {
+  formatModelMetadata,
+  getModelDisplayName,
+} from '../../features/settings/modules/models/modelPresentation';
 import { ModelProviderIcon } from '../ModelProviderIcon';
 import ModelGroupIcon from '../../assets/model-group.svg?react';
 
@@ -80,6 +84,9 @@ export default function ModelPicker({
   );
   const campaign = useFreeModelsCampaign();
   const { tooltip, handlers } = useAdaptiveTooltip();
+  const { tooltip: optionTooltip, handlers: optionTooltipHandlers } = useAdaptiveTooltip({
+    placement: 'right',
+  });
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties | null>(null);
@@ -122,7 +129,7 @@ export default function ModelPicker({
     (selection?.type === 'model_group'
       ? selectionLabel || t('chat.modelSelector.placeholder')
       : selected
-        ? selected.alias || selected.model_name
+        ? getModelDisplayName(selected)
         : selectionLabel || value || t('chat.modelSelector.placeholder'));
   const groups = [
     {
@@ -277,7 +284,11 @@ export default function ModelPicker({
         disabled={disabled}
         aria-haspopup="menu"
         aria-expanded={open && !disabled}
-        data-tooltip={t('chat.modelSelector.tooltip')}
+        data-tooltip={
+          selected && selection?.type !== 'model_group'
+            ? formatModelMetadata(selected, t)
+            : t('chat.modelSelector.tooltip')
+        }
         {...handlers}
         data-testid={`${testIdPrefix}-trigger`}
       >
@@ -314,6 +325,7 @@ export default function ModelPicker({
         )}
       </button>
       {tooltip}
+      {optionTooltip}
 
       {open &&
         !disabled &&
@@ -501,6 +513,8 @@ export default function ModelPicker({
                     const active = modelSelection
                       ? isSameSelection(selection, modelSelection)
                       : model === selected && selection?.type !== 'model_group';
+                    const displayName = getModelDisplayName(model);
+                    const metadata = formatModelMetadata(model, t);
                     return (
                       <button
                         key={`${model.model_id ?? model.model_name}-${index}`}
@@ -519,7 +533,13 @@ export default function ModelPicker({
                           <span className="chat-mode-select__icon" aria-hidden="true">
                             <ModelProviderIcon model={model} />
                           </span>
-                          <span className="chat-mode-select__label">{model.alias || model.model_name}</span>
+                          <span
+                            className="chat-mode-select__label"
+                            data-tooltip={metadata}
+                            {...optionTooltipHandlers}
+                          >
+                            {displayName}
+                          </span>
                         </span>
                         {active && (
                           <svg
@@ -583,6 +603,8 @@ export default function ModelPicker({
             const active = modelSelection
               ? isSameSelection(selection, modelSelection)
               : model === selected && selection?.type !== 'model_group';
+            const displayName = getModelDisplayName(model);
+            const metadata = formatModelMetadata(model, t);
             return (
               <button
                 key={`${model.model_id ?? model.model_name}-${index}`}
@@ -598,7 +620,13 @@ export default function ModelPicker({
                   <span className="chat-mode-select__icon" aria-hidden="true">
                     <ModelProviderIcon model={model} />
                   </span>
-                  <span className="chat-mode-select__label">{model.alias || model.model_name}</span>
+                  <span
+                    className="chat-mode-select__label"
+                    data-tooltip={metadata}
+                    {...optionTooltipHandlers}
+                  >
+                    {displayName}
+                  </span>
                 </span>
                 {active && (
                   <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">

@@ -98,11 +98,11 @@ class SessionManager(
     }
 
     /**
-     * Enables or disables a skill by its ID.
+     * Enables or disables a skill by its name (the API key used by skills.toggle).
      * Throws if the server does not support skills.toggle.
      */
-    fun toggleSkill(skillId: String, enabled: Boolean) {
-        request("skills.toggle", mapOf("skill_id" to skillId, "enabled" to enabled))
+    fun toggleSkill(name: String, enabled: Boolean): JsonObject {
+        return request("skills.toggle", mapOf("name" to name, "enabled" to enabled))
     }
 
     /**
@@ -125,7 +125,15 @@ class SessionManager(
         if (mode != null) params["mode"] = mode
         val payload = request("session.switch", params, sid)
         setSessionId(sid)
-        sessionTitle = payload.get("title")?.asString ?: sid
+        val serverTitle = payload.get("title")?.asString
+        sessionTitle = serverTitle ?: sid
+        if (serverTitle.isNullOrBlank()) {
+            // session.switch has no title; use the persisted title (e.g. a user
+            // rename) instead of falling back to the session id.
+            runCatching { listSessions() }.getOrNull()
+                ?.firstOrNull { it.session_id == sid && !it.title.isNullOrBlank() }
+                ?.title?.let { sessionTitle = it }
+        }
     }
 
     /**

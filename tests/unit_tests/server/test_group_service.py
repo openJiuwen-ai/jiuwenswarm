@@ -24,7 +24,7 @@ from jiuwenswarm.agents.swarm.group_chat import (
 )
 from jiuwenswarm.runtime.session_provisioner import SessionProvisionState
 from jiuwenswarm.server.runtime import group_service as gs
-from tests.agents.swarm.test_agent_group import _minimal_group
+from tests.agents.swarm.agent_group_fixtures import _minimal_group
 
 
 @pytest.fixture

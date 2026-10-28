@@ -82,11 +82,21 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                 await ws.send(json.dumps({"request_id": method, "channel_id": "web", "req_method": method,
                                           "session_id": "acceptance-0", "params": params}))
                 await receive(ws, method)
-            for _ in range(100):
-                if observations.exists() and len(observations.read_text(encoding="utf-8").splitlines()) == 4:
-                    break
+            # The observer appends each ~7.7KB JSON line via a buffered write;
+            # splitlines() counts a torn (mid-flush) line as complete, so a
+            # count-based wait can race the writer and hand json.loads a
+            # truncated string. Retry until the whole file parses cleanly into
+            # the expected row count instead.
+            rows: list[dict] = []
+            for _ in range(400):
+                if observations.exists():
+                    try:
+                        rows = [json.loads(line) for line in observations.read_text(encoding="utf-8").splitlines()]
+                    except json.JSONDecodeError:
+                        rows = []
+                    if len(rows) == 4:
+                        break
                 await asyncio.sleep(.01)
-            rows = [json.loads(line) for line in observations.read_text(encoding="utf-8").splitlines()]
             assert len(rows) == 4
             assert len({row["pid"] for row in rows}) == 1
             assert all(row["forbidden"] == [] for row in rows)

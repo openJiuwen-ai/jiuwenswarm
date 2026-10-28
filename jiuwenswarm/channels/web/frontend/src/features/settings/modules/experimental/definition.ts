@@ -6,9 +6,8 @@ import {
   ProactiveLimitsSetting,
   RSISetting,
   TrajectoryDiagnosisSetting,
-  TrajectoryUiSetting,
 } from './ExperimentalSettings';
-import { MultiModelVerificationSettings } from './MultiModelCollaborationSettings';
+import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
 import { A4PSettings } from './A4PSettings';
 
 export const experimentalModule: SettingsModuleDefinition = {
@@ -42,7 +41,6 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'trajectory-ui',
       titleKey: 'settingsPanel.experimental.trajectoryUi',
       items: [
-        { id: 'trajectory-ui-enabled', component: 'custom', render: TrajectoryUiSetting },
         { id: 'trajectory-diagnosis-enabled', component: 'custom', render: TrajectoryDiagnosisSetting },
       ],
     },
@@ -87,6 +85,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             uncheckWithParent: true,
             items: [
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
+              { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
             ],
           },
         },
@@ -119,8 +118,33 @@ export const experimentalModule: SettingsModuleDefinition = {
           subItems: {
             show: 'when-parent-checked',
             disabled: 'never',
-            items: [{ id: 'multi-model-verification', component: 'custom', render: MultiModelVerificationSettings }],
+            items: [
+              { id: 'collaboration-jev-enabled', component: 'switch', key: 'moa_jev_enabled' },
+              { id: 'multi-model-verification', component: 'custom', render: CollaborationVerifierInterval },
+            ],
           },
+        },
+      ],
+    },
+    {
+      id: 'tool-optimize',
+      titleKey: 'settingsPanel.experimental.toolOptimize',
+      items: [
+        {
+          id: 'progressive-tool-optimize-enabled',
+          component: 'switch',
+          key: 'progressive_tool_optimize',
+        },
+      ],
+    },
+    {
+      id: 'design-mode',
+      titleKey: 'settingsPanel.experimental.designMode',
+      items: [
+        {
+          id: 'comfyui-workflow-enabled',
+          component: 'switch',
+          key: 'comfyui_workflow_enabled',
         },
       ],
     },

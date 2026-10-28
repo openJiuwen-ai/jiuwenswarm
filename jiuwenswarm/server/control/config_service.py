@@ -115,6 +115,7 @@ _SWARMFLOW_ENABLED_PATH = ("modes", "team", "jiuwen_team", "enable_swarmflow")
 _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 _TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 _TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+_TEAM_MEMBER_MESSAGING_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -197,6 +198,20 @@ def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
             discovery.get("incremental_notice_max_chars", 4000)
         ),
     }
+
+
+def _flatten_recommendation(raw: dict[str, Any]) -> dict[str, str]:
+    """The two switches as resolved, from the one implementation the rest of the app uses.
+
+    ``raw`` is passed in, so the import stays lazy and this module still never loads
+    ``jiuwenswarm.common.config`` (see the module docstring).
+    """
+
+    from jiuwenswarm.common.recommendation_switches import (
+        flatten_recommendation_for_config_panel,
+    )
+
+    return flatten_recommendation_for_config_panel(raw)
 
 
 def _flatten_external_cli(raw: dict[str, Any]) -> dict[str, str]:
@@ -375,13 +390,15 @@ def _browser_credential_environment() -> dict[str, str]:
 
 def get_panel() -> dict[str, Any]:
     """Return the Web/TUI config panel payload without Gateway handlers."""
+    # 保存过的 .env 优先于本进程的 os.environ。生成类配置槽是由另一个进程写入的，
+    # 这里的 os.environ 可能还停在修改之前——设置页因此一直显示旧的模型（火山方舟的
+    # 默认值），而工具实际已经跑在用户新选的模型上了（MiniMax）。JEV 密钥早就因为这
+    # 个跨进程时序问题改读文件；这个 map 里的每个字段其实都一样。
+    environment = _browser_credential_environment()
     payload: dict[str, Any] = {
-        param_key: (os.getenv(env_key) or "")
+        param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
-    browser_environment = _browser_credential_environment()
-    for field in ("jev_openrouter_api_key", "jev_typesafe_api_key", "jev_custom_api_key"):
-        payload[field] = browser_environment.get(_CONFIG_SET_ENV_MAP.get(field, ""), "")
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
@@ -424,6 +441,12 @@ def get_panel() -> dict[str, Any]:
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
         )
+        payload["comfyui_workflow_enabled"] = _bool_text(
+            experimental_cfg.get("comfyui_workflow_enabled"), False
+        )
+        payload["progressive_tool_optimize"] = _bool_text(
+            raw.get("progressive_tool_optimize"), False
+        )
         payload["swarmflow_enabled"] = _bool_text(
             _nested(raw, _SWARMFLOW_ENABLED_PATH, False)
         )
@@ -433,11 +456,15 @@ def get_panel() -> dict[str, Any]:
         payload["team_task_verification_enabled"] = _bool_text(
             _nested(raw, _TEAM_TASK_VERIFICATION_PATH, False)
         )
+        payload["team_member_messaging_enabled"] = _bool_text(
+            _nested(raw, _TEAM_MEMBER_MESSAGING_PATH, False)
+        )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
         payload.update(_flatten_external_cli(raw))
         payload.update(_flatten_symphony(raw))
+        payload.update(_flatten_recommendation(raw))
         if not payload.get("free_search_ddg_enabled"):
             payload["free_search_ddg_enabled"] = "false"
         if not payload.get("free_search_bing_enabled"):
@@ -470,12 +497,17 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("comfyui_workflow_enabled", "false")
+        payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("team_scheduled_dispatch_enabled", "false")
         payload.setdefault("team_task_verification_enabled", "false")
+        payload.setdefault("team_member_messaging_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")
+        payload.setdefault("topic_recommendation_enabled", "false")
+        payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
         payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "true")

@@ -118,7 +118,7 @@ async def test_external_harness_ignores_invalid_moa_selection(
     monkeypatch.setattr(
         interface_deep,
         "load_persisted_external_harness_binding",
-        lambda _: binding if binding_source == "metadata" else None,
+        AsyncMock(side_effect=lambda _: binding if binding_source == "metadata" else None),
     )
     if binding_source == "cached":
         existing = parent._new_session_scoped_adapter(session_id)
@@ -159,6 +159,65 @@ async def test_group_and_configuration_switch_rebuild_under_session_lock(router)
     assert metadata["chat-a"]["moa_enabled"] is False
     assert parent._session_adapters["chat-b"] is other
     assert len(built) == warmup.await_count == 5
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "kind,selection",
+    [
+        ("agent", MODEL),
+        ("team", MODEL),
+        ("cron", MODEL),
+        ("team", {**GROUP, "route_id": "primary"}),
+        ("cron", {**GROUP, "route_id": "primary"}),
+    ],
+)
+async def test_busy_ordinary_session_accepts_its_applied_stable_model(router, kind, selection):
+    parent, _, metadata, built, _ = router
+    if kind == "team":
+        parent._session_instance_mode = "team"
+    elif kind == "cron":
+        parent._is_cron_execution_session = lambda _: True
+    child = await parent._get_or_create_session_adapter("chat-a", model_name="current")
+    model = object()
+    suffix = f":{selection['route_id']}" if selection.get("route_id") else ""
+    reference = f"{selection['type']}:{selection['id']}{suffix}"
+    child._stable_selection_cache = {reference: ("fingerprint", model)}
+    child._last_resolved_model = model
+    child.busy = True
+    before = deepcopy(metadata)
+
+    assert await parent._get_or_create_session_adapter("chat-a", model_selection=selection) is child
+    assert child._collaboration_model_selection is None
+    assert metadata == before
+    assert len(built) == 1
+    child.cleanup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("difference", ["model", "group", "route", "cached_model", "moa"])
+async def test_busy_session_still_rejects_a_different_model_snapshot(router, difference):
+    parent, _, _, _, _ = router
+    parent._session_instance_mode = "team"
+    child = await parent._get_or_create_session_adapter("chat-a", model_name="current")
+    model = object()
+    selection = {**GROUP, "route_id": "primary"}
+    child._stable_selection_cache = {"model_group:group-a:primary": ("fingerprint", model)}
+    child._last_resolved_model = model
+    child.busy = True
+    if difference == "model":
+        selection = MODEL
+    elif difference == "group":
+        selection = {**selection, "id": "group-b"}
+    elif difference == "route":
+        selection = {**selection, "route_id": "other"}
+    elif difference == "cached_model":
+        child._last_resolved_model = object()
+    else:
+        child._moa_enabled = True
+
+    with pytest.raises(RuntimeError, match="Model selection cannot change"):
+        await parent._get_or_create_session_adapter("chat-a", model_selection=selection)
 
 
 @pytest.mark.asyncio
@@ -253,7 +312,7 @@ def test_metadata_updates_keep_moa_and_ordinary_selection_independent(tmp_path, 
     # server 版已下沉 common（server 侧仅存兼容 shim，无模块属性）
     store = import_module("jiuwenswarm.common.model_selection_store")
     projection = import_module(f"jiuwenswarm.{runtime}.session.session_info").to_session_info
-    from jiuwenswarm.common.model_selection import ModelSelection
+    from gateway.common.model_selection import ModelSelection
 
     monkeypatch.setattr(metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)

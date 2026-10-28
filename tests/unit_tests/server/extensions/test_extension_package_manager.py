@@ -3,12 +3,15 @@
 
 from __future__ import annotations
 
+import asyncio as _asyncio
 import importlib
 import json
 import shutil
 import stat
 import zipfile
 from pathlib import Path
+
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -27,6 +30,11 @@ from tests.unit_tests.server.extensions.conftest import (
 )
 
 _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
+
+
+def _run(coro):
+    """Drive an async catalog call from a synchronous test."""
+    return _asyncio.run(coro)
 
 
 def test_normalize_agent_group_display_identity_preserves_binding_and_asset_id():
@@ -244,7 +252,7 @@ class TestPrepareWorkspaceAndMarketplace:
         point_resources_shelf(monkeypatch, tmp_path, experts=["preset"])
         seed_package(extension_workspace, AGENT_TEMPLATES, "preset", under="built_in")
         assert catalog.read_agent_template_marketplace_entries() == []
-        card = next(c for c in catalog.list_agent_templates() if c["id"] == "preset")
+        card = next(c for c in _run(catalog.list_agent_templates()) if c["id"] == "preset")
         assert card["installed"] is False
         assert "enabled" not in card
 
@@ -693,6 +701,64 @@ class TestAgentGroupLifecycle:
         assert read("already-saved") == saved
         assert read("other-group") == other
         assert catalog.show_agent_group("delivery-review-team") is None
+
+    def test_uninstall_preserves_archived_identity_without_relaxing_fences(
+        self, extension_workspace: Path
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+        self._create_group()
+        catalog.install_agent_group({"id": "delivery-review-team"})
+        identity = catalog.resolve_agent_group_display_identity("delivery-review-team")
+        sid = "archived-legacy-group"
+        original = {
+            "session_id": sid,
+            "agent_group_name": "delivery-review-team",
+            "archived": True,
+            "archived_at": 1234.0,
+            "message_count": 7,
+        }
+        metadata._write_metadata_sync(sid, original)
+        active, archived = lc.session_paths(sid)
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        lc.begin("session", sid, "archive")
+        active.rename(archived)
+        lc.complete("session", sid, archived=True)
+        fence = lc.state("session", sid)
+
+        catalog.uninstall_agent_group({"id": "delivery-review-team"})
+
+        assert lc.raw_metadata(sid) == {**original, "team_group_identity": identity}
+        assert lc.state("session", sid) == fence
+        assert not active.exists()
+        with pytest.raises(lc.LifecycleError, match="writes are isolated"):
+            metadata.update_session_metadata(session_id=sid, title="forbidden", sync_write=True)
+
+    def test_uninstall_keeps_package_during_archived_lifecycle_operation(
+        self, extension_workspace: Path
+    ) -> None:
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+        self._create_group()
+        catalog.install_agent_group({"id": "delivery-review-team"})
+        sid = "restoring-legacy-group"
+        metadata._write_metadata_sync(sid, {
+            "session_id": sid,
+            "agent_group_name": "delivery-review-team",
+        })
+        active, archived = lc.session_paths(sid)
+        archived.parent.mkdir(parents=True, exist_ok=True)
+        lc.begin("session", sid, "archive")
+        active.rename(archived)
+        lc.complete("session", sid, archived=True)
+        lc.begin("session", sid, "unarchive")
+
+        with pytest.raises(lc.LifecycleError, match="lifecycle operation in progress"):
+            catalog.uninstall_agent_group({"id": "delivery-review-team"})
+        assert "team_group_identity" not in lc.raw_metadata(sid)
+        assert catalog.resolve_agent_group_dir("delivery-review-team").is_dir()
 
     def test_uninstall_keeps_package_if_snapshot_write_fails(
         self, extension_workspace: Path, monkeypatch: pytest.MonkeyPatch
@@ -1363,7 +1429,7 @@ class TestCreateInstallUninstall:
             seed_package(extension_workspace, AGENT_TEMPLATES, package_id)
         catalog.install_agent_template({"id": package_id})
         catalog.uninstall_agent_template({"id": package_id})
-        cards = catalog.list_agent_templates()
+        cards = _run(catalog.list_agent_templates())
         # SkillHub uninstall removes the package body from the workspace.
         local = extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / package_id
         built_in = extension_workspace / "plugins" / AGENT_TEMPLATES / "built_in" / package_id
@@ -1725,7 +1791,7 @@ class TestListShowAndFileRead:
                 ],
             },
         )
-        listed = next(c for c in catalog.list_agent_templates() if c["id"] == "named")
+        listed = next(c for c in _run(catalog.list_agent_templates()) if c["id"] == "named")
         assert listed["displayName"] == {"zh": "专家", "en": "Expert"}
         assert listed["displayDescription"] == {"zh": "简介", "en": "Desc"}
         assert "display_name" not in listed
@@ -1812,7 +1878,7 @@ class TestListShowAndFileRead:
         point_resources_shelf(monkeypatch, tmp_path, experts=["preset"], plugins=["preset-pl"])
         seed_package(extension_workspace, AGENT_TEMPLATES, "mine")
         seed_package(extension_workspace, PLUGIN_PACKAGES, "mine-pl")
-        experts = catalog.list_agent_templates()
+        experts = _run(catalog.list_agent_templates())
         assert {c["id"] for c in experts} == {"preset", "mine"}
         preset = next(c for c in experts if c["id"] == "preset")
         assert preset["installed"] is False
@@ -1820,10 +1886,10 @@ class TestListShowAndFileRead:
         assert "enabled" not in preset
         assert "pending_connectors" not in preset
         assert preset["connection_state"] == "disconnected"
-        assert [c["id"] for c in catalog.list_agent_templates({"filter": "builtin"})] == [
+        assert [c["id"] for c in _run(catalog.list_agent_templates({"filter": "builtin"}))] == [
             "preset"
         ]
-        assert [c["id"] for c in catalog.list_agent_templates({"filter": "local"})] == [
+        assert [c["id"] for c in _run(catalog.list_agent_templates({"filter": "local"}))] == [
             "mine"
         ]
         assert [c["id"] for c in catalog.list_plugin_packages({"filter": "builtin"})] == [
@@ -1838,20 +1904,20 @@ class TestListShowAndFileRead:
         monkeypatch.setattr(
             catalog,
             "_agent_template_team_compatibility",
-            lambda package_dir: calls.append(package_dir) or {"leader": True, "member": True},
+            AsyncMock(side_effect=lambda package_dir: calls.append(package_dir) or {"leader": True, "member": True}),
         )
 
         default_card = next(
-            card for card in catalog.list_agent_templates() if card["id"] == "mine"
+            card for card in _run(catalog.list_agent_templates()) if card["id"] == "mine"
         )
         assert "teamCompatible" not in default_card
         assert calls == []
 
         group_card = next(
             card
-            for card in catalog.list_agent_templates(
+            for card in _run(catalog.list_agent_templates(
                 {"include_team_compatibility": True}
-            )
+            ))
             if card["id"] == "mine"
         )
         assert group_card["teamCompatible"] == {"leader": True, "member": True}
@@ -1877,7 +1943,7 @@ class TestListShowAndFileRead:
         records = {"feishu": {"state": "connected"}, "amap": {"state": "connecting"}}
         monkeypatch.setattr(catalog, "get_mcp_record", lambda name: records.get(name))
         shown = catalog.show_agent_template("needs-auth")
-        listed = catalog.list_agent_templates()
+        listed = _run(catalog.list_agent_templates())
         assert shown is not None
         assert shown["pending_connectors"] == ["amap"]
         assert shown["connection_state"] == "connecting"
@@ -2062,3 +2128,41 @@ class TestUpdateAndDeleteAgentTemplate:
         catalog.uninstall_agent_template({"id": "mine"})
         assert not pkg.exists()
         assert all(e["id"] != "mine" for e in marketplace_entries(AGENT_TEMPLATES))
+
+
+@pytest.mark.parametrize("as_archive", [False, True])
+@pytest.mark.parametrize("as_mapping", [False, True])
+@pytest.mark.parametrize("skill_path", [
+    "/tmp/docx-pro",
+    r"C:\Users\Administrator\skills\docx-pro",
+    r"\\server\share\docx-pro",
+    r"C:skills\docx-pro",
+    r"\Users\Administrator\skills\docx-pro",
+])
+def test_import_group_rejects_absolute_skill_paths(
+    extension_workspace: Path, tmp_path: Path,
+    skill_path: str, as_mapping: bool, as_archive: bool,
+) -> None:
+    source = _seed_valid_agent_group(
+        tmp_path / "source-home" / "agent" / "workspace",
+        "invalid-skills", under="local",
+    )
+    manifest_path = source / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["skills"] = [{"dir": skill_path}] if as_mapping else [skill_path]
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    upload = source
+    if as_archive:
+        upload = tmp_path / "invalid-skills.zip"
+        with zipfile.ZipFile(upload, "w") as archive:
+            for path in source.rglob("*"):
+                if path.is_file():
+                    archive.write(path, Path(source.name) / path.relative_to(source))
+    with pytest.raises(ValueError, match="package-relative"):
+        catalog.import_agent_group({"path": str(upload)})
+    destination = (
+        extension_workspace.parent.parent / ".agent_teams"
+        / AGENT_GROUPS / "local" / "invalid-skills"
+    )
+    assert not destination.exists()
+    assert not catalog.is_agent_group_installed("invalid-skills")

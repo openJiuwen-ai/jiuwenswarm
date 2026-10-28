@@ -123,6 +123,28 @@ async def test_unknown_upload_never_retries_or_turns_into_success(setup):
 
 
 @pytest.mark.asyncio
+async def test_failure_keeps_the_hub_guidance(setup):
+    service, _, publisher, _ = setup
+    publisher.error = PublishUploadError(
+        "hub_request_failed",
+        http_status=409,
+        message="发布新版本时不能修改 Skill 可见性，请沿用现有设置",
+    )
+    draft = await prepare(service)
+    op = await service.commit(
+        "trusted-user-workspace-hub",
+        draft["draft_id"],
+        "r1",
+        auth=PublishAuth("test-token"),
+    )
+    await service.wait_idle()
+    record = service.status("trusted-user-workspace-hub", op["operation_id"])
+    assert record["execution_status"] == "failed"
+    assert record["error"]["code"] == "hub_request_failed"
+    assert record["error"]["message"] == "发布新版本时不能修改 Skill 可见性，请沿用现有设置"
+
+
+@pytest.mark.asyncio
 async def test_tampered_artifact_fails_before_publisher(setup):
     service, store, publisher, _ = setup
     draft = await prepare(service)

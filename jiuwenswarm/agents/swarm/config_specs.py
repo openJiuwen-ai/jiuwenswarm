@@ -69,7 +69,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_TEAM_CODE_NORMAL,
     NEW_TEAM_CODE_PLAN,
     NEW_TEAM_DESIGN,
@@ -138,7 +138,6 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     # registrar.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -196,7 +195,6 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     # rail; declaring SKILL_TOOLKIT here too would double-register them.
     registry.SKILL_RETRIEVAL,
     registry.SYMPHONY_TOOLKIT,
-    registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
     registry.VIDEO_GEN,
@@ -259,25 +257,20 @@ def _is_code_mode(mode: str) -> bool:
 
 # Design profile (team.design) capability set. The design leader is a
 # conversation surface over the design canvas and the workers are per-node
-# executors: skill/symphony/task-planning rails and the generic media tools
-# are out (the designer graph tools arrive via the agent_group leader
-# template, not the profile). Web search/fetch is leader-only, so the
-# per-node executors stay on their node inputs. Everything else —
-# runtime/response prompts, streaming, security, anomaly detection,
-# heartbeat, context — stays because the team runtime's session mechanics
-# depend on them.
+# executors: skill/symphony/task-planning rails and the generic web/media
+# tools are out (the designer graph tools arrive via the agent_group leader
+# template, not the profile). Everything else — runtime/response prompts,
+# streaming, security, anomaly detection, heartbeat, context — stays because
+# the team runtime's session mechanics depend on them.
 _DESIGN_RAIL_NAMES: tuple[str, ...] = (
     registry.RUNTIME_PROMPT,
     registry.RESPONSE_PROMPT,
     registry.STREAM_EVENT,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,
-    registry.HEARTBEAT,
-    registry.AVATAR_PROMPT,
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
-    registry.PERSONAL_CONTEXT,
 )
 
 _DESIGN_TOOL_NAMES: tuple[str, ...] = (
@@ -319,7 +312,7 @@ def _build_design_capability_specs(
         # the execution graph (analyze → brief → review → storyboard →
         # review → graph → validate).
         rails_specs.append(RailSpec(type=registry.DESIGNER_AUTHORING))
-        # Leader execution rail: the designer_run_graph tool (canvas
+        # Leader execution rail: the swarmflow tool (canvas
         # compilation/trigger from the conversation, single-node rerun,
         # cascade rerun) + its prompt section. Graph editing
         # (designer_graph_tools) and execution stay two tools on two rails.
@@ -853,17 +846,31 @@ def build_member_capability_specs(
     Returns:
         A ``(rails_specs, tool_specs)`` tuple of openjiuwen specs.
     """
+    if role == "leader" and (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        availability = RailSpec(type=registry.ORGANIZATION_AVAILABILITY)
+    else:
+        availability = None
     if _is_code_mode(mode):
-        return _build_code_capability_specs(
+        rails, tools = _build_code_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
-    if _is_design_mode(mode):
-        return _build_design_capability_specs(
+    elif _is_design_mode(mode):
+        rails, tools = _build_design_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
-    return _build_team_capability_specs(
-        config, mode, role, enable_permissions=enable_permissions
-    )
+    else:
+        rails, tools = _build_team_capability_specs(
+            config, mode, role, enable_permissions=enable_permissions
+        )
+    if availability is not None:
+        rails.append(availability)
+    if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        rails.append(RailSpec(type=registry.ORGANIZATION_MODEL))
+        if role == "leader":
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_MODEL_TOOLS))
+            rails.append(RailSpec(type=registry.ORGANIZATION_OWNER_INBOX))
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_OWNER_INBOX_TOOLS))
+    return rails, tools
 
 
 def _is_subagent_enabled(sub_cfg: Any) -> bool:

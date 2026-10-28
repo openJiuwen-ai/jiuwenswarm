@@ -26,12 +26,31 @@ import {
   compressSharedTimeline,
   diagnosisSelectionRanges,
   clampSharedViewport,
+  formatAxisClock,
   formatElapsed,
   mainAgentLastNode,
+  otelSpanWallInterval,
+  rawOtelSpanInterval,
+  rawOtelSpanIntervals,
   sharedWallClockDomain,
   visibleAxisTicks,
   wallToCompressed,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisTimeSelection.mjs';
+
+function msToNano(ms) {
+  return String(BigInt(ms) * 1_000_000n);
+}
+
+function rawOtelRecord({ startMs, endMs, empty = false } = {}) {
+  if (empty) return { otlp: null };
+  const span = { startTimeUnixNano: msToNano(startMs) };
+  if (endMs !== undefined) span.endTimeUnixNano = msToNano(endMs);
+  return {
+    otlp: {
+      resourceSpans: [{ scopeSpans: [{ spans: [span] }] }],
+    },
+  };
+}
 
 const TRACE = 'a'.repeat(32);
 const ref = (spanId, subject = 'main') => ({ trace_id: TRACE, span_id: spanId.padEnd(16, '0'), subject_id: subject });
@@ -200,6 +219,49 @@ test('resolveStepIds separates steps that are no longer available', () => {
   assert.equal(missing.length, 1);
 });
 
+test('whole-table events replace the failure causes and evolution items', () => {
+  const cause = id => ({ id, dimension: 'd', summary: id, evidence: [ref('1')], suggestion: [] });
+  const judge = id => ({ id, category: 'skill', summary: id, evidence: [ref('2')], suggestion: ['x'], score: 0.5, target: 's' });
+  let current = record({ seq: 1, reward_failure_causes: [], evolution_judge: [] });
+  let outcome = applyProgressEvent(
+    current,
+    progress(2, 'reward_failure_causes', { stage_id: 'attribute', reward_failure_causes: [cause('rfc-1')] }),
+  );
+  assert.equal(outcome.refetch, false);
+  current = outcome.record;
+  outcome = applyProgressEvent(
+    current,
+    progress(3, 'evolution_judge', { stage_id: 'attribute', evolution_judge: [judge('evo-1')] }),
+  );
+  current = outcome.record;
+  assert.deepEqual(current.reward_failure_causes.map(item => item.id), ['rfc-1']);
+  assert.deepEqual(current.evolution_judge.map(item => item.id), ['evo-1']);
+  current = applyProgressEvent(
+    current,
+    progress(4, 'reward_failure_causes', { stage_id: 'attribute', reward_failure_causes: [cause('rfc-2')] }),
+  ).record;
+  assert.deepEqual(current.reward_failure_causes.map(item => item.id), ['rfc-2']);
+  assert.deepEqual(current.stages, []);
+});
+
+test('highlightKeysOf covers failure causes, evolution items and legacy root causes', () => {
+  const current = record({
+    reward_failure_causes: [{ id: 'rfc-1', dimension: 'd', summary: '', evidence: [ref('1')], suggestion: [] }],
+    evolution_judge: [{ id: 'evo-1', category: 'skill', summary: '', evidence: [ref('2')], suggestion: [], score: 0.5 }],
+    root_causes: [{ id: 'rc-1', category: 'other', subject_id: 'main', refs: [ref('3')], summary: '', evidence: '' }],
+  });
+  assert.deepEqual(
+    [...highlightKeysOf(current)].sort(),
+    [ref('1'), ref('2'), ref('3')].map(stepRefKey).sort(),
+  );
+  assert.deepEqual([...highlightKeysOf(current, ['evo-1'])], [stepRefKey(ref('2'))]);
+});
+
+test('summaryOf carries the trajectory summary', () => {
+  const summary = summaryOf(record({ trajectory_summary: 'what happened' }));
+  assert.equal(summary.trajectory_summary, 'what happened');
+});
+
 test('mergeTtseResults only touches ttse_trigger', () => {
   const merged = mergeTtseResults(record(), { 'tt-1': { result: 'triggered', triggered_at: 'x' } });
   assert.equal(merged.ttse_trigger['tt-1'].result, 'triggered');
@@ -273,10 +335,43 @@ test('a zero-width domain stays selectable', () => {
   );
 });
 
-test('mainAgentLastNode is the last timed node of the main agent', () => {
+test('otelSpanWallInterval reads start/end nanos and collapses a missing end', () => {
+  assert.deepEqual(
+    otelSpanWallInterval({
+      startTimeUnixNano: msToNano(1_000),
+      endTimeUnixNano: msToNano(1_250),
+    }),
+    { startMs: 1_000, endMs: 1_250 },
+  );
+  assert.deepEqual(
+    otelSpanWallInterval({ startTimeUnixNano: msToNano(500) }),
+    { startMs: 500, endMs: 500 },
+  );
+  assert.equal(otelSpanWallInterval({ startTimeUnixNano: 'not-a-number' }), null);
+  assert.equal(otelSpanWallInterval({ startTimeUnixNano: msToNano(-1) }), null);
+});
+
+test('rawOtelSpanIntervals keep every timed raw record and skip unusable ones', () => {
+  assert.equal(rawOtelSpanInterval(rawOtelRecord({ empty: true })), null);
+  assert.equal(rawOtelSpanInterval({ otlp: { resourceSpans: [] } }), null);
+  assert.deepEqual(
+    rawOtelSpanIntervals([
+      rawOtelRecord({ startMs: 1_000, endMs: 1_100 }),
+      rawOtelRecord({ empty: true }),
+      rawOtelRecord({ startMs: 2_000 }),
+      { otlp: { resourceSpans: [{ scopeSpans: [{ spans: [] }] }] } },
+    ]),
+    [
+      { startMs: 1_000, endMs: 1_100 },
+      { startMs: 2_000, endMs: 2_000 },
+    ],
+  );
+});
+
+test('mainAgentLastNode is the last assistant reply of the main agent', () => {
   const turns = [
-    { groups: [{ cells: [{ startedAt: 1_000, timeSeconds: 1 }, { requestOnly: true, startedAt: 9_000 }] }] },
-    { groups: [{ cells: [{ startedAt: 4_000, timeSeconds: 2 }, { startedAt: 500 }] }] },
+    { groups: [{ cells: [{ kind: 'message', startedAt: 1_000, timeSeconds: 1 }, { requestOnly: true, startedAt: 9_000 }] }] },
+    { groups: [{ cells: [{ kind: 'message', startedAt: 4_000, timeSeconds: 2 }, { startedAt: 500 }] }] },
   ];
   assert.deepEqual(mainAgentLastNode([
     { subjectId: 'member', kind: 'team_member', turns },
@@ -287,6 +382,32 @@ test('mainAgentLastNode is the last timed node of the main agent', () => {
     { subjectId: 'leader', kind: 'team_leader', turns },
     { subjectId: 'member', kind: 'team_member', turns: [{ groups: [{ cells: [{ startedAt: 8_000 }] }] }] },
   ]), { subjectId: 'leader', startMs: 4_000, endMs: 6_000 });
+});
+
+test('mainAgentLastNode ignores a user cell whose commit replay time outlasts the reply start', () => {
+  // The user row starts 6ms after the reply's inference began (commit replay
+  // time), yet the reply interval [10_000, 14_000] is the delivery node.
+  const turns = [
+    { groups: [{ cells: [
+      { kind: 'message', startedAt: 10_000, timeSeconds: 4 },
+      { kind: 'user', startedAt: 10_006 },
+    ] }] },
+  ];
+  assert.deepEqual(mainAgentLastNode([
+    { subjectId: 'main', kind: 'main_agent', turns },
+  ]), { subjectId: 'main', startMs: 10_000, endMs: 14_000 });
+});
+
+test('mainAgentLastNode breaks equal reply starts by their end', () => {
+  const turns = [
+    { groups: [{ cells: [
+      { kind: 'message', startedAt: 10_000, timeSeconds: 2 },
+      { kind: 'message', startedAt: 10_000, timeSeconds: 4 },
+    ] }] },
+  ];
+  assert.deepEqual(mainAgentLastNode([
+    { subjectId: 'main', kind: 'main_agent', turns },
+  ]), { subjectId: 'main', startMs: 10_000, endMs: 14_000 });
 });
 
 test('collectWallClockSamples keeps every cell in order', () => {
@@ -346,6 +467,12 @@ test('formatElapsed and axis ticks run from 0:00 to the end', () => {
   assert.equal(ticks[0].label, '0:00');
   assert.equal(ticks[ticks.length - 1].label, '1:30');
   assert.equal(ticks[ticks.length - 1].fraction, 1);
+});
+
+test('formatAxisClock shows local wall-clock time', () => {
+  const stamp = new Date(2026, 9, 23, 14, 5, 9).getTime();
+  assert.equal(formatAxisClock(stamp), '14:05:09');
+  assert.equal(formatAxisClock(Number.NaN), '');
 });
 
 test('canSubmitDiagnosis follows scope, busy and running state', () => {

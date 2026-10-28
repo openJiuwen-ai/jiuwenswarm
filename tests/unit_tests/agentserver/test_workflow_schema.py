@@ -22,7 +22,7 @@ def test_req_method_chat_swarmflow_reply():
 
 def test_swarmflow_reply_params_typeddict_keys():
     """SwarmflowReplyParams declares the expected keys (total=False => all optional)."""
-    from jiuwenswarm.common.schema.swarmflow_reply import SwarmflowReplyParams
+    from gateway.swarmflow_reply import SwarmflowReplyParams
 
     hints = SwarmflowReplyParams.__annotations__
     for key in ("session_id", "team_name", "run_id", "correlation_id", "answer"):

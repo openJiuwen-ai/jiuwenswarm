@@ -125,13 +125,13 @@ async def test_etcd_put_get_list_delete(extra_fields):
 @pytest.mark.asyncio
 async def test_controller_creates_etcd_job_without_login_model(monkeypatch):
     """AgentOS creation passes mcp and an empty credential_ref without login."""
-    from jiuwenswarm.gateway.cron.controller import CronController
+    from gateway.cron.controller import CronController
 
     def unexpected_login_binding(*_args):
         raise AssertionError("ordinary cron must not bind login credentials")
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.controller._login_credential_ref_from_session",
+        "gateway.cron.controller._login_credential_ref_from_session",
         unexpected_login_binding,
     )
     store, fake = _store()
@@ -163,6 +163,33 @@ async def test_controller_creates_etcd_job_without_login_model(monkeypatch):
     assert stored.credential_ref == ""
     assert "credential_ref" not in job
     scheduler.reload.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_etcd_create_job_persists_mcp_and_credential_ref():
+    """Regression: EtcdCronJobStore.create_job must accept mcp/credential_ref
+    (mirrors FileCronJobStore). 0.2.7 shipped the cron-mcp feature with the
+    etcd store signature missing these params, so every create on
+    store_backend=etcd raised "unexpected keyword argument 'mcp'". This pins
+    the etcd store to the same contract as the file store.
+    """
+    store, _fake = _store()
+    created = await store.create_job(
+        name="daily",
+        cron_expr="0 9 * * *",
+        timezone="Asia/Shanghai",
+        description="with-mcp",
+        targets="web",
+        mcp=["vision", "audio"],
+        credential_ref="cred-abc",
+    )
+    assert created.mcp == ["vision", "audio"]
+    assert created.credential_ref == "cred-abc"
+
+    fetched = await store.get_job(created.id)
+    assert fetched is not None
+    assert fetched.mcp == ["vision", "audio"]
+    assert fetched.credential_ref == "cred-abc"
 
 
 @pytest.mark.asyncio
@@ -261,7 +288,7 @@ def test_normalize_endpoint_adds_scheme():
 
 @pytest.mark.asyncio
 async def test_watch_triggers_scheduler_reload():
-    from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
+    from gateway.cron.scheduler import CronSchedulerService
 
     class _StubAgent:
         async def send_request(self, *_a, **_k):

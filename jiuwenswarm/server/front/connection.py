@@ -11,19 +11,19 @@ from typing import Any
 
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.security.ws_origin import (
+from gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from jiuwenswarm.common.ws_diagnostics import (
+from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.front.admission import ExecutionAdmission
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.protocol import (

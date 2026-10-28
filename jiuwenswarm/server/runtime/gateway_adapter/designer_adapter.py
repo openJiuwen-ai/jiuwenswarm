@@ -31,7 +31,7 @@ from jiuwenswarm.common.schema.designer_graph import (
 )
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     DESIGN_WORK_MODE,
     is_default_project_id,
@@ -295,6 +295,22 @@ def _graph_story_prompt(graph: dict[str, Any]) -> tuple[str, str]:
     meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
     analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
     return str(analysis.get("story_name") or ""), str(graph.get("description") or "")
+
+
+def _heal_canvas_title(graph: dict[str, Any]) -> dict[str, Any]:
+    """Retitle a canvas still named after its prompt, by the rule the session title follows."""
+    story_name, prompt = _graph_story_prompt(graph)
+    current = str(graph.get("title") or "")
+    title = _replacement_display_title(current, prompt, story_name)
+    if not title or title == current:
+        return graph
+    healed = dict(graph)
+    healed["title"] = title
+    try:
+        return dict(_store.save_graph(healed))
+    except Exception:
+        logger.warning("Failed to retitle design canvas %s", graph.get("graph_id"), exc_info=True)
+        return healed
 
 
 def sync_design_display_name(project: Any) -> Any:
@@ -653,6 +669,7 @@ def _get_design_workspace(
     )
     if error is not None or pair is None:
         return None, error, code
+    pair["graph"] = _heal_canvas_title(pair["graph"])
     return _workspace_from_pair(project, pair, pairs), None, None
 
 
@@ -953,6 +970,17 @@ def _compose_design_session(
     model_name = str(params.get("model_name") or "").strip()
     if model_name:
         metadata["model_name"] = model_name
+        # Team rounds resolve their chat model from the session, not the graph.
+        # Persist the canvas's chosen model here as well, otherwise the leader
+        # turn (``chat.send(mode='team.design')`` carries no model_name) falls
+        # back to the configured default even though the canvas was created
+        # with another model selected.
+        update_session_metadata(
+            session_id=session_id,
+            model=model_name,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
     graph["metadata"] = metadata
     if prompt:
         graph["description"] = prompt
@@ -1390,27 +1418,6 @@ def _cancel_run(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
     return {"run": dict(run)}, None, None
 
 
-def _choose_output(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    run_id = str(params.get("run_id") or "").strip()
-    node_id = str(params.get("node_id") or "").strip()
-    choice = str(params.get("choice") or "").strip()
-    if not run_id:
-        return None, "run_id is required", "BAD_REQUEST"
-    if not node_id:
-        return None, "node_id is required", "BAD_REQUEST"
-    run = _store.get_run(run_id)
-    graph_id = str((run or {}).get("graph_id") or "")
-    if run is None or not graph_id:
-        return None, "run or node not found", "NOT_FOUND"
-    try:
-        updated = _coordinator_for(graph_id).choose_output(run_id, node_id, choice)
-    except KeyError:
-        return None, "run or node not found", "NOT_FOUND"
-    except ValueError as exc:
-        return None, str(exc), "BAD_REQUEST"
-    return {"run": dict(updated)}, None, None
-
-
 class DesignerAdapter(GatewayAdapter):
     """Designer execution graph adapter.
 
@@ -1434,7 +1441,6 @@ class DesignerAdapter(GatewayAdapter):
             ReqMethod.DESIGNER_RUN_GET.value,
             ReqMethod.DESIGNER_RUN_PAUSE.value,
             ReqMethod.DESIGNER_RUN_CANCEL.value,
-            ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT.value,
         }
     )
 
@@ -1528,8 +1534,6 @@ class DesignerAdapter(GatewayAdapter):
                 payload, error, code = await asyncio.to_thread(_pause_run, params)
             elif method == ReqMethod.DESIGNER_RUN_CANCEL:
                 payload, error, code = await asyncio.to_thread(_cancel_run, params)
-            elif method == ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT:
-                payload, error, code = await asyncio.to_thread(_choose_output, params)
             else:
                 return build_error_response(
                     request,
@@ -1556,7 +1560,6 @@ class DesignerAdapter(GatewayAdapter):
         if isinstance(payload, dict) and payload.get("run") is not None and method in {
             ReqMethod.DESIGNER_RUN_PAUSE,
             ReqMethod.DESIGNER_RUN_CANCEL,
-            ReqMethod.DESIGNER_RUN_CHOOSE_OUTPUT,
         }:
             await _push_designer_event(
                 request=request,

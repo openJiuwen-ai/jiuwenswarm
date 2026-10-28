@@ -331,7 +331,7 @@ class ConfigAdapter(GatewayAdapter):
         )
 
     async def _handle_browser_config(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
             browser_decision_updates,
         )

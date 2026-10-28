@@ -27,7 +27,7 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,  # re-exported; image/compose handlers call it on this module
     get_default_project_session_workspace_dir,
 )
-from jiuwenswarm.common.work_mode import is_default_project_id
+from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 from jiuwenswarm.server.runtime.designer.user_references import user_reference_image_paths
 from jiuwenswarm.server.runtime.session import project_store
@@ -65,6 +65,7 @@ def graph_prompt(graph: DesignerExecutionGraph, node: DesignerGraphNode | None =
                     "STAGING LOCK",
                     "SAME-SCENE CONSISTENCY GATE",
                     "Film shot",
+                    "仅拍第",
                     "CLOTHING LOCK",
                     "LANGUAGE LOCK",
                 )
@@ -97,17 +98,7 @@ def graph_prompt(graph: DesignerExecutionGraph, node: DesignerGraphNode | None =
                     duration_sec=dur,
                     on_screen=list(config.get("on_screen") or config.get("cast_names") or []),
                 )
-                lock_bits: list[str] = [assignment]
-                for key, label in (
-                    ("costume_lock", "CLOTHING LOCK"),
-                    ("positioning_lock", "STAGING LOCK"),
-                    ("language_lock", "LANGUAGE LOCK"),
-                    ("speech_line", "SPEECH"),
-                ):
-                    val = str(config.get(key) or "").strip()
-                    if val:
-                        lock_bits.append(f"{label}: {val[:400]}")
-                return "\n".join(lock_bits)
+                return assignment
             return str(config.get("clip_action") or "")[:500] or "this storyboard shot only"
         if node_prompt:
             return node_prompt
@@ -343,8 +334,6 @@ def apply_uploaded_outputs_to_run(run: dict, graph: dict) -> bool:
         state["status"] = NODE_STATUS_COMPLETED
         state["output_ref"] = dict(ref)
         state["output_refs"] = [dict(ref)]
-        state["candidate_output_ref"] = None
-        state["candidate_output_refs"] = []
         state["error"] = None
         states[node_id] = state
         changed = True
@@ -863,9 +852,6 @@ def _is_rate_limit_error(text: str) -> bool:
     return any(token in low for token in _RATE_LIMIT_TOKENS)
 
 
-_IMAGE_GEN_TIMEOUT_SECONDS = 1200
-
-
 async def generate_designer_image(
     prompt: str,
     size: str = "1K",
@@ -919,6 +905,7 @@ async def generate_designer_image(
                     phase="tool",
                     detail={"attempt": attempt, "input": tool_input},
                 ):
+                    image_timeout = media_generation.image_tool_timeout_seconds()
                     result = await asyncio.wait_for(
                         media_generation.generate_image(
                             prompt,
@@ -926,10 +913,13 @@ async def generate_designer_image(
                             reference_images=refs or None,
                             save_dir=save_dir,
                         ),
-                        timeout=_IMAGE_GEN_TIMEOUT_SECONDS,
+                        timeout=image_timeout,
                     )
             except asyncio.TimeoutError:
-                last_error = f"image generation timed out after {_IMAGE_GEN_TIMEOUT_SECONDS}s"
+                last_error = (
+                    "image generation timed out after "
+                    f"{int(media_generation.image_tool_timeout_seconds())}s"
+                )
                 logger.info("Designer image generation timed out (attempt %s/%s)", attempt, attempts)
                 result = {"error": last_error}
             except Exception as exc:  # noqa: BLE001

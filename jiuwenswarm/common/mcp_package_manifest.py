@@ -14,7 +14,7 @@ from typing import Any
 
 _SAFE_PACKAGE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 _INTEGRATION_TYPES = frozenset({"stdio-mcp", "remote-mcp", "cli", "skill-only"})
-_CREDENTIAL_TYPES = frozenset({"token", "cli-oauth"})
+_CREDENTIAL_TYPES = frozenset({"token", "cli-oauth", "oauth"})
 
 logger = logging.getLogger(__name__)
 
@@ -189,8 +189,8 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
             )
         if credentials_type == "token" and credentials.get("file") is None:
             raise McpPackageError("token credentials must declare credentials.file")
-        if credentials_type == "cli-oauth" and credentials.get("file") is not None:
-            raise McpPackageError("cli-oauth credentials must not declare credentials.file")
+        if credentials_type in {"cli-oauth", "oauth"} and credentials.get("file") is not None:
+            raise McpPackageError(f"{credentials_type} credentials must not declare credentials.file")
         if credentials.get("file") is not None:
             credentials_file = _declared_path(
                 root, credentials.get("file"), "credentials.file"

@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+from gateway.channel_manager.tui.tui_connect import (
     CLI_FORWARD_NO_LOCAL_HANDLER_METHODS,
     CLI_FORWARD_REQ_METHODS,
     CliHandlersBindParams,

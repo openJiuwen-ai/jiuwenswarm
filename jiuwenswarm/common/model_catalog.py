@@ -11,7 +11,7 @@ from typing import Any
 
 from jiuwenswarm.common.config import get_config, load_models_config
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, MODEL_SELECTION_NOT_FOUND, ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
+from gateway.common.model_selection import ModelSelection
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +22,9 @@ _PUBLIC_GROUP_KEYS = (
     "is_default",
     "routes",
     "request_config",
+)
+_PUBLIC_GROUP_TIMEOUT_KEYS = (
+    "timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout",
 )
 
 
@@ -142,7 +145,12 @@ class ModelCatalog:
         if isinstance(model_config, dict) and isinstance(model_config.get("reasoning_level"), bool):
             model_config["reasoning_level"] = "on" if model_config["reasoning_level"] else "off"
         expose_api_key = include_api_key and hit["source"] == "defaults" and not is_login_model(entry)
-        client = entry.get("model_client_config")
+        client = entry.get("model_client_config") or {}
+        # The edit dialog requires these strings even for an empty YAML model.
+        # Normalize only the response; retain the original persisted values.
+        client["model_name"] = str(client.get("model_name") or "")
+        client["api_base"] = str(client.get("api_base") or "")
+        entry["model_client_config"] = client
         write_only_fields: list[str] = []
         if isinstance(client, dict):
             if "api_key" in client and not expose_api_key:
@@ -166,6 +174,15 @@ class ModelCatalog:
             for key in _PUBLIC_GROUP_KEYS:
                 value = deepcopy(group.get(key))
                 public[key] = value
+            routing = group.get("routing")
+            if isinstance(routing, dict):
+                timeouts = {
+                    key: deepcopy(routing[key])
+                    for key in _PUBLIC_GROUP_TIMEOUT_KEYS
+                    if key in routing
+                }
+                if timeouts:
+                    public["routing"] = timeouts
             result.append(public)
         return result
 
