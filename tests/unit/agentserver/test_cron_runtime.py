@@ -15,6 +15,11 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
 from jiuwenswarm.gateway.cron.store import CronJob, CronJobStore
+from jiuwenswarm.common.invocation_context.billing_trace import (
+    MAX_CORE_LEN,
+    MAX_TRACE_ID_LEN,
+    build_cron_trace_id,
+)
 
 import time
 
@@ -40,6 +45,33 @@ def _make_job(job_id="job-1", name="test", **overrides):
     }
     defaults.update(overrides)
     return CronJob(**defaults)
+
+
+class TestRunNowBillingTrace:
+    """立即执行 run_id 必须与定时轮同格式，否则 FINISH consumedPoints 恒为 0。"""
+
+    def test_run_now_id_is_billing_compatible_and_unique(self) -> None:
+        svc = _TestableScheduler.__new__(_TestableScheduler)
+        svc._runs = {}
+        svc._last_run_now_ts = {}
+        job_id = "1d96c179c1f6421fb999a6ac935dc8c9"
+
+        first = svc._next_run_now_id(job_id, 1793162095)
+        second = svc._next_run_now_id(job_id, 1793162095)
+
+        assert first == f"{job_id}:1793162095"
+        assert second == f"{job_id}:1793162096"  # 同秒内连续立即执行不重复
+        assert first.count(":") == 1  # 不再插入 uuid 段
+        trace = build_cron_trace_id(first)
+        assert len(trace) - len("cron_") <= MAX_CORE_LEN
+        assert len(trace) <= MAX_TRACE_ID_LEN
+
+        # 活跃 run 占用同秒 id 时继续顺延
+        svc._runs[first] = object()
+        svc._runs[second] = object()
+        assert svc._next_run_now_id(job_id, 1793162095) == f"{job_id}:1793162097"
+
+
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.device_tool_planner import (
     CronDeviceToolPlan,
 )

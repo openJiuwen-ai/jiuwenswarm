@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import time
-import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, tzinfo
 from typing import Any, Callable
@@ -351,6 +350,9 @@ class CronSchedulerService:
         self._events: list[tuple[float, int, _Event]] = []
         self._seq = 0
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
+        # 立即执行的秒级戳（每 job 单调递增）：run_id 必须保持计费 trace 可识别的
+        # jobId:epoch 形态，不能在中间插 uuid（见 _next_run_now_id）
+        self._last_run_now_ts: dict[str, int] = {}
         self._run_tasks: dict[str, asyncio.Task] = {}
         # run_id -> job_id.  A run skipped during crash recovery must stay
         # suppressed across later store reloads; otherwise a reload after the
@@ -639,6 +641,21 @@ class CronSchedulerService:
         self._sync_store_mtime()
         self._reload_event.set()
 
+    def _next_run_now_id(self, job_id: str, now_ts: int) -> str:
+        """立即执行的 run_id：与定时轮同格式 ``jobId:epoch``。
+
+        计费 trace 核心段上限 45（jobId 32 + ':' + 10 位秒级时间戳）；旧实现额外
+        插入 uuid（核心段 80），计费服务不识别，FINISH consumedPoints 恒为 0。
+        同一 job 连续立即执行用单调秒级时间戳避重（跨重启同秒碰撞概率可忽略）。
+        """
+        ts = max(now_ts, self._last_run_now_ts.get(job_id, 0) + 1)
+        run_id = f"{job_id}:{ts}"
+        while run_id in self._runs:
+            ts += 1
+            run_id = f"{job_id}:{ts}"
+        self._last_run_now_ts[job_id] = ts
+        return run_id
+
     async def trigger_run_now(self, job_id: str) -> str:
         info = await self.trigger_run_now_info(job_id)
         return str(info["run_id"])
@@ -651,7 +668,7 @@ class CronSchedulerService:
         now = datetime.now(tz=ZoneInfo(job.timezone))
         push_dt = now
         wake_dt = now
-        run_id = f"{job.id}:{uuid.uuid4().hex}:{int(push_dt.timestamp())}"
+        run_id = self._next_run_now_id(job.id, int(push_dt.timestamp()))
         channel_id, exec_session_id = self._make_execution_context(job)
         self._runs[run_id] = CronRunState(
             run_id=run_id,
