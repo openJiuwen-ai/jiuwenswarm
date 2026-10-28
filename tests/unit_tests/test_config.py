@@ -1559,7 +1559,7 @@ existing:
                 records.append(record)
 
         handler = _Collector(level=logging.WARNING)
-        config_logger = logging.getLogger("jiuwenswarm.common.config")
+        config_logger = logging.getLogger("gateway.common.config")
         previous_level = config_logger.level
         config_logger.addHandler(handler)
         config_logger.setLevel(logging.WARNING)
