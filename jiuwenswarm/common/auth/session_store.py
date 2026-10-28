@@ -1,6 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""转发别名（auth 拆分过渡）：sessions.json 凭据存储（gateway claim 写 / server apply_credential_update 写，真源单点）真源已迁 ``gateway.auth.session_store``。
+"""转发别名（auth 拆分过渡）：sessions.json 凭据存储，真源已迁
+``gateway.auth.session_store``（gateway claim 写 / server
+apply_credential_update 写，真源单点）。
 
 server/agents 侧消费方经本路径取用（拍板 #10 方向：母仓反向依赖
 gateway 仓）；B3 拆仓时随 shim 收敛退役。
