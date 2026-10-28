@@ -1304,6 +1304,59 @@ class MessageHandler(ABC):
 
         return len(candidates)
 
+    async def _cancel_streams_for_paused_session(self, msg: "Message") -> None:
+        """Pause-side gateway stream governance (issue 5448, G2).
+
+        Pausing parks the AgentServer round and cancels its event streams
+        without a wire-level terminal frame, so the gateway consumers would
+        hang on their receive queues forever — zombie registrations that
+        later veto the authoritative is_processing=false. Cancel them here;
+        each cancelled chat.send consumer finalizes itself with a local
+        is_processing=false (process_stream finally), and when nothing
+        emit-capable was cancelled (idle double-pause, attach-only
+        observers) broadcast the session-level false explicitly.
+        """
+        session_id = msg.session_id
+        if not session_id:
+            return
+        victims: list[str] = []
+        for rid, task in list(self._stream_tasks.items()):
+            if self._stream_sessions.get(rid) != session_id:
+                continue
+            if task.done():
+                continue
+            if self._stream_team_ids.get(rid):
+                continue  # expert-routed stream: targeted interrupt owns it
+            victims.append(rid)
+        # Capture before cancelling: process_stream finally pops the tracking
+        # entries, so emit flags are unreadable after the gather.
+        emit_victims = [
+            rid for rid in victims
+            if self._stream_emits_processing_status.get(rid)
+        ]
+        if victims:
+            logger.info(
+                "[MessageHandler] pause 治理同 session 流式任务: session_id=%s "
+                "cancelled_rids=%s 当前并发=%d",
+                session_id, victims, len(self._stream_tasks),
+            )
+            for rid in victims:
+                self._stream_tasks[rid].cancel()
+            await asyncio.gather(
+                *(self._stream_tasks[rid] for rid in victims),
+                return_exceptions=True,
+            )
+            # 走集中化 pop+broadcast：与 _cancel_stream_tasks_for_channel 相同，
+            # 让跨窗口配置保存锁感知运行态变化。
+            await self._pop_stream_tracking_and_broadcast(victims)
+        if not emit_victims:
+            # No cancelled stream can finalize itself (attach-only observers
+            # or an already-idle session): broadcast the session-level false
+            # so a resume-synthesized true cannot strand the frontend.
+            await self._send_processing_status(
+                msg.id, session_id, msg.channel_id, is_processing=False,
+            )
+
     async def _cancel_agent_work_for_session(
         self,
         msg: "Message",
@@ -4916,7 +4969,7 @@ class MessageHandler(ABC):
                         )
 
                     elif intent in ("pause", "resume"):
-                        # 暂停/恢复：不取消流式任务，转发给 AgentServer 处理 ReAct 循环
+                        # 暂停/恢复：转发给 AgentServer 处理 ReAct 循环
                         agent_msg = await self._prepare_agent_dispatch_message(msg)
                         # 确保 mode 信息存在，否则从 channel_states 注入
                         if isinstance(agent_msg.params, dict) and not agent_msg.params.get("mode"):
@@ -4943,6 +4996,14 @@ class MessageHandler(ABC):
                             msg.id, msg.channel_id, msg.session_id, intent,
                             has_active_task=has_active_task,
                         )
+                        # G2 (issue 5448): pause parks the AgentServer round and
+                        # its event streams die without a wire terminal — the
+                        # gateway consumers must not outlive them (zombie
+                        # registrations that later veto the authoritative
+                        # is_processing=false). resume needs no cleanup: the
+                        # next message starts a fresh round with a fresh stream.
+                        if intent == "pause":
+                            await self._cancel_streams_for_paused_session(msg)
 
                     continue
 
@@ -5242,9 +5303,42 @@ class MessageHandler(ABC):
                 )
                 ends_owner_stream = owns_status and not stream_route
                 if is_processing_false and ends_owner_stream:
-                    if self._session_has_streams_blocking_processing_false(session_id, exclude_rid=rid):
+                    # A team PERSISTENT stream outlives its round by design:
+                    # sibling live streams prove nothing about whether THIS
+                    # round is still running. Only round-authoritative
+                    # terminals carry is_complete=True (team.idle /
+                    # team.completed / pause broadcast), so those pass
+                    # regardless of sibling registrations — withholding them
+                    # froze the frontend spinner (issue 5448). A bare false
+                    # (e.g. one of several parallel owner works finishing)
+                    # is still the end of a single request and must keep
+                    # waiting for its siblings.
+                    owner_mode = self._stream_modes.get(rid, "")
+                    owner_round_terminal = (
+                        ChannelMode.is_team_mode(owner_mode)
+                        and isinstance(payload, dict)
+                        and payload.get("is_complete") is True
+                    )
+                    if not owner_round_terminal and (
+                        self._session_has_streams_blocking_processing_false(
+                            session_id, exclude_rid=rid
+                        )
+                    ):
                         # 这是单个请求的结束；同 session 仍有其他对话流时不能向前端
                         # 宣告整个会话空闲；保留自动收尾，让最后一个流退出时发送权威 false。
+                        logger.info(
+                            "[MessageHandler] withheld processing_status(false): "
+                            "session_id=%s owner_rid=%s blocked_by=%s",
+                            session_id, rid,
+                            [
+                                f"{active_rid}:emit="
+                                f"{self._stream_emits_processing_status.get(active_rid)}"
+                                f"/method={self._stream_methods.get(active_rid)}"
+                                f"/team_route={self._stream_team_ids.get(active_rid) or '-'}"
+                                for active_rid, sid in self._stream_sessions.items()
+                                if sid == session_id and active_rid != rid
+                            ],
+                        )
                         continue
                 published = await self.publish_stream_chunk(
                     chunk,
