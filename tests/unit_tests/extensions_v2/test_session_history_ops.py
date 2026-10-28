@@ -8,6 +8,7 @@ import asyncio
 import json
 from pathlib import Path
 import threading
+from types import SimpleNamespace
 
 import pytest
 from openjiuwen.core.events import Event, EventHandlerOpsBuilder, SessionContext
@@ -18,11 +19,19 @@ from jiuwenswarm.extensions_v2.handler_ops.session_ops import session_messages
 from jiuwenswarm.extensions_v2.webui.models import RenderTarget, UiActionInput
 from jiuwenswarm.server.runtime.session import lifecycle, project_store, session_history, session_metadata
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.history_context import (
+    bound_history_context,
+    capture_history_model,
+    capture_history_workspace,
+    history_context_scope,
+    platform_history_context,
+)
 from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
 from .management.support import write_package
 
 
-USER_EXTENSION = '''from dataclasses import replace
+USER_EXTENSION = '''import json
+from dataclasses import replace
 from openjiuwen.core.events import Event
 from jiuwenswarm.extensions_v2.event_types.session_history import SessionAppendRejection, SessionAppendResult
 
@@ -46,8 +55,16 @@ class Extension:
 
     async def policy(self, event, ops, next_handler):
         body = event.event_input.content
+        if body == "context-facts":
+            facts = {"cwd": await ops.session.cwd(), "root": await ops.session.root(),
+                     "model": await ops.session.model(), "source": event.event_input.source}
+            return await next_handler(Event(event.event_type, replace(event.event_input, content=json.dumps(facts))))
         if body == "deny":
             return SessionAppendRejection("Policy refused the message.")
+        if body == "fake-platform-deny":
+            return SessionAppendResult("rejected", ops.session_context.session_id, event.event_input.message_id)
+        if body == "forge-origin":
+            return await next_handler(Event(event.event_type, replace(event.event_input, source="extension", content="deny")))
         if body == "recursive":
             try:
                 await ops.session.append({"id": "inner", "role": "assistant", "content": "inner"})
@@ -278,10 +295,230 @@ async def test_existing_awaitable_platform_write_is_modified_before_persistence(
                          channel_id="web", role="assistant", content="platform:normal", timestamp=123.0, event_type="chat.final")
     assert _rows(sessions)[0]["content"] == "[checked] platform:normal"
     assert (await _query(history_host))["page"]["messages"][0]["content"] == "[checked] platform:normal"
-    with pytest.raises(SessionHistoryError, match="APPEND_REJECTED"):
-        await run_history_io(session_history.append_history_record, session_id="hist-a", request_id="platform-2",
-                             channel_id="web", role="assistant", content="deny", timestamp=124.0)
-    assert len(_rows(sessions)) == 1
+    await run_history_io(session_history.append_history_record, session_id="hist-a", request_id="platform-2",
+                         channel_id="web", role="assistant", content="deny", timestamp=124.0)
+    assert len(_rows(sessions)) == 2
+    assert _rows(sessions)[1]["content"] == "deny"
+
+
+def _save_context(sessions, sid, *, cwd, root, model="saved-model"):
+    path = sessions / sid / "metadata.json"
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    metadata.update({"project_dir": root, "channel_metadata": {"cwd": cwd}, "model": model})
+    path.write_text(json.dumps(metadata), encoding="utf-8")
+
+
+async def _platform_facts(sessions, sid, rid):
+    await run_history_io(session_history.append_history_record, session_id=sid, request_id=rid,
+                         channel_id="web", role="assistant", content="context-facts", timestamp=123.0)
+    rows = [row for row in _rows(sessions, sid) if row["request_id"] == rid]
+    return json.loads(rows[-1]["content"])
+
+
+def _runtime_model(name):
+    return SimpleNamespace(model_config=SimpleNamespace(model_name=name),
+                           model_client_config={"client_provider": "OpenAI"})
+
+
+def _capture_runtime(sid, *, cwd, project_root, model):
+    capture_history_workspace(sid, cwd=cwd, project_root=project_root)
+    capture_history_model(sid, model)
+
+
+@pytest.mark.asyncio
+async def test_platform_append_binds_saved_directories_without_activating_a_model(history_host, tmp_path):
+    _, sessions = history_host
+    root, cwd = str(tmp_path / "project"), str(tmp_path / "project" / "src")
+    _save_context(sessions, "hist-a", cwd=cwd, root=root)
+    facts = await _platform_facts(sessions, "hist-a", "saved-context")
+    assert facts["cwd"] == cwd and facts["root"] == root and facts["source"] == "history"
+    assert facts["model"]["model_name"] == "saved-model"
+    assert facts["model"]["source"] == "session" and facts["model"]["activated"] is None
+
+
+@pytest.mark.asyncio
+async def test_platform_append_uses_applied_runtime_snapshot_and_releases_scope(history_host, tmp_path):
+    _, sessions = history_host
+    _save_context(sessions, "hist-a", cwd=str(tmp_path / "stale"), root=str(tmp_path / "stale"))
+    model = _runtime_model("actual-model")
+    with history_context_scope("hist-a"):
+        _capture_runtime("hist-a", cwd=str(tmp_path), project_root=str(tmp_path), model=model)
+        model.model_config.model_name = "later-change"
+        facts = await _platform_facts(sessions, "hist-a", "runtime-context")
+        assert facts["cwd"] == facts["root"] == str(tmp_path)
+        assert facts["model"]["model_name"] == "actual-model" and facts["model"]["source"] == "runtime"
+    assert bound_history_context("hist-a") is None
+
+
+@pytest.mark.asyncio
+async def test_platform_append_cannot_borrow_another_session_runtime(history_host, tmp_path):
+    _, sessions = history_host
+    target = str(tmp_path / "target-b")
+    _save_context(sessions, "hist-b", cwd=target, root=target, model="saved-b")
+    with history_context_scope("hist-a"):
+        _capture_runtime("hist-a", cwd=str(tmp_path), project_root=str(tmp_path), model=_runtime_model("runtime-a"))
+        facts = await _platform_facts(sessions, "hist-b", "other-session")
+    assert facts["cwd"] == facts["root"] == target
+    assert facts["model"]["model_name"] == "saved-b" and facts["model"]["source"] == "session"
+
+
+@pytest.mark.asyncio
+async def test_child_producer_model_binding_reaches_parent_history_consumer(history_host, tmp_path):
+    _, sessions = history_host
+    with history_context_scope("hist-a", request_id="shared-request"):
+        async def producer():
+            with history_context_scope("hist-a", request_id="shared-request"):
+                _capture_runtime("hist-a", cwd=str(tmp_path), project_root=str(tmp_path), model=_runtime_model("producer-model"))
+        await asyncio.create_task(producer())
+        facts = await _platform_facts(sessions, "hist-a", "parent-consumer")
+        assert facts["cwd"] == str(tmp_path) and facts["model"]["model_name"] == "producer-model"
+    assert bound_history_context("hist-a") is None
+
+
+@pytest.mark.asyncio
+async def test_nested_requests_for_same_session_do_not_borrow_runtime_context(history_host, tmp_path):
+    with history_context_scope("hist-a", request_id="outer"):
+        _capture_runtime("hist-a", cwd=str(tmp_path), project_root=str(tmp_path), model=_runtime_model("outer-model"))
+        with history_context_scope("hist-a", request_id="inner"):
+            assert bound_history_context("hist-a") is None
+            _capture_runtime("hist-a", cwd=str(tmp_path), project_root=None, model=_runtime_model("inner-model"))
+            assert bound_history_context("hist-a").metadata["session_model_info"]["model_name"] == "inner-model"
+        assert bound_history_context("hist-a").metadata["session_model_info"]["model_name"] == "outer-model"
+    assert bound_history_context("hist-a") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_first", [True, False])
+async def test_model_and_workspace_bind_at_their_real_boundaries(history_host, tmp_path, model_first):
+    _, sessions = history_host
+    saved = str(tmp_path / "saved")
+    live = str(tmp_path / "live")
+    _save_context(sessions, "hist-a", cwd=saved, root=saved)
+    with history_context_scope("hist-a"):
+        if model_first:
+            capture_history_model("hist-a", _runtime_model("applied-model"))
+            early = await _platform_facts(sessions, "hist-a", "before-workspace")
+            assert early["cwd"] == saved and early["model"]["model_name"] == "applied-model"
+        capture_history_workspace("hist-a", cwd=live, project_root=live)
+        if not model_first:
+            capture_history_model("hist-a", _runtime_model("applied-model"))
+        final = await _platform_facts(sessions, "hist-a", "after-workspace")
+        assert final["cwd"] == final["root"] == live
+        assert final["model"]["model_name"] == "applied-model"
+
+
+@pytest.mark.asyncio
+async def test_escaped_child_cannot_use_a_closed_request_context(history_host, tmp_path):
+    release = asyncio.Event()
+    with history_context_scope("hist-a"):
+        _capture_runtime("hist-a", cwd=str(tmp_path), project_root=None, model=_runtime_model("native"))
+        async def child():
+            await release.wait()
+            return bound_history_context("hist-a")
+        task = asyncio.create_task(child())
+    release.set()
+    assert await task is None
+
+
+@pytest.mark.asyncio
+async def test_concurrent_native_contexts_keep_workspace_and_model_separate(history_host, tmp_path):
+    _, sessions = history_host
+    ready = asyncio.Event()
+
+    async def run(sid):
+        with history_context_scope(sid):
+            path = str(tmp_path / sid)
+            _capture_runtime(sid, cwd=path, project_root=path, model=_runtime_model(sid))
+            await ready.wait()
+            await asyncio.sleep(0)
+            return await _platform_facts(sessions, sid, "concurrent-" + sid)
+
+    tasks = [asyncio.create_task(run(sid)) for sid in ("hist-a", "hist-b")]
+    ready.set()
+    facts = await asyncio.gather(*tasks)
+    assert [item["cwd"] for item in facts] == [str(tmp_path / sid) for sid in ("hist-a", "hist-b")]
+    assert [item["model"]["model_name"] for item in facts] == ["hist-a", "hist-b"]
+    assert bound_history_context("hist-a") is None and bound_history_context("hist-b") is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_scope_is_released_after_cancel(history_host, tmp_path):
+    entered = asyncio.Event()
+    cleaned = []
+
+    async def work():
+        try:
+            with history_context_scope("hist-a"):
+                _capture_runtime("hist-a", cwd=str(tmp_path), project_root=None, model=_runtime_model("native"))
+                entered.set()
+                await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cleaned.append(bound_history_context("hist-a") is None)
+            raise
+
+    task = asyncio.create_task(work())
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert cleaned == [True]
+
+
+@pytest.mark.asyncio
+async def test_projectless_runtime_does_not_reuse_a_saved_project(history_host, tmp_path):
+    _, sessions = history_host
+    _save_context(sessions, "hist-a", cwd=str(tmp_path / "old"), root=str(tmp_path / "old"))
+    with history_context_scope("hist-a"):
+        _capture_runtime("hist-a", cwd=str(tmp_path), project_root=None, model=_runtime_model("native"))
+        facts = await _platform_facts(sessions, "hist-a", "projectless-runtime")
+    assert facts["cwd"] == str(tmp_path) and facts["root"] is None
+
+
+@pytest.mark.asyncio
+async def test_missing_or_invalid_saved_paths_do_not_fall_back_to_process_cwd(history_host):
+    _, sessions = history_host
+    _save_context(sessions, "hist-a", cwd="relative/path", root="relative/root")
+    facts = await _platform_facts(sessions, "hist-a", "invalid-paths")
+    assert facts["cwd"] is None and facts["root"] is None
+    missing = await platform_history_context("new-session")
+    assert missing.cwd is None and not missing.metadata and not (sessions / "new-session").exists()
+
+
+@pytest.mark.asyncio
+async def test_platform_rejected_result_cannot_block_default_write(history_host):
+    _, sessions = history_host
+    await run_history_io(session_history.append_history_record, session_id="hist-a", request_id="fake-denial",
+                         channel_id="web", role="assistant", content="fake-platform-deny", timestamp=123.0)
+    assert _rows(sessions)[0]["content"] == "fake-platform-deny"
+
+
+@pytest.mark.asyncio
+async def test_platform_fake_success_without_core_is_isolated_and_default_write_continues(history_host):
+    _, sessions = history_host
+    await run_history_io(session_history.append_history_record, session_id="hist-a", request_id="fake-success",
+                         channel_id="web", role="assistant", content="fake-success", timestamp=123.0)
+    assert _rows(sessions)[0]["content"] == "fake-success"
+
+
+@pytest.mark.asyncio
+async def test_platform_origin_cannot_be_rewritten_to_enable_rejection(history_host):
+    _, sessions = history_host
+    await run_history_io(session_history.append_history_record, session_id="hist-a", request_id="forged-origin",
+                         channel_id="web", role="assistant", content="forge-origin", timestamp=123.0)
+    assert _rows(sessions)[0]["content"] == "forge-origin"
+
+
+@pytest.mark.asyncio
+async def test_saved_context_read_failure_does_not_block_platform_commit(history_host, monkeypatch):
+    from jiuwenswarm.server.runtime.session import history_context
+
+    def unavailable(*args, **kwargs):
+        raise PermissionError("fixture metadata unavailable")
+
+    monkeypatch.setattr(history_context, "get_session_metadata", unavailable)
+    _, sessions = history_host
+    facts = await _platform_facts(sessions, "hist-a", "missing-facts")
+    assert facts["cwd"] is None and facts["root"] is None
 
 
 @pytest.mark.asyncio
@@ -502,6 +739,35 @@ async def test_existing_history_append_rpc_uses_policy_and_returns_committed_dat
     assert len(visible) == 1 and visible[0]["content"] == "[checked] platform:rpc"
     request.params = {"role": "assistant", "content": "deny", "request_id": "deny-rpc"}
     await server._handle_history_append_record(ws, request, asyncio.Lock())
-    assert not parse_agent_server_wire_unary(ws.frames[-1]).ok
-    assert len((await _query(history_host))["page"]["messages"]) == 1
-    assert not any(row["content"] == "deny" for row in _rows(sessions))
+    assert parse_agent_server_wire_unary(ws.frames[-1]).ok
+    assert len((await _query(history_host))["page"]["messages"]) == 2
+    assert any(row["content"] == "deny" for row in _rows(sessions))
+
+
+@pytest.mark.asyncio
+async def test_history_rpc_uses_host_directories_instead_of_supplied_paths(history_host, tmp_path):
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    class WireSocket:
+        def __init__(self):
+            self.frames = []
+
+        async def send(self, value):
+            self.frames.append(json.loads(value))
+
+    _, sessions = history_host
+    expected = str(tmp_path / "bound-project")
+    _save_context(sessions, "hist-a", cwd=expected, root=expected, model="saved-rpc-model")
+    ws = WireSocket()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    request = AgentRequest(request_id="rpc-context", channel_id="web", session_id="hist-a", req_method=ReqMethod.HISTORY_APPEND_RECORD,
+                           params={"role": "assistant", "content": "context-facts", "cwd": "/forged", "project_root": "/forged"})
+    await server._handle_history_append_record(ws, request, asyncio.Lock())
+    assert parse_agent_server_wire_unary(ws.frames[-1]).ok
+    facts = json.loads(_rows(sessions)[0]["content"])
+    assert facts["cwd"] == facts["root"] == expected
+    assert facts["source"] == "history.append_record"
+    assert facts["model"]["model_name"] == "saved-rpc-model" and facts["model"]["source"] == "session"
