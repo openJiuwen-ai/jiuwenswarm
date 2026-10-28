@@ -1289,11 +1289,15 @@ function AppContent({
     onConnect: () => {
       console.log('Connected');
       resetTeamAttachments();
-      // 连接建立/断线重连后重拉侧边栏定时任务列表（useCronStore）：web 先行
-      // 导航时首屏挂载早于 gateway 就绪，挂载期的 cron.job.list 会失败并被
-      // store 静默清空，且无其它重试入口，导致 project 页签定时任务空白直到
-      // 侧边栏重新挂载。这里在每次连接可用后补齐拉取。
-      void useCronStore.getState().loadJobs();
+      // 连接建立/断线重连后重拉侧边栏定时任务：首屏常早于 Gateway/Agent Pod 就绪。
+      // 失败时 store 不再清空已有列表；这里再按间隔重试，避免「会话已出、定时任务仍空」。
+      void (async () => {
+        if (await useCronStore.getState().loadJobs()) return;
+        for (const delayMs of [2000, 5000, 10000, 15000, 30000]) {
+          await new Promise((resolve) => setTimeout(resolve, delayMs));
+          if (await useCronStore.getState().loadJobs()) return;
+        }
+      })();
     },
     onDisconnect: () => {
       console.log('Disconnected');
@@ -2496,9 +2500,21 @@ function AppContent({
     }
     let cancelled = false;
     const retryDelaysMs = [2000, 5000, 10000, 15000, 30000];
+    const reloadCronJobs = async () => {
+      // 项目列表重试成功 ≈ 路由/Agent 侧已可用；顺带补拉定时任务，
+      // 覆盖「WS 已连上但 Agent Pod 更晚就绪」时 onConnect 那一次失败的情况。
+      if (cancelled) return;
+      if (await useCronStore.getState().loadJobs()) return;
+      for (const delayMs of retryDelaysMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        if (await useCronStore.getState().loadJobs()) return;
+      }
+    };
     const run = async () => {
       if (await loadProjects()) {
         if (!cancelled) initialProjectsLoadedRef.current = true;
+        await reloadCronJobs();
         return;
       }
       for (const delayMs of retryDelaysMs) {
@@ -2506,6 +2522,7 @@ function AppContent({
         if (cancelled) return;
         if (await loadProjects()) {
           if (!cancelled) initialProjectsLoadedRef.current = true;
+          await reloadCronJobs();
           return;
         }
       }

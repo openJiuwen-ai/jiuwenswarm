@@ -45,7 +45,8 @@ interface CronState {
   unreadCronJobs: Record<string, boolean>;
   markCronJobUnread: (jobId: string) => void;
   clearCronJobUnread: (jobId: string) => void;
-  loadJobs: () => Promise<void>;
+  /** @returns 是否拉取成功；失败时保留已有列表，方便调用方重试。 */
+  loadJobs: () => Promise<boolean>;
   reload: () => Promise<void>;
   toggleCronGroup: (groupId: string) => void;
   loadCronSessions: (projectId: string, cronId: string) => Promise<void>;
@@ -121,8 +122,12 @@ export const useCronStore = create<CronState>((set, get) => ({
       // 侧边栏是 Web 端工作区,只展示 targets 含 "web" 的定时任务
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
       set({ jobs: webJobs, isLoading: false });
+      return true;
     } catch {
-      set({ jobs: [], isLoading: false });
+      // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，
+      // 否则首屏失败后要等手动刷新才会再出现定时任务。
+      set({ isLoading: false });
+      return false;
     }
   },
 
