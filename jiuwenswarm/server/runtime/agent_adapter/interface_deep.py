@@ -10167,6 +10167,10 @@ class JiuWenSwarmDeepAdapter:
             cb_cfg.get("unknown_tool_threshold", defaults.unknown_tool_threshold),
             defaults.unknown_tool_threshold,
         )
+        non_retryable = JiuWenSwarmDeepAdapter._coerce_circuit_breaker_threshold(
+            cb_cfg.get("non_retryable_threshold", defaults.non_retryable_threshold),
+            defaults.non_retryable_threshold,
+        )
         if warning > critical:
             return None
         if critical > global_breaker:
@@ -10176,17 +10180,28 @@ class JiuWenSwarmDeepAdapter:
             critical_threshold=critical,
             global_breaker_threshold=global_breaker,
             unknown_tool_threshold=unknown,
+            non_retryable_threshold=non_retryable,
         )
 
     def _build_circuit_breaker_rail(self) -> CircuitBreakerRail | None:
-        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on."""
+        """Build develop's loop-detection rail. Default off; dest-stable RAS stays on.
+
+        The non_retryable_tool detector is only mounted when
+        ``execution_guard.circuit_breaker.enabled`` is true. Default deployments
+        keep agent_ras as the loop-detection chain, which does not consume
+        ``tool_result_contract``.
+        """
         try:
             guard_cfg = (get_config() or {}).get("execution_guard") or {}
             cb_cfg = guard_cfg.get("circuit_breaker") if isinstance(guard_cfg, dict) else {}
             if not isinstance(cb_cfg, dict):
                 cb_cfg = {}
             if cb_cfg.get("enabled", False) is not True:
-                logger.info("[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config")
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] CircuitBreakerRail disabled by config; "
+                    "agent_ras is the active loop-detection chain and does not consume "
+                    "tool_result_contract (non_retryable_tool inactive)"
+                )
                 return None
             defaults = CircuitBreakerConfig()
             config = self._circuit_breaker_config_from_mapping(cb_cfg, defaults)

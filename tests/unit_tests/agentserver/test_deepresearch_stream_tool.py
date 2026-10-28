@@ -3111,6 +3111,46 @@ async def test_html_failure_keeps_published_markdown(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_html_exception_still_publishes_markdown(tmp_path: Path):
+    final_result = {
+        "response_content": "# Report",
+        "infer_messages": [],
+        "chart_messages": [],
+    }
+    with patch.object(dt, "get_cwd", return_value=str(tmp_path)), patch.object(
+        dt,
+        "_generate_report_html",
+        new=AsyncMock(side_effect=ValueError("html render failed")),
+    ):
+        (
+            artifacts,
+            html_style_status,
+            html_style_phase,
+            html_style_reason_code,
+        ) = await dt._write_report_artifacts_stream(
+            final_result, "Research", "C1"
+        )
+
+    assert set(artifacts) == {"md"}
+    assert html_style_status is None
+    assert html_style_phase is None
+    assert html_style_reason_code is None
+    assert Path(artifacts["md"]).is_file()
+
+
+def test_error_detail_keeps_only_path_basename():
+    assert dt._basename_paths(
+        r"failed to write D:\zzm\relay-claw\workspace\report.md"
+    ) == "failed to write report.md"
+    assert dt._basename_paths(
+        "failed to write /home/user/workspace/report.md"
+    ) == "failed to write report.md"
+    assert dt._basename_paths(
+        r"failed to write C:\Users\A B\report.md"
+    ) == "failed to write report.md"
+
+
+@pytest.mark.asyncio
 async def test_progress_file_is_precreated_in_private_owned_directory():
     proc = _Proc([json.dumps({"__deepsearch_status__": "error", "error": "done"})])
     observations: list[tuple[Path, os.stat_result, os.stat_result]] = []
