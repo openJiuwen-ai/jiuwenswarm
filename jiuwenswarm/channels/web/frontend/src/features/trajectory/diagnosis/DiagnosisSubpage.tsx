@@ -113,14 +113,15 @@ interface RecordCardsProps {
   onFill: (text: string) => void;
 }
 
-function Card({ title, action, testId, children }: {
+function Card({ title, action, testId, className, children }: {
   title: string;
   action?: ReactNode;
   testId: string;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <section className={css.card} data-testid={testId}>
+    <section className={className === undefined ? css.card : `${css.card} ${className}`} data-testid={testId}>
       <header className={css.cardHead}>
         <h3 className={css.cardTitle}>{title}</h3>
         {action}
@@ -140,7 +141,6 @@ function RecordCards({
 }: RecordCardsProps) {
   const { t } = useTranslation();
   const running = isRunning(record);
-  const done = !running;
   const target = useMemo(() => diagnosisTarget(record), [record]);
   const labelOf = (subjectId: string) => subjectLabels.get(subjectId) ?? subjectId;
   const note = record.input.user_note?.trim() ?? '';
@@ -154,10 +154,16 @@ function RecordCards({
     : `${t('trajectory.diagnosis.artifactFillPrefix')}\n${artifactBody}`;
   const artifactItems = artifactSuggestionItems(record);
   const outlets = suggestionsState(record.status);
+  const showDetails = record.error !== undefined
+    || reward !== null
+    || trajectorySummary !== ''
+    || (record.reward_failure_causes?.length ?? 0) > 0
+    || (record.evolution_judge?.length ?? 0) > 0
+    || (record.root_causes?.length ?? 0) > 0;
 
   return (
     <>
-      <Card title={t('trajectory.diagnosis.object')} testId="trajectory-diagnosis-object">
+      <Card title={t('trajectory.diagnosis.object')} testId="trajectory-diagnosis-object" className={css.objectCard}>
         {target.full ? (
           <>
             <p className={css.line}>
@@ -198,39 +204,36 @@ function RecordCards({
         ) : null}
       </Card>
 
-      <Card
-        title={t('trajectory.diagnosis.details')}
-        testId="trajectory-diagnosis-record"
-        action={running ? (
-          <button
-            type="button"
-            className={css.button}
-            onClick={() => { void session.cancel(); }}
-            data-testid="trajectory-diagnosis-cancel"
-          >
-            {t('trajectory.diagnosis.cancel')}
-          </button>
-        ) : null}
-      >
-        {record.error === undefined ? null : (
-          <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
-        )}
-        <ProcessSection record={record} running={running} />
-        {done && reward !== null ? <RewardSummary reward={reward} /> : null}
-        {/* Findings appear as the attribution reports them, not only once the run is over. */}
-        <Findings
-          record={record}
-          subjectLabels={subjectLabels}
-          focusedFindingId={focusedFindingId}
-          onFocusFinding={onFocusFinding}
-        />
-        {trajectorySummary === '' ? null : (
-          <div className={`${css.block} ${css.summaryBlock}`} data-testid="trajectory-diagnosis-task">
-            <h4 className={css.blockTitle}>{t('trajectory.diagnosis.objectSummary')}</h4>
-            <PlainFold text={trajectorySummary} />
-          </div>
-        )}
-      </Card>
+      <ProcessSection
+        record={record}
+        running={running}
+        onCancel={running ? () => { void session.cancel(); } : undefined}
+      />
+
+      {showDetails ? (
+        <Card
+          title={t('trajectory.diagnosis.details')}
+          testId="trajectory-diagnosis-record"
+        >
+          {record.error === undefined ? null : (
+            <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
+          )}
+          {reward !== null ? <RewardSummary reward={reward} /> : null}
+          {/* Findings stream in under the evaluation once scoring has landed. */}
+          <Findings
+            record={record}
+            subjectLabels={subjectLabels}
+            focusedFindingId={focusedFindingId}
+            onFocusFinding={onFocusFinding}
+          />
+          {trajectorySummary === '' ? null : (
+            <div className={`${css.block} ${css.summaryBlock}`} data-testid="trajectory-diagnosis-task">
+              <h4 className={css.blockTitle}>{t('trajectory.diagnosis.objectSummary')}</h4>
+              <PlainFold text={trajectorySummary} />
+            </div>
+          )}
+        </Card>
+      ) : null}
 
       <Card title={t('trajectory.diagnosis.suggestions')} testId="trajectory-diagnosis-suggestions">
         {outlets === 'pending' ? (
@@ -490,36 +493,44 @@ function AgentLine({ labels }: { labels: readonly string[] }) {
 }
 
 /**
- * How the diagnosis ran. Open to its stage list from the start and after it ends; while it runs every
- * stage shows its detail, and afterwards each folds to its summary line.
+ * How the diagnosis ran, in its own card. While it runs every stage shows its detail, and afterwards
+ * each folds to its summary line.
  */
-function ProcessSection({ record, running }: { record: DiagnosisRecord; running: boolean }) {
+function ProcessSection({ record, running, onCancel }: {
+  record: DiagnosisRecord;
+  running: boolean;
+  onCancel?: () => void;
+}) {
   const { t } = useTranslation();
-  const [choice, setChoice] = useState<boolean | undefined>(undefined);
   const summary = useMemo(() => processSummary(record.stages), [record.stages]);
   // A starting run has no stage yet, but its waiting placeholders are worth showing.
   if (record.stages.length === 0 && !running) return null;
-  const open = choice ?? true;
   const meta = running
     ? ''
     : [t('trajectory.diagnosis.processSteps', { count: summary.count }), summary.elapsed]
       .filter(item => item !== '')
       .join(' · ');
+  const action = onCancel === undefined ? (
+    meta === '' ? undefined : <span className={css.hint}>{meta}</span>
+  ) : (
+    <button
+      type="button"
+      className={css.button}
+      onClick={onCancel}
+      data-testid="trajectory-diagnosis-cancel"
+    >
+      {t('trajectory.diagnosis.cancel')}
+    </button>
+  );
   return (
-    <div className={css.process} data-testid="trajectory-diagnosis-process" data-expanded={open ? 'true' : 'false'}>
-      <button
-        type="button"
-        className={`${css.stageHead} ${css.stageToggle}`}
-        aria-expanded={open}
-        onClick={() => setChoice(!open)}
-        data-testid="trajectory-diagnosis-process-toggle"
-      >
-        <ChevronRight className={`${css.chevron} ${open ? css.chevronOpen : ''}`} size={14} strokeWidth={2} aria-hidden />
-        <span className={css.stageTitle}>{t('trajectory.diagnosis.process')}</span>
-        <span className={css.stageSummary}>{meta}</span>
-      </button>
-      {open ? <StageList record={record} running={running} /> : null}
-    </div>
+    <Card
+      title={t('trajectory.diagnosis.process')}
+      testId="trajectory-diagnosis-process"
+      className={css.objectCard}
+      action={action}
+    >
+      <StageList record={record} running={running} />
+    </Card>
   );
 }
 

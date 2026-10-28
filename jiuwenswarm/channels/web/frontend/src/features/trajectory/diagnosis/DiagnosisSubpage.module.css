@@ -5,7 +5,7 @@
   flex: 1 1 0;
   flex-direction: column;
   overflow: hidden;
-  background: var(--color-surface-page);
+  background: #fff;
   color: var(--color-text-primary);
   font-size: 0.8125rem;
   line-height: 1.25rem;
@@ -62,6 +62,14 @@
   border-radius: 0.75rem;
   background: var(--color-surface-card);
   padding: 0.875rem 1rem;
+}
+
+.objectCard {
+  background: linear-gradient(
+    to bottom,
+    rgba(var(--color-action-primary-rgb), 0.12),
+    rgba(var(--color-action-primary-rgb), 0.04)
+  );
 }
 
 .cardHead {
@@ -771,15 +779,4 @@
   margin: 0;
   color: var(--color-text-primary);
   font-size: 0.75rem;
-}
-
-.process {
-  display: flex;
-  flex-direction: column;
-}
-
-.process > .stages {
-  margin: 0.125rem 0 0.25rem 0.5rem;
-  border-left: 1px solid var(--color-border-default);
-  padding-left: 1.125rem;
 }
