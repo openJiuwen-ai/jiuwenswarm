@@ -312,7 +312,7 @@ def resolve_cron_model(
     # 通道侧全局序号后缀，取前半段再匹配（与 passthrough._build_model_auth 一致）。
     try:
         from gateway.auth.login_credentials import bare_model_name
-        from jiuwenswarm.common.auth.model_catalog import get_models
+        from gateway.auth.model_catalog import get_models
 
         bare = bare_model_name(value)
         for login_model in get_models(allow_refresh=False):
