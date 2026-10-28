@@ -8,6 +8,8 @@ CHILD_PIDS="$4"
 PORTS="$5"
 LOG_FILE="$6"
 ARCH="$7"
+BACKEND_EXECUTABLE="$8"
+SHUTDOWN_RECEIPT="$9"
 exec 3>&1
 exec >>"$LOG_FILE" 2>&1
 echo "=== Electron update: $(date) ==="
@@ -83,6 +85,9 @@ if [ -n "$CHILD_PIDS" ]; then
     IFS=',' read -r -a children <<< "$CHILD_PIDS"
     for pid in "${children[@]}"; do wait_exit "$pid"; done
 fi
+# A detached Worker need not be among Electron's original service children.
+# Run the old backend before replacing its archive and require observed exit.
+"$BACKEND_EXECUTABLE" --desktop-run-worker-lifecycle --shutdown-worker --timeout 30 --shutdown-receipt "$SHUTDOWN_RECEIPT"
 if [ -n "$PORTS" ]; then
 IFS=',' read -r -a ports <<< "$PORTS"
 for port in "${ports[@]}"; do

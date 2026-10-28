@@ -32,7 +32,7 @@ def _activate_managed_external_cli_paths() -> None:
         )
 
 
-def main() -> None:
+def _run() -> None:
     logging.basicConfig(level=logging.INFO)
     from jiuwenswarm.server.worker.diagnostics import enable_worker_diagnostics
 
@@ -48,7 +48,13 @@ def main() -> None:
     )
     parser.add_argument("--stub-ready-delay", type=float, default=0.0)
     parser.add_argument("--stub-exit-on-request", action="store_true")
+    parser.add_argument("--identity-from-parent", action="store_true")
     args = parser.parse_args()
+    identity = None
+    if args.identity_from_parent:
+        from jiuwenswarm.server.supervisor.identity import read_launch_identity
+
+        identity = read_launch_identity()
     if args.stub:
         from jiuwenswarm.server.worker.stub import StubExit, serve_stub
 
@@ -58,6 +64,7 @@ def main() -> None:
                     args.socket,
                     ready_delay=args.stub_ready_delay,
                     exit_on_request=args.stub_exit_on_request,
+                    code_identity_value=identity,
                 )
             )
         except StubExit:
@@ -69,7 +76,7 @@ def main() -> None:
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port))
+    task = loop.create_task(serve_worker(args.socket, host=args.host, port=args.port, code_identity_value=identity))
 
     def _stop() -> None:
         task.cancel()
@@ -88,6 +95,20 @@ def main() -> None:
         raise SystemExit(1) from None
     finally:
         loop.close()
+
+
+def main() -> None:
+    import sys
+    from filelock import FileLock
+
+    # A lifetime lease prevents replacement before the previous owner exits.
+    args = sys.argv[1:]
+    if "--socket" not in args:
+        _run()
+        return
+    socket_path = args[args.index("--socket") + 1]
+    with FileLock(socket_path + ".owner.lock", timeout=0, thread_local=False):
+        _run()
 
 
 if __name__ == "__main__":

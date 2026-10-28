@@ -14,6 +14,9 @@
 #    （应用名 / exe 名 / 版本号均来自 build_config，与 Python 打包一致）
 
 param(
+    [string]$SourceRoot = "",
+    [string]$BuildRoot = "",
+    [string]$WorkerIdentityFile = "",
     [string]$ElectronDir = $(if ($env:ELECTRON_DIR) { $env:ELECTRON_DIR } else { "" }),
     [string]$NodeDir = "",
     [string]$SigningCertificateThumbprint = "",
@@ -30,6 +33,10 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
+$PreviousBuildEnvironment = @{}
+foreach ($Key in @('WORKSWARM_SOURCE_ROOT', 'WORKSWARM_PACKAGING_ROOT', 'WORKSWARM_BUILD_ROOT', 'WORKSWARM_WORKER_IDENTITY')) {
+    $PreviousBuildEnvironment[$Key] = [Environment]::GetEnvironmentVariable($Key, 'Process')
+}
 $PreviousProcessorArchitecture = $env:PROCESSOR_ARCHITECTURE
 $env:PROCESSOR_ARCHITECTURE = "AMD64"
 
@@ -316,7 +323,18 @@ function Invoke-CodeSigning {
     ) -ForegroundColor Gray
 }
 
-$ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$PackagingRoot = Split-Path -Parent $PSScriptRoot
+if (-not $SourceRoot) { $SourceRoot = $env:WORKSWARM_SOURCE_ROOT }
+if (-not $SourceRoot) { $SourceRoot = $PackagingRoot }
+$ProjectRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
+if (-not $BuildRoot) { $BuildRoot = $env:WORKSWARM_BUILD_ROOT }
+if (-not $BuildRoot) { $BuildRoot = $ProjectRoot }
+$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
+New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
+$env:WORKSWARM_SOURCE_ROOT = $ProjectRoot
+$env:WORKSWARM_PACKAGING_ROOT = $PackagingRoot
+$env:WORKSWARM_BUILD_ROOT = $BuildRoot
+if ($WorkerIdentityFile) { $env:WORKSWARM_WORKER_IDENTITY = (Resolve-Path -LiteralPath $WorkerIdentityFile).Path }
 Set-Location $ProjectRoot
 
 # Keep the architecture override process-local, verify the value Python-backed
@@ -388,7 +406,7 @@ $DesktopDir = Join-Path $ProjectRoot "jiuwenswarm\channels\desktop\electron"
 # synchronization or npm installation, matching scripts/build-exe.ps1. The
 # FrontendOnly path also needs these values for package.json and installer names.
 $BuildConfigJson = uv run --no-project --python 3.11 python `
-    "$ProjectRoot\scripts\build_config.py" --sync --emit-json
+    "$PackagingRoot\scripts\build_config.py" --root "$ProjectRoot" --sync --emit-json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $BuildConfig = $BuildConfigJson | ConvertFrom-Json
 $BuildDistDirName = [string]$BuildConfig.dist_dir_name
@@ -483,11 +501,19 @@ if (-not (Test-Path -LiteralPath $ElectronExe -PathType Leaf)) {
 Write-Host "  Electron: $ElectronExe" -ForegroundColor Gray
 
 # ── 4. PyInstaller: build backend exe ─────────────────────────────────────────
-if (-not $FrontendOnly) {
+$BackendDist = Join-Path $BuildRoot "dist\$BuildDistDirName"
+if ($FrontendOnly) {
+    Write-Host "`n[4/6] Skipping PyInstaller (FrontendOnly)" -ForegroundColor Gray
+} elseif ($ReuseBackend -and (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
+    Write-Host "`n[4/6] Reusing existing PyInstaller backend: $BackendDist" -ForegroundColor Yellow
+    $IdentityContract = Join-Path $ProjectRoot "jiuwenswarm\common\worker_build_identity.py"
+    uv run python "$IdentityContract" --source-root "$ProjectRoot" --packaging-root "$PackagingRoot" --verify "$BackendDist\_internal\jiuwenswarm\_worker_build_identity.json"
+    if ($LASTEXITCODE -ne 0) { throw "Reused backend identity does not match the selected inputs." }
+} else {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
-    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
+    uv run pyinstaller "$PackagingRoot\scripts\jiuwenswarm.spec" --noconfirm --distpath "$BuildRoot\dist" --workpath "$BuildRoot\build"
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    $BackendDist = Join-Path $ProjectRoot "dist\$BuildDistDirName"
+    $BackendDist = Join-Path $BuildRoot "dist\$BuildDistDirName"
     if (-not (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
         throw "PyInstaller output not found: $BackendDist\$BuildExecutableNameWindows"
     }
@@ -495,7 +521,7 @@ if (-not $FrontendOnly) {
     # Verify the actual frozen runtime, not only the source configuration
     # (same self-check as the Python packaging build in build-exe.ps1).
     $FrozenExe = Join-Path $BackendDist $BuildExecutableNameWindows
-    $GatewayVerifier = Join-Path $ProjectRoot "scripts\verify_gateway_adapter_bundle.py"
+    $GatewayVerifier = Join-Path $PackagingRoot "scripts\verify_gateway_adapter_bundle.py"
     $GatewayVerifyProcess = Start-Process `
         -FilePath $FrozenExe `
         -ArgumentList @("`"$GatewayVerifier`"") `
@@ -506,7 +532,7 @@ if (-not $FrontendOnly) {
         throw "Frozen Gateway adapter bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
-    $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
+    $A2UIVerifier = Join-Path $PackagingRoot "scripts\verify_a2ui_bundle.py"
     $VerifyProcess = Start-Process `
         -FilePath $FrozenExe `
         -ArgumentList @("`"$A2UIVerifier`"") `
@@ -517,7 +543,7 @@ if (-not $FrontendOnly) {
         throw "Frozen A2UI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
-    $RsiVerifier = Join-Path $ProjectRoot "scripts\verify_rsi_bundle.py"
+    $RsiVerifier = Join-Path $PackagingRoot "scripts\verify_rsi_bundle.py"
     $RsiVerifyProcess = Start-Process `
         -FilePath $FrozenExe `
         -ArgumentList @("`"$RsiVerifier`"") `
@@ -546,7 +572,7 @@ if (-not $FrontendOnly) {
     # would make every Windows Electron build fail after PyInstaller succeeded.
     $BundledGitCodeExe = Join-Path $BackendDist "_internal\gitcode.exe"
     if (Test-Path -LiteralPath $BundledGitCodeExe -PathType Leaf) {
-        $GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"
+        $GitCodeVerifier = Join-Path $PackagingRoot "scripts\verify_gitcode_cli_bundle.py"
         $GitCodeVerifyProcess = Start-Process `
             -FilePath $FrozenExe `
             -ArgumentList @("`"$GitCodeVerifier`"") `
@@ -566,7 +592,7 @@ if (-not $FrontendOnly) {
 # ── 5. Assemble final Electron app ────────────────────────────────────────────
 Write-Host "`n[5/6] Assembling Electron desktop app..." -ForegroundColor Yellow
 
-$ElectronAppDir = Join-Path $ProjectRoot "dist\$BuildDisplayName-Electron"
+$ElectronAppDir = Join-Path $BuildRoot "dist\$BuildDisplayName-Electron"
 if (Test-Path $ElectronAppDir) {
     Remove-Item $ElectronAppDir -Recurse -Force
 }
@@ -610,6 +636,7 @@ New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 # Copy the mature Electron desktop shell (main.cjs, preload.cjs, launch.cjs, target_mcp_wrapper.cjs)
 Write-Host "  Copying Electron desktop shell..." -ForegroundColor Gray
 Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "update_shutdown.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
@@ -651,7 +678,7 @@ if (-not $FrontendOnly) {
         # 与 build-exe.ps1 同款自检：此时 runtime\node-runtime 已就位，冻结入口会
         # 把它前置到 PATH，验证包内 Playwright MCP + Node 真能跑起来。
         $BackendFrozenExe = Join-Path $BackendDir $BuildExecutableNameWindows
-        $PlaywrightVerifier = Join-Path $ProjectRoot "scripts\verify_playwright_mcp_bundle.py"
+        $PlaywrightVerifier = Join-Path $PackagingRoot "scripts\verify_playwright_mcp_bundle.py"
         $PlaywrightVerifyProcess = Start-Process `
             -FilePath $BackendFrozenExe `
             -ArgumentList @("`"$PlaywrightVerifier`"") `
@@ -717,6 +744,7 @@ if ($FrontendOnly) {
 $RequiredFiles = @(
     (Join-Path $ElectronAppDir $ShellExeName),
     (Join-Path $AppDir "main.cjs"),
+    (Join-Path $AppDir "update_shutdown.cjs"),
     (Join-Path $AppDir "browser_downloads.cjs"),
     (Join-Path $AppDir "browser_download_bubble.cjs"),
     (Join-Path $AppDir "display_media_picker.cjs"),
@@ -806,7 +834,7 @@ if ($FrontendOnly) {
 } else {
     $InstallerFileName = $BuildSetupFilename
 }
-$InstallerPath = Join-Path $ProjectRoot "dist\$InstallerFileName"
+$InstallerPath = Join-Path $BuildRoot "dist\$InstallerFileName"
 if (Test-Path -LiteralPath $InstallerPath) {
     Remove-Item -LiteralPath $InstallerPath -Force
 }
@@ -827,7 +855,8 @@ if ($DoSign) {
         " /tr $TimestampUrl /td SHA256 /v " + '$f'
     $IsccArguments += "/Scertumsha256=$InnoSignCommand"
 }
-$IsccArguments += "$ProjectRoot\scripts\installer-electron.iss"
+$IsccArguments += "/DSourceRoot=$ProjectRoot", "/DBuildRoot=$BuildRoot"
+$IsccArguments += "$PackagingRoot\scripts\installer-electron.iss"
 & $Iscc @IsccArguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -853,6 +882,9 @@ if ($DoSign) {
     Write-Host "Signature: not applied; this installer is for local testing only" -ForegroundColor Yellow
 }
 } finally {
+    foreach ($Key in $PreviousBuildEnvironment.Keys) {
+        [Environment]::SetEnvironmentVariable($Key, $PreviousBuildEnvironment[$Key], 'Process')
+    }
     if ($null -eq $PreviousProcessorArchitecture) {
         Remove-Item Env:\PROCESSOR_ARCHITECTURE -ErrorAction SilentlyContinue
     } else {

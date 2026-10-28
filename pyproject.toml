@@ -172,6 +172,7 @@ namespaces = false
 [tool.setuptools.package-data]
 "*" = ["LICENSE"]
 jiuwenswarm = [
+    "_worker_build_identity.json",
     "channels/process_cli/protocol/schema.json",
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",

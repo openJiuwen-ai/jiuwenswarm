@@ -151,11 +151,11 @@ def test_shell_and_batch_values_are_emitted_directly_from_pyproject(tmp_path: Pa
 
 def test_packaging_consumers_use_the_central_build_config() -> None:
     consumers = {
-        "scripts/build-macos.sh": 'build_config.py" --sync --emit-shell',
-        "scripts/build-exe.ps1": 'build_config.py" --sync --emit-json',
-        "scripts/build-exe.bat": "build_config.py --sync --emit-batch",
-        "scripts/build-electron-exe.sh": 'build_config.py" --sync --emit-shell',
-        "scripts/build-electron-exe.ps1": 'build_config.py" --sync --emit-json',
+        "scripts/build-macos.sh": 'build_config.py" --root "$PROJECT_ROOT" --sync --emit-shell',
+        "scripts/build-exe.ps1": 'build_config.py" --root "$ProjectRoot" --sync --emit-json',
+        "scripts/build-exe.bat": 'build_config.py" --root "%WORKSWARM_SOURCE_ROOT%" --sync --emit-batch',
+        "scripts/build-electron-exe.sh": 'build_config.py" --root "$PROJECT_ROOT" --sync --emit-shell',
+        "scripts/build-electron-exe.ps1": 'build_config.py" --root "$ProjectRoot" --sync --emit-json',
         "scripts/jiuwenswarm.spec": '"scripts", "build_config.py"',
     }
     for relative_path, expected in consumers.items():
