@@ -63,6 +63,9 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   SSE 清理任务自身取消按清理失败报告，只有等待者真实取消才继续传播原取消。
   worker 初始化取消向排队调用者映射为 McpWorkerStoppedError，worker 本身继续传播
   原取消；发现阶段的内部取消仅跳过当前连接器，真实外部取消继续传播。
+  call_tool/list_tools 的内部取消（等待者无 cancel 请求）在所属任务清理成功后
+  最多重连重试一次；再次内部取消映射为普通工具错误。清理失败不得当作成功重试，
+  调用或清理期间的真实外部取消继续传播。
   建连/调用用 `asyncio.timeout`
   保持任务归属；`wait_for` 仅可用于完整生命周期或不持有上下文的单次 I/O。
   超时/死会话先 await disconnect 再重置状态，禁止延迟跨任务 aclose；False 必须报错。

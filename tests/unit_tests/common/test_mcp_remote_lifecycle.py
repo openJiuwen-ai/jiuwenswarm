@@ -824,3 +824,104 @@ async def test_finish_cleanup_budget_includes_cancel_resistant_task(monkeypatch)
     finally:
         release.set()
         await asyncio.gather(target, waiter, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["streamable-http", "sse"])
+@pytest.mark.parametrize("method", ["call_tool", "list_tools"])
+@pytest.mark.parametrize("persistent", [False, True])
+async def test_internal_io_cancel_retries_once_without_cancelling_caller(
+    transport, patched, monkeypatch, kind, method, persistent,
+):
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
+    client = ToolMgr._create_client(McpServerConfig(
+        server_id="test", server_name="test", client_type=kind,
+        server_path=config(kind)["url"],
+    ))
+    assert await client.connect()
+    session_cls = type(transport.sessions[-1])
+    original = getattr(session_cls, method)
+    calls = 0
+
+    async def internally_cancelled(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if persistent or calls == 1:
+            raise asyncio.CancelledError("internal transport cancellation")
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(session_cls, method, internally_cancelled)
+    caller = asyncio.create_task(
+        client.call_tool("echo", {}) if method == "call_tool" else client.list_tools()
+    )
+    try:
+        if persistent:
+            with pytest.raises(RuntimeError, match="cancelled internally"):
+                await asyncio.wait_for(caller, 1)
+        else:
+            assert await asyncio.wait_for(caller, 1)
+        assert not caller.cancelled() and caller.cancelling() == 0
+        assert calls == 2
+        assert transport.connects == 2
+    finally:
+        await client.disconnect()
+    await settled(transport)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["streamable-http", "sse"])
+async def test_worker_internal_call_cancel_is_tool_error(
+    transport, patched, monkeypatch, kind,
+):
+    worker = mcp_config._PooledMcpWorker("test")
+    params = {
+        "_mcp_client_type": kind, "server_name": "test",
+        "server_path": config(kind)["url"],
+    }
+    worker.task = asyncio.create_task(mcp_config._run_mcp_worker(params, worker))
+    try:
+        await asyncio.wait_for(worker.call_tool("echo", {}), 1)
+        session_cls = type(transport.sessions[-1])
+        original = session_cls.call_tool
+        monkeypatch.setattr(session_cls, "call_tool", AsyncMock(side_effect=asyncio.CancelledError()))
+        with pytest.raises(RuntimeError, match="cancelled internally"):
+            await asyncio.wait_for(worker.call_tool("echo", {}), 1)
+        assert not worker.task.done()
+        monkeypatch.setattr(session_cls, "call_tool", original)
+        assert (await asyncio.wait_for(worker.call_tool("echo", {}), 1)).content[0].text == "ok"
+    finally:
+        await mcp_config.shutdown_pooled_mcp_worker(worker)
+    await settled(transport)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["streamable-http", "sse"])
+async def test_external_cancel_during_internal_cancel_cleanup(
+    transport, patched, monkeypatch, kind,
+):
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
+    client = ToolMgr._create_client(McpServerConfig(
+        server_id="test", server_name="test", client_type=kind,
+        server_path=config(kind)["url"],
+    ))
+    assert await client.connect()
+    monkeypatch.setattr(
+        transport.sessions[-1], "call_tool", AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    transport.hold_close = True
+    caller = asyncio.create_task(client.call_tool("echo", {}))
+    try:
+        await asyncio.wait_for(transport.closing.wait(), 1)
+        caller.cancel()
+        await asyncio.sleep(0)
+        transport.release_close.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(caller, 1)
+        assert transport.connects == 1
+    finally:
+        transport.release_close.set()
+        await asyncio.gather(caller, return_exceptions=True)
+        await client.disconnect()
+    await settled(transport)

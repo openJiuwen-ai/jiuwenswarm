@@ -524,10 +524,10 @@ async def test_cleanup_cancelled_error_propagates(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.asyncio
-async def test_cancelled_error_propagates_after_cleanup(
+async def test_internal_cancel_reconnects_once_after_cleanup(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """不再依据取消计数猜测并吞掉 CancelledError。"""
+    """内部取消在原任务清理后重连一次，不取消业务调用者。"""
     import asyncio
 
     call_count = {"n": 0}
@@ -545,11 +545,10 @@ async def test_cancelled_error_propagates_after_cleanup(
         default_timeout=5.0,
     )
 
-    with pytest.raises(asyncio.CancelledError):
-        await client.call_tool("qa_echo", {})
-    assert call_count["n"] == 1
-    assert connect_count["n"] == 0
-    assert client._session is None
+    assert (await client.call_tool("qa_echo", {}))["ok"] is True
+    assert call_count["n"] == 2
+    assert connect_count["n"] == 1
+    assert client._session is not None
 
 
 @pytest.mark.asyncio
@@ -766,4 +765,28 @@ async def test_disconnect_wrap_retains_resources_when_aclose_fails(
     assert client._session is not None
     assert client._client is not None
     assert client._is_disconnected is False
+    assert client._jws_needs_reconnect is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_cancelled", [False, True])
+async def test_internal_cancel_cleanup_failure_does_not_reconnect(monkeypatch, cleanup_cancelled):
+    import asyncio
+
+    async def call(self, *args, **kwargs):
+        raise asyncio.CancelledError("internal call cancellation")
+
+    async def disconnect(self, **kwargs):
+        if cleanup_cancelled:
+            raise asyncio.CancelledError("internal cleanup cancellation")
+        return False
+
+    client, connects, _ = _install_fake_streamable_client(
+        monkeypatch, fake_call_tool=call, fake_disconnect=disconnect,
+    )
+    session = client._session
+    with pytest.raises(RuntimeError, match="internal cancellation cleanup failed"):
+        await client.call_tool("echo", {})
+    assert connects["n"] == 0
+    assert client._session is session
     assert client._jws_needs_reconnect is True

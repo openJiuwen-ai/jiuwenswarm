@@ -4,7 +4,7 @@
 调用保留精确 wait_for 截止和 SDK timeout+5/read timeout 传递；连接、断开及
 重连必须在同一个 owner 上执行。池化 client 使用现有 worker，ToolMgr HTTP
 client 使用专用任务，SSE 使用 SDK owner。超时先 await 清理再重置，禁止把旧
-AsyncExitStack 移到后台任务关闭。断开失败保留不可复用标记并报错，取消原样传播。
+AsyncExitStack 移到后台任务关闭。断开失败保留不可复用标记并报错，外部取消原样传播。
 死会话最多重连重试一次（at-least-once）。ToolMgr timeout 印章、AbilityManager
 模块内截止桥和工具 invoke 包装仍在唯一启动入口幂等安装。
 """
@@ -77,6 +77,10 @@ __all__ = [
     "force_invalidate_mcp_client",
     "is_retryable_mcp_dead_session_error",
 ]
+
+
+class _McpInternalCancellationError(RuntimeError):
+    """单次 I/O 内部取消且清理成功，可走既有的一次重连重试。"""
 
 
 def force_invalidate_mcp_client(client: Any) -> None:
@@ -819,12 +823,29 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                     except Exception as cleanup_error:
                         raise _timeout_error(cls.__name__, name, timeout) from cleanup_error
                     raise _timeout_error(cls.__name__, name, timeout) from None
-                except asyncio.CancelledError:
-                    # 取消保持原样传播，但必须在 owner 离开前清理半死会话。
+                except asyncio.CancelledError as exc:
+                    # I/O 自身取消不等于调用者取消；清理仍留在生命周期 owner。
+                    current = asyncio.current_task()
+                    outer_cancel = current is not None and current.cancelling() > 0
                     try:
                         await _abandon_session(self, context="call cancelled")
-                    except Exception:
+                    except asyncio.CancelledError as cleanup_error:
+                        if outer_cancel or (current is not None and current.cancelling()):
+                            raise
+                        raise RuntimeError(
+                            "MCP internal cancellation cleanup failed"
+                        ) from cleanup_error
+                    except Exception as cleanup_error:
+                        if not outer_cancel and not (current is not None and current.cancelling()):
+                            # 清理失败不能进入重试，否则会在未关闭的上下文上重连。
+                            raise RuntimeError(
+                                "MCP internal cancellation cleanup failed"
+                            ) from cleanup_error
                         logger.warning("[mcp-timeout] cleanup after cancellation failed", exc_info=True)
+                    if not outer_cancel and not (current is not None and current.cancelling()):
+                        raise _McpInternalCancellationError(
+                            f"MCP {cls.__name__}.{name} cancelled internally"
+                        ) from exc
                     raise
 
             async with _client_io_lock(self):
@@ -834,7 +855,10 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                 except (TimeoutError, asyncio.CancelledError):
                     raise
                 except Exception as exc:
-                    if not is_retryable_mcp_dead_session_error(exc):
+                    if not (
+                        isinstance(exc, _McpInternalCancellationError)
+                        or is_retryable_mcp_dead_session_error(exc)
+                    ):
                         raise
                     # 保留死会话的一次 at-least-once 重试；清理失败不能当成已断开。
                     await _connect_fresh(self, reason="dead-session")
