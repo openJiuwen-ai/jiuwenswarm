@@ -373,6 +373,24 @@ const truncate = (text: string, max = 72): string => {
   return `${normalized.slice(0, max)}...`;
 };
 
+/** 工具调用摘要优先取参数里的 description（如 bash 的意图说明），完整参数仍在展开详情里。 */
+const getToolCallSummary = (content: string): string => {
+  const trimmed = content.trim();
+  if (!trimmed.startsWith('{')) return content;
+  try {
+    const args: unknown = JSON.parse(trimmed);
+    if (args && typeof args === 'object' && !Array.isArray(args)) {
+      const description = (args as Record<string, unknown>).description;
+      if (typeof description === 'string' && description.trim()) {
+        return description;
+      }
+    }
+  } catch {
+    // 非 JSON（formatted_args 等展示串）原样返回
+  }
+  return content;
+};
+
 const isGenericTaskTitle = (title: string): boolean => {
   return GENERIC_TASK_TITLES.has(title.trim().toLowerCase());
 };
@@ -557,7 +575,7 @@ export function buildProcessItems(
           type: 'execution',
           timestamp: event.timestamp,
           title: getExecutionEventTitle(event, t),
-          subtitle: truncate(event.content || ''),
+          subtitle: truncate(getToolCallSummary(event.content || '')),
           status: 'execution',
           kind: event.kind,
           execution: event,
