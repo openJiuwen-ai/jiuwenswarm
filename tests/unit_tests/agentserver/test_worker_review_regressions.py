@@ -1,10 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Failure paths from the build ownership and desktop lifecycle review."""
+import ast
 import asyncio
 import json
 import subprocess
 import sys
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -13,6 +15,31 @@ import pytest
 
 from jiuwenswarm.common import update_shutdown
 from jiuwenswarm.server.supervisor import dependency_identity, resident_lifecycle, shutdown
+
+
+@pytest.mark.parametrize("failure", ["cmdline", "ppid", "terminate", "trailing_m"])
+def test_python_desktop_tree_reports_failure_or_cleans_all_known_processes(monkeypatch, failure):
+    front = SimpleNamespace(pid=11, cmdline=Mock(return_value=["python", "-m", "agentserver"]),
+                            ppid=Mock(return_value=10), terminate=Mock(), kill=Mock())
+    parent = SimpleNamespace(pid=10, children=lambda **kw: [front], terminate=Mock(), kill=Mock())
+    if failure == "trailing_m":
+        front.cmdline.return_value = ["python", "-m"]
+    else:
+        getattr(front, failure).side_effect = psutil.AccessDenied(11)
+    monkeypatch.setattr(psutil, "Process", lambda pid: parent)
+    path = Path(__file__).resolve().parents[3] / "jiuwenswarm/channels/desktop/desktop_app.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    method = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_psutil_terminate")
+    namespace = {}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), str(path), "exec"), namespace)
+    if failure == "trailing_m":
+        namespace[method.name](10)
+        front.terminate.assert_called_once()
+        parent.terminate.assert_called_once()
+    else:
+        with pytest.raises(RuntimeError, match="ownership could not be established|termination incomplete"):
+            namespace[method.name](10)
+        parent.terminate.assert_not_called()
 
 
 def test_receipt_replace_failure_cleans_temporary_and_preserves_pending(tmp_path, monkeypatch):

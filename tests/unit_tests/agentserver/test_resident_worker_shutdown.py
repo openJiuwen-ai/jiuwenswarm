@@ -11,7 +11,6 @@ import uuid
 
 import pytest
 
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.supervisor.worker_process import request_resident_worker_shutdown
 

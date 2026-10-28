@@ -58,12 +58,11 @@ def _is_launch_parent(parent_pid: int) -> bool:
 
 def launch_identity_payload(fingerprint: str) -> bytes:
     """Describe the parent's validated deployment on a private spawn pipe."""
-    observation = None
     return (json.dumps({"schema": 1, "parent_pid": os.getpid(),
         "package": _deployment_path(),
         "data_scope": data_scope(), "deployment_scope": deployment_scope(),
         "build_label": os.environ.get("JIUWENSWARM_BUILD_ID", "").strip(),
-        "code_identity": fingerprint, "source_observation": observation}) + "\n").encode()
+        "code_identity": fingerprint}) + "\n").encode()
 
 
 def _valid_fingerprint(value: object) -> bool:
@@ -108,9 +107,7 @@ def read_launch_identity() -> str:
             raise ValueError("identity pipe does not describe this child deployment")
         if not _valid_fingerprint(fingerprint):
             raise ValueError("identity pipe does not describe this child deployment")
-        observed_identity = None
-        if observed_identity is None:
-            observed_identity = code_identity()
+        observed_identity = code_identity()
         if observed_identity != fingerprint:
             raise ValueError("Worker source changed after the parent validated it")
         return fingerprint

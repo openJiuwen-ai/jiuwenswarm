@@ -24,19 +24,6 @@ from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 ROOT = Path(__file__).resolve().parents[3]
 
 
-@pytest.mark.parametrize("failure", ["cmdline", "ppid", "terminate"])
-def test_python_desktop_tree_cleanup_does_not_swallow_unknown_front_errors(monkeypatch, failure):
-    front = SimpleNamespace(pid=11, cmdline=Mock(return_value=["python", "-m", "agentserver"]),
-                            ppid=Mock(return_value=10), terminate=Mock(), kill=Mock())
-    parent = SimpleNamespace(pid=10, children=lambda **kw: [front], terminate=Mock(), kill=Mock())
-    getattr(front, failure).side_effect = psutil.AccessDenied(11)
-    monkeypatch.setattr(psutil, "Process", lambda pid: parent)
-    entry = _entry_functions(ROOT / "jiuwenswarm/channels/desktop/desktop_app.py", {"_psutil_terminate"})
-    with pytest.raises(RuntimeError, match="ownership could not be established|termination incomplete"):
-        entry["_psutil_terminate"](10)
-    parent.terminate.assert_not_called()
-
-
 @pytest.mark.parametrize("layout", ["checkout", "site-packages"])
 @pytest.mark.parametrize("changed", ["server", "lock"])
 def test_content_fallback_observes_real_code_and_root_lock(tmp_path, monkeypatch, layout, changed):

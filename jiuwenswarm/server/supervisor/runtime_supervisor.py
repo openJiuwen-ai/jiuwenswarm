@@ -1066,16 +1066,22 @@ class RuntimeSupervisor:
             # A Popen handle establishes ownership of our own child even before
             # HELLO, but does not authorize IPC commands on an unverified peer.
             conn = None
+        # IPC and graceful exit must leave time for forced exit observation.
+        grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 2)
         if conn is not None:
             try:
                 await asyncio.wait_for(
-                    conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, deadline - time.monotonic())
+                    conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, grace - time.monotonic())
                 )
             except (OSError, RuntimeError, asyncio.TimeoutError):
                 logger.warning("[Supervisor] Worker shutdown send failed or shutdown deadline exhausted")
-        grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 5)
-        if process is not None and await process.wait(timeout=max(0.0, grace - time.monotonic())) is None:
-            await process.stop(timeout=max(0.0, deadline - time.monotonic()))
+        if process is not None:
+            if conn is None:
+                # No validated peer received a shutdown request. Stop only the
+                # Popen-owned child now instead of waiting for an impossible ACK.
+                await process.stop(timeout=max(0.0, deadline - time.monotonic()))
+            elif await process.wait(timeout=max(0.0, grace - time.monotonic())) is None:
+                await process.stop(timeout=max(0.0, deadline - time.monotonic()))
         if self._worker_pid is not None and self._worker_create_time is not None:
             await asyncio.to_thread(self._reap_validated_worker, deadline=deadline)
         self._process = None
@@ -1135,16 +1141,14 @@ class RuntimeSupervisor:
 
 
 
-    def _reap_validated_worker(self, *, deadline: float, terminate: bool = False) -> None:
+    def _reap_validated_worker(self, *, deadline: float) -> None:
         """Final-exit authority is explicit; a reused PID must never be killed."""
         import psutil
         try:
             process = psutil.Process(self._worker_pid)
             if process.create_time() != self._worker_create_time:
                 raise RuntimeError("Worker PID identity changed during final exit")
-            if terminate:
-                process.terminate()
-            grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 5)
+            grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 2)
             try:
                 process.wait(timeout=max(0.0, grace - time.monotonic()))
             except psutil.TimeoutExpired as exc:
@@ -1155,7 +1159,9 @@ class RuntimeSupervisor:
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except psutil.TimeoutExpired as exit_error:
-                    raise RuntimeError("Validated Worker exit could not be observed before the shutdown deadline") from exit_error
+                    raise RuntimeError(
+                        "Validated Worker exit could not be observed before the shutdown deadline"
+                    ) from exit_error
         except psutil.NoSuchProcess:
             pass
         self._owns_process = False

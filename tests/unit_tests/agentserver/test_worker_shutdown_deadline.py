@@ -19,6 +19,75 @@ from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("validated", [False, True])
+async def test_final_stop_reserves_time_to_reap_owned_child(monkeypatch, validated):
+    clock = [0.0]
+    monkeypatch.setattr(supervisor_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    waits = []
+    stops = []
+
+    class Process:
+        pid = 123
+
+        async def wait(self, *, timeout):
+            waits.append(timeout)
+            clock[0] += timeout
+            return None
+
+        async def stop(self, *, timeout):
+            stops.append(timeout)
+            assert timeout > 0, "graceful waiting consumed the forced-exit observation budget"
+
+    peer = SimpleNamespace(send=AsyncMock())
+    front = RuntimeSupervisor(Readiness())
+    front._conn = peer
+    front._validated_conn = peer if validated else None
+    front._process = Process()
+    await front._shutdown_owned_worker(deadline=1.0)
+    assert stops and stops[0] >= .5
+    assert sum(waits) + stops[0] <= 1.0
+    if validated:
+        peer.send.assert_awaited_once()
+    else:
+        peer.send.assert_not_awaited()
+        assert waits == [], "an unverified owned child has received no graceful IPC request"
+
+
+@pytest.mark.parametrize("exits", [False, True])
+def test_validated_reaper_reserves_observation_time_and_reports_survivor(monkeypatch, exits):
+    clock = [0.0]
+    budgets = []
+    killed = []
+    monkeypatch.setattr(supervisor_module, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+
+    class Process:
+        def create_time(self):
+            return 1.0
+
+        def wait(self, *, timeout):
+            budgets.append(timeout)
+            clock[0] += timeout
+            if len(budgets) == 1 or not exits:
+                raise psutil.TimeoutExpired(timeout)
+            return 0
+
+        def kill(self):
+            killed.append(True)
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: Process())
+    front = RuntimeSupervisor(Readiness())
+    front._worker_pid, front._worker_create_time = 123, 1.0
+    if exits:
+        front._reap_validated_worker(deadline=1.0)
+    else:
+        with pytest.raises(RuntimeError, match="exit could not be observed"):
+            front._reap_validated_worker(deadline=1.0)
+    assert killed == [True]
+    assert len(budgets) == 2 and budgets[1] > 0
+    assert sum(budgets) <= 1.0
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["lookup", "spawn_before", "spawn_after", "connect", "connect_timeout"])
 async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path, phase):
     from jiuwenswarm.server.supervisor import identity, worker_process as worker_module
