@@ -10,9 +10,19 @@ organization; the outer group team never joins it.
 run_team itself returns as soon as that instance is ready. Tool calls are cut
 off at 300 seconds, so the Owner's wait and the group post run in a background
 task. Another run_team for that same live plan returns the in-progress result.
-A later multi-@ message keeps its own plan and starts only after the older
-plan finishes. If this proxy has not joined that older plan yet, run_team joins
-it first; the newer plan is queued only after the older one has been accepted.
+A message that also mentions a single expert is marked as a direct reply and
+does not open an organization. Each proxy turn stays bound to the message that
+woke it, so a later message cannot steal an organization that has not posted
+its result. Expert teams named on that later message wait, then answer on the
+ordinary single-team path. A single expert who is not in the live organization
+may reply immediately.
+A later multi-@ message keeps its own plan. When that plan shares a member
+with an older round that is still pending or running, recording it schedules
+the Owner. The background task starts the new plan only after the older round
+finishes and releases the shared instances. A proxy that is not in the older
+plan queues too; it does not bind those instances early. If this proxy has not
+joined that older plan yet, run_team joins it first. An early attempt that
+fails leaves the new plan queued.
 The join wait does not fail a proxy whose group turn for this message is still
 running. A run_team for that same multi-@ message never opens a private team,
 including after the plan has already ended.
@@ -47,8 +57,12 @@ _plan_events: dict[tuple[str, str], asyncio.Event] = {}
 _member_runs: dict[tuple[str, str, str], asyncio.Task] = {}
 _accepted_plans: set[tuple[str, str, str]] = set()
 _queued_plans: dict[tuple[str, str, str], asyncio.Task] = {}
+_proxy_backends: dict[tuple[str, str], Any] = {}
+_proxy_tools: dict[tuple[str, str], Any] = {}
 _owner_runs: dict[tuple[str, str], asyncio.Task] = {}
 _followup_runs: dict[tuple[str, str], asyncio.Task] = {}
+_member_turns: dict[tuple[str, str], list[str]] = {}
+_deferred_direct: dict[tuple[str, str, str], dict] = {}
 
 _QUEUED_NOTE = (
     "This multi-expert request is queued behind an older Team Organization. "
@@ -62,6 +76,12 @@ _CLOSED_PLAN_NOTE = (
 _IN_PROGRESS_NOTE = (
     "The Team Organization is already running. Do not call run_team again "
     "and do not post a group message. The Owner posts the final report."
+)
+_DIRECT_WAIT_NOTE = (
+    "An older Team Organization has not posted its result yet. Do not call "
+    "run_team again and do not post a group message. This request does not "
+    "open an organization. It runs on the ordinary single-team path after "
+    "that result is posted."
 )
 
 _REPLY_BLOCK = (
@@ -203,6 +223,31 @@ def mentioned_expert_teams(mentions: list[str], members: list[dict]) -> list[dic
     return result
 
 
+def mentioned_single_experts(mentions: list[str], members: list[dict]) -> list[str]:
+    """Return mentioned single-expert member names in mention order.
+
+    A single expert is ``agent_template``. Rows written before that rename used
+    ``expert``. Expert teams are not included.
+    """
+    by_name: dict[str, str] = {}
+    for item in members:
+        if not isinstance(item, dict):
+            continue
+        if item.get("kind") not in {"agent_template", "expert"}:
+            continue
+        name = str(item.get("member_name") or "").strip()
+        if name:
+            by_name[name] = name
+    result: list[str] = []
+    seen: set[str] = set()
+    for name in mentions:
+        if name not in by_name or name in seen:
+            continue
+        seen.add(name)
+        result.append(name)
+    return result
+
+
 def organization_id_for_session(session_id: str) -> str:
     """Legacy organization id used before each round chose its own."""
     safe = "".join(ch if ch.isalnum() or ch in "_.-" else "-" for ch in session_id)
@@ -319,10 +364,23 @@ def record_organization_plan(
     state = read_group(session_id)
     if state is None:
         return None
-    selected = mentioned_expert_teams(mentions, list(state.get("members") or []))
+    members = list(state.get("members") or [])
+    selected = mentioned_expert_teams(mentions, members)
+    names = [str(item["member_name"]) for item in selected]
+    singles = mentioned_single_experts(mentions, members)
+    if names and singles:
+        logger.info(
+            "group organization plan skipped; message also mentions a single expert "
+            "session=%s experts=%s singles=%s",
+            session_id,
+            names,
+            singles,
+        )
+        remember_direct_route(session_id, plan_id, names)
+        _defer_direct_members(session_id, plan_id, names, body)
+        return None
     if len(selected) < 2:
         return None
-    names = [str(item["member_name"]) for item in selected]
     existing = next(
         (
             item
@@ -371,6 +429,8 @@ def record_organization_plan(
         "created_at": _now_ms(),
     }
     if add_group_organization_plan(session_id, plan):
+        for name in names:
+            bind_member_turn(session_id, name, plan_id)
         logger.info(
             "group organization plan recorded session=%s plan=%s members=%s organization=%s",
             session_id,
@@ -378,6 +438,8 @@ def record_organization_plan(
             names,
             organization_id,
         )
+    if _blocking_earlier_plans(session_id, plan):
+        _start_owner_queue(session_id, plan)
     return plan
 
 
@@ -413,6 +475,7 @@ def _collect_live_plans(session_id: str, member_name: str) -> list[dict]:
                 session_id, plan["plan_id"], status="expired"
             )
             _plan_event(session_id, plan_id).set()
+            release_deferred_direct(session_id, plan_id)
             continue
         if member_name in (plan.get("members") or []):
             live.append(plan)
@@ -425,6 +488,201 @@ def pending_organization_plan(session_id: str, member_name: str) -> dict | None:
     return plans[0] if plans else None
 
 
+def remember_direct_route(
+    session_id: str, plan_id: str, members: list[str]
+) -> None:
+    """Mark one message as a direct reply that must not enter an organization."""
+    target = str(plan_id or "").strip()
+    named = [str(name) for name in members if str(name).strip()]
+    if not session_id or not target or not named:
+        return
+    from jiuwenswarm.server.runtime.group_service import add_group_direct_route
+
+    add_group_direct_route(
+        session_id, {"plan_id": target, "members": named}
+    )
+
+
+def direct_route_for_member(
+    session_id: str, member_name: str, plan_id: str | None
+) -> bool:
+    """Whether this message told this proxy to stay off the organization."""
+    target = str(plan_id or "").strip()
+    member = str(member_name or "").strip()
+    if not target or not member:
+        return False
+    from jiuwenswarm.server.runtime.group_service import group_direct_routes
+
+    for item in group_direct_routes(session_id):
+        if str(item.get("plan_id") or "") != target:
+            continue
+        return member in {str(name) for name in (item.get("members") or [])}
+    return False
+
+
+def bind_member_turn(session_id: str, member_name: str, message_id: str) -> None:
+    """Remember that this proxy still owes a turn for this message, in arrival order."""
+    target = str(message_id or "").strip()
+    member = str(member_name or "").strip()
+    if not session_id or not member or not target:
+        return
+    queue = _member_turns.setdefault((session_id, member), [])
+    if target not in queue:
+        queue.append(target)
+
+
+def bind_member_turn_front(session_id: str, member_name: str, message_id: str) -> None:
+    """Put a message back at the front after a call was spent on an older organization."""
+    target = str(message_id or "").strip()
+    member = str(member_name or "").strip()
+    if not session_id or not member or not target:
+        return
+    queue = _member_turns.setdefault((session_id, member), [])
+    queue[:] = [item for item in queue if item != target]
+    queue.insert(0, target)
+
+
+def peek_member_turn(session_id: str, member_name: str) -> str | None:
+    """The oldest message this proxy has not handled yet."""
+    queue = _member_turns.get((session_id, str(member_name or "")))
+    if not queue:
+        return None
+    return queue[0]
+
+
+def consume_member_turn(session_id: str, member_name: str) -> str | None:
+    """Drop the oldest bound message once this proxy has handled it."""
+    key = (session_id, str(member_name or ""))
+    queue = _member_turns.get(key)
+    if not queue:
+        return None
+    message_id = queue.pop(0)
+    if not queue:
+        _member_turns.pop(key, None)
+    return message_id
+
+
+def release_member_turn(session_id: str, member_name: str, message_id: str) -> None:
+    """Drop one bound message without affecting messages that arrived around it."""
+    key = (session_id, str(member_name or ""))
+    queue = _member_turns.get(key)
+    if not queue:
+        return
+    target = str(message_id or "")
+    remaining = [item for item in queue if item != target]
+    if remaining:
+        _member_turns[key] = remaining
+    else:
+        _member_turns.pop(key, None)
+
+
+def _defer_direct_members(
+    session_id: str, message_id: str, members: list[str], body: str
+) -> None:
+    """Hold a direct reply until an older organization that includes that proxy has posted."""
+    for name in members:
+        bind_member_turn(session_id, name, message_id)
+        if pending_organization_plan(session_id, name) is None:
+            continue
+        _deferred_direct[(session_id, str(message_id), name)] = {
+            "body": str(body or ""),
+            "member": name,
+            "message_id": str(message_id),
+            "started": False,
+        }
+
+
+def queued_direct_result(plan: dict) -> Any:
+    """Tell the proxy to wait; the direct reply starts after the organization posts."""
+    from openjiuwen.core.foundation.tool import ToolOutput
+
+    return ToolOutput(
+        success=True,
+        data={
+            "content": _DIRECT_WAIT_NOTE,
+            "plan_id": str(plan.get("plan_id") or ""),
+            "accepted": True,
+            "status": "queued",
+            "posted_to_group": False,
+        },
+    )
+
+
+def release_deferred_direct(session_id: str, plan_id: str) -> None:
+    """After an organization posts, start direct replies that were waiting on it."""
+    plan = _plan_record(session_id, plan_id) or {}
+    for name in plan.get("members") or []:
+        release_member_turn(session_id, str(name), plan_id)
+    for key, job in list(_deferred_direct.items()):
+        if key[0] != session_id or job.get("started"):
+            continue
+        member = str(job.get("member") or "")
+        if pending_organization_plan(session_id, member) is not None:
+            continue
+        job["started"] = True
+        _schedule_direct_member(session_id, job)
+
+
+def _schedule_direct_member(session_id: str, job: dict) -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        job["started"] = False
+        return
+    member = str(job.get("member") or "")
+    message_id = str(job.get("message_id") or "")
+    task = asyncio.create_task(
+        _launch_direct_member(
+            session_id=session_id,
+            member_name=member,
+            message_id=message_id,
+            body=str(job.get("body") or ""),
+        ),
+        name=f"group-direct-{message_id}-{member}",
+    )
+
+    def _finished(done: asyncio.Task) -> None:
+        if done.cancelled() or done.exception() is not None:
+            current = _deferred_direct.get((session_id, message_id, member))
+            if current is not None:
+                current["started"] = False
+
+    task.add_done_callback(_finished)
+
+
+async def _launch_direct_member(
+    session_id: str, member_name: str, message_id: str, body: str
+) -> None:
+    """Run one direct reply on the ordinary single-team path.
+
+    Reuse the proxy's own run_team tool. A freshly built tool would not have
+    the private-team spec or the session context that path needs.
+    """
+    tool = None
+    for _ in range(10):
+        tool = _proxy_tools.get((session_id, member_name))
+        if tool is not None:
+            break
+        await asyncio.sleep(POLL_SECONDS)
+    if tool is None:
+        logger.warning(
+            "direct reply had no proxy session=%s member=%s message=%s",
+            session_id,
+            member_name,
+            message_id,
+        )
+        return
+    if peek_member_turn(session_id, member_name) != message_id:
+        bind_member_turn_front(session_id, member_name, message_id)
+    await tool.invoke(
+        {
+            "action": "start",
+            "run_id": f"direct-{message_id}",
+            "content": body or message_id,
+        }
+    )
+
+
 def organization_plan_for_member(
     session_id: str, member_name: str, plan_id: str | None
 ) -> dict | None:
@@ -433,7 +691,8 @@ def organization_plan_for_member(
     A call caused by a recorded multi-@ message uses that message's plan, even
     when an older plan is still live. A call that is not itself a new multi-@
     plan stays on the oldest live plan, so it does not open a private team
-    while an organization is running.
+    while an organization is running. A direct-reply message never reaches
+    this lookup.
     """
     plans = _collect_live_plans(session_id, member_name)
     if plan_id:
@@ -530,24 +789,73 @@ def release_organization_plan_claim(session_id: str, plan_id: str, member_name: 
     _accepted_plans.discard(_acceptance_key(session_id, plan_id, member_name))
 
 
+def _plan_record(session_id: str, plan_id: str) -> dict | None:
+    from jiuwenswarm.server.runtime.group_service import group_organization_plans
+
+    target = str(plan_id or "")
+    for plan in group_organization_plans(session_id):
+        if str(plan.get("plan_id") or "") == target:
+            return plan
+    return None
+
+
+def _blocking_earlier_plans(session_id: str, plan: dict) -> list[dict]:
+    """Older pending or running plans that still use one of this plan's members."""
+    from jiuwenswarm.server.runtime.group_service import group_organization_plans
+
+    members = {str(name) for name in (plan.get("members") or [])}
+    target = _plan_sort_key(plan)
+    blocking = [
+        item
+        for item in group_organization_plans(session_id)
+        if str(item.get("status") or "") in {"pending", "running"}
+        and str(item.get("plan_id") or "") != str(plan.get("plan_id") or "")
+        and _plan_sort_key(item) < target
+        and members.intersection(str(name) for name in (item.get("members") or []))
+    ]
+    blocking.sort(key=_plan_sort_key)
+    return blocking
+
+
+def remember_proxy_backend(session_id: str, backend: Any) -> None:
+    """Keep the group proxy that can start this member's organization round."""
+    member_name = str(getattr(backend, "member_name", "") or "")
+    if session_id and member_name and backend is not None:
+        _proxy_backends[(session_id, member_name)] = backend
+
+
+def remember_proxy_tool(session_id: str, tool: Any) -> None:
+    """Keep the run_team tool that can start this member's later single-team reply."""
+    backend = getattr(tool, "backend", None)
+    member_name = str(getattr(backend, "member_name", "") or "")
+    if session_id and member_name and tool is not None:
+        _proxy_tools[(session_id, member_name)] = tool
+
+
 def route_live_organization_plan(
     session_id: str, member_name: str, plan: dict
 ) -> tuple[str, dict]:
     """Choose the plan this run_team call should join or queue.
 
     The oldest live plan this proxy has not accepted is joined now, even when
-    a newer mention is already in the history. A newer plan is queued only
-    after that older plan has been accepted, so a slow Owner cannot skip it.
+    a newer mention is already in the history. A plan that shares a member with
+    an older live round queues instead of binding those instances. That includes
+    a proxy that is not itself a member of the older round.
     """
     earlier = earlier_organization_plans(session_id, member_name, plan)
+    if earlier:
+        oldest = earlier[0]
+        oldest_id = str(oldest.get("plan_id") or "")
+        if not organization_plan_accepted(session_id, oldest_id, member_name):
+            if claim_organization_plan(session_id, oldest_id, member_name):
+                return ("join", oldest)
+    plan_id = str(plan.get("plan_id") or "")
+    if _blocking_earlier_plans(session_id, plan):
+        claim_organization_plan(session_id, plan_id, member_name)
+        return ("queue", plan)
     if not earlier:
-        claim_organization_plan(session_id, str(plan.get("plan_id") or ""), member_name)
+        claim_organization_plan(session_id, plan_id, member_name)
         return ("join", plan)
-    oldest = earlier[0]
-    oldest_id = str(oldest.get("plan_id") or "")
-    if not organization_plan_accepted(session_id, oldest_id, member_name):
-        if claim_organization_plan(session_id, oldest_id, member_name):
-            return ("join", oldest)
     live = sorted(
         _collect_live_plans(session_id, member_name),
         key=_plan_sort_key,
@@ -569,12 +877,19 @@ def route_live_organization_plan(
 async def wait_for_earlier_organization_plans(
     session_id: str, member_name: str, plan: dict
 ) -> None:
-    """Hold a later multi-@ request until every older live plan has finished."""
+    """Hold a later multi-@ request until every overlapping older plan has finished."""
     while True:
         earlier = _earlier_live_plans(session_id, member_name, plan)
-        if not earlier:
+        seen = {str(item.get("plan_id") or "") for item in earlier}
+        blocking = [
+            item
+            for item in _blocking_earlier_plans(session_id, plan)
+            if str(item.get("plan_id") or "") not in seen
+        ]
+        pending = [*earlier, *blocking]
+        if not pending:
             return
-        event = _plan_event(session_id, str(earlier[0].get("plan_id") or ""))
+        event = _plan_event(session_id, str(pending[0].get("plan_id") or ""))
         try:
             await asyncio.wait_for(event.wait(), timeout=POLL_SECONDS)
         except TimeoutError:
@@ -585,41 +900,67 @@ def queue_organization_plan(*, backend: Any, session_id: str, plan: dict) -> Any
     """Accept a later multi-@ request without holding its run_team call open.
 
     The proxy tool returns before the older organization finishes. A background
-    task starts this plan once those earlier plans are done, using the same
-    join path a direct run_team would use.
+    task starts this plan once those earlier plans are done. The Owner task
+    launches or resumes every mentioned instance, including a proxy whose turn
+    already ended without another run_team call.
     """
     from openjiuwen.core.foundation.tool import ToolOutput
 
-    member_name = str(backend.member_name)
-    plan_id = str(plan["plan_id"])
-    key = (session_id, plan_id, member_name)
-    current = _queued_plans.get(key)
-    if current is None or current.done():
-        current = asyncio.create_task(
-            _join_queued_organization_plan(
-                backend=backend,
-                session_id=session_id,
-                member_name=member_name,
-                plan_id=plan_id,
-            ),
-            name=f"group-org-queue-{plan_id}-{member_name}",
-        )
-        _queued_plans[key] = current
-
-        def _finished(done: asyncio.Task) -> None:
-            if _queued_plans.get(key) is done:
-                _queued_plans.pop(key, None)
-
-        current.add_done_callback(_finished)
+    remember_proxy_backend(session_id, backend)
+    _start_owner_queue(session_id, plan, backend)
     return ToolOutput(
         success=True,
         data={
             "content": _QUEUED_NOTE,
-            "plan_id": plan_id,
+            "plan_id": str(plan.get("plan_id") or ""),
             "accepted": True,
             "status": "queued",
             "posted_to_group": False,
         },
+    )
+
+
+def _start_owner_queue(session_id: str, plan: dict, backend: Any | None = None) -> None:
+    """Queue the Owner once. A member call does not start its own join."""
+    owner = str(plan.get("owner_member") or "")
+    plan_id = str(plan.get("plan_id") or "")
+    if not owner or not plan_id:
+        return
+    if backend is not None:
+        remember_proxy_backend(session_id, backend)
+    key = (session_id, plan_id, owner)
+    current = _queued_plans.get(key)
+    if current is not None and not current.done():
+        return
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = asyncio.create_task(
+        _owner_queue_entry(session_id, plan_id, owner),
+        name=f"group-org-queue-{plan_id}-{owner}",
+    )
+    _queued_plans[key] = task
+
+    def _finished(done: asyncio.Task) -> None:
+        if _queued_plans.get(key) is done:
+            _queued_plans.pop(key, None)
+
+    task.add_done_callback(_finished)
+
+
+async def _owner_queue_entry(session_id: str, plan_id: str, owner: str) -> None:
+    """Wait for the Owner proxy, then start this plan after older rounds finish."""
+    while _proxy_backends.get((session_id, owner)) is None:
+        plan = _plan_record(session_id, plan_id)
+        if plan is None or str(plan.get("status") or "") not in {"pending", "running"}:
+            return
+        await asyncio.sleep(POLL_SECONDS)
+    await _join_queued_organization_plan(
+        backend=_proxy_backends[(session_id, owner)],
+        session_id=session_id,
+        member_name=owner,
+        plan_id=plan_id,
     )
 
 
@@ -631,22 +972,35 @@ async def _join_queued_organization_plan(
     plan_id: str,
 ) -> None:
     try:
-        plan = organization_plan_for_member(session_id, member_name, plan_id)
-        if plan is None:
-            release_organization_plan_claim(session_id, plan_id, member_name)
+        while True:
+            plan = organization_plan_for_member(session_id, member_name, plan_id)
+            if plan is None:
+                release_organization_plan_claim(session_id, plan_id, member_name)
+                return
+            await wait_for_earlier_organization_plans(session_id, member_name, plan)
+            plan = organization_plan_for_member(session_id, member_name, plan_id)
+            if plan is None:
+                release_organization_plan_claim(session_id, plan_id, member_name)
+                return
+            result = await run_organization_member(
+                backend=backend,
+                session_id=session_id,
+                plan=plan,
+                ensure_members=member_name == str(plan.get("owner_member") or ""),
+            )
+            if getattr(result, "success", True) is False:
+                error = str(getattr(result, "error", "") or "")
+                current = _plan_record(session_id, plan_id)
+                if (
+                    "live organization" in error
+                    and current is not None
+                    and str(current.get("status") or "") in {"pending", "running"}
+                ):
+                    await asyncio.sleep(POLL_SECONDS)
+                    continue
+                release_organization_plan_claim(session_id, plan_id, member_name)
+                return
             return
-        await wait_for_earlier_organization_plans(session_id, member_name, plan)
-        plan = organization_plan_for_member(session_id, member_name, plan_id)
-        if plan is None:
-            release_organization_plan_claim(session_id, plan_id, member_name)
-            return
-        result = await run_organization_member(
-            backend=backend,
-            session_id=session_id,
-            plan=plan,
-        )
-        if getattr(result, "success", True) is False:
-            release_organization_plan_claim(session_id, plan_id, member_name)
     except Exception:
         release_organization_plan_claim(session_id, plan_id, member_name)
         logger.exception(
@@ -658,7 +1012,18 @@ async def _join_queued_organization_plan(
 
 
 async def triggering_plan_id(backend: Any, member_name: str) -> str | None:
-    """Client message id of the latest user message that mentions this proxy."""
+    """Client message id of the turn this proxy is still handling.
+
+    A message bound when it arrived stays ahead of anything written into the
+    history later. The history scan is only the fallback for a turn that was
+    not bound.
+    """
+    session_id = str(getattr(getattr(backend, "context", None), "session_id", "") or "")
+    if not session_id:
+        session_id = str(getattr(backend, "session_id", "") or "")
+    bound = peek_member_turn(session_id, member_name)
+    if bound:
+        return bound
     getter = getattr(backend, "group_conversation", None)
     if not callable(getter):
         return None
@@ -687,13 +1052,22 @@ async def triggering_plan_id(backend: Any, member_name: str) -> str | None:
 
 
 def group_reply_block_reason(
-    session_id: str, member_name: str, team_id: str = ""
+    session_id: str,
+    member_name: str,
+    team_id: str = "",
+    message_id: str | None = None,
 ) -> str | None:
     """Block a non-owner reply while a multi-@ organization plan is live.
 
     The Owner background posts the one group reply. A mentioned teammate, and
-    that teammate's expert-team instance, must not post.
+    that teammate's expert-team instance, must not post. A direct-reply message
+    may post only after this proxy has no live organization left.
     """
+    if (
+        direct_route_for_member(session_id, member_name, message_id)
+        and pending_organization_plan(session_id, member_name) is None
+    ):
+        return None
     plan = pending_organization_plan(session_id, member_name)
     if plan is not None and str(plan.get("owner_member") or "") != str(member_name):
         return _REPLY_BLOCK
@@ -1095,6 +1469,144 @@ def _restore_followup_tool(agent: Any, *, session_id: str, member_name: str, had
         remove_tool("complete_team_run")
 
 
+async def _open_followup_card(
+    *,
+    session_id: str,
+    member_name: str,
+    run_id: str,
+    task: str,
+    team_id: str,
+) -> str | None:
+    """Publish the same team card a first private run shows once work starts.
+
+    A proxy that already joined an organization still resumes that instance.
+    The card is what makes this later single-@ visible like a first run.
+    """
+    from jiuwenswarm.server.runtime.group_execution import TERMINAL, GroupExecutions
+
+    store = GroupExecutions(session_id)
+    token = _digest("group-instance-followup-card", session_id, member_name, run_id)
+    try:
+        created = await store.create([member_name], task, token, defer_card=True)
+        record = created[0]
+        if record.get("status") in TERMINAL:
+            return None
+        execution_id = str(record["execution_id"])
+        await store.update(
+            execution_id,
+            execution_kind="team",
+            team_id=team_id,
+            background=True,
+        )
+        opened = await store.begin_task(execution_id, member_name)
+    except Exception:
+        logger.warning(
+            "group follow-up card was not opened session=%s member=%s",
+            session_id,
+            member_name,
+            exc_info=True,
+        )
+        return None
+    return str(opened["execution_id"])
+
+
+async def _start_followup_task_monitor(
+    session_id: str,
+    execution_id: str | None,
+    team_id: str,
+):
+    """Copy this instance's child tasks onto the follow-up card.
+
+    create_task and claim_task update the team board. The card only grows a
+    row from a team.task event. A first private run gets those events from
+    the team monitor; this follow-up attaches the same monitor once the
+    resumed instance is active. The leader stream does not carry them.
+    """
+    if not execution_id:
+        return None, None
+    from openjiuwen.agent_teams.context import reset_session_id, set_session_id
+    from openjiuwen.core.runner import Runner
+
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+
+    token = set_session_id(session_id)
+    try:
+        monitor = await Runner.get_agent_team_monitor(
+            team_name=team_id,
+            session_id=session_id,
+            hide_dm=True,
+        )
+    finally:
+        reset_session_id(token)
+    if monitor is None:
+        return None, None
+    handler = TeamMonitorHandler(monitor, session_id)
+    await handler.start()
+
+    async def _watch() -> None:
+        async for event in handler.events():
+            await _record_followup_task(session_id, execution_id, event)
+
+    return handler, asyncio.create_task(_watch())
+
+
+async def _stop_followup_task_monitor(handler, worker) -> None:
+    if handler is not None:
+        try:
+            await handler.stop()
+        except Exception:
+            logger.warning("group follow-up task monitor did not stop", exc_info=True)
+    if worker is None:
+        return
+    try:
+        await asyncio.wait_for(asyncio.shield(worker), timeout=2)
+    except asyncio.TimeoutError:
+        worker.cancel()
+        await asyncio.gather(worker, return_exceptions=True)
+    except Exception:
+        logger.warning("group follow-up task monitor did not drain", exc_info=True)
+
+
+async def _record_followup_task(session_id: str, execution_id: str | None, payload: dict) -> None:
+    """Add one private-team child task to the follow-up card."""
+    if not execution_id or payload.get("event_type") != "team.task":
+        return
+    from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+    try:
+        await GroupExecutions(session_id).task_event(execution_id, payload)
+    except Exception:
+        logger.warning(
+            "group follow-up card missed a child task session=%s execution=%s",
+            session_id,
+            execution_id,
+            exc_info=True,
+        )
+
+
+async def _fail_followup_card(session_id: str, execution_id: str | None) -> None:
+    if not execution_id:
+        return
+    from jiuwenswarm.server.runtime.group_execution import TERMINAL, GroupExecutions
+
+    store = GroupExecutions(session_id)
+    try:
+        record = store.get(execution_id)
+    except Exception:
+        return
+    if record.get("status") in TERMINAL:
+        return
+    try:
+        await store.update(execution_id, status="failed", phase="failed")
+    except Exception:
+        logger.warning(
+            "group follow-up card was not marked failed session=%s execution=%s",
+            session_id,
+            execution_id,
+            exc_info=True,
+        )
+
+
 async def run_instance_followup(
     *,
     backend: Any,
@@ -1106,7 +1618,8 @@ async def run_instance_followup(
 
     The model chooses this path by calling run_team. The same team id and
     session keep the child-task conversation. This does not open a blank
-    private team and does not rejoin the organization.
+    private team and does not rejoin the organization. It does publish a
+    team execution card, with one row per child task from that instance.
     """
     from openjiuwen.core.foundation.tool import ToolOutput
 
@@ -1161,7 +1674,10 @@ async def _run_instance_followup(
     agent = None
     had_tool = False
     runtime = None
+    execution_id: str | None = None
     team_id = instance_team_id(session_id, member_name)
+    task_monitor = None
+    task_monitor_worker = None
     try:
         state = read_group(session_id) or {}
         member = None
@@ -1197,28 +1713,75 @@ async def _run_instance_followup(
         agent = getattr(entry, "agent", None)
         if agent is not None:
             _mount_followup_tool(agent, follow_key)
+        execution_id = await _open_followup_card(
+            session_id=session_id,
+            member_name=member_name,
+            run_id=run_id,
+            task=task,
+            team_id=team_id,
+        )
+
+        async def _on_payload(payload: dict) -> None:
+            await _record_followup_task(session_id, execution_id, payload)
+
+        async def _on_activated() -> None:
+            nonlocal task_monitor, task_monitor_worker
+            if task_monitor is not None:
+                return
+            try:
+                task_monitor, task_monitor_worker = await _start_followup_task_monitor(
+                    session_id, execution_id, team_id,
+                )
+            except Exception:
+                logger.warning(
+                    "group follow-up task monitor was not attached session=%s team=%s",
+                    session_id,
+                    team_id,
+                    exc_info=True,
+                )
+
         ran = await runtime.run_organization_turn(
             team_name=team_id,
             session_id=session_id,
             inputs={"query": _followup_query(task)},
+            on_payload=_on_payload,
+            on_activated=_on_activated,
         )
+        await _stop_followup_task_monitor(task_monitor, task_monitor_worker)
+        task_monitor = None
+        task_monitor_worker = None
         if not ran or not future.done():
             raise RuntimeError("organization instance ended without a follow-up result")
         submission = future.result()
-        result = submission["result"] if isinstance(submission, dict) else submission
-        await backend.append_group_message(
-            member_name,
-            result,
-            client_message_id=f"expert-followup-{follow_key[:24]}",
-            mentions=[],
-        )
+        if isinstance(submission, dict):
+            result = submission["result"]
+            attachments = list(submission.get("attachments") or [])
+        else:
+            result = submission
+            attachments = []
+        if execution_id:
+            from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+            await GroupExecutions(session_id).finish(
+                execution_id, backend, result, attachments
+            )
+        else:
+            await backend.append_group_message(
+                member_name,
+                result,
+                attachments=attachments,
+                client_message_id=f"expert-followup-{follow_key[:24]}",
+                mentions=[],
+            )
     except Exception:
+        await _fail_followup_card(session_id, execution_id)
         logger.exception(
             "group instance follow-up failed session=%s member=%s",
             session_id,
             member_name,
         )
     finally:
+        await _stop_followup_task_monitor(task_monitor, task_monitor_worker)
         _results.pop(follow_key, None)
         if runtime is not None:
             try:
@@ -1239,12 +1802,22 @@ async def _run_instance_followup(
 
 
 def _organization_has_live_plan(session_id: str, organization_id: str) -> bool:
+    """Whether this organization has a round whose owner has already started.
+
+    A later multi-@ message is recorded as pending before its owner runs.
+    That record reuses an organization id but has not taken the instances, so
+    it must not stop an older round from leaving this organization.
+    """
     from jiuwenswarm.server.runtime.group_service import group_organization_plans
 
     for plan in group_organization_plans(session_id):
-        if plan.get("status") not in {"pending", "running"}:
+        if organization_id_for_plan(plan, session_id) != organization_id:
             continue
-        if organization_id_for_plan(plan, session_id) == organization_id:
+        status = str(plan.get("status") or "")
+        if status == "running":
+            return True
+        plan_id = str(plan.get("plan_id") or "")
+        if status == "pending" and _owner_run_active(session_id, plan_id):
             return True
     return False
 
@@ -1273,8 +1846,9 @@ async def _detach_other_organization(
     """Leave a finished organization without deleting its tasks or context.
 
     Core refuses to create or invite into a new organization while the team
-    still points at the old one. A plan that is still pending or running is
-    left untouched.
+    still points at the old one. A round whose owner is running, or whose
+    owner task has already started, is left untouched. A plan that is only
+    recorded is not a reason to stay.
     """
     backend = await _live_backend(runtime, team_id, session_id)
     current = _bound_organization(backend)
@@ -1574,7 +2148,12 @@ def _status_text(value: Any) -> str:
 
 
 def _team_labels(session_id: str) -> dict[str, str]:
-    """Map a resident instance id to the expert team's display name."""
+    """Map a resident instance id to the expert team's display name.
+
+    The live organization roster is replaced when the next round starts. A card
+    that is still refreshing must keep resolving the previous round's instances
+    from the group member list, whose instance ids do not change.
+    """
     from jiuwenswarm.server.runtime.group_service import (
         group_organization_teams,
         read_group,
@@ -1587,6 +2166,14 @@ def _team_labels(session_id: str) -> dict[str, str]:
         if isinstance(item, dict)
     }
     labels: dict[str, str] = {}
+    for item in roster.values():
+        entry = expert_team_roster_entry(item)
+        if entry is None:
+            continue
+        member_name = entry["member_name"]
+        labels[instance_team_id(session_id, member_name)] = str(
+            entry.get("display_name") or member_name
+        )
     for item in group_organization_teams(session_id):
         team_id = str(item.get("team_id") or "")
         member_name = str(item.get("member_name") or "")
@@ -1646,26 +2233,27 @@ def _controller_team_id(task: Any) -> str:
     return str(getattr(aggregation, "controller_team_id", "") or "")
 
 
-def _output_heading(task: Any) -> str:
-    """First line of the root report, without a markdown heading mark."""
-    context = getattr(task, "output_context", None)
-    if isinstance(context, dict):
-        text = str(context.get("description") or "")
-    else:
-        text = str(getattr(context, "description", "") or "")
+def _outline_line(text: str) -> str:
+    """First line of a task outline, without a markdown heading mark."""
     line = text.strip().splitlines()[0].strip() if text.strip() else ""
     return line.lstrip("#").strip()
 
 
-def _hierarchical_row_title(task: Any) -> str:
-    """Use the report title the Owner wrote. The primed root title is not one."""
-    heading = _output_heading(task)
-    if heading:
-        return heading
+def _hierarchical_row_title(task: Any, *, outline: str = "") -> str:
+    """Name the Owner's summary when it is handed over, and keep that name.
+
+    The primed root title is not an outline. The finished report is not either:
+    its first line must not replace the row after the summary completes.
+    """
     title = str(getattr(task, "title", "") or "").strip()
-    if title and title != "Swarm group request":
-        return title
-    return "汇总"
+    if not title or title == "Swarm group request":
+        title = str(getattr(task, "description", "") or "").strip() or outline
+    line = _outline_line(title)
+    if not line:
+        return "汇总"
+    if line.startswith("汇总"):
+        return line
+    return f"汇总：{line}"
 
 
 async def _plan_child_tasks(task_pool: Any, plan: dict) -> tuple[list[Any], Any]:
@@ -1747,7 +2335,7 @@ async def _organization_rows(
         controller = _controller_team_id(root) or _assigned_team_id(root)
         tasks[task_id] = status
         details[task_id] = {
-            "title": _hierarchical_row_title(root),
+            "title": _hierarchical_row_title(root, outline=str(plan.get("body") or "")),
             "status": status,
             "member_id": labels.get(controller, ""),
         }
@@ -1925,7 +2513,13 @@ async def team_contribution(
     return result
 
 
-async def run_organization_member(*, backend: Any, session_id: str, plan: dict) -> Any:
+async def run_organization_member(
+    *,
+    backend: Any,
+    session_id: str,
+    plan: dict,
+    ensure_members: bool = False,
+) -> Any:
     """Join duplicate proxy tool calls to one durable organization run."""
     key = (session_id, str(plan["plan_id"]), str(backend.member_name))
     task = _member_runs.get(key)
@@ -1935,6 +2529,7 @@ async def run_organization_member(*, backend: Any, session_id: str, plan: dict) 
                 backend=backend,
                 session_id=session_id,
                 plan=plan,
+                ensure_members=ensure_members,
             )
         )
         _member_runs[key] = task
@@ -1946,7 +2541,11 @@ async def run_organization_member(*, backend: Any, session_id: str, plan: dict) 
 
 
 async def _run_organization_member_once(
-    *, backend: Any, session_id: str, plan: dict
+    *,
+    backend: Any,
+    session_id: str,
+    plan: dict,
+    ensure_members: bool = False,
 ) -> Any:
     """Organization-mode implementation of one proxy's run_team call."""
     from openjiuwen.core.foundation.tool import ToolOutput
@@ -2047,6 +2646,7 @@ async def _run_organization_member_once(
                 plan=plan,
                 organization_id=organization_id,
                 team_id=team_id,
+                ensure_members=ensure_members,
             )
         return _accepted_organization_output(
             organization_id=organization_id,
@@ -2060,11 +2660,16 @@ async def _run_organization_member_once(
             session_id,
             member_name,
         )
+        # An early bind hit a round that is still live. Leave this plan pending
+        # so the Owner queue can start it after that round releases.
+        if _blocking_earlier_plans(session_id, plan) and "live organization" in str(exc):
+            return ToolOutput(success=False, error=str(exc))
         if is_owner:
             update_group_organization_plan(
                 session_id, plan_id, status="failed", error=str(exc)
             )
             _plan_event(session_id, plan_id).set()
+            release_deferred_direct(session_id, plan_id)
         return ToolOutput(success=False, error=str(exc))
 
 
@@ -2124,6 +2729,87 @@ async def _owner_background(**kwargs: Any) -> None:
         )
 
 
+async def _ensure_mentioned_member_instances(
+    *,
+    runtime: Any,
+    org_runtime: Any,
+    launcher: Any,
+    session_id: str,
+    plan: dict,
+    organization_id: str,
+    record_backend: Any | None = None,
+) -> None:
+    """Launch or resume every mentioned instance and invite it into this plan.
+
+    A queued follow-up starts after the previous organization has released
+    membership. A proxy that already ended its turn cannot call run_team
+    again, so the Owner brings that instance back itself.
+    """
+    from jiuwenswarm.server.runtime.group_service import (
+        group_organization_teams,
+        read_group,
+        upsert_group_organization_team,
+    )
+
+    state = read_group(session_id) or {}
+    roster = {
+        item.get("member_name"): item
+        for item in state.get("members") or []
+        if isinstance(item, dict)
+    }
+    owner_member = str(plan.get("owner_member") or "")
+    async with _lock_for(session_id):
+        for name in list(plan.get("members") or []):
+            member_name = str(name)
+            member = expert_team_roster_entry(roster.get(member_name) or {})
+            if member is None:
+                raise RuntimeError(f"{member_name} is not an expert-team proxy")
+            is_owner = member_name == owner_member
+            team_id = await ensure_member_instance(
+                runtime=runtime,
+                launcher=launcher,
+                session_id=session_id,
+                outer_team_id=str(state.get("team_name") or ""),
+                member=member,
+                is_owner=is_owner,
+                organization_id=organization_id,
+            )
+            upsert_group_organization_team(
+                session_id,
+                organization_id,
+                {
+                    "member_name": member_name,
+                    "team_id": team_id,
+                    "role": "owner" if is_owner else "member",
+                    "id": member["id"],
+                },
+            )
+            if record_backend is not None and callable(
+                getattr(record_backend, "group_conversation", None)
+            ):
+                await _record_team_run(
+                    record_backend,
+                    member_name=member_name,
+                    team_id=team_id,
+                    session_id=session_id,
+                    organization_id=organization_id,
+                )
+            await _set_member_instance_silence(
+                runtime, team_id, session_id, silent=not is_owner
+            )
+            await _block_template_expert_creation(runtime, team_id, session_id)
+        owner = roster.get(owner_member) or {}
+        await sync_organization_membership(
+            runtime=runtime,
+            org_runtime=org_runtime,
+            session_id=session_id,
+            organization_id=organization_id,
+            owner_member=owner_member,
+            owner_display_name=(owner.get("display_name") or owner_member),
+            teams=group_organization_teams(session_id),
+        )
+
+
 async def _run_owner_proxy(
     *,
     backend: Any,
@@ -2133,6 +2819,7 @@ async def _run_owner_proxy(
     plan: dict,
     organization_id: str,
     team_id: str,
+    ensure_members: bool = False,
 ) -> Any:
     from openjiuwen.core.foundation.tool import ToolOutput
 
@@ -2179,6 +2866,20 @@ async def _run_owner_proxy(
     posted = None
     start_watchdog: asyncio.Task | None = None
     try:
+        if ensure_members:
+            launcher = getattr(org_runtime, "_expert_team_launcher", None)
+            bound_runtime, bound_org = runtime, org_runtime
+            if launcher is None:
+                bound_runtime, bound_org, launcher = _organization_runtime()
+            await _ensure_mentioned_member_instances(
+                runtime=bound_runtime,
+                org_runtime=bound_org,
+                launcher=launcher,
+                session_id=session_id,
+                plan=plan,
+                organization_id=organization_id,
+                record_backend=backend,
+            )
         missing = await _wait_for_members(
             runtime,
             session_id=session_id,
@@ -2245,8 +2946,22 @@ async def _run_owner_proxy(
             )
         except Exception:
             logger.exception("group organization pause failed session=%s", session_id)
-        if completed:
-            try:
+        # Release while this plan is still the live one, then mark it done or
+        # failed. Marking it earlier let the next queued round bind, and this
+        # finally then released that new binding. A failed round releases too,
+        # but only while the instance still points at this organization.
+        try:
+            bound_now = await _live_backend(runtime, team_id, session_id)
+            current = _bound_organization(bound_now)
+            if current and current != organization_id:
+                logger.info(
+                    "group organization release skipped; instance moved "
+                    "session=%s plan=%s bound=%s",
+                    session_id,
+                    plan_id,
+                    current,
+                )
+            else:
                 await unregister_completed_organization(
                     org_runtime=org_runtime,
                     task_pool=task_pool,
@@ -2254,14 +2969,11 @@ async def _run_owner_proxy(
                     organization_id=organization_id,
                     owner_team_id=team_id,
                 )
-            except Exception:
-                logger.exception(
-                    "group organization unregister failed session=%s",
-                    session_id,
-                )
-        # The plan stays live until membership is released. Marking it done
-        # earlier let the next queued round bind, and this finally then
-        # released that new binding.
+        except Exception:
+            logger.exception(
+                "group organization unregister failed session=%s",
+                session_id,
+            )
         try:
             if failed_error is not None:
                 update_group_organization_plan(
@@ -2281,6 +2993,7 @@ async def _run_owner_proxy(
                 plan_id,
             )
         _plan_event(session_id, plan_id).set()
+        release_deferred_direct(session_id, plan_id)
     return ToolOutput(
         success=True,
         data={
