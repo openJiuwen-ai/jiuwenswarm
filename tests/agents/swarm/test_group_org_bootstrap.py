@@ -9,11 +9,23 @@ import pytest
 
 from jiuwenswarm.agents.swarm import group_chat
 from jiuwenswarm.agents.swarm import group_org_bootstrap as bootstrap
+from jiuwenswarm.server.runtime import group_execution
 from jiuwenswarm.server.runtime import group_service
 from openjiuwen.agent_teams.organization.schema import OrgTaskStatus
 
 SESSION = "web_group"
 ORG = bootstrap.organization_id_for_session(SESSION)
+
+
+@pytest.fixture(autouse=True)
+def _clear_bound_turns():
+    yield
+    bootstrap._member_turns.clear()
+    bootstrap._deferred_direct.clear()
+    bootstrap._proxy_tools.clear()
+    bootstrap._accepted_plans.clear()
+
+
 MEMBERS = [
     {"kind": "agent_template", "id": "writer", "member_name": "writer"},
     {
@@ -229,14 +241,14 @@ def test_mentions_keep_order_and_instance_identity_is_stable():
 
 def test_plan_keeps_mentions_and_first_expert_is_owner(monkeypatch):
     group = _MemoryGroup(monkeypatch)
-    mentions = ["business", "writer", "insight"]
+    mentions = ["business", "insight"]
     plan = bootstrap.record_organization_plan(
         SESSION,
         mentions=mentions,
         body="写可行性报告",
         plan_id="message-1",
     )
-    assert mentions == ["business", "writer", "insight"]
+    assert mentions == ["business", "insight"]
     assert plan["members"] == ["business", "insight"]
     assert plan["owner_member"] == "business"
     assert plan["organization_id"] == bootstrap.new_organization_id(SESSION, "message-1")
@@ -250,6 +262,220 @@ def test_plan_keeps_mentions_and_first_expert_is_owner(monkeypatch):
         plan_id="message-1",
     )
     assert len(group.state["organization_plans"]) == 1
+
+
+def test_expert_teams_with_a_single_expert_stay_off_the_organization(monkeypatch):
+    group = _MemoryGroup(monkeypatch)
+    mentions = ["business", "writer", "insight"]
+    plan = bootstrap.record_organization_plan(
+        SESSION,
+        mentions=mentions,
+        body="专家团和单个专家一起看",
+        plan_id="message-mixed",
+    )
+    assert plan is None
+    assert mentions == ["business", "writer", "insight"]
+    assert group.state.get("organization_plans", []) == []
+    assert group.state["direct_routes"] == [
+        {"plan_id": "message-mixed", "members": ["business", "insight"]}
+    ]
+    assert bootstrap.direct_route_for_member(SESSION, "business", "message-mixed")
+    assert not bootstrap.direct_route_for_member(SESSION, "writer", "message-mixed")
+    bootstrap.record_organization_plan(
+        SESSION,
+        mentions=["business", "writer", "insight"],
+        body="专家团和单个专家一起看",
+        plan_id="message-mixed",
+    )
+    assert len(group.state["direct_routes"]) == 1
+    assert (
+        bootstrap.record_organization_plan(
+            SESSION,
+            mentions=["business", "writer"],
+            body="一个团加一个专家",
+            plan_id="message-one",
+        )
+        is None
+    )
+    assert group.state["direct_routes"][-1] == {
+        "plan_id": "message-one",
+        "members": ["business"],
+    }
+    legacy = _MemoryGroup(
+        monkeypatch,
+        members=[
+            {"kind": "expert", "id": "writer", "member_name": "writer"},
+            {
+                "kind": "agent_group",
+                "id": "business-planning",
+                "member_name": "business",
+            },
+            {
+                "kind": "agent_group",
+                "id": "technology-insight",
+                "member_name": "insight",
+            },
+        ],
+    )
+    assert (
+        bootstrap.record_organization_plan(
+            SESSION,
+            mentions=["insight", "writer", "business"],
+            body="旧花名册里的单个专家",
+            plan_id="message-legacy-mixed",
+        )
+        is None
+    )
+    assert legacy.state.get("organization_plans", []) == []
+    assert legacy.state["direct_routes"] == [
+        {"plan_id": "message-legacy-mixed", "members": ["insight", "business"]}
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_older_organization_finishes_before_the_direct_reply(monkeypatch):
+    calls = []
+    group = _MemoryGroup(monkeypatch)
+    bootstrap.record_organization_plan(
+        SESSION,
+        mentions=["business", "insight"],
+        body="一起做上线前检查",
+        plan_id="message-org",
+    )
+    bootstrap.record_organization_plan(
+        SESSION,
+        mentions=["business", "writer", "insight"],
+        body="这条上线说明写得清不清楚",
+        plan_id="message-mixed",
+    )
+    assert [item["plan_id"] for item in group.state["organization_plans"]] == ["message-org"]
+    assert bootstrap._deferred_direct[(SESSION, "message-mixed", "business")]["body"] == (
+        "这条上线说明写得清不清楚"
+    )
+
+    async def _organization(**kwargs):
+        calls.append(("organization", kwargs["plan"]["plan_id"]))
+        return "organization-result"
+
+    async def _saved(*_args, **_kwargs):
+        return {"kind": "organization"}
+
+    async def _follow(**_kwargs):
+        calls.append(("followup",))
+        return "followup-result"
+
+    async def _private(_key, task, *, execution=None):
+        calls.append(("private", task))
+        return "private-result"
+
+    monkeypatch.setattr(bootstrap, "run_organization_member", _organization)
+    monkeypatch.setattr(bootstrap, "saved_organization_instance", _saved)
+    monkeypatch.setattr(bootstrap, "run_instance_followup", _follow)
+    tool = group_chat.RunTeam(
+        SimpleNamespace(
+            conversation_mode="group_chat",
+            team_name="outer-team",
+            member_name="business",
+        ),
+        SimpleNamespace(session_id=SESSION),
+        {},
+    )
+    monkeypatch.setattr(tool, "_run", _private)
+
+    first = await tool.invoke({"run_id": "r-org", "task": "上线前检查"})
+    assert first == "organization-result"
+    assert calls == [("organization", "message-org")]
+
+    second = await tool.invoke({"run_id": "r-mixed", "task": "说明写得清不清楚"})
+    assert second.data["status"] == "queued"
+    assert calls == [("organization", "message-org")]
+
+    scheduled = []
+    monkeypatch.setattr(
+        bootstrap,
+        "_schedule_direct_member",
+        lambda session_id, job: scheduled.append(
+            (session_id, job["message_id"], job["member"], job["body"])
+        ),
+    )
+    group.state["organization_plans"][0]["status"] = "done"
+    bootstrap.release_deferred_direct(SESSION, "message-org")
+    assert scheduled == [
+        (SESSION, "message-mixed", "business", "这条上线说明写得清不清楚"),
+        (SESSION, "message-mixed", "insight", "这条上线说明写得清不清楚"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_direct_reply_reuses_the_proxy_tool():
+    calls = []
+
+    class _Tool:
+        def __init__(self):
+            self.backend = SimpleNamespace(member_name="business")
+
+        async def invoke(self, inputs, **_kwargs):
+            calls.append(inputs)
+            return "ran"
+
+    bootstrap.remember_proxy_tool(SESSION, _Tool())
+    await bootstrap._launch_direct_member(
+        SESSION, "business", "message-mixed", "这条上线说明写得清不清楚"
+    )
+    assert calls == [
+        {
+            "action": "start",
+            "run_id": "direct-message-mixed",
+            "content": "这条上线说明写得清不清楚",
+        }
+    ]
+
+
+def test_direct_reply_waits_until_the_older_organization_posts(monkeypatch):
+    now = bootstrap._now_ms()
+    _MemoryGroup(
+        monkeypatch,
+        organization_plans=[
+            {
+                "plan_id": "round-2",
+                "status": "running",
+                "members": ["business", "insight"],
+                "owner_member": "business",
+                "created_at": now,
+            }
+        ],
+        direct_routes=[
+            {"plan_id": "message-mixed", "members": ["business", "insight"]}
+        ],
+        organization_teams=[
+            {
+                "team_id": "org-expert-insight",
+                "role": "member",
+                "member_name": "insight",
+            }
+        ],
+    )
+    assert bootstrap.group_reply_block_reason(SESSION, "insight")
+    assert bootstrap.group_reply_block_reason(
+        SESSION, "insight", message_id="message-mixed"
+    )
+    assert bootstrap.group_reply_block_reason(
+        SESSION, "insight", message_id="round-2"
+    )
+    assert bootstrap.group_reply_block_reason(
+        SESSION,
+        "team-leader",
+        team_id="org-expert-insight",
+        message_id="message-mixed",
+    )
+    plans = group_service.read_group(SESSION)["organization_plans"]
+    plans[0]["status"] = "done"
+    assert (
+        bootstrap.group_reply_block_reason(
+            SESSION, "insight", message_id="message-mixed"
+        )
+        is None
+    )
 
 
 def test_public_agent_group_roster_records_an_organization_plan(monkeypatch):
@@ -635,6 +861,116 @@ async def test_failed_organization_is_released_before_a_different_set(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_a_recorded_plan_does_not_pin_the_previous_organization(monkeypatch):
+    old = "gorg-old"
+    new = "gorg-new"
+    owner_team = bootstrap.instance_team_id(SESSION, "business")
+    _MemoryGroup(
+        monkeypatch,
+        organization_id=old,
+        organization_teams=[
+            {
+                "member_name": "business",
+                "team_id": owner_team,
+                "role": "owner",
+                "id": "business-planning",
+            }
+        ],
+        organization_plans=[
+            {
+                "plan_id": "later-plan",
+                "members": ["business", "insight", "architecture"],
+                "owner_member": "business",
+                "organization_id": old,
+                "status": "pending",
+                "created_at": 2,
+            }
+        ],
+    )
+    pool = _Pool()
+    backend = pool.add(owner_team, organization_id=old)
+    released = []
+    created = []
+
+    class _Runtime:
+        async def release_membership(self, **kwargs):
+            released.append(kwargs)
+            backend.org_task_manager = None
+
+        async def create_organization(self, **kwargs):
+            created.append(kwargs)
+            backend.org_task_manager = SimpleNamespace(
+                organization_id=kwargs["organization_id"]
+            )
+            return _OrganizationRecord()
+
+    await bootstrap.sync_organization_membership(
+        runtime=SimpleNamespace(pool=pool),
+        org_runtime=_Runtime(),
+        session_id=SESSION,
+        organization_id=new,
+        owner_member="business",
+        owner_display_name="商业策划专家团",
+        teams=[{"member_name": "business", "team_id": owner_team, "role": "owner"}],
+    )
+    assert released[0]["organization_id"] == old
+    assert created[0]["organization_id"] == new
+    assert backend.org_task_manager.organization_id == new
+
+
+@pytest.mark.asyncio
+async def test_a_started_owner_keeps_a_pending_organization(monkeypatch):
+    old = "gorg-old"
+    new = "gorg-new"
+    owner_team = bootstrap.instance_team_id(SESSION, "business")
+    _MemoryGroup(
+        monkeypatch,
+        organization_plans=[
+            {
+                "plan_id": "started-plan",
+                "members": ["business", "insight"],
+                "owner_member": "business",
+                "organization_id": old,
+                "status": "pending",
+                "created_at": 1,
+            }
+        ],
+    )
+    pool = _Pool()
+    pool.add(owner_team, organization_id=old)
+    hold = asyncio.Event()
+    owner = asyncio.create_task(hold.wait())
+    bootstrap._owner_runs[(SESSION, "started-plan")] = owner
+    released = []
+
+    class _Runtime:
+        async def release_membership(self, **kwargs):
+            released.append(kwargs)
+
+        async def create_organization(self, **_kwargs):
+            raise AssertionError("a started round must keep its organization")
+
+    try:
+        with pytest.raises(RuntimeError, match="live organization"):
+            await bootstrap.sync_organization_membership(
+                runtime=SimpleNamespace(pool=pool),
+                org_runtime=_Runtime(),
+                session_id=SESSION,
+                organization_id=new,
+                owner_member="business",
+                owner_display_name="商业策划专家团",
+                teams=[
+                    {"member_name": "business", "team_id": owner_team, "role": "owner"}
+                ],
+            )
+        assert released == []
+    finally:
+        hold.set()
+        await owner
+        bootstrap._owner_runs.pop((SESSION, "started-plan"), None)
+
+
+@pytest.mark.asyncio
 async def test_recovered_root_is_complete_without_the_new_wait_clock():
     plan_id = "plan-1"
     root_id = bootstrap._root_task_id(plan_id)
@@ -674,11 +1010,13 @@ async def test_recovered_root_is_complete_without_the_new_wait_clock():
 
 
 def _clear_queued_plan_claims() -> None:
-    for plan_id in ("plan-1", "plan-2"):
-        bootstrap.release_organization_plan_claim(SESSION, plan_id, "business")
-        task = bootstrap._queued_plans.pop((SESSION, plan_id, "business"), None)
-        if task is not None and not task.done():
-            task.cancel()
+    for plan_id in ("plan-1", "plan-2", "plan-next"):
+        for member_name in ("business", "insight", "architecture"):
+            bootstrap.release_organization_plan_claim(SESSION, plan_id, member_name)
+            bootstrap._proxy_backends.pop((SESSION, member_name), None)
+            task = bootstrap._queued_plans.pop((SESSION, plan_id, member_name), None)
+            if task is not None and not task.done():
+                task.cancel()
 
 
 @pytest.mark.asyncio
@@ -836,6 +1174,153 @@ async def test_a_late_run_team_joins_the_older_plan_before_queueing(monkeypatch,
     assert queued.data["status"] == "queued"
     assert queued.data["plan_id"] == "plan-2"
     assert calls == ["plan-1"]
+
+
+def _roster_with_architecture() -> list[dict]:
+    return [
+        *MEMBERS,
+        {
+            "kind": "agent_group",
+            "id": "software-architecture-design",
+            "member_name": "architecture",
+            "display_name": "代码架构设计专家团",
+        },
+    ]
+
+
+@pytest.mark.asyncio
+async def test_overlapping_plan_queues_the_owner_when_it_is_recorded(monkeypatch, tmp_path):
+    _clear_queued_plan_claims()
+    now = bootstrap._now_ms()
+    older = {
+        "plan_id": "plan-1",
+        "members": ["business", "insight"],
+        "owner_member": "business",
+        "status": "running",
+        "created_at": now,
+        "organization_id": ORG,
+        "body": "上一问",
+    }
+    group = _MemoryGroup(
+        monkeypatch,
+        members=_roster_with_architecture(),
+        organization_plans=[older],
+    )
+    calls = []
+
+    async def _run(**kwargs):
+        calls.append((kwargs["plan"]["plan_id"], kwargs["ensure_members"]))
+        return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(bootstrap, "run_organization_member", _run)
+    owner = SimpleNamespace(member_name="business")
+    bootstrap.remember_proxy_backend(SESSION, owner)
+    plan = bootstrap.record_organization_plan(
+        SESSION,
+        mentions=["architecture", "business", "insight"],
+        body="后一问",
+        plan_id="plan-next",
+    )
+    assert plan["status"] == "pending"
+    assert plan["owner_member"] == "business"
+    waiter = bootstrap._queued_plans[(SESSION, "plan-next", "business")]
+    await asyncio.sleep(0)
+    assert calls == []
+
+    history = tmp_path / "history.jsonl"
+    history.write_text(
+        json.dumps(
+            {
+                "client_message_id": "plan-next",
+                "sender": "user",
+                "mentions": ["architecture", "business", "insight"],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    async def _conversation():
+        return SimpleNamespace(history_path=history)
+
+    tool = group_chat.RunTeam(
+        SimpleNamespace(
+            member_name="architecture",
+            conversation_mode="group_chat",
+            team_name="outer",
+            group_conversation=_conversation,
+        ),
+        SimpleNamespace(session_id=SESSION),
+        {},
+    )
+    queued = await tool.invoke({"run_id": "next", "task": "后一问"})
+    assert queued.data["status"] == "queued"
+    assert queued.data["plan_id"] == "plan-next"
+    assert calls == []
+    assert bootstrap._queued_plans[(SESSION, "plan-next", "business")] is waiter
+
+    group.state["organization_plans"][0]["status"] = "done"
+    bootstrap._plan_event(SESSION, "plan-1").set()
+    await waiter
+    assert calls == [("plan-next", True)]
+    assert group.state["organization_plans"][1]["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_early_bind_failure_keeps_the_overlapping_plan_pending(monkeypatch):
+    now = bootstrap._now_ms()
+    older = {
+        "plan_id": "plan-1",
+        "members": ["business", "insight"],
+        "owner_member": "business",
+        "status": "running",
+        "created_at": now,
+        "organization_id": ORG,
+        "body": "上一问",
+    }
+    newer = {
+        "plan_id": "plan-next",
+        "members": ["architecture", "business", "insight"],
+        "owner_member": "business",
+        "status": "pending",
+        "created_at": now + 1,
+        "organization_id": "gorg-next",
+        "body": "后一问",
+    }
+    group = _MemoryGroup(
+        monkeypatch,
+        members=_roster_with_architecture(),
+        organization_plans=[older, newer],
+    )
+
+    async def _ensure(**_kwargs):
+        return "org-expert-business"
+
+    async def _sync(**_kwargs):
+        raise RuntimeError("team already belongs to a live organization: " + ORG)
+
+    async def _quiet(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(
+        bootstrap, "_organization_runtime", lambda: (object(), object(), object())
+    )
+    monkeypatch.setattr(bootstrap, "ensure_member_instance", _ensure)
+    monkeypatch.setattr(bootstrap, "sync_organization_membership", _sync)
+    monkeypatch.setattr(bootstrap, "_record_team_run", _quiet)
+    monkeypatch.setattr(bootstrap, "_set_member_instance_silence", _quiet)
+    monkeypatch.setattr(bootstrap, "_block_template_expert_creation", _quiet)
+    monkeypatch.setattr(group_service, "upsert_group_organization_team", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(group_service, "group_organization_teams", lambda _session_id: [])
+
+    result = await bootstrap._run_organization_member_once(
+        backend=SimpleNamespace(member_name="business"),
+        session_id=SESSION,
+        plan=newer,
+    )
+    assert result.success is False
+    assert "live organization" in result.error
+    assert group.state["organization_plans"][1]["status"] == "pending"
 
 
 @pytest.mark.asyncio
@@ -1299,6 +1784,56 @@ async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_card_rows_keep_names_after_another_round_replaces_the_roster(monkeypatch):
+    plan = _stale_plan()
+    root_id = bootstrap._root_task_id(plan["plan_id"])
+    business = bootstrap.instance_team_id(SESSION, "business")
+    insight = bootstrap.instance_team_id(SESSION, "insight")
+    listed = [
+        SimpleNamespace(
+            task_id="child-business",
+            parent_task_id=root_id,
+            title="第一批内测使用对象",
+            status="COMPLETED",
+            task_type=None,
+            created_at=2,
+            assignment=SimpleNamespace(team_id=business),
+        ),
+        SimpleNamespace(
+            task_id="child-insight",
+            parent_task_id=root_id,
+            title="上线首日最关键环节",
+            status="CLAIMED",
+            task_type=None,
+            created_at=3,
+            assignment=SimpleNamespace(team_id=insight),
+        ),
+    ]
+
+    class _Pool:
+        async def list_tasks(self, **_kwargs):
+            return listed
+
+        async def get_task_review(self, task_id):
+            if task_id == "child-business":
+                return SimpleNamespace(review_status="ACCEPTED")
+            return None
+
+    _MemoryGroup(
+        monkeypatch,
+        organization_id="gorg-next",
+        organization_teams=[
+            {"member_name": "writer", "team_id": "org-expert-other", "role": "member"},
+        ],
+    )
+    _rows, details = await bootstrap._organization_rows(
+        SESSION, plan, _Pool(), fail_unfinished=False
+    )
+    assert details["child-business"]["member_id"] == "商业策划专家团"
+    assert details["child-insight"]["member_id"] == "技术洞察专家团"
+
+
+@pytest.mark.asyncio
 async def test_hierarchical_summary_row_names_the_owner_team(monkeypatch):
     plan = _stale_plan()
     root_id = bootstrap._root_task_id(plan["plan_id"])
@@ -1360,7 +1895,7 @@ async def test_hierarchical_summary_row_names_the_owner_team(monkeypatch):
     )
     assert list(waiting_rows) == ["child-business", root_id]
     assert waiting_rows[root_id] == "in_progress"
-    assert waiting_details[root_id]["title"] == "汇总"
+    assert waiting_details[root_id]["title"] == "汇总：联合调研"
     assert waiting_details[root_id]["member_id"] == "商业策划专家团"
 
     root.status = "COMPLETED"
@@ -1371,7 +1906,7 @@ async def test_hierarchical_summary_row_names_the_owner_team(monkeypatch):
         SESSION, plan, _Pool([root, child]), fail_unfinished=False
     )
     assert list(rows) == ["child-business", root_id]
-    assert details[root_id]["title"] == "《10人团队内部知识问答助手》可行性报告（约500字）"
+    assert details[root_id]["title"] == "汇总：联合调研"
     assert details[root_id]["member_id"] == "商业策划专家团"
     assert rows[root_id] == "completed"
 
@@ -1451,7 +1986,7 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
     assert rows["child-tech"] == "failed"
     assert rows["repair-tech"] == "completed"
     assert rows[root_id] == "completed"
-    assert details[root_id]["title"] == "10人团队内部知识问答助手 · 可行性报告（简）"
+    assert details[root_id]["title"] == "汇总：联合调研"
     assert details[root_id]["member_id"] == "商业策划专家团"
 
 
@@ -1826,6 +2361,144 @@ async def test_missing_run_team_fails_before_the_root_is_created(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_queued_owner_launches_members_before_the_join_wait(monkeypatch):
+    plan = _stale_plan()
+    plan["status"] = "pending"
+    _MemoryGroup(monkeypatch, organization_id=ORG, organization_plans=[plan])
+    order = []
+
+    async def _publish(**_kwargs):
+        return None
+
+    async def _ensure(**kwargs):
+        order.append("ensure")
+        assert kwargs["plan"]["members"] == ["business", "insight"]
+        assert kwargs["organization_id"] == ORG
+
+    async def _wait(*_args, **_kwargs):
+        order.append("wait")
+        return ["insight"]
+
+    async def _prime(**_kwargs):
+        raise AssertionError("missing members must not prime the root")
+
+    class _Pool:
+        pass
+
+    async def _backend(*_args, **_kwargs):
+        return SimpleNamespace(org_task_manager=_Pool())
+
+    async def _post(*_args, **_kwargs):
+        raise AssertionError("a round missing run_team must not post")
+
+    monkeypatch.setattr(bootstrap, "publish_organization_card", _publish)
+    monkeypatch.setattr(bootstrap, "_ensure_mentioned_member_instances", _ensure)
+    monkeypatch.setattr(bootstrap, "_wait_for_members", _wait)
+    monkeypatch.setattr(bootstrap, "_owner_primes_root_task", _prime)
+    monkeypatch.setattr(bootstrap, "_live_backend", _backend)
+    with pytest.raises(RuntimeError, match="did not call run_team: insight"):
+        await bootstrap._run_owner_proxy(
+            backend=SimpleNamespace(member_name="business", append_group_message=_post),
+            runtime=object(),
+            org_runtime=SimpleNamespace(_expert_team_launcher=object()),
+            session_id=SESSION,
+            plan=plan,
+            organization_id=ORG,
+            team_id="org-expert-business",
+            ensure_members=True,
+        )
+    assert order == ["ensure", "wait"]
+
+
+@pytest.mark.asyncio
+async def test_queued_plan_ensures_a_member_that_skipped_run_team(monkeypatch):
+    plan = _stale_plan()
+    group = _MemoryGroup(monkeypatch, organization_id=ORG, organization_plans=[plan])
+    launched = []
+    synced = []
+
+    async def _ensure(**kwargs):
+        launched.append(kwargs["member"]["member_name"])
+        return bootstrap.instance_team_id(SESSION, kwargs["member"]["member_name"])
+
+    async def _sync(**kwargs):
+        synced.append([item["member_name"] for item in kwargs["teams"]])
+
+    async def _record(*_args, **_kwargs):
+        return None
+
+    async def _silence(*_args, **_kwargs):
+        return None
+
+    async def _block(*_args, **_kwargs):
+        return None
+
+    teams = []
+
+    def _upsert(_session_id, _organization_id, team):
+        teams.append(team)
+        group.state["organization_teams"] = teams
+
+    monkeypatch.setattr(bootstrap, "ensure_member_instance", _ensure)
+    monkeypatch.setattr(bootstrap, "sync_organization_membership", _sync)
+    monkeypatch.setattr(bootstrap, "_record_team_run", _record)
+    monkeypatch.setattr(bootstrap, "_set_member_instance_silence", _silence)
+    monkeypatch.setattr(bootstrap, "_block_template_expert_creation", _block)
+    monkeypatch.setattr(group_service, "upsert_group_organization_team", _upsert)
+    monkeypatch.setattr(
+        group_service, "group_organization_teams", lambda _session_id: list(teams)
+    )
+
+    await bootstrap._ensure_mentioned_member_instances(
+        runtime=object(),
+        org_runtime=object(),
+        launcher=object(),
+        session_id=SESSION,
+        plan=plan,
+        organization_id=ORG,
+        record_backend=SimpleNamespace(member_name="business"),
+    )
+
+    assert launched == ["business", "insight"]
+    assert [item["role"] for item in teams] == ["owner", "member"]
+    assert synced == [["business", "insight"]]
+
+
+@pytest.mark.asyncio
+async def test_queued_owner_join_ensures_members_after_the_older_plan(monkeypatch):
+    plan = _stale_plan()
+    plan["owner_member"] = "business"
+    seen = []
+
+    async def _wait(*_args, **_kwargs):
+        return None
+
+    async def _run(**kwargs):
+        seen.append(kwargs["ensure_members"])
+        return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(bootstrap, "wait_for_earlier_organization_plans", _wait)
+    monkeypatch.setattr(
+        bootstrap, "organization_plan_for_member", lambda *_args, **_kwargs: plan
+    )
+    monkeypatch.setattr(bootstrap, "run_organization_member", _run)
+
+    await bootstrap._join_queued_organization_plan(
+        backend=SimpleNamespace(member_name="business"),
+        session_id=SESSION,
+        member_name="business",
+        plan_id=plan["plan_id"],
+    )
+    await bootstrap._join_queued_organization_plan(
+        backend=SimpleNamespace(member_name="insight"),
+        session_id=SESSION,
+        member_name="insight",
+        plan_id=plan["plan_id"],
+    )
+    assert seen == [True, False]
+
+
+@pytest.mark.asyncio
 async def test_swarm_owner_loses_template_team_creation(monkeypatch):
     removed = []
 
@@ -1884,7 +2557,7 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
             raise AssertionError("a failed round must not dissolve the organization")
 
         async def release_membership(self, **_kwargs):
-            released.append("release")
+            released.append(plan["status"])
 
     async def _backend(*_args, **_kwargs):
         return SimpleNamespace(org_task_manager=_Pool())
@@ -1912,9 +2585,68 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
     assert calls[-1]["status"] == "failed"
     assert calls[-1]["fail_unfinished"] is True
     assert plan["status"] == "failed"
+    assert released == ["running", "pool"]
+    assert "organization_id" not in group.state
+    assert group.state["organization_teams"] == []
+
+
+@pytest.mark.asyncio
+async def test_failed_round_keeps_a_binding_that_already_moved(monkeypatch):
+    plan = _stale_plan()
+    group = _MemoryGroup(
+        monkeypatch,
+        organization_id="gorg-next",
+        organization_teams=[
+            {"team_id": "org-expert-next", "role": "owner", "member_name": "business"}
+        ],
+        organization_plans=[plan],
+    )
+    released = []
+
+    async def _publish(**_kwargs):
+        return None
+
+    async def _round(*_args, **_kwargs):
+        return "failed", []
+
+    async def _wait(*_args, **_kwargs):
+        return []
+
+    async def _quiet(**_kwargs):
+        return None
+
+    class _Runtime:
+        async def release_membership(self, **_kwargs):
+            released.append("release")
+
+    async def _backend(*_args, **_kwargs):
+        return SimpleNamespace(
+            org_task_manager=SimpleNamespace(organization_id="gorg-next")
+        )
+
+    async def _post(*_args, **_kwargs):
+        raise AssertionError("a failed organization must not post")
+
+    monkeypatch.setattr(bootstrap, "publish_organization_card", _publish)
+    monkeypatch.setattr(bootstrap, "_round_state", _round)
+    monkeypatch.setattr(bootstrap, "_wait_for_members", _wait)
+    monkeypatch.setattr(bootstrap, "_owner_primes_root_task", _quiet)
+    monkeypatch.setattr(bootstrap, "_queue_owner_start_reminder", _quiet)
+    monkeypatch.setattr(bootstrap, "pause_organization_instances", _quiet)
+    monkeypatch.setattr(bootstrap, "_live_backend", _backend)
+    with pytest.raises(RuntimeError, match="organization root task failed"):
+        await bootstrap._run_owner_proxy(
+            backend=SimpleNamespace(member_name="business", append_group_message=_post),
+            runtime=object(),
+            org_runtime=_Runtime(),
+            session_id=SESSION,
+            plan=plan,
+            organization_id=ORG,
+            team_id="org-expert-business",
+        )
     assert released == []
-    assert group.state["organization_id"] == ORG
-    assert group.state["organization_teams"][0]["team_id"] == "org-expert-business"
+    assert group.state["organization_id"] == "gorg-next"
+    assert group.state["organization_teams"][0]["team_id"] == "org-expert-next"
 
 
 def test_followup_policy_lets_the_model_choose_proxy_or_instance():
@@ -2297,6 +3029,219 @@ async def test_instance_followup_reuses_the_organization_session(monkeypatch):
     assert "existing conversation" in turns[0]["inputs"]["query"]
     assert posts[0][0][1] == "沿用上一轮子任务"
     assert harness.removed == ["complete_team_run"]
+
+
+@pytest.mark.asyncio
+async def test_followup_after_an_organization_opens_a_team_card(monkeypatch):
+    _MemoryGroup(monkeypatch)
+    team_id = bootstrap.instance_team_id(SESSION, "insight")
+    seen = []
+
+    class _Store:
+        def __init__(self, session_id):
+            self.session_id = session_id
+
+        async def create(self, members, task, token, *, defer_card=False):
+            seen.append(("create", members, task, defer_card))
+            return [{
+                "execution_id": "exec-follow",
+                "status": "queued",
+                "presentation": "message",
+                "member_name": members[0],
+            }]
+
+        async def update(self, execution_id, **changes):
+            seen.append(("update", execution_id, changes))
+            return {
+                "execution_id": execution_id,
+                "status": changes.get("status", "running"),
+                "presentation": "message",
+                "member_name": "insight",
+                **changes,
+            }
+
+        async def begin_task(self, execution_id, member_name):
+            seen.append(("begin", execution_id, member_name))
+            return {
+                "execution_id": execution_id,
+                "status": "running",
+                "presentation": "card",
+                "member_name": member_name,
+            }
+
+        async def task_event(self, execution_id, payload):
+            seen.append(("task", execution_id, payload["event"]["member_id"]))
+
+        async def finish(self, execution_id, backend, result, attachments):
+            seen.append(("finish", execution_id, result, attachments))
+            return {"execution_id": execution_id, "status": "completed"}
+
+        def get(self, execution_id):
+            return {"execution_id": execution_id, "status": "running"}
+
+    class _Runtime:
+        def __init__(self):
+            self.pool = SimpleNamespace(get=self._get)
+
+        async def _get(self, _team_id):
+            return None
+
+        async def run_organization_turn(self, **kwargs):
+            await kwargs["on_payload"]({
+                "event_type": "team.task",
+                "event": {
+                    "task_id": "child-1",
+                    "status": "in_progress",
+                    "title": "检索质量",
+                    "member_id": "trend_analyst",
+                },
+            })
+            key = bootstrap._digest(
+                "group-instance-followup", SESSION, "insight", "follow-card"
+            )
+            group_chat._results[key].set_result({
+                "result": "团队结论",
+                "attachments": [],
+            })
+            return True
+
+    async def _ensure(**_kwargs):
+        return team_id
+
+    async def _post(*_args, **_kwargs):
+        raise AssertionError("the card finish publishes the group result")
+
+    monkeypatch.setattr(group_execution, "GroupExecutions", _Store)
+    monkeypatch.setattr(bootstrap, "ensure_member_instance", _ensure)
+    monkeypatch.setattr(bootstrap, "_organization_runtime", lambda: (_Runtime(), object(), object()))
+    output = await bootstrap.run_instance_followup(
+        backend=SimpleNamespace(member_name="insight", append_group_message=_post),
+        session_id=SESSION,
+        run_id="follow-card",
+        task="交给专家团评估检索质量",
+    )
+    await bootstrap._followup_runs[(SESSION, "insight")]
+
+    assert output.data["resumed_instance"] is True
+    assert seen[0][0] == "create"
+    assert seen[0][3] is True
+    assert ("update", "exec-follow", {
+        "execution_kind": "team",
+        "team_id": team_id,
+        "background": True,
+    }) in seen
+    assert ("begin", "exec-follow", "insight") in seen
+    assert ("task", "exec-follow", "trend_analyst") in seen
+    assert ("finish", "exec-follow", "团队结论", []) in seen
+
+
+@pytest.mark.asyncio
+async def test_followup_card_copies_child_tasks_from_the_team_monitor(monkeypatch):
+    _MemoryGroup(monkeypatch)
+    team_id = bootstrap.instance_team_id(SESSION, "insight")
+    seen = []
+
+    class _Store:
+        def __init__(self, session_id):
+            self.session_id = session_id
+
+        async def create(self, members, task, token, *, defer_card=False):
+            return [{
+                "execution_id": "exec-monitor",
+                "status": "queued",
+                "presentation": "message",
+                "member_name": members[0],
+            }]
+
+        async def update(self, execution_id, **changes):
+            return {"execution_id": execution_id, "status": "running", "member_name": "insight", **changes}
+
+        async def begin_task(self, execution_id, member_name):
+            return {"execution_id": execution_id, "status": "running", "presentation": "card", "member_name": member_name}
+
+        async def task_event(self, execution_id, payload):
+            seen.append((execution_id, payload["event"]["member_id"], payload["event"]["task_id"]))
+
+        async def finish(self, execution_id, backend, result, attachments):
+            seen.append(("finish", execution_id, result))
+            return {"execution_id": execution_id, "status": "completed"}
+
+        def get(self, execution_id):
+            return {"execution_id": execution_id, "status": "running"}
+
+    class _Monitor:
+        def __init__(self):
+            self.stopped = False
+
+        async def events(self):
+            yield {
+                "event_type": "team.member",
+                "event": {"member_id": "trend_analyst", "type": "team.member.status_changed"},
+            }
+            yield {
+                "event_type": "team.task",
+                "event": {
+                    "task_id": "child-1",
+                    "status": "in_progress",
+                    "title": "检索质量从哪来",
+                    "member_id": "trend_analyst",
+                },
+            }
+            while not self.stopped:
+                await asyncio.sleep(0.01)
+
+        async def stop(self):
+            self.stopped = True
+
+    class _Runtime:
+        def __init__(self):
+            self.pool = SimpleNamespace(get=self._get)
+
+        async def _get(self, _team_id):
+            return None
+
+        async def run_organization_turn(self, **kwargs):
+            await kwargs["on_activated"]()
+            await asyncio.sleep(0.05)
+            key = bootstrap._digest(
+                "group-instance-followup", SESSION, "insight", "follow-monitor"
+            )
+            group_chat._results[key].set_result({"result": "团队结论", "attachments": []})
+            return True
+
+    async def _ensure(**_kwargs):
+        return team_id
+
+    async def _post(*_args, **_kwargs):
+        raise AssertionError("the card finish publishes the group result")
+
+    async def _start(session_id, execution_id, watched_team_id):
+        assert session_id == SESSION
+        assert execution_id == "exec-monitor"
+        assert watched_team_id == team_id
+        monitor = _Monitor()
+
+        async def _watch():
+            async for event in monitor.events():
+                await bootstrap._record_followup_task(session_id, execution_id, event)
+
+        return monitor, asyncio.create_task(_watch())
+
+    monkeypatch.setattr(group_execution, "GroupExecutions", _Store)
+    monkeypatch.setattr(bootstrap, "ensure_member_instance", _ensure)
+    monkeypatch.setattr(bootstrap, "_organization_runtime", lambda: (_Runtime(), object(), object()))
+    monkeypatch.setattr(bootstrap, "_start_followup_task_monitor", _start)
+    output = await bootstrap.run_instance_followup(
+        backend=SimpleNamespace(member_name="insight", append_group_message=_post),
+        session_id=SESSION,
+        run_id="follow-monitor",
+        task="请团里分工评估检索质量",
+    )
+    await bootstrap._followup_runs[(SESSION, "insight")]
+
+    assert output.data["resumed_instance"] is True
+    assert ("exec-monitor", "trend_analyst", "child-1") in seen
+    assert seen[-1] == ("finish", "exec-monitor", "团队结论")
 
 
 def test_only_the_owner_can_reply_during_a_multi_mention(monkeypatch):
