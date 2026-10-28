@@ -3329,14 +3329,14 @@ class JiuWenSwarm:
 
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
-        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
 
         with bind_request_subject(request.metadata):
             return await self._process_message(request, schedule_session=True)
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
-        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
 
         with bind_request_subject(request.metadata):
             return await self._process_message(request, schedule_session=False)
@@ -3802,7 +3802,7 @@ class JiuWenSwarm:
         """Inject an interaction answer into this Session's active execution."""
         if not is_interrupt_resume_payload(request.params):
             raise ValueError("control input must answer an active interaction")
-        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
 
         # 续聊不经过 process_message。这里绑定当次请求的名单，深研适配器里的 allows 才能放行已授权专家。
         with bind_request_subject(request.metadata):
@@ -4102,7 +4102,7 @@ class JiuWenSwarm:
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
         """处理流式请求，并带上本次请求的用户身份。"""
-        from jiuwenswarm.server.runtime.package_allowlist import bind_request_subject
+        from jiuwenswarm.enterprise.capabilities.experts.allowlist import bind_request_subject
 
         with bind_request_subject(request.metadata):
             async for chunk in self._process_message_stream(request):

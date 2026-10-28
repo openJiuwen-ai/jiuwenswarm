@@ -183,15 +183,8 @@ def _register_declared_routes(app: FastAPI, app_services: AppServices) -> None:
     )
 
     for method, verb, path in declared_http_routes():
-        handler = _handler_for(method)
-        if handler is None:
-            continue
-        app.add_api_route(
-            f"{API_PREFIX}{path}",
-            _make_method_endpoint(app_services, method, handler),
-            methods=[verb],
-            name=f"{verb} {path}",
-        )
+        _add_declared_route(app, app_services, method, verb, path)
+    _register_enterprise_expert_routes(app, app_services)
     history = _handler_for(ReqMethod.HISTORY_GET.value)
     if history is not None:
         app.add_api_route(
@@ -202,6 +195,35 @@ def _register_declared_routes(app: FastAPI, app_services: AppServices) -> None:
             methods=["GET"],
             name="GET /sessions/{session_id}/history/stream",
         )
+
+
+def _add_declared_route(app: FastAPI, app_services: AppServices, method: str, verb: str, path: str) -> None:
+    handler = _handler_for(method)
+    if handler is None:
+        return
+    app.add_api_route(
+        f"{API_PREFIX}{path}",
+        _make_method_endpoint(app_services, method, handler),
+        methods=[verb],
+        name=f"{verb} {path}",
+    )
+
+
+def _register_enterprise_expert_routes(app: FastAPI, app_services: AppServices) -> None:
+    """企业版挂出专家包专用网址。不读取 Gateway 企业包。"""
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.enterprise.capabilities.experts.http_dispatch import (
+        expert_http_route_rows,
+        install_expert_http_handlers,
+    )
+    from jiuwenswarm.server.dispatch import HANDLERS
+
+    install_expert_http_handlers(HANDLERS)
+    for method, verb, path in expert_http_route_rows():
+        _add_declared_route(app, app_services, method, verb, path)
 
 
 def _handler_for(method_name: str):
@@ -451,10 +473,10 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         else:
             if ext:
                 metadata[METADATA_KEY] = ext
-    from jiuwenswarm.enterprise import is_enterprise
+    from jiuwenswarm.enterprise.edition import is_enterprise
 
     if is_enterprise():
-        from jiuwenswarm.server.runtime.package_allowlist import (
+        from jiuwenswarm.common.schema.package_allowlist import (
             HEADER_NAME,
             METADATA_KEY as GRANT_METADATA_KEY,
             decode_package_allowlist_header,

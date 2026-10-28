@@ -116,14 +116,14 @@ def _e2a_to_wire(envelope: E2AEnvelope) -> dict[str, Any]:
 
 async def _stamp_package_allowlist(envelope: E2AEnvelope) -> None:
     """企业版用库里的名单覆盖 channel_context。个人版不读库。"""
-    from gateway.enterprise import is_enterprise
+    from gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return
+    from gateway.enterprise.capabilities.experts.allowlist import apply_allowlist_to_envelope
     from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
         read_package_allowlist_packages,
     )
-    from jiuwenswarm.server.runtime.package_allowlist import apply_allowlist_to_envelope
 
     apply_allowlist_to_envelope(envelope, await read_package_allowlist_packages())
 

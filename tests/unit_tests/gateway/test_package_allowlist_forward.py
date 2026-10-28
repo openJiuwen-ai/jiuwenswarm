@@ -22,9 +22,9 @@ from gateway.enterprise.config.manager_config.core.application_config.package_al
 )
 from gateway.routing.agent_client import _stamp_package_allowlist
 from jiuwenswarm.server.agent_http_routes import _rebuild_identity_from_headers
-from jiuwenswarm.server.runtime.package_allowlist import (
+from gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
+from jiuwenswarm.common.schema.package_allowlist import (
     HEADER_NAME,
-    bind_outbound_allowlist,
     decode_package_allowlist_header,
     encode_package_allowlist_header,
 )
