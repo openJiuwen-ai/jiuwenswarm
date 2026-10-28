@@ -281,10 +281,27 @@ test('free models without IDs survive refresh before and after the catalog arriv
     store.setSelectedModelSelection('new', { type: 'model', id: 'mdl-main' });
     store.removeRuntime('new');
     assert.deepEqual(store.ensureRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-main' });
-    // A removed free model falls back to an available custom model.
+    // A removed free model must also fall back when recreating the draft.
     store.setSelectedModelName('new', free.model_name);
     store.setAvailableModels(models, 'main-model');
+    store.removeRuntime('new');
+    assert.equal(store.ensureRuntime('new').selectedModelName, 'main-model');
     assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-main' });
+    assert.deepEqual(store.getModelSelectionPayload('new'), {
+      model_selection: { type: 'model', id: 'mdl-main' },
+    });
+    // When the same model gains an ID, both restoration paths use that ID.
+    store.setAvailableModels(catalog, 'main-model');
+    store.setSelectedModelName('new', free.model_name);
+    const stableFree = { ...free, model_id: 'mdl-free' };
+    store.setAvailableModels([...models, stableFree], 'main-model');
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-free' });
+    store.removeRuntime('new');
+    assert.equal(store.ensureRuntime('new').selectedModelName, free.model_name);
+    assert.deepEqual(store.getRuntime('new').selectedModelSelection, { type: 'model', id: 'mdl-free' });
+    assert.deepEqual(store.getModelSelectionPayload('new'), {
+      model_selection: { type: 'model', id: 'mdl-free' },
+    });
   } finally {
     store.removeRuntime('new');
     if (previousStorage === undefined) delete globalThis.localStorage;

@@ -737,10 +737,9 @@ function createEmptyRuntime(
     : null;
   return {
     mode: loadModeFromStorage(),
-    selectedModelName: (sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadLastLegacyModelName() : null)
-      ?? restoredModel?.model_name ?? null,
-    selectedModelSelection: sessionId === TRANSIENT_NEW_CONVERSATION_ID && loadLastLegacyModelName()
-      ? null
+    selectedModelName: restoreLegacyName ? legacyName : restoredModel?.model_name ?? null,
+    selectedModelSelection: restoreLegacyName
+      ? legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null
       : restoredSelection,
     projectDirectory: null,
     persistSession: false,
