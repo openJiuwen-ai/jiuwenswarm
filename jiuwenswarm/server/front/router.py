@@ -169,6 +169,11 @@ class MethodRouter:
                             if isinstance(snapshot.get("is_processing"), bool):
                                 response.payload["is_processing"] = snapshot["is_processing"]
                                 response.payload["status"] = "processing" if snapshot["is_processing"] else "idle"
+                    # Runtime may still contain child work after the Owner stops.
+                    # Keep its snapshot intact while projecting the Owner composer as idle.
+                    if response.payload.get("organization_owner_stopped") is True:
+                        response.payload["is_processing"] = False
+                        response.payload["status"] = "idle"
             elif method in CONTROL_PROJECT_METHODS:
                 _load_project_service()
                 response = await _HANDLE_PROJECT(request)

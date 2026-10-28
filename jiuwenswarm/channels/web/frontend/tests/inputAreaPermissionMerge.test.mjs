@@ -4,6 +4,7 @@ import { act, createElement, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
+import { loadCallback } from './loadProductionCallback.mjs';
 
 // Reserved, non-resolving DOM origin only; fetch rejects network access and the WebSocket fixture returns picker data.
 const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="root"></div></div>', {
@@ -1050,6 +1051,93 @@ test('paused Owner retains its pause state while organization work exposes stop 
     } finally {
       await act(async () => {
         finishExpertRequest(`${sessionId}::expert`, 'background');
+        setTeamOrganizationUiEnabled(false);
+      });
+    }
+  });
+});
+
+
+test('actual Owner composer remains disabled after stop and metadata refresh while child runs', async () => {
+  const { startExpertRequest, clearOrganizationRequests, setOrganizationOwnerStopped,
+    isOrganizationOwnerStopped, organizationOwnerStateRevision } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
+  );
+  const { organizationOwnerStopTarget, selectedExpertTeamId } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/conversation.js'
+  );
+  await mount({ mode: 'team' }, async ({ sessionId, props, render }) => {
+    const chat = useChatStore.getState();
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore,
+      request: async () => ({ session_id: sessionId, is_processing: true, status: 'processing' }),
+      sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata() {},
+      useWorkspaceStore,
+      setProcessing: (id, value) => { chat.setProcessing(id, value); props.isProcessing = value; },
+      setThinking: chat.setThinking,
+      isOrganizationOwnerStopped,
+      setOrganizationOwnerStopped,
+      organizationOwnerStateRevision,
+    });
+    const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+      selectedExpertTeamId, organizationOwnerStopTarget, useSessionStore, useChatStore,
+      setOrganizationOwnerStopped, isOrganizationOwnerStopped,
+      getSessionWorkContext: () => ({}),
+      resolveOutgoingMode: (_id, mode) => mode,
+      closeActiveTeamLeaderMessages() {},
+      request: async (_method, params) => {
+        assert.equal(params.organization_owner_stop, true);
+        return { success: true };
+      },
+      onErrorRef: { current: error => assert.fail(error) },
+      t: key => key,
+    });
+    const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
+      interrupt, organizationOwnerStopTarget,
+      useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: () => assert.fail('child cancelled') }) },
+      onErrorRef: { current: error => assert.fail(error) }, t: key => key,
+    });
+    const handleCancel = loadCallback('App.tsx', 'handleCancel', {
+      sessionIdRef: { current: sessionId }, NEW_CONVERSATION_ID: 'new',
+      useGoalStore: { getState: () => ({ runtimes: {} }) },
+      mode: 'team', organizationOwnerStopTarget, cancel, pause: () => assert.fail('Owner paused'),
+    });
+    props.onCancel = () => {
+      handleCancel();
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+    };
+    try {
+      await act(async () => {
+        setTeamOrganizationUiEnabled(true);
+        chat.setProcessing(sessionId, true);
+        useTeamSelectorStore.setState(state => ({ runtimes: {
+          ...state.runtimes, [sessionId]: { selectedTeamId: 'owner', teams: [
+            { team_id: 'owner', is_owner: true, organization_id: 'org' },
+            { team_id: 'expert', is_owner: false, organization_id: 'org' },
+          ] },
+        } }));
+        startExpertRequest(`${sessionId}::expert`, 'child-running', 'org_expert_background');
+      });
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+      await render();
+      assert.equal(byId('chat-panel-input-send').dataset.variant, 'stop');
+      await click(byId('chat-panel-input-send'));
+      await render();
+      assert.equal(byId('chat-panel-input-send').disabled, true);
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          assert.ok(await refresh(sessionId));
+          startExpertRequest(`${sessionId}::expert`, `late-child-${i}`, 'org_expert_background');
+        });
+        await render();
+        assert.equal(byId('chat-panel-input-send').dataset.variant, 'send');
+        assert.equal(byId('chat-panel-input-send').disabled, true);
+        assert.equal(chat.getRuntime(`${sessionId}::expert`).isProcessing, true);
+      }
+    } finally {
+      await act(async () => {
+        clearOrganizationRequests(sessionId);
         setTeamOrganizationUiEnabled(false);
       });
     }
