@@ -7,8 +7,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import login_credentials as lc
-from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
+from gateway.auth import login_credentials as lc
+from gateway.auth.login_credentials import credential_ref_for_user
 from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from openjiuwen_protocol.e2a.agent_models import AgentRequest
 from openjiuwen_protocol.message import ReqMethod

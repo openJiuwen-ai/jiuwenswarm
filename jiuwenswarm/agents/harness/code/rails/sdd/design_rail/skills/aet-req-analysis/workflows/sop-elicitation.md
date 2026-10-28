@@ -60,6 +60,8 @@ If still leaves gaps, **keep drilling down** with another round of questions. Gr
 
 **Completion: DO NOT proceed until all ambiguities resolved and user confirms.**
 
+**Skip handling:** If the user skips a question (empty confirmation, the 「跳过」 button or the 「取消」 button), that question is answered "no preference" — it does NOT mean the user skipped the elicitation, the document generation, or the SDD flow. Record the skipped point as an open assumption, stop asking about it, and move on to the next question. Never re-ask a skipped question, and never keep drilling down on it. If every question is skipped, continue with the raw requirement and list the skipped points as public assumptions in the generated document. Ask every question as a structured question with options (a free-text question carries no answer the transport can keep — an empty confirmation is dropped and the same question gets asked again); use the `Other` option when the user needs to answer in their own words.
+
 #### Step 3: Background Confirmation
 
 After clarifying requirements, confirm the background:
@@ -105,7 +107,7 @@ Issue the following confirmation questions:
 **Completion: all conditions below are verified as satisfied**
 
 - No unresolved ambiguities or conflicts remain
-- User has confirmed all questions
+- Every question has been answered or explicitly skipped (skipped points are recorded as public assumptions)
 - Key specification design has been comprehensively considered
 - No implementation-related questions have been asked (technology selection, architecture, module partitioning)
 

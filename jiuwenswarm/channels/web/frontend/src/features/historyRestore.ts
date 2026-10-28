@@ -223,9 +223,9 @@ function normalizeRecoveredSubagentStatus(status: string): {
 
 /**
  * Recover subagent roster/result hints from the parent history's structured tool records.
- * The parent history endpoint currently filters chat.subtask_update, so this is only a
- * discovery bridge to the independent subagent history; it never treats tool-result text
- * as a transcript/result body except the explicit subagent_wait.results mapping.
+ * Complements disk discovery via history.done ``subagent_ids`` when parent roster frames
+ * are missing; never treats tool-result text as a transcript/result body except the
+ * explicit subagent_wait.results mapping.
  */
 export function recoverSubagentToolHistory(
   items: HistoryToolReplayItem[],
@@ -518,6 +518,8 @@ interface BeginHistoryRestoreOptions {
   onTeamReplay?: (items: HistoryTeamReplayItem[]) => void;
   /** 恢复独立 subagent history 中的 roster/status 与 transcript */
   onSubagentReplay?: (items: HistorySubagentReplayItem[]) => void;
+  /** Parent history.done may list on-disk subagent bucket ids (GitCode #4887). */
+  onDiscoveredSubagentIds?: (ids: string[]) => void;
   /** 与消息同一时间线顺序，用于恢复模型思考块（chat.reasoning） */
   onReasoningReplay?: (items: HistoryReasoningReplayItem[]) => void;
   /** 恢复上下文压缩汇总（context.compact_boundary），用于回显「本轮完成上下文压缩 N 次」 */
@@ -1412,6 +1414,10 @@ function parseSessionHistoryTimelineEntry(
   // （不弹实时交互框——web 重连后后端不重发挂起中断，弹框 + resume 会报
   // "session has no active execution"，见下方未配对分支）。
   if (eventType === 'chat.ask_user_question') {
+    // Permission approvals share this event but are not clarification questions.
+    if (payload.source === 'permission_interrupt') {
+      return null;
+    }
     const rawQuestions = payload.questions;
     if (!Array.isArray(rawQuestions) || rawQuestions.length === 0) {
       return null;
@@ -2299,6 +2305,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   let requestCursor: string | null = null;
   let cursorMeta: HistoryCursorMeta | null = null;
   let snapshotMeta: HistoryCursorMeta | null = null;
+  let discoveredSubagentIds: string[] = [];
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2332,6 +2339,10 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       }
       snapshotMeta = nextMeta;
       cursorMeta = nextMeta;
+    }
+    const nextDiscovered = readDiscoveredSubagentIds(payload);
+    if (nextDiscovered.length > 0) {
+      discoveredSubagentIds = nextDiscovered;
     }
 
     if (payload.status === 'error') {
@@ -2467,6 +2478,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     stopListening();
 
     try {
+      if (discoveredSubagentIds.length > 0) {
+        options.onDiscoveredSubagentIds?.(discoveredSubagentIds);
+      }
       if (isEmpty) {
         options.onEmpty?.(cursorMeta);
         return;
@@ -2526,7 +2540,25 @@ export interface FetchHistoryCursorBatchResult {
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
   contextUsageSnapshot: Record<string, unknown> | null;
+  /** Parent history.done may list on-disk subagent bucket ids (GitCode #4887). */
+  discoveredSubagentIds: string[];
   cursor: HistoryCursorMeta;
+}
+
+/** Read ``subagent_ids`` advertised on a parent ``history.message`` done frame. */
+export function readDiscoveredSubagentIds(payload: Record<string, unknown>): string[] {
+  const raw = payload.subagent_ids ?? payload.subagentIds;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'string') continue;
+    const id = item.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  return ids;
 }
 
 export interface FetchHistoryCursorBatchOptions {
@@ -2550,6 +2582,7 @@ export function fetchHistoryCursorBatch(
 
   const entries: HistoryTimelineEntry[] = [];
   let cursorMeta: HistoryCursorMeta | null = null;
+  let discoveredSubagentIds: string[] = [];
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2571,6 +2604,10 @@ export function fetchHistoryCursorBatch(
 
     const nextMeta = readHistoryCursorMeta(payload, options.cursor);
     if (nextMeta) cursorMeta = nextMeta;
+    const nextDiscovered = readDiscoveredSubagentIds(payload);
+    if (nextDiscovered.length > 0) {
+      discoveredSubagentIds = nextDiscovered;
+    }
 
     if (payload.status === 'error') {
       fail({
@@ -2641,7 +2678,12 @@ export function fetchHistoryCursorBatch(
     const materialized = materializeHistoryTimeline(entries);
     const contextUsageSnapshot = selectLatestContextUsagePayload(materialized.contextUsageReplay);
     dispose();
-    options.onReady({ ...materialized, contextUsageSnapshot, cursor: cursorMeta });
+    options.onReady({
+      ...materialized,
+      contextUsageSnapshot,
+      discoveredSubagentIds,
+      cursor: cursorMeta,
+    });
   }
 
   const handle: HistoryRestoreHandle = { generation, dispose };

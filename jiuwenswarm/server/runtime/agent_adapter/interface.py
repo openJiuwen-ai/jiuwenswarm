@@ -11,10 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import aclosing
-from copy import deepcopy
-from dataclasses import replace
-from concurrent.futures import Future
 import inspect
 import json
 import logging
@@ -22,63 +18,46 @@ import re
 import shutil
 import tempfile
 import time
+from concurrent.futures import Future
+from contextlib import aclosing
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
-from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from gateway.common.mode_matrix import (
+    canonicalize_mode_text,
+    is_code_profile_mode,
+    is_team_plan_mode,
+    is_web_composable_mode,
+    read_request_work_mode,
+)
+from gateway.common.mode_matrix import (
+    is_team_mode as is_team_runtime_mode,
+)
 from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
-
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
-    SKILLS_REBUILD_SILENT,
-)
-from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
-    AgentAdapter,
-    create_adapter,
-    resolve_sdk_choice,
-)
-from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
-from jiuwenswarm.server.runtime.session.history_io import run_history_io as _run_history_io
-from jiuwenswarm.server.runtime.session.session_history import (
-    SESSION_REQUEST_COMPLETED_EVENT,
-    append_compact_history_records,
-    append_history_record,
-    collapse_file_content_blocks,
-    enqueue_history_request_completion,
-    resolve_final_record_timestamp,
-)
-from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
-    MEMBER_SEGMENT_BOUNDARY_EVENTS,
-    TeamMemberStreamHistory,
-    team_member_stream_key,
-)
-from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
-from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
-    STATUSLINE_SETUP_SYSTEM_PROMPT,
-    build_statusline_setup_dispatch,
-)
-from jiuwenswarm.server.runtime.session.session_manager import SessionManager
-from jiuwenswarm.runtime.session.model import (
-    TEAM_ATTACH_ONLY_PARAM,
-    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
-)
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
-from jiuwenswarm.server.runtime.session_assets import get_session_asset_manager
-from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
-from jiuwenswarm.server.utils.utils import is_team_params
-from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-)
+from gateway.extensions.registry import ExtensionRegistry
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
     PLAN_REVISE_OPTION_VALUES,
     PLAN_SKIP_OPTION_VALUES,
     plan_skip_feedback,
+)
+from jiuwenswarm.agents.harness.common.auto_memory import (
+    _execute_auto_memory_extraction,
+)
+from jiuwenswarm.agents.harness.common.memory.config import (
+    get_memory_mode,
+    is_auto_memory_enabled,
+    is_memory_enabled,
+)
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    EVOLUTION_INTERRUPT_METADATA_SOURCES,
+    is_interrupt_resume_payload,
 )
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
     ALLOW_ONCE,
@@ -89,25 +68,34 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from gateway.common.mode_matrix import (
-    canonicalize_mode_text,
-    is_code_profile_mode,
-    is_team_mode as is_team_runtime_mode,
-    is_team_plan_mode,
-    is_web_composable_mode,
-    read_request_work_mode,
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+    SKILLS_REBUILD_SILENT,
+)
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+    USER_INTERACTION_EVENTS,
+)
+from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
-from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
+from jiuwenswarm.common.e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_context import MemoryHookContext
+from jiuwenswarm.common.schema.agent import (
+    AgentRequest,
+    AgentResponse,
+    AgentResponseChunk,
+)
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     configure_skill_library,
@@ -116,26 +104,54 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     migrate_team_skill_views,
 )
+from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.runtime.session.model import (
+    TEAM_ATTACH_ONLY_PARAM,
+    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+)
+from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
+from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 from jiuwenswarm.server.runtime.a2ui.integration import (
     TeamA2UIBlockBuffer,
     finalize_assistant_response_if_a2ui,
 )
-from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
-from jiuwenswarm.server.runtime import extension_package_manager as package_manager
-from jiuwenswarm.agents.harness.common.auto_memory import (
-    _execute_auto_memory_extraction,
+from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import (
+    should_finalize_a2ui_content,
 )
-from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-    EVOLUTION_INTERRUPT_METADATA_SOURCES,
-    is_interrupt_resume_payload,
+from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
+    AgentAdapter,
+    create_adapter,
+    resolve_sdk_choice,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
-    HOST_USER_ORIGIN_EXTERNAL,
-    HOST_USER_ORIGIN_INTERNAL,
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    STATUSLINE_SETUP_SYSTEM_PROMPT,
+    build_statusline_setup_dispatch,
 )
-from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
-    USER_INTERACTION_EVENTS,
+from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
+    MEMBER_SEGMENT_BOUNDARY_EVENTS,
+    TeamMemberStreamHistory,
+    team_member_stream_key,
 )
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
+    TEAM_USER_TURN_KEY,
+    UserTurn,
+)
+from jiuwenswarm.server.runtime.session.history_io import (
+    run_history_io as _run_history_io,
+)
+from jiuwenswarm.server.runtime.session.session_history import (
+    SESSION_REQUEST_COMPLETED_EVENT,
+    append_compact_history_records,
+    append_history_record,
+    collapse_file_content_blocks,
+    enqueue_history_request_completion,
+    resolve_final_record_timestamp,
+)
+from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+from jiuwenswarm.server.runtime.session_assets import get_session_asset_manager
+from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
+from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
+from jiuwenswarm.server.utils.utils import is_team_params
 
 
 def _with_request_runtime_context(
@@ -2923,7 +2939,9 @@ class JiuWenSwarm:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
+                from jiuwenswarm.server.runtime.organization_packages import (
+                    uninstall_organization_agent_group,
+                )
 
                 await uninstall_organization_agent_group(params)
                 payload = {}

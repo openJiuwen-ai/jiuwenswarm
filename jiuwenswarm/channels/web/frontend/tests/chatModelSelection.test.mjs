@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  isModelCatalogPending,
+  isModelSelectionAvailable,
   resolveAvailableModelSelection,
   resolveChatModelSelection,
   resolveConfiguredModelName,
@@ -84,6 +86,16 @@ test('deleted historical model_group selections resolve to the catalog fallback'
   assert.equal(resolveAvailableModelSelection(dead, [custom], [
     { model_group_id: 'mgp-deleted', enabled: true, routes: [{ model_id: 'mdl-custom' }] },
   ])?.id, 'mgp-deleted');
+});
+
+test('empty model catalog is pending and must not clear a restored selection (#5860)', () => {
+  const selection = { type: 'model', id: 'mdl-main' };
+  assert.equal(isModelCatalogPending([], []), true);
+  assert.equal(isModelCatalogPending(models, []), false);
+  assert.equal(isModelCatalogPending([], [{ model_group_id: 'grp', enabled: true, routes: [] }]), false);
+  // Before models.list arrives, availability looks false — callers must defer via isModelCatalogPending.
+  assert.equal(isModelSelectionAvailable(selection, [], []), false);
+  assert.equal(isModelSelectionAvailable(selection, models, []), true);
 });
 
 test('sending a group selection and recreating a conversation preserves the cached group', () => {

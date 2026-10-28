@@ -14,8 +14,12 @@ import pytest
 RUNTIME_DIR = Path(__file__).parents[3] / "jiuwenswarm" / "runtime"
 PROJECT_ROOT = Path(__file__).parents[3]
 # 无状态共享件以 gateway 为唯一真源，runtime 允许引用；其余 gateway 子包属传输层。
+# 扩展治理层 registry/manager/loader 同为单份实现（进程内单例，双份会状态分裂）。
 ALLOWED_IMPORT_PREFIXES = (
     "gateway.common",
+    "gateway.extensions.registry",
+    "gateway.extensions.manager",
+    "gateway.extensions.loader",
     "gateway.extensions.sdk",
     "gateway.extensions.types",
     "gateway.extensions.callback_compat",
@@ -152,6 +156,9 @@ ALLOWED = (
     'gateway',
     'gateway.extensions',
     'gateway.common',
+    'gateway.extensions.registry',
+    'gateway.extensions.manager',
+    'gateway.extensions.loader',
     'gateway.extensions.sdk',
     'gateway.extensions.types',
     'gateway.extensions.callback_compat',

@@ -3257,7 +3257,7 @@ class MessageHandler(ABC):
         续期是同步 HTTP，放线程里跑；结果用 ``auth.credentials.update`` 推回去。
         全程失败都只记日志：AgentServer 会按自己的重试间隔再来要。
         """
-        from jiuwenswarm.common.auth.login_credentials import CREDENTIAL_REFRESH_EVENT
+        from gateway.auth.login_credentials import CREDENTIAL_REFRESH_EVENT
 
         payload = chunk.payload if isinstance(chunk.payload, dict) else None
         if payload is None or payload.get("event_type") != CREDENTIAL_REFRESH_EVENT:
@@ -3480,7 +3480,7 @@ class MessageHandler(ABC):
                 "[MessageHandler] trajectory update skipped because web channel is unavailable"
             )
             return True
-        from jiuwenswarm.observability.models import CommittedTraceUpdate
+        from gateway.channel_manager.web.trace_update import CommittedTraceUpdate
 
         try:
             frame_seq = int(payload.get("frame_seq", 0))
@@ -4007,13 +4007,27 @@ class MessageHandler(ABC):
         route = self._expert_stream_route(msg.params)
         if not route or not msg.session_id:
             return False
+        from gateway.routing.session_metadata_remote import (
+            SessionMetadataRemoteUnavailable,
+        )
+
         try:
             from jiuwenswarm.common.external_providers import provider
 
             metadata = await provider("session_metadata").get_session_metadata_async(
-                msg.session_id, enable_writeback=False,
+                msg.session_id, enable_writeback=False, user_id=msg.user_id,
             )
             owner_id = str((metadata or {}).get("team_name") or "").strip()
+        except SessionMetadataRemoteUnavailable:
+            # 传输失败≠读为空：owner 未知时宁可照常走定向取消分支（成员
+            # 校验由 AgentServer 权威执行，最坏是被拒），绝不放大成会话级
+            # 取消——该分支上方的约束是"Never enter the session-wide path"。
+            logger.warning(
+                "[MessageHandler] expert cancel owner lookup unavailable; "
+                "forwarding as targeted cancel: session=%s",
+                msg.session_id,
+            )
+            return True
         except Exception:
             logger.warning(
                 "[MessageHandler] expert cancel owner lookup failed: session=%s",
@@ -4345,12 +4359,23 @@ class MessageHandler(ABC):
             user_id=getattr(msg, "user_id", None),
         )
 
-    async def _effective_session_model(self, session_id: str, params: dict[str, Any]) -> str:
+    async def _effective_session_model(
+        self, session_id: str, params: dict[str, Any], user_id: str | None = None
+    ) -> str | None:
+        """返回会话生效模型名；``None`` 表示读取失败（未知），空串表示明确无模型。
+
+        登录提示判定消费 ``None`` 跳过结论——传输失败时把"未知"当"无模型"
+        会产生假登录提示（"" != owner.model_name 恒成立）。
+        """
         if isinstance(params.get("model_selection"), dict):
             return ""
         explicit = str(params.get("model_name") or "").strip()
         if explicit:
             return explicit
+        from gateway.routing.session_metadata_remote import (
+            SessionMetadataRemoteUnavailable,
+        )
+
         try:
             from jiuwenswarm.common.external_providers import provider
             from jiuwenswarm.common.model_selection_store import (
@@ -4360,8 +4385,15 @@ class MessageHandler(ABC):
             if get_session_model_selection(session_id) is not None:
                 return ""
             metadata = await provider("session_metadata").get_session_metadata_async(
-                session_id, cache_bust=True, enable_writeback=False,
+                session_id, cache_bust=True, enable_writeback=False, user_id=user_id,
             )
+        except SessionMetadataRemoteUnavailable:
+            # 传输失败≠读为空：模型未知，调用方应跳过登录提示判定
+            logger.warning(
+                "[MessageHandler] 会话模型读取不可用，跳过登录提示判定 session=%s",
+                session_id,
+            )
+            return None
         except Exception:  # noqa: BLE001 — 读不到就当没有
             logger.debug("[MessageHandler] 读取会话模型失败 session=%s", session_id, exc_info=True)
             return ""
@@ -4400,11 +4432,17 @@ class MessageHandler(ABC):
 
         try:
             from gateway.auth import session_owners
-            from jiuwenswarm.common.auth.login_credentials import bare_model_name
+            from gateway.auth.login_credentials import bare_model_name
 
             owner = session_owners.lookup(session_id)
+            effective_model = await self._effective_session_model(
+                session_id, params, user_id=str(getattr(env, "user_id", "") or "").strip() or None,
+            )
+            if effective_model is None:
+                # 模型未知（传输失败）：不下登录结论，放行本条
+                return
             if owner is None or (
-                bare_model_name(await self._effective_session_model(session_id, params)) != owner.model_name
+                bare_model_name(effective_model) != owner.model_name
             ):
                 params[E2A_LOGIN_REQUIRED_HINT_PARAM_KEY] = _LOGIN_HINT_NO_OWNER
                 return
@@ -4697,9 +4735,11 @@ class MessageHandler(ABC):
                     continue
 
                 if msg.req_method == ReqMethod.CHAT_CANCEL:
-                    if await self._is_targeted_expert_cancel(msg):
-                        # The AgentServer validates membership and cancels only
-                        # this expert. Never enter the session-wide cancel path.
+                    params = msg.params if isinstance(msg.params, dict) else {}
+                    organization_stop = params.get("organization_owner_stop") is True
+                    organization_stop = organization_stop or params.get("organization_stop") is True
+                    if organization_stop or await self._is_targeted_expert_cancel(msg):
+                        # Preserve Team routing and return the actual AgentServer result.
                         agent_msg = await self._prepare_agent_dispatch_message(msg)
                         await self._process_non_stream_request(msg, self.message_to_e2a(agent_msg))
                         continue

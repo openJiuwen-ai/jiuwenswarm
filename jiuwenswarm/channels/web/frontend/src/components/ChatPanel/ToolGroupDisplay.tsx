@@ -82,6 +82,9 @@ export function isToolResultSuccessful(result?: ToolExecution['result']) {
   if (result.timedOut) {
     return false;
   }
+  if (result.toolName === 'ttse_consult') {
+    return Boolean(result.success);
+  }
   return Boolean(result.success && !result.result.includes('success=False'));
 }
 

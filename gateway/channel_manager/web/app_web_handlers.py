@@ -62,7 +62,7 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     get_root_dir,
 )
-from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from gateway.dotenv_early import load_dotenv_runtime
 from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_TUI_WORK_MODE,
@@ -4749,7 +4749,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     from jiuwenswarm.common.external_providers import provider
 
                     meta = await provider("session_metadata").get_session_metadata_async(
-                        session_id, cache_bust=True
+                        session_id, cache_bust=True, user_id=user_id,
                     )
                     if isinstance(meta, dict):
                         pd = meta.get("project_dir")
@@ -5017,7 +5017,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     async def _forward_recommendation(ws, req_id, params, session_id, user_id=None, *, action: str):
         """Send a recommendation panel call to AgentServer and return its payload."""
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if (
@@ -6117,5 +6117,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         channel.container_file_client = real_agent_client
     else:
         channel.container_file_client = None
-    # The diagnosis HTTP proxy reaches the AgentServer service through this client.
+    # The diagnosis and trajectory HTTP proxies reach the AgentServer through this client.
     channel.diagnosis_agent_client = real_agent_client
+    channel.trajectory_agent_client = real_agent_client

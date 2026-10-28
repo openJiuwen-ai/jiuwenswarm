@@ -155,6 +155,66 @@ def _chat_request(request_id: str, session_id: str, params: dict) -> AgentReques
     )
 
 
+@pytest.mark.parametrize("sync_metadata", [False, True])
+@pytest.mark.parametrize(
+    "stored_mode, requested_mode, expected_mode, manager_mode, sub_mode",
+    [
+        ("agent.work.normal", "team.work.normal", "agent.work.normal", "agent", None),
+        ("team.work.normal", "agent.work.normal", "team.work.normal", "team", None),
+        ("agent.code.normal", "team.code.normal", "agent.code.normal", "code", "normal"),
+        ("team.code.normal", "agent.code.normal", "team.code.normal", "code", "team"),
+        ("agent.work.plan", "team.work.normal", "agent.work.plan", "agent", "plan"),
+        ("team.code.plan", "agent.code.normal", "team.code.plan", "code", "team"),
+        ("agent", "team", "agent.work.normal", "agent", None),
+        ("code.team", "code.plan", "team.code.normal", "code", "team"),
+        ("agent.work.normal", "agent.work.plan", "agent.work.plan", "agent", "plan"),
+        ("agent.code.plan", "agent.code.normal", "agent.code.normal", "code", "normal"),
+        ("team.work.normal", "team.work.plan", "team.work.plan", "team", "plan"),
+        ("team.code.plan", "team.code.normal", "team.code.normal", "code", "team"),
+        ("unknown", "team.work.normal", "team.work.normal", "team", None),
+        (None, "agent.work.normal", "agent.work.normal", "agent", None),
+        (None, "team.work.normal", "team.work.normal", "team", None),
+        ("team.work.normal", None, "team.work.normal", "team", None),
+    ],
+)
+async def test_runtime_preserves_session_mode_type_before_prepare(
+    sessions_dir, monkeypatch, sync_metadata,
+    stored_mode, requested_mode, expected_mode, manager_mode, sub_mode,
+):
+    from jiuwenswarm.runtime.request import prepare_chat_turn
+    from jiuwenswarm.runtime.service import AgentRuntime
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_dir)
+    work_mode = "code" if manager_mode == "code" else "work"
+    if stored_mode is not None:
+        session_metadata.init_session_metadata(
+            session_id="mode-type", channel_id="web", mode=stored_mode, work_mode=work_mode,
+        )
+    params = {"work_mode": work_mode}
+    if requested_mode is not None:
+        params["mode"] = requested_mode
+    request = _chat_request("mode-type-request", "mode-type", params)
+    request = AgentRuntime._normalize_runtime_request(request)
+    agent = object()
+
+    async def get_agent_for_request(request, **kwargs):
+        assert kwargs["mode"] == manager_mode
+        assert kwargs["sub_mode"] == sub_mode
+        assert request.params["mode"] == expected_mode
+        kwargs["admit_request"]()
+        return agent
+
+    manager = SimpleNamespace(wait_for_session_prewarm=AsyncMock(), get_agent_for_request=get_agent_for_request)
+    result = await prepare_chat_turn(manager, request, "web", sync_metadata=sync_metadata)
+
+    assert result == (manager_mode, sub_mode, agent)
+    _drain_writes()
+    if sync_metadata:
+        persisted = json.loads((sessions_dir / "mode-type" / "metadata.json").read_text(encoding="utf-8"))
+        assert persisted["mode"] == expected_mode
+
+
 def test_attach_only_subscription_does_not_touch_session_metadata(sessions_dir) -> None:
     _init_session("s-attach")
     _drain_writes()

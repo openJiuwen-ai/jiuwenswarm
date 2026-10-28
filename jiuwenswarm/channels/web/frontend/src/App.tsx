@@ -104,7 +104,7 @@ import {
   type Session,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
-import { resolveAvailableModelSelection } from './stores/sessionStore';
+import { isModelCatalogPending, resolveAvailableModelSelection } from './stores/sessionStore';
 import type { ProjectInfo, WorkMode } from './features/workspace/projectTypes';
 import { isDefaultInputProject } from './components/ChatPanel/projectSelection';
 import {
@@ -203,6 +203,7 @@ import {
 import {
   shouldInsetTrajectoryForFloatingTasks,
   trajectoryComposerClearance,
+  type TrajectoryComposerPolicy,
 } from './features/trajectory/trajectoryLayout';
 import {
   normalizeTrajectoryDiagnosisEnabled,
@@ -277,6 +278,12 @@ function restoreSessionModelSelection(
   const store = useSessionStore.getState();
   const restoredSelection = parseModelSelection(modelSelection);
   if (restoredSelection) {
+    // Catalog often arrives after session.get_metadata on refresh (#5860). Keep the
+    // server selection until models.list is ready; do not clear or write back yet.
+    if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) {
+      store.setSelectedModelSelection(sessionId, restoredSelection);
+      return;
+    }
     const resolved = resolveAvailableModelSelection(
       restoredSelection,
       store.chatAvailableModels,
@@ -489,6 +496,7 @@ function AppContent({
   // watch-only, per session, alongside which view that session last showed.
   const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
+  const [diagnosisComposerPolicy, setDiagnosisComposerPolicy] = useState<TrajectoryComposerPolicy>('available');
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
@@ -878,14 +886,26 @@ function AppContent({
   const leaveDiagnosisView = useCallback(() => {
     selectChatSurfaceView('chat');
   }, [selectChatSurfaceView]);
+  const returnToChatAfterFill = useCallback(() => {
+    selectChatSurfaceView('chat');
+    setComposerFocusNonce((nonce) => nonce + 1);
+  }, [selectChatSurfaceView]);
   const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const composerHeldClosed = composerDocked && diagnosisComposerPolicy !== 'available';
   const toggleTrajectoryComposer = useCallback(() => {
+    if (composerHeldClosed) return;
     setTrajectoryComposerCollapsed((current) => ({
       ...current,
       [sessionId]: !(current[sessionId] ?? false),
     }));
-  }, [sessionId]);
+  }, [composerHeldClosed, sessionId]);
+  useEffect(() => {
+    if (diagnosisComposerPolicy === 'available') return;
+    setTrajectoryComposerCollapsed((current) => (
+      current[sessionId] === true ? current : { ...current, [sessionId]: true }
+    ));
+  }, [diagnosisComposerPolicy, sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
@@ -1487,6 +1507,35 @@ function AppContent({
     }
   }, [applySubagentHistoryReplay, request]);
 
+  const seedDiscoveredSubagents = useCallback((sid: string, ids: string[]) => {
+    // Cold refresh has no in-memory roster; parent history.done lists on-disk
+    // subagent buckets so we can seed ids and then pull per-subagent history
+    // (GitCode #4887). Placeholder status is replaced by roster frames.
+    if (!ids.length) return;
+    const subagentStore = useSubagentStore.getState();
+    let seeded = false;
+    for (const subagentId of ids) {
+      if (subagentStore.getRuntime(sid)?.subagentsById[subagentId]) continue;
+      const event = normalizeSubagentStatusEvent({
+        event_type: 'chat.subtask_update',
+        session_id: sid,
+        parent_session_id: sid,
+        subagent_id: subagentId,
+        display_name: subagentId,
+        status: 'completed',
+        revision: 0,
+        created_at: 0,
+        updated_at: 0,
+      });
+      if (!event || event.subagent.parent_session_id !== sid) continue;
+      subagentStore.applyHistoryEvent(sid, event);
+      seeded = true;
+    }
+    if (seeded) {
+      restoreSubagentHistory(sid);
+    }
+  }, [restoreSubagentHistory]);
+
   const applyRecoveredSubagentToolHistory = useCallback((sid: string, items: HistoryToolReplayItem[]) => {
     const subagentStore = useSubagentStore.getState();
     const mergedToolReplay = mergeHistoryToolReplayItems(
@@ -1594,6 +1643,9 @@ function AppContent({
         );
       }
     }
+    if (result.discoveredSubagentIds.length > 0) {
+      seedDiscoveredSubagents(sid, result.discoveredSubagentIds);
+    }
     if (result.subagentReplay.length > 0) {
       applySubagentHistoryReplay(sid, result.subagentReplay);
     }
@@ -1659,7 +1711,7 @@ function AppContent({
         ...currentItems,
       ]);
     }
-  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, settleHistoricalToolExecutions]);
+  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, seedDiscoveredSubagents, settleHistoricalToolExecutions]);
 
   const fetchHistoryBatch = useCallback(async (
     sid: string,
@@ -2740,6 +2792,9 @@ function AppContent({
       onSubagentReplay: (items) => {
         applySubagentHistoryReplay(sessionId, items);
       },
+      onDiscoveredSubagentIds: (ids) => {
+        seedDiscoveredSubagents(sessionId, ids);
+      },
       onReasoningReplay: (items) => {
         restoreReasoningSegments(
           sessionId,
@@ -2831,6 +2886,7 @@ function AppContent({
     addToolResult,
     applyRecoveredSubagentToolHistory,
     applySubagentHistoryReplay,
+    seedDiscoveredSubagents,
     settleHistoricalToolExecutions,
     clearMessages,
     disposeInFlightHistoryHandles,
@@ -3022,8 +3078,20 @@ function AppContent({
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { skillName: string; prefixText?: string; suffixText?: string; secondSkillName?: string; metadata?: Record<string, unknown>; mode?: AgentMode };
-      enterNewConversation(detail.mode);
+      const detail = (e as CustomEvent).detail as {
+        skillName: string;
+        prefixText?: string;
+        suffixText?: string;
+        secondSkillName?: string;
+        metadata?: Record<string, unknown>;
+        mode?: AgentMode;
+      };
+      // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
+      // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
+      enterNewConversation(
+        detail.mode,
+        detail.mode ? { forceMode: detail.mode } : {},
+      );
       // 存储 metadata，sendMessage 时随 chat.send 发送后清除（skill-creator 统一入口等场景）
       if (detail.metadata) {
         useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
@@ -4474,7 +4542,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
                     '--trajectory-composer-clearance': `${trajectoryComposerClearance(
                       composerDocked,
-                      composerCollapsed,
+                      composerCollapsed || composerHeldClosed,
                       trajectoryComposerHeight,
                     )}px`,
                   } as CSSProperties}
@@ -4536,7 +4604,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
                         composerDocked={composerDocked}
-                        composerCollapsed={composerCollapsed}
+                        composerCollapsed={composerCollapsed || composerHeldClosed}
+                        composerToggleDisabled={composerHeldClosed}
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
@@ -4559,6 +4628,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           mode={mode}
                           sessionId={sessionId}
                           onBack={leaveDiagnosisView}
+                          onComposerPolicyChange={setDiagnosisComposerPolicy}
+                          onComposerFilled={returnToChatAfterFill}
                         />
                       </Suspense>
                     )}

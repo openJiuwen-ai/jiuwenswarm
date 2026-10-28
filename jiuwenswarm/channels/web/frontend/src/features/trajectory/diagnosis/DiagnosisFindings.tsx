@@ -47,6 +47,17 @@ function HighlightButton({ id, focused, onFocusFinding }: {
   );
 }
 
+function KindBadge({ kind }: { kind: 'artifact' | 'skill' | 'experience' }) {
+  const { t } = useTranslation();
+  return (
+    <span className={`${css.kind} ${css[`kind_${kind}`]}`} data-testid="trajectory-diagnosis-attribution">
+      {t('trajectory.diagnosis.attributionLabel', {
+        kind: t(`trajectory.diagnosis.attributionKind.${kind}`),
+      })}
+    </span>
+  );
+}
+
 export function SignalTags({ signal }: { signal: SignalRef | null | undefined }) {
   const { t } = useTranslation();
   if (signal === null || signal === undefined) return null;
@@ -73,6 +84,18 @@ export function SignalTags({ signal }: { signal: SignalRef | null | undefined })
   );
 }
 
+/** Category and the dimension requirement on one line; either part alone when the other is empty. */
+function causeTopic(
+  category: string | null | undefined,
+  dimension: string,
+  join: (category: string, dimension: string) => string,
+): string {
+  const name = (category ?? '').trim();
+  const requirement = dimension.trim();
+  if (name !== '' && requirement !== '') return join(name, requirement);
+  return name !== '' ? name : requirement;
+}
+
 function CauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
   cause: RewardFailureCause;
   subjectLabels: ReadonlyMap<string, string>;
@@ -82,93 +105,51 @@ function CauseCard({ cause, subjectLabels, focused, onFocusFinding }: {
   const { t } = useTranslation();
   const nodes = evidenceNodeLabel(cause);
   const subjectId = cause.evidence[0]?.subject_id ?? '';
+  const topic = causeTopic(cause.signal?.category, cause.dimension, (category, dimension) => (
+    t('trajectory.diagnosis.causeTopic', { category, dimension })
+  ));
+  const comment = signalEvidenceBody(cause.signal, cause.dimension);
+  const score = cause.signal?.score;
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
-      <div className={css.causeHead}>
-        <span className={css.badge} title={cause.dimension} data-testid="trajectory-diagnosis-attribution">
-          {t('trajectory.diagnosis.attributionLabel', {
-            kind: t('trajectory.diagnosis.attributionKind.artifact'),
-          })}
-        </span>
-        <SignalTags signal={cause.signal} />
+      <div className={`${css.causeHead} ${css.causeHeadTop}`}>
+        <KindBadge kind="artifact" />
+        {topic === '' ? null : (
+          <p className={css.causeDimension} data-testid="trajectory-diagnosis-cause-topic">
+            <span className={css.lineLabel}>{t('trajectory.diagnosis.findingDimension')}</span>
+            <span className={css.findingLineBody}>{topic}</span>
+          </p>
+        )}
+        {typeof score === 'number' ? (
+          <span className={css.hint}>{t('trajectory.diagnosis.signalScore', { score })}</span>
+        ) : null}
         {subjectLabels.size > 1 && subjectId !== '' ? (
           <span className={css.chip} data-testid="trajectory-diagnosis-cause-agent">
             {subjectLabels.get(subjectId) ?? subjectId}
           </span>
         ) : null}
         {nodes === '' ? null : (
-          <span className={css.hint} data-testid="trajectory-diagnosis-cause-nodes">
+          <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
             {t('trajectory.diagnosis.causeAt', { nodes })}
           </span>
         )}
-        <span className={css.spacer} />
         <HighlightButton id={cause.id} focused={focused} onFocusFinding={onFocusFinding} />
       </div>
-      <FoldedMarkdown text={cause.summary} />
-      <CauseEvidence cause={cause} nodes={nodes} />
-    </div>
-  );
-}
-
-/** The evidence a new-interface finding stands on: its dimension, the surfaced nodes and the signal text. */
-function CauseEvidence({ cause, nodes }: { cause: RewardFailureCause; nodes: string }) {
-  const { t } = useTranslation();
-  const text = signalEvidenceBody(cause.signal, cause.dimension);
-  return (
-    <details className={css.evidence} data-testid="trajectory-diagnosis-evidence">
-      <summary>{t('trajectory.diagnosis.evidence')}</summary>
-      <div className={css.evidenceBody}>
-        <p className={css.hint} data-testid="trajectory-diagnosis-dimension-text">
-          {t('trajectory.diagnosis.dimension')}：{cause.dimension}
+      {comment === '' ? null : (
+        <p className={css.findingLine} data-testid="trajectory-diagnosis-cause-problem">
+          <span className={css.lineLabel}>{t('trajectory.diagnosis.findingProblem')}</span>
+          <span className={css.findingLineBody}>{comment}</span>
         </p>
-        {nodes === '' ? null : (
-          <p className={css.hint}>{t('trajectory.diagnosis.signalSurfacedAt', { nodes })}</p>
-        )}
-        {text === '' ? null : <PlainText text={text} />}
-      </div>
-    </details>
-  );
-}
-
-/** Read-only related signals of a judge: the same labels/body as the suggestion expansion. */
-function FindingRelatedSignals({ judge }: { judge: EvolutionJudge }) {
-  const { t } = useTranslation();
-  const signals = judge.related_signals ?? [];
-  if (signals.length === 0) return null;
-  return (
-    <details className={css.evidence} data-testid="trajectory-diagnosis-related-signals">
-      <summary>{t('trajectory.diagnosis.relatedSignals')}</summary>
-      <div className={`${css.evidenceBody} ${css.relatedSignals}`}>
-        {signals.flatMap(signal => signal.entries.map((entry, index) => {
-          const nodes = evidenceNodeLabel({ evidence: entry.refs });
-          return (
-            <div className={css.relatedSignal} key={`${signal.signal_id}:${index}`}>
-              <div className={css.row}>
-                <span className={css.badge}>
-                  {t('trajectory.diagnosis.attributionLabel', {
-                    kind: t(`trajectory.diagnosis.attributionKind.${judge.category}`),
-                  })}
-                </span>
-                <SignalTags
-                  signal={{
-                    id: signal.signal_id,
-                    source: signal.source,
-                    tier: signal.tier,
-                    category: signal.category,
-                    score: signal.score,
-                    node_ids: signal.node_ids,
-                  }}
-                />
-                {nodes === '' ? null : (
-                  <span className={css.hint}>{t('trajectory.diagnosis.causeAt', { nodes })}</span>
-                )}
-              </div>
-              <FoldedMarkdown text={entry.text_md} />
-            </div>
-          );
-        }))}
-      </div>
-    </details>
+      )}
+      {cause.summary.trim() === '' ? null : (
+        <div className={css.findingLine} data-testid="trajectory-diagnosis-cause-reason">
+          <span className={css.lineLabel}>{t('trajectory.diagnosis.findingReason')}</span>
+          <div className={css.findingLineBody}>
+            <FoldedMarkdown text={cause.summary} />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -185,12 +166,8 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
   const subjectId = judge.evidence[0]?.subject_id ?? '';
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
-      <div className={css.causeHead}>
-        <span className={css.badge} data-testid="trajectory-diagnosis-attribution">
-          {t('trajectory.diagnosis.attributionLabel', {
-            kind: t(`trajectory.diagnosis.attributionKind.${judge.category}`),
-          })}
-        </span>
+      <div className={`${css.causeHead} ${css.causeHeadTop}`}>
+        <KindBadge kind={judge.category} />
         {!skill || judge.target === null || judge.target === undefined || judge.target === '' ? null : (
           <span className={css.badge} title={judge.target}>{judge.target}</span>
         )}
@@ -198,31 +175,19 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
           <span className={css.tag} data-testid="trajectory-diagnosis-evolution-score">
             {t('trajectory.diagnosis.confidence', { value: Math.round(judge.score * 100) })}
           </span>
-        ) : (
-          <>
-            {judge.outcome === null || judge.outcome === undefined ? null : (
-              <span className={css.tag} data-testid="trajectory-diagnosis-evolution-outcome">
-                {t(`trajectory.diagnosis.ttseOutcome.${judge.outcome}`)}
-              </span>
-            )}
-            <span className={css.hint} data-testid="trajectory-diagnosis-evolution-score">
-              {t('trajectory.diagnosis.signalScore', { score: judge.score })}
-            </span>
-          </>
-        )}
+        ) : null}
         {subjectLabels.size > 1 && subjectId !== '' ? (
           <span className={css.chip}>{subjectLabels.get(subjectId) ?? subjectId}</span>
         ) : null}
+        <span className={css.spacer} />
         {nodes === '' ? null : (
-          <span className={css.hint} data-testid="trajectory-diagnosis-cause-nodes">
+          <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
             {t('trajectory.diagnosis.causeAt', { nodes })}
           </span>
         )}
-        <span className={css.spacer} />
         <HighlightButton id={judge.id} focused={focused} onFocusFinding={onFocusFinding} />
       </div>
       <FoldedMarkdown text={judge.summary} />
-      <FindingRelatedSignals judge={judge} />
     </div>
   );
 }
@@ -294,32 +259,34 @@ export function Findings({ record, subjectLabels, focusedFindingId, onFocusFindi
         <h4 className={css.blockTitle}>{t('trajectory.diagnosis.rootCauses')}</h4>
         <span className={css.hint} data-testid="trajectory-diagnosis-findings-count">{countsLabel}</span>
       </div>
-      {items.map(item => (item.cause !== undefined ? (
-        <CauseCard
-          key={item.id}
-          cause={item.cause}
-          subjectLabels={subjectLabels}
-          focused={focusedFindingId === item.id}
-          onFocusFinding={onFocusFinding}
-        />
-      ) : (
-        <EvolutionFindingCard
-          key={item.id}
-          judge={item.judge as EvolutionJudge}
-          subjectLabels={subjectLabels}
-          focused={focusedFindingId === item.id}
-          onFocusFinding={onFocusFinding}
-        />
-      )))}
-      {legacy.map(cause => (
-        <LegacyCauseCard
-          key={cause.id}
-          cause={cause}
-          subjectLabels={subjectLabels}
-          focused={focusedFindingId === cause.id}
-          onFocusFinding={onFocusFinding}
-        />
-      ))}
+      <div className={css.findingList} data-testid="trajectory-diagnosis-finding-list">
+        {items.map(item => (item.cause !== undefined ? (
+          <CauseCard
+            key={item.id}
+            cause={item.cause}
+            subjectLabels={subjectLabels}
+            focused={focusedFindingId === item.id}
+            onFocusFinding={onFocusFinding}
+          />
+        ) : (
+          <EvolutionFindingCard
+            key={item.id}
+            judge={item.judge as EvolutionJudge}
+            subjectLabels={subjectLabels}
+            focused={focusedFindingId === item.id}
+            onFocusFinding={onFocusFinding}
+          />
+        )))}
+        {legacy.map(cause => (
+          <LegacyCauseCard
+            key={cause.id}
+            cause={cause}
+            subjectLabels={subjectLabels}
+            focused={focusedFindingId === cause.id}
+            onFocusFinding={onFocusFinding}
+          />
+        ))}
+      </div>
     </div>
   );
 }

@@ -22,6 +22,8 @@ import {
   skillSuggestionText,
   splitStageOutput,
   stageViews,
+  stripLeadingHeading,
+  suggestionParts,
   suggestionsState,
   truncateText,
   type ArtifactSuggestionItem,
@@ -32,7 +34,7 @@ import { FillButton } from './DiagnosisFillButton';
 import { RewardSummary } from './DiagnosisReward';
 import { Findings } from './DiagnosisFindings';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
-import { ClampedMarkdown, PlainFold } from './DiagnosisText';
+import { ClampedMarkdown, PlainFold, WholeMarkdown } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
 import css from './DiagnosisSubpage.module.css';
 
@@ -44,6 +46,8 @@ export interface DiagnosisSubpageProps {
   focusedFindingId: string | null;
   /** Emphasise a finding on the trajectory, or `null` to stop. */
   onFocusFinding: (findingId: string | null) => void;
+  /** Leave the diagnosis view once a suggestion has been written into the composer. */
+  onComposerFilled?: () => void;
 }
 
 export const DiagnosisSubpage = memo(function DiagnosisSubpage({
@@ -51,9 +55,14 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
   subjectLabels,
   focusedFindingId,
   onFocusFinding,
+  onComposerFilled,
 }: DiagnosisSubpageProps) {
   const { t } = useTranslation();
-  const { record, notice, summaries } = session;
+  const { record, notice, summaries, fillComposer } = session;
+  const fillAndReturn = useCallback((text: string) => {
+    fillComposer(text);
+    onComposerFilled?.();
+  }, [fillComposer, onComposerFilled]);
 
   return (
     <div className={css.root} data-testid="trajectory-diagnosis-subpage">
@@ -87,6 +96,7 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
             subjectLabels={subjectLabels}
             focusedFindingId={focusedFindingId}
             onFocusFinding={onFocusFinding}
+            onFill={fillAndReturn}
           />
         )}
       </div>
@@ -100,6 +110,7 @@ interface RecordCardsProps {
   subjectLabels: ReadonlyMap<string, string>;
   focusedFindingId: string | null;
   onFocusFinding: (findingId: string | null) => void;
+  onFill: (text: string) => void;
 }
 
 function Card({ title, action, testId, children }: {
@@ -119,7 +130,14 @@ function Card({ title, action, testId, children }: {
   );
 }
 
-function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocusFinding }: RecordCardsProps) {
+function RecordCards({
+  record,
+  session,
+  subjectLabels,
+  focusedFindingId,
+  onFocusFinding,
+  onFill,
+}: RecordCardsProps) {
   const { t } = useTranslation();
   const running = isRunning(record);
   const done = !running;
@@ -130,7 +148,10 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
   const reward = asRewardPayload(record.reward);
   const skills = skillJudges(record);
   const experience = experienceJudge(record);
-  const artifactText = artifactSuggestion(record, false);
+  const artifactBody = artifactSuggestion(record, false);
+  const artifactText = artifactBody === ''
+    ? ''
+    : `${t('trajectory.diagnosis.artifactFillPrefix')}\n${artifactBody}`;
   const artifactItems = artifactSuggestionItems(record);
   const outlets = suggestionsState(record.status);
 
@@ -204,8 +225,8 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
           onFocusFinding={onFocusFinding}
         />
         {trajectorySummary === '' ? null : (
-          <div className={css.taskBox} data-testid="trajectory-diagnosis-task">
-            <span className={css.lineLabel}>{t('trajectory.diagnosis.objectSummary')}</span>
+          <div className={`${css.block} ${css.summaryBlock}`} data-testid="trajectory-diagnosis-task">
+            <h4 className={css.blockTitle}>{t('trajectory.diagnosis.objectSummary')}</h4>
             <PlainFold text={trajectorySummary} />
           </div>
         )}
@@ -228,7 +249,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                 action={(
                   <FillButton
                     text={artifactText}
-                    onFill={session.fillComposer}
+                    onFill={onFill}
                     testId="trajectory-diagnosis-artifact-fix-fill"
                   />
                 )}
@@ -243,7 +264,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                 action={(
                   <FillButton
                     text={artifactText}
-                    onFill={session.fillComposer}
+                    onFill={onFill}
                     testId="trajectory-diagnosis-artifact-fix-fill"
                   />
                 )}
@@ -258,12 +279,12 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                 action={(
                   <FillButton
                     text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skillSuggestionText(judge)}`}
-                    onFill={session.fillComposer}
+                    onFill={onFill}
                     testId="trajectory-diagnosis-skill-fill"
                   />
                 )}
               >
-                <ClampedMarkdown text={skillSuggestionText(judge)} />
+                <SuggestionLines lines={skillSuggestionParts(judge)} />
               </EvolutionCard>
             ))}
             {experience === null ? null : (
@@ -297,7 +318,7 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
                 <p className={css.hint}>{t('trajectory.diagnosis.ttseHint')}</p>
               </EvolutionCard>
             )}
-            <LegacySuggestions record={record} session={session} />
+            <LegacySuggestions record={record} onFill={onFill} />
             {artifactItems.length === 0 && artifactText === '' && skills.length === 0 && experience === null ? (
               <p className={css.hint}>{t('trajectory.diagnosis.noSuggestions')}</p>
             ) : null}
@@ -308,21 +329,36 @@ function RecordCards({ record, session, subjectLabels, focusedFindingId, onFocus
   );
 }
 
-/**
- * The artifact-fix outlet of the new interface: one entry per failure cause, showing only
- * its suggestion text until the user opens it onto the full attribution fields.
- */
-/** The artifact-fix suggestions: one text per cause, no per-item expansion. */
+/** The artifact-fix suggestions: one numbered line per suggestion, not one block per cause. */
 function ArtifactCauseList({ items }: { items: readonly ArtifactSuggestionItem[] }) {
+  return <SuggestionLines lines={items.flatMap(item => item.parts)} />;
+}
+
+/** One suggestion as written. Several are a numbered list so they stay distinct. */
+function SuggestionLines({ lines }: { lines: readonly string[] }) {
+  if (lines.length === 0) return null;
+  if (lines.length === 1) return <SuggestionMarkdown text={lines[0]} />;
   return (
-    <ol className={css.artifactItems} data-testid="trajectory-diagnosis-artifact-list">
-      {items.map(item => (
-        <li key={item.id}>
-          <ClampedMarkdown text={item.text} />
+    <ol className={css.suggestionLines} data-testid="trajectory-diagnosis-suggestion-lines">
+      {lines.map((line, index) => (
+        <li key={`${index}:${line.slice(0, 32)}`}>
+          <SuggestionMarkdown text={line} />
         </li>
       ))}
     </ol>
   );
+}
+
+function SuggestionMarkdown({ text }: { text: string }) {
+  return (
+    <div className={css.suggestionBody}>
+      <WholeMarkdown text={stripLeadingHeading(text)} />
+    </div>
+  );
+}
+
+function skillSuggestionParts(judge: EvolutionJudge): string[] {
+  return suggestionParts(judge.suggestion);
 }
 
 /** One evolution item: the advice/verdict text and its action; details live in the findings list. */
@@ -349,7 +385,10 @@ function EvolutionCard({ judge, action, children }: {
 }
 
 /** Suggestions of a record written before the switch (read-only fallback). */
-function LegacySuggestions({ record, session }: { record: DiagnosisRecord; session: DiagnosisSession }) {
+function LegacySuggestions({ record, onFill }: {
+  record: DiagnosisRecord;
+  onFill: (text: string) => void;
+}) {
   const { t } = useTranslation();
   const suggestions = record.suggestions;
   const hasNew = (record.reward_failure_causes ?? []).length > 0 || (record.evolution_judge ?? []).length > 0;
@@ -366,7 +405,7 @@ function LegacySuggestions({ record, session }: { record: DiagnosisRecord; sessi
           action={(
             <FillButton
               text={instruction}
-              onFill={session.fillComposer}
+              onFill={onFill}
               testId="trajectory-diagnosis-artifact-fix-fill"
             />
           )}
@@ -385,7 +424,7 @@ function LegacySuggestions({ record, session }: { record: DiagnosisRecord; sessi
           action={(
             <FillButton
               text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skill.message}`}
-              onFill={session.fillComposer}
+              onFill={onFill}
               testId="trajectory-diagnosis-skill-fill"
             />
           )}
@@ -429,7 +468,9 @@ function SuggestionCard({ tone, kind, title, mono = false, action, testId, child
         <span className={css.spacer} />
         {action}
       </div>
-      {children}
+      <div className={css.suggestionScroll}>
+        {children}
+      </div>
     </div>
   );
 }

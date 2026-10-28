@@ -93,6 +93,7 @@ import {
   createTrajectorySubjectViewCache,
   groupTrajectorySubjects,
   MAIN_TRAJECTORY_SUBJECT_ID,
+  subjectAppearsOnTeamLanes,
 } from './trajectorySubjects';
 import {
   countTurns,
@@ -102,6 +103,7 @@ import {
 import { TeamTrajectoryWorkspace } from './TeamTrajectoryWorkspace';
 import { SharedTimeAxis } from './diagnosis/SharedTimeAxis';
 import {
+  EMPTY_DIAGNOSIS_SELECTION,
   isAgentFullySelected,
   isAgentIncluded,
   laneRangeOf,
@@ -113,7 +115,7 @@ import {
   type DiagnosisSelectionState,
   type WallRange,
 } from './diagnosis/diagnosisSelection';
-import { mainAgentLastNode, timedNodeIntervals } from './diagnosis/diagnosisTimeSelection';
+import { mainAgentLastNode, rawOtelSpanIntervals } from './diagnosis/diagnosisTimeSelection';
 import { useSharedTimeAxis } from './diagnosis/useSharedTimeAxis';
 import css from './TrajectoryPanel.module.css';
 import './client/theme.css';
@@ -162,6 +164,12 @@ export interface TrajectoryPanelProps {
    * `sharedTimeAxis`; without it the lanes only show.
    */
   selection?: TrajectoryPanelSelection;
+  /**
+   * Whole-trajectory pick: paint every lane and the axis as fully selected.
+   * Drawing or toggling a lane leaves this mode via `onFullScopeChange(false)`.
+   */
+  fullScopeSelection?: boolean;
+  onFullScopeChange?: (value: boolean) => void;
   /** Reports whether any lane has timing, i.e. whether there is something to pick from. */
   onTimelineAvailableChange?: (available: boolean) => void;
   /** Reports the session's agent lanes (id and display name) whenever they change. */
@@ -205,6 +213,8 @@ export interface TrajectoryArchiveActions {
   exportDisabled: boolean;
   attributionOpen: boolean;
   replayActive: boolean;
+  /** Shown while an imported archive is open; null when live. */
+  replayLabel: string | null;
   importLabel: string;
   exportLabel: string;
   attributionLabel: string;
@@ -245,15 +255,35 @@ export type TrajectoryLaneScale = 'time' | 'equal' | 'tokens' | 'duration';
 export interface TrajectoryPanelSummary {
   /** Subject lanes on the page (same set diagnosis can pick from). */
   agents: number;
-  /** Timed nodes across those lanes (`timedNodeIntervals`, same as diagnosis). */
-  nodes: number;
+  /**
+   * Selectable OTel spans on the swimlanes (`rawOtelSpanIntervals`).
+   * Matches `selectedNodeCount(..., fullScope: true)` so the header and the
+   * "select all" summary stay in sync.
+   */
+  spans: number;
 }
 
 function ignoreTimelineRange(): void {}
 
 interface InitialLoadProgress {
+  /** Timed OTel spans loaded so far (same rule as the analysis header). */
   loaded: number;
+  /**
+   * Timed spans known so far plus remaining raw records not yet fetched.
+   * Shrinks toward the final header count as untimed records are discovered.
+   */
   total: number;
+}
+
+/** How many raw detail records carry a selectable OTel span. */
+function timedRawSpanCount(
+  buckets: Iterable<{ rawRecords: ReadonlyMap<string, TrajectoryDetailRecord> }>,
+): number {
+  let count = 0;
+  for (const bucket of buckets) {
+    count += rawOtelSpanIntervals([...bucket.rawRecords.values()]).length;
+  }
+  return count;
 }
 
 function recordLabel(record: OtlpExportTraceServiceRequest): string {
@@ -332,6 +362,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onDiagnosisNodesChange,
   highlightStepKeys,
   selection,
+  fullScopeSelection = false,
+  onFullScopeChange,
   onTimelineAvailableChange,
   laneScale = 'time',
   turnsCollapsed = false,
@@ -361,7 +393,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const hintCoordinatorRef = useRef(createTrajectoryTraceHintCoordinator());
   const activeRef = useRef(active);
   const deferredPublishRef = useRef(false);
-  const initialLoadProgressRef = useRef<({ generation: number } & InitialLoadProgress) | null>(null);
+  const initialLoadProgressRef = useRef<({
+    generation: number;
+    /** Raw records the subject list promised for header-visible subjects. */
+    recordTotal: number;
+    /** Subjects whose raw rows feed the analysis header OTel Span count. */
+    headerSubjectIds: ReadonlySet<string>;
+  } & InitialLoadProgress) | null>(null);
   activeRef.current = active;
   const bodyRef = useRef<HTMLDivElement>(null);
   const rawResizeDragRef = useRef<RawInspectorResizeDrag | null>(null);
@@ -431,7 +469,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
 
   const copy = useMemo(() => chinese ? {
     loading: '正在加载轨迹…',
-    loadingProgress: (loaded: number, total: number) => `正在加载轨迹 ${loaded} / ${total}`,
+    loadingProgress: (loaded: number, total: number) => `正在加载轨迹 ${loaded} / ${total} 个 OTel Span`,
     emptyTitle: '暂无轨迹',
     emptyText: teamMode
       ? '运行一次集群对话后，这里会并行展示 Leader 与各 Teammate 成员的操作泳道。'
@@ -441,7 +479,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     retry: '重试',
     importArchive: '导入',
     importingArchive: '导入中…',
-    importProgress: (percent: number, records: number) => `正在导入轨迹 ${percent}% · ${records} 条记录`,
+    importProgress: (percent: number, spans: number) => `正在导入轨迹 ${percent}% · ${spans} 个 OTel Span`,
     exportArchive: '导出',
     exportingArchive: '导出中…',
     exitReplay: '退出复现',
@@ -502,7 +540,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     attributionCopyright: '原项目 Copyright © 2026 DeepSeek · 修改部分 © 2026 Huawei Technologies Co., Ltd.',
   } : {
     loading: 'Loading trajectory…',
-    loadingProgress: (loaded: number, total: number) => `Loading trajectory ${loaded} / ${total}`,
+    loadingProgress: (loaded: number, total: number) => `Loading trajectory ${loaded} / ${total} OTel spans`,
     emptyTitle: 'No trajectory yet',
     emptyText: teamMode
       ? 'Run a cluster conversation to see Leader and Teammate member lanes side by side.'
@@ -512,7 +550,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     retry: 'Retry',
     importArchive: 'Import',
     importingArchive: 'Importing…',
-    importProgress: (percent: number, records: number) => `Importing trajectory ${percent}% · ${records} records`,
+    importProgress: (percent: number, spans: number) => `Importing trajectory ${percent}% · ${spans} OTel spans`,
     exportArchive: 'Export',
     exportingArchive: 'Exporting…',
     exitReplay: 'Exit replay',
@@ -727,17 +765,18 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       if (staged.invalidRecordSeen) setInvalidRecordSeen(true);
       const loadProgress = initialLoadProgressRef.current;
       if (loadProgress !== null && loadProgress.generation === generation) {
-        const loaded = Math.min(
-          loadProgress.total,
-          [...windowStateRef.current.buckets.values()].reduce(
-            (count, bucket) => count + bucket.rawRecords.size,
-            0,
-          ),
-        );
-        if (loaded !== loadProgress.loaded) {
-          const nextProgress = { ...loadProgress, loaded };
+        const buckets = [...windowStateRef.current.buckets.entries()]
+          .filter(([subjectId]) => loadProgress.headerSubjectIds.has(subjectId))
+          .map(([, bucket]) => bucket);
+        const rawLoaded = buckets.reduce((count, bucket) => count + bucket.rawRecords.size, 0);
+        const loaded = timedRawSpanCount(buckets);
+        // Untimed raw rows never become header spans; drop them from the total
+        // as soon as they are seen so the fraction ends on the OTel Span count.
+        const total = loaded + Math.max(0, loadProgress.recordTotal - rawLoaded);
+        if (loaded !== loadProgress.loaded || total !== loadProgress.total) {
+          const nextProgress = { ...loadProgress, loaded, total };
           initialLoadProgressRef.current = nextProgress;
-          setInitialLoadProgress({ loaded, total: loadProgress.total });
+          setInitialLoadProgress({ loaded, total });
         }
       }
       publish(generation);
@@ -835,9 +874,21 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         }
         checkpointsRef.current = seeded.checkpoints;
         trajectoryV2ReducerRef.current.seed(seeded.checkpoints.v2Seeds);
-        const total = page.items.reduce((count, summary) => count + summary.record_count, 0);
-        initialLoadProgressRef.current = { generation, loaded: 0, total };
-        setInitialLoadProgress({ loaded: 0, total });
+        // Match the analysis header: team swimlanes omit main/unassigned rows.
+        const countForHeader = sessionTeamModeRef.current;
+        const headerItems = page.items.filter(summary => (
+          !countForHeader || subjectAppearsOnTeamLanes(summary.kind)
+        ));
+        const headerSubjectIds = new Set(headerItems.map(summary => summary.subject_id));
+        const recordTotal = headerItems.reduce((count, summary) => count + summary.record_count, 0);
+        initialLoadProgressRef.current = {
+          generation,
+          loaded: 0,
+          total: recordTotal,
+          recordTotal,
+          headerSubjectIds,
+        };
+        setInitialLoadProgress({ loaded: 0, total: recordTotal });
         await loadSummaries(page.items, signal, generation);
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
         const windowState = windowStateRef.current;
@@ -1222,7 +1273,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   onDiagnosisNodesChangeRef.current = onDiagnosisNodesChange;
   const diagnosisNodesKey = JSON.stringify(subjectGroups.groups.map(group => ({
     subjectId: group.subject.id,
-    intervals: timedNodeIntervals(subjectSnapshots.get(group.subject.id)?.turns ?? []),
+    intervals: rawOtelSpanIntervals(group.rawRecords),
   })));
   useEffect(() => {
     onDiagnosisNodesChangeRef.current?.(
@@ -1242,7 +1293,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const lanes = JSON.parse(diagnosisNodesKey) as TrajectoryDiagnosisLaneNodes[];
     onSummaryChangeRef.current?.({
       agents: lanes.length,
-      nodes: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
+      spans: lanes.reduce((sum, lane) => sum + lane.intervals.length, 0),
     });
   }, [diagnosisNodesKey, sharedTimeAxis]);
   const exportArchiveRef = useRef<() => void>(() => {});
@@ -1325,19 +1376,34 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const endMs = timeAxis.toWall(range.end);
     return endMs < startMs ? null : { startMs, endMs };
   };
-  const axisVisualRange = selecting && selection.state.mode === 'axis'
-    ? toAxisRange(selection.state.axisRange)
-    : null;
+  const fullWallRange = (): WallRange | null => {
+    if (timeAxis.domain === null || timeAxis.toWall === undefined) return null;
+    return toWallRange({ start: timeAxis.domain.startMs, end: timeAxis.domain.endMs });
+  };
+  const leaveFullScope = () => {
+    if (fullScopeSelection) onFullScopeChange?.(false);
+  };
+  const axisVisualRange = !selecting
+    ? null
+    : fullScopeSelection
+      ? timeAxis.sharedTimeDomain
+      : selection.state.mode === 'axis'
+        ? toAxisRange(selection.state.axisRange)
+        : null;
   const selectOnAxisRange = (range: TrajectoryTimeRange | null) => {
     if (selection === undefined) return;
+    leaveFullScope();
     const wall = toWallRange(range);
     selection.onChange(current => selectOnAxis(current, wall));
   };
-  const laneVisualRange = (subjectId: string): TrajectoryTimeRange | null => (
-    selection === undefined ? null : toAxisRange(laneRangeOf(selection.state, subjectId))
-  );
+  const laneVisualRange = (subjectId: string): TrajectoryTimeRange | null => {
+    if (selection === undefined) return null;
+    if (fullScopeSelection) return timeAxis.sharedTimeDomain;
+    return toAxisRange(laneRangeOf(selection.state, subjectId));
+  };
   const selectOnLaneRange = (subjectId: string, range: TrajectoryTimeRange | null) => {
     if (selection === undefined) return;
+    leaveFullScope();
     const wall = toWallRange(range);
     selection.onChange(current => selectOnLane(current, subjectId, wall));
   };
@@ -1463,7 +1529,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const generation = importGenerationRef.current;
     setArchiveError(null);
     setArchiveNotice(null);
-    setImportProgress({ bytesRead: 0, totalBytes: file.size, records: 0 });
+    setImportProgress({ bytesRead: 0, totalBytes: file.size, spans: 0 });
     try {
       const archive = await readTrajectoryArchive(file, (progress) => {
         if (importGenerationRef.current === generation) setImportProgress(progress);
@@ -1510,6 +1576,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const importingArchive = importProgress !== null;
   const exportDisabled = exporting || (replayArchive === null && sessionId === 'new');
   const replayActive = replayArchive !== null;
+  const replayLabel = replayArchive === null
+    ? null
+    : copy.replay(replayArchive.header.session_id);
   const importLabel = importingArchive ? copy.importingArchive : copy.importArchive;
   const exportLabel = exporting ? copy.exportingArchive : copy.exportArchive;
   useEffect(() => {
@@ -1520,6 +1589,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       exportDisabled,
       attributionOpen,
       replayActive,
+      replayLabel,
       importLabel,
       exportLabel,
       attributionLabel: copy.attributionLabel,
@@ -1539,6 +1609,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     importLabel,
     importingArchive,
     replayActive,
+    replayLabel,
     sharedTimeAxis,
   ]);
 
@@ -1747,21 +1818,55 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
               ? {}
               : {
                 agentSelection: {
-                  isIncluded: (subjectId: string) => isAgentIncluded(selection.state, subjectId),
-                  onToggle: (subjectId: string) => selection.onChange(current => toggleAgent(current, subjectId)),
+                  isIncluded: (subjectId: string) => (
+                    fullScopeSelection || isAgentIncluded(selection.state, subjectId)
+                  ),
+                  onToggle: (subjectId: string) => {
+                    if (fullScopeSelection) {
+                      leaveFullScope();
+                      const full = fullWallRange();
+                      if (full === null) {
+                        selection.onChange(() => EMPTY_DIAGNOSIS_SELECTION);
+                        return;
+                      }
+                      selection.onChange(() => toggleAgent(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, full), subjectId));
+                      return;
+                    }
+                    selection.onChange(current => toggleAgent(current, subjectId));
+                  },
                   canSelectAll: (subjectId: string) => (
-                    unionWallRange(timedNodeIntervals(subjectSnapshots.get(subjectId)?.turns ?? [])) !== null
+                    unionWallRange(rawOtelSpanIntervals(
+                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    )) !== null
                   ),
-                  isSelectAllActive: (subjectId: string) => isAgentFullySelected(
-                    selection.state,
-                    subjectId,
-                    timedNodeIntervals(subjectSnapshots.get(subjectId)?.turns ?? []),
-                  ),
+                  isSelectAllActive: (subjectId: string) => {
+                    const intervals = rawOtelSpanIntervals(
+                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    );
+                    return fullScopeSelection
+                      ? unionWallRange(intervals) !== null
+                      : isAgentFullySelected(selection.state, subjectId, intervals);
+                  },
                   onSelectAll: (subjectId: string) => {
-                    const intervals = timedNodeIntervals(subjectSnapshots.get(subjectId)?.turns ?? []);
+                    const intervals = rawOtelSpanIntervals(
+                      subjectGroups.byId.get(subjectId)?.rawRecords ?? [],
+                    );
+                    if (fullScopeSelection) {
+                      leaveFullScope();
+                      const full = fullWallRange();
+                      if (full === null) {
+                        selection.onChange(() => EMPTY_DIAGNOSIS_SELECTION);
+                        return;
+                      }
+                      // Cancel full-scope for this agent only; keep the rest selected.
+                      selection.onChange(() => toggleAgent(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, full), subjectId));
+                      return;
+                    }
                     selection.onChange(current => toggleSelectAllOnLane(current, subjectId, intervals));
                   },
-                  isHighlighted: (subjectId: string) => laneRangeOf(selection.state, subjectId) !== null,
+                  isHighlighted: (subjectId: string) => (
+                    fullScopeSelection || laneRangeOf(selection.state, subjectId) !== null
+                  ),
                 },
               }),
           }
@@ -1998,7 +2103,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       {importProgress === null ? null : (
         <div className={css.loadProgress} role="status" aria-live="polite">
           <div className={css.loadProgressLabel}>
-            {copy.importProgress(importPercent, importProgress.records)}
+            {copy.importProgress(importPercent, importProgress.spans)}
           </div>
           <div
             className={css.loadProgressTrack}

@@ -10,7 +10,10 @@
   R3  gateway 禁止 import server / agents / channels
 
 例外：``gateway.common`` 是无状态纯函数/常量的唯一真源（M1 策略调整），
-common / server / runtime 允许反向引用；其余 ``gateway.*`` 仍属传输层，继续禁止。
+common / server / runtime 允许反向引用；扩展治理层
+``gateway.extensions.{registry,manager,loader}`` 同理——扩展发现、注册表与
+加载器收敛为单份实现，避免两侧各持一份进程内单例，其在 AgentServer 侧的
+引用不视为违规。其余 ``gateway.*`` 仍属传输层，继续禁止。
 
 使用时机（《Gateway独立成仓-解耦设计》PR-2，单人解耦精简版）：
 
@@ -63,26 +66,26 @@ _ALL_LOCAL_PKGS = None  # 延迟初始化（collect_py_files 依赖 git）
 KNOWN_R1_COMMON_BACKREFS: dict[str, set[str]] = {}
 
 # 允许的跨层目标：无状态纯组件以 gateway 为唯一真源，母仓反向引用不视为违规。
-ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = ("gateway.common",)
+# extensions 治理层（registry/manager/loader）同样以 gateway 为唯一实现：
+# 三者持有进程内单例与扩展注册表，双份副本会导致状态分裂。
+# gateway.auth 为登录栈领域共享（sessions.json 等有状态双侧契约需真源单点，
+# 母仓经 common/auth shim 受控消费）。base_crypto 为 CryptoProvider 注入点
+# 接口件，实现与装配（_RegistryCryptoBridge）在 extensions 治理层，
+# 母仓 config/config_panel 经 common/security shim 受控消费。
+ALLOWED_CROSS_LAYER_PREFIXES: tuple[str, ...] = (
+    "gateway.common",
+    "gateway.extensions.registry",
+    "gateway.extensions.manager",
+    "gateway.extensions.loader",
+    "gateway.extensions.base_crypto",
+    "gateway.auth",
+)
 
 KNOWN_R2_SERVER_TO_GATEWAY: dict[str, set[str]] = {}
 
 # gateway 对 channels 的存量（A5 散件吸收对象：web 面板的文件选择器）已消除。
 # browser_config 已下沉 jiuwenswarm.common.browser_config，不再占用本白名单。
 KNOWN_R3_GATEWAY_FOREIGN: dict[str, set[str]] = {
-    # 过渡桥接（B1'）：gateway 与 AgentServer 同机部署期间的直连实现，
-    # gateway 独立成仓时整体删除并由 WS 远端实现替代（session_metadata
-    # 域已就绪 gateway/routing/session_metadata_remote.py）。
-    # （runtime.cron.factory 一条已随 M0-a 的 router_client 改向消除）
-    "gateway.server_store_bridge": {
-        "jiuwenswarm.server.runtime.mcp.state_store",
-        "jiuwenswarm.server.runtime.mcp.registry",
-        "jiuwenswarm.server.runtime.mcp.credential",
-        "jiuwenswarm.server.runtime.a2ui.integration",
-        "jiuwenswarm.server.runtime.team_binding_store",
-        "jiuwenswarm.server.runtime.team_entity_store",
-        "jiuwenswarm.server.runtime.session.session_metadata",
-    },
 }
 # 燃尽基线（--baseline 对照用；数字口径见各字段注释）
 BASELINE = {
@@ -91,22 +94,25 @@ BASELINE = {
     # B2.5 后（rebase 1372eda94 实测，含 B2 合入后的 extensions 状态）：
     # 四大包（agents/server/runtime/symphony）hard 闭包全部归零。
     # extensions 30 = B2 吸收后的框架件 + AgentOS 客户端 + 上游回流。
+    # gateway 自有只读 dotenv 副本后，根包 dotenv_early 不再从 gateway 可达；
+    # instance_manager 延迟闭包只经母仓 dotenv_early 的 bootstrap 写入到达，一并归零。
     "closure_hard": {
         "extensions": 30, "observability": 10,
-        "dotenv_early": 1, "llm_provider_compat_patch": 0,
+        "dotenv_early": 0, "llm_provider_compat_patch": 0,
     },
     # lazy 闭包 = 含函数内延迟 import 的可达模块数
     "closure_lazy": {
         # 2026-10-19 rebase 8e0f173b4：上游新功能 lazy 扩散 +104（非解耦退化）
         "agents": 344, "server": 240, "extensions": 54, "runtime": 43,
-        "symphony": 11, "observability": 11, "instance_manager": 6, "channels": 6,
-        "dotenv_early": 1, "llm_provider_compat_patch": 0,
+        "symphony": 11, "observability": 11, "instance_manager": 0, "channels": 6,
+        "dotenv_early": 0, "llm_provider_compat_patch": 0,
     },
     # common 反向引用（R1 存量）：B1' 已全部消除（注入化 + 纯模块下沉）
     "common_backref_modules": 0,
     "common_backref_imports": 0,
-    # gateway 直接 import 的外部（非 gateway/common）模块数
-    "gateway_direct_foreign": 23,
+    # gateway 直接 import 的外部（非 gateway/common）模块数。
+    # 本次去掉 dotenv_early，23 → 22。与实测的其余差额是既有燃尽，本次不重刷。
+    "gateway_direct_foreign": 22,
 }
 
 

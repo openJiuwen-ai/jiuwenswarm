@@ -36,11 +36,22 @@ from gateway.channel_manager.web.app_web_handlers import (
     _validate_wechat_numeric_params,
 )
 from gateway.heartbeat import HeartbeatServiceUnavailableError
-from gateway.server_store_bridge import install as _install_server_stores
 
-# 与 gateway 进程启动装配一致（B1' 注入点）：config 面板 handler 经
-# common.external_providers 取 server 侧存储实现
-_install_server_stores()
+# gateway 进程的 bridge 已退役；测试进程按 server 侧同款"import 即注册"
+# 装配注入点（tests 不受 R3 约束），使 config 面板等 common 消费路径
+# 在本测试进程内可执行（生产形态为 gateway 经 WS 访问 AgentServer）。
+import jiuwenswarm.server.runtime.a2ui.integration  # noqa: F401,E402
+import jiuwenswarm.server.runtime.mcp.credential  # noqa: F401,E402
+import jiuwenswarm.server.runtime.mcp.state_store  # noqa: F401,E402
+import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401,E402
+import jiuwenswarm.server.runtime.team_binding_store  # noqa: F401,E402
+import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401,E402
+from gateway.runtime.cron import factory as _cron_factory_module
+from jiuwenswarm.common.external_providers import register as _register_test_provider
+from jiuwenswarm.server.runtime.mcp import registry as _mcp_registry_module
+
+_register_test_provider("cron_store_factory", _cron_factory_module)
+_register_test_provider("mcp_registry", _mcp_registry_module)
 from gateway.routing.agent_client import WebSocketAgentServerClient
 from gateway.routing.keys import AgentRef, RoutingKey
 

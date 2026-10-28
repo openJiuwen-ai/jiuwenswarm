@@ -30,7 +30,7 @@ dependencies = [
     "websockets>=12.0,<16",
     "psutil>=7.2.2,<8",
     "aiosqlite>=0.22.1,<0.23",
-    "croniter>=2.0.0,<7",
+    "croniter>=3.0.0,<7",
     "python-telegram-bot>=20.0,<23",
     "discord.py>=2.4.0,<3",
     "slack-bolt>=1.30.0,<2",
@@ -92,7 +92,7 @@ harmony = [
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "aiosqlite>=0.22.1",
-    "croniter>=2.0.0",
+    "croniter>=3.0.0",
     "python-telegram-bot>=20.0",
     "discord.py>=2.4.0",
     "slack-bolt>=1.30.0",
@@ -195,6 +195,11 @@ jiuwenswarm = [
     # styles markdown 与 index.json，运行期由 designer.skills_loader 读取
     "server/runtime/designer/skills/*",
     "server/runtime/designer/skills/**/*",
+]
+gateway = [
+    "extensions/**/*.yaml",
+    "extensions/**/*.yml",
+    "extensions/**/*.md",
 ]
 jiuwenbox = [
     "configs/**/*",

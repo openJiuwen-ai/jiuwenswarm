@@ -233,6 +233,7 @@ class WebChannel(BaseWsChannel):
         # Agent client the diagnosis HTTP proxy uses to reach the AgentServer
         # service; bound by the web handler registration.
         self.diagnosis_agent_client: Any = None
+        self.trajectory_agent_client: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
         # 3rd-agent Web UI proxy: one northbound port per agent_type.

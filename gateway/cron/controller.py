@@ -33,6 +33,7 @@ from gateway.cron.models import (
 from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from gateway.cron.store_base import CronJobStoreBackend
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 
 
 # 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
@@ -47,8 +48,8 @@ def _login_credential_ref_from_session(auth_session: str) -> str:
     创建请求连接上的登录会话（``_auth_session``，由 web handler 注入）。
     没有可用会话时明确拒绝，不留一个到点必失败的任务。
     """
-    from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
-    from jiuwenswarm.common.auth.service import ModelAuthRequired, live_session
+    from gateway.auth.login_credentials import credential_ref_for_user
+    from gateway.auth.service import ModelAuthRequired, live_session
 
     try:
         session = live_session(auth_session or None, allow_refresh=False)
@@ -175,13 +176,17 @@ class CronController:
         if self._target_channel is None and not raw_s:
             raise ValueError("targets is required when target_channel is not set")
         if not raw_s:
-            return normalize_target_channel_id(self._target_channel.value)
-        if not is_valid_target_channel_id(raw_s):
-            raise ValueError(
-                "targets must be one of tui/web/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
-                " or feishu_enterprise:<app_id>"
-            )
-        return normalize_target_channel_id(raw_s)
+            target = normalize_target_channel_id(self._target_channel.value)
+        else:
+            if not is_valid_target_channel_id(raw_s):
+                raise ValueError(
+                    "targets must be one of tui/web/feishu/dingtalk/whatsapp/wecom/wechat"
+                    " or feishu_enterprise:<app_id>"
+                )
+            target = normalize_target_channel_id(raw_s)
+        if not is_scheduled_task_supported(target):
+            raise ValueError(f"targets does not support scheduled tasks: {target}")
+        return target
 
     @classmethod
     def _normalize_description(cls, description: str, name: str) -> str:
@@ -306,7 +311,15 @@ class CronController:
         return cron_job_metadata()
 
     @_serialize_mutation
-    async def create_job(self, params: dict[str, Any]) -> dict[str, Any]:
+    async def create_job(
+        self,
+        params: dict[str, Any],
+        *,
+        internal_proactive_sync: bool = False,
+    ) -> dict[str, Any]:
+        # ``internal_proactive_sync`` is a Python-level keyword set only by
+        # proactive_cron_sync. It deliberately does not live in ``params``:
+        # every key in ``params`` can be supplied by a web/tui client (#5853).
         # This marker is set only by the AgentServer-to-Gateway path after the
         # project has been resolved against the user's AgentServer directory.
         # Do not persist it with the job payload.
@@ -334,13 +347,18 @@ class CronController:
         # proactive.tick 是主动推荐开关自动维护的内部模式（proactive_cron_sync
         # 以固定 id 注册）：用户路径创建同模式任务会被后端 mode 保护拒绝启停/
         # 删除，而前端只按固定 id 识别系统任务，导致任务永远停不掉（#5128）。
-        if (
-            mode == "proactive.tick"
-            and str(params.get("id") or "").strip() != PROACTIVE_JOB_ID
-        ):
-            raise ValueError(
-                "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
-            )
+        # 豁免不能依赖客户端可控的 params.id：用户路径携带固定 id 会整体顶替
+        # 内置任务（#5853），因此只认内部 sync 传入的关键字参数。
+        requested_id = str(params.get("id") or "").strip()
+        if not internal_proactive_sync:
+            if mode == "proactive.tick":
+                raise ValueError(
+                    "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动创建"
+                )
+            if requested_id == PROACTIVE_JOB_ID:
+                raise ValueError(
+                    f"{PROACTIVE_JOB_ID} 是系统内置主动推荐任务的保留 id，不能手动创建"
+                )
         model_name, model_source = resolve_cron_model(
             params.get("model_name"),
             zen_entries=await self._zen_entries(),

@@ -1419,18 +1419,26 @@
 
   /* ── Resend button on user messages ── */
   .resend-btn {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 10px;
-    padding: 0;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 2px 7px;
+    border-radius: 10px;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
     line-height: 1;
+    align-self: flex-end;
+    margin-top: 2px;
   }
-  .msg:hover .resend-btn { opacity: 0.6; }
-  .resend-btn:hover { opacity: 1 !important; color: var(--accent); }
+  .msg:hover .resend-btn { opacity: 0.95; }
+  .resend-btn:hover {
+    opacity: 1 !important;
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--bg3);
+  }
 
   /* ── Session title inline edit ── */
   .session-title-input {
@@ -2366,13 +2374,28 @@ function updateSkills(skills) {
         (skill.trigger    ? '<div class="skill-trigger">' + escapeHtml(skill.trigger)    + '</div>' : '') +
       '</div>' +
       '<button class="skill-toggle-btn' + (enabled ? ' enabled' : '') + '" ' +
-        'onclick="toggleSkill(' + JSON.stringify(skill.skill_id) + ',' + !enabled + ')" ' +
+        'data-skill-key="' + escapeHtml(skillKey(skill)) + '" ' +
+        'data-enable="' + (!enabled ? '1' : '0') + '" ' +
         'title="' + (enabled ? 'Disable' : 'Enable') + '">' +
         (enabled ? 'ON' : 'OFF') +
       '</button>';
     el.appendChild(item);
   });
 }
+
+// Delegate the toggle click instead of embedding skill names in inline JS.
+// Names can contain quotes/HTML; data attributes go through escapeHtml().
+(function initSkillToggleDelegation() {
+  var list = document.getElementById('skills-list');
+  if (!list) return;
+  list.addEventListener('click', function(e) {
+    var btn = e.target && e.target.closest ? e.target.closest('.skill-toggle-btn') : null;
+    if (!btn || !list.contains(btn)) return;
+    var key = btn.getAttribute('data-skill-key') || '';
+    if (!key) return;
+    toggleSkill(key, btn.getAttribute('data-enable') === '1');
+  });
+})();
 
 function showSkillsError(message) {
   var msg = escapeHtml(message || 'Failed to load skills');
@@ -2387,19 +2410,30 @@ function showSkillsError(message) {
     '</div>';
 }
 
+// The server's skills.toggle expects `name`; the list's skill_id may be empty
+// for local/builtin skills, so use name as the stable key.
+function skillKey(skill) {
+  return (skill && (skill.skill_id || skill.name)) || '';
+}
+
 function toggleSkill(skillId, enable) {
+  var skill = (state.skills || []).find(function(s) { return skillKey(s) === skillId; });
   // Optimistic update: reflect change immediately before server confirms
-  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
-  if (idx >= 0) {
-    state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enable });
+  if (skill) {
+    skill.enabled = enable;
     updateSkills(state.skills);
   }
-  send({ type: 'toggle_skill', skillId: skillId, enabled: enable });
+  send({
+    type: 'toggle_skill',
+    skillId: skillId,
+    name: (skill && (skill.name || skill.skill_id)) || skillId,
+    enabled: enable,
+  });
 }
 
 function onSkillToggled(skillId, enabled) {
   // Update in-memory state and re-render
-  var idx = state.skills.findIndex(function(s) { return s.skill_id === skillId; });
+  var idx = state.skills.findIndex(function(s) { return skillKey(s) === skillId; });
   if (idx >= 0) {
     state.skills[idx] = Object.assign({}, state.skills[idx], { enabled: enabled });
     updateSkills(state.skills);
@@ -2771,11 +2805,17 @@ function handleJiuwenEvent(evt) {
     // Team mode emits one chat.final per leader segment (delegation, progress,
     // result), each under a rid that may not match the chat.send turn. They are
     // milestones, not end-of-turn; the turn ends on chat.processing_status.
-    if (!teammateChat) finalizeTurn(rid, payload);
+    if (!teammateChat) {
+      finalizeTurn(rid, payload);
+      // The history file is created/updated by the turn; refresh so the menu's
+      // "Copy Logs Path"/"Export" items get the current path without reopening.
+      send({ type: 'list_sessions' });
+    }
   } else if (et === 'chat.processing_status' && payload.is_processing === false) {
-    // Stream ended but no chat.final was sent by gateway — release the UI
+    // Stream ended but no chat.final was sent by gateway - release the UI
     if (state.streaming) {
       finalizeTurn(rid, payload);
+      send({ type: 'list_sessions' });
     }
   } else if (et === 'history.message') {
     renderHistoryMessage(payload);
@@ -2838,6 +2878,8 @@ function beginTurn(requestId, userContent) {
     textContent: '',
     thinkingEl: null,
     typingEl: typingEl,
+    // Set on this turn only when the user clicks the stop button.
+    stopRequested: false,
     // metrics tracking
     startTime: Date.now(),
     firstTokenTime: null,
@@ -3244,6 +3286,10 @@ function mapInterruptAnswerValue(pt, value) {
 
 function sendAnswerForInterrupt(pt, rid, source, optionValue) {
   pt.questionAnswered = true;
+  // The user chose to continue this turn, so a previous stop click no longer
+  // applies; let the resumed stream finish as completed.
+  pt.stopRequested = false;
+  pt.stopped = false;
   const statusEl = pt.pendingQuestion ? pt.pendingQuestion.querySelector('.question-status') : null;
   if (statusEl) statusEl.textContent = 'Answer sent — waiting for the agent to continue…';
   send({
@@ -3716,7 +3762,7 @@ function finalizeTurn(rid, payload) {
     pt.hasFinal = true;
     // The local stop click may race the server's final; the flag makes sure the
     // turn is still classified as stopped if the final arrives afterwards.
-    if (payload.stopped || state.stopRequested) pt.stopped = true;
+    if (payload.stopped || pt.stopRequested) pt.stopped = true;
 
     // Record the final response text as a 'final' event so the trajectory
     // shows the turn's response as its own entry. Live streaming never emits a
@@ -4205,7 +4251,10 @@ sendBtn.addEventListener('click', function() {
     // finalizeTurn and leave the UI stuck in streaming mode.
     Object.keys(state.pendingTurns).forEach(function(rid) {
       var pt = state.pendingTurns[rid];
-      if (pt) pt.questionAnswered = true;
+      if (pt) {
+        pt.stopRequested = true;
+        pt.questionAnswered = true;
+      }
       finalizeTurn(rid, { stopped: true });
     });
     // No live turn (e.g. it was already finalized server-side) — still release UI.
@@ -5071,31 +5120,44 @@ function openToolFile(ev) {
   if (path) send({ type: 'open_file', path: path, line: 0 });
 }
 
+function applyInlineEmphasis(html) {
+  // Protect code spans and file links: filenames often contain underscores,
+  // which must not be turned into <em> tags.
+  return html.split(/(<a\b[^>]*>[\s\S]*?<\/a>|<code>[\s\S]*?<\/code>)/g)
+    .map(function(part, idx) {
+      if (idx % 2 === 1) return part;
+      return part
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+        .replace(/_([^_]+)_/g, '<em>$1</em>');
+    }).join('');
+}
+
 function renderInline(line) {
-  line = line.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  line = line.replace(/\*([^*]+)\*/g, '<em>$1</em>');
-  line = line.replace(/_([^_]+)_/g, '<em>$1</em>');
   // Pattern 1: backtick-wrapped file paths — run before generic backtick handler
-  line = line.replace(/`((?:(?:\.{1,2}\/)?(?:[\w\-]+\/)+)?[\w.\-]+\.\w{2,6}(?::\d+)?)`/g, function(_, raw) {
-    var m = raw.match(/^(.*?):(\d+)$/);
-    var filePath = m ? m[1] : raw;
+  line = line.replace(/`([^`\n]+)`/g, function(_, raw) {
+    var text = raw.trim();
+    if (!text || text.indexOf('://') !== -1) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
+    var m = text.match(/^(.*?):(\d+)$/);
+    var filePath = m ? m[1] : text;
     var lineNum = m ? m[2] : '0';
-    var hasSlash = filePath.indexOf('/') !== -1;
+    var hasSlash = /[\/\\]/.test(filePath);
     var hasLine = !!m;
-    if (!hasSlash && !hasLine) return '<code>' + escapeHtml(raw) + '</code>';
+    var looksLikeFile = /\.[A-Za-z0-9]{2,10}$/.test(filePath);
+    if (!looksLikeFile || (!hasSlash && !hasLine)) {
+      return '<code>' + escapeHtml(raw) + '</code>';
+    }
     return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
          + '" onclick="openFileLink(this)"><code>' + escapeHtml(raw) + '</code></a>';
-  });
-  // Generic backtick handler for remaining non-file spans
-  line = line.replace(/`([^`]+)`/g, function(_, c) {
-    return '<code>' + escapeHtml(c) + '</code>';
   });
   // Pattern 2: bare path/to/file.ext:N outside backticks and existing HTML
   line = line.replace(/(?<![<>"'`\w\/])((?:\.{1,2}\/)?(?:[\w\-]+\/)+[\w.\-]+\.\w{2,6}):(\d+)(?!\w)/g, function(_, filePath, lineNum) {
     return '<a class="file-link" data-path="' + escapeHtml(filePath) + '" data-line="' + lineNum
          + '" onclick="openFileLink(this)">' + escapeHtml(filePath) + ':' + lineNum + '</a>';
   });
-  return line;
+  return applyInlineEmphasis(line);
 }
 
 // ─────────────────────────────────────────────
