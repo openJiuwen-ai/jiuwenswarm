@@ -16,47 +16,75 @@ from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, star
 logger = logging.getLogger(__name__)
 
 
-def detach_front_process(pid: int, *, force: bool = False) -> None:
-    """Stop an owned Front launcher subtree while retaining Worker and tools."""
+def detach_front_process(pid: int, *, force: bool = False, timeout: float = 5.0) -> None:
+    """Stop an owned Front subtree; unknown survivors cannot mean success."""
     import psutil
+
+    deadline = time.monotonic() + max(0.0, timeout)
     try:
         parent = psutil.Process(pid)
         children = parent.children(recursive=True)
-        by_pid = {child.pid: child for child in children}
-        retained = set()
-        fronts = []
-        for child in [parent, *children]:
-            try:
-                argv = child.cmdline()
-            except psutil.Error:
-                # An unreadable command may be a Worker; preserve its subtree.
+    except psutil.NoSuchProcess:
+        return
+    by_pid = {child.pid: child for child in children}
+    workers = set()
+    unknown = set()
+    fronts = []
+    for child in [parent, *children]:
+        try:
+            argv = child.cmdline()
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error:
+            unknown.add(child.pid)
+            continue
+        module = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
+        if module == "jiuwenswarm.server.worker.main":
+            workers.add(child.pid)
+        if module == "jiuwenswarm.server.app_agentserver" or "--desktop-run-agent" in argv:
+            fronts.append(child.pid)
+    if not fronts:
+        raise RuntimeError("Front detach refused a process without an AgentServer child")
+    if parent.pid in workers:
+        raise RuntimeError("Front detach refused a Worker root")
+    retained = set(workers)
+    for child in children:
+        try:
+            ancestor = child.ppid()
+            visited = set()
+            while ancestor in by_pid and ancestor not in workers:
+                if ancestor in visited:
+                    raise RuntimeError("Front ancestry could not be established")
+                visited.add(ancestor)
+                ancestor = by_pid[ancestor].ppid()
+            if ancestor in workers:
                 retained.add(child.pid)
-                continue
-            module = argv[argv.index("-m") + 1] if "-m" in argv[:-1] else ""
-            if module == "jiuwenswarm.server.worker.main":
-                retained.add(child.pid)
-            if module == "jiuwenswarm.server.app_agentserver" or "--desktop-run-agent" in argv:
-                fronts.append(child.pid)
-        if not fronts:
-            raise RuntimeError("Front detach refused a process without an AgentServer child")
-        for child in children:
-            try:
-                ancestor = child.ppid()
-                while ancestor in by_pid and ancestor not in retained:
-                    ancestor = by_pid[ancestor].ppid()
-                if ancestor in retained:
-                    retained.add(child.pid)
-            except psutil.Error:
-                retained.add(child.pid)
-        for child in reversed(children):
-            if child.pid not in retained:
-                try:
-                    child.kill() if force else child.terminate()
-                except psutil.Error:
-                    logger.warning("Front child termination failed: pid=%s", child.pid, exc_info=True)
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error:
+            unknown.add(child.pid)
+    if unknown - retained:
+        raise RuntimeError("Front detach incomplete: descendant ownership could not be established")
+    targets = [child for child in reversed(children) if child.pid not in retained]
+    for child in targets:
+        try:
+            child.kill() if force else child.terminate()
+        except psutil.NoSuchProcess:
+            continue
+        except psutil.Error as exc:
+            raise RuntimeError("Front detach incomplete: process termination failed") from exc
+    _, alive = psutil.wait_procs(targets, timeout=max(0.0, deadline - time.monotonic()))
+    if alive:
+        raise RuntimeError("Front detach incomplete: process exit could not be observed")
+    # Keep the launcher available for a forced retry until descendants are
+    # observed gone. Losing it first would orphan an unconfirmed Front.
+    try:
         parent.kill() if force else parent.terminate()
     except psutil.NoSuchProcess:
-        pass
+        return
+    _, alive = psutil.wait_procs([parent], timeout=max(0.0, deadline - time.monotonic()))
+    if alive:
+        raise RuntimeError("Front detach incomplete: launcher exit could not be observed")
 
 
 async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | None = None) -> dict:
@@ -103,7 +131,7 @@ def main() -> None:
 
         require_clean_shutdown(args.shutdown_receipt)
     if args.detach_front:
-        detach_front_process(args.detach_front, force=args.force)
+        detach_front_process(args.detach_front, force=args.force, timeout=args.timeout)
     if args.shutdown_worker:
         result = asyncio.run(shutdown_resident_worker(timeout=max(.001, args.timeout)))
         result_logger = logging.Logger(f"{__name__}.result", level=logging.INFO)

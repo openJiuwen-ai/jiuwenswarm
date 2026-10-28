@@ -3195,7 +3195,11 @@ nohup {q_executable} >/dev/null 2>&1 &
 
         for process in processes:
             if process.poll() is None:
-                _terminate_process_tree(process)
+                try:
+                    _terminate_process_tree(process)
+                except (OSError, RuntimeError):
+                    shutdown_ok = False
+                    logger.exception("[desktop] service tree cleanup incomplete")
 
         if processes:
             # Front restarts detach. The desktop application owns final exit
@@ -3218,7 +3222,10 @@ nohup {q_executable} >/dev/null 2>&1 &
         for process in processes:
             if process.poll() is None:
                 shutdown_ok = False
-                _kill_process_tree(process)
+                try:
+                    _kill_process_tree(process)
+                except (OSError, RuntimeError):
+                    logger.exception("[desktop] forced service tree cleanup incomplete")
 
         with self._lock:
             self.processes.clear()
