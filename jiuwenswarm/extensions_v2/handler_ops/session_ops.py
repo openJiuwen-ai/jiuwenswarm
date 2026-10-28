@@ -5,9 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from functools import partial
-from pathlib import Path
-
+>
 from openjiuwen.core.events import (
     OPS_BUILD_EVENT_TYPE,
     Event,
@@ -26,11 +24,13 @@ from jiuwenswarm.server.runtime.session.model_selection_store import (
     sanitize_model_info,
 )
 from jiuwenswarm.server.runtime.session.session_repo import read_session_repo
-from jiuwenswarm.server.runtime.session.session_history_ops import (
     SessionHistoryError,
     prepare_extension_append,
     read_session_messages,
-)
+    SESSION_USAGE_INFO_KEY,
+    read_session_turns,
+    read_session_usage,
+    select_usage_breakdown,
 
 
 def _require_session(ops: EventHandlerOps, capability: str) -> SessionContext:
@@ -109,7 +109,6 @@ async def session_repo(ops: EventHandlerOps) -> dict[str, object] | None:
     return await asyncio.to_thread(read_session_repo, cwd)
 
 
-async def session_messages(
     ops: EventHandlerOps,
     limit: int = 50,
     cursor: str | None = None,
@@ -150,7 +149,24 @@ async def session_append(
         fingerprint=fingerprint, update_metadata=False,
     )
     return result.to_dict()
+    """Read committed main user-input turns, or None for an unknown session."""
+    context = _require_session(ops, "session.turns")
+    return await asyncio.to_thread(read_session_turns, context.session_id)
 
+
+async def session_usage(ops: EventHandlerOps, breakdown: bool = False) -> dict | None:
+    """Read observed context and per-turn usage without measuring or billing."""
+    context = _require_session(ops, "session.usage")
+    if not is_valid_session_id(context.session_id):
+        raise ValueError("invalid session_id")
+    if SESSION_USAGE_INFO_KEY in context.metadata:
+        snapshot = context.metadata[SESSION_USAGE_INFO_KEY]
+        if snapshot is not None and (
+            not isinstance(snapshot, Mapping) or snapshot.get("session_id") != context.session_id
+        ):
+            raise ValueError("session.usage requires a matching host snapshot")
+        return select_usage_breakdown(snapshot, breakdown)
+    return await asyncio.to_thread(read_session_usage, context.session_id, breakdown)
 
 async def session_ops_build(
     event: Event,
@@ -169,9 +185,8 @@ async def session_ops_build(
     builder.add_method("session", "root", session_root)
     builder.add_method("session", "model", session_model)
     builder.add_method("session", "repo", session_repo)
-    builder.add_method("session", "messages", session_messages)
     builder.add_method("session", "append", partial(session_append, bus=bus))
-    return builder
+    builder.add_method("session", "usage", session_usage)
 
 
 def register_session_ops(bus: ExtensionEventBus) -> None:
