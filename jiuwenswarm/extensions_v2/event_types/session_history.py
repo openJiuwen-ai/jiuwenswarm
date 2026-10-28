@@ -41,7 +41,7 @@ class SessionAppendInput:
 
 @dataclass(frozen=True, slots=True)
 class SessionAppendRejection:
-    """An explicit rejection returned before calling next_handler."""
+    """An explicit rejection of an extension note before calling next_handler."""
 
     reason: str
 
@@ -106,7 +106,18 @@ def valid_append_input(value: object) -> bool:
 def valid_append_output(value: object) -> bool:
     """Keep explicit rejections separate from malformed handler results."""
     if isinstance(value, SessionAppendRejection):
-        return isinstance(value.reason, str) and 0 < len(value.reason.strip()) <= 512
+        state = _INVOCATION.get()
+        return (
+            state is not None and state.original.source == "extension"
+            and isinstance(value.reason, str) and 0 < len(value.reason.strip()) <= 512
+        )
+    if isinstance(value, SessionAppendResult) and value.status == "rejected":
+        state = _INVOCATION.get()
+        return state is not None and state.original.source == "extension"
+    if isinstance(value, SessionAppendResult):
+        state = _INVOCATION.get()
+        if state is not None and state.original.source != "extension" and state.receipt is None:
+            return False
     return isinstance(value, SessionAppendResult) and value.status in ("persisted", "duplicate", "rejected")
 
 
@@ -137,6 +148,8 @@ async def dispatch_session_append(
         if state.receipt is not None:
             return copy.deepcopy(state.receipt)
         if isinstance(result, SessionAppendRejection):
+            if source != "extension":
+                raise SessionHistoryError("APPEND_RESULT_INVALID")
             return SessionAppendResult("rejected", prepared.session_id, message_id, reason=result.reason.strip())
         raise SessionHistoryError("APPEND_RESULT_INVALID")
     finally:
@@ -168,8 +181,11 @@ async def try_append_platform_history(
         raise SessionHistoryError("INVALID_MESSAGE")
     key = idempotency_key or uuid.uuid4().hex
     append_key = "platform:" + hashlib.sha256(key.encode("utf-8")).hexdigest()
+    from jiuwenswarm.server.runtime.session.history_context import platform_history_context
+
+    context = await platform_history_context(prepared.session_id)
     result = await dispatch_session_append(
-        bus, SessionContext(prepared.session_id), prepared,
+        bus, context, prepared,
         message_id=prepared.record["id"], source=source, append_key=append_key,
         fingerprint=original_fingerprint(prepared.record), update_metadata=True,
     )

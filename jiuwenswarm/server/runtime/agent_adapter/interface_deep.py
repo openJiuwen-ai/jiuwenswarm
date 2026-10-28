@@ -8685,6 +8685,10 @@ class JiuWenSwarmDeepAdapter:
         self._last_resolved_model = model
         self._active_request_model = model
 
+        from jiuwenswarm.server.runtime.session.history_context import capture_history_model
+
+        capture_history_model(session_id, model)
+
     @staticmethod
     def _resolve_skill_mode(
         config: dict[str, Any],
@@ -13775,7 +13779,8 @@ class JiuWenSwarmDeepAdapter:
             self._instance.deep_config.language = resolved_language
 
     def _seed_runtime_cwd(
-        self, cwd: str | None = None, workspace: str | None = None
+        self, cwd: str | None = None, workspace: str | None = None,
+        *, session_id: str | None = None,
     ) -> None:
         """Seed Core's CwdState holder from the request/runtime cwd.
 
@@ -13794,6 +13799,12 @@ class JiuWenSwarmDeepAdapter:
         if not runtime_cwd or not os.path.isdir(runtime_cwd):
             runtime_cwd = workspace_root
         init_cwd(runtime_cwd, project_root=workspace_root, workspace=workspace_root)
+        from jiuwenswarm.server.runtime.session.history_context import capture_history_workspace
+
+        capture_history_workspace(
+            session_id, cwd=runtime_cwd,
+            project_root=workspace_root if self._project_dir else None,
+        )
 
     @staticmethod
     def _resolve_request_task_name(
@@ -14038,7 +14049,7 @@ class JiuWenSwarmDeepAdapter:
             # workspace.root_path (~/.jiuwenswarm/agent/workspace).
             deep_config.cwd = task_cwd
             deep_config.project_root = task_workspace
-        self._seed_runtime_cwd(task_cwd, workspace=task_workspace)
+        self._seed_runtime_cwd(task_cwd, workspace=task_workspace, session_id=runtime_config.session_id)
         if runtime_paths is not None and runtime_paths.is_projectless:
             setattr(self._instance, "_jiuwenswarm_project_dir", task_workspace)
         resolved_language = self._resolve_runtime_language()
@@ -17363,8 +17374,11 @@ class JiuWenSwarmDeepAdapter:
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.session.history_context import history_context_scope
 
-            with self._bind_permission_request_context(request):
+            with self._bind_permission_request_context(request), history_context_scope(
+                request.session_id or "default", request_id=request.request_id,
+            ):
                 async with bind_task_execution(request, self, inputs):
                     return await self._process_message_impl(request, inputs)
 
@@ -18069,8 +18083,11 @@ class JiuWenSwarmDeepAdapter:
         async with self._permission_request_admission(request, inputs):
             self.validate_auto_permission_workspace_request(request)
             from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+            from jiuwenswarm.server.runtime.session.history_context import history_context_scope
 
-            with self._bind_permission_request_context(request):
+            with self._bind_permission_request_context(request), history_context_scope(
+                request.session_id or "default", request_id=request.request_id,
+            ):
                 async with bind_task_execution(request, self, inputs):
                     async with aclosing(self._process_message_stream_impl(request, inputs)) as stream:
                         async for chunk in stream:
