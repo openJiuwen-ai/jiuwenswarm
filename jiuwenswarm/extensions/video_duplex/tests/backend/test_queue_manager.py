@@ -140,3 +140,63 @@ async def test_text_manager_changes_real_queue_order(tmp_path, monkeypatch):
         assert result["receipts"][-1]["receipt"]["operation"]["state"] == "reordered"
     finally:
         await manager.close()
+
+
+@pytest.mark.asyncio
+async def test_pending_management_is_cancellable_and_does_not_repeat_operations(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def pending_step(messages):
+        entered.set()
+        await release.wait()
+        return json.dumps({"response": "队列为空"})
+
+    monkeypatch.setattr(queue_manager, "request_step", pending_step)
+    pending = asyncio.create_task(queue_manager.manage_queue(
+        manager, "alice", "voice", management_call(), "查询队列",
+    ))
+    await entered.wait()
+    pending.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending
+    assert manager.operate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_management_still_stops_after_six_model_decisions(monkeypatch):
+    manager = SimpleNamespace(operate=AsyncMock(return_value={"jobs": []}))
+    step = AsyncMock(return_value=json.dumps({
+        "tool": {"name": "jiuwen_task_query", "arguments": {}},
+    }))
+    monkeypatch.setattr(queue_manager, "request_step", step)
+    result = await queue_manager.manage_queue(manager, "alice", "voice", management_call(), "查询队列")
+    assert result["state"] == "incomplete"
+    assert "operation limit" in result["error"]
+    assert step.await_count == 6
+
+
+@pytest.mark.asyncio
+async def test_model_request_preserves_configured_network_timeout(monkeypatch):
+    from jiuwenswarm.common import config
+    from openjiuwen.core.foundation import llm
+
+    monkeypatch.delenv("DUPLEX_QUEUE_MANAGER_MODEL", raising=False)
+    monkeypatch.setattr(config, "get_default_models", lambda: [{
+        "model_client_config": {
+            "model_name": "test-model", "client_provider": "OpenAI",
+            "api_key": "test-only", "api_base": "https://example.invalid", "timeout": 77,
+        },
+    }])
+    received = []
+    invoke = AsyncMock(return_value=SimpleNamespace(content='{"response":"done"}'))
+
+    def model(**kwargs):
+        received.append(kwargs["model_client_config"])
+        return SimpleNamespace(invoke=invoke)
+
+    monkeypatch.setattr(llm, "Model", model)
+    assert await queue_manager.request_step([]) == '{"response":"done"}'
+    assert received[0].timeout == 77
+    invoke.assert_awaited_once_with([])

@@ -100,8 +100,11 @@ the current project, so project binding and credential resolution stay unchanged
 
 The manager reuses the first configured text model by default. Set `DUPLEX_QUEUE_MANAGER_MODEL`
 in `.env` to an existing model ID, alias or unique name, then restart. It receives instructions
-and task records, without audio or images. Each request allows six model decisions within
-40 seconds. Errors preserve earlier receipts and do not imply success or rollback. Duplicate
+and task records, without audio or images. Each request allows six model decisions without
+a management deadline or an additional per-step deadline. Model requests retain the selected
+model's network timeout configuration. Qwen management requests and JoyAI user requests that
+may include management have no frontend waiting deadline. Errors preserve earlier receipts
+and do not imply success or rollback. Duplicate
 command IDs share execution while cached in the current process. Approval cards retain explicit voice consent and on-screen controls.
 
 JoyAI refreshes an expired context token in the same authorized chat and retries the

@@ -1,6 +1,5 @@
 """Text-only queue control using the existing scoped task operations."""
 
-import asyncio
 import hashlib
 import json
 import os
@@ -79,7 +78,7 @@ async def request_step(messages):
         raise ValueError("Set DUPLEX_QUEUE_MANAGER_MODEL to one configured text model, or configure a default text model") from exc
     client = dict(entry["model_client_config"])
     name = client.pop("model_name")
-    client.update(client_id="duplex-queue-manager", timeout=10, max_retries=0,
+    client.update(client_id="duplex-queue-manager", max_retries=0,
                   use_shared_llm_http_client=True)
     client.setdefault("client_provider", "OpenAI")
     request = build_reasoning_model_request_kwargs(
@@ -87,8 +86,7 @@ async def request_step(messages):
     )
     model = Model(model_client_config=ModelClientConfig.model_validate(client),
                   model_config=ModelRequestConfig.model_validate(request))
-    async with asyncio.timeout(10):
-        result = await model.invoke(messages)
+    result = await model.invoke(messages)
     return result.content
 
 
@@ -182,42 +180,41 @@ async def manage_queue(
         return await operate(validated.name, args)
 
     try:
-        async with asyncio.timeout(40):
-            initial = await operate("jiuwen_task_query", {})
-            # Keep the bootstrap query in the receipt trail so the caller and the
-            # model see every executed operation, including the read-only seed.
-            receipts.append({"name": "jiuwen_task_query", "receipt": initial})
-            messages = [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps({
-                    "user_request": original_instruction or call.task,
-                    "resolved_request": call.task, "allowed_tools": allowed_tools, "queue": initial,
-                    "reply_language": reply_language,
-                    "information_answers_allowed": allow_answers,
-                }, ensure_ascii=False)},
-            ]
-            for _ in range(6):
-                raw = await request_step(messages)
-                proposal = parse_manager_json(raw)
-                if not isinstance(proposal, dict):
-                    raise ValueError("Invalid queue manager proposal")
-                if set(proposal) == {"response"} and isinstance(proposal["response"], str) and proposal["response"].strip():
-                    return {"managed_by": "text_queue_manager", "response": proposal["response"][:2000],
-                            "receipts": receipts, "message": "Report only facts supported by these receipts. Do not call queue management again for this request."}
-                if set(proposal) != {"tool"} or not isinstance(proposal["tool"], dict):
-                    raise ValueError("Invalid queue manager tool proposal")
-                tool = proposal["tool"]
-                if set(tool) != {"name", "arguments"} or (
-                    tool["name"] not in allowed_names and tool["name"] != _CRON_CREATE_TOOL
-                ):
-                    raise ValueError("Unsupported queue manager operation")
-                receipt = await run_tool(tool)
-                receipts.append({"name": tool["name"], "receipt": receipt})
-                messages.extend([
-                    {"role": "assistant", "content": raw},
-                    {"role": "user", "content": json.dumps({"receipt": receipt}, ensure_ascii=False)},
-                ])
-            raise ValueError("Queue manager operation limit reached")
+        initial = await operate("jiuwen_task_query", {})
+        # Keep the bootstrap query in the receipt trail so the caller and the
+        # model see every executed operation, including the read-only seed.
+        receipts.append({"name": "jiuwen_task_query", "receipt": initial})
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps({
+                "user_request": original_instruction or call.task,
+                "resolved_request": call.task, "allowed_tools": allowed_tools, "queue": initial,
+                "reply_language": reply_language,
+                "information_answers_allowed": allow_answers,
+            }, ensure_ascii=False)},
+        ]
+        for _ in range(6):
+            raw = await request_step(messages)
+            proposal = parse_manager_json(raw)
+            if not isinstance(proposal, dict):
+                raise ValueError("Invalid queue manager proposal")
+            if set(proposal) == {"response"} and isinstance(proposal["response"], str) and proposal["response"].strip():
+                return {"managed_by": "text_queue_manager", "response": proposal["response"][:2000],
+                        "receipts": receipts, "message": "Report only facts supported by these receipts. Do not call queue management again for this request."}
+            if set(proposal) != {"tool"} or not isinstance(proposal["tool"], dict):
+                raise ValueError("Invalid queue manager tool proposal")
+            tool = proposal["tool"]
+            if set(tool) != {"name", "arguments"} or (
+                tool["name"] not in allowed_names and tool["name"] != _CRON_CREATE_TOOL
+            ):
+                raise ValueError("Unsupported queue manager operation")
+            receipt = await run_tool(tool)
+            receipts.append({"name": tool["name"], "receipt": receipt})
+            messages.extend([
+                {"role": "assistant", "content": raw},
+                {"role": "user", "content": json.dumps({"receipt": receipt}, ensure_ascii=False)},
+            ])
+        raise ValueError("Queue manager operation limit reached")
     except Exception as exc:
         return {"managed_by": "text_queue_manager", "state": "incomplete", "receipts": receipts,
                 "error": str(exc)[:1000] or type(exc).__name__,
