@@ -401,3 +401,21 @@ def test_forever_retention_keeps_stale_databases_and_sidecars(tmp_path: Path) ->
     finally:
         assert router.close(timeout=5) is True
     test_logger.info("indefinite retention kept stale databases and WAL sidecars")
+
+
+def test_stale_sweep_keeps_schema_archives(tmp_path: Path) -> None:
+    """Schema archives survive sweeping even when ordinary retention is enabled."""
+    root = tmp_path / "sessions"
+    database = _session_database_with_age(root, "old-schema", age_days=999)
+    archive_dir = database.with_name(f"{database.name}.schema-3.saved.archive")
+    archive_dir.mkdir()
+    archive = archive_dir / database.name
+    archive.write_bytes(b"historical database")
+    stamp = time.time() - 999 * 86400
+    os.utime(archive, (stamp, stamp))
+
+    router = TrajectorySessionSinkRouter(_settings(root))
+    assert router.sweep_stale_databases() == 1
+    assert not database.exists()
+    assert archive.read_bytes() == b"historical database"
+    test_logger.info("stale database sweeping left historical schema archives intact")
