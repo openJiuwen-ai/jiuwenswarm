@@ -658,6 +658,20 @@ class TaskService:
             if replay:
                 return replay
             interaction = task.get("interaction") or {}
+            if interaction.get("id") == interaction_id and interaction.get("operation_id"):
+                if interaction.get("source") in NATIVE_APPROVAL_SOURCES:
+                    chosen = answers if native_ui else voice_approval_answers(interaction, answers)
+                    chosen = validate_native_approval_answers(interaction, chosen)
+                else:
+                    chosen = validate_answers(interaction, answers)
+                if chosen == interaction.get("answers"):
+                    receipt = dict(
+                        task_id=task_id, operation_id=command_id, state="already_answered",
+                        applied=False, task_state=task["status"],
+                        message="This exact card already has the same recorded answer. Nothing was resubmitted. Report task_state; do not infer continued execution or completion.",
+                    )
+                    self.store.command(db, task, command_id, fingerprint, receipt)
+                    return receipt
             if (
                 task["status"] != "waiting_user"
                 or interaction.get("state") != "pending"

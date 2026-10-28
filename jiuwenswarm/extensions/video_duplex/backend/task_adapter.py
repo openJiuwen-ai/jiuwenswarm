@@ -199,7 +199,7 @@ class AgentTaskExecutor:
                 result["files"] = files
             return result
         except InteractionPending:
-            await self.wait_settled(task)
+            await self.wait_settled(task, waiting_for_answer=True)
             raise
         except Exception as exc:
             current = self.store.read(task["id"])
@@ -219,9 +219,16 @@ class AgentTaskExecutor:
         )
         return bool(payload.get("pending"))
 
-    async def wait_settled(self, task):
+    async def wait_settled(self, task, *, waiting_for_answer=False):
         from jiuwenswarm.extensions.video_duplex.backend.tasks.service import ExecutionUncertain
 
+        if waiting_for_answer:
+            # A suspended turn can retain its execution while the user considers
+            # the card. Keep that lease until Core confirms settlement; the
+            # ordinary output-cleanup deadline must not expire a live question.
+            while not self.store.read(task["id"])["execution_settled"]:
+                await asyncio.sleep(0.05)
+            return
         try:
             async with asyncio.timeout(20):
                 while not self.store.read(task["id"])["execution_settled"]:
@@ -1049,7 +1056,17 @@ class VideoSearchManager:
                 )
             except ValueError as exc:
                 # Explicit receipt so the model cannot mistake a refusal for consent.
-                return dict(task_id=args["job_id"], state="rejected", applied=False, error=str(exc))
+                current = self.service.get(owner, scope, args["job_id"])
+                return dict(
+                    task_id=args["job_id"], state="rejected", applied=False, error=str(exc),
+                    current_task=self.voice_job(self.public(current)),
+                    message=(
+                        "The answer was not applied. Report the current task state from this receipt; "
+                        "do not claim approval, continued execution or completion without evidence. "
+                        "Query the current card before another answer. Do not recreate the task or "
+                        "transfer consent to a different card automatically."
+                    ),
+                )
         else:
             try:
                 result = self.service.modify(
