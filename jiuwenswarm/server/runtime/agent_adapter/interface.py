@@ -979,6 +979,7 @@ _SESSION_ASSET_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SESSION_ASSETS_LIST: "handle_session_assets_list",
     ReqMethod.SESSION_ASSETS_REGISTER: "handle_session_assets_register",
     ReqMethod.SESSION_ASSETS_RENAME: "handle_session_assets_rename",
+    ReqMethod.SESSION_ASSETS_REMOVE: "handle_session_assets_remove",
 }
 
 # Handlers that persist a Skill visibility document; every one of them must

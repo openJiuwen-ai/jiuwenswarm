@@ -141,6 +141,7 @@ import {
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
 import { resolveNewConversationProjectDir } from './multi-session/state/newConversationProject';
+import { clearAttachmentDrafts } from './features/sessionAssets/attachmentDraftRegistry';
 import { toDisplaySessionTitle } from './utils/documentMessage';
 import {
   getHiddenNavItemsForPlatform,
@@ -2971,6 +2972,15 @@ function AppContent({
       currentSessionId !== NEW_CONVERSATION_ID
       && pendingNewConversationRef.current
       && Boolean(pendingNewRuntime);
+    // 草稿会话（'new'）的未发送附件和它的输入框文字、专家选择一样只在内存里存着，
+    // 但没有跟着 resetNewConversationRuntime 走同一套"要不要带到这次新对话"的判断
+    // （附件草稿存在 InputArea.tsx 模块作用域里，resetNewConversationRuntime 够不着）。
+    // 不是回到刚才那个还没发出去的草稿时，上一次遗留的附件就清掉，不然用户随手上传、
+    // 没发送就切到别的会话，再点"新建对话"时那个文件会悄悄带进这个新对话，并在它第一次
+    // 真正发消息时被当成这个新会话自己的素材注册上去。
+    if (!shouldRestorePendingNewConversation) {
+      clearAttachmentDrafts(NEW_CONVERSATION_ID);
+    }
     newConversationPreviousSessionRef.current = resolvePendingPreviousSession({
       currentSessionId,
       currentMode: currentRuntime?.mode ?? mode,

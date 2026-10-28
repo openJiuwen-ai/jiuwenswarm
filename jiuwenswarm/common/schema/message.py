@@ -317,6 +317,10 @@ class ReqMethod(Enum):
     SESSION_ASSETS_LIST = "session.assets.list"
     SESSION_ASSETS_REGISTER = "session.assets.register"
     SESSION_ASSETS_RENAME = "session.assets.rename"
+    # Removing a composer attachment chip should also drop the session-asset
+    # registry entry it created (see session_assets.py). staging/develop add
+    # this via _ensure_req_method's protocol-gap shim; here it's a native member.
+    SESSION_ASSETS_REMOVE = "session.assets.remove"
 
     # 技能同步（Server / Client 分离部署）。外部入口为 HTTP /skill-sync/*
     # （Bearer token 鉴权）。WS 侧仅保留 reload：web 进程 HTTP apply 落盘后的

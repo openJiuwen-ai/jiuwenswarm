@@ -42,6 +42,7 @@ import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObject
 import { OverwriteGoalConfirmModal } from '../GoalBar/OverwriteGoalConfirmModal';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
+import { attachmentDraftsBySession, useAttachmentDraftClearNonce } from '../../features/sessionAssets/attachmentDraftRegistry';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
@@ -514,7 +515,9 @@ interface AttachmentDraft {
 // unsent attachment drafts at module scope so that navigation does not discard
 // a session's composer state. The persisted image itself already lives under
 // that session's uploads directory; this map preserves only the pending UI draft.
-const attachmentDraftsBySession = new Map<string, AttachmentDraft[]>();
+// Lives in a shared module (not declared here) so multi-session/state/newConversationLifecycle.ts
+// can clear the 'new' entry when a genuinely fresh new conversation starts, without
+// an import cycle (that module is itself imported below for NEW_CONVERSATION_ID).
 
 interface AttachmentAlert {
   id: string;
@@ -777,8 +780,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentDraft[]>(() =>
-    activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : [],
+    activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
   );
+  // 当前 `attachments` state 实际对应的 session（和 activeSessionId 分开追踪）：切换会话时
+  // activeSessionId 在本次渲染就已经更新，但 attachments 还要等切换 session 的 effect 跑完
+  // 才会重置成目标会话的草稿。切会话瞬间两者短暂不一致，谁依赖 attachments 做跨会话操作
+  // （比如把它们注册成任务素材）都要先核对这个 ref，否则会把上一个会话的草稿误登记到新会话。
+  const attachmentSessionIdRef = useRef(activeSessionId);
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
   const attachmentAlertTimersRef = useRef<Map<string, number>>(new Map());
   const [attachmentMenuId, setAttachmentMenuId] = useState<string | null>(null);
@@ -1314,6 +1322,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [activeSessionId, canPersistAttachments]);
   useEffect(() => {
     if (!canPersistAttachments || !activeSessionId) return;
+    // 切换会话那一次渲染里，activeSessionId 已经是新会话，但 attachments 还是上一个会话的草稿
+    // （要等下面"切会话"那个 effect 跑完才会重置）。这一轮先跳过，避免把上一个会话还没发送的
+    // 附件误登记成这个新会话的素材；下一轮渲染 attachments 跟 activeSessionId 对齐后会重新触发。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
     const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string }> = [];
     const consider = (path: string | undefined, source: 'upload' | 'generated', name?: string) => {
       const value = path?.trim();
@@ -1630,6 +1642,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     for (const path of plan.paths) {
       requestImageDiscard(sessionId, path);
     }
+    // A removed chip that had already been auto-registered as a session material
+    // (session.assets.register fires as soon as the upload completes, well before
+    // send) must drop that material too, unless another still-attached draft needs
+    // the same path kept. Only 'upload' materials: agent-generated ('generated')
+    // ones are not tied to any composer draft and must survive regardless.
+    if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
+      const keptPaths = new Set(
+        remaining
+          .map((draft) => pickString(draft.persistedMediaItem?.path))
+          .filter((path): path is string => Boolean(path))
+          .map(normalizePath),
+      );
+      for (const draft of drafts) {
+        const path = pickString(draft.persistedMediaItem?.path);
+        if (!path || keptPaths.has(normalizePath(path))) continue;
+        const asset = sessionAssetsRef.current.find(
+          (item) => item.source === 'upload' && normalizePath(item.path) === normalizePath(path),
+        );
+        if (!asset) continue;
+        void useSessionAssetsStore
+          .getState()
+          .remove(sessionId, asset.asset_id)
+          .catch((error) => console.error('Failed to remove session asset:', error));
+      }
+    }
   }, [activeSessionId, requestImageDiscard]);
 
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
@@ -1702,18 +1739,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
   }, [releaseUnsentUploads]);
 
-  const attachmentSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
     const sessionId = attachmentSessionIdRef.current;
     if (sessionId) attachmentDraftsBySession.set(sessionId, attachments);
   }, [attachments]);
+
+  // 外部清空（目前只有 App.tsx enterNewConversation 对 'new' 调用 clearAttachmentDrafts）
+  // 只改了 Map，不会让 activeSessionId 变化——如果这时候本来就停留在被清的那个会话上
+  // （典型：已经在 'new' 欢迎页带着未发送附件，又点了一次"新建对话"），下面"切换会话"
+  // 那个 effect 不会跑，本地 attachments state 就不会跟着清空，残留的附件之后一发送
+  // 还是会被注册成新会话自己的素材——清空形同虚设。这个 effect 专门补上这种"没有发生
+  // 会话切换"的清空场景。
+  const attachmentDraftClearNonce = useAttachmentDraftClearNonce(activeSessionId);
+  const attachmentDraftClearNonceRef = useRef(attachmentDraftClearNonce);
+  useEffect(() => {
+    if (attachmentDraftClearNonce === attachmentDraftClearNonceRef.current) return;
+    attachmentDraftClearNonceRef.current = attachmentDraftClearNonce;
+    // ref 还没等于 activeSessionId 说明一次真正的会话切换正在进行中，下面那个 effect
+    // 本来就会用（已经清空的）Map 内容重新同步本地 state，这里不用重复处理。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
+    releaseUnsentUploads(attachmentsRef.current);
+    setAttachments([]);
+    setAttachmentAlerts([]);
+    setAttachmentMenuId(null);
+    clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
+  }, [attachmentDraftClearNonce, activeSessionId, releaseUnsentUploads]);
 
   useEffect(() => {
     if (attachmentSessionIdRef.current === activeSessionId) return;
     const previousSessionId = attachmentSessionIdRef.current;
     if (previousSessionId) attachmentDraftsBySession.set(previousSessionId, attachments);
     attachmentSessionIdRef.current = activeSessionId;
-    setAttachments(activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : []);
+    setAttachments(
+      activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
+    );
     setAttachmentAlerts([]);
     setAttachmentMenuId(null);
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
