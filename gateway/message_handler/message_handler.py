@@ -1554,6 +1554,7 @@ class MessageHandler(ABC):
                     sid_for_agent,
                     "cancel",
                     success=True,
+                    metadata=cancel_metadata or None,
                 )
             return True
 
@@ -1570,6 +1571,7 @@ class MessageHandler(ABC):
                 await self._send_interrupt_result_notification(
                     msg.id, msg.channel_id, sid_for_agent, "cancel",
                     message=f"任务终止失败: {exc}", success=False,
+                    metadata=cancel_metadata or None,
                 )
             return False
 
@@ -1594,9 +1596,13 @@ class MessageHandler(ABC):
             )
             await self.publish_robot_messages(out)
             logger.info(
-                "[MessageHandler] 已转发 AgentServer 中断结果: request_id=%s ok=%s",
+                "[MessageHandler] 已转发 AgentServer 中断结果: request_id=%s ok=%s "
+                "killed=%s cancelled_tools=%s ws_id=%s",
                 resp.request_id,
                 resp.ok,
+                payload.get("killed"),
+                len(payload.get("cancelled_tools") or []),
+                (msg.metadata or {}).get("ws_id", "") if isinstance(msg.metadata, dict) else "",
             )
 
             # 发送被中断工具的 tool_result 给前端
@@ -1621,6 +1627,7 @@ class MessageHandler(ABC):
                 "cancel",
                 message=error_message,
                 success=False,
+                metadata=cancel_metadata or None,
             )
         return False
 
@@ -5151,12 +5158,12 @@ class MessageHandler(ABC):
                         )
 
                     elif intent == "cancel":
-                        # fire_and_forget：避免慢 cancel 阻塞 _forward_loop，
-                        # 导致后续 session.create 等请求在队列中等待、前端超时。
+                        # 必须 await AS interrupt：先推 success=True 会让 UI 以为已停，
+                        # 但亲和漂走时实际 killed=0；等真实结果再反馈（含 ws_id 寻址）。
                         await self._cancel_agent_work_for_session(
                             msg,
                             msg.session_id,
-                            agent_notify="fire_and_forget",
+                            agent_notify="await",
                         )
 
                     elif intent in ("pause", "resume"):
@@ -5891,8 +5898,13 @@ class MessageHandler(ABC):
         message: str | None = None,
         success: bool = True,
         has_active_task: bool | None = None,
+        metadata: dict | None = None,
     ) -> None:
-        """发送 interrupt_result 事件到前端（pause / resume 等）."""
+        """发送 interrupt_result 事件到前端（pause / resume / cancel 等）.
+
+        ``metadata`` 应带上发起停止的 web 连接 ``ws_id``：cron session 往往没有
+        挂着的 WebSocket，只按 session_id 投递会被 ``has no connected ws`` 丢掉。
+        """
         from openjiuwen_protocol.message import EventType, Message
 
         # 根据 has_active_task 调整 pause/resume 的消息
@@ -5921,6 +5933,7 @@ class MessageHandler(ABC):
         }
         if has_active_task is not None:
             payload_dict["has_active_task"] = has_active_task
+        notify_meta = dict(metadata) if isinstance(metadata, dict) else None
         notify_msg = Message(
             id=request_id,
             type="event",
@@ -5931,12 +5944,16 @@ class MessageHandler(ABC):
             ok=True,
             payload=payload_dict,
             event_type=EventType.CHAT_INTERRUPT_RESULT,
-            metadata=None,
+            metadata=notify_meta,
         )
         await self.publish_robot_messages(notify_msg)
         logger.info(
-            "[MessageHandler] 已发送 interrupt_result 通知: intent=%s request_id=%s",
-            intent, request_id,
+            "[MessageHandler] 已发送 interrupt_result 通知: intent=%s request_id=%s "
+            "success=%s ws_id=%s",
+            intent,
+            request_id,
+            success,
+            (notify_meta or {}).get("ws_id", ""),
         )
 
     async def _send_processing_status(

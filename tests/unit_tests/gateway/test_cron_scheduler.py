@@ -781,6 +781,37 @@ class TestHandleEventStoreValidation:
     """_handle_event skips wake/push when job absent from store."""
 
     @pytest.mark.asyncio
+    async def test_wake_hydrates_job_when_missing_from_memory(self, tmp_path):
+        """新建后立刻 run_now：库里有任务，本机 _jobs 还没有，wake 不得静默丢掉。"""
+        store_file = tmp_path / "cron_jobs.json"
+        store = CronJobStore(path=store_file)
+        job = await _create_one_job(store)
+
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler)
+        # 故意不 reload，模拟「写库成功、本机字典尚未装入」
+        assert job.id not in svc.jobs
+
+        run_id = f"{job.id}:1234"
+        called: list[tuple[str, str]] = []
+
+        async def _capture_wake(j, rid):
+            called.append((j.id, rid))
+
+        with patch.object(svc, "_on_wake", _capture_wake):
+            ev = _Event(
+                at_ts=time.time(),
+                seq=1,
+                kind="wake",
+                job_id=job.id,
+                run_id=run_id,
+            )
+            await svc.handle_event(ev)
+
+        assert job.id in svc.jobs
+        assert called == [(job.id, run_id)]
+
+    @pytest.mark.asyncio
     async def test_wake_skipped_when_job_absent_from_store(self, tmp_path):
         store_file = tmp_path / "cron_jobs.json"
         store = CronJobStore(path=store_file)
