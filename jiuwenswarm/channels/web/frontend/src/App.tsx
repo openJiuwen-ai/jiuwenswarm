@@ -215,6 +215,11 @@ import { setComfyuiWorkflowEnabled } from './features/designer/comfyuiFeatureCon
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
 import { organizationOwnerStopTarget } from './features/teamOrganization/conversation';
 import {
+  isOrganizationOwnerStopped,
+  organizationOwnerStateRevision,
+  setOrganizationOwnerStopped,
+} from './features/teamOrganization/processing';
+import {
   normalizeTeamDispatchMode,
   resolveNewSessionDispatchMode,
   setTeamScheduledDispatchEnabled,
@@ -1866,6 +1871,7 @@ function AppContent({
   }, []);
 
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
+    const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
       const response = await request<Session>('session.get_metadata', {
@@ -1900,6 +1906,18 @@ function AppContent({
         targetSessionId,
         canContinueQueuedMessages === true,
       );
+      // Metadata can report aggregate child activity after the Owner has stopped.
+      // Only restore a persisted stop if no newer organization action raced this query.
+      if (
+        session.organization_owner_stopped === true && !isOrganizationOwnerStopped(targetSessionId) &&
+        organizationOwnerStateRevision(targetSessionId) === ownerStateRevision
+      ) {
+        setOrganizationOwnerStopped(targetSessionId, true);
+      }
+      if (isOrganizationOwnerStopped(targetSessionId)) {
+        session.is_processing = false;
+        session.status = 'interrupted';
+      }
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
       // is_processing 由 Gateway 在 session.get_metadata 响应入队前读取当前

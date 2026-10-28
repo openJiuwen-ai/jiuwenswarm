@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
+import { loadCallback } from './loadProductionCallback.mjs';
 import { JSDOM } from 'jsdom';
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
@@ -19,6 +20,7 @@ import {
   finishExpertRequest,
   reconcileOrganizationRequests,
   organizationProcessingRevision,
+  organizationOwnerStateRevision,
   useOrganizationConversationKey,
   useOrganizationEvents,
   useChatStore,
@@ -242,34 +244,6 @@ function seed() {
   });
 }
 
-// Execute the production callbacks with injected dependencies, without mounting the full App.
-function loadCallback(path, name, bindings) {
-  const source = ts.createSourceFile(
-    path,
-    readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
-  );
-  let callback;
-  function visit(node) {
-    if (ts.isVariableDeclaration(node) && node.name.getText(source) === name) {
-      const initializer = node.initializer;
-      if (
-        initializer && ts.isCallExpression(initializer) && initializer.expression.getText(source) === 'useCallback'
-      ) {
-        callback = initializer.arguments[0].getText(source);
-      }
-    }
-    ts.forEachChild(node, visit);
-  }
-  visit(source);
-  assert.ok(callback, `${path}: ${name} callback must exist`);
-  const { outputText } = ts.transpileModule(`const callback = ${callback};`, {
-    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
-  });
-  return new Function(...Object.keys(bindings), `${outputText}\nreturn callback;`)(...Object.values(bindings));
-}
 
 for (const scenario of [
   { name: 'expert team', mode: 'team', enabled: true, teamId: 'expert', intent: 'cancel' },
@@ -307,6 +281,10 @@ for (const scenario of [
     const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
       selectedExpertTeamId,
       organizationOwnerStopTarget,
+      setOrganizationOwnerStopped,
+      isOrganizationOwnerStopped,
+      useChatStore,
+      closeActiveTeamLeaderMessages() {},
       sendExpertMessage,
       request: loadCallback('hooks/useWebSocket.ts', 'request', { webClient }),
       useSessionStore,
@@ -318,6 +296,7 @@ for (const scenario of [
     const controls = Object.fromEntries(['pause', 'cancel'].map((intent) => {
       const callback = loadCallback('hooks/useWebSocket.ts', intent, {
         interrupt,
+        organizationOwnerStopTarget,
         useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled() {} }) },
         onErrorRef: { current: fail },
         t: (key) => key,
@@ -2085,3 +2064,190 @@ test('child final-only output populates its member process panel and stays isola
     delete globalThis.document;
   }
 });
+
+
+for (const outcome of ['success', 'failure', 'disconnect']) {
+  test(`Owner stop is immediate before acknowledgement and restores on ${outcome}`, async () => {
+    seed();
+    clearOrganizationRequests('session');
+    setTeamOrganizationUiEnabled(true);
+    useTeamSelectorStore.setState((state) => ({ runtimes: {
+      ...state.runtimes, session: { ...state.runtimes.session, selectedTeamId: 'owner' },
+    } }));
+    useSessionStore.getState().setMode('session', 'team');
+    const chat = useChatStore.getState();
+    chat.setProcessing('session', true);
+    startExpertRequest('session::expert', 'child-running', 'org_expert_background');
+    let complete;
+    let fail;
+    const response = new Promise((resolve, reject) => { complete = resolve; fail = reject; });
+    const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+      selectedExpertTeamId: () => null,
+      organizationOwnerStopTarget,
+      useSessionStore,
+      useChatStore,
+      getSessionWorkContext: () => ({}),
+      resolveOutgoingMode: (_sessionId, mode) => mode,
+      setOrganizationOwnerStopped,
+      isOrganizationOwnerStopped,
+      closeActiveTeamLeaderMessages() {},
+      request: async () => response,
+      onErrorRef: { current() {} },
+      t: key => key,
+    });
+    try {
+      const pending = interrupt('session', 'cancel');
+      assert.equal(isOrganizationOwnerStopped('session'), true);
+      assert.equal(chat.getRuntime('session').isProcessing, false);
+      assert.equal(chat.getRuntime('session').isThinking, false);
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+      startExpertRequest('session::expert', 'late-child-round', 'org_expert_background');
+      assert.equal(chat.getRuntime('session').isProcessing, false);
+      if (outcome === 'disconnect') fail(new Error('disconnected'));
+      else complete({ success: outcome === 'success' });
+      assert.equal(await pending, outcome === 'success');
+      assert.equal(isOrganizationOwnerStopped('session'), outcome === 'success');
+      assert.equal(chat.getRuntime('session').isProcessing, outcome !== 'success');
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+    } finally {
+      chat.setProcessing('session', false);
+      clearOrganizationRequests('session');
+      setTeamOrganizationUiEnabled(false);
+    }
+  });
+}
+
+
+for (const ownerOnly of [true, false]) {
+  test(`cancel preserves running subagents only for an Owner-only stop: ${ownerOnly}`, async () => {
+    const cancelled = [];
+    const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
+      organizationOwnerStopTarget: () => ownerOnly ? 'owner' : null,
+      interrupt: async () => true,
+      useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: id => cancelled.push(id) }) },
+      onErrorRef: { current: error => assert.fail(error) },
+      t: key => key,
+    });
+    await cancel('session');
+    assert.deepEqual(cancelled, ownerOnly ? [] : ['session']);
+  });
+}
+
+
+test('pending Owner stop retains live background rounds for failure rollback', () => {
+  seed();
+  clearOrganizationRequests('session');
+  useChatStore.getState().setProcessing('session', false);
+  startExpertRequest('session', 'owner-background', 'org_root_background');
+  setOrganizationOwnerStopped('session', true, true);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+  setOrganizationOwnerStopped('session', false);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, true);
+  setOrganizationOwnerStopped('session', true);
+  setOrganizationOwnerStopped('session', false);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+  clearOrganizationRequests('session');
+});
+
+
+for (const stoppedBy of ['local', 'persisted', 'neither']) {
+  test(`metadata refresh cannot relight a stopped Owner: ${stoppedBy}`, async () => {
+    seed();
+    clearOrganizationRequests('session');
+    const chat = useChatStore.getState();
+    chat.setProcessing('session', true);
+    startExpertRequest('session::expert', 'child-running', 'org_expert_background');
+    if (stoppedBy === 'local') setOrganizationOwnerStopped('session', true, true);
+    let projected;
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore,
+      request: async () => ({ session_id: 'session', is_processing: true, status: 'processing',
+        organization_owner_stopped: stoppedBy === 'persisted' }),
+      sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata: session => { projected = session; },
+      useWorkspaceStore: { getState: () => ({ upsertSession() {} }) },
+      setProcessing: chat.setProcessing,
+      setThinking: chat.setThinking,
+      isOrganizationOwnerStopped,
+      setOrganizationOwnerStopped,
+      organizationOwnerStateRevision,
+    });
+    try {
+      assert.ok(await refresh('session'));
+      assert.equal(chat.getRuntime('session').isProcessing, stoppedBy === 'neither');
+      assert.equal(projected.is_processing, stoppedBy === 'neither');
+      if (stoppedBy !== 'neither') assert.equal(projected.status, 'interrupted');
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+    } finally {
+      chat.setProcessing('session', false);
+      clearOrganizationRequests('session');
+    }
+  });
+}
+
+
+test('a snapshot received while Owner stop is pending cannot clear its local stop', () => {
+  seed();
+  clearOrganizationRequests('session');
+  setOrganizationOwnerStopped('session', true, true);
+  reconcileOrganizationRequests('session', 'owner', [
+    { team_id: 'expert', request_id: 'child-running', source: 'org_expert_background' },
+  ], organizationProcessingRevision(), [], false);
+  assert.equal(isOrganizationOwnerStopped('session'), true);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, false);
+  setOrganizationOwnerStopped('session', false);
+  assert.equal(useChatStore.getState().getRuntime('session').isProcessing, true);
+  clearOrganizationRequests('session');
+});
+
+test('stopped Owner rejects late foreground deltas without an organization source tag', () => {
+  seed();
+  clearOrganizationRequests('session');
+  setOrganizationOwnerStopped('session', true);
+  const resolve = loadCallback('hooks/useWebSocket.ts', 'resolveEventSessionId', {
+    getPayloadSessionId: payload => payload.session_id,
+    isOrganizationOwnerStopped,
+    expertTeamId: () => null,
+    ensureSessionRuntimes() {},
+    useChatStore,
+  });
+  try {
+    for (const event of ['chat.delta', 'chat.reasoning', 'chat.tool_call', 'chat.tool_result']) {
+      assert.equal(resolve({ session_id: 'session' }, event), null);
+    }
+    assert.equal(resolve({ session_id: 'session' }, 'chat.final'), 'session');
+  } finally {
+    clearOrganizationRequests('session');
+  }
+});
+
+
+for (const newerAction of ['child-progress', 'owner-input']) {
+  test(`persisted Owner stop recovery distinguishes ${newerAction} during metadata query`, async () => {
+    seed();
+    clearOrganizationRequests('session');
+    const chat = useChatStore.getState();
+    chat.setProcessing('session', true);
+    let complete;
+    const response = new Promise(resolve => { complete = resolve; });
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore, request: async () => response, sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata() {}, useWorkspaceStore: { getState: () => ({ upsertSession() {} }) },
+      setProcessing: chat.setProcessing, setThinking: chat.setThinking,
+      isOrganizationOwnerStopped, setOrganizationOwnerStopped, organizationOwnerStateRevision,
+    });
+    try {
+      const pending = refresh('session');
+      startExpertRequest('session::expert', 'child-running', 'org_expert_background');
+      if (newerAction === 'owner-input') setOrganizationOwnerStopped('session', false);
+      complete({ session_id: 'session', is_processing: true, organization_owner_stopped: true });
+      assert.ok(await pending);
+      assert.equal(isOrganizationOwnerStopped('session'), newerAction === 'child-progress');
+      assert.equal(chat.getRuntime('session').isProcessing, newerAction === 'owner-input');
+      assert.equal(chat.getRuntime('session::expert').isProcessing, true);
+    } finally {
+      chat.setProcessing('session', false);
+      clearOrganizationRequests('session');
+    }
+  });
+}

@@ -2891,6 +2891,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 cron_activity = getattr(_get_cron(), "is_session_processing", None)
                 if callable(cron_activity):
                     is_processing = is_processing or cron_activity(target_session_id, user_id=user_id)
+                # Child activity still guards Git writes, but cannot restart a stopped Owner composer.
+                if payload.get("organization_owner_stopped") is True:
+                    is_processing = False
                 payload["is_processing"] = is_processing
                 payload["status"] = "processing" if is_processing else "idle"
                 # Cron executes outside the Web busy cache; keep this response

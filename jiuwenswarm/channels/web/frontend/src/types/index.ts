@@ -46,6 +46,7 @@ export interface Session {
   updated_at: string;
   is_active?: boolean;
   is_processing?: boolean;
+  organization_owner_stopped?: boolean;
   queued_session_messages?: Array<{
     message_id: string;
     target_session_id: string;
