@@ -130,7 +130,7 @@ async def test_session_create_uses_server_allocated_project_path_for_resume(
     project_dir = str(project)
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root
+        "gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",

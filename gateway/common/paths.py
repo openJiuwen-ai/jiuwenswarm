@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Gateway 侧路径解析（``jiuwenswarm.common.utils`` 的路径子集副本）。
+"""Gateway 侧路径解析（``gateway.common.paths`` 的路径子集副本）。
 
 Gateway 与母仓共用同一份用户工作区与 ``config`` 目录（配置文件共享），因此这里
 的返回值必须与母仓实现保持一致；差异仅在于 Gateway 不再通过 import 母仓

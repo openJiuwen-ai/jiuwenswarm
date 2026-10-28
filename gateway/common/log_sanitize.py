@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""日志敏感信息脱敏（``jiuwenswarm.common.utils`` 同名实现的 Gateway 副本）。
+"""日志敏感信息脱敏（``gateway.common.paths`` 同名实现的 Gateway 副本）。
 
 Gateway 独立安装时必须自带脱敏能力：api_key / token / 个人信息不得明文落盘。
 本文件为母仓实现的逐行副本，改动请同步两侧。

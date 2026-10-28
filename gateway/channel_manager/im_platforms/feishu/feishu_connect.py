@@ -537,7 +537,7 @@ class FeishuChannel(BaseChannel):
                 )
                 # 持久化到配置文件（多应用模式下写入对应 app 条目）
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
+                    from gateway.common.config import update_channel_app_field
                     ok = update_channel_app_field(
                         "feishu", self.config.app_id,
                         {"bot_open_id": bot_open_id},
@@ -2821,7 +2821,7 @@ class FeishuChannel(BaseChannel):
             # V2 多应用：写入对应 app 条目，避免多 app 争抢同一个平铺字段
             if self.config.channel_id == "feishu" and not self.config.bot_key:
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
+                    from gateway.common.config import update_channel_app_field
 
                     update_channel_app_field(
                         "feishu",
@@ -2837,7 +2837,7 @@ class FeishuChannel(BaseChannel):
                     pass
             elif self.channel_id.startswith("feishu_enterprise:") and self.config.bot_key:
                 try:
-                    from jiuwenswarm.common.config import (
+                    from gateway.common.config import (
                         update_channel_subsection_in_config,
                     )
 

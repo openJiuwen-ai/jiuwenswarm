@@ -26,9 +26,9 @@ from typing import Any
 
 from openjiuwen_protocol.message import ReqMethod
 
+from gateway.common.external_providers import register
 from gateway.routing.e2a_proxy import fetch_agent_unary
-from jiuwenswarm.common.external_providers import register
-from jiuwenswarm.common.mcp_oauth import McpOAuthError
+from gateway.common.mcp_oauth import McpOAuthError
 
 logger = logging.getLogger(__name__)
 

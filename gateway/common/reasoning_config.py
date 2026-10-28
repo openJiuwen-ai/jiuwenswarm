@@ -48,7 +48,7 @@ def resolve_endpoint_profile_override(api_base: str | None) -> str | None:
     # Local import: keep this module importable in lightweight contexts that
     # do not load (or have) the user workspace config file.
     try:
-        from jiuwenswarm.common.config import get_endpoint_profile_overrides
+        from gateway.common.config import get_endpoint_profile_overrides
 
         overrides = get_endpoint_profile_overrides()
     except Exception:

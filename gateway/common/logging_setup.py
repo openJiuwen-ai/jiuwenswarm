@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Gateway 日志初始化（``jiuwenswarm.common.utils.setup_logger`` 的 Gateway 版本）。
+"""Gateway 日志初始化（``gateway.common.paths.setup_logger`` 的 Gateway 版本）。
 
 输出目录与母仓一致：``~/.jiuwenswarm/agent/.logs/``；``gateway.log`` 可通过
 ``AGENTOS_GATEWAY_LOG_DIR`` 独立存放。级别取自共享 ``config.yaml`` 的

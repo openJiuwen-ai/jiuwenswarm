@@ -8,9 +8,9 @@ import types
 from collections import deque
 
 import pytest
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
 from gateway.channel_manager.protocol.acp.acp_connect import AcpChannel, AcpChannelConfig
-from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
 
 class DummyBus:
@@ -99,13 +99,13 @@ def _short_acp_waits(monkeypatch: pytest.MonkeyPatch) -> None:
 def _import_acp_channel_entry(monkeypatch: pytest.MonkeyPatch):
     import gateway.channel_manager.protocol.acp.acp_connect as existing_module
 
-    fake_config_module = types.ModuleType("jiuwenswarm.common.config")
+    fake_config_module = types.ModuleType("gateway.common.config")
 
     def get_default_config():
         return {}
 
     fake_config_module.get_config = get_default_config
-    monkeypatch.setitem(sys.modules, "jiuwenswarm.common.config", fake_config_module)
+    monkeypatch.setitem(sys.modules, "gateway.common.config", fake_config_module)
     return existing_module
 
 
@@ -123,7 +123,7 @@ def test_load_acp_channel_config_uses_defaults(monkeypatch: pytest.MonkeyPatch):
 def test_load_acp_channel_config_reads_channels_acp(monkeypatch: pytest.MonkeyPatch):
     module = _import_acp_channel_entry(monkeypatch)
 
-    fake_config_module = types.ModuleType("jiuwenswarm.common.config")
+    fake_config_module = types.ModuleType("gateway.common.config")
 
     def get_custom_config():
         return {
@@ -138,7 +138,7 @@ def test_load_acp_channel_config_reads_channels_acp(monkeypatch: pytest.MonkeyPa
         }
 
     fake_config_module.get_config = get_custom_config
-    monkeypatch.setitem(sys.modules, "jiuwenswarm.common.config", fake_config_module)
+    monkeypatch.setitem(sys.modules, "gateway.common.config", fake_config_module)
 
     conf = module.load_acp_channel_config()
 

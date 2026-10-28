@@ -1790,7 +1790,7 @@ class AcpChannel(BaseChannel):
 
 
 def _load_acp_channel_config() -> AcpChannelConfig:
-    from jiuwenswarm.common.config import get_config
+    from gateway.common.config import get_config
 
     try:
         full_cfg = get_config()

@@ -45,6 +45,26 @@ from gateway.channel_manager.web.task_asr import (
     TaskAsrError,
     transcribe_task_audio,
 )
+from gateway.common.config import (
+    get_config,
+    get_config_raw,
+    get_default_models,
+    replace_channel_subsection_with_cleanup,
+    update_browser_in_config,
+    update_channel_in_config,
+    update_health_check_in_config,
+    update_preferred_language_in_config,
+    update_updater_in_config,
+)
+from gateway.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
+    build_external_cli_publish_url as _build_external_cli_publish_url,
+)
+from gateway.common.config_panel.config_set_handlers import (
+    detect_external_cli_agent as _detect_external_cli_agent,
+)
+from gateway.common.config_panel.config_set_handlers import (
+    external_cli_managed_cli_path as _external_cli_managed_cli_path,
+)
 from gateway.common.paths import (
     get_env_file,
     get_root_dir,
@@ -56,27 +76,7 @@ from gateway.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
-from jiuwenswarm.common.config import (
-    get_config,
-    get_config_raw,
-    get_default_models,
-    replace_channel_subsection_with_cleanup,
-    update_browser_in_config,
-    update_channel_in_config,
-    update_health_check_in_config,
-    update_preferred_language_in_config,
-    update_updater_in_config,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (  # noqa: F401 — 兼容别名（原模块级符号，实现已下沉）
-    build_external_cli_publish_url as _build_external_cli_publish_url,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    detect_external_cli_agent as _detect_external_cli_agent,
-)
-from jiuwenswarm.common.config_panel.config_set_handlers import (
-    external_cli_managed_cli_path as _external_cli_managed_cli_path,
-)
-from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
+from gateway.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from gateway.dotenv_early import load_dotenv_runtime
 
 for _jiuwen_log in LogManager.get_all_loggers().values():
@@ -887,7 +887,7 @@ def _activate_managed_external_cli_paths_if_needed() -> None:
     """Expose managed SDKs only for an external-CLI configuration request."""
     if not _is_frozen_runtime():
         return
-    from jiuwenswarm.common.external_cli_runtime import (
+    from gateway.common.external_cli_runtime import (
         activate_external_cli_runtime_paths,
     )
 
@@ -1018,7 +1018,7 @@ def _ensure_managed_external_cli_runtime_or_start_install(cli_agent: str) -> dic
 
 def _run_managed_external_cli_runtime_install(cli_agent: str) -> None:
     try:
-        from jiuwenswarm.common.external_cli_runtime import (
+        from gateway.common.external_cli_runtime import (
             activate_external_cli_runtime_paths,
             install_external_cli_runtime,
         )
@@ -1055,7 +1055,7 @@ def _run_managed_external_cli_runtime_install(cli_agent: str) -> None:
 
 def _known_external_cli_agents() -> tuple[str, ...]:
     """Return Claude, Codex and every runtime the managed-runtime manifest describes."""
-    from jiuwenswarm.common.external_cli_runtime import external_cli_runtime_names
+    from gateway.common.external_cli_runtime import external_cli_runtime_names
 
     try:
         managed = external_cli_runtime_names()
@@ -1067,7 +1067,7 @@ def _known_external_cli_agents() -> tuple[str, ...]:
 
 def _managed_external_cli_runtime_status(cli_agent: str) -> dict[str, Any]:
     """Describe the installed managed runtime; failures become an ``unavailable`` state."""
-    from jiuwenswarm.common.external_cli_runtime import get_external_cli_runtime_status
+    from gateway.common.external_cli_runtime import get_external_cli_runtime_status
 
     try:
         return get_external_cli_runtime_status(cli_agent)
@@ -1099,14 +1099,14 @@ def _remove_custom_external_cli_agent(cli_agent: str) -> None:
     Raises:
         ValueError: When ``cli_agent`` is not an installed custom agent.
     """
-    from jiuwenswarm.common.config import (
+    from gateway.common.config import (
         EXTERNAL_CLI_AGENTS_CONFIG_PATH,
         update_external_cli_agents_in_config,
     )
-    from jiuwenswarm.common.config_panel.config_set_handlers import (
+    from gateway.common.config_panel.config_set_handlers import (
         get_nested_config_value,
     )
-    from jiuwenswarm.common.custom_agent_runtime import (
+    from gateway.common.custom_agent_runtime import (
         get_custom_agent,
         remove_custom_agent,
     )
@@ -1422,7 +1422,7 @@ def _build_optional_dependency_install_args(
     end as a pip "already satisfied" no-op and never restore the file.
     """
     # Import lazily: only needed on this rare install path.
-    from jiuwenswarm.common.external_cli_runtime import pinned_sdk_requirements
+    from gateway.common.external_cli_runtime import pinned_sdk_requirements
 
     pinned = pinned_sdk_requirements(cli_agent)
     if force_reinstall:
@@ -3450,7 +3450,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
-        from jiuwenswarm.common.browser_config import (
+        from gateway.common.browser_config import (
             browser_decision_state,
         )
 
@@ -3558,11 +3558,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             else True
         )
 
-        from jiuwenswarm.common.browser_config import (
+        from gateway.common.browser_config import (
             browser_decision_state,
             browser_decision_updates,
         )
-        from jiuwenswarm.common.config import update_browser_decision_in_config
+        from gateway.common.config import update_browser_decision_in_config
 
         decision_updates, error = browser_decision_updates(
             set_params.get("decision_mode"), set_params.get("decision_provider"), get_config(),
@@ -4836,7 +4836,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 # A2g：经注入点读 metadata（AgentServer 侧写入），不再
                 # 直读 gateway 本地文件
                 try:
-                    from jiuwenswarm.common.external_providers import provider
+                    from gateway.common.external_providers import provider
 
                     meta = await provider("session_metadata").get_session_metadata_async(
                         session_id, cache_bust=True, user_id=user_id,
@@ -5218,7 +5218,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         执行少了"当前配置中该 agent 已启用"的前置检查，误触发的代价仅是
         ensure 幂等空转（已装即返回 None）。
         """
-        from jiuwenswarm.common.config_panel.config_set_handlers import (
+        from gateway.common.config_panel.config_set_handlers import (
             team_payload_requests_codex,
         )
 
@@ -5401,7 +5401,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         resolved_client = _resolve(agent_client)
         if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            from jiuwenswarm.common.hooks_config import load_hooks_config
+            from gateway.common.hooks_config import load_hooks_config
 
             try:
                 hooks_config = load_hooks_config(get_config())
@@ -6049,7 +6049,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _memory_forbidden_set(ws, req_id, params, session_id, user_id=None):
-        from jiuwenswarm.common.config import update_memory_forbidden_in_config
+        from gateway.common.config import update_memory_forbidden_in_config
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return

@@ -3,11 +3,12 @@
 import asyncio
 
 import pytest
-
-from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
 from openjiuwen_protocol.e2a.agent_models import AgentResponse
 from openjiuwen_protocol.message import ReqMethod
-from jiuwenswarm.common.config_panel import tui_models_handlers
+
+from tests.unit_tests.gateway.config_routing_harness import make_config_routing_client
+from gateway.common.config_panel import tui_models_handlers
+from jiuwenswarm.common.config_panel import tui_models_handlers as _server_tui_models_handlers
 from gateway.channel_manager.tui import tui_connect as tui_connect_module
 from gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
@@ -909,7 +910,7 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
                 return {"content": "", "reasoning_content": ""}
             return {"content": "hello"}
 
-    monkeypatch.setattr(tui_models_handlers, "Model", FakeModel)
+    monkeypatch.setattr(_server_tui_models_handlers, "Model", FakeModel)
 
     await server.local_handlers["/tui"]["config.validate_model"](
         object(),
@@ -1736,8 +1737,8 @@ async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch):
             seen["on_event_loop"] = False
         return [{"model_client_config": {"model_name": "m", "api_key": "k"}}]
 
-    monkeypatch.setattr(tui_models_handlers, "get_config", lambda: {})
-    monkeypatch.setattr(tui_models_handlers, "get_available_models", fake_available)
+    monkeypatch.setattr(_server_tui_models_handlers, "get_config", lambda: {})
+    monkeypatch.setattr(_server_tui_models_handlers, "get_available_models", fake_available)
 
     await server.local_handlers["/tui"]["models.list"](object(), "req-models", {}, "sess-1")
 

@@ -92,7 +92,7 @@ def build_moa_config_from_frontend(
 
 def save_moa_config_from_frontend(params: dict[str, Any]) -> None:
     """Write all collaboration fields in one locked transaction."""
-    from jiuwenswarm.common.config import resolve_env_vars, update_config
+    from gateway.common.config import resolve_env_vars, update_config
 
     def mutate(data: dict[str, Any]) -> dict[str, Any]:
         candidate = build_moa_config_from_frontend(params, data, resolve_value=resolve_env_vars)

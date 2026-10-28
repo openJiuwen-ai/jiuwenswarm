@@ -14,6 +14,7 @@ from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import EventType, Message, ReqMethod
 
+from gateway.common.scheduled_task_policy import is_scheduled_task_supported
 from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
@@ -28,7 +29,6 @@ from gateway.cron.models import (
     normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
 )
-from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from gateway.cron.store_base import CronJobStoreBackend
 from gateway.message_handler.message_handler import MessageHandler
 from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
@@ -2304,7 +2304,7 @@ class CronSchedulerService:
             channels_cfg: dict = {}
             ch_cfg: dict = {}
             try:
-                from jiuwenswarm.common.config import get_config_raw
+                from gateway.common.config import get_config_raw
 
                 cfg = get_config_raw() or {}
                 channels_cfg = cfg.get("channels") or {}

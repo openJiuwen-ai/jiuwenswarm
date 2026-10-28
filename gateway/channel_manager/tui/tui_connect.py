@@ -11,15 +11,15 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
+from gateway.common.config import (
+    get_config,
+)
+from gateway.common.config_panel import tui_models_handlers
 from gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
 )
 from gateway.routing.route_binding import GatewayRouteBinding
-from jiuwenswarm.common.config import (
-    get_config,
-)
-from jiuwenswarm.common.config_panel import tui_models_handlers
 
 logger = logging.getLogger(__name__)
 
@@ -1730,7 +1730,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         resolved_client = _resolve_agent_client(agent_client)
         if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            from jiuwenswarm.common.hooks_config import load_hooks_config
+            from gateway.common.hooks_config import load_hooks_config
 
             try:
                 hooks_config = load_hooks_config(get_config())
@@ -1887,7 +1887,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             # AgentOS 用户 session 不在 Gateway 部署目录，不能在这里作本地反查。
             if "project_dir" not in params and session_id:
                 try:
-                    from jiuwenswarm.common.external_providers import provider
+                    from gateway.common.external_providers import provider
 
                     meta = await provider("session_metadata").get_session_metadata_async(
                         session_id, cache_bust=True, user_id=user_id,

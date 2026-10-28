@@ -26,11 +26,17 @@ from openjiuwen_protocol.hooks import GatewayChatHookContext, GatewayHookEvents
 from openjiuwen_protocol.message import TEAM_ATTACH_ONLY_PARAM
 
 from gateway.channel_manager.base import ChannelType
+from gateway.common.config import get_evolution_auto_save_enabled
 from gateway.common.event_names import (
     PROMPT_SUGGESTION_READY_EVENT,
     SESSION_REQUEST_COMPLETED_EVENT,
     TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
     TOPIC_STARTERS_READY_EVENT,
+)
+from gateway.common.hooks_config import load_hooks_config
+from gateway.common.host_services import (
+    install_runtime_wake_handler,
+    restore_runtime_wake_handler,
 )
 from gateway.common.mode_matrix import (
     DEPRECATION_MAP,
@@ -75,12 +81,6 @@ from gateway.routing.session_sharing import SessionSharingRegistry, SubRole
 from gateway.runtime.session_input import (
     resolve_session_input_mode,
     validate_session_input,
-)
-from jiuwenswarm.common.config import get_evolution_auto_save_enabled
-from jiuwenswarm.common.hooks_config import load_hooks_config
-from jiuwenswarm.common.host_services import (
-    install_runtime_wake_handler,
-    restore_runtime_wake_handler,
 )
 
 logger = logging.getLogger(__name__)
@@ -428,7 +428,7 @@ class MessageHandler(ABC):
 
         # 初始化 Gateway hooks handler
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
             config_base = get_config()
             self._gateway_hooks_config = load_hooks_config(config_base)
             self._gateway_hook_handler = GatewayHookHandler(self._gateway_hooks_config)
@@ -462,7 +462,7 @@ class MessageHandler(ABC):
 
         # 直接使用 jiuwenswarm.config 的 get_config_raw/set_config/update_channel_in_config
         # 避免在此处重复实现 config 模块加载逻辑。
-        from jiuwenswarm.common.config import get_config_raw, update_channel_in_config
+        from gateway.common.config import get_config_raw, update_channel_in_config
 
         self._get_config_raw = get_config_raw
         self._update_channel_in_config = update_channel_in_config
@@ -4012,7 +4012,7 @@ class MessageHandler(ABC):
         )
 
         try:
-            from jiuwenswarm.common.external_providers import provider
+            from gateway.common.external_providers import provider
 
             metadata = await provider("session_metadata").get_session_metadata_async(
                 msg.session_id, enable_writeback=False, user_id=msg.user_id,
@@ -4377,8 +4377,8 @@ class MessageHandler(ABC):
         )
 
         try:
-            from jiuwenswarm.common.external_providers import provider
-            from jiuwenswarm.common.model_selection_store import (
+            from gateway.common.external_providers import provider
+            from gateway.common.model_selection_store import (
                 get_session_model_selection,
             )
 

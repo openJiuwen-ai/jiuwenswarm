@@ -117,7 +117,7 @@ async def run_harmonyos_dev_init(params: dict[str, Any]) -> dict[str, Any]:
     }
     actions: dict[str, Any] = {
         "skillsPath": str(skills_dir),
-        "skillsPathSource": "jiuwenswarm.common.utils.get_agent_skills_dir",
+        "skillsPathSource": "gateway.common.paths.get_agent_skills_dir",
         "installDevecocliAttempted": False,
         "updateDevecocliAttempted": False,
         "initSkillAttempted": False,
