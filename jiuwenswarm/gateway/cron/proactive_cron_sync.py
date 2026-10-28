@@ -125,11 +125,25 @@ async def _find_job(cron_controller: Any) -> dict[str, Any] | None:
         job = None
     if job is not None:
         return job
-    # get_job may return None for some controllers; fall back to listing.
-    try:
-        for j in await cron_controller.list_jobs():
-            if isinstance(j, dict) and j.get("id") == PROACTIVE_JOB_ID:
-                return j
-    except Exception as exc:
-        logger.debug("[ProactiveAutoReg] list_jobs fallback failed: %s", exc)
+    # get_job may return None for some controllers; fall back to the store
+    # directly. ``cron_controller.list_jobs`` applies the project-admission
+    # gate for every owner, and this runs at startup when all owner sandboxes
+    # are cold; existence of the fixed proactive job does not depend on it.
+    store = getattr(cron_controller, "store", None)
+    list_all = getattr(store, "list_jobs", None)
+    if callable(list_all):
+        try:
+            for j in await list_all():
+                job_id = (
+                    j.get("id") if isinstance(j, dict)
+                    else getattr(j, "id", None)
+                )
+                if str(job_id or "") != PROACTIVE_JOB_ID:
+                    continue
+                if isinstance(j, dict):
+                    return j
+                to_dict = getattr(j, "to_dict", None)
+                return to_dict() if callable(to_dict) else {"id": PROACTIVE_JOB_ID}
+        except Exception as exc:
+            logger.debug("[ProactiveAutoReg] store fallback failed: %s", exc)
     return None

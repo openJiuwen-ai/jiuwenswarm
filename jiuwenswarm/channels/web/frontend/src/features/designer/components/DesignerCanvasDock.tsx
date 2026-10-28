@@ -3,7 +3,6 @@ import {
   Hand,
   MousePointer2,
   Upload,
-  Workflow,
 } from 'lucide-react';
 import { useCallback, useRef, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,7 +13,7 @@ import {
   offsetCanvasPosition,
   type DesignerAddTemplate,
 } from '../designerCanvasNodes';
-import { DesignerAddNodeTypeIcon } from '../designerIcons';
+import { ComfyuiGenerationIcon, DesignerAddNodeTypeIcon } from '../designerIcons';
 import {
   DESIGNER_UPLOAD_ACCEPT,
   buildUploadedDesignerNode,
@@ -145,7 +144,7 @@ export function DesignerCanvasDock() {
             fileInputRef.current?.click();
           }}
         >
-          <Workflow size={18} aria-hidden />
+          <ComfyuiGenerationIcon aria-hidden />
         </button>
         <input
           ref={fileInputRef}

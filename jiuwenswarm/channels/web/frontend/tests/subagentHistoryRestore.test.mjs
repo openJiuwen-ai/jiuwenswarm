@@ -8,6 +8,7 @@ import {
   mergeHistoryToolReplayItems,
   parseHistoryJsonFileToTimelinePreview,
   parseSubagentHistoryReplay,
+  readDiscoveredSubagentIds,
   recoverSubagentToolHistory,
   shouldProcessHistoryPayload,
   parseHistoryJsonFileToPreviewMessages,
@@ -124,6 +125,18 @@ test('existing full-duplex spoken replies stay expanded after history restore wi
   assert.deepEqual(messages.map((message) => message.keepExpanded), [true, true, undefined]);
 });
 
+test('a full-duplex task restores only its clean result, not the raw Core answer with brief markers', () => {
+  const brief = '[[JIUWEN_BRIEF_BEGIN]]\n已拒绝授权。\n[[JIUWEN_BRIEF_END]]';
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    { id: 'core', channel_id: 'video_tool', role: 'assistant', event_type: 'chat.final',
+      request_id: 'task-a', content: `未能完成任务：授权被拒绝。\n\n${brief}`, timestamp: 1 },
+    { id: 'receipt', channel_id: 'video_duplex', role: 'assistant', event_type: 'chat.final',
+      presentation: 'tool_result', content: '未能完成任务：授权被拒绝。', timestamp: 2 },
+  ], sessionId);
+  assert.deepEqual(messages.map((message) => message.id), ['receipt']);
+  assert.ok(messages.every((message) => !message.content.includes('JIUWEN_BRIEF')));
+});
+
 test('history restores an unmatched chat.ask_user_question as a read-only qa.summary card (no live re-prompt)', () => {
   const preview = parseHistoryJsonFileToTimelinePreview([
     {
@@ -161,6 +174,85 @@ test('history restores an unmatched chat.ask_user_question as a read-only qa.sum
     { header: 'Question', question: '用哪种方案?', answers: [] },
   ]);
 });
+
+for (const nested of [false, true]) {
+  for (const smart of [false, true]) {
+    for (const allowed of [false, true]) {
+      test(`permission history skips QA without changing tool or reasoning records (${nested}, ${smart}, ${allowed})`, () => {
+        const question = {
+          source: 'permission_interrupt',
+          questions: [{
+            header: 'Permission', question: 'Allow this tool?', options: [],
+            ...(smart ? { card_id: 'opaque-card' } : {}),
+          }],
+        };
+        const records = [
+          { id: 'user', role: 'user', content: 'Read the file', timestamp: 1792553400001 },
+          {
+            id: 'permission', role: 'assistant', event_type: 'chat.ask_user_question',
+            request_id: 'permission-request', timestamp: 1792553400002,
+            ...(nested ? { event_payload: question } : question),
+          },
+          {
+            id: 'call', role: 'assistant', event_type: 'chat.tool_call', timestamp: 1792553400003,
+            tool_call: { tool_call_id: 'call', name: 'read_file', arguments: '{"file_path":"/sample.txt"}' },
+          },
+          {
+            id: 'result', role: 'assistant', event_type: 'chat.tool_result', timestamp: 1792553400004,
+            tool_call_id: 'call', tool_name: 'read_file', success: allowed,
+            result: allowed ? 'file contents' : 'Permission denied',
+          },
+          {
+            id: 'final', role: 'assistant', event_type: 'chat.final', timestamp: 1792553400005,
+            content: allowed ? 'Read completed' : 'Read rejected', reasoning_content: 'Check the permission',
+          },
+        ];
+        const original = structuredClone(records);
+        const expected = parseHistoryJsonFileToTimelinePreview(records.filter((record) => record.id !== 'permission'), sessionId);
+        const preview = parseHistoryJsonFileToTimelinePreview(records, sessionId);
+        assert.equal(expected.executions.length, 1);
+        assert.equal(expected.reasoningSegments.length, 1);
+        assert.deepEqual(preview, expected);
+        assert.deepEqual(records, original);
+        assert.deepEqual(parseHistoryJsonFileToPreviewMessages(records, sessionId), expected.messages);
+      });
+    }
+  }
+}
+
+for (const source of [undefined, 'unknown_interrupt', ' permission_interrupt', 'ask_user_interrupt']) {
+  test(`permission history preserves genuine and compatible questions in a mixed turn (${source})`, () => {
+    const records = [
+      {
+        id: 'permission', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1792553400001,
+        request_id: 'permission-request', source: 'permission_interrupt',
+        questions: [{ header: 'Permission', question: 'Allow?', options: [] }],
+      },
+      {
+        id: 'answered', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1792553400002,
+        request_id: 'answered-request', source: 'ask_user_interrupt',
+        questions: [{ header: 'Topic', question: 'Which topic?', options: [{ label: 'Streaming' }] }],
+      },
+      {
+        id: 'answer', role: 'assistant', event_type: 'chat.ask_user_answer', timestamp: 1792553400003,
+        request_id: 'answered-request', source: 'ask_user_interrupt',
+        answers: [{ question: 'Which topic?', selected_options: ['Streaming'] }],
+      },
+      {
+        id: 'unanswered', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1792553400004,
+        request_id: 'unanswered-request', ...(source === undefined ? {} : { source }),
+        questions: [{ header: 'Details', question: 'Any details?', options: [] }],
+      },
+    ];
+    const preview = parseHistoryJsonFileToTimelinePreview(records, sessionId);
+    assert.equal(preview.pendingQuestions.length, 0);
+    assert.equal(preview.answeredQuestions.length, 1);
+    assert.deepEqual(preview.messages.map((message) => JSON.parse(message.content.slice('qa.summary:'.length)).items), [
+      [{ header: 'Topic', question: 'Which topic?', answers: ['Streaming'], answerSources: ['option'] }],
+      [{ header: 'Details', question: 'Any details?', answers: [] }],
+    ]);
+  });
+}
 
 test('history skips chat.ask_user_question with empty or missing questions', () => {
   const preview = parseHistoryJsonFileToTimelinePreview([
@@ -1186,6 +1278,18 @@ test('history skips chat.error with empty content', () => {
     },
   ], sessionId);
   assert.equal(messages.length, 0);
+});
+
+test('history.done subagent_ids discovery parses unique non-empty ids (#4887)', () => {
+  assert.deepEqual(
+    readDiscoveredSubagentIds({
+      status: 'done',
+      subagent_ids: [' sub-a ', 'sub-b', 'sub-a', '', 12, null],
+    }),
+    ['sub-a', 'sub-b'],
+  );
+  assert.deepEqual(readDiscoveredSubagentIds({ status: 'done' }), []);
+  assert.deepEqual(readDiscoveredSubagentIds({ subagentIds: ['legacy-id'] }), ['legacy-id']);
 });
 
 test('4470 history preserves token-related choices while masking custom input', () => {

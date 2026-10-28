@@ -13,6 +13,17 @@ def test_default_model_config_does_not_set_context_window():
     assert "context_window" not in model_config
 
 
+def test_default_model_group_routing_timeout_matches_single_model():
+    repo_root = Path(__file__).resolve().parents[2]
+    config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
+    models = yaml.safe_load(config_file.read_text(encoding="utf-8"))["models"]
+
+    assert models["group_routing_timeout_seconds"] == "${JIUWENSWARM_MODEL_GROUP_TIMEOUT_SECONDS:-360}"
+    assert models["defaults"][0]["model_client_config"]["timeout"] == 360
+    assert models["group_stream_first_chunk_timeout_seconds"] == "${JIUWENSWARM_MODEL_GROUP_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS:-300}"
+    assert models["group_stream_idle_timeout_seconds"] == "${JIUWENSWARM_MODEL_GROUP_STREAM_IDLE_TIMEOUT_SECONDS:-120}"
+
+
 def test_default_team_config_enables_managed_worktrees():
     repo_root = Path(__file__).resolve().parents[2]
     config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"

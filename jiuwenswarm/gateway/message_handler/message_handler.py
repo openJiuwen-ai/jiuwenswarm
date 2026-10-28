@@ -128,6 +128,9 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "evolution_interrupt",
 })
 _A2UI_OPEN_TAG_MARKER = "<a2ui-json>"
+# 只有会进入 Agent turn 的流式请求才需要刷新 AgentServer 的 cron 工具视图。
+# 读取类流(history.get 等)不产生 turn,却会按任务属主触发项目准入 RPC。
+_CRON_SNAPSHOT_STREAM_METHODS = frozenset({"chat.send", "command.goal"})
 # before_chat_request 钩子可改写的用户可见参数：变更时实时回推前端
 # （chat.message_updated），避免前端气泡/模型显示停留在改写前的值。
 _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
@@ -334,6 +337,7 @@ class MessageHandler(ABC):
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
         self._stream_channels: dict[str, str] = {}  # request_id -> channel_id
         self._stream_sessions: dict[str, str | None] = {}  # request_id -> session_id
+        self._stream_team_ids: dict[str, str] = {}  # request_id -> targeted expert
         self._stream_metadata: dict[str, dict[str, Any] | None] = {}  # request_id -> request metadata
         # AgentServer server_push frames only carry request_id. Keep the
         # authenticated owner so cron mutations and reverse E2A stay routed.
@@ -1106,6 +1110,7 @@ class MessageHandler(ABC):
         self._stream_tasks.pop(rid, None)
         self._stream_channels.pop(rid, None)
         self._stream_sessions.pop(rid, None)
+        self._stream_team_ids.pop(rid, None)
         self._stream_metadata.pop(rid, None)
         self._stream_user_ids.pop(rid, None)
         self._stream_emits_processing_status.pop(rid, None)
@@ -1463,6 +1468,7 @@ class MessageHandler(ABC):
             await _cancel_tasks(tasks_to_cancel)
             await self._pop_stream_tracking_and_broadcast(rids_cancelled)
 
+        await self._finish_cancelled_cron_session_runs(env_interrupt, resp)
         payload = resp.payload if isinstance(resp.payload, dict) else {}
         if payload.get("event_type") == "chat.interrupt_result":
             if not publish_interrupt_result:
@@ -3547,13 +3553,7 @@ class MessageHandler(ABC):
 
         try:
             if action == "list":
-                data = await cc.list_jobs()
-                if owner_user_id:
-                    data = [
-                        job
-                        for job in data
-                        if str(job.get("user_id") or "").strip() == owner_user_id
-                    ]
+                data = await cc.list_jobs(user_id=owner_user_id or None)
             elif action == "get":
                 job_id = str(params.get("job_id") or "")
                 if params.get("authoritative") is True:
@@ -3865,6 +3865,8 @@ class MessageHandler(ABC):
             ok=False,
             payload={
                 "event_type": EventType.CHAT_ERROR.value,
+                "request_id": request_id,
+                **self._expert_stream_route(env.params),
                 "error": str(error) or type(error).__name__,
                 "code": code,
                 "is_complete": True,
@@ -3931,18 +3933,52 @@ class MessageHandler(ABC):
         """
         from jiuwenswarm.common.schema.message import ReqMethod
 
-        if any(msg.session_id == session_id for msg in self._non_stream_chat_messages.values()):
+        if any(
+            msg.session_id == session_id and not self._expert_stream_route(msg.params)
+            for msg in self._non_stream_chat_messages.values()
+        ):
             return True
         for active_rid, sid in self._stream_sessions.items():
             if active_rid == exclude_rid:
                 continue
             if sid != session_id:
                 continue
+            if self._stream_team_ids.get(active_rid):
+                continue
             if self._stream_emits_processing_status.get(active_rid, True):
                 return True
             if self._stream_methods.get(active_rid) == ReqMethod.COMMAND_GOAL.value:
                 return True
         return False
+
+    @staticmethod
+    def _expert_stream_route(params: dict[str, Any] | None) -> dict[str, str]:
+        """Derive expert routing from the request, independent of UI selection."""
+        params = params if isinstance(params, dict) else {}
+        team_id = str(params.get("target_team_id") or "").strip()
+        if not team_id or not ChannelMode.is_team_mode(params.get("mode")):
+            return {}
+        return {"team_id": team_id, "team_name": team_id, "source": "org_expert_direct"}
+
+    def _is_targeted_expert_cancel(self, msg: "Message") -> bool:
+        route = self._expert_stream_route(msg.params)
+        if not route or not msg.session_id:
+            return False
+        try:
+            from jiuwenswarm.gateway.embedded.runtime.session.session_metadata import get_session_metadata
+
+            metadata = get_session_metadata(
+                msg.session_id, enable_writeback=False,
+            )
+            owner_id = str((metadata or {}).get("team_name") or "").strip()
+        except Exception:
+            logger.warning(
+                "[MessageHandler] expert cancel owner lookup failed: session=%s",
+                msg.session_id,
+                exc_info=True,
+            )
+            return False
+        return bool(owner_id and route["team_id"] != owner_id)
 
     @staticmethod
     def _stream_method_value(msg: "Message") -> str:
@@ -4582,6 +4618,14 @@ class MessageHandler(ABC):
                     continue
 
                 if msg.req_method == ReqMethod.CHAT_CANCEL:
+                    params = msg.params if isinstance(msg.params, dict) else {}
+                    organization_stop = params.get("organization_owner_stop") is True
+                    organization_stop = organization_stop or params.get("organization_stop") is True
+                    if organization_stop or self._is_targeted_expert_cancel(msg):
+                        # Preserve Team routing and return the actual AgentServer result.
+                        agent_msg = await self._prepare_agent_dispatch_message(msg)
+                        await self._process_non_stream_request(msg, self.message_to_e2a(agent_msg))
+                        continue
                     logger.info(
                         "[MessageHandler] 收到中断请求: id=%s channel_id=%s",
                         msg.id, msg.channel_id,
@@ -5030,6 +5074,7 @@ class MessageHandler(ABC):
         rid = env.request_id or ""
         channel_id = env.channel or ""
         stream_app_id = self._stream_app_ids.get(rid, "")  # 提前捕获，_pop_stream_tracking 后会清除
+        stream_route = self._expert_stream_route(env.params)
         cancelled = False
         has_processing_status_false = False
         _proc_count = 0
@@ -5053,20 +5098,34 @@ class MessageHandler(ABC):
                 if self._is_terminal_stream_chunk(chunk):
                     continue
                 payload = chunk.payload or {}
+                if isinstance(payload, dict):
+                    event_type = payload.get("event_type")
+                    if event_type in ("chat.processing_status", "chat.error"):
+                        payload = {"request_id": chunk.request_id, **payload}
+                        payload_team = payload.get("team_id") or payload.get("team_name")
+                        if stream_route and not payload_team:
+                            payload = {**payload, **stream_route}
+                        chunk.payload = payload
+                owns_status = (
+                    isinstance(payload, dict)
+                    and str(payload.get("request_id") or chunk.request_id or "") == rid
+                    and (
+                        str(payload.get("team_id") or payload.get("team_name") or "").strip()
+                        == stream_route["team_id"]
+                        if stream_route else payload.get("source") != "org_expert_direct"
+                    )
+                )
                 is_processing_false = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
                     and payload.get("is_processing") is False
                 )
-                if (
-                    is_processing_false
-                    and self._session_has_streams_blocking_processing_false(
-                        session_id, exclude_rid=rid
-                    )
-                ):
-                    # 这是单个请求的结束；同 session 仍有其他对话流时不能向前端
-                    # 宣告整个会话空闲；保留自动收尾，让最后一个流退出时发送权威 false。
-                    continue
+                ends_owner_stream = owns_status and not stream_route
+                if is_processing_false and ends_owner_stream:
+                    if self._session_has_streams_blocking_processing_false(session_id, exclude_rid=rid):
+                        # 这是单个请求的结束；同 session 仍有其他对话流时不能向前端
+                        # 宣告整个会话空闲；保留自动收尾，让最后一个流退出时发送权威 false。
+                        continue
                 published = await self.publish_stream_chunk(
                     chunk,
                     session_id=session_id,
@@ -5077,7 +5136,7 @@ class MessageHandler(ABC):
                 if isinstance(payload, dict):
                     event_type = payload.get("event_type")
                     if event_type == "chat.processing_status":
-                        if payload.get("is_processing") is False:
+                        if payload.get("is_processing") is False and owns_status:
                             has_processing_status_false = True
                     elif event_type == "chat.processing_status_deferred":
                         # Internal placeholder from the cluster-mode
@@ -5087,7 +5146,8 @@ class MessageHandler(ABC):
                         # prevents the Gateway from auto-emitting
                         # is_processing=False when this short stream
                         # ends, and is NOT forwarded to the frontend.
-                        has_processing_status_false = True
+                        if owns_status:
+                            has_processing_status_false = True
                         continue
 
                 _has_fanout = bool((getattr(chunk, "metadata", None) or {}).get("fan_out_targets"))
@@ -5167,7 +5227,7 @@ class MessageHandler(ABC):
             # permission-resume chat.send would clear is_processing while Goal
             # is still running; but history.get must not strand the spinner.
             session_blocks_processing_false = (
-                self._session_has_streams_blocking_processing_false(session_id)
+                not stream_route and self._session_has_streams_blocking_processing_false(session_id)
             )
             _will_broadcast = (
                 emit_processing_status
@@ -5199,6 +5259,7 @@ class MessageHandler(ABC):
                     await self._send_processing_status(
                         rid, session_id, channel_id,
                         is_processing=False, app_id=stream_app_id,
+                        team_id=stream_route.get("team_id", ""),
                     )
                     logger.info(
                         "[MessageHandler] 该 session 流式任务已结束（cancelled=%s），已发送 is_processing=false: session_id=%s",
@@ -5215,6 +5276,10 @@ class MessageHandler(ABC):
         Failure is non-fatal for ordinary chat; mutation attempts will still
         report their Gateway delivery failure through the existing path.
         """
+        # 读取类流不进入 Agent turn,不会调用 cron 工具;对它们刷新快照只会
+        # 为任务列表付出按属主路由的准入 RPC。
+        if str(getattr(env, "method", "") or "") not in _CRON_SNAPSHOT_STREAM_METHODS:
+            return
         from jiuwenswarm.gateway.routing.e2a_proxy import is_agentos_routing_client
 
         if not is_agentos_routing_client(self.agent_client):
@@ -5230,12 +5295,7 @@ class MessageHandler(ABC):
             )
             return
         try:
-            jobs = await controller.list_jobs()
-            user_jobs = [
-                job
-                for job in jobs
-                if str(job.get("user_id") or "").strip() == user_id
-            ]
+            jobs = await controller.list_jobs(user_id=user_id)
             from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
             from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -5244,7 +5304,7 @@ class MessageHandler(ABC):
                 channel_id=env.channel or "web",
                 session_id=env.session_id,
                 req_method=ReqMethod.CRON_JOBS_SYNC,
-                params={"jobs": user_jobs},
+                params={"jobs": jobs},
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=user_id,
@@ -5307,6 +5367,8 @@ class MessageHandler(ABC):
     ) -> None:
         """Start a Gateway stream consumer and register stream bookkeeping."""
         emit_processing_status = self._should_emit_processing_status_for_stream(msg)
+        stream_route = self._expert_stream_route(env.params)
+        self._stream_team_ids[stream_rid] = stream_route.get("team_id", "")
         self._stream_emits_processing_status[stream_rid] = emit_processing_status
         self._stream_methods[stream_rid] = self._stream_method_value(msg)
         self._stream_modes[stream_rid] = (
@@ -5319,6 +5381,7 @@ class MessageHandler(ABC):
                 msg.channel_id,
                 is_processing=True,
                 app_id=msg.app_id or "",
+                team_id=stream_route.get("team_id", ""),
             )
         task = asyncio.create_task(
             self.process_stream(
@@ -5340,6 +5403,29 @@ class MessageHandler(ABC):
             stream_rid, msg.channel_id, len(self._stream_tasks),
         )
 
+    async def _finish_cancelled_cron_session_runs(
+        self, env: "E2AEnvelope", response: "AgentResponse",
+    ) -> None:
+        """Settle cron waiters only after a successful, session-wide cancel ACK."""
+        params = env.params if isinstance(env.params, dict) else {}
+        if str(params.get("intent", "cancel")).strip().lower() != "cancel":
+            return
+        payload = response.payload if isinstance(response.payload, dict) else {}
+        if not response.ok or payload.get("success") is not True:
+            return
+        controller = getattr(self, "_cron_controller", None)
+        finish_runs = getattr(controller, "finish_cancelled_session_runs", None)
+        session_id = str(getattr(env, "session_id", None) or "").strip()
+        if not callable(finish_runs) or not session_id:
+            return
+        try:
+            await finish_runs(session_id, user_id=getattr(env, "user_id", None))
+        except Exception:
+            logger.warning(
+                "[MessageHandler] cancelled cron waiter cleanup failed: session_id=%s",
+                session_id, exc_info=True,
+            )
+
     async def _send_interrupt_to_agent(
         self,
         env: "E2AEnvelope",
@@ -5360,6 +5446,7 @@ class MessageHandler(ABC):
                 "[MessageHandler] AgentServer 中断响应: request_id=%s ok=%s",
                 resp.request_id, resp.ok,
             )
+            await self._finish_cancelled_cron_session_runs(env, resp)
             payload = resp.payload if isinstance(resp.payload, dict) else {}
             ch = (channel_id or getattr(env, "channel", None) or "").strip()
             sid = (session_id or getattr(env, "session_id", None) or "").strip()
@@ -5427,7 +5514,7 @@ class MessageHandler(ABC):
 
     async def _send_processing_status(
         self, request_id: str, session_id: str | None, channel_id: str, *,
-        is_processing: bool, app_id: str = "",
+        is_processing: bool, app_id: str = "", team_id: str = "",
     ) -> None:
         """发送 chat.processing_status 事件到客户端。"""
         from jiuwenswarm.common.schema.message import Message, EventType
@@ -5444,6 +5531,8 @@ class MessageHandler(ABC):
             ok=True,
             payload={
                 "event_type": "chat.processing_status",
+                "request_id": request_id,
+                **({"team_id": team_id, "team_name": team_id, "source": "org_expert_direct"} if team_id else {}),
                 "session_id": session_id,
                 "is_processing": is_processing,
                 "is_complete": not is_processing
@@ -5592,6 +5681,7 @@ class MessageHandler(ABC):
         self._stream_tasks.clear()
         self._stream_channels.clear()
         self._stream_sessions.clear()
+        self._stream_team_ids.clear()
         self._stream_metadata.clear()
         self._stream_user_ids.clear()
         self._stream_emits_processing_status.clear()

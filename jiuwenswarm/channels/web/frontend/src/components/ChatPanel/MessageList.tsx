@@ -13,8 +13,10 @@ import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
 import { AgentAvatar } from '../AgentAvatar';
 import { useChatStore, useSessionStore } from '../../stores';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useConversationLeaderIdentity } from '../../features/teamOrganization/leaderIdentity';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import type { TeamLeaderIdentity } from '../../features/teamLeaderIdentity';
+import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import type { ReasoningSegment } from '../../stores/chatStore';
 import { filterPublishedHistoryBatch } from '../../features/historyPagination';
 import { projectTimelineItems, type TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
@@ -153,12 +155,13 @@ function TeamGroupDisplay({
   leaderIdentity?: TeamLeaderIdentity | null;
   className?: string;
 }) {
+  const { i18n } = useTranslation();
   if (identity) {
     return (
       <AgentAvatar
         identityOverride={{
           agentTemplateId: identity.id,
-          displayName: identity.displayName,
+          displayName: resolveTeamGroupDisplayName(identity, i18n.language),
           ...(identity.avatarUrl ? { avatar: identity.avatarUrl } : {}),
         }}
         alt=""
@@ -186,6 +189,7 @@ const MAX_PLAUSIBLE_TURN_MS = 24 * 60 * 60 * 1000;
 export function TurnElapsed({
   startMs,
   endMs,
+  isStarting = false,
   isLastTurn,
   isProcessing,
   showAvatar,
@@ -196,6 +200,7 @@ export function TurnElapsed({
 }: {
   startMs: number;
   endMs: number;
+  isStarting?: boolean;
   isLastTurn: boolean;
   isProcessing: boolean;
   showAvatar?: boolean;
@@ -226,7 +231,7 @@ export function TurnElapsed({
     <div
       className={clsx('completed-work-chip', showActive && 'is-active', !showAvatar && teamLayout && 'turn-elapsed--team')}
       data-testid="chat-panel-turn-elapsed"
-      data-variant={showActive ? 'active' : 'finished'}
+      data-variant={showActive ? (isStarting ? 'starting' : 'active') : 'finished'}
     >
       <span
         className={clsx('completed-work-chip__icon', showActive ? 'is-active' : 'is-success')}
@@ -240,11 +245,13 @@ export function TurnElapsed({
       </span>
       <span className="completed-work-chip__label">
         <span data-testid="chat-panel-turn-elapsed-label">
-          {showActive ? t('chatUi.turnRunning') : t('chatUi.turnElapsed')}
+          {showActive ? t(isStarting ? 'chatUi.turnStarting' : 'chatUi.turnRunning') : t('chatUi.turnElapsed')}
         </span>{' '}
-        <span data-testid="chat-panel-turn-elapsed-value">
-          {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
-        </span>
+        {!(showActive && isStarting) && (
+          <span data-testid="chat-panel-turn-elapsed-value">
+            {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
+          </span>
+        )}
       </span>
     </div>
   );
@@ -552,9 +559,7 @@ export function ChatTimelineList({
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
-  const runtimeTeamLeaderIdentity = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null,
-  );
+  const runtimeTeamLeaderIdentity = useConversationLeaderIdentity(activeSessionId);
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
   const teamGroupIdentity = teamGroupIdentityOverride;
   const storeIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
@@ -882,6 +887,7 @@ export function ChatTimelineList({
           key={`${timelineScope}/${item.key}`}
           startMs={range.startMs}
           endMs={range.endMs}
+          isStarting={item.isStarting}
           isLastTurn={item.isLastTurn}
           isProcessing={isProcessing}
           showAvatar={item.showAvatar}

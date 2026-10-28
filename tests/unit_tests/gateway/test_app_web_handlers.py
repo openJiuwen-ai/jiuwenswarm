@@ -3,6 +3,8 @@
 import asyncio
 import importlib
 import json
+import os
+import sys
 import threading
 import time
 from pathlib import Path
@@ -40,6 +42,8 @@ class FakeWebChannel:
         self.connect_handler = None
         self.disconnect_handler = None
         self.routing_keys: list[RoutingKey] = []
+        self.rebounds: list[tuple[str | None, str]] = []
+        self.cleared: list[str | None] = []
 
     def register_method(self, name, handler):
         self.methods[name] = handler
@@ -63,6 +67,12 @@ class FakeWebChannel:
 
     async def routing_keys_for_ws(self, ws):
         return list(self.routing_keys)
+
+    def record_a4p_rebound(self, session_id, ws_id):
+        self.rebounds.append((session_id, ws_id))
+
+    def clear_a4p_rebound(self, session_id):
+        self.cleared.append(session_id)
 
 
 @pytest.mark.asyncio
@@ -105,6 +115,11 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
         "app_id": "app-1",
         "agent_ref": {"mode": "team", "id": "research"},
     }
+    if method == "a4p.authorization.complete":
+        # 完成授权时把恢复 turn 的输出改绑到当前连接（当前 ws_id 覆盖授权方冻结的旧 ws）。
+        assert channel.rebounds == [("session-1", "ws-1")]
+    else:
+        assert channel.rebounds == []
 
 
 @pytest.mark.asyncio
@@ -119,6 +134,71 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
     )
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "A4P_WEB_SESSION_REQUIRED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cli_agent", "package", "relative"),
+    [("claude", "claude_agent_sdk", "_bundled/claude"),
+     ("codex", "codex_cli_bin", "bin/codex")],
+)
+@pytest.mark.parametrize("runtime_state", ["current", "update_required"])
+@pytest.mark.parametrize("platform_name", ["nt", "posix"])
+async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
+    monkeypatch, tmp_path, cli_agent, package, relative, runtime_state, platform_name
+):
+    from jiuwenswarm.common import external_cli_runtime as runtime
+
+    site = tmp_path / cli_agent / "site-packages"
+    suffix = ".exe" if platform_name == "nt" else ""
+    executable = site / package / (relative + suffix)
+    executable.parent.mkdir(parents=True)
+    executable.touch()
+    (site / package / "__init__.py").touch()
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    original_find_spec = importlib.util.find_spec
+
+    def find_spec(name, *args, **kwargs):
+        if name == package:
+            if str(site) not in sys.path:
+                return None
+            return importlib.util.spec_from_file_location(name, site / package / "__init__.py")
+        return original_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(importlib.util, "find_spec", find_spec)
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: True)
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "external_cli_runtime_names", lambda: [cli_agent])
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: site)
+    monkeypatch.setattr(runtime, "get_external_cli_runtime_status", lambda _agent: {"runtime_state": runtime_state})
+    # Replace only this module's reference, not the process-wide os.name.
+    monkeypatch.setattr(config_set_handlers, "os", SimpleNamespace(name=platform_name))
+    competing_cli = tmp_path / "path-bin" / (cli_agent + suffix)
+    competing_cli.parent.mkdir()
+    competing_cli.touch()
+    monkeypatch.setattr(
+        config_set_handlers.shutil, "which",
+        lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
+    )
+    monkeypatch.setattr(config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
+    monkeypatch.setattr(config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    assert config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
+
+    await channel.methods["external_cli.detect"](
+        object(), "detect-cold", {"cli_agent": cli_agent, "use_builtin": True}, "session"
+    )
+
+    result = channel.responses[-1]
+    assert result["ok"] is True
+    if runtime_state == "current":
+        assert result["payload"]["status"] == "ok"
+        assert Path(result["payload"]["path"]) == executable
+        assert result["payload"]["version"] == "1.2.3"
+    else:
+        assert result["payload"]["status"] == "missing"
+        assert str(site) not in sys.path
 
 
 class FakeAgentClient:
@@ -172,6 +252,105 @@ class _FakeModelsResponse:
                 for model_id in self._model_ids
             ],
         }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("modality", "expected"),
+    [
+        ("image", ["doubao-seedream-active", "doubao-seedream-retiring"]),
+        ("video", ["doubao-seedance-active", "doubao-seedance-shutdown"]),
+    ],
+)
+async def test_vendors_fetch_models_filters_ark_generation_domain_without_dropping_lifecycle_status(
+    monkeypatch, modality, expected,
+):
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"data": [
+                {"id": "doubao-seedream-active", "domain": "ImageGeneration"},
+                {"id": "doubao-seedream-retiring", "domain": "ImageGeneration", "status": "Retiring"},
+                {"id": "doubao-seedance-active", "domain": "VideoGeneration"},
+                {"id": "doubao-seedance-shutdown", "domain": "VideoGeneration", "status": "Shutdown"},
+                {"id": "doubao-vision", "domain": "VLM", "modalities": {"input_modalities": ["image"]}},
+            ]}
+
+    requested = []
+
+    def fake_get(url, **kwargs):
+        requested.append(url)
+        return FakeResponse()
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {
+            "vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret",
+            "api_base": "https://ark.ap-southeast.bytepluses.com/api/v3", "modality": modality,
+        },
+        "sess-1",
+    )
+
+    assert requested == ["https://ark.ap-southeast.bytepluses.com/api/v3/models"]
+    assert channel.responses[-1]["payload"] == {"models": expected, "source": "remote"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_base", [
+    "https://ark.cn-beijing.volces.com.evil.example/api/v3",
+    "https://ark.cn-beijing.volces.com/api/coding/v3",
+])
+async def test_vendors_fetch_models_rejects_untrusted_ark_generation_base(monkeypatch, api_base):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: pytest.fail("unexpected remote request"))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {
+            "vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret",
+            "api_base": api_base, "modality": "image",
+        },
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_requires_key_without_generation_preset_fallback(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: pytest.fail("unexpected remote request"))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models", {"vendor_key": "volcengine", "plan": "custom_api", "modality": "image"}, "sess-1",
+    )
+    assert channel.responses[-1]["payload"] == {
+        "models": [], "source": "unavailable", "reason": "api_key required for fetch",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_does_not_show_single_preset_when_ark_generation_catalog_is_empty(monkeypatch):
+    monkeypatch.setattr("httpx.get", lambda *args, **kwargs: _FakeModelsResponse(["doubao-text-only"]))
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["vendors.fetch_models"](
+        object(), "req-ark-models",
+        {"vendor_key": "volcengine", "plan": "custom_api", "api_key": "secret", "modality": "image"},
+        "sess-1",
+    )
+
+    assert channel.responses[-1]["payload"] == {
+        "models": [], "source": "unavailable", "reason": "remote returned empty generation model list",
+    }
 
 
 @pytest.mark.asyncio
@@ -897,6 +1076,7 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
             "jev_key_configured": False,
             "decision_model": "jev-1.13.0",
             "decision_api_base": "https://api.typesafe.ai/v1",
+            "decision_display_name": "",
         },
         "error": None,
         "code": None,
@@ -933,6 +1113,38 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "BAD_REQUEST"
     assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
+    from jiuwenswarm.common import config as config_module
+
+    current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: current)
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda updates: None)
+    def save_decision(updates):
+        for key, value in updates.items():
+            if key == "display_name" and value is None:
+                current["browser"]["decision"].pop(key, None)
+            else:
+                current["browser"]["decision"][key] = value
+
+    monkeypatch.setattr(config_module, "update_browser_decision_in_config", save_decision)
+
+    async def no_runtime_change(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", no_runtime_change)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", no_runtime_change)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods["path.set"](
+        object(), "req-name", {"chrome_path": "", "decision_display_name": "  My Jev  "}, "sess-1",
+    )
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["decision_display_name"] == "My Jev"
+    assert current["browser"]["decision"]["display_name"] == "My Jev"
+
 
 
 class FakeUpdaterService:
@@ -1522,52 +1734,49 @@ async def test_config_get_returns_jev_credentials_like_model_settings(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
+async def test_trajectory_diagnosis_switch_round_trips_through_config_rpc(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
     monkeypatch.setattr(
         app_web_handlers,
         "get_config_raw",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         app_web_handlers,
         "get_config",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     # config.set 路径实现已下沉 config_set_handlers，config.get 仍读 gateway 侧，双patch
     monkeypatch.setattr(
         config_set_handlers,
         "get_config_raw",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         config_set_handlers,
         "get_config",
-        lambda: {"trajectory_ui": {"enabled": False}},
+        lambda: {"trajectory_ui": {"enabled": False, "diagnosis_enabled": False}},
     )
     monkeypatch.setattr(
         config_set_handlers,
-        "update_trajectory_ui_in_config",
+        "update_trajectory_diagnosis_in_config",
         lambda enabled: persisted.append(enabled),
     )
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     await channel.methods["config.get"](object(), "req-trajectory-get", {}, "session")
-    assert channel.responses[-1]["payload"]["trajectory_ui_enabled"] == "false"
+    assert channel.responses[-1]["payload"]["trajectory_ui_diagnosis_enabled"] == "false"
 
     await channel.methods["config.set"](
         object(),
         "req-trajectory-set",
-        {"trajectory_ui_enabled": "true"},
+        {"trajectory_ui_diagnosis_enabled": "true"},
         "session",
     )
     assert persisted == [True]
-    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_enabled"]
-    change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_enabled"])
-    assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
-    # Diagnosis switches the trajectory data plane on too, so it needs the same
-    # runtime sync as the trajectory view switch.
+    assert channel.responses[-1]["payload"]["updated"] == ["trajectory_ui_diagnosis_enabled"]
+    # Diagnosis owns the data plane and chat/trajectory tabs.
     diagnosis_change_set = app_web_handlers._ConfigChangeSet({}, ["trajectory_ui_diagnosis_enabled"])
     assert diagnosis_change_set.reload_scopes == {"agent_runtime", "web_ui"}
 
@@ -1602,6 +1811,38 @@ async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatc
     assert channel.responses[-1]["payload"]["updated"] == ["task_full_duplex_enabled"]
     change_set = app_web_handlers._ConfigChangeSet({}, ["task_full_duplex_enabled"])
     assert change_set.reload_scopes == {"web_ui"}
+
+
+@pytest.mark.asyncio
+async def test_progressive_tool_optimize_switch_round_trips_through_config_rpc(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    raw_config = {"progressive_tool_enabled": True, "progressive_tool_optimize": False}
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    # config.set 路径实现已下沉 config_set_handlers，config.get 仍读 gateway 侧，双patch
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
+    monkeypatch.setattr(
+        config_set_handlers,
+        "update_progressive_tool_optimize_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](object(), "req-tool-optimize-get", {}, "session")
+    assert channel.responses[-1]["payload"]["progressive_tool_optimize"] == "false"
+
+    await channel.methods["config.set"](
+        object(),
+        "req-tool-optimize-set",
+        {"progressive_tool_optimize": "true"},
+        "session",
+    )
+    assert persisted == [True]
+    assert channel.responses[-1]["payload"]["updated"] == ["progressive_tool_optimize"]
+    change_set = app_web_handlers._ConfigChangeSet({}, ["progressive_tool_optimize"])
+    assert change_set.reload_scopes == {"agent_runtime"}
 
 
 @pytest.mark.asyncio
@@ -3432,6 +3673,57 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
 
     assert result["status"] == "unsupported"
     assert result["path"] == str(script_path)
+
+
+def test_resolve_external_cli_path_replaces_windows_script_shim_with_executable(monkeypatch, tmp_path) -> None:
+    shim = tmp_path / "npm" / "claude.cmd"
+    shim.parent.mkdir()
+    shim.write_text("@echo off\n", encoding="utf-8")
+    exe = tmp_path / "bin" / "claude.exe"
+    exe.parent.mkdir()
+    exe.write_bytes(b"MZ")
+    monkeypatch.setattr(
+        config_set_handlers,
+        "os",
+        SimpleNamespace(name="nt", environ={"PATH": str(exe.parent)}, pathsep=os.pathsep),
+    )
+    monkeypatch.setattr(
+        config_set_handlers.shutil,
+        "which",
+        lambda name: str(shim) if name == "claude" else None,
+    )
+
+    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
+
+    assert resolved == str(exe)
+    assert error == ""
+    assert reason == ""
+
+
+def test_detect_external_cli_agent_reports_windows_script_shim_without_executable(monkeypatch, tmp_path) -> None:
+    shim = tmp_path / "npm" / "claude.cmd"
+    shim.parent.mkdir()
+    shim.write_text("@echo off\n", encoding="utf-8")
+    monkeypatch.setattr(
+        config_set_handlers,
+        "os",
+        SimpleNamespace(name="nt", environ={"PATH": str(shim.parent)}, pathsep=os.pathsep),
+    )
+    monkeypatch.setattr(
+        config_set_handlers.shutil,
+        "which",
+        lambda name: str(shim) if name == "claude" else None,
+    )
+
+    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
+    assert resolved == ""
+    assert reason == "windows_script"
+
+    result = _detect_external_cli_agent("claude", "")
+
+    assert result["status"] == "unsupported"
+    assert result["reason"] == "windows_script"
+    assert ".cmd" not in result["path"].lower()
 
 
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():

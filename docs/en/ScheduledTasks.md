@@ -95,6 +95,8 @@ minute hour day month weekday
 
 > **Timeout Note**: Both normal modes like `agent.fast` and Team modes like `team`/`team.plan`/`code.team` default to 3600 seconds (1 hour). If you need a longer execution time, you can set it when creating.
 
+> **Session Activity**: Web metadata combines the current user's active cron execution on this Gateway with Web interaction activity and returns consistent `is_processing` and `status` fields. Waiting for a scheduled trigger, finished executions, and result delivery do not count as active execution. Stopping a task closes its cron receive stream after the backend confirms cancellation. Set `timeout_seconds=600` explicitly when testing a ten-minute timeout.
+
 5. Click **Create**, the task will take effect automatically
 
 **Project归属:**

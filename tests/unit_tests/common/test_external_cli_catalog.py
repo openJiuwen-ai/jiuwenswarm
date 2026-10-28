@@ -2,7 +2,9 @@
 
 """Unit tests for reconciling the external CLI built-in model catalog."""
 
+import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import pytest
@@ -251,3 +253,48 @@ async def test_custom_agent_probe_runs_the_provider_in_a_scratch_directory(custo
     (config,) = provider.configs
     assert config["cli_path"] == "/opt/acme"
     assert not Path(config["cwd"]).exists(), "the scratch directory is removed after the probe"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows CLI preservation")
+@pytest.mark.asyncio
+async def test_model_probe_uses_migrated_configured_cli(tmp_path, monkeypatch):
+    from jiuwenswarm.common import windows_cli_paths
+
+    root = tmp_path / "npm"
+    old = tmp_path / "old-node"
+    active = root / "installed" / "snapshot" / "prefix"
+    active.mkdir(parents=True)
+    (active / "custom.cmd").touch()
+    mapping = root / "preserved" / "snapshot" / "mapping.json"
+    mapping.parent.mkdir(parents=True)
+    mapping.write_text(json.dumps({"schema": 1, "source": str(old), "target": str(active)}))
+    monkeypatch.setattr(windows_cli_paths, "windows_npm_root", lambda: root)
+    seen = []
+
+    async def probe(agent, cli_path):
+        seen.append(cli_path)
+        return {"model": []}
+
+    monkeypatch.setattr(catalog_module, "_probe_custom_agent_models", probe)
+    assert await catalog_module._probe_models("custom", str(old / "custom.cmd")) == {"model": []}
+    assert seen == [str(active / "custom.cmd")]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows CLI preservation")
+@pytest.mark.parametrize("agent,field", [("claude", "cli_path"), ("codex", "codex_bin")])
+def test_host_config_normalizes_migrated_and_legacy_cli_paths(tmp_path, monkeypatch, agent, field):
+    from jiuwenswarm.common import windows_cli_paths
+
+    root = tmp_path / "npm"
+    old = tmp_path / "old-node"
+    active = root / "installed" / "snapshot" / "prefix"
+    active.mkdir(parents=True)
+    (active / "cli.cmd").touch()
+    mapping = root / "preserved" / "snapshot" / "mapping.json"
+    mapping.parent.mkdir(parents=True)
+    mapping.write_text(json.dumps({"schema": 1, "source": str(old), "target": str(active)}))
+    monkeypatch.setattr(windows_cli_paths, "windows_npm_root", lambda: root)
+    entries = config_module._normalize_external_cli_agents(
+        [{"cli_agent": agent, field: str(old / "cli.cmd")}], "external_cli_agents",
+    )
+    assert entries == [{"cli_agent": agent, "cli_path": str(active / "cli.cmd")}]

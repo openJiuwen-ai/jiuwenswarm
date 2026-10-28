@@ -1,4 +1,3 @@
-import { hasPendingDesignerRevision } from './designerMaterials';
 import type { DesignerExecutionRun, DesignerNodeState } from './executionGraphTypes';
 import { DESIGNER_RUN_STATUS_FAILED } from './executionGraphTypes';
 
@@ -7,6 +6,15 @@ export const DESIGNER_TERMINAL_RUN_STATUSES = new Set(['completed', 'failed', 'c
 
 export function isActiveDesignerRun(status: string | undefined): boolean {
   return Boolean(status && DESIGNER_ACTIVE_RUN_STATUSES.has(status));
+}
+
+// Provider wordings: MiniMax "1026 content blocked by moderation", DashScope
+// "DataInspectionFailed", ModelArk "*SensitiveContentDetected".
+const MODERATION_ERROR_PATTERN =
+  /content blocked|moderation|data_?inspection_?failed|sensitive_?content_?detected|sensitive content/i;
+
+export function isDesignerModerationError(message: string | null | undefined): boolean {
+  return MODERATION_ERROR_PATTERN.test(String(message || ''));
 }
 
 /** Prefer run-level error; fall back to the first failed node error. */
@@ -41,7 +49,6 @@ export function mergeRunStatesIntoNodes<
       outputRef?: unknown;
       outputRefs?: unknown;
       error?: string | null;
-      pendingRevision?: boolean;
     };
   },
 >(nodes: T[], run: DesignerExecutionRun | null | undefined): T[] {
@@ -55,7 +62,6 @@ export function mergeRunStatesIntoNodes<
         outputRef: state?.output_ref ?? node.data.outputRef,
         outputRefs: state?.output_refs ?? node.data.outputRefs,
         error: state?.error ?? node.data.error ?? null,
-        pendingRevision: hasPendingDesignerRevision(state),
       },
     };
   });

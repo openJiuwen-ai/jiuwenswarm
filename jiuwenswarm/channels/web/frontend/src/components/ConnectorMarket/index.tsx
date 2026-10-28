@@ -118,9 +118,16 @@ export function ConnectorMarketPanel({
 
   useEffect(() => {
     if (connectorError) {
-      // 与 McpPickerDrawer 抽屉内的 error effect 共用 CONNECTOR_ERROR_TOAST_ID：抽屉挂载时
-      // 两处 effect 会对同一次失败各跑一遍，同 id 才会被 toast.open 原地合并成一条。
-      toast.open({ id: CONNECTOR_ERROR_TOAST_ID, content: connectorError, variant: 'error', duration: 5 });
+      // 与抽屉共用 id 以合并同一次失败；显式补上页面 Toast 的 testid/data-variant，
+      // 否则全局默认 ui-toast 无法被自动化识别。
+      toast.open({
+        id: CONNECTOR_ERROR_TOAST_ID,
+        content: connectorError,
+        variant: 'error',
+        duration: 5,
+        testId: 'connector-market-toast',
+        dataVariant: 'error',
+      });
       clearConnectorError();
     }
   }, [connectorError, clearConnectorError]);

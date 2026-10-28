@@ -9,9 +9,7 @@ from openjiuwen.core.foundation.llm.schema.message import (
     OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
 )
 
-from jiuwenswarm.server.runtime.session.session_history import (
-    flush_pending_writes, load_history_records,
-)
+from jiuwenswarm.server.runtime.session import session_history
 
 HISTORY_ID = "duplex_history_id"
 
@@ -30,6 +28,15 @@ def conversation_record_id(record):
     return None
 
 
+async def load_voice_history(session_id: str) -> list[dict]:
+    """Read durable conversational speech, excluding delegated result echoes."""
+    if not await asyncio.to_thread(session_history.flush_pending_writes, timeout=5):
+        raise RuntimeError("Voice history is still saving; retry the request")
+    records = await asyncio.to_thread(session_history.load_history_records, session_id)
+    return [record for record in records if conversation_record_id(record)
+            and isinstance(record.get("content"), str) and record["content"].strip()]
+
+
 async def sync_conversation_context(agent, session_id):
     react = getattr(agent, "react_agent", None)
     if react is None:
@@ -37,9 +44,8 @@ async def sync_conversation_context(agent, session_id):
     context = react.context_engine.get_context(session_id=session_id)
     if context is None:
         return  # Cold creation restores disk history through warmup_session_context.
-    if not await asyncio.to_thread(flush_pending_writes, timeout=5):
-        raise RuntimeError("语音对话历史尚未保存，请稍后重试。")
-    records = await asyncio.to_thread(load_history_records, session_id)
+    records = await load_voice_history(session_id)
+    imported = False
     # Retain consumed IDs even if Core compacts its message window.
     seen = getattr(context, "duplex_history_ids", None)
     if seen is None:
@@ -53,8 +59,6 @@ async def sync_conversation_context(agent, session_id):
         content = record.get("content")
         if not identity or identity in seen:
             continue
-        if not isinstance(content, str) or not content.strip():
-            continue
         message_type = UserMessage if record["role"] == "user" else AssistantMessage
         metadata = {HISTORY_ID: identity}
         if record["role"] == "user":
@@ -64,3 +68,13 @@ async def sync_conversation_context(agent, session_id):
             })
         await context.add_messages(message_type(content=content, metadata=metadata))
         seen.add(identity)
+        imported = True
+    if imported:
+        from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
+
+        session = resolve_live_agent_session(agent, session_id)
+        if session is None:
+            raise RuntimeError("The conversation session is unavailable; retry the message.")
+        # ReAct.create_context reloads this snapshot before reading the next query.
+        # Updating only the pooled context silently loses imported voice messages.
+        await react.context_engine.save_contexts(session)

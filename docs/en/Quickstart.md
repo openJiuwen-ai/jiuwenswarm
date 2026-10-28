@@ -62,6 +62,12 @@ After successful startup, the terminal will display a service port banner:
 
 When you see similar output, the service is ready. Open `http://localhost:5173` in your browser to use.
 
+### Find the application version and build date
+
+The update page shows the full current version with a secondary “Built on YYYY-MM-DD” label. WHL, Windows EXE, and macOS DMG packages use UTC+08:00 for the packaging date. Installing, starting, or checking for updates does not change it. Older packages and source checkouts without a build date show only the version.
+
+WHL users can also inspect `config/config.yaml` under the data directory, for example `config_version: "0.2.8 · 2026-10-26"`. The version retains daily build suffixes, and the date is language-neutral. This field records version information; configuration synchronization still follows the template. Update checks and protocol APIs continue to use the original version number.
+
 ### Remote Web UI Access on Linux (Optional)
 
 By default, `jiuwenswarm-start` binds the Web UI to `localhost`, so you can open the Web UI address shown in the terminal from a browser on the same Linux host. To access the Web UI on a Linux server from another computer, start it with:

@@ -61,7 +61,7 @@ def route_key(command: UnitCommand):
                     command.actuator, command.receiver)
 
 
-def _candidates(facts: Facts, intent: Intent):
+def _candidates(facts: Facts, intent: Intent, *, include_unavailable=False):
     candidates = [
         p for p in facts.primitives
         if intent.kind in unit_contracts[p.unit][1] and (p.unit != 'native_action' or intent.kind == 'action')
@@ -72,7 +72,7 @@ def _candidates(facts: Facts, intent: Intent):
         matches = exact or [p for p in candidates if p.action_description == name]
         if len(matches) > 1:
             refuse("ambiguous_target", facts, "More than one native action matches this name.")
-        return [p for p in matches if p.supported == Knowledge.YES]
+        return [p for p in matches if include_unavailable or p.supported == Knowledge.YES]
     # Coordinate requests mean pointer events, even when a semantic action exists.
     requires_pointer_event = (
         any(key in intent.parameters for key in ("x", "fromX"))
@@ -109,7 +109,7 @@ def _candidates(facts: Facts, intent: Intent):
                            and primitive.channel == Channel.KEYBOARD and primitive.readiness == Knowledge.YES)
         return (1 if ready_text_keys else channel_priority, primitive.id)
 
-    return sorted((p for p in candidates if p.supported == Knowledge.YES), key=priority)
+    return sorted((p for p in candidates if include_unavailable or p.supported == Knowledge.YES), key=priority)
 
 
 def validate_target(facts: Facts, policy: HostPolicy):
@@ -208,5 +208,10 @@ def choose(facts: Facts, intent: Intent, policy: HostPolicy, attempts: Attempts,
         refuse("input_unavailable", facts,
                "The selected control has no confirmed text-editing capability or remaining preparation route.",
                "read the intended control or its window; focus alone does not authorize text input")
-    refuse("input_unavailable", facts, "No confirmed route can perform this intent in the current desktop mode.",
+    reasons = list(dict.fromkeys(p.unavailable_reason for p in _candidates(facts, intent, include_unavailable=True)
+                                if p.unavailable_reason))
+    detail = "No confirmed route can perform this intent in the current desktop mode."
+    if reasons:
+        detail += " " + " ".join(reasons)
+    refuse("input_unavailable", facts, detail,
            "read the current target; foreground assistance or an independent desktop may be required")

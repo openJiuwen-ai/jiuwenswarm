@@ -537,6 +537,29 @@ async def test_compose_handler_merges_clips_in_shot_order(
     assert result.output_ref["kind"] == NODE_TYPE_VIDEO
     assert str(result.output_ref.get("label") or "").endswith(".mp4")
 
+    rerun = await ComposeNodeHandler().execute(
+        graph["nodes"][-1],
+        NodeExecutionContext(
+            graph=graph,
+            run_id="run_compose01",
+            node_id="n_compose",
+            run={
+                "node_states": {
+                    "n_clip_1": {
+                        "status": "completed",
+                        "output_ref": file_output_ref(clip1, kind=NODE_TYPE_VIDEO, mime_type="video/mp4"),
+                    },
+                    "n_clip_2": {
+                        "status": "completed",
+                        "output_ref": file_output_ref(clip2, kind=NODE_TYPE_VIDEO, mime_type="video/mp4"),
+                    },
+                }
+            },
+        ),
+    )
+    assert rerun.output_ref is not None
+    assert rerun.output_ref["uri"] != result.output_ref["uri"]
+
 
 def test_concatenate_clip_videos_concats_shot1_then_shot2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -566,8 +589,7 @@ def test_concatenate_clip_videos_concats_shot1_then_shot2(
     merged = compose_mod.concatenate_clip_videos([clip1, clip2], dest)
     assert merged == dest.resolve()
     assert dest.read_bytes() == b"concatenated"
-    assert calls
-    copy_cmd = calls[0]
+    copy_cmd = next(cmd for cmd in calls if "concat" in cmd)
     assert copy_cmd[0] == "ffmpeg"
     assert "-f" in copy_cmd and "concat" in copy_cmd
     assert "-c" in copy_cmd or "-c:v" in copy_cmd
@@ -621,9 +643,46 @@ def test_concatenate_clip_videos_falls_back_to_filter_concat(
     assert str(clip1.resolve()) in filter_cmd
     assert str(clip2.resolve()) in filter_cmd
     assert filter_cmd.index(str(clip1.resolve())) < filter_cmd.index(str(clip2.resolve()))
-    assert "concat=n=2:v=1:a=1" in spec
+    assert "[v0][a0][v1][a1]concat=n=2:v=1:a=1" in spec
     assert "-an" not in filter_cmd
     assert "aac" in filter_cmd
+
+
+def test_mismatched_inputs_skip_stream_copy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import subprocess
+
+    from jiuwenswarm.server.runtime.designer.handlers import compose as compose_mod
+
+    shot = tmp_path / "shot1.mp4"
+    upload = tmp_path / "upload.mp4"
+    dest = tmp_path / "film.mp4"
+    shot.write_bytes(b"clip-1")
+    upload.write_bytes(b"upload")
+    probes = {
+        str(shot.resolve()): (
+            "Stream #0:0: Video: h264 (High), yuv420p, 1280x720 [SAR 1:1], 24 fps, 24 tbr\n"
+            "Stream #0:1: Audio: aac (LC), 44100 Hz, stereo"
+        ),
+        str(upload.resolve()): "Stream #0:0: Video: hevc (Main), yuv420p, 640x480, 30 fps, 30 tbr",
+    }
+    calls: list[list[str]] = []
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        calls.append(list(cmd))
+        if "-filter_complex" not in cmd and "concat" not in cmd:
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=probes.get(cmd[-1], ""))
+        dest.write_bytes(b"film")
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(compose_mod, "_find_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(compose_mod.subprocess, "run", fake_run)
+    compose_mod.concatenate_clip_videos([shot, upload], dest)
+
+    assert not any("-f" in cmd and "concat" in cmd for cmd in calls)
+    filter_cmd = next(cmd for cmd in calls if "-filter_complex" in cmd)
+    spec = filter_cmd[filter_cmd.index("-filter_complex") + 1]
+    assert "anullsrc" in spec
+    assert "[v0][a0][v1][a1]concat=n=2:v=1:a=1" in spec
 
 
 

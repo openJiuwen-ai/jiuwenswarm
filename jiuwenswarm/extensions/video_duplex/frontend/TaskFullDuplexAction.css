@@ -14,20 +14,15 @@
   color: var(--color-text-inverse);
 }
 
-/* The orb takes its own row above the composer (#5284): the chat area gives up
-   that height instead of the orb floating over messages. */
-.chat-input-frame:has(> .task-full-duplex-orb) {
-  display: flex;
-  flex-direction: column;
-}
-
 .task-full-duplex-orb {
-  order: -1;
+  position: fixed;
+  bottom: 140px;
+  left: 50%;
+  z-index: 100;
   display: flex;
   align-items: center;
-  align-self: center;
   flex-direction: column;
-  padding: 12px 0 8px;
+  transform: translateX(-50%);
 }
 
 /* 视觉参数（尺寸、时长、缩放幅度）来源：实测截图调定。 */
@@ -83,14 +78,14 @@
 @keyframes task-full-duplex-orb-enter {
   from {
     opacity: 0;
-    transform: translateY(12px) scale(0.4);
+    scale: 0.4;
   }
 }
 
 @keyframes task-full-duplex-orb-leave {
   to {
     opacity: 0;
-    transform: translateY(8px) scale(0.6);
+    scale: 0.6;
   }
 }
 
@@ -98,13 +93,21 @@
   display: flex;
   gap: 8px;
   padding-top: 8px;
+}
+
+.task-full-duplex-orb__controls,
+.task-full-duplex-sharing {
   opacity: 0;
   pointer-events: none;
   transition: opacity 150ms;
 }
 
 .task-full-duplex-orb:hover .task-full-duplex-orb__controls,
-.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls {
+.task-full-duplex-orb:hover .task-full-duplex-sharing,
+.task-full-duplex-orb.is-dragging .task-full-duplex-orb__controls,
+.task-full-duplex-orb.is-dragging .task-full-duplex-sharing,
+.task-full-duplex-orb:focus-within .task-full-duplex-orb__controls,
+.task-full-duplex-orb:focus-within .task-full-duplex-sharing {
   opacity: 1;
   pointer-events: auto;
 }
@@ -140,7 +143,8 @@
 }
 
 @media (hover: none) {
-  .task-full-duplex-orb__controls {
+  .task-full-duplex-orb__controls,
+  .task-full-duplex-sharing {
     opacity: 1;
     pointer-events: auto;
   }
@@ -170,14 +174,13 @@
 }
 
 .task-full-duplex-sharing {
-  position: fixed;
-  top: 12px;
-  right: 16px;
-  z-index: 100;
   display: flex;
   align-items: center;
   gap: 10px;
+  width: max-content;
   max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  margin-bottom: 12px;
   padding: 8px 12px;
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
@@ -205,30 +208,19 @@
   cursor: pointer;
 }
 
-.task-full-duplex-sources {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
+.task-full-duplex-sharing > span:not(.task-full-duplex-sharing__dot) {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.task-full-duplex-sources button {
-  display: flex;
-  flex: 1 1 180px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 16px;
-  min-height: 120px;
-  padding: 16px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  color: var(--color-text-primary);
-  background: var(--color-surface-card);
-  font: inherit;
-  cursor: pointer;
+.task-full-duplex-orb__handle {
+  width: 80px;
+  height: 80px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 
-.task-full-duplex-sources button[aria-checked='true'] {
-  border-color: var(--color-text-link);
-  background: var(--color-icon-btn-hover-surface);
+.task-full-duplex-orb.is-dragging .task-full-duplex-orb__handle {
+  cursor: grabbing;
 }

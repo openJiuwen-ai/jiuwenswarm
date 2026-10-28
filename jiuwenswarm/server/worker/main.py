@@ -10,6 +10,28 @@ import logging
 import signal
 
 
+def _activate_managed_external_cli_paths() -> None:
+    """Expose managed external CLI SDK paths before runtime modules load.
+
+    The frozen app installs the optional external CLI SDKs (``claude_agent_sdk``,
+    ``openai_codex``) outside the bundle, and every process importing them must
+    append their site-packages directories to ``sys.path`` first. Agent turns,
+    including team members backed by those SDKs, execute in this process. The
+    call never raises, so an optional SDK problem cannot block worker startup.
+    """
+    try:
+        from jiuwenswarm.common.external_cli_runtime import (
+            activate_external_cli_runtime_paths,
+        )
+
+        activate_external_cli_runtime_paths()
+    except Exception:  # noqa: BLE001 - optional capability must not block startup
+        logging.getLogger(__name__).warning(
+            "Managed external CLI runtime activation failed at worker startup",
+            exc_info=True,
+        )
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
     from jiuwenswarm.server.worker.diagnostics import enable_worker_diagnostics
@@ -42,6 +64,7 @@ def main() -> None:
             raise SystemExit(1) from None
         return
 
+    _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
 
     loop = asyncio.new_event_loop()

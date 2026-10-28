@@ -21,7 +21,12 @@ function loadAgentGroupVisualIdentity(groupId: string): Promise<AgentGroupVisual
       .getGroup(groupId)
       .then((detail) => ({
         // 团级身份给聊天区 Leader / 群头像；成员表只用来判定归属（★），运行态不渲染包图
-        identity: { id: detail.id, displayName: detail.displayName, avatarUrl: detail.avatarUrl },
+        identity: {
+          id: detail.id,
+          name: detail.name,
+          displayName: detail.displayName,
+          avatarUrl: detail.avatarUrl,
+        },
         members: detail.members.map((member) => ({ id: member.id })),
       }))
       .catch(() => null)

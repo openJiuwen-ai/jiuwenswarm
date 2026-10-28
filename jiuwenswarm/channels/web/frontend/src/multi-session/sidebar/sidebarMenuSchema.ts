@@ -17,15 +17,23 @@ const PIN_LABEL_PAIRS = {
 export function getProjectMenuItems(
   isPinned: boolean,
   translate: Translate,
-  options: { isDefault?: boolean; archiveSessionsDisabled?: boolean } = {},
+  options: {
+    isDefault?: boolean;
+    archiveSessionsDisabled?: boolean;
+    /** design 模式不支持归档，跳过「归档会话」 */
+    archivable?: boolean;
+  } = {},
 ): SidebarMenuItemDef[] {
-  const batchItems: SidebarMenuItemDef[] = [
-    {
-      key: 'archive-sessions',
-      label: translate('multiSession.project.archiveSessions'),
-      disabled: options.archiveSessionsDisabled,
-    },
-  ];
+  const batchItems: SidebarMenuItemDef[] =
+    options.archivable === false
+      ? []
+      : [
+          {
+            key: 'archive-sessions',
+            label: translate('multiSession.project.archiveSessions'),
+            disabled: options.archiveSessionsDisabled,
+          },
+        ];
   if (options.isDefault) return batchItems;
   return [
     {

@@ -8,7 +8,7 @@ storyboard → review → execution graph → validate) instead of the leader
 hand-assembling the graph.
 
 ``swarm.designer_execution`` mounts the leader's canvas-execution tool
-(``designer_run_graph``) together with its system prompt section — the
+(``swarmflow``) together with its system prompt section — the
 "rules for the mapping skeleton, LLM fills the parameters" surface the
 design leader uses to trigger a run after the user agrees.
 
@@ -67,7 +67,7 @@ def _build_designer_authoring_rail(
 @harness_element(
     kind=ElementKind.RAIL,
     name=DESIGNER_EXECUTION,
-    description="team.design leader execution tool (designer_run_graph) "
+    description="team.design leader execution tool (swarmflow) "
     "plus its usage prompt section; canvas trigger from the conversation.",
 )
 def _build_designer_execution_rail(

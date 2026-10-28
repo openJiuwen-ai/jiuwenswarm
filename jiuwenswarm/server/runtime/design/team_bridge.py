@@ -123,10 +123,15 @@ async def _push_team_event(
     try:
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
+        # Voice tasks execute on an internal channel; their saved Design canvas
+        # is still observed through the normal Web session subscription.
+        event_channel = channel_id
+        if channel_id == "video_tool" and str(payload.get("event_type") or "").startswith("designer."):
+            event_channel = "web"
         await AgentWebSocketServer.get_instance().send_push(
             {
                 "request_id": request_id or f"design-{uuid.uuid4().hex}",
-                "channel_id": channel_id or "web",
+                "channel_id": event_channel or "web",
                 "session_id": session_id,
                 "payload": payload,
                 "is_complete": False,
@@ -193,7 +198,7 @@ def _push_run_update(
 ) -> None:
     """Push designer.run.updated while a leader-triggered run executes.
 
-    The ``designer_run_graph`` tool call awaits the whole trigger, so the
+    The ``swarmflow`` tool call awaits the whole trigger, so the
     canvas needs the run event stream (not just the final reply) to show
     live progress — same payloads as the canvas run button path.
     """

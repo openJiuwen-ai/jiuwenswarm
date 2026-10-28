@@ -29,8 +29,8 @@ from ..client.images import image_delivered, image_label, image_metadata, requir
 from ..client.preview import latest_preview_sink
 from ..client.result_presentation import result_receipt, text_source_label
 from ..observation.action_presentation import ActionPresentation
-from ..protocol.png import decode_png
 from .output import OutputBuffer
+from .image_delivery import prepare_image
 from .presentation import ObservationOutput, ObservationPresenter
 
 _runs = ContextVar("computer_use_execution", default=None)
@@ -105,7 +105,7 @@ class Runtime:
                 run["imageContexts"].set(observation["state"]["screenshot"], True)
 
         def emit_image(png):
-            if not any(image is png for image in run["images"]):
+            if not any(delivery.source is png for delivery in run["images"]):
                 self.print_image(png)
 
         run["observations"].flush(emit, emit_image)
@@ -176,13 +176,14 @@ class Runtime:
     def print_image(self, png):
         if not isinstance(png, (bytes, bytearray, memoryview)):
             raise TypeError("printImage() expects PNG bytes, such as state.screenshot.")
-        data = base64.b64encode(png).decode("ascii")
-        decode_png(data)
+        delivery = prepare_image(png)
+        data = base64.b64encode(delivery.png).decode("ascii")
         run = _runs.get()
-        self.emit(dict(type="text", text=image_label(png, run is not None and run["imageContexts"].has(png))))
+        self.emit(dict(type="text", text=image_label(
+            png, run is not None and run["imageContexts"].has(png), delivery.coordinates)))
         self.emit(dict(type="image", mimeType="image/png", data=data))
         if run is not None and run["active"]:
-            run["images"].append(png)
+            run["images"].append(delivery)
             self.send(dict(diagnostic=dict(kind="image_output", capture=image_metadata(png)), executionId=run["id"]))
 
     async def finish(self, error=None):
@@ -201,8 +202,8 @@ class Runtime:
         except Exception as failure:
             if error is None:
                 error = failure
-        for png in run["images"]:
-            image_delivered(png)
+        for delivery in run["images"]:
+            image_delivered(delivery.source, delivery.coordinates)
         run["active"] = False
         run["phase"] = "finished"
         result = dict(content=run["output"].content.copy())

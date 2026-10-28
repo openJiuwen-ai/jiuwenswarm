@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, Mock, patch
 
 import pytest
 
@@ -218,6 +218,58 @@ async def test_response_prompt_rail_splits_input_and_output_rules():
     assert builder.has_section("input")
     assert builder.has_section("output")
     assert not builder.has_section("response")
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_omits_send_file_for_xiaoyi(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"channels": {"xiaoyi": {"send_file_allowed": True}}},
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+    assert "生成并投递文件" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_fails_closed_without_config(monkeypatch):
+    def unavailable_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        unavailable_config,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
 
 
 @pytest.mark.asyncio
@@ -2414,6 +2466,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
         sys_operation=None,
         language="cn",
         max_iterations=7,
+        rails=[ANY],
     )
 
 
@@ -2451,6 +2504,7 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
         sys_operation=None,
         language="cn",
         max_iterations=DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+        rails=[ANY],
     )
 
 

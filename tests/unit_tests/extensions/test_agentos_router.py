@@ -1946,6 +1946,70 @@ async def test_sandbox_prewarm_lifecycle_protected_during_warmup(monkeypatch) ->
 
 
 @pytest.mark.asyncio
+async def test_leader_cancel_wakes_follower_and_clears_inflight() -> None:
+    """Cancelling a leader must settle the inflight Future and wake followers."""
+
+    gate = asyncio.Event()
+
+    class GatedWsClient(FakeAgentWsClient):
+        def __init__(self, yuanrong: FakeYuanRongClient) -> None:
+            super().__init__(yuanrong)
+            self.gate = gate
+
+        async def connect(self, uri: str) -> None:
+            await self.gate.wait()
+            await super().connect(uri)
+
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    gated_clients: list[GatedWsClient] = []
+
+    def ws_factory() -> GatedWsClient:
+        gated = GatedWsClient(yuanrong)
+        gated_clients.append(gated)
+        return gated
+
+    client = _router_client(
+        yuanrong,
+        agent_manager=agent_manager,
+        ws_client_factory=ws_factory,
+    )
+
+    await client._on_channel_event(_channel_event("u1", "connected", "web"))
+    warmup_task = client._warmup_tasks.get("u1")
+    assert warmup_task is not None
+
+    runtime = None
+    for _ in range(500):
+        runtime = await agent_manager.get_agent("u1", "jiuwenswarm")
+        if runtime is not None and runtime.is_ready():
+            break
+        await asyncio.sleep(0.01)
+    assert runtime is not None and runtime.is_ready()
+    assert gated_clients
+
+    follower_task = asyncio.create_task(client._get_ws_client(runtime))
+    await asyncio.sleep(0.05)
+    assert not follower_task.done()
+    assert client._ws_connecting
+
+    warmup_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await warmup_task
+
+    with pytest.raises(RuntimeError, match="leader cancelled"):
+        await asyncio.wait_for(follower_task, timeout=1.0)
+
+    assert gated_clients[0].disconnected is True
+    assert client._ws_connecting == {}
+
+    gate.set()
+    connected = await asyncio.wait_for(client._get_ws_client(runtime), timeout=1.0)
+    assert connected is not None
+    await client.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_chat_after_connect_warmup_reuses_sandbox() -> None:
     yuanrong = FakeYuanRongClient()
     client = _router_client(yuanrong)

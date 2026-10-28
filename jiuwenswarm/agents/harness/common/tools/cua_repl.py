@@ -15,16 +15,12 @@ from jiuwenswarm.cua_engine.runtime import desktop_lane
 
 
 REPL_DESCRIPTION = (
-    "Execute Python with top-level await for systematic multi-step desktop workflows: "
-    "opening files, searching, filling, editing, saving, loops and conditions. Prefer this tool "
-    "for the overall workflow; existing individual tools remain suitable for a simple window "
-    "observation or one explicit action. Preloaded: computer (Computer/App/Element SDK), print, "
-    "printImage. Variables persist across calls within this delegated task. Await operations "
-    "sequentially. Reads present text; printImage delivers screenshots; actions return receipts "
-    "only, so explicitly read to verify. Finish a call and inspect a new screenshot before "
-    "choosing coordinates. Never mix this tool's references or pixels with the old tools. "
-    "Execution uses the host user's permissions, not a security sandbox. Timeout or cancellation "
-    "may clear state after actions already executed; never replay uncertain input."
+    "Run Python with top-level await for multi-step desktop workflows. Preloaded: computer "
+    "(Computer/App/Element SDK), print, printImage. Variables persist across calls within this "
+    "task. Await operations sequentially. Use printImage for screenshots and explicitly read "
+    "to verify actions. Use references and coordinates from this tool; inspect a returned "
+    "image before choosing coordinates in a later call. After errors, observe before retrying "
+    "actions that may already have executed."
 )
 
 

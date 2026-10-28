@@ -1,4 +1,6 @@
+import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
+import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
   applyMultiModelCollaborationSnapshot,
   getMultiModelCollaborationRevision,
@@ -48,7 +50,7 @@ import {
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
 import { LoginDialog } from './components/LoginDialog';
 import { DesignerPage } from './features/designer/components/DesignerPage';
-import { submitDesignComposer } from './features/designer/designerEntry';
+import { createDesignerConversation, submitDesignComposer } from './features/designer/designerEntry';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -77,13 +79,19 @@ import {
 } from './features/tool-events/toolEventNormalizer';
 import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
+import { normalizeTeamGroupIdentity } from './features/teamGroupIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
-import { webRequest } from './services/webClient';
+import { webClient, webRequest } from './services/webClient';
 import { attachTeamSession, resetTeamAttachments } from './services/teamAttach';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
+import {
+  applyBrowserDisplaySettings,
+  browserDisplayRevision,
+  useDesktopBrowserHeadless,
+} from './features/desktopBrowserDisplay';
 import {
   AgentMode,
   MediaItem,
@@ -96,7 +104,7 @@ import {
   type Session,
 } from './types';
 import { parseModelGroups, parseModelSelection } from './features/settings/modules/models/modelGroupAdapters';
-import { resolveAvailableModelSelection } from './stores/sessionStore';
+import { isModelCatalogPending, resolveAvailableModelSelection } from './stores/sessionStore';
 import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -194,12 +202,8 @@ import {
 import {
   shouldInsetTrajectoryForFloatingTasks,
   trajectoryComposerClearance,
+  type TrajectoryComposerPolicy,
 } from './features/trajectory/trajectoryLayout';
-import {
-  normalizeTrajectoryUiEnabled,
-  setTrajectoryUiEnabled,
-  useTrajectoryUiEnabled,
-} from './features/trajectory/featureConfig';
 import {
   normalizeTrajectoryDiagnosisEnabled,
   setTrajectoryDiagnosisEnabled,
@@ -207,16 +211,13 @@ import {
 } from './features/trajectory/diagnosis/diagnosisFeatureConfig';
 import './App.css';
 import { setTeamOrganizationUiEnabled } from './features/teamOrganization/featureConfig';
+import { organizationOwnerStopTarget } from './features/teamOrganization/conversation';
 import {
   normalizeTeamDispatchMode,
   resolveNewSessionDispatchMode,
   setTeamScheduledDispatchEnabled,
 } from './features/teamDispatch/featureConfig';
 
-const LazyTrajectoryPanel = lazy(async () => {
-  const module = await import('./features/trajectory/TrajectoryPanel');
-  return { default: module.TrajectoryPanel };
-});
 const LazyTrajectoryAnalysisPage = lazy(async () => {
   const module = await import('./features/trajectory/TrajectoryAnalysisPage');
   return { default: module.TrajectoryAnalysisPage };
@@ -273,6 +274,12 @@ function restoreSessionModelSelection(
   const store = useSessionStore.getState();
   const restoredSelection = parseModelSelection(modelSelection);
   if (restoredSelection) {
+    // Catalog often arrives after session.get_metadata on refresh (#5860). Keep the
+    // server selection until models.list is ready; do not clear or write back yet.
+    if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) {
+      store.setSelectedModelSelection(sessionId, restoredSelection);
+      return;
+    }
     const resolved = resolveAvailableModelSelection(
       restoredSelection,
       store.chatAvailableModels,
@@ -473,8 +480,8 @@ function AppContent({
   // watch-only, per session, alongside which view that session last showed.
   const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
+  const [diagnosisComposerPolicy, setDiagnosisComposerPolicy] = useState<TrajectoryComposerPolicy>('available');
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
-  const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
@@ -485,7 +492,6 @@ function AppContent({
   );
   const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
-  const trajectoryUiEnabled = useTrajectoryUiEnabled();
   const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -606,7 +612,23 @@ function AppContent({
   );
   /** 仅用于强制重跑「首屏 history」effect：从会话列表恢复时若 sessionId 未变，也要重新拉 history 并恢复 historyPagerMeta */
   const [historyBootstrapKey, setHistoryBootstrapKey] = useState(0);
+  const historyRefreshQueueRef = useRef(new HistoryRefreshQueue());
+  const forcedHistoryRefreshRef = useRef(new Set<string>());
+  const [historyRecoveryRevision, setHistoryRecoveryRevision] = useState(0);
+  // 延迟绑定到后文定义的 loadSessionMetadata，供 runtime.history_required 回查权威运行态。
+  const loadSessionMetadataRef = useRef<((id: string) => Promise<Session | null>) | null>(null);
   const sessionIdRef = useRef(sessionId);
+  useEffect(() => webClient.on('runtime.history_required', (event) => {
+    const targetSessionId = event.payload.session_id;
+    if (typeof targetSessionId !== 'string' || !targetSessionId) return;
+    historyRefreshQueueRef.current.request(targetSessionId);
+    setHistoryRecoveryRevision((revision) => revision + 1);
+    // 该恢复 turn 的终态被当孤儿丢弃，本地 isProcessing 可能停在刷新前的 true
+    // （不会再有 processing_status(false) 到达），从而阻塞下方 effect 的 take()。
+    // 回查网关权威运行态，用实时 is_processing 覆盖本地状态解除阻塞；若确有新 turn
+    // 在跑则保持 busy、延后刷新，不会清掉新轮的流式缓冲。
+    void loadSessionMetadataRef.current?.(targetSessionId);
+  }), []);
   const sessionRestoreQueueRef = useRef<Promise<void>>(Promise.resolve());
   const sessionMetadataRequestsRef = useRef(new Map<string, Promise<Session | null>>());
   const sessionViewIdRef = useRef(generateUuidV4());
@@ -816,12 +838,15 @@ function AppContent({
   const requestedChatSurfaceView: ChatSurfaceView = surfaceModeSupported
     ? (chatSurfaceViews[sessionId] ?? 'chat')
     : 'chat';
-  const chatSurfaceView: ChatSurfaceView = (requestedChatSurfaceView === 'trajectory' && !trajectoryUiEnabled)
+  // The standalone chat/trajectory tabs were removed; only the diagnosis entry remains.
+  const chatSurfaceView: ChatSurfaceView = (
+    requestedChatSurfaceView === 'trajectory'
     || (requestedChatSurfaceView === 'diagnosis' && !diagnosisEntryAvailable)
+  )
     ? 'chat'
     : requestedChatSurfaceView;
   const selectChatSurfaceView = useCallback((nextView: ChatSurfaceView) => {
-    if (nextView === 'trajectory') setTrajectoryUiRequested(true);
+    if (nextView === 'trajectory') return;
     if (nextView === 'diagnosis') setDiagnosisUiRequested(true);
     setChatSurfaceViews((current) => (
       current[sessionId] === nextView
@@ -836,18 +861,31 @@ function AppContent({
   const leaveDiagnosisView = useCallback(() => {
     selectChatSurfaceView('chat');
   }, [selectChatSurfaceView]);
-  const composerDocked = chatSurfaceView === 'trajectory' || chatSurfaceView === 'diagnosis';
+  const returnToChatAfterFill = useCallback(() => {
+    selectChatSurfaceView('chat');
+    setComposerFocusNonce((nonce) => nonce + 1);
+  }, [selectChatSurfaceView]);
+  const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const composerHeldClosed = composerDocked && diagnosisComposerPolicy !== 'available';
   const toggleTrajectoryComposer = useCallback(() => {
+    if (composerHeldClosed) return;
     setTrajectoryComposerCollapsed((current) => ({
       ...current,
       [sessionId]: !(current[sessionId] ?? false),
     }));
-  }, [sessionId]);
+  }, [composerHeldClosed, sessionId]);
+  useEffect(() => {
+    if (diagnosisComposerPolicy === 'available') return;
+    setTrajectoryComposerCollapsed((current) => (
+      current[sessionId] === true ? current : { ...current, [sessionId]: true }
+    ));
+  }, [diagnosisComposerPolicy, sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
   const browserAgentActive = useBrowserAgentActivity(sessionId);
+  const browserHeadless = useDesktopBrowserHeadless();
   const [chatPanelWidthPct, setChatPanelWidthPct] = useState(CHAT_PANEL_DEFAULT_WIDTH_PCT);
   const chatPanelResizeDragRef = useRef<ChatPanelResizeDrag | null>(null);
   const [codeReviewTarget, setCodeReviewTarget] = useState<CodeReviewTarget | null>(null);
@@ -894,6 +932,10 @@ function AppContent({
 
   const browserAutoExpandedSessionRef = useRef<string | null>(null);
   useEffect(() => {
+    if (browserHeadless) {
+      browserAutoExpandedSessionRef.current = null;
+      return;
+    }
     if (!window.jiuwenDesktop?.isElectron || !browserAgentActive) return;
     // Electron 内置浏览器页签只在浏览器 Agent 真正被调用后出现；每个会话只自动
     // 展开一次，之后尊重用户手动收起的选择。team 模式不抢 tab，等回到单 agent
@@ -904,7 +946,15 @@ function AppContent({
     setToolPanelHidden(false);
     setSingleAgentPanelActiveTab('browser');
     setSingleAgentPanelExpanded(true);
-  }, [browserAgentActive, mode, sessionId, setSingleAgentPanelActiveTab, setSingleAgentPanelExpanded, setToolPanelHidden]);
+  }, [
+    browserAgentActive,
+    browserHeadless,
+    mode,
+    sessionId,
+    setSingleAgentPanelActiveTab,
+    setSingleAgentPanelExpanded,
+    setToolPanelHidden,
+  ]);
 
   const handleOpenCodeReview = useCallback((target: CodeReviewTarget) => {
     setHeartbeatPanelOpen(false);
@@ -1077,6 +1127,7 @@ function AppContent({
   }, [setHistoryRetryAvailable, setLoadingHistory]);
 
   useEffect(() => () => disposeInFlightHistoryHandles(), [disposeInFlightHistoryHandles]);
+
   const todos = useTodoStore((s) => s.runtimes[sessionId]?.todos ?? []);
   const subagentCount = useSubagentStore((s) => Object.keys(s.runtimes[sessionId]?.subagentsById ?? {}).length);
   const subagentStatusSignature = useSubagentStore((s) => Object.values(s.runtimes[sessionId]?.subagentsById ?? {})
@@ -1220,6 +1271,33 @@ function AppContent({
   const applicationPlugins = applicationPluginState.plugins;
   const visibleApplicationPlugins = enabledApplicationPlugins(applicationPlugins);
   const settingsRequest = useMemo(() => resolveSettingsRequest(request), [request, resolveSettingsRequest]);
+
+  useEffect(() => {
+    if (!isConnected || !window.jiuwenDesktop?.isElectron) return;
+    let active = true;
+    let requestId = 0;
+    const refresh = () => {
+      const id = ++requestId;
+      const revision = browserDisplayRevision();
+      void settingsRequest<{ headless?: unknown }>('path.get')
+        .then((settings) => {
+          if (active && id === requestId) return applyBrowserDisplaySettings(settings, revision);
+        })
+        .catch((error) => console.warn('[desktop.browser] display setting load failed:', error));
+    };
+    refresh();
+    const unsubscribe = webClient.on('config.changed', ({ payload }) => {
+      const keys = payload.updated_keys;
+      const browserChanged = !Array.isArray(keys) || keys.length === 0 || keys.some(
+        (key) => typeof key === 'string' && (key.startsWith('browser') || key === 'headless'),
+      );
+      if (browserChanged) refresh();
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [isConnected, settingsRequest]);
 
   const applySubagentHistoryReplay = useCallback((sid: string, items: HistorySubagentReplayItem[]) => {
     const subagentStore = useSubagentStore.getState();
@@ -1404,6 +1482,35 @@ function AppContent({
     }
   }, [applySubagentHistoryReplay, request]);
 
+  const seedDiscoveredSubagents = useCallback((sid: string, ids: string[]) => {
+    // Cold refresh has no in-memory roster; parent history.done lists on-disk
+    // subagent buckets so we can seed ids and then pull per-subagent history
+    // (GitCode #4887). Placeholder status is replaced by roster frames.
+    if (!ids.length) return;
+    const subagentStore = useSubagentStore.getState();
+    let seeded = false;
+    for (const subagentId of ids) {
+      if (subagentStore.getRuntime(sid)?.subagentsById[subagentId]) continue;
+      const event = normalizeSubagentStatusEvent({
+        event_type: 'chat.subtask_update',
+        session_id: sid,
+        parent_session_id: sid,
+        subagent_id: subagentId,
+        display_name: subagentId,
+        status: 'completed',
+        revision: 0,
+        created_at: 0,
+        updated_at: 0,
+      });
+      if (!event || event.subagent.parent_session_id !== sid) continue;
+      subagentStore.applyHistoryEvent(sid, event);
+      seeded = true;
+    }
+    if (seeded) {
+      restoreSubagentHistory(sid);
+    }
+  }, [restoreSubagentHistory]);
+
   const applyRecoveredSubagentToolHistory = useCallback((sid: string, items: HistoryToolReplayItem[]) => {
     const subagentStore = useSubagentStore.getState();
     const mergedToolReplay = mergeHistoryToolReplayItems(
@@ -1514,6 +1621,9 @@ function AppContent({
         );
       }
     }
+    if (result.discoveredSubagentIds.length > 0) {
+      seedDiscoveredSubagents(sid, result.discoveredSubagentIds);
+    }
     if (result.subagentReplay.length > 0) {
       applySubagentHistoryReplay(sid, result.subagentReplay);
     }
@@ -1579,7 +1689,7 @@ function AppContent({
         ...currentItems,
       ]);
     }
-  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, settleHistoricalToolExecutions]);
+  }, [addToolCall, addToolResult, applyRecoveredSubagentToolHistory, applySubagentHistoryReplay, prependMessages, seedDiscoveredSubagents, settleHistoricalToolExecutions]);
 
   const fetchHistoryBatch = useCallback(async (
     sid: string,
@@ -1834,6 +1944,12 @@ function AppContent({
             ? normalizeTeamLeaderIdentity(session.team_leader_identity)
             : null,
         );
+        useSessionStore.getState().setTeamGroupIdentity(
+          targetSessionId,
+          sessionGroupId && Object.prototype.hasOwnProperty.call(session, 'team_group_identity')
+            ? normalizeTeamGroupIdentity(session.team_group_identity)
+            : null,
+        );
         // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
@@ -1846,19 +1962,12 @@ function AppContent({
           const cfg = sfConfig as {
             enable_swarmflow?: boolean;
             swarmflow_budget?: number | null;
-            swarmflow_worktree?: boolean;
           };
           if (cfg.enable_swarmflow) {
             useSessionStore.getState().setSwarmflowActive(
               targetSessionId,
               true,
               cfg.swarmflow_budget ?? undefined,
-            );
-          }
-          if (cfg.swarmflow_worktree !== undefined) {
-            useSessionStore.getState().setSwarmflowWorktree(
-              targetSessionId,
-              cfg.swarmflow_worktree,
             );
           }
         }
@@ -1901,6 +2010,10 @@ function AppContent({
     return pending;
   }, [fetchSessionMetadata]);
 
+  useEffect(() => {
+    loadSessionMetadataRef.current = loadSessionMetadata;
+  }, [loadSessionMetadata]);
+
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
     try {
@@ -1908,8 +2021,9 @@ function AppContent({
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
-      setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
-      setTrajectoryDiagnosisEnabled(normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled));
+      setTrajectoryDiagnosisEnabled(
+        normalizeTrajectoryDiagnosisEnabled(config.trajectory_ui_diagnosis_enabled),
+      );
       setTeamOrganizationUiEnabled(config.team_organization_ui_enabled);
       setTeamScheduledDispatchEnabled(config.team_scheduled_dispatch_enabled);
       const collaborationSnapshotApplied = applyMultiModelCollaborationSnapshot(
@@ -2328,6 +2442,24 @@ function AppContent({
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
 
+  useEffect(() => {
+    if (!isConnected || !sessionId) return;
+    // A recovered old request must not clear a newer turn's stream buffers.
+    if (!historyRefreshQueueRef.current.take(sessionId, isProcessing || isLoadingHistory)) return;
+    disposeInFlightHistoryHandles(sessionId);
+    setHistoryPagerMeta(sessionId, null);
+    forcedHistoryRefreshRef.current.add(sessionId);
+    setHistoryBootstrapKey((key) => key + 1);
+  }, [
+    disposeInFlightHistoryHandles,
+    historyRecoveryRevision,
+    isConnected,
+    isLoadingHistory,
+    isProcessing,
+    sessionId,
+    setHistoryPagerMeta,
+  ]);
+
   // 聊天处理完成后更新本地会话元数据，以便拾取自动生成的标题等更新。
   const prevProcessingBySessionRef = useRef(new Map<string, boolean>());
   useEffect(() => {
@@ -2374,8 +2506,9 @@ function AppContent({
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     
-    if (sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
+    if (!forceRefresh && sessionIdsCreatedInThisPageRef.current.has(sessionId)) {
       setHistoryPagerMeta(sessionId, null);
       setHistoryLoadingMore(false);
       setLoadingHistory(sessionId, false);
@@ -2384,7 +2517,7 @@ function AppContent({
 
     // 新建会话时跳过历史加载
     const isNew = useChatStore.getState().runtimes[sessionId]?.isNewSession ?? false;
-    if (isNew) {
+    if (isNew && !forceRefresh) {
       useChatStore.getState().setNewSession(sessionId, false);
       setHistoryPagerMeta(sessionId, null);  // 新会话无历史，不显示分页栏
       setLoadingHistory(sessionId, false);
@@ -2396,7 +2529,7 @@ function AppContent({
     const existingRuntime = useChatStore.getState().getRuntime(sessionId);
     const subagentRuntime = useSubagentStore.getState().getRuntime(sessionId);
     const hasStorageOnlySubagentCache = Object.keys(subagentRuntime?.cacheOnlySubagentIds ?? {}).length > 0;
-    if (existingRuntime && existingRuntime.historyPagerMeta) {
+    if (!forceRefresh && existingRuntime && existingRuntime.historyPagerMeta) {
       if (hasStorageOnlySubagentCache) {
         useSubagentStore.getState().removeRuntime(sessionId);
       } else {
@@ -2465,6 +2598,11 @@ function AppContent({
     // 开始历史会话加载
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
+      requestNextBatch: (cursor) => request(HISTORY_GET_METHOD, {
+        session_id: sessionId,
+        cursor,
+        limit: 50,
+      }),
       onReady: (messages, cursorMeta) => {
         historyRestoreFromPanelHintRef.current = false;
         // "目标完成"回显消息纯前端合成，从未写进后端 session 历史，history.get 拉回来的
@@ -2628,6 +2766,9 @@ function AppContent({
       onSubagentReplay: (items) => {
         applySubagentHistoryReplay(sessionId, items);
       },
+      onDiscoveredSubagentIds: (ids) => {
+        seedDiscoveredSubagents(sessionId, ids);
+      },
       onReasoningReplay: (items) => {
         restoreReasoningSegments(
           sessionId,
@@ -2719,6 +2860,7 @@ function AppContent({
     addToolResult,
     applyRecoveredSubagentToolHistory,
     applySubagentHistoryReplay,
+    seedDiscoveredSubagents,
     settleHistoricalToolExecutions,
     clearMessages,
     disposeInFlightHistoryHandles,
@@ -2917,8 +3059,20 @@ function AppContent({
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { skillName: string; prefixText?: string; suffixText?: string; secondSkillName?: string; metadata?: Record<string, unknown>; mode?: AgentMode };
-      enterNewConversation(detail.mode);
+      const detail = (e as CustomEvent).detail as {
+        skillName: string;
+        prefixText?: string;
+        suffixText?: string;
+        secondSkillName?: string;
+        metadata?: Record<string, unknown>;
+        mode?: AgentMode;
+      };
+      // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
+      // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
+      enterNewConversation(
+        detail.mode,
+        detail.mode ? { forceMode: detail.mode } : {},
+      );
       // 存储 metadata，sendMessage 时随 chat.send 发送后清除（skill-creator 统一入口等场景）
       if (detail.metadata) {
         useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
@@ -3022,6 +3176,17 @@ function AppContent({
     };
 
     try {
+      if (workContext.work_mode === 'design') {
+        const created = await createDesignerConversation(initialTitle);
+        pendingNewConversationRef.current = false;
+        newConversationProjectRef.current = null;
+        newConversationPreviousSessionRef.current = null;
+        sessionIdRef.current = created.sessionId;
+        setSessionId(created.sessionId);
+        useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+        navigate({ kind: 'design-project', projectId: created.projectId, sessionId: created.sessionId });
+        return created.sessionId;
+      }
       const createParams: Record<string, unknown> = {
         create_token: generateUuidV4(),
         mode: resolvePlanWireMode(
@@ -3063,6 +3228,9 @@ function AppContent({
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
       (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
       if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      if (pendingRuntime?.teamGroupIdentity) {
+        sessionStore.setTeamGroupIdentity(newSid, pendingRuntime.teamGroupIdentity);
+      }
       if (pendingRuntime?.selectedModelSelection) {
         sessionStore.setSelectedModelSelection(newSid, pendingRuntime.selectedModelSelection);
         void request('session.selection.set', {
@@ -3078,9 +3246,6 @@ function AppContent({
       );
       if (pendingRuntime?.enableSwarmflow) {
         sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
-      }
-      if (pendingRuntime?.swarmflowWorktree !== undefined) {
-        sessionStore.setSwarmflowWorktree(newSid, pendingRuntime.swarmflowWorktree);
       }
       const pendingDispatchMode = resolveNewSessionDispatchMode(pendingRuntime?.teamDispatchMode);
       if (pendingDispatchMode) {
@@ -3200,7 +3365,10 @@ function AppContent({
                   : code === 'unsupported'
                     ? t('designer.chat.unsupported')
                     : '';
-          window.alert(referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')));
+          toast.open({
+            content: referenceError || (code && code !== 'empty' ? code : t('designer.chat.bootstrapError')),
+            variant: 'error',
+          });
         } finally {
           creatingSessionRef.current = false;
           useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
@@ -3312,18 +3480,17 @@ function AppContent({
         if (pendingAgentGroupBinding) {
           useSessionStore.getState().setAgentGroupBindingPending(newSid, pendingAgentGroupBinding);
         }
+        const pendingTeamGroupIdentity = useSessionStore.getState()
+          .getRuntime(NEW_CONVERSATION_ID)?.teamGroupIdentity;
+        if (pendingTeamGroupIdentity) {
+          useSessionStore.getState().setTeamGroupIdentity(newSid, pendingTeamGroupIdentity);
+        }
         useSessionStore.getState().clearAgentGroupSelectionIntent(NEW_CONVERSATION_ID);
         // Swarmflow 开关同样按 session 存，必须在 removeRuntime('new') 之前搬到真实会话，
         // 否则 NEW_CONVERSATION_ID 的 runtime 被删后读到 undefined，chat.send 不带 enable_swarmflow=true。
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
         if (newConvSwarmflow?.enableSwarmflow) {
           useSessionStore.getState().setSwarmflowActive(newSid, true, newConvSwarmflow.swarmflowBudget);
-        }
-        if (newConvSwarmflow?.swarmflowWorktree !== undefined) {
-          useSessionStore.getState().setSwarmflowWorktree(
-            newSid,
-            newConvSwarmflow.swarmflowWorktree,
-          );
         }
         // 调度模式同理，且在这里落成显式值：团队按首条消息建好后就不能再改。
         const newConvDispatchMode = resolveNewSessionDispatchMode(newConvSwarmflow?.teamDispatchMode);
@@ -3445,7 +3612,11 @@ function AppContent({
     // （paused/blocked/completed/无目标）下，停止只结束会话，不碰目标本身。
     const isGoalActive = useGoalStore.getState().runtimes[currentSessionId]?.goal?.status === 'active';
     if (mode === 'team') {
-      void pause(currentSessionId);
+      if (organizationOwnerStopTarget(currentSessionId)) {
+        void cancel(currentSessionId);
+      } else {
+        void pause(currentSessionId);
+      }
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }
@@ -4194,6 +4365,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       data-testid="app-shell"
       data-session-id={sessionId}
     >
+      <ApplicationConversationRuntimes sessionId={sessionId} />
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
@@ -4326,7 +4498,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
                     '--trajectory-composer-clearance': `${trajectoryComposerClearance(
                       composerDocked,
-                      composerCollapsed,
+                      composerCollapsed || composerHeldClosed,
                       trajectoryComposerHeight,
                     )}px`,
                   } as CSSProperties}
@@ -4384,7 +4556,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
                         composerDocked={composerDocked}
-                        composerCollapsed={composerCollapsed}
+                        composerCollapsed={composerCollapsed || composerHeldClosed}
+                        composerToggleDisabled={composerHeldClosed}
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
@@ -4407,6 +4580,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           mode={mode}
                           sessionId={sessionId}
                           onBack={leaveDiagnosisView}
+                          onComposerPolicyChange={setDiagnosisComposerPolicy}
+                          onComposerFilled={returnToChatAfterFill}
                         />
                       </Suspense>
                     )}
@@ -4415,25 +4590,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     mode={mode}
                     onViewChange={selectChatSurfaceView}
                     tabListLabel={t('trajectory.tabs.aria')}
-                    trajectory={(
-                      <Suspense
-                        fallback={(
-                          <div className="trajectory-view-loading">
-                            {t('trajectory.loading')}
-                          </div>
-                        )}
-                      >
-                        <LazyTrajectoryPanel
-                          active={chatSurfaceView === 'trajectory'}
-                          mode={mode}
-                          sessionId={sessionId}
-                        />
-                      </Suspense>
-                    )}
-                    trajectoryEnabled={trajectoryUiEnabled}
+                    trajectory={null}
+                    trajectoryEnabled={false}
                     trajectoryLabel={t('trajectory.tabs.trajectory')}
                     showNavigation={sessionId !== NEW_CONVERSATION_ID}
-                    trajectoryRequested={trajectoryUiRequested}
+                    trajectoryRequested={false}
                   />
                 </div>
 

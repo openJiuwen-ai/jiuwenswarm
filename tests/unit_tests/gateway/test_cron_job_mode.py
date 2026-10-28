@@ -13,6 +13,7 @@ from jiuwenswarm.common.mode_matrix import (
     NEW_TEAM_CODE_PLAN,
     deprecate_mode,
 )
+from jiuwenswarm.gateway.cron.controller import CronController
 from jiuwenswarm.gateway.cron.models import (
     CRON_DEFAULT_TIMEOUT_SECONDS,
     CRON_JOB_DEFAULT_MODE,
@@ -131,6 +132,14 @@ def test_cron_job_metadata_matches_modes_and_default() -> None:
     assert meta["default_team_timeout_seconds"] == CRON_TEAM_DEFAULT_TIMEOUT_SECONDS
     assert meta["max_timeout_seconds"] == CRON_MAX_TIMEOUT_SECONDS
     assert meta["modes"] == sorted(meta["modes"])
+
+
+def test_cron_controller_rejects_xiaoyi_target() -> None:
+    controller = object.__new__(CronController)
+    controller._target_channel = None
+
+    with pytest.raises(ValueError, match="does not support scheduled tasks: xiaoyi"):
+        controller._normalize_targets("xiaoyi")
 
 
 def test_resolve_cron_job_timeout_seconds_defaults_by_mode() -> None:

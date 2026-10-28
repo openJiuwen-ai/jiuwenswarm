@@ -52,6 +52,7 @@ from jiuwenswarm.common.config import (
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
+    update_cua_agent_enabled_in_config,
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
@@ -59,6 +60,7 @@ from jiuwenswarm.common.config import (
     update_memory_forbidden_description_in_config,
     update_memory_forbidden_enabled_in_config,
     update_permissions_profile_in_config,
+    update_progressive_tool_optimize_in_config,
     update_proactive_recommendation_in_config,
     update_rsi_enabled_in_config,
     update_setup_guide_enabled_in_config,
@@ -74,7 +76,6 @@ from jiuwenswarm.common.config import (
     update_team_scheduled_dispatch_in_config,
     update_team_task_verification_in_config,
     update_trajectory_diagnosis_in_config,
-    update_trajectory_ui_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
     validate_persisted_kv_cache_affinity,
@@ -84,6 +85,7 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     build_models_defaults_from_frontend,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.moa_config import (
     MOA_CONFIG_KEYS,
     build_moa_config_from_frontend,
@@ -219,9 +221,8 @@ class ConfigChangeSet:
                 scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
-            elif key_text in {"trajectory_ui_enabled", "trajectory_ui_diagnosis_enabled"}:
-                # Diagnosis switches the trajectory data plane on as well, so
-                # it needs the same runtime sync as the trajectory view switch.
+            elif key_text == "trajectory_ui_diagnosis_enabled":
+                # Diagnosis owns the trajectory data plane and diagnosis entry.
                 scopes.update({"agent_runtime", "web_ui"})
             elif key_text in {"task_full_duplex_enabled", "team_organization_ui_enabled"}:
                 scopes.add("web_ui")
@@ -373,7 +374,7 @@ CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "rsi_enabled",
-    "trajectory_ui_enabled",
+    "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
@@ -395,6 +396,7 @@ CONFIG_YAML_KEYS = frozenset({
     "skill_evolution",
     "ttse_enabled",
     "enable_free_models",
+    "progressive_tool_optimize",
 })
 # 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification），改动后需重载 team。
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
@@ -856,8 +858,32 @@ def external_cli_managed_cli_path(cli_agent: str) -> str:
     return str(candidate) if candidate.is_file() else ""
 
 
+def _resolve_windows_cli_executable_from_path(cli_agent: str) -> str:
+    """PATH lookup restricted to real executables.
+
+    npm-style global installs drop `claude`, `claude.cmd` and `claude.ps1`
+    side by side; the PATHEXT-driven `shutil.which` resolves the script shim,
+    which the detector rejects as unsupported and the path dropdown would
+    then offer as a dead entry (#5678). Only an `.exe` is launchable through
+    CreateProcess, so scan PATH for that instead. Windows-only: other
+    platforms have no `.exe` and their `shutil.which` never resolves the
+    script shims.
+    """
+    if not is_windows_platform():
+        return ""
+    for entry in os.environ.get("PATH", "").split(os.pathsep):
+        if not entry.strip():
+            continue
+        candidate = Path(entry) / f"{cli_agent}.exe"
+        if candidate.is_file():
+            return str(candidate)
+    return ""
+
+
 def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
-    requested = cli_path.strip()
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    requested = resolve_preserved_cli_path(cli_path.strip())
     if requested:
         resolved = shutil.which(requested)
         if resolved:
@@ -870,6 +896,17 @@ def resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, 
         return "", f"{requested} not found", "not_found"
 
     resolved = shutil.which(cli_agent)
+    if resolved and is_windows_platform() and Path(resolved).suffix.lower() in UNSUPPORTED_WINDOWS_CLI_SUFFIXES:
+        # The PATHEXT lookup hit a script shim (.cmd/.bat/.ps1) that this
+        # detector cannot run; prefer a real executable from the same PATH so
+        # the UI does not offer the shim as a dead path option (#5678).
+        resolved = _resolve_windows_cli_executable_from_path(cli_agent)
+        if not resolved:
+            # npm-style installs often ship only the shim without a native
+            # .exe; report the known windows-script situation instead of a
+            # misleading "not found" so the UI can show the accurate
+            # unsupported-shim message (#5678).
+            return "", "windows_script", "windows_script"
     if resolved:
         return resolved, "", ""
     return "", f"{cli_agent} not found in PATH", "not_found"
@@ -958,7 +995,7 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
     if not resolved_path:
         return {
             "cli_agent": normalized_agent,
-            "status": "unsupported" if path_reason == "directory" else "missing",
+            "status": "unsupported" if path_reason in ("directory", "windows_script") else "missing",
             "path": "",
             "version": "",
             "reference_version": reference_version,
@@ -1334,6 +1371,10 @@ def apply_config_payload(
         raise ConfigPanelBadRequest(
             "permissions_profile and permissions_enabled are mutually exclusive"
         )
+    if "cua_agent_enabled" in params:
+        value = params["cua_agent_enabled"]
+        if value is not None and not isinstance(value, bool) and value not in ("true", "false"):
+            raise ConfigPanelBadRequest("cua_agent_enabled must be true, false or null")
     moa_params = {key: value for key, value in params.items() if key in MOA_CONFIG_KEYS}
     if moa_params:
         try:
@@ -1341,7 +1382,7 @@ def apply_config_payload(
             build_moa_config_from_frontend(moa_params, get_config_raw(), resolve_value=resolve_env_vars)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
-    # The MoA section writer encrypts only newly entered, nonempty credentials.
+    # Collaboration writes only its switches and interval; Jev credentials use the shared env fields.
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
     yaml_updated: list[str] = []
@@ -1429,6 +1470,8 @@ def apply_config_payload(
                 update_setup_guide_enabled_in_config(parsed)
             elif param_key == "rsi_enabled":
                 update_rsi_enabled_in_config(parsed)
+            elif param_key == "cua_agent_enabled":
+                update_cua_agent_enabled_in_config(None if val is None else parsed)
             elif param_key == "enable_free_models":
                 update_enable_free_models_in_config(parsed)
             elif param_key == "memory_forbidden_enabled":
@@ -1497,10 +1540,10 @@ def apply_config_payload(
                 if not ok:
                     raise ConfigPanelBadRequest(error or "invalid A2UI config")
                 update_a2ui_in_config(update)
-            elif param_key == "trajectory_ui_enabled":
-                update_trajectory_ui_in_config(parsed)
             elif param_key == "trajectory_ui_diagnosis_enabled":
                 update_trajectory_diagnosis_in_config(parsed)
+            elif param_key == "progressive_tool_optimize":
+                update_progressive_tool_optimize_in_config(parsed)
             elif param_key == "task_full_duplex_enabled":
                 update_task_full_duplex_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
@@ -1521,6 +1564,8 @@ def apply_config_payload(
             raise
         except Exception as e:  # noqa: BLE001
             logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)
+            if param_key == "cua_agent_enabled":
+                raise ConfigPanelInternalError("failed to update cua_agent.enabled") from e
             if param_key == "swarmflow_enabled":
                 raise ConfigPanelInternalError("failed to update enable_swarmflow") from e
             if is_external_cli_agent_config_key(param_key):
@@ -1556,10 +1601,7 @@ def apply_config_payload(
 
     if moa_params:
         try:
-            crypto = _get_crypto_provider()
-            save_moa_config_from_frontend(
-                moa_params, encrypt_secret=crypto.encrypt if crypto is not None else None,
-            )
+            save_moa_config_from_frontend(moa_params)
             yaml_updated.extend(moa_params)
         except ValueError as exc:
             raise ConfigPanelBadRequest(str(exc)) from exc
@@ -1679,6 +1721,7 @@ async def config_get_handler(
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+    payload["cua_backend_available"] = "true" if is_cua_backend_available() else "false"
     # 合并 config.yaml 中的配置项
     try:
         raw = get_config_raw()
@@ -1695,6 +1738,11 @@ async def config_get_handler(
                     payload[key] = crypto_provider.decrypt(val)
         payload.update(flatten_moa_for_config_panel(raw, resolve_value=resolve_env_vars))
         react_cfg = raw.get("react") or {}
+        payload["cua_agent_enabled"] = (
+            "true" if is_cua_agent_enabled(
+                get_nested_config_value(raw, ("react", "subagents", "cua_agent"), {})
+            ) else "false"
+        )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = "true" if ctx_cfg.get("enabled", False) else "false"
         payload["kv_cache_affinity_enabled"] = (
@@ -1722,6 +1770,9 @@ async def config_get_handler(
         experimental_cfg = raw.get("experimental") or {}
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
+        )
+        payload["progressive_tool_optimize"] = (
+            "true" if raw.get("progressive_tool_optimize", False) else "false"
         )
         payload["task_full_duplex_enabled"] = (
             "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
@@ -1756,6 +1807,7 @@ async def config_get_handler(
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("rsi_enabled", "true")
+        payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
@@ -1774,6 +1826,7 @@ async def config_get_handler(
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("task_asr_enabled", "false")
         for key, (_, value_type, default) in {
             **SYMPHONY_CONFIG_SPECS,

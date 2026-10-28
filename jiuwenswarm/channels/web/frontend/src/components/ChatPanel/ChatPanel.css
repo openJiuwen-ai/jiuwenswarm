@@ -140,7 +140,7 @@
   cursor: pointer;
 }
 
-.chat-header-icon-btn:hover {
+.chat-header-icon-btn:hover:not(:disabled) {
   background: var(--color-tool-tab-active-bg);
   border-radius: 10.67px;
 }
@@ -2254,6 +2254,14 @@
   opacity: 1;
 }
 
+/* 永续会话标签在已发消息阶段没有 ×（只读）：hover 不参与「图标换 ×」的交换，
+   图标保持常显，避免悬停时图标淡出又没有 × 补位、标签视觉上缺一块。
+   必须排在上面的 hover 隐藏规则之后：两条规则特异性相同，按源序后者生效 */
+.chat-agent-tag--static:hover .chat-agent-tag__avatar,
+.chat-agent-tag--static:focus-within .chat-agent-tag__avatar {
+  opacity: 1;
+}
+
 .chat-agent-tag__lock {
   flex: 0 0 auto;
   color: var(--color-text-tertiary);
@@ -3262,13 +3270,6 @@
   font-size: var(--font-size-2xs, 11px);
   color: var(--color-text-secondary);
   opacity: 0.7;
-}
-
-.chat-swarmflow-config-panel__worktree-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
 }
 
 .chat-skill-select__trigger {
@@ -5065,4 +5066,35 @@
 
 .chat-team-select__dot--idle {
   background: var(--color-feedback-warning);
+}
+
+.chat-group-runtime-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 24px;
+}
+
+.chat-group-runtime-dialog__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.chat-group-runtime-dialog__header h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 24px;
+}
+
+.chat-group-runtime-dialog__message {
+  margin: 16px 0 24px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+
+.chat-group-runtime-dialog__actions {
+  display: flex;
+  justify-content: flex-end;
 }

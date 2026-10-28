@@ -1,5 +1,6 @@
 from collections.abc import Callable
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -30,6 +31,53 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     init_session_metadata,
 )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows CLI preservation")
+def test_preserved_cli_paths_work_for_host_and_manifest_configuration(tmp_path, monkeypatch):
+    from jiuwenswarm.common import external_cli_runtime, windows_cli_paths
+
+    root = windows_cli_paths.windows_npm_root()
+    old = tmp_path / "old-app" / "runtime" / "node-runtime"
+    active = root / "installed" / "snapshot" / "prefix"
+    active.mkdir(parents=True)
+    (active / "host.cmd").touch()
+    (active / "manifest.cmd").touch()
+    mapping = root / "preserved" / "snapshot" / "mapping.json"
+    mapping.parent.mkdir(parents=True)
+    mapping.write_text(json.dumps({"schema": 1, "source": str(old), "target": str(active)}))
+    monkeypatch.setattr(external_cli_runtime, "activate_external_cli_runtime_paths", lambda: None)
+    monkeypatch.setattr(external_harness_helpers, "_host_cli_agent_entry", lambda _: {"cli_path": str(old / "host.cmd")})
+    host = external_harness_helpers._merge_host_external_cli_config("codex", {"model": "selected"})
+    assert host["cli_path"] == str(active / "host.cmd")
+    manifest = external_harness_helpers._merge_host_external_cli_config("codex", {"cli_path": str(old / "manifest.cmd"), "model": "selected"})
+    assert manifest["cli_path"] == str(active / "manifest.cmd")
+    assert manifest["model"] == "selected"
+    monkeypatch.setattr(external_harness_helpers, "_host_cli_agent_entry", lambda _: {"cli_agent": "codex"})
+    native = external_harness_helpers._merge_host_external_cli_config(
+        "codex", {"codex_bin": str(old / "manifest.cmd"), "model": "selected"},
+    )
+    assert native["codex_bin"] == str(active / "manifest.cmd")
+    assert "cli_path" not in native
+    custom = tmp_path / "user-codex.cmd"
+    custom.touch()
+    result = external_harness_helpers._merge_host_external_cli_config("codex", {"cli_path": str(custom)})
+    assert result["cli_path"] == str(custom)
+    native_custom = external_harness_helpers._merge_host_external_cli_config("codex", {"codex_bin": str(custom)})
+    assert native_custom["codex_bin"] == str(custom)
+
+
+def test_merge_host_codex_turn_idle_invalid_host_config_falls_back(monkeypatch):
+    from jiuwenswarm.common import external_cli_runtime
+
+    monkeypatch.setattr(external_cli_runtime, "activate_external_cli_runtime_paths", lambda: None)
+    monkeypatch.setattr(
+        external_harness_helpers,
+        "_host_cli_agent_entry",
+        lambda _: {"cli_agent": "codex", "codex_turn_idle_timeout_s": "5min"},
+    )
+    merged = external_harness_helpers._merge_host_external_cli_config("codex", {})
+    assert merged["turn_idle_timeout_s"] == 300.0
 
 
 @pytest.fixture(autouse=True)

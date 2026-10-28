@@ -21,6 +21,7 @@ from jiuwenswarm.runtime.cron.models import (
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.runtime.host_services import send_runtime_wake
 
@@ -1053,7 +1054,11 @@ class CronRuntimeBridge:
         tools = create_cron_tools(
             effective_backend,
             context=context,
-            target_channels=[channel.value for channel in CronTargetChannel],
+            target_channels=[
+                channel.value
+                for channel in CronTargetChannel
+                if is_scheduled_task_supported(channel.value)
+            ],
             default_target_channel=None,
             agent_id=agent_id,
             language=language,

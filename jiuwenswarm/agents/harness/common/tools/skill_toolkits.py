@@ -706,6 +706,9 @@ class SkillToolkit:
                     "detail": "Built-in skills cannot be uninstalled.",
                 }
 
+            # 技能可能由其它 facade 的 import_local 落盘，本实例内存 state 仍是
+            # 旧快照；先重载磁盘 state，再判定是否已安装。
+            self._manager.reload_state()
             installed_payload = await self._list_installed_skills()
             if not installed_payload.get("success"):
                 return {

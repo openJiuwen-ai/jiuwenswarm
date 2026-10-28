@@ -110,6 +110,72 @@ def resolve_subagent_history_path(
     return resolved / _JSONL_HISTORY_FILENAME, None
 
 
+def _peek_subagent_id_from_history_dir(sub_dir: Path) -> str | None:
+    """Best-effort read of ``subagent_id`` from a per-subagent history bucket."""
+    candidates: list[Path] = []
+    jsonl_path = sub_dir / _JSONL_HISTORY_FILENAME
+    legacy_path = sub_dir / _LEGACY_HISTORY_FILENAME
+    if jsonl_path.is_file():
+        candidates.append(jsonl_path)
+    if legacy_path.is_file():
+        candidates.append(legacy_path)
+    for path in candidates:
+        try:
+            records = (
+                _read_history_jsonl(path)
+                if path.suffix.lower() == ".jsonl"
+                else _read_history(path)
+            )
+        except Exception:  # noqa: BLE001
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            sid = str(record.get("subagent_id") or "").strip()
+            if sid:
+                return sid
+            nested = record.get("subagent_activity")
+            if isinstance(nested, dict):
+                sid = str(nested.get("subagent_id") or "").strip()
+                if sid:
+                    return sid
+    return None
+
+
+def list_session_subagent_ids(session_id: str) -> list[str]:
+    """Return durable subagent ids discovered under a parent session directory.
+
+    Per-subagent history lives in ``sessions/<parent>/subagents/<id|hash>/``.
+    Parent history often lacks roster frames (empty-shell filter historically
+    dropped ``chat.subtask_update``), so cold refresh must rediscover ids from
+    disk before it can call ``history.get`` with ``subagent_id``.
+    """
+    parent_dir, error = resolve_session_dir(session_id, create=False)
+    if error is not None or parent_dir is None:
+        return []
+    root = parent_dir / "subagents"
+    if not root.is_dir():
+        return []
+
+    discovered: list[str] = []
+    seen: set[str] = set()
+    try:
+        children = sorted(root.iterdir(), key=lambda path: path.name)
+    except OSError:
+        return []
+    for child in children:
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        sid = _peek_subagent_id_from_history_dir(child)
+        if not sid and is_valid_session_id(child.name):
+            sid = child.name
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        discovered.append(sid)
+    return discovered
+
+
 _TOOL_RESULT_TERMINAL_FIELDS = frozenset(
     {"result", "error", "status", "success", "is_error"}
 )
@@ -160,6 +226,16 @@ def _has_persistable_assistant_payload(
         return True
     if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
         return True
+    # chat.subtask_update carries roster identity in subagent_id / description
+    # (content is often empty). Without this exception the empty-shell rule drops
+    # parent-stream roster frames, so refresh cannot rediscover subagent ids
+    # (GitCode #4887).
+    if et == "chat.subtask_update":
+        if str(payload.get("subagent_id") or payload.get("subagentId") or "").strip():
+            return True
+        if str(payload.get("description") or "").strip():
+            return True
+        return False
     # chat.ask_user_question 的载荷在 questions[] 数组里（无 content），
     # 否则会被下面的「空 chat.* 壳」规则丢弃，导致问题澄清对话框刷新后无法恢复。
     if et == "chat.ask_user_question":

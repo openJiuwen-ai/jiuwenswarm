@@ -2,8 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  DESIGNER_UPLOAD_TOO_LARGE,
   buildUploadedDesignerNode,
   canReplaceUploadedNode,
+  isDesignerUploadTooLarge,
+  storeDesignerUpload,
   uploadAcceptForNodeType,
   uploadKindFromMime,
   uploadedNodeConfig,
@@ -83,4 +86,24 @@ test('canReplaceUploadedNode rejects generated and chat-reference nodes', () => 
     false,
   );
   assert.equal(canReplaceUploadedNode(null), false);
+});
+
+const MB = 1024 * 1024;
+
+test('isDesignerUploadTooLarge allows videos up to 1 GB and other media up to 32 MB', () => {
+  assert.equal(isDesignerUploadTooLarge({ size: 1024 * MB, type: 'video/mp4' }), false);
+  assert.equal(isDesignerUploadTooLarge({ size: 1024 * MB + 1, type: 'video/mp4' }), true);
+  assert.equal(isDesignerUploadTooLarge({ size: 32 * MB, type: 'image/png' }), false);
+  assert.equal(isDesignerUploadTooLarge({ size: 32 * MB + 1, type: 'image/png' }), true);
+  assert.equal(isDesignerUploadTooLarge({ size: 32 * MB + 1, type: 'audio/mpeg' }), true);
+});
+
+test('storeDesignerUpload rejects an oversized file before uploading it', async (t) => {
+  const fetchMock = t.mock.method(globalThis, 'fetch', async () => {
+    throw new Error('fetch must not be called');
+  });
+  const file = { name: 'huge.mp4', size: 1024 * MB + 1, type: 'video/mp4' };
+
+  await assert.rejects(storeDesignerUpload(file), { message: DESIGNER_UPLOAD_TOO_LARGE });
+  assert.equal(fetchMock.mock.callCount(), 0);
 });

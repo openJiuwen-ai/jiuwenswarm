@@ -1,9 +1,7 @@
 include setup.py
 include backends/macos/Package.swift
-include backends/macos/SOURCE.json
 recursive-include backends/macos/Sources *.swift
 recursive-include backends/windows *.cs
-include backends/windows/SOURCE.json
 recursive-include assets/agent-pointer *.svg *.json
 recursive-include skills *.md
 prune backends/macos/.build

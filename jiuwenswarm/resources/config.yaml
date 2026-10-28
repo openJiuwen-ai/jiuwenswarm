@@ -1,5 +1,5 @@
-# 配置版本号：与程序版本（jiuwenswarm/common/_build_config.py 的 VERSION）同步。
-# 空串表示未迁移，首次启动迁移后由程序写回实际版本。
+# 应用版本与打包日期：例如 "0.2.8 · 2026-10-26"，日期按 UTC+08:00 记录。
+# 启动时自动同步；保留 WHL 完整版本后缀，旧包或源码无日期时仅写版本号。
 config_version: ""
 
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
@@ -422,6 +422,13 @@ models:
   #       context_window: 262144
   # Model groups reference models by stable model_id. Route order is the only
   # primary/fallback order; routes[0] is primary.
+  # Defaults for groups without their own routing timeouts. A group may override
+  # these under groups[].routing with timeout_seconds, stream_first_chunk_timeout,
+  # and stream_idle_timeout. Individual route timeouts take precedence.
+  group_routing_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_TIMEOUT_SECONDS:-360}
+  # Streaming timeouts are stored per group for future support; IntelliRouter does not consume them yet.
+  group_stream_first_chunk_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_STREAM_FIRST_CHUNK_TIMEOUT_SECONDS:-300}
+  group_stream_idle_timeout_seconds: ${JIUWENSWARM_MODEL_GROUP_STREAM_IDLE_TIMEOUT_SECONDS:-120}
   groups: []
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
@@ -574,8 +581,8 @@ agent_observability:
 # auto_harness 不向 Web 暴露轨迹。
 # ============================================================
 trajectory_ui:
-  enabled: false                     # 启用“对话 / 轨迹”数据链路
-  diagnosis_enabled: false           # 启用“诊断与归因”视图；开启后同样会记录轨迹数据，无需同时开启 enabled
+  enabled: false                     # 数据面开关；由 diagnosis_enabled 同步写入，勿单独依赖实验设置
+  diagnosis_enabled: false           # 启用「诊断与归因」入口并记录轨迹数据；关闭后隐藏轨迹相关页面
   db_path: ""                       # Session database root; defaults to ~/.jiuwenswarm/.trace/sessions
   retention_days: 7                 # SQLite 轨迹保留天数
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
@@ -670,12 +677,14 @@ react:
     # 需安装 cua 可选依赖（pip install "workswarm[cua]" 或 uv sync --extra cua），并使用支持图片输入的模型。
     # 运行时会真实移动鼠标、向前台窗口输入，执行期间请勿操作电脑。
     cua_agent:
-      enabled: false
+      enabled: null # null follows the release default (currently off); user changes persist true/false.
       # max_iterations: 100
       # 上下文中完整保留的窗口截图数量；单窗口任务可设为 1 以大幅缩减上下文。默认 3。
       # snapshot_keep_last_k: 3
       # 用户接管屏幕（检测到鼠标/键盘输入）时暂停桌面操作，空闲后自动继续（Windows 与 Linux X11 支持探测）。
       pause_on_user_input: false
+      # 委派桌面任务前是否弹出确认卡片。在卡片上选择“永久记住”会写入 false；改回 true 可恢复询问。
+      # require_approval: true
   # 常驻 subagent 运行时。开启后 task_tool 被 subagent_spawn/wait/list/
   # send_input/close/resume 六个工具替换（两者互斥）。默认开启。
   subagent_runtime:
@@ -1426,8 +1435,9 @@ browser:
   # Browser-only decisions. Existing LLM still handles fallback and final answers.
   decision:
     mode: llm # llm | shadow (observe only) | hybrid; shadow and hybrid need an openjiuwen with Jev
-    provider: openrouter # openrouter | typesafe
+    provider: openrouter # openrouter | typesafe | custom
     model: typesafe/jev-1.13
+    display_name: ""
     api_base: https://openrouter.ai/api/alpha
     # Use a dedicated OpenRouter key, or explicitly reference API_KEY if it is already an OpenRouter key.
     api_key_env: OPENROUTER_API_KEY

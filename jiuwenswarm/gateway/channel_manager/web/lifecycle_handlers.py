@@ -45,7 +45,12 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                         key = (entry["event"], payload["resource_id"])
                         previous = revisions.get(key, -1)
                         revisions[key] = payload["revision"]
-                        if first or payload["revision"] <= previous:
+                        if payload["revision"] <= previous:
+                            continue
+                        if entry["completed"] and entry["kind"] in {"archive", "delete"}:
+                            if entry["event"].startswith("session."):
+                                mark_sessions_idle([payload["resource_id"]])
+                        if first:
                             continue
                         for ws in clients:
                             await channel.send_event(ws, entry["event"], payload)
@@ -92,6 +97,36 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
 
     channel.ensure_lifecycle_watch = ensure_watch
 
+    def _completed_session_ids(payload: dict) -> list[str]:
+        results = payload.get("results")
+        items = results if isinstance(results, list) else [payload]
+        session_ids = []
+        for item in items:
+            if not isinstance(item, dict) or not item.get("ok", True):
+                continue
+            if item.get("finalizing") or item.get("stop_pending"):
+                continue
+            if item.get("accepted") and item.get("finalizing") is not False:
+                continue
+            session_id = item.get("session_id")
+            if session_id:
+                session_ids.append(str(session_id))
+        return session_ids
+
+    def mark_sessions_idle(session_ids: list[str]) -> None:
+        """Clear the cached busy flag for Sessions a lifecycle action stopped.
+
+        Archive/delete stop runtime work in the AgentServer without emitting
+        ``chat.processing_status(false)``.  Without this, a later
+        ``session.get_metadata`` (for example after unarchive) would report a
+        stopped Session as still processing.
+        """
+        clear = getattr(channel, "clear_session_busy", None)
+        if not callable(clear):
+            return
+        for sid in dict.fromkeys(session_ids):
+            clear(sid)
+
     def handler(method):
         async def handle(ws, req_id, params, session_id, user_id=None):
             ensure_watch(user_id)
@@ -125,6 +160,15 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 error=None if ok else payload.get("error"),
                 code=None if ok else payload.get("code"),
             )
+            if ok and method in {
+                "session.archive",
+                "session.delete",
+                "project.sessions.archive",
+                "project.sessions.delete_archived",
+            }:
+                # Acceptance does not prove that file writers have stopped.
+                # Pending work keeps its busy guard until the completion poll.
+                mark_sessions_idle(_completed_session_ids(payload))
             if ok and method == "session.unarchive":
                 project_ids = {
                     item.get("project_id") for item in payload.get("results", [payload])
@@ -151,6 +195,13 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 if method.startswith(("session.", "project.sessions.")):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
+                            clear_expert = getattr(channel, "clear_expert_processing", None)
+                            session_closed = (
+                                event in {"session.archived", "session.deleted"}
+                                and "operation_id" not in payload
+                            )
+                            if callable(clear_expert) and session_closed:
+                                clear_expert(item["session_id"])
                             send_event = getattr(channel, "send_event", None)
                             if callable(send_event):
                                 await send_event(ws, event, item)

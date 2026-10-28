@@ -84,11 +84,27 @@ Use `read_file` to load `workflows/sop-design.md` and `workflows/sop-verificatio
 
 ### [A2.2] User Confirmation
 
-- After verifying that the design meets the specifications, summarize the design and ask the user for confirmation.
+- After verifying that the design meets the specifications, summarize the design and ask the user for confirmation with a **structured** question — the confirmation must be a choice, not a free-text box, so an empty confirmation can never be lost in transport.
 - If verification was performed, describe the overall final solution after the fixes, NOT just the fixes themselves. User only cares about the end result.
-- Put the complete design summary in the `[]` placeholder of the ask_user query below — the user must see the design approach in the same message as the confirmation question.
+- Put the complete design summary in the visible content of the message (and in the `query` below) — the user must see the design approach in the same message as the confirmation question.
 
-> "我已经完成了设计与初步验证。实现思路：[填写完整的实现思路：架构概述、核心组件及职责、数据流、关键设计决策]。请你确认是否同意这个设计方案，或者是否有任何问题或建议？"
+  ```json
+  {
+    "query": "我已经完成了设计与初步验证。实现思路：[填写完整的实现思路：架构概述、核心组件及职责、数据流、关键设计决策]。请你确认是否同意这个设计方案，或者是否有任何问题或建议？",
+    "questions": [{
+      "question": "我已经完成了设计与初步验证。实现思路：[同上]。是否同意这个设计方案？",
+      "header": "设计确认",
+      "options": [
+        {"label": "同意此设计，继续生成设计文档"},
+        {"label": "需要调整（请补充具体意见）"},
+        {"label": "Other"}
+      ]
+    }]
+  }
+  ```
+
+- The `Other` option is the frontend's free-text slot (rendered as 「其他（自定义输入）」): picking it opens an input box for the concrete adjustment request. Keep the literal label `Other`.
+- Treat a skipped or cancelled confirmation as "同意此设计": record the skipped points as public assumptions and continue to [A3]. NEVER re-ask the same confirmation question.
 
 ## [A3] Document Generation (Generator Pattern)
 
@@ -105,13 +121,29 @@ Use `read_file` to load `workflows/sop-generation.md` (absolute path in the "Ski
 
 ## [A4] Review and Revision
 
-- Prompt the user for review authorization:
-  > "我已经完成了系统设计文档的生成。是否需要进行文档审查与修订？"
+- Prompt the user for review authorization with a **structured** question — the authorization must be a choice, not a free-text box:
+
+  ```json
+  {
+    "query": "我已经完成了系统设计文档的生成，是否需要进行文档审查与修订？",
+    "questions": [{
+      "question": "我已经完成了系统设计文档的生成。是否需要进行文档审查与修订？",
+      "header": "审查授权",
+      "options": [
+        {"label": "需要审查与修订"},
+        {"label": "跳过审查"}
+      ]
+    }]
+  }
+  ```
+
 - IF the user wants review:
   - Call `sdd_advance` tool with `stage=design_review` to enter the design review stage.
   - The review stage will handle the review pipeline automatically (subagent gate, user revision, re-gate).
-- IF the user declines review:
-  - Call `sdd_advance` tool with `stage=design_review` to enter the review stage, then choose "跳过复审" to proceed quickly.
+- IF the user declines review (picked "跳过审查", clicked 「跳过」 or 「取消」, or explicitly said no review):
+  - Call `sdd_advance` tool with `stage=done` to skip the review stage and finish the flow.
+  - Do NOT enter the review stage in order to skip it: the review stage has no "skip review" entry point before its own user gate, so entering it forces the full gate pipeline that the user just declined.
+  - Skipping the review is NOT skipping the SDD flow — the design document has already been produced at this point.
 
 </instruct>
 

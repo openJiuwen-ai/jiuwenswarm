@@ -21,6 +21,7 @@ import yaml
 from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
@@ -375,19 +376,22 @@ def _browser_credential_environment() -> dict[str, str]:
 
 def get_panel() -> dict[str, Any]:
     """Return the Web/TUI config panel payload without Gateway handlers."""
+    # 保存过的 .env 优先于本进程的 os.environ。生成类配置槽是由另一个进程写入的，
+    # 这里的 os.environ 可能还停在修改之前——设置页因此一直显示旧的模型（火山方舟的
+    # 默认值），而工具实际已经跑在用户新选的模型上了（MiniMax）。JEV 密钥早就因为这
+    # 个跨进程时序问题改读文件；这个 map 里的每个字段其实都一样。
+    environment = _browser_credential_environment()
     payload: dict[str, Any] = {
-        param_key: (os.getenv(env_key) or "")
+        param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
-    browser_environment = _browser_credential_environment()
-    for field in ("jev_openrouter_api_key", "jev_typesafe_api_key", "jev_custom_api_key"):
-        payload[field] = browser_environment.get(_CONFIG_SET_ENV_MAP.get(field, ""), "")
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     )
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+    payload["cua_backend_available"] = "true" if is_cua_backend_available() else "false"
     try:
         raw = _read_raw_config()
         setup_guide_cfg = raw.get("setup_guide") or {}
@@ -395,6 +399,9 @@ def get_panel() -> dict[str, Any]:
             setup_guide_cfg.get("enabled", True), True
         )
         react_cfg = raw.get("react") or {}
+        payload["cua_agent_enabled"] = (
+            "true" if is_cua_agent_enabled(_nested(raw, ("react", "subagents", "cua_agent"), {})) else "false"
+        )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = _bool_text(ctx_cfg.get("enabled"), False)
         payload["kv_cache_affinity_enabled"] = (
@@ -423,6 +430,9 @@ def get_panel() -> dict[str, Any]:
         experimental_cfg = raw.get("experimental") or {}
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
+        )
+        payload["progressive_tool_optimize"] = _bool_text(
+            raw.get("progressive_tool_optimize"), False
         )
         payload["swarmflow_enabled"] = _bool_text(
             _nested(raw, _SWARMFLOW_ENABLED_PATH, False)
@@ -460,6 +470,7 @@ def get_panel() -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] panel yaml merge failed: %s", exc)
         payload.setdefault("context_engine_enabled", "false")
+        payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("setup_guide_enabled", "true")
@@ -470,6 +481,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("team_scheduled_dispatch_enabled", "false")
         payload.setdefault("team_task_verification_enabled", "false")

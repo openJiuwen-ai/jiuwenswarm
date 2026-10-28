@@ -112,6 +112,9 @@ from jiuwenswarm.agents.harness.common.rails import (
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
 )
+from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
+    SubagentToolActivityRail,
+)
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
@@ -119,6 +122,7 @@ from jiuwenswarm.agents.harness.common.tools import (
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.tool_ownership import (
     mark_stateless,
     register_tool,
@@ -695,6 +699,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raw = "cn"
         return resolve_language(raw)
 
+    def _resolve_cua_card_language(self) -> str:
+        """The cua approval card is read by the user, so it follows the UI
+        language rather than the English code-mode prompt language."""
+        return self._resolve_output_language()
+
     def _session_instance_extra_create_kwargs(self) -> dict[str, Any]:
         """Propagate an explicit Spec through lazy root and session builds."""
         if self._session_instance_spec is not None:
@@ -960,6 +969,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 build_context=build_context, agent_definition=agent_definition,
             )
         except BaseException:
+            await self._close_moa_runtime(suppress_errors=True)
             if self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
                 await self._isolate_permission_instance()
             raise
@@ -1089,11 +1099,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             mode=self._session_instance_mode,
             is_cron=self._is_cron_execution_session(self._parent_session_id),
         ):
-            model = self._prepare_moa_for_build(config_base)
+            model = await self._prepare_moa_for_build(config_base)
         else:
             self._moa_enabled = False
-            self._moa_runtime = None
-            self._moa_fingerprint = None
+            await self._close_moa_runtime()
             if spec is None or spec.model is None:
                 model = self._create_model(config_base)
 
@@ -1208,8 +1217,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 主事件循环 await 这个 future 时保持响应，期间能读取并处理 esc 的 cancel。
         # 跑完后回主 loop 继续后续代码，时序与语义不变；唯一变化是初始化期间主 loop 活。
         #
-        # 安全性：ensure_initialized 操作的是 self._pending_rails、workspace 文件等实例自己的资源，
-        # 不碰全局 asyncio 原语，不跨 loop 访问主 loop 对象，不会死锁。
+        # This initialization also registers rails in Runner's shared callback
+        # framework. The resident Worker forwards registry access to its business
+        # loop; filesystem and rail init work remain in this thread. That guard
+        # is installed only by Worker startup. Standalone Runtime/SDK callers
+        # must provide a consistent loop owner for shared async resources.
         if agent_definition is not None and agent_definition.get("tools") != "*":
             from jiuwenswarm.runtime.tool_allowlist import install_tool_allowlist
 
@@ -1560,6 +1572,61 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         )
         self._align_code_multimodal_tool_records()
 
+    def _reconcile_tool_retrieval_rails_after_spec_reload(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Take back tool disclosure after a spec-rebuild reload.
+
+        ``apply_deep_agent_parts`` re-queues the spec-armed bundled
+        ProgressiveToolRail (``progressive_tool_enabled`` stays True to keep
+        the deferred whitelist armed), and a bundled copy registered by an
+        earlier reload is treated as an external rail that never retires.
+        For sessions still running our profile (frozen on ∧ switch on) strip
+        every bundled copy (pending and registered) so ``ensure_initialized``
+        only keeps our ToolRetrievalPromptRail. The gate matches the
+        runtime syncs (``_tool_retrieval_tools_enabled_for_runtime``): a
+        session frozen off keeps its bundled rail — its handover is the
+        session rebuild at the next acquire, never mid-reload surgery that
+        would mount ours just to unmount it a step later.
+
+        Ours is queued before the strip: when the build fails the bundled
+        rail stays as the disclosure owner instead of leaving the session
+        with neither system.
+        """
+
+        if not self._tool_retrieval_tools_enabled_for_runtime(
+            config_base or self._config_base_cache
+        ):
+            return
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return
+        try:
+            from openjiuwen.harness.rails.progressive_tool_rail import (
+                ProgressiveToolRail,
+            )
+            from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
+                ToolRetrievalPromptRail,
+            )
+
+            if not instance.find_rails_by_type((ToolRetrievalPromptRail,)):
+                if self._register_tool_retrieval_prompt_rail() is None:
+                    return
+            removed = instance.strip_rails_by_type((ProgressiveToolRail,))
+            if removed:
+                logger.info(
+                    "[JiuwenSwarmCodeAdapter] stripped %d bundled "
+                    "ProgressiveToolRail(s) on spec reload",
+                    removed,
+                )
+        except Exception:
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] tool retrieval rail reconcile on "
+                "spec reload failed",
+                exc_info=True,
+            )
+
     async def _reload_agent_config(
         self,
         config_base: dict[str, Any] | None = None,
@@ -1728,7 +1795,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     omitted_fields,
                 )
 
+            # apply_deep_agent_parts 把 spec 武装的 bundled ProgressiveToolRail
+            # 重新排进 pending；优化开关开启时在 ensure_initialized 消费队列前
+            # 统一摘除（含此前 reload 已注册的副本），并确保我们的
+            # ToolRetrievalPromptRail 在位。
+            self._reconcile_tool_retrieval_rails_after_spec_reload(config_base)
             await self._instance.ensure_initialized()
+            await self._sync_tool_retrieval_prompt_rail_for_runtime(config_base)
         except Exception:
             self._config_cache = previous_config_cache
             self._config_base_cache = previous_config_base_cache
@@ -2652,6 +2725,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         browser_agent_cfg.get("max_iterations") if isinstance(browser_agent_cfg, dict) else None,
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
+                    # Feeds the Web subagent panel's tool activity (issue #8637).
+                    rails=[SubagentToolActivityRail()],
                 )
                 from jiuwenswarm.agents.harness.common.browser_config import (
                     apply_browser_decision_config,
@@ -2678,12 +2753,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
             # cua_agent (desktop automation via screenshots + real input) — 按配置启用
             cua_agent_cfg = subagents_cfg.get("cua_agent")
-            if self._is_subagent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
+            cua_agent_cfg = cua_agent_cfg if isinstance(cua_agent_cfg, dict) else {}
+            if is_cua_agent_enabled(cua_agent_cfg) and cua_model_rejects_images(model):
                 logger.warning(
                     "[JiuwenSwarmCodeAdapter] cua_agent skipped: the model rejects image input "
                     "and cua_agent sees the screen only through screenshots"
                 )
-            elif self._is_subagent_enabled(cua_agent_cfg):
+            elif is_cua_agent_enabled(cua_agent_cfg):
                 cua_spec = build_cua_agent_config(
                     model,
                     card=build_cua_agent_card(resolved_language),
@@ -2694,6 +2770,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         cua_agent_cfg.get("max_iterations"),
                         DEFAULT_CUA_AGENT_MAX_ITERATIONS,
                     ),
+                    rails=[SubagentToolActivityRail()],
                     **resolve_cua_factory_options(cua_agent_cfg),
                 )
                 cua_spec.factory_kwargs["auto_create_workspace"] = False

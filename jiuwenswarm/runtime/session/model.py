@@ -144,6 +144,8 @@ class TeamExecutionDetails:
     background_trigger: str | None = None
     session_message_id: str | None = None
     waiter_kind: TeamWaiterKind = TeamWaiterKind.NONE
+    # A pure subscription survives business pause and observes later rounds.
+    observation_only: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -166,6 +168,8 @@ class SessionExecutionHandle:
     root_work_kind: SessionWorkKind | None = None
     root_request_id: str | None = None
     waiting_control_id: str | None = None
+    # Every card this execution still waits on; waiting_control_id is the latest.
+    pending_control_ids: set[str] = field(default_factory=set, repr=False)
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None

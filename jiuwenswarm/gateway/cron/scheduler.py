@@ -24,6 +24,7 @@ from jiuwenswarm.gateway.cron.models import (
     normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
 )
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
@@ -365,6 +366,51 @@ class CronSchedulerService:
         self._boot_time: float = now_fn()
         self._watch_task: asyncio.Task | None = None
 
+    def is_session_processing(self, session_id: str, user_id: str | None = None) -> bool:
+        """Return whether this owner's execution session has an active cron run."""
+        target_session_id = str(session_id or "").strip()
+        if not target_session_id:
+            return False
+        owner = str(user_id or "").strip()
+        for run_id, state in self._runs.items():
+            if str(state.exec_session_id or "").strip() != target_session_id:
+                continue
+            if str(state.exec_user_id or "").strip() != owner:
+                continue
+            if state.status != "running" or state.finished_at is not None:
+                continue
+            task = self._run_tasks.get(run_id)
+            if task is not None and not task.done():
+                return True
+        return False
+
+    async def finish_cancelled_session_runs(self, session_id: str, user_id: str | None = None) -> int:
+        """Release local waiters after the AgentServer confirmed cancellation."""
+        target_session_id = str(session_id or "").strip()
+        if not target_session_id:
+            return 0
+        owner = str(user_id or "").strip()
+        current_task = asyncio.current_task()
+        tasks = []
+        for run_id, state in list(self._runs.items()):
+            if str(state.exec_session_id or "").strip() != target_session_id:
+                continue
+            if str(state.exec_user_id or "").strip() != owner:
+                continue
+            if state.status != "running" or state.finished_at is not None:
+                continue
+            task = self._run_tasks.get(run_id)
+            # Team timeout cleanup can call MessageHandler from its own run.
+            # Its caller already owns finalization and must not cancel itself.
+            if task is not None and task is not current_task and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=10)
+            if pending:
+                raise RuntimeError("cancelled cron runs are still stopping")
+        return len(tasks)
+
     async def _sync_store_revision(self) -> None:
         """Snapshot current store revision to avoid redundant reloads."""
         try:
@@ -696,6 +742,13 @@ class CronSchedulerService:
             if job_id in new_job_ids
         }
         for job in jobs:
+            if not is_scheduled_task_supported(job.targets):
+                logger.info(
+                    "[Cron] skipping unsupported target job=%s target=%s",
+                    job.id,
+                    job.targets,
+                )
+                continue
             try:
                 push_dt, wake_dt, run_id = self._compute_next_run(job, now_ts=now)
             except Exception as exc:  # noqa: BLE001
@@ -812,11 +865,13 @@ class CronSchedulerService:
         self._hiding_projects.discard(project_id)
 
     async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
+        if not project_id or project_id in {"default", "default_code"}:
+            return True
+        # 默认项目没有可恢复的生命周期资源,不必为它做文件锁 + 读盘的属主
+        # 登记;真实项目仍在准入查询前登记,保证重启后能路由回属主。
         self.remember_lifecycle_owner(user_id)
         if project_id in self._hiding_projects:
             return False
-        if not project_id or project_id in {"default", "default_code"}:
-            return True
         from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
         _t0 = time.monotonic()
@@ -951,6 +1006,10 @@ class CronSchedulerService:
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
+        if not is_scheduled_task_supported(job.targets):
+            raise ValueError(
+                f"scheduled tasks are not supported for target: {job.targets}"
+            )
         if not await self.project_execution_allowed(job.project_id, job.user_id):
             raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         now = datetime.now(tz=ZoneInfo(job.timezone))
@@ -1191,6 +1250,13 @@ class CronSchedulerService:
 
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
+        if job is not None and not is_scheduled_task_supported(job.targets):
+            logger.info(
+                "[Cron] dropping unsupported target event job=%s target=%s",
+                job.id,
+                job.targets,
+            )
+            return
         if (
             job is not None
             and not await self.project_execution_allowed(job.project_id, job.user_id)
@@ -2186,6 +2252,13 @@ class CronSchedulerService:
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
+        if not is_scheduled_task_supported(job.targets):
+            logger.info(
+                "[Cron] push skipped: unsupported target job=%s target=%s",
+                job.id,
+                job.targets,
+            )
+            return
         logger.info(
             "[Cron] push_to_targets job=%s run_id=%s channel=%s is_placeholder=%s text_len=%d status=%s",
             job.id,

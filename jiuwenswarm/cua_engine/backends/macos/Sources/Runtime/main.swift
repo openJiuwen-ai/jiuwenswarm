@@ -2,6 +2,8 @@ import AppKit
 import Foundation
 import Darwin
 
+if let code = ForegroundActivation.runIfRequested(CommandLine.arguments) { exit(code) }
+
 let app = NSApplication.shared
 // AppKit may activate an accessory app while finishing launch if its first
 // request already created a window. Keep launch prohibited, then enable the

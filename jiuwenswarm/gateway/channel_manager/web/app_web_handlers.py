@@ -2236,6 +2236,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         cli_path = str(params.get("cli_path") or "").strip()
         raw_use_builtin = params.get("use_builtin")
         use_builtin = raw_use_builtin is True or str(raw_use_builtin).strip().lower() == "true"
+        _activate_managed_external_cli_paths_if_needed()
         result = _detect_external_cli_agent(cli_agent, cli_path, use_builtin)
         await channel.send_response(ws, req_id, ok=True, payload=result)
 
@@ -2412,8 +2413,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _vendors_fetch_models(ws, req_id, params, session_id):
         """按厂商预设拉取远端可用模型列表(供前端"拉取最新"按钮)。
 
-        params: {vendor_key, plan, api_key?}。按预设的 ``models_needs_key``
-        决定是否带 Authorization;失败/无端点优雅回退预设列表,永不报错。
+        params: {vendor_key, plan, api_key?, modality?, api_base?}。按预设的 ``models_needs_key``
+        决定是否带 Authorization。普通列表失败时回退预设；火山生成模型按
+        domain 返回完整远端目录，失败时返回空列表供前端手填。
         """
         del session_id
         if not isinstance(params, dict):
@@ -2422,6 +2424,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         vendor_key = str(params.get("vendor_key") or "").strip()
         plan_raw = str(params.get("plan") or "").strip()
         api_key = str(params.get("api_key") or "").strip()
+        modality = str(params.get("modality") or "").strip()
         try:
             from jiuwenswarm.common.model_vendor_registry import (
                 PlanKind,
@@ -2429,7 +2432,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
 
             def _fetch_remote_sync(
-                endpoint: str, hdrs: dict[str, str]
+                endpoint: str, hdrs: dict[str, str], model_domain: str | None = None,
             ) -> tuple[list[str], str]:
                 """同步拉取并解析 /models(在线程池里跑,不阻塞事件循环)。
 
@@ -2457,6 +2460,23 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     return [], "remote returned non-JSON body"
                 if not isinstance(payload_json, dict):
                     return [], "remote returned unexpected body shape"
+                if model_domain:
+                    entries = payload_json.get("data")
+                    if not isinstance(entries, list):
+                        return [], "remote returned unexpected body shape"
+                    ids: list[str] = []
+                    seen: set[str] = set()
+                    for item in entries:
+                        if not isinstance(item, dict) or item.get("domain") != model_domain:
+                            continue
+                        model_id = item.get("id")
+                        if not isinstance(model_id, str):
+                            continue
+                        model_id = model_id.strip()
+                        if model_id and model_id not in seen:
+                            seen.add(model_id)
+                            ids.append(model_id)
+                    return ids, "" if ids else "remote returned empty generation model list"
                 try:
                     ids = parse_openai_account_model_ids(payload_json)
                 except Exception:  # noqa: BLE001
@@ -2484,6 +2504,26 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
                 return
 
+            model_domain = None
+            endpoint = preset.models_endpoint
+            if modality:
+                if vendor_key != "volcengine" or plan != PlanKind.CUSTOM_API or modality not in {"image", "video"}:
+                    await channel.send_response(
+                        ws, req_id, ok=False, error="unsupported model modality", code="BAD_REQUEST",
+                    )
+                    return
+                from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
+
+                try:
+                    api_base = normalize_ark_api_base(str(params.get("api_base") or preset.api_base))
+                except ValueError as exc:
+                    await channel.send_response(
+                        ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST",
+                    )
+                    return
+                endpoint = f"{api_base}/models"
+                model_domain = "ImageGeneration" if modality == "image" else "VideoGeneration"
+
             # 无远端端点(Maas 等) -> 直接回退预设
             if not preset.models_endpoint:
                 await channel.send_response(
@@ -2503,8 +2543,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     await channel.send_response(
                         ws, req_id, ok=True,
                         payload={
-                            "models": list(preset.model_options),
-                            "source": "preset",
+                            "models": [] if model_domain else list(preset.model_options),
+                            "source": "unavailable" if model_domain else "preset",
                             "reason": "api_key required for fetch",
                         },
                     )
@@ -2514,7 +2554,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 同步 httpx.get 通过 asyncio.to_thread 卸载到线程池,避免阻塞事件循环
             # (与同文件 _openai_account_*_payload / _updater_* 的 to_thread 模式一致)。
             remote_ids, remote_reason = await asyncio.to_thread(
-                _fetch_remote_sync, preset.models_endpoint, headers,
+                _fetch_remote_sync, endpoint, headers, model_domain,
             )
 
             # DashScope's /models catalogue includes unavailable marketplace,
@@ -2553,8 +2593,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(
                 ws, req_id, ok=True,
                 payload={
-                    "models": list(preset.model_options),
-                    "source": "preset",
+                    "models": [] if model_domain else list(preset.model_options),
+                    "source": "unavailable" if model_domain else "preset",
                     "reason": remote_reason or "remote fetch failed or empty",
                 },
             )
@@ -2831,12 +2871,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _session_get_metadata(ws, req_id, params, session_id, user_id=None):
-        """返回单个会话的元数据（mode / model / project_dir / last_user_message_at 等）。
+        """Return persisted metadata with current Web and owned cron activity.
 
-        经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
-        SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。运行态不属于
-        持久化 metadata：由 WebChannel 已维护的 session busy 状态在响应入队前覆盖，
-        这样页面刷新仍能恢复当前会话的停止按钮，并与随后同一 WS 上的状态事件保持顺序。
+        Project runtime state before enqueueing the response so page restoration
+        sees consistent processing fields without persisting or caching them.
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
@@ -2847,9 +2885,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
             if ok:
-                payload["is_processing"] = channel.is_session_busy(target_session_id)
-                # The busy map drives the stop button on page reload; expose
-                # the value it served for that session's metadata request.
+                is_processing = channel.is_session_busy(target_session_id)
+                cron_activity = getattr(_get_cron(), "is_session_processing", None)
+                if callable(cron_activity):
+                    is_processing = is_processing or cron_activity(target_session_id, user_id=user_id)
+                payload["is_processing"] = is_processing
+                payload["status"] = "processing" if is_processing else "idle"
+                # Cron executes outside the Web busy cache; keep this response
+                # projection separate from the channel's event-driven state.
                 logger.info(
                     "[WebHandlers] session.get_metadata runtime status: "
                     "session_id=%s is_processing=%s",
@@ -3208,40 +3251,29 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
 
-        # 移除前先问 AgentServer 项目下是否有会话在执行:必须在 hide_project_jobs
-        # 之前拦截,否则定时任务已被停用、移除却被取消,留下任务全部停用的
-        # 半残状态。预检失败或旧版 AgentServer 不认识该参数时不触碰 cron;
-        # 通过预检后仍由 commit 侧重新扫描,覆盖期间新启动的会话。
-        precheck_ok, precheck_payload = await fetch_agent_unary(
-            agent_client=_resolve(agent_client),
-            req_method=ReqMethod.PROJECT_LIFECYCLE,
-            params={"project_id": project_id, "running_sessions": True},
-            session_id=session_id,
-            user_id=user_id,
-            channel_id="web",
-            label="project.remove.precheck",
-            timeout_seconds=10,
-        )
-        if not precheck_ok or "has_running_sessions" not in precheck_payload:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error=str(precheck_payload.get("error") or "project remove precheck unavailable"),
-                code=str(precheck_payload.get("code") or "SERVICE_UNAVAILABLE"),
-            )
-            return
-        if precheck_payload["has_running_sessions"]:
-            await channel.send_response(
-                ws, req_id, ok=False,
-                error="project has running sessions; stop them before removing",
-                code="SESSION_BUSY",
-            )
-            return
-
+        # Removal is accepted immediately; running sessions no longer block it.
+        # The AgentServer hides the project and stops those sessions in the
+        # background, so this path goes straight to the cron-safe commit.
         async def _after_remove() -> None:
             registry = getattr(channel, "git_watcher_registry", None)
             if registry is not None and project_id:
                 registry.cleanup_project(project_id)
             _schedule_agent_prewarm_sync("project.remove")
+            # The AgentServer stops these Sessions in the background.  Settle
+            # the Gateway's busy cache now: otherwise a later restore would
+            # surface them as "still processing" on session.get_metadata.
+            stopped = (
+                remove_payload.get("stopped_sessions")
+                if isinstance(remove_payload, dict)
+                else None
+            )
+            if isinstance(stopped, list):
+                clear_busy = getattr(channel, "clear_session_busy", None)
+                if callable(clear_busy):
+                    for raw_sid in stopped:
+                        sid = str(raw_sid or "")
+                        if sid:
+                            clear_busy(sid)
             await _broadcast_project_event("project.removed", project_id, user_id)
 
         class _RemoveCommitError(Exception):
@@ -3563,7 +3595,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
         # Older clients omit the decision fields; the saved values are then left untouched.
         set_params = {"chrome_path": chrome_path, "headless": headless}
-        for decision_key in ("decision_mode", "decision_provider", "decision_model", "decision_api_base"):
+        for decision_key in (
+            "decision_mode", "decision_provider", "decision_model", "decision_api_base", "decision_display_name",
+        ):
             if params.get(decision_key) is not None:
                 set_params[decision_key] = params[decision_key]
 
@@ -3648,6 +3682,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         decision_updates, error = browser_decision_updates(
             set_params.get("decision_mode"), set_params.get("decision_provider"), get_config(),
             model=set_params.get("decision_model"), api_base=set_params.get("decision_api_base"),
+            display_name=set_params.get("decision_display_name"),
         )
         if error:
             await channel.send_response(ws, req_id, ok=False, error=error, code="BAD_REQUEST")
@@ -4805,13 +4840,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         if cc is None:
             await channel.send_response(ws, req_id, ok=False, error="cron not available", code="INTERNAL_ERROR")
             return
-        jobs = await cc.list_jobs()
         # 按 web 连接 user_id 过滤:只返回该用户创建的定时任务(隔离)。
-        # user_id 为空(连接未带)时维持原行为(返回全部);agent 内部创建的 cron
-        # (user_id 空串)在带 user_id 的连接下被过滤掉(对人类用户不可见)。
+        # 过滤在 controller 内进行,先于按属主路由的准入闸门,避免为其他
+        # 用户的沙箱冷启动/超时买单。user_id 为空(连接未带)时维持原行为
+        # (返回全部);agent 内部创建的 cron(user_id 空串)在带 user_id 的
+        # 连接下被过滤掉(对人类用户不可见)。
         uid_str = str(user_id or "").strip()
-        if uid_str:
-            jobs = [j for j in jobs if str(j.get("user_id") or "").strip() == uid_str]
+        jobs = await cc.list_jobs(user_id=uid_str or None)
         # 可选按 project_id 过滤(支持 default/default_code 虚拟项目)
         if isinstance(params, dict):
             raw_pid = params.get("project_id")
@@ -5230,6 +5265,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("config.get", _ConfigReq.CONFIG_GET, _config_get)
     _register_config_proxy("config.set", _ConfigReq.CONFIG_SET, _config_set)
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
+
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
     _register_config_proxy("models.get", _ConfigReq.MODELS_GET,
@@ -5345,6 +5381,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     # 转发到 AgentServer 与本地 handler 冲突）。静态元数据本地返回最快、依赖最少。
     channel.register_method("commands.list", _commands_list)
 
+    async def _file_upload_chunk(ws, req_id, params, session_id, user_id=None):
+        """浏览器分块上传（E2A 转发 AgentServer 的 ``file.upload_chunk``）。
+
+        生产入口（app_web 静态服务）没有 Vite 的 /file-api 上传中间件，画布素材
+        改为复用这条已认证的 WS 通道逐块上传（前端 512 KiB/块），由 AgentServer
+        落到注入目录；避免前端直连要求 token 的 /file-api/upload 得到
+        ``missing_token``（issue #5325）。
+        """
+        from jiuwenswarm.common.schema.message import ReqMethod
+        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        await proxy_unary_request(
+            channel=channel,
+            agent_client=_resolve(agent_client),
+            ws=ws,
+            req_id=req_id,
+            params=params if isinstance(params, dict) else {},
+            session_id=session_id,
+            user_id=user_id,
+            req_method=ReqMethod.FILE_UPLOAD_CHUNK,
+            label="file.upload_chunk",
+            timeout_seconds=120.0,
+        )
+
+    channel.register_method("file.upload_chunk", _file_upload_chunk)
     channel.register_method("chat.send", _chat_send)
     channel.register_method("media.persist", _media_persist)
     channel.register_method("media.discard", _media_discard)
@@ -5884,13 +5945,25 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             params=dict(params) if isinstance(params, dict) else {},
             metadata=route_metadata,
         )
+        authorize_completion = req_method in {
+            ReqMethod.A4P_AUTHORIZATION_COMPLETE,
+            ReqMethod.A4P_AUTHORIZATION_REJECT,
+        }
+        if authorize_completion:
+            # 刷新后经新连接完成/拒绝授权：把该恢复 turn 的输出改绑到当前连接，
+            # 其迟到事件（旧 ws 已注销）据此改投，而不是被当孤儿丢弃。
+            channel.record_a4p_rebound(session_id, route_metadata["ws_id"])
         try:
             resp = await ac.send_request(env)
         except Exception as exc:
+            if authorize_completion:
+                channel.clear_a4p_rebound(session_id)
             logger.exception("[a4p] forward to agent failed: %s", exc)
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
             return
         if not resp.ok:
+            if authorize_completion:
+                channel.clear_a4p_rebound(session_id)
             payload = resp.payload if isinstance(resp.payload, dict) else {}
             await channel.send_response(
                 ws,

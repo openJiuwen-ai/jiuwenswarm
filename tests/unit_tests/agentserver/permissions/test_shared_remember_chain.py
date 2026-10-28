@@ -11,8 +11,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.foundation.llm import ToolCall
+from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPT_AUTO_CONFIRM_KEY
 
@@ -72,12 +75,15 @@ def build(policy, root, sid, smart):
     )
 
 
-async def approve(rail, ctx, permanent, before_answer=None, remember=True):
+async def approve(
+    rail, ctx, permanent, before_answer=None, remember=True, *,
+    approved=True, queue=None, request_id="same-turn",
+):
     """Use the existing queue reservation/claim and default Core confirmation."""
-    queue = RootPermissionQueue()
+    queue = RootPermissionQueue() if queue is None else queue
     queue_rail = RootPermissionQueueRail(queue)
     token = bind_root_permission_request(
-        root_session_id=ctx.session.get_session_id(), request_id="same-turn",
+        root_session_id=ctx.session.get_session_id(), request_id=request_id,
         enabled=True, queue=queue,
     )
     try:
@@ -85,7 +91,7 @@ async def approve(rail, ctx, permanent, before_answer=None, remember=True):
         with pytest.raises(AbortError) as raised:
             await rail.before_tool_call(ctx)
         ctx.exception = raised.value
-        await queue_rail.on_tool_exception(ctx)
+        await queue_rail.after_tool_call(ctx)
         card = queue.pending_for_call(
             root_session_id=ctx.session.get_session_id(),
             execution_session_id=ctx.session.get_session_id(),
@@ -99,13 +105,14 @@ async def approve(rail, ctx, permanent, before_answer=None, remember=True):
         if before_answer:
             before_answer()
         answer = InteractiveInput()
-        payload = {"approved": True, "auto_confirm": remember}
+        payload = {"approved": approved, "auto_confirm": remember if approved else False}
         if permanent is not None:
             payload["persist_allow"] = permanent
         answer.update(card.key.invocation_id, payload)
         reserved = queue.reserve_answer(ctx.session.get_session_id(), answer)
         resumed = context(
             ctx.session.get_session_id(), ctx.inputs.tool_name, ctx.inputs.tool_args,
+            call_id=ctx.inputs.tool_call.id,
         )
         resumed.session = ctx.session
         resumed.agent = ctx.agent
@@ -113,6 +120,7 @@ async def approve(rail, ctx, permanent, before_answer=None, remember=True):
         await queue_rail.before_tool_call(resumed)
         await rail.before_tool_call(resumed)
         await RootPermissionCompletionRail(queue).before_tool_call(resumed)
+        assert queue.get(card.key) is None
         return resumed
     finally:
         reset_root_permission_request(token)
@@ -275,6 +283,75 @@ async def test_allow_once_uses_same_core_chain_without_writing_rules(storage, tm
         await rail.before_tool_call(context("session-a", "unknown_lookup", {}, "next"))
 
 
+@pytest.mark.parametrize("smart", [False, True])
+@pytest.mark.parametrize("existing_rules", [False, True])
+async def test_reject_and_allow_once_apply_only_to_current_call(storage, tmp_path, smart, existing_rules):
+    policy, global_path = storage
+    policy["mode"] = "auto" if smart else "manual"
+    policy["defaults"] = {"*": "ask"}
+    policy["tools"] = {"unknown_lookup": "ask"}
+    config.dump_yaml_round_trip(global_path, {"permissions": policy})
+    paths = [global_path, layers.user_permissions_path(), layers.session_permissions_path("session-a")]
+    if existing_rules:
+        for path in paths[1:]:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            config.dump_yaml_round_trip(path, {"deny_tools": ["unrelated_tool"]})
+    original = {path: path.read_bytes() if path.exists() else None for path in paths}
+    rail = build(policy, tmp_path, "session-a", smart)
+    queue, executed = RootPermissionQueue(), []
+    manager = AbilityManager(owner_id="reject-once")
+    agent = SimpleNamespace(
+        ability_manager=manager, agent_callback_manager=AgentCallbackManager("reject-once"),
+    )
+    tool = LocalFunction(
+        card=ToolCard(
+            id="reject-once-target", name="unknown_lookup", description="Approval probe",
+            input_params={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        ),
+        func=lambda query: executed.append(query) or "executed-once",
+    )
+    manager.add_ability(tool.card, tool)
+    first = context("session-a", "unknown_lookup", {"query": "same"}, "rejected-call")
+    first.agent = agent
+    try:
+        for approved, call_id in ((False, "rejected-call"), (True, "allowed-call")):
+            call = context("session-a", "unknown_lookup", {"query": "same"}, call_id)
+            call.agent, call.session = agent, first.session
+            resumed = await approve(
+                rail, call, None, remember=False, approved=approved,
+                queue=queue, request_id=f"request-{call_id}",
+            )
+            results = await manager.execute(resumed, resumed.inputs.tool_call, first.session)
+            assert executed == (["same"] if approved else [])
+            if approved:
+                assert results[0][0] == "executed-once"
+            assert not queue.has_live(root_session_id="session-a")
+            assert first.session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) in (None, {})
+            assert {path: path.read_bytes() if path.exists() else None for path in paths} == original
+        third = context("session-a", "unknown_lookup", {"query": "same"}, "third-call")
+        third.agent, third.session = agent, first.session
+        token = bind_root_permission_request(
+            root_session_id="session-a", request_id="request-third-call", enabled=True, queue=queue,
+        )
+        try:
+            queue_rail = RootPermissionQueueRail(queue)
+            await queue_rail.before_tool_call(third)
+            with pytest.raises(AbortError) as raised:
+                await rail.before_tool_call(third)
+            third.exception = raised.value
+            await queue_rail.after_tool_call(third)
+            card = queue.pending_for_call(
+                root_session_id="session-a", execution_session_id="session-a", tool_call_id="third-call",
+            )
+            assert card is not None and card.key.request_id == "request-third-call"
+            assert executed == ["same"]
+            assert {path: path.read_bytes() if path.exists() else None for path in paths} == original
+        finally:
+            reset_root_permission_request(token)
+    finally:
+        manager.remove("unknown_lookup")
+
+
 @pytest.mark.parametrize("permanent", [False, True])
 async def test_changed_pending_arguments_cannot_gain_a_rule(storage, tmp_path, permanent):
     policy, _ = storage
@@ -394,7 +471,16 @@ async def test_each_callback_loads_shared_layers_once_including_owner_scene(stor
 
 
 @pytest.mark.parametrize("permanent", [False, True])
-async def test_native_read_remember_reloads_exact_file_axis(storage, native, permanent):
+async def test_native_read_remember_reloads_exact_file_axis(storage, native, permanent, monkeypatch):
+    from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
+        REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY,
+    )
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_metadata._configured_reviewer_display_language",
+        lambda: "en",
+    )
     _, global_path = storage
     config.dump_yaml_round_trip(global_path, {"permissions": native.permissions})
     external = native.root.parent / "approved.txt"
@@ -411,8 +497,58 @@ async def test_native_read_remember_reloads_exact_file_axis(storage, native, per
     first.session.update_state({INTERRUPT_AUTO_CONFIRM_KEY: {}})
     following = context("native-session", "read_file", {"file_path": str(external)}, "next")
     following.agent, following.session = first.agent, first.session
+    native.rail._maybe_run_reviewer = AsyncMock(wraps=native.rail._maybe_run_reviewer)
     await native.rail.before_tool_call(following)
     assert not following.extra.get("_skip_tool")
+    assert native.rail._maybe_run_reviewer.await_count == 0
+    metadata = following.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY]["next"]
+    assert metadata["decision_source"] == "policy_evaluator"
+    assert metadata["reviewer_status"] == metadata["final_reviewer_status"] == "approved"
+    assert metadata["evidence_summary"] == (
+        "Your permission settings already allow this action. No approval needed."
+    )
+    assert "reviewer_called" not in metadata
+
+    events = []
+
+    async def capture(event):
+        events.append(event)
+
+    following.session.write_stream = capture
+    following.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY]["other-call"] = {"reviewer_status": "denied"}
+    stream = JiuSwarmStreamEventRail()
+    await stream.before_tool_call(following)
+    tool_args = following.inputs.tool_args
+    if isinstance(tool_args, str):
+        tool_args = json.loads(tool_args)
+    following.inputs.tool_result = await native.tools["read_file"].invoke(tool_args)
+    assert following.inputs.tool_result.success
+    await stream.after_tool_call(following)
+    progress = [
+        event.payload["tool_update"] for event in events
+        if event.type == "tool_update" and "reviewer_metadata" in event.payload["tool_update"]
+    ]
+    terminal = [event.payload["tool_result"] for event in events if event.type == "tool_result"]
+    assert progress[0]["tool_call_id"] == terminal[0]["tool_call_id"] == "next"
+    assert progress[0]["reviewer_metadata"] == terminal[0]["reviewer_metadata"] == metadata
+    assert terminal[0]["success"] is True
+    assert following.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY] == {
+        "other-call": {"reviewer_status": "denied"},
+    }
+
+    rebuilt = build(native.permissions, native.root, "other-session", True)
+    rebuilt._maybe_run_reviewer = AsyncMock(wraps=rebuilt._maybe_run_reviewer)
+    cross = context("other-session", "read_file", {"file_path": str(external)}, "cross")
+    cross.agent = first.agent
+    if permanent:
+        await rebuilt.before_tool_call(cross)
+        assert not cross.extra.get("_skip_tool")
+        assert (cross.extra[REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY]["cross"]["evidence_summary"]
+                == metadata["evidence_summary"])
+        assert rebuilt._maybe_run_reviewer.await_count == 0
+    else:
+        with pytest.raises(AbortError):
+            await rebuilt.before_tool_call(cross)
     other = native.root.parent / "other.txt"
     other.write_text("other")
     changed = context("native-session", "read_file", {"file_path": str(other)}, "other")

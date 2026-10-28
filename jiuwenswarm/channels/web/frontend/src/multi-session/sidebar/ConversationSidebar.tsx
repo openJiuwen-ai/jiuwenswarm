@@ -18,6 +18,7 @@ import {
   getSessionActivityAt,
   getSessionIndicator,
   getTaskStatusLabel,
+  getViewedSessionId,
   sortSessionsForSidebar,
 } from './sidebarModel';
 import { ProjectCreateMenu } from './ProjectCreateMenu';
@@ -852,15 +853,17 @@ export function ConversationSidebar({
     return () => window.clearInterval(timer);
   }, []);
 
+  const viewedSessionId = getViewedSessionId(workMode, activeSessionId, activeDesignSessionId);
+
   useEffect(() => {
-    if (!activeSessionId) return;
+    if (!viewedSessionId) return;
     setUnreadSessions((current) => {
-      if (!current.has(activeSessionId)) return current;
+      if (!current.has(viewedSessionId)) return current;
       const next = new Set(current);
-      next.delete(activeSessionId);
+      next.delete(viewedSessionId);
       return next;
     });
-  }, [activeSessionId]);
+  }, [viewedSessionId]);
 
   useEffect(() => {
     localStorage.setItem(UNREAD_KEY, JSON.stringify([...unreadSessions]));
@@ -939,13 +942,13 @@ export function ConversationSidebar({
       previousProcessing.current,
       observedSidebarSessions,
       runtimes,
-      activeSessionId,
+      viewedSessionId,
     );
     previousProcessing.current = snapshot;
     if (completedInBackground.length > 0) {
       setUnreadSessions((current) => new Set([...current, ...completedInBackground]));
     }
-  }, [activeSessionId, observedSidebarSessions, runtimes]);
+  }, [observedSidebarSessions, runtimes, viewedSessionId]);
 
   async function handleCreateProject(name: string, projectDir: string) {
     setPathDialogError(null);
@@ -1024,7 +1027,7 @@ export function ConversationSidebar({
         now={relativeTimeNow}
         onSelect={() => openListedSession(session)}
         menuScope={projectMenu ? 'project' : 'conversation'}
-        activeSessionId={workMode === 'design' ? (activeDesignSessionId ?? null) : activeSessionId}
+        activeSessionId={viewedSessionId}
         onLeaveActiveSession={leaveActiveSession}
       />
     );

@@ -30,6 +30,8 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     _ensure_model_business_ids,
+    _normalize_legacy_model_nulls,
+    _recover_existing_model_fields,
     get_config,
     get_config_raw,
     get_available_models,
@@ -227,7 +229,8 @@ def _merge_models_for_replace_all(
         origin_idx = item.get("origin_index")
         model_id = item.get("model_id")
         if model_id:
-            origin_idx = next((i for i, entry in enumerate(raw_defaults) if entry.get("model_id") == model_id), None)
+            origin_idx = next((i for i, entry in enumerate(raw_defaults)
+                               if isinstance(entry, dict) and entry.get("model_id") == model_id), None)
             if origin_idx is None:
                 raise ConfigPanelBadRequest(f"unknown model_id: {model_id}")
         raw_entry = None
@@ -514,7 +517,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
     crypto = _get_crypto_provider()
 
     raw_cfg = get_config_raw()
-    raw_defaults = raw_cfg.get("models", {}).get("defaults") if isinstance(raw_cfg, dict) else None
+    raw_defaults = (raw_cfg.get("models") or {}).get("defaults") if isinstance(raw_cfg, dict) else None
     if not isinstance(raw_defaults, list):
         raw_defaults = []
     resolved_defaults = get_default_models()
@@ -708,11 +711,11 @@ async def models_list_handler(
                 # 迁移/校验后注入，前端据此关联模型组与路由。
                 "model_id": entry.get("model_id", ""),
                 "model_name": model_name,
-                "api_base": mcc.get("api_base", ""),
+                "api_base": str(mcc.get("api_base") or ""),
                 # 保持旧设置页的编辑/测试/保存协议；登录模型凭据不可下发。
-                "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
+                "api_key": "" if is_login_model(entry) else str(mcc.get("api_key") or ""),
                 "has_api_key": bool(mcc.get("api_key")),
-                "model_provider": mcc.get("client_provider", ""),
+                "model_provider": str(mcc.get("client_provider") or ""),
                 "temperature": mco.get("temperature"),
                 "reasoning_level": reasoning_level_display(mco.get("reasoning_level")),
                 "is_default": is_default,
@@ -803,6 +806,8 @@ async def models_replace_all_handler(
         # AgentOS entries and model groups are validated and preserved.
         candidate_models = dict((get_config_raw().get("models") or {}))
         candidate_models["defaults"] = new_models
+        _recover_existing_model_fields(candidate_models)
+        _normalize_legacy_model_nulls(candidate_models)
         _ensure_model_business_ids(candidate_models)
         raise_if_invalid(candidate_models)
         update_default_models_in_config(candidate_models["defaults"], cron_references_checked=True)

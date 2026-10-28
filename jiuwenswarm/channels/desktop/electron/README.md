@@ -109,6 +109,18 @@ registration, including single-agent conversations. The browser pane has member
 tabs; switching or hiding a tab does not stop background automation. Popups are
 still redirected into their owning page; this is not a full Chrome tab manager.
 
+Browser settings' `browser.headless` also controls embedded page presentation.
+Headed mode keeps the normal browser tab and automatic single-agent expansion;
+headless mode hides the browser tab and all native views, while MCP operations
+continue on the same pages. Switching display modes does not itself close or
+navigate those views, change their TargetIDs, or clear their login state. Electron
+implements this as background WebContentsViews, not a separate headless Chrome
+process. The default is headless, including while the saved setting is loading.
+After a successful settings save the presentation updates without restarting
+Electron. Failed saves leave the effective mode unchanged. HTML/Markdown file
+links use the normal artifact preview in headless mode rather than navigating a
+background task's page.
+
 All browser panels use `persist:jiuwenswarm-browser`, separate from the trusted
 UI's session. Cookies and origin-scoped local storage are shared across members
 and conversations and survive restarts. Page navigation and sessionStorage are

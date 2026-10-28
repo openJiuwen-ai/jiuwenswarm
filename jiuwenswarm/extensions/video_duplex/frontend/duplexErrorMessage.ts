@@ -17,7 +17,12 @@ export function describeDuplexError(raw: string, scope: FailureScope = 'session'
   } else if (/\b(401|403)\b|unauthorized|forbidden|invalid.?api.?key|鉴权|认证失败/i.test(detail)) {
     action = '请检查对应服务的 API Key、访问权限及模型授权，然后重试';
   } else if (/\b429\b|quota|rate.?limit|限流|额度|配额/i.test(detail)) {
-    action = '请检查服务额度和限流状态，额度恢复后重试';
+    if (/joyai/i.test(detail)) {
+      result = '模型供应商额度已耗尽，本次请求被拒';
+      action = 'JoyAI 服务商限流（429，每分钟 token 额度已用完），请稍后重试或提高供应商额度';
+    } else {
+      action = '请检查服务额度和限流状态，额度恢复后重试';
+    }
   } else if (/not.?supported|不支持/i.test(detail)) {
     // A runtime capability gap (#5283): the service logs hold nothing useful.
     result = '当前运行环境不支持该功能';

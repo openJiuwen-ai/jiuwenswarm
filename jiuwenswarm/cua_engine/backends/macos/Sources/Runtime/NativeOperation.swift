@@ -27,6 +27,32 @@ import Foundation
     private var inputReferences = [String: () -> Void]()
     private var unavailableBackgroundPreparation = Set<String>()
     private var confirmedPreparation = Set<String>()
+    private var contentPreparationPrimitive: String?
+    var contentPreparationStarted: Bool { contentPreparationPrimitive != nil }
+
+    /// Scrolling can change content before the requested click. Reinspection
+    /// must retain this admitted candidate rather than choose a new action.
+    func contentPreparationCandidate(in candidates: [String]) throws -> String? {
+        guard let original = contentPreparationPrimitive else { return nil }
+        guard candidates.contains(original) else {
+            throw DriverError("the original click contract became unavailable after content preparation; observe before continuing",
+                              code: .inputUnavailable, effect: .possible)
+        }
+        return original
+    }
+
+    func requirePreparationCandidate(_ primitive: String) throws {
+        guard contentPreparationPrimitive == nil || contentPreparationPrimitive == primitive else {
+            throw DriverError("content preparation already affected the selected click candidate; observe before selecting another route",
+                              code: .executionUnknown, effect: .possible)
+        }
+    }
+
+    func recordContentPreparation(_ primitive: String) throws {
+        try check(write: true)
+        try requirePreparationCandidate(primitive)
+        contentPreparationPrimitive = primitive
+    }
     private let cancelActive: () -> Void
     private let now: () -> TimeInterval
 

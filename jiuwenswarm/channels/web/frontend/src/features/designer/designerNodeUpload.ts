@@ -9,6 +9,18 @@ export type DesignerUploadKind = 'image' | 'video' | 'audio';
 
 export const DESIGNER_UPLOAD_ACCEPT = 'image/*,video/*,audio/*';
 
+/** Error message thrown for files over the upload limit; the server answers with the same code. */
+export const DESIGNER_UPLOAD_TOO_LARGE = 'file_too_large';
+
+// Mirror MAX_DESIGNER_UPLOAD_BYTES / MAX_DESIGNER_VIDEO_UPLOAD_BYTES in designer_upload_http.py.
+const DESIGNER_UPLOAD_MAX_BYTES = 32 * 1024 * 1024;
+const DESIGNER_VIDEO_UPLOAD_MAX_BYTES = 1024 * 1024 * 1024;
+
+export function isDesignerUploadTooLarge(file: Pick<File, 'size' | 'type'>): boolean {
+  const isVideo = file.type.toLowerCase().startsWith('video/');
+  return file.size > (isVideo ? DESIGNER_VIDEO_UPLOAD_MAX_BYTES : DESIGNER_UPLOAD_MAX_BYTES);
+}
+
 export function uploadKindFromMime(mime: string | null | undefined): DesignerUploadKind | null {
   const value = String(mime || '').toLowerCase();
   if (value.startsWith('image/')) return 'image';
@@ -37,6 +49,7 @@ export type DesignerStoredUpload = {
 };
 
 export async function storeDesignerUpload(file: File): Promise<DesignerStoredUpload> {
+  if (isDesignerUploadTooLarge(file)) throw new Error(DESIGNER_UPLOAD_TOO_LARGE);
   const stored = await uploadDesignerAsset(file);
   return {
     uri: localPathToFileUri(stored.path),

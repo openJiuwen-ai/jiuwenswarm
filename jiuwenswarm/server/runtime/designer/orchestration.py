@@ -15,7 +15,6 @@ from jiuwenswarm.common.schema.designer_graph import (
     node_pipeline,
 )
 from jiuwenswarm.server.runtime.designer.continuity import (
-    continuity_prompt_clause as _continuity_prompt_clause,
     infer_continuity_lock as _infer_continuity_lock,
     merge_lock_with_previous,
 )
@@ -24,15 +23,51 @@ from jiuwenswarm.server.runtime.designer.model_tools import (
     call_model_tool,
     list_configured_models,
 )
+from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import CLOTHING_PARTS_RULE
+from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+    POSITIVE_VISUAL_RULE,
+    authoring_language_rule,
+    current_content_language,
+    node_task,
+)
 from jiuwenswarm.server.runtime.designer.user_references import carry_user_references
 
 logger = logging.getLogger(__name__)
 
-_SHOT_TEXT_LANGUAGE_RULE = (
-    "Write every camera, action, and cast_actions value entirely in the "
-    "language of user_prompt, even where the approved brief or locks are in "
-    "another language; only ids, ratios such as 16:9, and timelines stay as-is. "
-)
+
+def _llm_character_card(
+    raw: dict[str, Any],
+    index: int,
+    prior: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Identity card from Director JSON; keeps garment slots the LLM authored earlier."""
+    from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
+        normalize_clothing_parts,
+    )
+
+    cid = str(raw.get("id") or f"char_{index}").strip() or f"char_{index}"
+    name = str(raw.get("name") or cid).strip() or cid
+    card: dict[str, Any] = {
+        "id": cid,
+        "name": name,
+        "description": str(raw.get("description") or name)[:600],
+    }
+    parts = normalize_clothing_parts(raw.get("clothing_parts"))
+    if not parts:
+        earlier = next(
+            (c for c in prior if isinstance(c, dict) and str(c.get("id") or "") == cid),
+            {},
+        )
+        parts = normalize_clothing_parts(earlier.get("clothing_parts"))
+    if parts:
+        card["clothing_parts"] = parts
+    return card
+
+
+def _language_rule() -> str:
+    """Keep every user-editable value the Director writes in the content language."""
+    return authoring_language_rule(current_content_language())
+
 
 # Role → tool set for one-pass node agents (no feedback loop).
 _ROLE_TOOLS: dict[str, list[str]] = {
@@ -139,11 +174,6 @@ def _spatial_continuity_patch(graph: DesignerExecutionGraph) -> list[str]:
                 lock[key] = value
         shot["continuity_lock"] = lock
         shot_locks[idx] = lock
-        clause = _continuity_prompt_clause(lock)
-        prompt = str(shot.get("clip_prompt") or action)
-        if clause and "CONSISTENCY LOCK" not in prompt:
-            shot["clip_prompt"] = prompt + clause
-            notes.append(f"analysis shot {idx}: consistency lock stamped")
 
     if analysis.get("clips"):
         meta["script_analysis"] = analysis
@@ -164,17 +194,7 @@ def _spatial_continuity_patch(graph: DesignerExecutionGraph) -> list[str]:
         if not lock:
             continue
         cfg["continuity_lock"] = lock
-        clause = _continuity_prompt_clause(lock)
-        gen = dict(cfg.get("generate") or {}) if isinstance(cfg.get("generate"), dict) else {}
-        prompt = str(gen.get("prompt") or "").strip()
-        if clause and "CONSISTENCY LOCK" not in prompt:
-            if not prompt:
-                camera = str(cfg.get("camera") or "medium / eye-level")
-                prompt = f"Film shot {idx or '?'} only. Camera {camera}. Action: {action}."
-            gen["prompt"] = prompt + clause
-            cfg["generate"] = gen
-            notes.append(f"{node.get('id')}: consistency lock in generate.prompt")
-        elif role == "storyboard":
+        if role == "storyboard":
             notes.append(f"{node.get('id')}: consistency locks available for planned shots")
         node["config"] = cfg
 
@@ -493,7 +513,7 @@ def _director_reedit_artifacts_after_prune(
             render_storyboard_table,
         )
 
-        meta["approved_storyboard"] = render_storyboard_table(surviving, chars)
+        meta["approved_storyboard"] = render_storyboard_table(surviving, chars, current_content_language())
         graph["metadata"] = meta
         notes.append("reedit_approved_storyboard")
 
@@ -1076,7 +1096,7 @@ class Director:
             '"spatial_lock":{"setting":"...","landmarks":"...","light":"...","static_rule":"..."},'
             '"node_directives":{"<node_id>":{"preferred_model":"...","task":"..."}},'
             '"notes":"..."}'
-        )
+        ) + _language_rule()
         prompt = json.dumps(
             {
                 "user_prompt": graph.get("description"),
@@ -1135,7 +1155,7 @@ class Director:
             tools = _tools_for_node(node)
             directives[nid] = {
                 "preferred_model": preferred,
-                "task": str(entry.get("task") or f"Execute node {node.get('label') or nid}"),
+                "task": str(entry.get("task") or node_task("execute", label=node.get("label") or nid)),
                 "tools": tools,
             }
         plan = {
@@ -1229,7 +1249,7 @@ class Director:
                 "Preserve all explicit people, places, brand facts, claims, and requested events; "
                 "creative enrichment may fill only details the user left unspecified. "
                 "Respond with markdown brief only (no JSON wrapper)."
-            )
+            ) + _language_rule()
             result = await call_model_tool(
                 prompt=json.dumps(
                     {
@@ -1335,7 +1355,8 @@ class Director:
                 "on-screen human as characters[] (id, name, description) — one identity card "
                 "each, including unnamed groups that share one look. Put that id in on_screen "
                 "on every shot where they are visible. NOT every character appears in every scene. "
-                "Copy the approved Brief's visual style exactly into style_lock; never "
+                + CLOTHING_PARTS_RULE
+                + "Copy the approved Brief's visual style exactly into style_lock; never "
                 "substitute a model or leaf default. "
                 "Different setting_id = DIFFERENT place (distinct architecture). "
                 "Group shots by setting_id. Shots are consecutive TIME windows that "
@@ -1386,17 +1407,18 @@ class Director:
                 "change wardrobe or emotion only when this shot's story changes them. "
                 "Shots are self-contained continuity windows — do not rely on prior "
                 "clip media. "
-                + _SHOT_TEXT_LANGUAGE_RULE
                 + "Film-wide locks: language_lock (e.g. en/zh — ALL dialogue in that "
                 "language), bgm_lock {mood,style,instruments,continuity,rule}, "
                 "include_speech, include_music. "
                 "Respond JSON only: "
                 '{"style_lock":{"look":"...","medium":"..."},'
-                '"characters":[{"id":"char_1","name":"...","description":"..."}],'
+                '"characters":[{"id":"char_1","name":"...","description":"...",'
+                '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
+                '"accessories":"","outfit":""}}],'
                 '"clips":[{"clip_index":1,"timeline":"<copy this shot timeline from the approved brief>",'
                 '"camera":"...",'
                 '"action":"...","on_screen":["char_1"],"offscreen":["char_2"],'
-                '"featured_cast_ids":["char_1"],"cast_actions":{"char_1":"preaching"},'
+                '"featured_cast_ids":["char_1"],"cast_actions":{"char_1":"..."},'
                 '"ensemble_cast_ids":["char_1","char_2"],"setting_id":"set_1",'
                 '"clip_strategy":"compose_from_character_specs",'
                 '"start_state":{"pose":"...","seats":{},"facing":"..."},'
@@ -1404,12 +1426,12 @@ class Director:
                 '"continuity_lock":{"forbid":"..."},"clip_prompt":"...",'
                 '"exiting_character_ids":[],'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
-                '"language_lock":"en",'
+                '"language_lock":"<spoken language code, e.g. zh or en>",'
                 '"bgm_lock":{"mood":"...","style":"...","instruments":"...",'
                 '"continuity":"same bed","rule":"non-vocal underscore"},'
                 '"include_speech":true,"include_music":true,'
                 '"notes":"...","target_clip_count":N}'
-            )
+            ) + _language_rule() + POSITIVE_VISUAL_RULE
             result = await call_model_tool(
                 prompt=json.dumps(
                     {
@@ -1438,15 +1460,7 @@ class Director:
                 for i, raw in enumerate(llm_chars, start=1):
                     if not isinstance(raw, dict):
                         continue
-                    cid = str(raw.get("id") or f"char_{i}").strip() or f"char_{i}"
-                    name = str(raw.get("name") or cid).strip() or cid
-                    cleaned_chars.append(
-                        {
-                            "id": cid,
-                            "name": name,
-                            "description": str(raw.get("description") or name)[:600],
-                        }
-                    )
+                    cleaned_chars.append(_llm_character_card(raw, i, characters))
                 if cleaned_chars:
                     characters = cleaned_chars
                     analysis["characters"] = characters
@@ -1572,7 +1586,7 @@ class Director:
                 "Chat model did not return a usable storyboard.",
                 code=LLM_API_ERROR,
             )
-        sb_md = render_storyboard_table(shots, characters)
+        sb_md = render_storyboard_table(shots, characters, current_content_language())
 
         from jiuwenswarm.server.runtime.designer.media_model_playbook import (
             synchronize_graph_style_from_brief,
@@ -1714,7 +1728,8 @@ class Director:
                 "card (id, name, description), including unnamed groups that share one look. "
                 "List that id in on_screen wherever they are visible. "
                 "NOT every character in every scene. "
-                "MUST include shots[] grouped by setting_id (distinct places). "
+                + CLOTHING_PARTS_RULE
+                + "MUST include shots[] grouped by setting_id (distinct places). "
                 "Shots are consecutive TIME windows that concatenate to the film. "
                 "Each shot.action is THAT window only — do not paste the user prompt "
                 "into every clip. Preserve every distinct narrative/content shot from the "
@@ -1744,13 +1759,15 @@ class Director:
                 "speech_by_character, speech_line. "
                 "Schema: "
                 '{"style_lock":{"look":"...","medium":"..."},'
-                '"characters":[{"id":"char_1","name":"...","description":"..."}],'
+                '"characters":[{"id":"char_1","name":"...","description":"...",'
+                '"clothing_parts":{"top":"...","bottom":"...","outerwear":"","footwear":"...",'
+                '"accessories":"","outfit":""}}],'
                 '"clips":[{"clip_index":1,"timeline":"<copy this shot timeline from the approved brief>",'
                 '"action":"...",'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
                 '"target_clip_count":N,"include_speech":bool,'
                 '"include_music":bool,"notes":"..."}'
-            )
+            ) + _language_rule() + POSITIVE_VISUAL_RULE
             from jiuwenswarm.server.runtime.designer.pipeline.director_contract import (
                 infer_shot_budget,
             )
@@ -1793,14 +1810,8 @@ class Director:
             for i, raw in enumerate(llm_chars, start=1):
                 if not isinstance(raw, dict):
                     continue
-                cid = str(raw.get("id") or f"char_{i}").strip() or f"char_{i}"
-                name = str(raw.get("name") or cid).strip() or cid
                 cleaned_chars.append(
-                    {
-                        "id": cid,
-                        "name": name,
-                        "description": str(raw.get("description") or name)[:600],
-                    }
+                    _llm_character_card(raw, i, list(analysis.get("characters") or []))
                 )
             if not cleaned_chars:
                 raise DesignerLlmError(
@@ -2020,6 +2031,8 @@ class Director:
         if prompt != str(gen.get("prompt") or cfg.get("prompt") or "").strip():
             notes.append("strip_prior_prompt_pastes")
             changed = True
+        # Lock clauses below are for the leaf agent; images persist only this text.
+        visible_prompt = prompt
 
         setting_id = str(cfg.get("setting_id") or "set_1").strip() or "set_1"
         strategy = str(
@@ -2250,7 +2263,6 @@ class Director:
                     cfg,
                     events=list(cfg.get("previous_clip_finished_events") or []),
                     prior_text=str(cfg.get("previous_clip_wan_prompt") or ""),
-                    prior_action=str(cfg.get("previous_clip_action") or ""),
                 )
                 if not isinstance(cfg.get("crowd_state"), dict):
                     cfg["crowd_state"] = infer_crowd_state(cfg, events=[])
@@ -2769,6 +2781,7 @@ class Director:
                 user_still = resolve_user_origin_prompt(cfg, "")
                 if user_still and user_still != str(prompt or "").strip():
                     prompt = user_still
+                    visible_prompt = user_still
                     notes.append("image_user_authority")
                     changed = True
                     cfg["director_image_prompt_notes"] = ["image_user_authority"]
@@ -2827,15 +2840,26 @@ class Director:
             "prompt_limit_source": str(getattr(lim, "source", "") or ""),
             "media_prompt_limits": packet or cfg.get("media_prompt_limits"),
         }
-        gen["prompt"] = prompt.strip()
+        persisted = prompt.strip()
+        lock_notes = ""
+        if role != "clip":
+            visible = visible_prompt.strip()
+            if persisted.startswith(visible):
+                lock_notes = persisted[len(visible):].strip()
+                persisted = visible
+        if lock_notes:
+            cfg["director_lock_notes"] = lock_notes
+        else:
+            cfg.pop("director_lock_notes", None)
+        gen["prompt"] = persisted
         cfg["generate"] = gen
         # Character/scene leaves read cfg.prompt; keep both in sync after Director gate.
         if role in {"character", "scene"} or not str(cfg.get("prompt") or "").strip():
-            cfg["prompt"] = prompt.strip()
+            cfg["prompt"] = persisted
         if changed:
-            cfg["last_approved_prompt"] = prompt.strip()
+            cfg["last_approved_prompt"] = persisted
         else:
-            cfg.setdefault("last_approved_prompt", prompt.strip())
+            cfg.setdefault("last_approved_prompt", persisted)
         node["config"] = cfg
         nid = str(node.get("id") or "")
         for n in graph.get("nodes") or []:
@@ -3171,7 +3195,7 @@ class Director:
                 "introduce a conflicting or unrelated plot, cast, claim, or geography. "
                 "Respond JSON only: "
                 '{"ok":true,"patched_brief_markdown":"...","notes":"...","issues":["..."]}'
-            )
+            ) + _language_rule()
             result = await call_model_tool(
                 prompt=json.dumps(
                     {
@@ -3316,17 +3340,16 @@ class Director:
                 "speech), per-shot speech_by_character (exact lines for every speaking shot; "
                 "{} only when that shot has no speaker or the user asked for mime or no dialogue), and "
                 "film-wide bgm_lock. "
-                + _SHOT_TEXT_LANGUAGE_RULE
                 + "Respond JSON only: "
                 '{"ok":true,"shot_fixes":[{"clip_index":1,"action":"...","camera":"...",'
                 '"timeline":"<copy this shot timeline from the approved brief>",'
                 '"continuity_lock":{"forbid":"..."},'
                 '"character_ids":["char_1"],'
                 '"speech_by_character":{"char_1":"exact line"},"speech_line":"..."}],'
-                '"language_lock":"en",'
+                '"language_lock":"<spoken language code, e.g. zh or en>",'
                 '"bgm_lock":{"mood":"...","style":"...","rule":"..."},'
                 '"include_speech":true,"include_music":true,"notes":"..."}'
-            )
+            ) + _language_rule() + POSITIVE_VISUAL_RULE
             result = await call_model_tool(
                 prompt=json.dumps(
                     {
@@ -3426,6 +3449,7 @@ class Director:
             meta["approved_storyboard"] = render_storyboard_table(
                 shots,
                 [c for c in (analysis.get("characters") or []) if isinstance(c, dict)],
+                current_content_language(),
             )
             # Patch storyboard + downstream clip configs once.
             try:
@@ -3535,14 +3559,13 @@ class Director:
             "(7) GRAPH USEFULNESS: every node must be useful for the final compose shot — "
             "list prune_ids for unused/orphan nodes; after prune the remaining graph must stay "
             "coherent (master scene → shot views → frames → shots → compose). "
-            + _SHOT_TEXT_LANGUAGE_RULE
             + "Respond JSON only: "
             '{"ok":true|false,"issues":["..."],"prune_ids":["n_unused"],'
             '"spatial_lock":{"landmarks":"...","layout":"...","light":"...","static_rule":"..."},'
             '"shot_fixes":[{"clip_index":1,"character_ids":["char_1"],'
             '"action":"...","continuity_lock":{"motion":"...","facing":"...","forbid":"..."},'
             '"costume_lock":"...","camera":"..."}],"notes":"..."}'
-        )
+        ) + _language_rule() + POSITIVE_VISUAL_RULE
         prompt = json.dumps(
             {
                 "user_prompt": graph.get("description"),
@@ -3634,10 +3657,6 @@ class Director:
                     shot["clip_prompt"] = action
                 if lock:
                     shot["continuity_lock"] = {str(k): str(v) for k, v in lock.items()}
-                    clause = _continuity_prompt_clause(shot["continuity_lock"])
-                    prompt = str(shot.get("clip_prompt") or "")
-                    if clause and "CONSISTENCY LOCK" not in prompt:
-                        shot["clip_prompt"] = prompt + clause
                 if camera:
                     shot["camera"] = camera
                 if costume:
@@ -3660,12 +3679,6 @@ class Director:
                     cfg["costume_lock"] = costume
                 if lock:
                     cfg["continuity_lock"] = {str(k): str(v) for k, v in lock.items()}
-                    gen = dict(cfg.get("generate") or {}) if isinstance(cfg.get("generate"), dict) else {}
-                    prompt = str(gen.get("prompt") or cfg.get("clip_action") or "")
-                    clause = _continuity_prompt_clause(cfg["continuity_lock"])
-                    if clause and "CONSISTENCY LOCK" not in prompt:
-                        gen["prompt"] = prompt + clause
-                        cfg["generate"] = gen
                 node["config"] = cfg
         if shots:
             analysis["clips"] = shots
@@ -3792,7 +3805,7 @@ class Director:
             "Respond JSON only: "
             '{"scores":{"<node_id>":0-10,"director":0-10,"overall":0-10},'
             '"summary":"...","pipeline_notes":"...","suggestions":{"<node_id>":"...","global":"..."}}'
-        )
+        ) + _language_rule()
         prompt = json.dumps(
             {
                 "user_prompt": graph.get("description"),
@@ -3881,7 +3894,7 @@ class Director:
             '{"scores":{"<node_id>":0-10,"overall":0-10},'
             '"summary":"...","suggestions":{"<node_id>":"...","global":"..."},'
             '"aggregated_score":0-10,"improvement_plan":"..."}'
-        )
+        ) + _language_rule()
         prompt = json.dumps(
             {
                 "agent_feedback": agent_feedback,
@@ -3962,6 +3975,8 @@ def _heuristic_node_score(
 
 def _shot_distinctness_patch(graph: DesignerExecutionGraph) -> list[str]:
     """Ensure each clip has a unique clip_action + generate prompt (text-only)."""
+    from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import shot_brief_prompt
+
     notes: list[str] = []
     camera_cycle = (
         "wide / establishing",
@@ -3990,25 +4005,13 @@ def _shot_distinctness_patch(graph: DesignerExecutionGraph) -> list[str]:
         prompt = str(gen.get("prompt") or "").strip()
         marker = f"shot {idx}"
         cast_names = [str(x) for x in (cfg.get("cast_names") or []) if str(x).strip()]
-        cast_who = ", ".join(cast_names)
         lock = cfg.get("continuity_lock") if isinstance(cfg.get("continuity_lock"), dict) else None
         if not lock and action:
-            lock = _infer_continuity_lock(action)
-            cfg["continuity_lock"] = lock
-        clause = _continuity_prompt_clause(lock if isinstance(lock, dict) else None)
-        if not prompt or marker not in prompt.lower():
-            gen["prompt"] = (
-                f"Film {marker} only. Camera {camera}. Action: {action}. "
-                + (f"Focus cast on screen: {cast_who}. " if cast_who else "")
-                + "Must differ from sibling shots."
-                + clause
-            )
+            cfg["continuity_lock"] = _infer_continuity_lock(action)
+        if not prompt or (marker not in prompt.lower() and f"第{idx}镜" not in prompt):
+            gen["prompt"] = shot_brief_prompt(idx, camera=camera, action=action, cast_names=cast_names)
             cfg["generate"] = gen
             notes.append(f"{node.get('id')}: refreshed generate.prompt")
-        elif clause and "CONSISTENCY LOCK" not in prompt:
-            gen["prompt"] = prompt + clause
-            cfg["generate"] = gen
-            notes.append(f"{node.get('id')}: appended consistency lock")
         if role == "clip":
             cfg["max_video_calls"] = 1
         node["config"] = cfg
@@ -4063,7 +4066,7 @@ def _cast_focus_alignment_patch(graph: DesignerExecutionGraph) -> list[str]:
 
         planned = list(analysis.get("clips") or [])
         if planned:
-            meta["approved_storyboard"] = render_storyboard_table(planned, characters)
+            meta["approved_storyboard"] = render_storyboard_table(planned, characters, current_content_language())
             graph["metadata"] = meta
             for node in graph.get("nodes") or []:
                 cfg = dict(node.get("config") or {})
@@ -4159,14 +4162,26 @@ def _cast_focus_alignment_patch(graph: DesignerExecutionGraph) -> list[str]:
             }
             cfg["identity_refs"] = identity_refs
             cfg["costume_lock"] = costume_lock
-            cfg["director_task"] = (
-                f"Use identity_refs sheets {identity_refs['character_node_ids']} "
-                f"({', '.join(cfg.get('cast_names') or [])}). "
-                f"Costume lock: {costume_lock}. Do not redesign wardrobe."
-            )
+            cfg["director_task"] = _lock_free_media_task(cfg)
             node["config"] = cfg
     graph["metadata"] = meta
     return notes
+
+
+_LEGACY_LOCK_TASK_PREFIXES = ("LOCKS:", "Use identity_refs sheets")
+
+
+def _lock_free_media_task(cfg: dict[str, Any]) -> str:
+    """Agent task text for a media node; lock values reach the agent only via the locks snapshot."""
+    existing = str(cfg.get("director_task") or "").strip()
+    if existing and not existing.startswith(_LEGACY_LOCK_TASK_PREFIXES):
+        return existing
+    setting = str(cfg.get("setting_id") or "").strip() or "this setting"
+    return (
+        f"Compose from the character specs in locks.character_node_ids for {setting}. "
+        "Wardrobe, staging, scene specs and the other locks are in the JSON locks snapshot. "
+        "Write one positive prompt from THIS storyboard row, then call the media model once."
+    )
 
 
 def _ensure_all_character_specs_precede_clips(graph: DesignerExecutionGraph) -> list[str]:
@@ -4455,38 +4470,7 @@ def _identity_consistency_patch(graph: DesignerExecutionGraph) -> list[str]:
             )
             node["label"] = label
             cfg["agent_name"] = label
-        cfg["director_task"] = (
-            f"LOCKS: character specs {identity_refs['character_node_ids']} "
-            f"(all character specs ready: {all_character_spec_ids}). Costume lock: {costume_lock}. "
-            f"Strategy=compose_from_character_specs for setting {setting_id}. "
-            f"Scene master/handoff={master_frame}. "
-            "Respect scene_specs hierarchical views; keep scene specs; no cross-setting."
-        )
-        gen = dict(cfg.get("generate") or {}) if isinstance(cfg.get("generate"), dict) else {}
-        prompt = str(gen.get("prompt") or "")
-        lock_bits = []
-        if costume_lock and "Costume lock" not in prompt and "CLOTHING LOCK" not in prompt:
-            lock_bits.append(
-                f"IDENTITY sheets={identity_refs['character_node_ids']}. "
-                f"CLOTHING LOCK: {costume_lock}."
-            )
-        if "STRATEGY=" not in prompt:
-            lock_bits.append(f"STRATEGY=compose_from_character_specs setting={setting_id}.")
-        if specs and "SCENE SPECS" not in prompt:
-            lock_bits.append(
-                f"SCENE SPECS: scene={specs.get('scene_name') or specs.get('place')}; "
-                f"lighting={specs.get('lighting')}; "
-                f"objects={', '.join(str(x) for x in (specs.get('objects') or [])[:5])}; "
-                f"views={list((specs.get('views') or {}).keys())}."
-            )
-        if handoff_from and "SCENE PROMPT HANDOFF" not in prompt:
-            lock_bits.append(
-                f"SCENE PROMPT HANDOFF from {handoff_from} — keep architecture; change view/cast only."
-            )
-        if lock_bits:
-            gen["prompt"] = (prompt + " " + " ".join(lock_bits)).strip()
-            cfg["generate"] = gen
-            notes.append(f"{node.get('id')}: identity/scene lock clause in generate.prompt")
+        cfg["director_task"] = _lock_free_media_task(cfg)
         node["config"] = cfg
 
     for node in frame_nodes:

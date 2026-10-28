@@ -55,7 +55,7 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
                     await rail.before_tool_call(ctx)
                 except AbortError as interrupted:
                     ctx.exception = interrupted
-                    await queue_rail.on_tool_exception(ctx)
+                    await queue_rail.after_tool_call(ctx)
                     interrupt = interrupted.cause
                 else:
                     raise AssertionError("initial call must require approval")
@@ -64,7 +64,7 @@ async def run(root: Path, permanent: bool, phase: str) -> None:
                     [(interrupt, None)], [ctx.inputs.tool_call],
                     AssistantMessage(tool_calls=[ctx.inputs.tool_call]), 0,
                 )
-                assert state.auto_confirm_mapping == {ctx.inputs.tool_call.id: ""}
+                assert interrupt.request.auto_confirm_key == ""
                 handler.save(state, session)
                 snapshot = {
                     "result_type": "interrupt", "interrupt_ids": [ctx.inputs.tool_call.id],

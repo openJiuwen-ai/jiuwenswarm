@@ -21,6 +21,7 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +79,35 @@ def resolve_request_project_dir(
         if isinstance(first, str) and first.strip():
             return first.strip()
     return None
+
+
+def resolve_request_owner_channel(request: AgentRequest) -> str:
+    """Return the channel whose agent owns this request's session.
+
+    A voice task in a saved chat reaches Core on the ``video_tool`` channel
+    with the chat's own session id. It must run on that chat's agent: a
+    separate ``video_tool`` agent keeps a second in-memory copy of the
+    session, so a voice turn can resume an approval card the chat already
+    answered or still shows (#5487). Design tasks keep their own team routing.
+    """
+    channel_id = getattr(request, "channel_id", "")
+    session_id = str(getattr(request, "session_id", "") or "").strip()
+    params = getattr(request, "params", None)
+    params = params if isinstance(params, dict) else {}
+    if channel_id != "video_tool" or not session_id or str(params.get("mode") or "").startswith("team."):
+        return channel_id
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        owner = str(
+            (get_session_metadata(session_id, enable_writeback=False) or {}).get("channel_id") or ""
+        ).strip()
+    except (OSError, ValueError):
+        logger.warning("owner channel lookup failed for session %s", session_id, exc_info=True)
+        return channel_id
+    return owner if owner and owner != "video_tool" else channel_id
 
 
 def _resolve_cancel_project_dir(request: AgentRequest) -> str | None:
@@ -155,11 +185,46 @@ def sync_chat_request_metadata(
     explicit_mode_provided: bool = False,
     user_id: str = "",
 ) -> str | None:
-    """Persist chat request metadata and return the locked project directory."""
+    """Persist chat request metadata and return the locked project directory.
+
+    An attach-only subscription is a passive observer: it submits no input,
+    so it carries no request-scoped semantics and must not touch session
+    metadata.  Writing here would refresh ``last_message_at`` (sidebar
+    ordering) and ``last_user_message_at`` merely because the user opened or
+    refreshed a Team session in the Web UI.
+    """
     session_id = (request.session_id or "").strip()
     if not session_id:
         return project_dir
     params = request.params if isinstance(request.params, dict) else {}
+    if params.get(TEAM_ATTACH_ONLY_PARAM) is True:
+        # Passive subscription: never touch session metadata. The locked
+        # project_dir is still resolved read-only so agent admission keys
+        # and request routing stay consistent with the session's owner.
+        if session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.session_metadata import (
+                    get_session_metadata,
+                )
+
+                readonly_metadata = get_session_metadata(
+                    session_id,
+                    cache_bust=True,
+                    enable_writeback=False,
+                )
+                locked = (
+                    readonly_metadata.get("project_dir")
+                    if isinstance(readonly_metadata, dict)
+                    else None
+                )
+                if isinstance(locked, str) and locked.strip():
+                    return locked.strip()
+            except (OSError, ValueError):
+                logger.debug(
+                    "attach-only locked project_dir resolution failed: session_id=%s",
+                    session_id,
+                )
+        return project_dir
     raw_model_name = params.get("model_name")
     explicit_model_provided = isinstance(raw_model_name, str) and bool(
         raw_model_name.strip()
@@ -456,11 +521,32 @@ async def prepare_chat_turn(
                 if isinstance(locked, str) and locked.strip():
                     project_dir = locked.strip()
 
+        from jiuwenswarm.server.runtime.session.session_metadata import _repair_session_project_dir
+
+        _repair_session_project_dir(session_metadata)
+        bound_project_id = str(session_metadata.get("project_id") or "").strip()
+        if bound_project_id:
+            from jiuwenswarm.common.agentos_runtime import is_agentos_workspace_fallback
+
+            request.params["project_id"] = bound_project_id
+            if not is_agentos_workspace_fallback(
+                channel_id=request.channel_id,
+                project_id=bound_project_id,
+                project_dir=project_dir,
+            ):
+                project_dir = str(session_metadata.get("project_dir") or "").strip() or None
+            request.metadata = dict(request.metadata or {})
+            request.metadata["project_id"] = bound_project_id
+
         if isinstance(project_dir, str) and project_dir.strip():
             project_dir = project_dir.strip()
             request.params["project_dir"] = project_dir
             request.metadata = dict(request.metadata or {})
             request.metadata["project_dir"] = project_dir
+        else:
+            request.params.pop("project_dir", None)
+            if isinstance(request.metadata, dict):
+                request.metadata.pop("project_dir", None)
         return project_dir
 
     await agent_manager.wait_for_session_prewarm(request.session_id)
@@ -525,7 +611,7 @@ async def cancel_request(
     allow_create: bool = False,
 ) -> AgentResponse:
     """Cancel one request/session through its existing Runtime agent."""
-    channel_id = request.channel_id or "default"
+    channel_id = resolve_request_owner_channel(request) or "default"
     session_lookup = getattr(agent_manager, "get_agent_for_session_nowait", None)
     agent = (
         session_lookup(channel_id, request.session_id or "")
@@ -589,6 +675,7 @@ __all__ = [
     "cancel_request",
     "prepare_chat_turn",
     "resolve_agent_request_mode",
+    "resolve_request_owner_channel",
     "resolve_request_project_dir",
     "resolve_request_runtime_mode",
     "sync_chat_request_metadata",

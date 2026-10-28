@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from jiuwenswarm.gateway.cron.controller import CronController
+from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.embedded.runtime.session.project_store import CronProjectBinding
 
 
@@ -123,6 +124,63 @@ async def test_list_jobs_checks_gate_once_per_project() -> None:
     # 4 个任务只查 3 次(同项目同属主共享判定),隐藏项目的任务被过滤。
     assert sorted(job["id"] for job in result) == ["job_a", "job_b", "job_c"]
     assert sorted(gate_calls) == [("proj_1", "alice"), ("proj_1", "bob"), ("proj_2", "alice")]
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_filters_owner_before_admission_gate() -> None:
+    """传 user_id 时先按属主过滤:只为自己的项目打闸门,不替其他用户付超时。"""
+    jobs = [
+        SimpleNamespace(id="job_a", project_id="proj_alice", user_id="alice",
+                        to_dict=lambda: {"id": "job_a", "user_id": "alice"}),
+        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b", "user_id": "bob"}),
+        # 无属主的历史任务在带 user_id 的查询下不可见(与 Web 列表语义一致)。
+        SimpleNamespace(id="job_c", project_id="proj_legacy", user_id="",
+                        to_dict=lambda: {"id": "job_c", "user_id": ""}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    result = await controller.list_jobs(user_id="alice")
+
+    assert [job["id"] for job in result] == ["job_a"]
+    assert gate_calls == [("proj_alice", "alice")]
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_owner_without_jobs_issues_no_gate_rpc() -> None:
+    """用户 0 任务时不得为 store 里其他用户的任务发起任何准入查询。"""
+    jobs = [
+        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+                        to_dict=lambda: {"id": "job_b"}),
+    ]
+    gate_calls: list[tuple[str | None, str | None]] = []
+
+    async def list_jobs():
+        return list(jobs)
+
+    async def project_execution_allowed(project_id, user_id=None):
+        gate_calls.append((project_id, user_id))
+        return True
+
+    controller = CronController(
+        store=SimpleNamespace(list_jobs=list_jobs),
+        scheduler=SimpleNamespace(project_execution_allowed=project_execution_allowed),
+    )
+
+    assert await controller.list_jobs(user_id="alice") == []
+    assert gate_calls == []
 
 
 class _RecordingStore:
@@ -261,6 +319,36 @@ async def test_create_job_rejects_unresolved_project_in_single_user(monkeypatch)
                 "project_id": "proj_missing",
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_create_job_without_marker_allows_default_project_and_no_fields() -> None:
+    """无项目字段的请求（系统路径，如 proactive 自动注册）与默认项目 ID 不需要 marker。
+
+    无项目字段时按 work 模式落到 ``default``（#5713：不再产生空 project_id）。
+    """
+    cc = _make_controller()
+    job = await cc.create_job(
+        {
+            "name": "system-path",
+            "cron_expr": "0 9 * * *",
+            "targets": "web",
+            "mode": "proactive.tick",
+            "id": PROACTIVE_JOB_ID,
+        }
+    )
+    assert job["project_id"] == "default"
+    assert job["work_mode"] == "work"
+
+    job_default = await cc.create_job(
+        {
+            "name": "default-bound",
+            "cron_expr": "0 9 * * *",
+            "targets": "web",
+            "project_id": "default_code",
+        }
+    )
+    assert job_default["project_id"] == "default_code"
 
 
 @pytest.mark.asyncio

@@ -271,6 +271,44 @@ class TestUpdateSessionMetadata:
         assert data["agent_group_name"] == "sample-expert-group"
 
     @staticmethod
+    def test_agent_group_display_identity_is_written_once(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            update_session_metadata,
+        )
+
+        first_identity = {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": "中文专家团",
+            "avatar": "",
+        }
+        init_session_metadata(session_id="sess_group_identity", channel_id="web")
+        update_session_metadata(
+            session_id="sess_group_identity",
+            agent_group_name="group-a",
+            team_group_identity=first_identity,
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+        update_session_metadata(
+            session_id="sess_group_identity",
+            team_group_identity={
+                "id": "changed-asset",
+                "name": "group-a",
+                "display_name": "Changed Team",
+                "avatar": "",
+            },
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+
+        data = _read_json(
+            sessions_dir / "sess_group_identity" / "metadata.json"
+        )
+        assert data["team_group_identity"] == first_identity
+
+    @staticmethod
     def test_fallback_create_when_no_metadata(sessions_dir):
         """外部渠道隐式创建 session 时,metadata 不存在,应自动创建"""
         from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -512,6 +550,59 @@ class TestGetSessionMetadata:
         assert data["model"] == ""
         assert data["status"] == "idle"
         assert data["last_user_message_at"] == 1000.0  # 回退到 created_at
+
+    @staticmethod
+    def test_backfills_bound_agent_group_display_identity(sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_CACHE,
+            _METADATA_QUEUE,
+            _write_metadata_sync,
+            get_session_metadata,
+        )
+
+        identity = {
+            "id": "hub-asset-123",
+            "name": "group-a",
+            "display_name": "中文专家团",
+            "display_name_i18n": {"zh": "中文专家团", "en": "Expert Team"},
+            "avatar": "https://example.test/group.png",
+        }
+        _write_metadata_sync("sess_legacy_group", {
+            "session_id": "sess_legacy_group",
+            "channel_id": "web",
+            "created_at": 1000.0,
+            "last_message_at": 1000.0,
+            "title": "legacy group",
+            "message_count": 1,
+            "mode": "team.work.normal",
+            "team_name": "team-a",
+            "agent_group_name": "group-a",
+            "round_id": 1,
+        })
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_display_identity",
+            lambda name: identity if name == "group-a" else None,
+        )
+
+        data = get_session_metadata("sess_legacy_group", cache_bust=True)
+        assert data["team_group_identity"] == identity
+        _METADATA_QUEUE.join()
+        assert _read_json(
+            sessions_dir / "sess_legacy_group" / "metadata.json"
+        )["team_group_identity"] == identity
+
+        # A later restart after uninstall reads the persisted snapshot without
+        # consulting the package that no longer exists.
+        def package_removed(_name):
+            raise ValueError("package removed")
+
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_display_identity",
+            package_removed,
+        )
+        _METADATA_CACHE.pop("sess_legacy_group", None)
+        restored = get_session_metadata("sess_legacy_group", cache_bust=True)
+        assert restored["team_group_identity"] == identity
 
 
 # ===========================================================================
@@ -3195,3 +3286,72 @@ class TestCanonicalModeBoundary:
         meta = get_session_metadata("s_code_team")
         assert meta["mode"] == "team.code.normal"
         assert "wire_mode" not in meta
+
+
+class TestGetAllSessionsMetadataLifecycleVisibility:
+    """Archive/delete are accepted before their directory changes, so the flat
+    active list must already hide them (otherwise a slow or abandoned cleanup
+    keeps a deleted Session visible forever)."""
+
+    @staticmethod
+    def test_hides_logically_deleted_and_archived(sessions_dir, monkeypatch):
+        from jiuwenswarm.server.runtime.session import lifecycle as lc
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_all_sessions_metadata,
+            init_session_metadata,
+        )
+
+        for sid in ("live", "gone", "archived", "archiving"):
+            init_session_metadata(session_id=sid, channel_id="web")
+
+        def fake_state(kind, resource_id):
+            if kind != "session":
+                return {}
+            if resource_id == "gone":
+                return {"deleted": True}
+            if resource_id == "archived":
+                return {
+                    "operation": {"kind": "archive", "status": "completed"},
+                }
+            if resource_id == "archiving":
+                return {
+                    "operation": {"kind": "archive", "status": "running"},
+                }
+            return {}
+
+        monkeypatch.setattr(lc, "state", fake_state)
+        # A completed archive lives in sessions_archived; the existing path
+        # check hides it.  Keep the pending one only in the active area.
+        (sessions_dir.parent / "sessions_archived" / "archived").mkdir(parents=True)
+        monkeypatch.setattr(
+            lc,
+            "session_paths",
+            lambda sid, sessions_root=None: (
+                sessions_dir / sid,
+                sessions_dir.parent / "sessions_archived" / sid,
+            ),
+        )
+
+        sessions, total = get_all_sessions_metadata()
+        assert total == 1
+        assert [item["session_id"] for item in sessions] == ["live"]
+
+
+def test_owner_stop_persists_without_changing_session_activity_or_other_metadata(sessions_dir):
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+    from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+    sm.update_session_metadata(
+        session_id="owner-stop", mode="team", team_name="owner", title="original", sync_write=True,
+    )
+    original = sm.get_session_metadata("owner-stop")
+    set_owner_stopped("owner-stop", True)
+    assert sm.get_session_metadata("owner-stop", cache_bust=True)["organization_owner_stopped"] is True
+    assert owner_is_stopped("owner-stop", "owner")
+    assert not owner_is_stopped("owner-stop", "child")
+    stored = sm.get_session_metadata("owner-stop")
+    assert stored["last_message_at"] == original["last_message_at"]
+    assert stored["title"] == "original"
+    set_owner_stopped("owner-stop", False)
+    assert not owner_is_stopped("owner-stop", "owner")
+

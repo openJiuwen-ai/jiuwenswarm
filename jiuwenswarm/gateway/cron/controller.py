@@ -30,6 +30,7 @@ from jiuwenswarm.gateway.cron.models import (
 from jiuwenswarm.gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from jiuwenswarm.gateway.cron.store_base import CronJobStoreBackend
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 
 
 # 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
@@ -97,6 +98,14 @@ class CronController:
     def scheduler(self) -> CronSchedulerService:
         """The underlying cron scheduler service."""
         return self._scheduler
+
+    def is_session_processing(self, session_id: str, user_id: str | None = None) -> bool:
+        """Return active cron execution state scoped to the session's owner."""
+        return self._scheduler.is_session_processing(session_id, user_id=user_id)
+
+    async def finish_cancelled_session_runs(self, session_id: str, user_id: str | None = None) -> int:
+        """Release this owner's cron waiters after confirmed backend cancellation."""
+        return await self._scheduler.finish_cancelled_session_runs(session_id, user_id=user_id)
 
     def set_target_channel(self, channel: CronTargetChannel) -> None:
         self._target_channel = channel
@@ -172,13 +181,17 @@ class CronController:
         if self._target_channel is None and not raw_s:
             raise ValueError("targets is required when target_channel is not set")
         if not raw_s:
-            return normalize_target_channel_id(self._target_channel.value)
-        if not is_valid_target_channel_id(raw_s):
-            raise ValueError(
-                "targets must be one of tui/web/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
-                " or feishu_enterprise:<app_id>"
-            )
-        return normalize_target_channel_id(raw_s)
+            target = normalize_target_channel_id(self._target_channel.value)
+        else:
+            if not is_valid_target_channel_id(raw_s):
+                raise ValueError(
+                    "targets must be one of tui/web/feishu/dingtalk/whatsapp/wecom/wechat"
+                    " or feishu_enterprise:<app_id>"
+                )
+            target = normalize_target_channel_id(raw_s)
+        if not is_scheduled_task_supported(target):
+            raise ValueError(f"targets does not support scheduled tasks: {target}")
+        return target
 
     @classmethod
     def _normalize_description(cls, description: str, name: str) -> str:
@@ -209,8 +222,25 @@ class CronController:
             return raw_s
         return raw_s
 
-    async def list_jobs(self) -> list[dict[str, Any]]:
+    async def list_jobs(self, user_id: str | None = None) -> list[dict[str, Any]]:
+        """List jobs, optionally scoped to one owner.
+
+        ``user_id`` is applied before admission is queried.  Admission is a
+        cross-process RPC routed by the job owner's ``user_id``, so querying it
+        for other owners both delays this caller and may cold-start (or abort
+        the cold start of) another user's sandbox.  ``None``/empty keeps the
+        legacy all-owner behavior for callers without an identity.
+        """
         jobs = await self._store.list_jobs()
+        owner = str(user_id or "").strip()
+        if owner:
+            # 先按属主过滤再打闸门:闸门按任务属主路由到其沙箱,过滤前全量
+            # 查询会让本请求替其他用户承担冷启动和 10s 超时。
+            jobs = [
+                job
+                for job in jobs
+                if str(getattr(job, "user_id", "") or "").strip() == owner
+            ]
         # project_execution_allowed 是一次跨进程 RPC。同项目多任务共享同一
         # (project_id, user_id) 判定:去重后并发查询,避免把一次列表请求
         # 放大成逐任务串行 N 次往返(每个 10s 超时)。

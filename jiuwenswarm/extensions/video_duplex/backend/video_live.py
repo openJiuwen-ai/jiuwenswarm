@@ -13,6 +13,7 @@ from typing import Any
 import uuid
 
 from jiuwenswarm.extensions.video_duplex.backend import (
+    joyai_action_helper,
     joyai_provider,
     settings,
     video_search,
@@ -44,7 +45,7 @@ _CONVERSATION_EVENT_KINDS = {
 
 
 _REALTIME_TELEMETRY_EVENT = re.compile(
-    r"^(?:realtime|qwen|joyai|search_result|barge_in)_[a-z0-9_]{1,80}$"
+    r"^(?:realtime|qwen|joyai|search_result|barge_in|task_trace)_[a-z0-9_]{1,80}$"
 )
 _REALTIME_TELEMETRY_FIELDS = {
     "event", "client_time", "level", "peak_level", "threshold",
@@ -57,7 +58,7 @@ _REALTIME_TELEMETRY_FIELDS = {
     "speech_epoch", "tts_generation", "resumed_text_chars", "text_chars",
     "transcript_chars", "user_speech_active", "response_generation",
     "current_generation", "stream_id", "streamed", "cooldown_ms",
-    "rate_limit_strikes", "request_kind", "audio_append_sequence",
+    "rate_limit_strikes", "frame_interval_ms", "request_kind", "audio_append_sequence",
     "image_append_sequence", "has_deferred_image", "response_id",
     "audio_level", "speech_threshold", "cancel_event_sent",
     "replacing_pending_prompt", "instruction_chars", "frame_time_range",
@@ -65,6 +66,9 @@ _REALTIME_TELEMETRY_FIELDS = {
     "speech_probability",
     "queued_count", "result_kind", "brief_chars",
     "latency_ms", "inference_ms", "wait_ms", "dropped_chunks",
+    "rpc_request_id", "action", "before_job_id", "queue_version", "sequence",
+    "status", "queue_position", "stored_status", "stored_sequence",
+    "stored_queue_version", "stored_queue_position", "output_chars", "item_id",
 }
 
 
@@ -207,8 +211,18 @@ def register_video_live_handler(
         log_asr=lambda event: _append_asr_log(event),
     )
 
+    from .realtime_context import ContextRestoreExpired, RealtimeContextRestorer
+
+    context_restorer = RealtimeContextRestorer(search_manager)
+
     async def _realtime_config(ws, req_id, params, session_id):
-        del params, session_id
+        del session_id
+        try:
+            restored = await context_restorer.prepare(ws, str((params or {}).get("search_session_id") or "").strip())
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
+            return
+        context_payload = {"context_restore": restored} if restored else {}
         if _video_live_mode() == "joyai":
             api_base, _, model = joyai_provider.model_config()
             if not api_base or not model:
@@ -220,7 +234,8 @@ def register_video_live_handler(
                 return
             await channel.send_response(
                 ws, req_id, ok=True,
-                payload={"provider": "joyai", "model": model, "reply_language": settings.reply_language()},
+                payload={"provider": "joyai", "model": model, "reply_language": settings.reply_language(),
+                         **context_payload},
             )
             return
         config = QwenOmniRealtimeConfig.from_environment()
@@ -244,8 +259,9 @@ def register_video_live_handler(
                 "url": QWEN_OMNI_PROXY_PATH,
                 "model": config.model,
                 "voice": config.voice,
-                "tools": qwen_omni_tools(),
+                "tools": qwen_omni_tools(queue_manager=True),
                 "reply_language": settings.reply_language(),
+                **context_payload,
             },
         )
 
@@ -257,12 +273,15 @@ def register_video_live_handler(
         search_session_id = str(params.get("search_session_id") or "").strip()
         question = str(params.get("question") or "").strip()
         tool_context = str(params.get("tool_context") or "").strip()
+        approval_context = str(params.get("approval_context") or "").strip()
         frame_time_range = str(params.get("frame_time_range") or "").strip()
         reply_language = joyai_provider.normalize_response_language(
             params.get("reply_language", settings.reply_language())
         )
         request_kind = str(params.get("request_kind") or "frame").strip().casefold()
-        if not _is_allowed_image_data_url(frame_data_url):
+        if (frame_data_url and not _is_allowed_image_data_url(frame_data_url)) or (
+            not frame_data_url and request_kind != "user"
+        ):
             await channel.send_response(
                 ws, req_id, ok=False,
                 error="frame_data_url must be a base64 JPEG, PNG, or WebP data URL",
@@ -303,6 +322,18 @@ def register_video_live_handler(
                 code="BAD_REQUEST",
             )
             return
+        if len(approval_context) > joyai_provider.MAX_APPROVAL_CONTEXT_CHARS or (
+            approval_context and request_kind != "user"
+        ):
+            await channel.send_response(
+                ws, req_id, ok=False,
+                error=(
+                    "approval_context is allowed only for user requests, up to "
+                    f"{joyai_provider.MAX_APPROVAL_CONTEXT_CHARS} characters"
+                ),
+                code="BAD_REQUEST",
+            )
+            return
         if tool_context and request_kind != "user":
             await channel.send_response(
                 ws, req_id, ok=False,
@@ -328,6 +359,19 @@ def register_video_live_handler(
             return
         upstream_session_id = requested_session_id or str(session_id or f"joyai-{uuid.uuid4().hex}")
         search_session_id = search_session_id or upstream_session_id
+        restore_instructions = ""
+        restore_token = params.get("restore_token")
+        if restore_token:
+            try:
+                if request_kind != "user":
+                    raise ValueError("Restored context is allowed only for user requests")
+                restore_instructions = await context_restorer.instructions(ws, search_session_id, restore_token)
+            except ContextRestoreExpired as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
+                return
+            except Exception as exc:
+                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
+                return
         request_log = {
             "request_id": str(req_id),
             "joyai_session_id": upstream_session_id,
@@ -337,18 +381,64 @@ def register_video_live_handler(
             "frame_chars": len(frame_data_url),
             "frame_time_range": frame_time_range,
             "tool_context_chars": len(tool_context),
+            "approval_context_chars": len(approval_context),
         }
         await asyncio.to_thread(_append_joyai_log, {**request_log, "stage": "requested"})
         try:
-            model_instruction = (
-                joyai_provider.ground_user_instruction(instruction, tool_context, reply_language)
-                if request_kind == "user"
-                else instruction
-            )
+            model_instruction = instruction
+            if request_kind == "user":
+                extra = {"restore_instructions": restore_instructions} if restore_instructions else {}
+                if approval_context:
+                    extra["approval_context"] = approval_context
+                model_instruction = joyai_provider.ground_user_instruction(
+                    instruction, tool_context, reply_language, **extra
+                )
             request_args = [frame_data_url, model_instruction, upstream_session_id]
             if frame_time_range:
                 request_args.append(frame_time_range)
-            result = await joyai_provider.request_frame(*request_args)
+            protocol_invalid = False
+            try:
+                result = await joyai_provider.request_frame(*request_args)
+            except joyai_provider.JoyAIActionProtocolError as exc:
+                if request_kind != "user":
+                    raise
+                protocol_invalid = True
+                result = {**exc.completion, "decision": "response", "response": "", "delegation": ""}
+            if request_kind == "user" and result.get("decision") != "delegation":
+                try:
+                    owner, scope = await search_manager.scope(ws, {"search_session_id": search_session_id})
+                    snapshot = search_manager.snapshot(owner, scope)
+                    jobs = snapshot["jobs"]
+                    active = [job for job in jobs if job["status"] not in {"completed", "failed", "cancelled"}]
+                    recent = active[:8] + [job for job in jobs[-8:] if job not in active[:8]]
+                    task_context = [{key: job.get(key) for key in (
+                        "job_id", "title", "question", "status", "revision", "parent_id", "successor_id",
+                    )} for job in recent]
+                    for task in task_context:
+                        task["question"] = str(task.get("question") or "")[:1000]
+                    result = await joyai_action_helper.review_action(
+                        instruction=instruction,
+                        result=result,
+                        context=json.dumps({"restored_history": restore_instructions,
+                                            "confirmed_tool_results": tool_context}, ensure_ascii=False),
+                        current_tasks=task_context,
+                        reply_language=reply_language,
+                        command_id=str(params.get("command_id") or req_id),
+                        protocol_invalid=protocol_invalid,
+                    )
+                except Exception as exc:
+                    # The original answer may promise an action that was never
+                    # submitted. Withhold it if review cannot establish a result.
+                    await asyncio.to_thread(_append_joyai_log, {
+                        **request_log, "stage": "failed", "error_code": "JOYAI_ACTION_HELPER_ERROR",
+                        "error_type": type(exc).__name__,
+                    })
+                    await channel.send_response(
+                        ws, req_id, ok=False,
+                        error="JoyAI action review failed; no new task was submitted. Retry or check the task list.",
+                        code="JOYAI_ACTION_HELPER_ERROR",
+                    )
+                    return
             _validate_joyai_result(result)
         except Exception as exc:  # noqa: BLE001
             error = str(exc) or "JoyAI frame request failed"
@@ -372,9 +462,15 @@ def register_video_live_handler(
             return
 
         # JoyAI has a delegation marker rather than native function calls. Only
-        # explicit schema-validated JSON is a control; no text intent classifier.
+        # explicit schema-validated JSON is a control. Reviewed proposals enter
+        # the same validation and command deduplication path as native calls.
         scheduling = None
-        for operation_index in range(3):
+        task_title = ""
+        operation_count = 0
+        queue_management = None
+        search_job = None
+        tools_used: list[str] = []
+        while operation_count < 3:
             delegation = str(result.get("delegation") or "").strip()
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
                 break
@@ -386,9 +482,12 @@ def register_video_live_handler(
                     raise ValueError("Invalid task operation")
                 if value.get("name") not in {
                     "jiuwen_delegate",
+                    "jiuwen_queue_manage",
                     "jiuwen_task_query",
                     "jiuwen_task_modify",
                     "jiuwen_task_cancel",
+                    # Approval cards only; operate() refuses information forms.
+                    "jiuwen_task_answer",
                 }:
                     raise ValueError("Unsupported task operation")
                 owner, scope = await search_manager.scope(
@@ -397,10 +496,33 @@ def register_video_live_handler(
                 call = parse_qwen_omni_tool_call(
                     {
                         **value,
-                        "call_id": f"{params.get('command_id') or req_id}:{operation_index}",
+                        "call_id": f"{params.get('command_id') or req_id}:{operation_count}",
                     }
                 )
+                if call.name == "jiuwen_queue_manage":
+                    if request_kind != "user":
+                        raise ValueError("Queue management requires an explicit user request")
+                    management_instruction = question or instruction
+                    queue_management = await search_manager.manage_queue_call(
+                        owner, scope, call, management_instruction,
+                        allow_answers=False, reply_language=reply_language,
+                    )
+                    tools_used.append(call.name)
+                    response_text = queue_management.get("response", "")
+                    if queue_management.get("state") == "incomplete":
+                        response_text = (
+                            "Queue management did not finish. Check the task list and scheduled jobs for any changes already applied."
+                            if reply_language == "en" or (
+                                reply_language == "match" and not re.search(r"[\u4e00-\u9fff]", question or instruction)
+                            ) else "队列管理未全部完成，请查看任务列表和定时任务确认已执行的操作。"
+                        )
+                    # Only the manager's receipt-based answer reaches chat/TTS.
+                    # Never speak JoyAI's unconfirmed acknowledgement or ask it
+                    # to issue another operation for the same request.
+                    result = {**result, "decision": "response", "response": response_text, "delegation": ""}
+                    break
                 if call.name == "jiuwen_delegate":
+                    task_title = call.arguments.get("title", "")
                     scheduling = {
                         k: call.arguments.get(k)
                         for k in ("independent", "depends_on", "resources")
@@ -408,10 +530,13 @@ def register_video_live_handler(
                     }
                     result = {**result, "delegation": call.task}
                     break
-                receipt = await search_manager.operate(owner, scope, call)
+                receipt = await search_manager.operate(
+                    owner, scope, call, ws=ws, approvals_only=True, user_instruction=question or instruction,
+                )
+                operation_count += 1
                 # Feed facts through the same provider conversation, including ids
                 # needed for query -> modify. A receipt cannot manufacture a task.
-                followup = task_receipt_followup(receipt)
+                followup = model_instruction + "\n\n" + task_receipt_followup(receipt)
                 result = await joyai_provider.request_frame(
                     frame_data_url, followup, upstream_session_id
                 )
@@ -421,18 +546,14 @@ def register_video_live_handler(
                     ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
                 )
                 return
-        else:
+        if operation_count == 3 and result.get("decision") == "delegation":
             await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
+                ws, req_id, ok=False,
                 error="Task operation limit reached; query current state",
                 code="TASK_REQUEST_REJECTED",
             )
             return
 
-        search_job = None
-        tools_used: list[str] = []
         delegation = str(result.get("delegation") or "").strip()
         if result.get("decision") == "delegation" and delegation:
             try:
@@ -440,6 +561,7 @@ def register_video_live_handler(
                     ws,
                     question=question or delegation,
                     query=delegation,
+                    title=task_title,
                     search_session_id=search_session_id,
                     visual_context=str(result.get("response") or ""),
                     frame_data_url=frame_data_url,
@@ -452,6 +574,8 @@ def register_video_live_handler(
                 )
                 return
             tools_used.append("jiuwen_delegate")
+            if result.get("action_helper_delegated"):
+                result["response"] = joyai_action_helper.submission_response(search_job, reply_language, instruction)
         await asyncio.to_thread(
             _append_joyai_log,
             {
@@ -466,6 +590,7 @@ def register_video_live_handler(
                 "timing": result.get("timing"),
                 "tools_used": tools_used,
                 "search_job": search_job,
+                **({"queue_management": queue_management} if queue_management is not None else {}),
             },
         )
         await channel.send_response(
@@ -475,6 +600,7 @@ def register_video_live_handler(
             payload={
                 "response": result.get("response"),
                 "search_job": search_job,
+                **({"queue_management": queue_management} if queue_management is not None else {}),
             },
         )
 
@@ -486,18 +612,37 @@ def register_video_live_handler(
                 ws, req_id, ok=False, error="unsupported telemetry event", code="BAD_REQUEST"
             )
             return
-        allowed: dict[str, str | int | float | bool] = {}
+        allowed: dict[str, Any] = {}
         for key, value in params.items():
             if key not in _REALTIME_TELEMETRY_FIELDS:
                 continue
             if isinstance(value, (str, int, float, bool)):
                 allowed[key] = value
+        if event_name == "qwen_tool_call_invalid":
+            arguments = params.get("arguments")
+            if isinstance(arguments, dict):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            if isinstance(arguments, str):
+                allowed["arguments"] = arguments[:2_000]
         for key in ("question", "query", "text", "transcript"):
             if isinstance(allowed.get(key), str):
                 allowed[key] = allowed[key][:1_000]
         for key in ("result", "realtime_answer"):
             if isinstance(allowed.get(key), str):
                 allowed[key] = allowed[key][:50_000]
+        if event_name.startswith(("task_trace_", "qwen_tool_")) or event_name in {
+            "qwen_realtime_error", "qwen_text_input_dispatched",
+        }:
+            from .tasks.diagnostics import trace_task
+
+            if event_name.startswith("task_trace_") and isinstance(params.get("jobs"), list):
+                allowed["jobs"] = [
+                    {key: job.get(key) for key in (
+                        "job_id", "status", "sequence", "queue_position", "queue_version",
+                    ) if isinstance(job.get(key), (str, int, float, bool))}
+                    for job in params["jobs"][:100] if isinstance(job, dict)
+                ]
+            trace_task(event_name, **{key: value for key, value in allowed.items() if key != "event"})
         if event_name in {
             "realtime_answer_final",
             "search_result_received",
@@ -628,9 +773,9 @@ def register_video_live_handler(
             content = ""
 
         previous_title: str | None = None
+        metadata = get_session_metadata(visible_session_id, cache_bust=True)
         if role == "user" and content.strip():
             # Refresh before history writes so a rename by AgentServer is respected.
-            metadata = get_session_metadata(visible_session_id, cache_bust=True)
             previous_title = str(metadata.get("title") or "")
             if previous_title == "Full-duplex conversation":
                 # Older plugin versions persisted this placeholder as a real title.
@@ -652,7 +797,7 @@ def register_video_live_handler(
             timestamp=timestamp,
             event_type=event_type,
             extra=extra,
-            mode="agent",
+            mode=str(metadata.get("mode") or ("team.design" if metadata.get("work_mode") == "design" else "agent")),
         )
         if previous_title is not None:
             title = str(get_session_metadata(visible_session_id).get("title") or "")
@@ -670,8 +815,24 @@ def register_video_live_handler(
             payload={"persisted": True, "event_id": event_id},
         )
 
+    async def _core_receipts(ws, req_id, params, session_id):
+        from .task_adapter import task_identity, task_agent_query
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            owner, scope = task_identity(ws, str((params or {}).get("search_session_id") or ""))
+            if not scope.startswith("task-duplex:"):
+                raise ValueError("Core receipts require a saved conversation")
+            payload = await task_agent_query(agent_client, ReqMethod.VOICE_SESSION_RECEIPTS,
+                {"token": params.get("token"), "action": params.get("action")},
+                scope.removeprefix("task-duplex:"), owner)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except Exception as exc:
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CORE_RECEIPT_REJECTED")
+
     handlers = {
         "video.realtime.config": _realtime_config,
+        "video.core.subscribe": _core_receipts,
         "video.joyai.frame": _joyai_frame,
         "video.realtime.telemetry": _realtime_telemetry,
         "video.conversation.append": _append_conversation,

@@ -146,15 +146,11 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'integer',
     'experimental.multi_model_collaboration.verifier_interval',
   ),
-  yamlField('moa_jev_api_base', 'experimental', 'text', 'experimental.multi_model_collaboration.jev.api_base'),
-  yamlField('moa_jev_model_name', 'experimental', 'text', 'experimental.multi_model_collaboration.jev.model_name'),
-  yamlField('moa_jev_api_key', 'experimental', 'text', 'experimental.multi_model_collaboration.jev.api_key'),
-  // Write-only action: clearing the key also disables JEV in the same backend save.
-  yamlField('moa_jev_api_key_clear', 'experimental', 'boolean', 'experimental.multi_model_collaboration.jev.api_key'),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
-  yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
+  yamlField('cua_agent_enabled', 'experimental', 'boolean', 'react.subagents.cua_agent.enabled'),
+  yamlField('progressive_tool_optimize', 'experimental', 'boolean', 'progressive_tool_optimize'),
   yamlField('trajectory_ui_diagnosis_enabled', 'experimental', 'boolean', 'trajectory_ui.diagnosis_enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
   yamlField('team_scheduled_dispatch_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.dispatch_mode'),

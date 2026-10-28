@@ -29,12 +29,24 @@ enum BackgroundEvents {
     private typealias FindWindow = @convention(c) (UInt32, UInt32, Int64, Int64,
         UnsafePointer<CGPoint>, UnsafeMutablePointer<CGPoint>, UnsafeMutablePointer<UInt32>, UnsafeMutablePointer<UInt32>) -> Int32
     private static let findWindow = symbol("SLSFindWindowAndOwner", as: FindWindow.self)
-    static func inputWindow(at point: CGPoint) -> CGWindowID? {
-        guard let mainConnection, let findWindow else { return nil }
+    private static func windowServerHit(at point: CGPoint) -> NativeInputWindowHit.WindowServer {
+        guard let mainConnection, let findWindow else { return .unavailable }
         var point = point, local = CGPoint.zero, window: UInt32 = 0, owner: UInt32 = 0
-        guard findWindow(mainConnection(), 0, 1, 0, &point, &local, &window, &owner) == 0,
-              window != 0, owner != 0 else { return nil }
-        return window
+        let status = findWindow(mainConnection(), 0, 1, 0, &point, &local, &window, &owner)
+        guard status == 0 else { return .failed(status) }
+        guard window != 0, owner != 0 else { return .noWindow }
+        return .window(window)
+    }
+
+    static func inputWindowHit(at point: CGPoint, retained: WindowGeometry.WindowMapping? = nil,
+                               nativeWindow: AXUIElement? = nil) -> NativeInputWindowHit {
+        NativeInputWindowHit.resolve(windowServerHit(at: point)) {
+            NativeInputWindowQuery.accessibility(at: point, retained: retained, nativeWindow: nativeWindow)
+        }
+    }
+
+    static func inputWindow(at point: CGPoint) -> CGWindowID? {
+        inputWindowHit(at: point).windowID
     }
 
     private typealias SetFront = @convention(c) (UnsafeRawPointer, UInt32, UInt32) -> Int32

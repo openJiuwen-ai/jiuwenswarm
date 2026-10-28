@@ -1,7 +1,7 @@
 plugins {
     id("java")
-    id("org.jetbrains.kotlin.jvm") version "1.9.25"
-    id("org.jetbrains.intellij.platform") version "2.1.0"
+    id("org.jetbrains.kotlin.jvm") version "2.4.0"
+    id("org.jetbrains.intellij.platform") version "2.19.0"
 }
 
 group = "com.jiuwenswarm"
@@ -14,10 +14,24 @@ repositories {
     }
 }
 
+// Use the reproducible JetBrains platform coordinate by default. Developers who
+// need to build against a locally installed IDE can pass
+// -PjetbrainsIdePath="C:\Program Files\JetBrains\WebStorm 2026.1" or set
+// JETBRAINS_IDE_PATH. Never commit a machine-specific absolute path.
+val localIdePath = providers.gradleProperty("jetbrainsIdePath")
+    .orElse(providers.environmentVariable("JETBRAINS_IDE_PATH"))
+
 dependencies {
     intellijPlatform {
-        intellijIdeaCommunity("2024.1")
-        instrumentationTools()
+        if (localIdePath.isPresent) {
+            local(localIdePath.get())
+        } else {
+            intellijIdea("2026.1")
+        }
+        // instrumentationTools() is no longer provided by the IntelliJ Platform
+        // Gradle plugin 2.x; instrumentation is disabled below via instrumentCode.
+        bundledPlugin("com.intellij.modules.jcef")
+        bundledPlugin("org.jetbrains.plugins.terminal")
     }
 
     // OkHttp for WebSocket
@@ -27,7 +41,7 @@ dependencies {
 }
 
 kotlin {
-    jvmToolchain(17)
+    jvmToolchain(21)
 }
 
 intellijPlatform {
@@ -37,7 +51,10 @@ intellijPlatform {
         version = project.version.toString()
 
         ideaVersion {
-            sinceBuild = "231"
+            // Compile against 2026.1 but keep the install floor at 2025.3 (253):
+            // issue #5307 was caused by declaring 262 as the minimum. The APIs
+            // used here (JCEF, terminal, editor) are available on 253+.
+            sinceBuild = "253"
             untilBuild = provider { null }
         }
 
@@ -63,7 +80,7 @@ intellijPlatform {
 
 tasks {
     wrapper {
-        gradleVersion = "8.7"
+        gradleVersion = "9.6.0"
     }
 }
 

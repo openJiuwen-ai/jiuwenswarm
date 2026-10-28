@@ -12,6 +12,7 @@ class GenerateCompose(Tool):
     """One generation call for this member. A second call returns an error dict."""
 
     def __init__(self) -> None:
+        timeout_s = float(node_tools().video_generate_timeout_seconds())
         super().__init__(
             ToolCard(
                 id="generate_compose",
@@ -26,6 +27,7 @@ class GenerateCompose(Tool):
                     "required": ["shot_ticket", "prompt"],
                     "additionalProperties": False,
                 },
+                properties={"resilience": {"timeout_s": timeout_s}},
                 parallel_safe=False,
             )
         )

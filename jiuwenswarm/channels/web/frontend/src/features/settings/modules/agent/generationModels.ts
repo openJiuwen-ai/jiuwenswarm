@@ -84,8 +84,7 @@ const MINIMAX_MODELS: Record<GenerationSlot, readonly string[]> = {
   visual_gen: ['image-01'],
 };
 
-// 仅保留这两个已在 Ark 控制台确认可用、命名正确（doubao- 前缀）的模型——此前目录
-// 里的 dola-/dreamina- 前缀是错的，选中也会在真实调用时报 ModelNotOpen / 404。
+// 供旧配置的协议识别及自定义目录使用；选择火山时的下拉列表从 Ark API 动态获取。
 const MODELARK_MODELS: Record<GenerationSlot, readonly string[]> = {
   video_gen: ['doubao-seedance-2-5-260628'],
   visual_gen: ['doubao-seedream-5-0-flash-260915'],
@@ -156,6 +155,14 @@ export function isEditableBaseVendor(vendorKey: string | undefined): boolean {
 /** 生成用的默认地址：百炼的对话预设是 compatible-mode（或 Token/Coding Plan 专属域名），生成走原生 /api/v1。 */
 export function generationApiBase(vendorKey: string | undefined, presetBase: string): string {
   return vendorKey === 'alibaba' ? DASHSCOPE_API_BASE : presetBase;
+}
+
+/** Ark generation and discovery share the regular official regional API, excluding Coding Plan. */
+export function isArkGenerationApiBase(apiBase: string): boolean {
+  const match = /^https:\/\/ark\.[\w-]+\.(?:volces\.com|bytepluses\.com)(\/.*)?$/i.exec(
+    apiBase.trim().replace(/\/+$/, ''),
+  );
+  return Boolean(match && (!match[1] || match[1] === '/api/v3'));
 }
 
 /** vLLM-Omni 自部署服务可以不鉴权，模型名留空时用服务实际加载的模型。 */

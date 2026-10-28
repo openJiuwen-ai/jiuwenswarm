@@ -116,3 +116,12 @@ report/index.html
 /context/
 /.plans/
 /todo/
+
+# Local launcher, notes, and task artifacts
+/jiuwen-start.cmd
+/README_JIUWEN_START.md
+/README_JIUWEN_START_EN.md
+/.codex-tmp/
+/local-only/
+/outputs/
+/%SystemDrive%/

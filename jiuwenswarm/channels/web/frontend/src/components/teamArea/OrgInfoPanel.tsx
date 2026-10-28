@@ -19,10 +19,12 @@ import { useOrganizationSnapshot } from '../../features/teamOrganization/useOrga
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 import {
   resolveOrganizationTeamIdentity,
+  resolveOrganizationTeamLabel,
   useOrganizationGroupCatalog,
 } from '../../features/teamOrganization/teamIdentity';
 
 interface OrgTeamHandle {
+  available?: boolean;
   organization_id?: string | null;
   team_id?: string | null;
   capabilities?: string[];
@@ -137,16 +139,13 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
   );
 
   const ownerTeam = organization?.owner_team_id ? runtimeTeamById.get(organization.owner_team_id) : undefined;
-  const ownerName =
-    resolveOrganizationTeamIdentity(ownerTeam, groups)?.displayName ||
-    ownerTeam?.agent_group_name?.trim() ||
-    organization?.owner_team_id;
+  const ownerName = resolveOrganizationTeamLabel(ownerTeam, groups, organization?.owner_team_id || '-');
 
   if (!organizationUiEnabled || !activeSessionId) return null;
 
   return (
     <div
-      className={clsx('flex h-full min-h-0 flex-col overflow-hidden bg-card', className)}
+      className={clsx('flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-card', className)}
       data-testid="team-area-org-info-panel"
     >
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
@@ -227,7 +226,7 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                     const runtimeTeam = team.team_id ? runtimeTeamById.get(team.team_id) : undefined;
                     const teamId = team.team_id || runtimeTeam?.team_name?.trim() || '-';
                     const identity = resolveOrganizationTeamIdentity(runtimeTeam, groups);
-                    const teamName = identity?.displayName || runtimeTeam?.agent_group_name?.trim() || teamId;
+                    const teamName = resolveOrganizationTeamLabel(runtimeTeam, groups, teamId);
                     const capabilities = team.capabilities?.length
                       ? team.capabilities
                       : (runtimeTeam?.capabilities ?? []);
@@ -250,6 +249,11 @@ export function OrgInfoPanel({ className }: OrgInfoPanelProps) {
                           <span className="truncate" data-testid="team-area-org-info-team-name" data-variant={teamId}>
                             {teamName}
                           </span>
+                          {(team.available === false || runtimeTeam?.available === false) && (
+                            <span className="text-xs text-danger" data-testid="team-area-org-info-team-unavailable" data-variant={teamId}>
+                              {t('chat.teamSelect.unavailable')}
+                            </span>
+                          )}
                         </div>
                         {teamName !== teamId && (
                           <div className="truncate text-[10px] text-text-muted" title={teamId}>

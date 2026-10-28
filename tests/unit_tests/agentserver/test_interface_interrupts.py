@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,6 +21,8 @@ from jiuwenswarm.common.e2a.constants import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+
+test_logger = logging.getLogger("tests.interface_interrupts")
 
 
 class _InterruptHarness(JiuWenSwarm):
@@ -38,6 +41,7 @@ class _FakeTeamManager:
         self.pause_calls: list[tuple[str, str]] = []
         self.cancel_calls: list[tuple[str, str]] = []
         self.cancel_dispositions: list[str | None] = []
+        self.broadcast_events: list[dict] = []
 
     async def pause_session_runtime(self, session_id: str, reason: str = "") -> bool:
         self.pause_calls.append((session_id, reason))
@@ -53,6 +57,16 @@ class _FakeTeamManager:
         self.cancel_calls.append((session_id, reason))
         self.cancel_dispositions.append(workflow_disposition)
         return self.cancel_result
+
+    async def broadcast_event(
+        self,
+        session_id: str,
+        event: dict,
+        *,
+        channel_id: str | None = None,
+    ) -> bool:
+        self.broadcast_events.append(event)
+        return True
 
 
 @pytest.mark.asyncio
@@ -208,6 +222,77 @@ async def test_team_interrupt_resume_is_ack_only(monkeypatch: pytest.MonkeyPatch
     assert cancelled == []
     assert fake_manager.pause_calls == []
     assert fake_manager.cancel_calls == []
+
+
+@pytest.mark.asyncio
+async def test_team_pause_leaves_terminal_delivery_to_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The adapter must not duplicate Runtime's Session completion broadcast."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(pause_result=True)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(),
+    )
+
+    response = await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
+
+    assert response.payload["success"] is True
+    assert fake_manager.broadcast_events == []
+    test_logger.info("Team adapter returned pause success without a duplicate waiter frame")
+
+
+@pytest.mark.asyncio
+async def test_team_pause_failure_does_not_broadcast_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed pause leaves state unchanged; no terminal frame may be emitted."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(pause_result=False)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(),
+    )
+
+    await claw.process_interrupt_for_test(_build_team_interrupt_request("pause"))
+
+    assert fake_manager.broadcast_events == []
+
+
+@pytest.mark.asyncio
+async def test_team_cancel_does_not_broadcast_pause_terminal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancel goes through its own teardown path; no pause terminal frame."""
+    claw = _InterruptHarness()
+    fake_manager = _FakeTeamManager(cancel_result=True)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.get_team_manager",
+        lambda channel_id=None: fake_manager,
+    )
+    monkeypatch.setattr(
+        claw.session_manager_for_test,
+        "cancel_session_task",
+        AsyncMock(),
+    )
+
+    await claw.process_interrupt_for_test(_build_team_interrupt_request("cancel"))
+
+    assert fake_manager.broadcast_events == []
 
 
 @pytest.mark.asyncio

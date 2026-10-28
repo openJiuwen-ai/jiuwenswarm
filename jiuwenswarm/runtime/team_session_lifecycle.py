@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Protocol
+from typing import Any, Protocol
 
 from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
@@ -52,6 +52,16 @@ class _TeamLifecycleManager(Protocol):
         generation: int | None = None,
     ) -> bool:
         """Stop runtime resources owned by the matching Session generation."""
+        ...
+
+    async def broadcast_event(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> bool:
+        """Deliver a Session event through observers or the waiter-less fallback."""
         ...
 
     def is_generation_running(self, session_id: str, generation: int) -> bool:
@@ -122,9 +132,11 @@ class TeamSessionLifecycleAdapter:
         context: SessionLifecycleContext,
         *,
         reason: str,
-    ) -> None:
-        """Pause the matching Team generation."""
-        await self._team_manager.pause_session_runtime(
+        channel_id: str | None = None,
+    ) -> bool:
+        """Return whether the matching Team generation was paused or drained."""
+        del channel_id
+        return await self._team_manager.pause_session_runtime(
             context.session_id,
             reason,
             generation=context.generation,
@@ -141,6 +153,27 @@ class TeamSessionLifecycleAdapter:
             context.session_id,
             reason,
             generation=context.generation,
+        )
+
+    async def publish_pause_completed(
+        self,
+        session_id: str,
+        *,
+        generation: int | None,
+        channel_id: str | None = None,
+    ) -> None:
+        """Park surviving observers and publish the authoritative pause terminal."""
+        if generation is not None:
+            self._coordinator.mark_session_waiting_for_input(session_id, generation)
+        await self._team_manager.broadcast_event(
+            session_id,
+            {
+                "event_type": "chat.processing_status",
+                "session_id": session_id,
+                "is_processing": False,
+                "is_complete": True,
+            },
+            channel_id=channel_id,
         )
 
     def is_running(self, context: SessionLifecycleContext) -> bool:

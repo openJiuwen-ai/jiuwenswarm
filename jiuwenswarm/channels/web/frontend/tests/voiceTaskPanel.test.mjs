@@ -232,6 +232,30 @@ test('observed question and spoken answer retain exact task and interaction iden
   assert.equal(JSON.parse(outputs().at(-1).item.output).state, 'accepted');
 });
 
+test('headless panel receives information forms once and excludes permission approvals', async () => {
+  const args = await call('jiuwen_task_query', {}, 'query-form');
+  await receipt('query-form', { tool_result: { jobs: [] } });
+  await finishResponse();
+  await act(async () => root.render(createElement(VideoLivePanel, { ref: panel, headless: true })));
+  const payload = { job_id: 'task-form', search_session_id: args.search_session_id, status: 'waiting_user',
+    interaction: { id: 'form-a', request_id: 'request-a', source: 'ask_user_interrupt', state: 'pending',
+      questions: [{ question: '时间？' }, { question: '内容？' }] } };
+  const notices = () => sent.filter(event => event.item?.content?.[0]?.text?.includes('Background Agent information form'));
+  await act(async () => {
+    panel.current.deliverTaskInteraction({ ...payload, replay: true });
+    panel.current.deliverTaskInteraction({ ...payload, search_session_id: 'other' });
+    panel.current.deliverTaskInteraction({ ...payload, interaction: { ...payload.interaction, source: 'permission_interrupt' } });
+  });
+  assert.equal(notices().length, 0);
+  await act(async () => {
+    panel.current.deliverTaskInteraction(payload);
+    panel.current.deliverTaskInteraction(payload);
+  });
+  assert.equal(notices().length, 1);
+  assert.match(notices()[0].item.content[0].text, /form-a/);
+  assert.match(notices()[0].item.content[0].text, /内容/);
+});
+
 test('late RPC receipt after media restart cannot speak into the new session', async () => {
   await call('jiuwen_delegate', { task: 'old task' }, 'old');
   const previous = session;
@@ -240,6 +264,106 @@ test('late RPC receipt after media restart cannot speak into the new session', a
   assert.notEqual(session, previous);
   await receipt('old', { search_job: { id: 'old-task', status: 'queued', question: 'old task' } });
   assert.equal(outputs().length, 0);
+});
+
+test('provider idle timeout renews repeatedly with fresh context and mute settings without an idle UI state', async () => {
+  const states = [];
+  await act(async () => root.render(createElement(VideoLivePanel, { ref: panel, onRuntimeState: state => states.push(state) })));
+  await act(async () => {
+    panel.current.stop();
+    await panel.current.startScreenDuplex('task-duplex:conversation-a', false);
+    panel.current.setMicrophoneMuted(true);
+    panel.current.setSpeakerMuted(true);
+  });
+  const request = globalThis.__panel.request;
+  let restores = 0;
+  globalThis.__panel.request = async (method, args) => {
+    const config = await request(method, args);
+    return method === 'video.realtime.config'
+      ? { ...config, context_restore: { token: 'restore', instructions: `history-${++restores}` } }
+      : config;
+  };
+  states.length = 0;
+  for (let round = 1; round <= 3; round += 1) {
+    const previous = session;
+    await act(async () => previous.handleEvent({ type: 'error', error: {
+      code: 'response_idle_timeout', message: 'Your session was closed because no response was generated for 300 seconds.',
+    } }));
+    assert.notEqual(session, previous);
+    assert.equal(previous.socket, null);
+    assert.equal(session.config.restoreInstructions, `history-${round}`);
+    assert.equal(session.microphoneMuted, true);
+    assert.equal(session.speakerMuted, true);
+  }
+  assert.equal(states.includes('idle'), false);
+  assert.equal(requests.filter(r => r.method === 'video.realtime.config').at(-1).args.search_session_id, 'task-duplex:conversation-a');
+  assert.equal(sent.some(event => event.type === 'response.create'), false, 'renewal generates no answer or acceptance');
+});
+
+test('a task accepted before idle renewal is notified once without replaying its old call ID', async () => {
+  const args = await call('jiuwen_delegate', { task: 'Calculate the sum' }, 'old-create');
+  await receipt('old-create', { search_job: { id: 'old-task', status: 'running', question: 'Calculate the sum' } });
+  await finishResponse();
+  await act(async () => session.handleEvent({ type: 'error', error: { code: 'response_idle_timeout', message: 'idle' } }));
+  const result = {
+    job_id: 'old-task', search_session_id: args.search_session_id, tool_call_id: 'old-create',
+    question: 'Calculate the sum', status: 'completed', result: '55',
+    realtime_brief: { status: 'completed', summary: '55' },
+  };
+  await act(async () => {
+    panel.current.deliverToolResult(result);
+    panel.current.deliverToolResult(result);
+  });
+  assert.equal(outputs().length, 1, 'old acceptance is never replayed on the new connection');
+  assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice')).length, 1);
+});
+
+test('user cancellation wins over a queued idle-timeout renewal', async () => {
+  const count = requests.filter(r => r.method === 'video.realtime.config').length;
+  const previous = session;
+  await act(async () => {
+    previous.handleEvent({ type: 'error', error: { code: 'response_idle_timeout', message: 'idle' } });
+    panel.current.stop();
+  });
+  assert.equal(requests.filter(r => r.method === 'video.realtime.config').length, count);
+  assert.equal(previous.socket, null);
+});
+
+for (const terminal of ['completed', 'failed', 'cancelled', 'stop']) {
+  test(`terminal result during config reload survives renewal: ${terminal}`, async () => {
+    const args = await call('jiuwen_delegate', { task: 'Calculate the sum' }, 'old-create');
+    await receipt('old-create', { search_job: { id: 'old-task', status: 'running', question: 'Calculate the sum' } });
+    await finishResponse();
+    const request = globalThis.__panel.request;
+    let resolveConfig;
+    globalThis.__panel.request = (method, params) => method === 'video.realtime.config'
+      ? new Promise(resolve => { resolveConfig = resolve; }) : request(method, params);
+    await act(async () => session.handleEvent({ type: 'error', error: { code: 'response_idle_timeout', message: 'idle' } }));
+    assert.equal(typeof resolveConfig, 'function');
+    const result = {
+      job_id: 'old-task', search_session_id: args.search_session_id, tool_call_id: 'old-create',
+      question: 'Calculate the sum', status: terminal === 'stop' ? 'completed' : terminal,
+      result: '55', error: 'Service failed', realtime_brief: { status: 'completed', summary: '55' },
+    };
+    await act(async () => {
+      panel.current.deliverToolResult(result);
+      panel.current.deliverToolResult(result);
+      if (terminal === 'cancelled') panel.current.deliverToolResult({ ...result, status: 'completed' });
+      if (terminal === 'stop') panel.current.stop();
+    });
+    await act(async () => { resolveConfig({ provider: 'qwen_omni', url: 'ws://127.0.0.1/realtime' }); });
+    const notices = sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice'));
+    assert.equal(notices.length, ['completed', 'failed'].includes(terminal) ? 1 : 0);
+    assert.equal(outputs().length, 1, 'old call ID and acceptance are never replayed');
+  });
+}
+
+test('quota and ordinary provider errors do not trigger automatic renewal', async () => {
+  const count = requests.filter(r => r.method === 'video.realtime.config').length;
+  const previous = session;
+  await act(async () => previous.handleEvent({ type: 'error', error: { code: 'quota_exhausted', message: 'quota exhausted' } }));
+  assert.equal(session, previous);
+  assert.equal(requests.filter(r => r.method === 'video.realtime.config').length, count);
 });
 
 async function shareScreenWith(error) {

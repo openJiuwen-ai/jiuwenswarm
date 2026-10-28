@@ -16,6 +16,7 @@ import tempfile
 import time
 import zipfile
 from collections import OrderedDict
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -312,6 +313,13 @@ def _i18n(value: Any, fallback: str = "") -> dict[str, str]:
     if isinstance(value, str) and value:
         return {"zh": value, "en": value}
     return {"zh": fallback, "en": fallback}
+
+
+def _manifest_display_description(manifest: dict[str, Any]) -> dict[str, str]:
+    """UI short copy: ``display_description`` with ``description`` fallback (agent_template)."""
+    description = manifest.get("description")
+    fallback = description.strip() if isinstance(description, str) else ""
+    return _i18n(manifest.get("display_description"), fallback)
 
 
 def _resolve_agent_group_member_display_name_i18n(
@@ -706,7 +714,11 @@ def _build_list_card(
     card: dict[str, Any] = {
         "id": pkg_dir.name,
         "displayName": manifest.get("display_name") or pkg_dir.name,
-        "displayDescription": manifest.get("display_description") or {},
+        "displayDescription": (
+            _manifest_display_description(manifest)
+            if package_type == "agent_template"
+            else (manifest.get("display_description") or {})
+        ),
         "category": category if isinstance(category, str) else "",
         "tags": manifest.get("tags") if isinstance(manifest.get("tags"), list) else [],
         "source": source,
@@ -765,10 +777,15 @@ def _build_show_card(
     if package_type == "agent_template":
         description = manifest.get("description")
         details = description if isinstance(description, str) else ""
+    display_description = (
+        _manifest_display_description(manifest)
+        if package_type == "agent_template"
+        else (manifest.get("display_description") or {})
+    )
     card: dict[str, Any] = {
         "id": pkg_dir.name,
         "displayName": manifest.get("display_name") or pkg_dir.name,
-        "displayDescription": manifest.get("display_description") or {},
+        "displayDescription": display_description,
         "source": resolved_source,
         "avatar": _resolve_package_avatar(pkg_dir, manifest),
         "version": version if isinstance(version, str) else "",
@@ -1284,6 +1301,107 @@ def _safe_avatar_reference(raw: Any, *, package_dir: Path) -> str:
     return _resolve_package_avatar(package_dir, {"avatar": value})
 
 
+def normalize_agent_group_display_identity(
+    value: Any,
+    *,
+    binding_name: str | None = None,
+) -> dict[str, Any] | None:
+    """Normalize an AgentGroup display snapshot for session metadata."""
+    if not isinstance(value, dict):
+        return None
+    raw_name = value.get("name", value.get("package_name"))
+    name = raw_name.strip() if isinstance(raw_name, str) else ""
+    expected_name = binding_name.strip() if isinstance(binding_name, str) else ""
+    if expected_name:
+        if name and name != expected_name:
+            return None
+        name = expected_name
+    raw_id = value.get("id", value.get("asset_id"))
+    identity_id = raw_id.strip() if isinstance(raw_id, str) else ""
+    raw_display_name = value.get("display_name", value.get("displayName"))
+    fallback_display_name = (
+        raw_display_name.strip() if isinstance(raw_display_name, str) else ""
+    )
+    raw_display_name_i18n = value.get(
+        "display_name_i18n", value.get("displayNameI18n")
+    )
+    localized_display_name = None
+    if isinstance(raw_display_name_i18n, dict):
+        localized_display_name = _i18n(
+            raw_display_name_i18n,
+            fallback_display_name,
+        )
+    elif isinstance(raw_display_name, dict):
+        localized_display_name = _i18n(raw_display_name, fallback_display_name)
+    if localized_display_name is not None:
+        localized_display_name = {
+            key: str(localized_display_name.get(key) or "").strip()
+            for key in ("zh", "en")
+        }
+        display_name = localized_display_name["zh"]
+    else:
+        display_name = fallback_display_name
+    if not name or not display_name:
+        return None
+    raw_avatar = value.get("avatar", value.get("avatarUrl"))
+    avatar = raw_avatar.strip() if isinstance(raw_avatar, str) else ""
+    if avatar and any(ord(char) < 0x20 for char in avatar):
+        avatar = ""
+    elif avatar:
+        try:
+            parsed = urlsplit(avatar)
+            is_external = (
+                parsed.scheme.lower() in {"http", "https"}
+                and bool(parsed.netloc)
+                and not any(char.isspace() for char in avatar)
+            )
+        except ValueError:
+            is_external = False
+        if not (avatar.lower().startswith("data:image/") or is_external):
+            avatar = ""
+    identity: dict[str, Any] = {
+        "id": identity_id or name,
+        "name": name,
+        "display_name": display_name,
+        "avatar": avatar,
+    }
+    if localized_display_name is not None:
+        identity["display_name_i18n"] = localized_display_name
+    return identity
+
+
+def resolve_agent_group_display_identity(name: Any) -> dict[str, Any] | None:
+    """Resolve the stable catalog identity of an installed AgentGroup."""
+    package_dir = resolve_agent_group_dir(name)
+    return _agent_group_display_identity_from_dir(package_dir)
+
+
+def _agent_group_display_identity_from_dir(package_dir: Path) -> dict[str, Any] | None:
+    """Read the display snapshot while the package body is still available."""
+    manifest = _read_package_manifest(package_dir)
+    if manifest is None:
+        return None
+    package_name = package_dir.name
+    install_record = _hub_install_state_store(_AGENT_GROUP_KIND).get_by_package_id(
+        package_name
+    )
+    display_name_i18n = _i18n(manifest.get("display_name"), package_name)
+    identity = {
+        "id": install_record.asset_id if install_record is not None else package_name,
+        "name": package_name,
+        "display_name": display_name_i18n["zh"],
+        "display_name_i18n": display_name_i18n,
+        "avatar": _safe_avatar_reference(
+            manifest.get("avatar"),
+            package_dir=package_dir,
+        ),
+    }
+    return normalize_agent_group_display_identity(
+        identity,
+        binding_name=package_name,
+    )
+
+
 def normalize_agent_group_leader_identity(value: Any) -> dict[str, Any] | None:
     """Normalize a persisted leader snapshot while retaining name-only identity."""
     if not isinstance(value, dict):
@@ -1734,6 +1852,85 @@ def _assert_agent_group_name_available(name: str) -> None:
                 f"agent_group display name already exists: {name} ({package_dir.name})",
                 "AGENT_GROUP_DUPLICATE",
             )
+
+
+def _package_id_claimed(kind: str, package_id: str) -> bool:
+    """Report whether a local, built-in or shelf package owns this directory name.
+
+    Built-in copies stay in place (no orphan cleanup), so any built_in hit
+    blocks the name and the caller takes the next suffix.
+    """
+    if (_local_root(kind) / package_id).exists():
+        return True
+    resources_root = _resources_root(kind)
+    if resources_root is not None and (resources_root / package_id).is_dir():
+        return True
+    return (_built_in_root(kind) / package_id).exists()
+
+
+def _hub_package_id_resolver(kind: str) -> Callable[[str, str], str]:
+    """Pick a free local id when several Hub assets share one package name.
+
+    Hub keys assets by asset_id, so two publishers can both own
+    ``business-planning``. Local packages are keyed by directory name, which is
+    why the second asset used to fail with a duplicate error. Resolve it to
+    ``business-planning-2`` instead: the display name stays the same and both
+    copies keep an independent lifecycle. Reinstalling the same asset reuses
+    its recorded id so retries stay idempotent instead of piling up suffixes.
+    """
+    store = _hub_install_state_store(kind)
+
+    def resolve(hub_package_id: str, asset_id: str) -> str:
+        recorded = store.get(asset_id)
+        if recorded is not None and recorded.package_id:
+            return recorded.package_id
+        if not _package_id_claimed(kind, hub_package_id):
+            return hub_package_id
+        for index in range(2, 100):
+            candidate = f"{hub_package_id}-{index}"
+            if not _package_id_claimed(kind, candidate):
+                logger.info(
+                    "[extension_package_manager] Hub %s package %r is taken; "
+                    "installing as %r",
+                    kind,
+                    hub_package_id,
+                    candidate,
+                )
+                return candidate
+        raise ValueError(
+            f"too many Hub packages share the name {hub_package_id!r}"
+        )
+
+    return resolve
+
+
+def _rename_hub_package_identity(
+    package_root: Path, package_id: str, package_type: str
+) -> None:
+    """Rewrite only the identity field so an aliased package loads under its own id.
+
+    agent_template and agent_group key on ``manifest["name"]``; plugin keys on
+    ``manifest["id"]``. ``display_name`` stays untouched on purpose: the two
+    copies must keep showing the same product name.
+
+    Only an alias may rename: the resolver appends ``-<n>`` and keeps the Hub
+    package name as the stem. Any other mismatch is a Hub packaging error that
+    the id check must report instead of silently rewriting it.
+    """
+    manifest = _read_package_manifest(package_root)
+    if manifest is None:
+        return  # the package validator reports the precise manifest error
+    key = "id" if package_type == "plugin" else "name"
+    current = manifest.get(key)
+    if not isinstance(current, str) or not current.strip():
+        return  # missing identity, let _package_id_from_manifest reject it
+    if current == package_id:
+        return
+    stem, separator, suffix = package_id.rpartition("-")
+    if not separator or not suffix.isdigit() or stem != current:
+        return  # not an alias of this package, keep it for the id check
+    manifest[key] = package_id
+    _write_json(package_root / "manifest.json", manifest)
 
 
 def _skills_manifest_entries(skill_names: list[str]) -> list[dict[str, str]]:
@@ -2367,6 +2564,24 @@ def _build_agent_group_card(
     return card
 
 
+def disabled_agent_group_runtimes(package: Any) -> list[str]:
+    """Read current switches before selecting an expert team."""
+    from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.common.config_panel.config_set_handlers import flatten_external_cli_agents_for_config_panel
+
+    switches = flatten_external_cli_agents_for_config_panel(get_config())
+    disabled: list[str] = []
+    for template in package.templates.values():
+        external = external_cli_agent_spec_from_template(template)
+        if external is None:
+            continue
+        name = external.cli_agent
+        if switches.get(f"external_cli_agent_{name}_enabled") != "true" and name not in disabled:
+            disabled.append(name)
+    return disabled
+
+
 def show_agent_group(name: str) -> dict | None:
     """Return one valid AgentGroup detail card, or ``None`` when absent."""
     from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
@@ -2378,13 +2593,20 @@ def show_agent_group(name: str) -> dict | None:
     market = _marketplace_index(read_agent_group_marketplace_entries())
     # Keep show as strict as Team assembly and list: a corrupt/unloadable group
     # must never be presented as selectable detail data.
-    return _build_agent_group_card(
+    card = _build_agent_group_card(
         package_dir,
         source=source,
         marketplace=market.get(package_dir.name),
         load_package=load_agent_group_package,
         include_details=True,
     )
+
+    if card is not None:
+        from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package_bundle
+
+        package = load_agent_group_package_bundle(package_dir)
+        card["disabledRuntimes"] = disabled_agent_group_runtimes(package)
+    return card
 
 
 async def show_agent_group_with_hub(
@@ -2507,6 +2729,52 @@ def _hub_detail_card(
     }
 
 
+_CAPABILITY_FIELDS = {
+    "skill": "skills",
+    "tool": "tools",
+    "rail": "rails",
+    "mcp": "mcps",
+}
+
+
+def _hub_card_with_capabilities(detail: HubAssetDetail) -> dict[str, Any]:
+    """Render a detail card from Hub metadata plus the published package profile.
+
+    The version endpoint already returns ``agent_package_profile``, so skills/tools/rails/
+    connectors and quick inputs can be shown without downloading the package archive.
+    """
+    card = _hub_detail_card(detail)
+    profile = detail.package_profile if isinstance(detail.package_profile, dict) else {}
+    capabilities = profile.get("capabilities")
+    if isinstance(capabilities, list):
+        for entry in capabilities:
+            if not isinstance(entry, dict):
+                continue
+            field = _CAPABILITY_FIELDS.get(str(entry.get("kind") or "").strip())
+            if field is None:
+                continue
+            identifier = str(entry.get("id") or "").strip()
+            if not identifier:
+                continue
+            card[field].append(
+                {
+                    "id": identifier,
+                    "displayName": _i18n(entry.get("name"), identifier),
+                    "displayDescription": _i18n(entry.get("description")),
+                }
+            )
+    quick_inputs = profile.get("quick_inputs")
+    if isinstance(quick_inputs, list):
+        card["quickInputs"] = [item for item in quick_inputs if isinstance(item, str)]
+    persona = profile.get("persona_markdown")
+    if isinstance(persona, str) and persona.strip():
+        card["persona"] = persona
+    manifest_tags = profile.get("manifest_tags")
+    if isinstance(manifest_tags, list) and manifest_tags and not card["tags"]:
+        card["tags"] = [_i18n(tag, str(tag)) for tag in manifest_tags]
+    return card
+
+
 def _apply_hub_identity(card: dict[str, Any], detail: HubAssetDetail) -> dict[str, Any]:
     card["id"] = detail.asset_id
     card["packageName"] = detail.package_name or detail.asset_id
@@ -2548,10 +2816,15 @@ def _build_show_card_from_zip(
     if package_type == "agent_template":
         description = manifest.get("description")
         details = description if isinstance(description, str) else ""
+    display_description = (
+        _manifest_display_description(manifest)
+        if package_type == "agent_template"
+        else (manifest.get("display_description") or {})
+    )
     card: dict[str, Any] = {
         "id": package_id,
         "displayName": manifest.get("display_name") or package_id,
-        "displayDescription": manifest.get("display_description") or {},
+        "displayDescription": display_description,
         "source": "hub",
         "avatar": _resolve_zip_avatar(body, package_root, manifest),
         "version": version if isinstance(version, str) else "",
@@ -2627,22 +2900,19 @@ async def _show_equipment_with_hub(
             f"Hub asset id mismatch: expected {remote_asset_id!r}, "
             f"got {remote.asset_id!r}"
         )
-    archive = await _load_hub_preview_archive(
-        kind,
-        remote.asset_id,
-        hub_port=port,
-        downloader=downloader,
-        detail=remote,
-    )
-    card = _build_show_card_from_zip(
-        archive.body,
-        archive.package_root,
-        package_type=hub_asset_kind,
-        package_id=remote.package_name or remote.asset_id,
-    )
-    if card is None:
-        return _hub_detail_card(remote)
-    return _apply_hub_identity(card, remote)
+    # Return the Hub metadata card immediately instead of downloading the package.
+    # The ZIP is only required for the files tab and for installing, and both of those
+    # paths load it on demand, so opening a detail page never waits for a download.
+    card = _hub_card_with_capabilities(remote)
+    if not card["details"]:
+        # Packages imported from outside the app may carry no description at all; read the
+        # README instead of leaving the detail page empty. This never downloads the archive.
+        reader = getattr(port, "read_public_readme", None)
+        if callable(reader):
+            readme = await reader(remote.asset_id, remote.version)
+            if readme:
+                card["details"] = readme
+    return card
 
 
 async def show_agent_template_with_hub(
@@ -2819,6 +3089,9 @@ async def _prepare_hub_equipment(
 
     def validate_package(package_root: Path, expected_package_id: str) -> None:
         _normalize_hub_equipment_manifest(package_root, package_type=package_type)
+        # An aliased install must answer to its own directory id, otherwise the
+        # id check below and the runtime loader still see the Hub package name.
+        _rename_hub_package_identity(package_root, expected_package_id, package_type)
         _validate_package_manifest(package_root, kind_label, package_type)
         manifest = _read_package_manifest(package_root)
         if manifest is None:
@@ -2861,6 +3134,7 @@ async def _prepare_hub_equipment(
             value, f"Hub {kind_label} package"
         ),
         package_validator=validate_package,
+        package_id_resolver=_hub_package_id_resolver(kind),
         conflict_validator=reject_conflict,
         on_committed=write_marketplace,
         on_rollback=lambda runtime_package_id: _remove_marketplace_entry(
@@ -3891,6 +4165,35 @@ def _validate_agent_template_import_layout(pkg_root: Path, manifest: dict) -> No
         )
 
 
+def _validate_manifest_import_skill_paths(
+    manifest: dict,
+    pkg_root: Path,
+    *,
+    kind_label: str,
+) -> None:
+    """Reject host-specific skill paths before the core package loader runs."""
+    skills = manifest.get("skills", [])
+    if not isinstance(skills, list):
+        return
+    pkg_root_resolved = pkg_root.resolve()
+    for skill in skills:
+        raw_dir = skill.get("dir") if isinstance(skill, dict) else skill
+        if not isinstance(raw_dir, str) or not raw_dir.strip():
+            continue
+        rel = raw_dir.strip().replace("\\", "/")
+        posix = PurePosixPath(rel)
+        if posix.is_absolute() or ".." in rel.split("/") or PureWindowsPath(raw_dir).is_absolute():
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
+        skill_dir = (pkg_root / rel).resolve()
+        if skill_dir == pkg_root_resolved or not skill_dir.is_relative_to(pkg_root_resolved):
+            raise ValueError(f"{kind_label} skill dir must be package-relative")
+
+
+def _validate_agent_group_import_skill_paths(manifest: dict, pkg_root: Path) -> None:
+    """Reject host-specific skill paths before the core package loader runs."""
+    _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="agent_group")
+
+
 def _commit_imported_package(
     pkg_root: Path, *, kind: str, kind_label: str, package_type: str
 ) -> dict:
@@ -3908,6 +4211,9 @@ def _commit_imported_package(
         _require_import_readme(pkg_root, kind_label)
     if kind == _AGENT_TEMPLATE_KIND:
         _validate_agent_template_import_layout(pkg_root, manifest)
+        _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="agent_template")
+    if kind == _PLUGIN_PACKAGE_KIND:
+        _validate_manifest_import_skill_paths(manifest, pkg_root, kind_label="plugin")
     if kind == _AGENT_GROUP_KIND:
         from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
 
@@ -3920,6 +4226,7 @@ def _commit_imported_package(
                 "agent_group manifest name must match its package directory"
             )
         _assert_no_symlinks(pkg_root)
+        _validate_agent_group_import_skill_paths(manifest, pkg_root)
         load_agent_group_package(pkg_root)
     local_root = _local_root(kind)
     _assert_package_id_available(
@@ -4170,6 +4477,7 @@ async def install_agent_group_with_hub(
     package_id = record.package_id if record is not None else requested_id
     if _resolve_agent_group_definition_dir(package_id) is None:
         def validate(package_root: Path, expected_name: str) -> None:
+            _rename_hub_package_identity(package_root, expected_name, "agent_group")
             _validate_package_manifest(package_root, "agent_group", "agent_group")
             manifest = _read_package_manifest(package_root)
             if (
@@ -4186,6 +4494,7 @@ async def install_agent_group_with_hub(
             state_store=store,
             package_name_validator=lambda value: _reject_package_name(value, "agent_group"),
             package_validator=validate,
+            package_id_resolver=_hub_package_id_resolver(_AGENT_GROUP_KIND),
             conflict_validator=lambda value: _assert_package_id_available(
                 value, local_root=_local_root(_AGENT_GROUP_KIND),
                 built_in_root=_built_in_root(_AGENT_GROUP_KIND),
@@ -4272,6 +4581,13 @@ def uninstall_agent_group(params: dict) -> None:
         kind=_AGENT_GROUP_KIND,
         kind_label="agent_group",
     )
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        preserve_agent_group_display_identity,
+    )
+
+    identity = _agent_group_display_identity_from_dir(pkg_dir)
+    if identity is not None:
+        preserve_agent_group_display_identity(package_id, identity)
     _rmtree(pkg_dir)
     remove_agent_group_marketplace_entry(package_id)
     if record is not None:

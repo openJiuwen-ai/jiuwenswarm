@@ -6,11 +6,11 @@ from pathlib import Path
 import zipfile
 
 import pytest
+import portalocker
 from ruamel.yaml import YAML
 
 from jiuwenswarm.common import config as config_module
 from jiuwenswarm.common import utils as common_utils
-from jiuwenswarm.common._build_config import VERSION
 
 
 PACKAGE_ROOT = Path(common_utils.__file__).resolve().parent.parent
@@ -18,6 +18,8 @@ PACKAGE_ROOT = Path(common_utils.__file__).resolve().parent.parent
 
 @pytest.fixture
 def runtime_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_version", lambda: "0.2.8b1")
+    monkeypatch.setattr("jiuwenswarm.common.version.get_runtime_build_date", lambda: "2026-10-26")
     package_root = tmp_path / "package"
     resources = package_root / "resources"
     template_workspace = resources / "agent" / "workspace"
@@ -98,7 +100,7 @@ def test_personal_runtime_still_migrates_config(
     common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)
 
     migrated = config_module.load_yaml_round_trip(config_path)
-    assert migrated["config_version"] == VERSION
+    assert migrated["config_version"] == "0.2.8b1 · 2026-10-26"
     assert migrated["preferred_language"] == "en"
     assert migrated["react"]["answer_chunk_size"] == 300
     assert "context_engine_config" in migrated["react"]
@@ -108,3 +110,41 @@ def test_personal_runtime_still_migrates_config(
     written = config_path.read_text(encoding="utf-8")
     assert "# operator configuration" in written
     assert "# keep this choice" in written
+
+
+@pytest.mark.parametrize(
+    "lock_error",
+    [TimeoutError("config write lock timed out"), portalocker.exceptions.LockException("lock busy")],
+)
+def test_runtime_workspace_retries_migration_after_mcp_repair_lock_error(
+    runtime_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    lock_error: Exception,
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
+    config_path = runtime_workspace / "config" / "config.yaml"
+    config_path.write_text("operator_extra: keep\n", encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        common_utils.logger,
+        "warning",
+        lambda message, error: warnings.append(message % error),
+    )
+
+    def raise_lock_error(*_args: Path) -> bool:
+        raise lock_error
+
+    config_module_migrate = config_module.migrate_config_from_template
+    monkeypatch.setattr(config_module, "migrate_config_from_template", raise_lock_error)
+    common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)
+
+    assert (runtime_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins").is_dir()
+    assert len(warnings) == 1
+    assert "获取配置写锁失败" in warnings[0]
+    assert "config_version" not in config_module.load_yaml_round_trip(config_path)
+
+    monkeypatch.setattr(config_module, "migrate_config_from_template", config_module_migrate)
+    common_utils.prepare_runtime_workspace(cleanup_stale_descs=False)
+    migrated = config_module.load_yaml_round_trip(config_path)
+    assert migrated["operator_extra"] == "keep"
+    assert migrated["config_version"] == "0.2.8b1 · 2026-10-26"

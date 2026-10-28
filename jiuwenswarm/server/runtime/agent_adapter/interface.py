@@ -2587,7 +2587,9 @@ class JiuWenSwarm:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                package_manager.uninstall_agent_group(params)
+                from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
+
+                await uninstall_organization_agent_group(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
                 cards = await package_manager.list_agent_templates_with_hub(params)
@@ -2839,6 +2841,9 @@ class JiuWenSwarm:
           message directly to continue a paused session.
         """
         from jiuwenswarm.agents.harness.team import get_team_manager
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import control_target
+
+        voice_round = control_target(request)
 
         team_manager = get_team_manager(request.channel_id)
         reason = f"interrupt(intent={intent}): "
@@ -2854,6 +2859,8 @@ class JiuWenSwarm:
         if intent in {"pause", "cancel"}:
             if intent == "pause":
                 paused = await team_manager.pause_session_runtime(session_id, reason=reason)
+                # Runtime retains pure observation subscriptions and broadcasts
+                # completion after the cancelled business response streams exit.
                 await self._session_manager.cancel_session_task(
                     session_id,
                     reason,
@@ -2879,6 +2886,8 @@ class JiuWenSwarm:
                 )
                 message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
             success = paused if intent == "pause" else cancelled
+            if voice_round is not None and intent == "cancel" and cancelled:
+                await voice_round.settle(cancelled=True)
             return self._build_interrupt_result_response(
                 request,
                 intent=intent,
@@ -2952,6 +2961,11 @@ class JiuWenSwarm:
             return await self._process_interrupt(request)
 
         if request.req_method == ReqMethod.CHAT_ANSWER:
+            if (request.channel_id == "video_tool" and (request.params or {}).get("mode") == "team.design"
+                    and (request.params or {}).get("managed_task_request")):
+                from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import answer_design_task
+
+                return await answer_design_task(request, self._build_inputs)
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
             validator = getattr(
                 adapter, "validate_auto_permission_workspace_request", None
@@ -3429,7 +3443,7 @@ class JiuWenSwarm:
             return
         # should_record 判定（与 process_message_stream 一致）：
         # chat.* 或 context.usage 落盘；其余不落盘。
-        should_record = et.startswith("chat.") or et == "context.usage"
+        should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
         if not should_record:
             return
         # chat.delta / chat.reasoning 增量不落盘（与 process_message_stream 一致）。
@@ -4431,7 +4445,7 @@ class JiuWenSwarm:
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
                             _note_goal_stream_payload(et, data.payload)
-                            should_record = et.startswith("chat.") or et == "context.usage"
+                            should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
                             final_segment_started_at: float | None = None
                             final_segment_order = None
                             if not should_record and et == EventType.TEAM_MESSAGE.value:
@@ -4710,7 +4724,7 @@ class JiuWenSwarm:
                         ) or data
                         et = str(data.get("event_type"))
                         _note_goal_stream_payload(et, data)
-                        should_record = et.startswith("chat.") or et == "context.usage"
+                        should_record = (et.startswith("chat.") and et != "chat.moa_status") or et == "context.usage"
                         final_segment_started_at = None
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True

@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 
+import pytest
+
 from jiuwenswarm.common.schema.designer_graph import normalize_execution_graph
+from jiuwenswarm.server.runtime.design import run_coordinator as run_coordinator_module
 from jiuwenswarm.server.runtime.design.run_coordinator import RunCoordinator
 
 
@@ -116,4 +120,110 @@ async def test_refused_rerun_writes_failed_instead_of_staying_running():
     assert saved["current_node_ids"] == []
     assert "upstream not ready: n_up" in str(saved.get("error"))
     assert any(u.get("status") == "failed" for u in updates)
+
+
+async def test_trigger_source_is_recorded_without_dropping_metadata():
+    run = _failed_run()
+    run["metadata"] = {"scope_node_ids": ["n_down"]}
+    store = _Store(run)
+    coordinator = RunCoordinator(store, "g_refused")
+
+    await coordinator.start(_refused_graph(), node_ids=["n_down"])
+    assert store.runs["run_refused"]["metadata"] == {
+        "scope_node_ids": ["n_down"],
+        "trigger_source": "canvas",
+    }
+
+    await coordinator.start(_refused_graph(), node_ids=["n_down"], source="leader")
+    assert store.runs["run_refused"]["metadata"]["trigger_source"] == "leader"
+
+
+class _DesignContext:
+    worker_base_spec = object()
+    worker_build_context = None
+    expert_specs = None
+    team_name = "team_ut"
+    node_result_sink: Any = None
+    node_activity_sink: Any = None
+    node_run_env: Any = None
+
+
+class _Registry:
+    def __init__(self, context: _DesignContext) -> None:
+        self._context = context
+
+    def for_graph(self, graph_id: str) -> _DesignContext:
+        return self._context
+
+
+def _runnable_graph():
+    return normalize_execution_graph({
+        "schema_version": "designer-execution-graph.v1",
+        "graph_id": "g_live",
+        "project_id": "ut",
+        "metadata": {"team_design_run_id": "run_live", "session_id": "sess_ut"},
+        "nodes": [
+            {"id": "n1", "type": "text", "label": "one",
+             "config": {"prompt": "p", "pipeline": "brief"}},
+        ],
+        "edges": [],
+    })
+
+
+async def test_cancelled_trigger_task_records_cancelled_and_reraises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """A leader trigger dies with the leader's task; the record must not stay 'running'."""
+    context = _DesignContext()
+    entered = asyncio.Event()
+
+    async def _never_finishing_workflow(*_args: Any, **_kwargs: Any) -> Any:
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        run_coordinator_module, "get_design_context_registry", lambda: _Registry(context)
+    )
+    monkeypatch.setattr(run_coordinator_module, "_build_team_worker", lambda **_kwargs: object())
+    monkeypatch.setattr(run_coordinator_module, "run_workflow", _never_finishing_workflow)
+    monkeypatch.setattr(
+        run_coordinator_module, "workflow_run_dir", lambda *_args: tmp_path / "run"
+    )
+    monkeypatch.setattr(
+        run_coordinator_module,
+        "workflow_run_journal_path",
+        lambda *_args: tmp_path / "run" / "journal.jsonl",
+    )
+    monkeypatch.setattr(
+        run_coordinator_module,
+        "workflow_run_wal_path",
+        lambda *_args: tmp_path / "run" / "wal" / "wal.jsonl",
+    )
+    store = _Store({
+        "run_id": "run_live",
+        "graph_id": "g_live",
+        "status": "draft",
+        "current_node_ids": [],
+        "node_states": {},
+    })
+    coordinator = RunCoordinator(store, "g_live")
+    updates: list[dict[str, Any]] = []
+
+    task = asyncio.create_task(
+        coordinator.start(_runnable_graph(), on_update=updates.append, source="leader")
+    )
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    context.node_run_env["run"]["node_states"]["n1"]["status"] = "running"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    saved = store.runs["run_live"]
+    assert saved["status"] == "cancelled"
+    assert saved["current_node_ids"] == []
+    assert saved["node_states"]["n1"]["status"] == "cancelled"
+    assert saved["metadata"]["trigger_source"] == "leader"
+    assert updates[-1]["status"] == "cancelled"
+    assert not coordinator.is_active()
+    assert context.node_run_env is None
 

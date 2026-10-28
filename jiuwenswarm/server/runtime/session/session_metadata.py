@@ -179,6 +179,23 @@ def _build_project_lookup() -> tuple[
         return {}, {}
 
 
+def _repair_session_project_dir(metadata: dict[str, Any]) -> None:
+    """Keep an explicitly bound session's directory consistent with its project ID."""
+    from jiuwenswarm.common.work_mode import is_default_project_id
+    from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
+
+    project_id = str(metadata.get("project_id") or "").strip()
+    if not project_id or "project_dir" not in metadata:
+        return
+    project_dir = ""
+    if not is_default_project_id(project_id):
+        project = get_project_by_id(project_id, cache_bust=True)
+        if project is None:
+            return
+        project_dir = project.project_dir
+    metadata["project_dir"] = project_dir
+
+
 def _apply_metadata_defaults_with_inference(
     session_id: str,
     metadata: dict[str, Any],
@@ -335,6 +352,31 @@ def _apply_metadata_defaults_with_inference(
         metadata["mode"] = repaired_mode
         changed = True
         changed_fields.add("mode")
+
+    # Sessions created before the display snapshot field existed can be
+    # migrated while their bound package is still installed. Keep this out of
+    # bulk session-list scans: the full identity is only needed when opening a
+    # session, and resolving every package during a list operation is costly.
+    agent_group_name = str(metadata.get("agent_group_name") or "").strip()
+    if (
+        agent_group_name
+        and "team_group_identity" not in metadata
+        and not background_writeback
+    ):
+        try:
+            from jiuwenswarm.server.runtime.extension_package_manager import (
+                resolve_agent_group_display_identity,
+            )
+
+            team_group_identity = resolve_agent_group_display_identity(
+                agent_group_name
+            )
+        except (OSError, ValueError):
+            team_group_identity = None
+        if team_group_identity is not None:
+            metadata["team_group_identity"] = team_group_identity
+            changed = True
+            changed_fields.add("team_group_identity")
 
     # project_id: 缺失时尝试按 work_mode 反查唯一真实 Project
     if not str(metadata.get("project_id") or "").strip():
@@ -608,6 +650,12 @@ def _write_metadata_unfenced(
                 session_id, len(recovered), sorted(recovered),
             )
 
+        # The display snapshot is frozen at first binding. Queued metadata
+        # captured before uninstall must not remove the persisted identity.
+        if current is not None and isinstance(current.get("team_group_identity"), dict):
+            to_write = to_write.copy()
+            to_write["team_group_identity"] = copy.deepcopy(current["team_group_identity"])
+
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
         # later attempts to switch the session to another runtime.
@@ -658,6 +706,10 @@ def _write_metadata_unfenced(
                 effective_preserve_rebound = True
         if effective_preserve_rebound and current is not None:
             to_write = _merge_rebound_fields(current, to_write)
+
+        # Recheck after merging so partial writes follow the current binding.
+        to_write = to_write.copy()
+        _repair_session_project_dir(to_write)
 
         # Atomic write: write a temp file then rename, so that truncation by
         # write_text can never expose empty content to a concurrent reader
@@ -858,6 +910,7 @@ def _enqueue_write(  # pylint: disable=too-many-arguments,huawei-too-many-argume
     注意: ``_write_metadata_sync`` 本身不更新缓存,缓存更新统一在此函数
     顶部完成,与异步路径行为一致,避免 ``init_session_metadata`` 污染缓存。
     """
+    _repair_session_project_dir(metadata)
     # 立即更新缓存,确保后续读取能看到最新状态
     # 入队前捕获 rebind 版本号: worker 处理时据此判断本快照是否早于一次重绑
     from jiuwenswarm.server.runtime.session import lifecycle as lc
@@ -999,6 +1052,7 @@ def update_session_metadata(
     team_template_id: str | None = None,
     agent_group_name: str | None = None,
     team_leader_identity: dict[str, Any] | None = None,
+    team_group_identity: dict[str, Any] | None = None,
     accent_color: str | None = None,
     project_dir: str | None = None,
     project_id: str | None = None,
@@ -1016,6 +1070,7 @@ def update_session_metadata(
     session_runtime_binding: dict[str, Any] | None = None,
     session_harness_checkpoint: dict[str, Any] | None = None,
     group_members: list[dict[str, Any]] | None = None,
+    organization_owner_stopped: bool | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1108,6 +1163,8 @@ def update_session_metadata(
             )
         if isinstance(team_leader_identity, dict):
             metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
+        if isinstance(team_group_identity, dict):
+            metadata["team_group_identity"] = copy.deepcopy(team_group_identity)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -1134,6 +1191,11 @@ def update_session_metadata(
         # a changed package definition.
         if isinstance(team_leader_identity, dict) and "team_leader_identity" not in metadata:
             metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
+        # AgentGroup display identity follows the same first-binding snapshot
+        # contract as the leader identity. Package removal or later catalog
+        # edits must not rewrite how an existing conversation is displayed.
+        if isinstance(team_group_identity, dict) and "team_group_identity" not in metadata:
+            metadata["team_group_identity"] = copy.deepcopy(team_group_identity)
         if accent_color is not None:
             metadata["accent_color"] = accent_color
         # model：覆盖式——每次请求更新为本次模型
@@ -1202,6 +1264,8 @@ def update_session_metadata(
 
     if group_members is not None:
         metadata["group_members"] = copy.deepcopy(group_members)
+    if organization_owner_stopped is not None:
+        metadata["organization_owner_stopped"] = organization_owner_stopped
 
     _enqueue_write(
         session_id,
@@ -1437,7 +1501,62 @@ def sync_session_request_metadata(
             metadata["last_message_at"] = _current_timestamp()
 
     _enqueue_write(session_id, metadata, preserve_pin_fields=True)
+    # Execution fallback may come from legacy metadata rather than the request.
+    if not is_agentos_workspace_fallback(
+        channel_id=channel_id,
+        project_dir=effective_project_dir,
+        project_id=str(metadata.get("project_id") or ""),
+    ):
+        effective_project_dir = str(metadata.get("project_dir") or "").strip() or None
     return effective_project_dir
+
+
+def preserve_agent_group_display_identity(
+    agent_group_name: str, identity: dict[str, Any]
+) -> None:
+    """Persist missing legacy snapshots before uninstall removes their source."""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    sessions_dir = get_agent_sessions_dir()
+    archived_dir = sessions_dir.parent / "sessions_archived"
+    session_ids: set[str] = set()
+    for root in (sessions_dir, archived_dir):
+        if not root.is_dir():
+            continue
+        for directory in root.iterdir():
+            if directory.is_dir():
+                session_ids.add(directory.name)
+    for session_id in sorted(session_ids):
+        with lc.resource_lock("session", session_id):
+            session_dir = lc.resolve_session(
+                session_id, must_exist=False, sessions_root=sessions_dir
+            )
+            metadata = _read_metadata_file_in(session_dir)
+            if (
+                metadata.get("agent_group_name") != agent_group_name
+                or "team_group_identity" in metadata
+            ):
+                continue
+            if session_dir.parent == archived_dir:
+                operation = lc.state("session", session_id).get("operation")
+                if operation and operation.get("status") != "completed":
+                    raise lc.LifecycleError(
+                        "OPERATION_IN_PROGRESS", "session lifecycle operation in progress"
+                    )
+                # Archived metadata maintenance follows archive_time's locked
+                # atomic write; runtime write fences remain unchanged.
+                metadata["team_group_identity"] = copy.deepcopy(identity)
+                lc.atomic_json(session_dir / "metadata.json", metadata)
+                remove_session_metadata_cache(session_id)
+                continue
+        metadata["team_group_identity"] = copy.deepcopy(identity)
+        options = _MetadataWriteOptions(
+            merge_fields=frozenset({"team_group_identity"}),
+            expected_fields={"team_group_identity": (False, None)},
+        )
+        written = _write_metadata_sync(session_id, metadata, options)
+        with _CACHE_LOCK:
+            _METADATA_CACHE[session_id] = written.copy()
 
 
 def get_session_metadata(
@@ -1608,11 +1727,17 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
             sessions_dir = get_agent_sessions_dir()
             pinned_list: list[tuple[str, int]] = []
             if sessions_dir.is_dir():
+                from jiuwenswarm.server.runtime.session import lifecycle as lc
                 for session_dir in sessions_dir.iterdir():
                     if not session_dir.is_dir():
                         continue
                     sid = session_dir.name
                     if sid.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
+                        continue
+                    state = lc.state("session", sid)
+                    if lc.logically_deleted(state) or lc.logically_archived(state):
+                        # Accepted but not yet moved/deleted: it already left
+                        # the active pin ordering.
                         continue
                     scanned += 1
                     m = meta if sid == session_id else _read_metadata(sid)
@@ -2006,6 +2131,11 @@ def get_all_sessions_metadata(
         if session_id.startswith(_EPHEMERAL_PROBE_SESSION_PREFIXES):
             continue
         state = lc.state("session", session_id)
+        # Lifecycle state is authoritative for visibility: archive and delete
+        # are accepted before the directory moves or disappears, so the active
+        # list must hide the Session while cleanup runs in the background.
+        if lc.logically_deleted(state) or lc.logically_archived(state):
+            continue
         archived = lc.session_paths(session_id)[1].exists()
         if archived:
             continue
@@ -2145,6 +2275,10 @@ def _collect_all_sessions_metadata(
             continue
         state = lc.state("session", sid)
         if lc.session_paths(sid, sessions_root=sessions_dir)[1].exists():
+            continue
+        # Lifecycle state is authoritative for visibility: archive and delete
+        # are accepted before the directory moves or disappears.
+        if lc.logically_deleted(state) or lc.logically_archived(state):
             continue
         if user_id:
             # 按用户家目录读时,绕过走全局单例的 _read_metadata,直接读该目录下文件,

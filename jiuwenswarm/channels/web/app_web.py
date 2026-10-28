@@ -2055,7 +2055,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
 
         if parsed.path == "/file-api/upload":
-            self._handle_file_upload_proxy(parsed)
+            if self._is_designer_upload(parsed):
+                self._handle_designer_upload()
+            else:
+                self._handle_file_upload_proxy(parsed)
             return
 
         if parsed.path == "/file-api/file-content":
@@ -2158,6 +2161,45 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         status, payload = handle_custom_agent_upload_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
+
+    def _is_designer_upload(self, parsed) -> bool:
+        if parse_qs(parsed.query).get("token"):
+            return False
+        return "multipart/form-data" in self.headers.get("Content-Type", "").lower()
+
+    def _discard_request_body(self, length: int) -> None:
+        # Answering before the body is consumed resets the connection, which
+        # the browser reports as "Failed to fetch" instead of the JSON error.
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(remaining, 1024 * 1024))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
+    def _handle_designer_upload(self) -> None:
+        from jiuwenswarm.channels.web.designer_upload_http import (
+            MAX_DESIGNER_UPLOAD_REQUEST_BYTES,
+            handle_designer_upload_http,
+        )
+
+        length = self._parse_content_length()
+        # A routed AgentServer keeps uploads in a per-user sandbox this process cannot write.
+        if _uses_agentos_routing():
+            self._discard_request_body(length)
+            self._write_json(503, {"error": "agentserver_file_rpc_required"})
+            return
+        if length > MAX_DESIGNER_UPLOAD_REQUEST_BYTES:
+            self._discard_request_body(length)
+            self._write_json(413, {"error": "file_too_large", "files": [], "errors": [{"error": "file_too_large"}]})
+            return
+        status, payload = handle_designer_upload_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self.rfile,
+            length=length,
+            workspace_root=Path(self.workspace_root),
         )
         self._write_json(status, payload)
 

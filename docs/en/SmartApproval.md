@@ -32,6 +32,8 @@ The permission menu next to the Web message box offers these profiles:
 
 Profile changes take effect on the **next conversation turn**.
 
+Exception: delegating a task to the desktop automation subagent `cua_agent` shows a confirmation card under every profile, including Full Access, unless `react.subagents.cua_agent.require_approval` is `false`. See [Desktop Automation](DesktopAutomation.md).
+
 ## How to use it
 
 ### Enable it in the WebUI
@@ -42,6 +44,8 @@ Profile changes take effect on the **next conversation turn**.
 4. Send your next message to continue.
 
 When Smart Approval needs your judgment, JiuwenSwarm displays the standard Permission card. You can allow the request once, deny it, or use an existing option such as remembering your decision for the session.
+
+**Reject** and **Allow once** apply only to the current tool call. A new call with the same tool and arguments in the same session is evaluated against the current rules and shows another card if human approval is still required. **Remember permanently** and **Remember for this session** reuse allow rules within their existing scopes and cannot override an explicit `deny`.
 
 ### Enable it in configuration
 

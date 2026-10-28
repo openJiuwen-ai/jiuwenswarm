@@ -86,6 +86,21 @@ export interface ContextCompressionSummary {
   summaries: string[];
 }
 
+export type MoaPhase = 'reference' | 'verification';
+
+export interface MoaStatusPayload extends Record<string, unknown> {
+  operation_id: string;
+  phase: MoaPhase;
+  status: 'started' | 'completed' | 'failed' | 'cancelled';
+  execution_id?: string;
+}
+
+export interface MoaOperation {
+  phase: MoaPhase;
+  status: MoaStatusPayload['status'];
+  executionId?: string;
+}
+
 export interface TeamMemberContextCompressionState {
   runtime?: ContextCompressionRuntime;
   summary?: ContextCompressionSummary;
@@ -96,6 +111,8 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: string;
+  /** True until the server confirms this optimistic input's timestamp. */
+  isTimestampPending?: boolean;
   /** A displayed supplement belongs to the existing execution, not a new user turn. */
   supplementalInput?: {
     executionId: string;

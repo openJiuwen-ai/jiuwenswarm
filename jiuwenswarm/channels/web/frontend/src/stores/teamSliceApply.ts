@@ -9,6 +9,7 @@ import { conversationKey } from './chatStore';
 import { useTeamSelectorStore } from './teamSelectorStore';
 import type { TeamTask, TeamTaskStatus } from './sessionStore';
 import type { TeamSnapshotPayload } from './teamSelectorStore';
+import { resolveOrganizationTeamIdentity } from '../features/teamOrganization/teamIdentity';
 
 const TEAM_TASK_STATUSES = new Set<TeamTaskStatus>([
   'pending',
@@ -67,7 +68,11 @@ export function applyTeamSnapshotToSession(
   sessionId = conversationKey(sessionId, team?.is_owner ? null : teamId);
   const store = useSessionStore.getState();
   store.ensureRuntime(sessionId);
-  if (!team?.is_owner) store.setMode(sessionId, 'team');
+  if (!team?.is_owner) {
+    store.setMode(sessionId, 'team');
+    const identity = resolveOrganizationTeamIdentity(team, []);
+    if (identity) store.setTeamGroupIdentity(sessionId, identity);
+  }
 
   const now = Date.now();
   const rawMembers = Array.isArray(snapshot?.members) ? snapshot.members : [];

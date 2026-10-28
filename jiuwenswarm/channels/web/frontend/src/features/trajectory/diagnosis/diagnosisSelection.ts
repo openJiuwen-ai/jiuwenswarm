@@ -71,8 +71,62 @@ export function selectOnLane(
   return { mode: 'lanes', axisRange: null, laneRanges: next, excluded: state.excluded };
 }
 
+/**
+ * One window covering every interval of an agent (earliest start to latest end).
+ *
+ * Empty or invalid input yields `null`. Used by the per-agent "select all"
+ * control so a click picks the whole lane without dragging.
+ */
+export function unionWallRange(intervals: readonly WallRange[]): WallRange | null {
+  let startMs = Number.POSITIVE_INFINITY;
+  let endMs = Number.NEGATIVE_INFINITY;
+  for (const interval of intervals) {
+    if (!validRange(interval)) continue;
+    if (interval.startMs < startMs) startMs = interval.startMs;
+    if (interval.endMs > endMs) endMs = interval.endMs;
+  }
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
+  return { startMs, endMs };
+}
+
+function sameWallRange(left: WallRange, right: WallRange): boolean {
+  return left.startMs === right.startMs && left.endMs === right.endMs;
+}
+
+/** Whether the pick already covers this agent's whole timed span. */
+export function isAgentFullySelected(
+  state: DiagnosisSelectionState,
+  subjectId: string,
+  intervals: readonly WallRange[],
+): boolean {
+  const full = unionWallRange(intervals);
+  if (full === null) return false;
+  const current = laneRangeOf(state, subjectId);
+  return current !== null && sameWallRange(current, full);
+}
+
+/**
+ * Select or clear one agent's whole timed span.
+ *
+ * A second click on the same full span drops that agent from the pick.
+ */
+export function toggleSelectAllOnLane(
+  state: DiagnosisSelectionState,
+  subjectId: string,
+  intervals: readonly WallRange[],
+): DiagnosisSelectionState {
+  const full = unionWallRange(intervals);
+  if (full === null) return state;
+  if (isAgentFullySelected(state, subjectId, intervals)) {
+    return selectOnLane(state, subjectId, null);
+  }
+  return selectOnLane(state, subjectId, full);
+}
+
 /** Whether an agent counts in the current pick; drives its checkbox. */
 export function isAgentIncluded(state: DiagnosisSelectionState, subjectId: string): boolean {
+  // Nothing picked yet: leave every lane unticked until the user draws a window.
+  if (state.mode === 'none') return false;
   if (state.mode === 'lanes') return state.laneRanges.has(subjectId);
   return !state.excluded.has(subjectId);
 }
@@ -82,9 +136,10 @@ export function isAgentIncluded(state: DiagnosisSelectionState, subjectId: strin
  *
  * On the shared window it excludes or restores the agent. With per-agent
  * windows, unticking drops that agent's window; a window cannot be created by
- * ticking, only by drawing it.
+ * ticking, only by drawing it. With nothing picked yet, ticking is ignored.
  */
 export function toggleAgent(state: DiagnosisSelectionState, subjectId: string): DiagnosisSelectionState {
+  if (state.mode === 'none') return state;
   if (state.mode === 'lanes') {
     return state.laneRanges.has(subjectId) ? selectOnLane(state, subjectId, null) : state;
   }
@@ -95,11 +150,12 @@ export function toggleAgent(state: DiagnosisSelectionState, subjectId: string): 
 }
 
 /**
- * Whether the pick contains a whole node of one agent.
+ * Whether the pick contains a whole OTel span of one agent.
  *
- * The whole trajectory contains every node. Otherwise both the start and the
- * end have to lie inside the agent's own window (the shared window, unless
- * that agent is unchecked). Covering only one of the two moments is not enough.
+ * An OTel span counts only when both its start and end on the swimlane lie
+ * inside the agent's window (the shared axis window, unless that agent is
+ * unchecked). Covering only one of the two moments is not enough. The whole
+ * trajectory contains every span.
  */
 export function selectionCoversInterval(
   state: DiagnosisSelectionState,
@@ -150,14 +206,15 @@ export function selectionRanges(
   return ranges;
 }
 
-/** A diagnosis may cover at most this many nodes. One more and it cannot start. */
+/** A diagnosis may cover at most this many OTel spans. One more and it cannot start. */
 export const DIAGNOSIS_NODE_LIMIT = 1_500;
 
 /**
- * How many nodes the pick contains.
+ * How many OTel spans the pick contains.
  *
- * A node counts only when the pick contains it whole (see
- * `selectionCoversInterval`). The whole trajectory contains every node.
+ * A span counts only when the pick covers it whole on the swimlane — both
+ * start and end (see `selectionCoversInterval`). The whole trajectory
+ * contains every span.
  */
 export function selectedNodeCount(
   state: DiagnosisSelectionState,

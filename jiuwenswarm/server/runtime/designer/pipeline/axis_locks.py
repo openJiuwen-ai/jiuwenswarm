@@ -363,17 +363,9 @@ def apply_axis_locks_to_graph(graph: dict[str, Any]) -> list[str]:
         idx = int(cfg.get("clip_index") or 0)
         clause = format_axis_clause(shots.get(idx), analysis) if idx else clause_global
         if role in {"scene", "clip", "character"} and clause:
-            gen = dict(cfg.get("generate") or {}) if isinstance(cfg.get("generate"), dict) else {}
-            prev = str(gen.get("prompt") or cfg.get("prompt") or "")
-            if "STYLE LOCK" not in prev:
-                stamped = (prev + "\n" + clause).strip()
-                if role in {"clip"}:
-                    gen["prompt"] = stamped
-                    cfg["generate"] = gen
-                else:
-                    cfg["prompt"] = stamped
-                notes.append(f"axis:{node.get('id')}")
+            # The leaf agent reads axis_clause; the user-visible prompt stays lock-free.
             cfg["axis_clause"] = clause[:900]
+            notes.append(f"axis:{node.get('id')}")
             if idx and shots.get(idx):
                 cfg["screen_axis"] = shots[idx].get("screen_axis")
                 cfg["occupancy"] = shots[idx].get("occupancy")

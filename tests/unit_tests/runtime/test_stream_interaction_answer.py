@@ -5,7 +5,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import AsyncIterator
 from contextlib import aclosing
+from dataclasses import replace
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -25,7 +29,7 @@ from jiuwenswarm.runtime.context import get_current_runtime
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.interaction import InteractionAnswerInput
 from jiuwenswarm.runtime.service import AgentRuntime
-from jiuwenswarm.runtime.session.model import SessionExecutionState, SessionWorkKind
+from jiuwenswarm.runtime.session.model import SessionExecutionHandle, SessionExecutionState, SessionWorkKind
 from jiuwenswarm.runtime.session_catalog import SessionCatalogError
 
 
@@ -170,6 +174,225 @@ async def _seed_waiting(harness) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["web", "typed", "list"])
+@pytest.mark.parametrize("terminal", ["completed", "failed", "cancelled"])
+async def test_moa_resumes_keep_root_identity_only_on_progress(
+    harness: SimpleNamespace,
+    route: str,
+    terminal: str,
+) -> None:
+    await _seed_waiting(harness)
+    root = _execution(harness.coordinator.snapshot_session(SESSION_ID), "root-request")
+
+    async def delivered(request: AgentRequest) -> AsyncIterator[AgentResponseChunk]:
+        control_id = request.params["request_id"]
+        phase = "reference" if control_id == "question_1" else "verification"
+        for status in ("started", terminal):
+            yield _chunk(request, "chat.moa_status", operation_id=control_id, phase=phase, status=status)
+        yield _chunk(request, "chat.delta", content="answer")
+        if control_id == "question_1":
+            yield _chunk(request, "chat.ask_user_question", request_id="question_2", source="ask_user_interrupt")
+
+    harness.agent.deliver_control_input = delivered
+    for control_id in ("question_1", "question_2"):
+        answer = _answer(control_id)
+        if route == "web":
+            events = await _collect(harness.runtime.stream(answer.to_agent_request(), trigger_hook=False))
+        elif route == "typed":
+            events = await _collect(harness.runtime.stream_interaction_answer(answer, trigger_hook=False))
+        else:
+            events = await harness.runtime._deliver_control(answer.to_agent_request(), on_control_event=None)
+        notices = [event for event in events if event.event_type == "chat.moa_status"]
+        assert [event.payload["status"] for event in notices] == ["started", terminal]
+        assert all(event.payload["execution_id"] == root.execution_id for event in notices)
+        assert all(not harness.runtime._event_confirms_user_turn(event) for event in notices)
+        assert all("execution_id" not in event.payload for event in events if event.event_type != "chat.moa_status")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["stream", "list"])
+async def test_moa_control_identity_is_captured_once_and_preserves_existing_ids(
+    harness: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+) -> None:
+    await _seed_waiting(harness)
+    root = _execution(harness.coordinator.snapshot_session(SESSION_ID), "root-request")
+
+    async def delivered(request: AgentRequest) -> AsyncIterator[AgentResponseChunk]:
+        # The accepted identity must survive later changes to the status snapshot.
+        with monkeypatch.context() as scoped:
+            scoped.setattr(harness.coordinator, "snapshot_session", lambda _session_id: None)
+            for index, execution_id in enumerate([None, "", "  ", 42, "already-bound"]):
+                yield _chunk(
+                    request, "chat.moa_status", operation_id=str(index), phase="reference",
+                    status="started", execution_id=execution_id,
+                )
+            yield _chunk(request, "chat.delta", content="answer", execution_id="unchanged")
+
+    harness.agent.deliver_control_input = delivered
+    request = _answer().to_agent_request()
+    if route == "stream":
+        events = await _collect(harness.runtime.stream(request, trigger_hook=False))
+    else:
+        events = await harness.runtime._deliver_control(request, on_control_event=None)
+    assert [event.payload["execution_id"] for event in events] == [
+        root.execution_id, root.execution_id, root.execution_id, root.execution_id, "already-bound", "unchanged",
+    ]
+
+
+@pytest.mark.parametrize("invalid", [
+    "missing-session", "missing-parent", "ambiguous-control", "queued-control",
+    "other-request", "other-session", "other-generation", "cycle", "unparented-control",
+])
+def test_moa_control_does_not_guess_unknown_execution(invalid: str) -> None:
+    root = SessionExecutionHandle(
+        execution_id="root", session_id=SESSION_ID, request_id="root-request", generation=1,
+        work_kind=SessionWorkKind.CHAT_STREAM, state=SessionExecutionState.WAITING_FOR_CONTROL,
+    ).snapshot()
+    control = SessionExecutionHandle(
+        execution_id="control", session_id=SESSION_ID, request_id="question_1", generation=1,
+        work_kind=SessionWorkKind.CONTROL_INPUT, state=SessionExecutionState.RUNNING,
+        parent_execution_id=root.execution_id,
+    ).snapshot()
+    executions = [root, control]
+    if invalid == "missing-parent":
+        executions = [control]
+    elif invalid == "ambiguous-control":
+        executions.append(replace(control, execution_id="another-control"))
+    elif invalid == "queued-control":
+        executions[1] = replace(control, state=SessionExecutionState.QUEUED)
+    elif invalid == "other-request":
+        executions[1] = replace(control, request_id="another-question")
+    elif invalid == "other-session":
+        executions[0] = replace(root, session_id="another-session")
+    elif invalid == "other-generation":
+        executions[0] = replace(root, generation=2)
+    elif invalid == "cycle":
+        executions[0] = replace(root, parent_execution_id=control.execution_id)
+    elif invalid == "unparented-control":
+        executions[1] = replace(control, parent_execution_id=None)
+    snapshot = None if invalid == "missing-session" else SimpleNamespace(
+        session_id=SESSION_ID, generation=1, executions=tuple(executions),
+    )
+    runtime = AgentRuntime.__new__(AgentRuntime)
+    runtime._session_coordinator = SimpleNamespace(snapshot_session=Mock(return_value=snapshot))
+    identity = runtime._moa_control_execution_id(_answer().to_agent_request())
+    assert identity is None
+    event = RuntimeEvent(
+        request_id="resume", channel_id="web", session_id=SESSION_ID,
+        payload={"event_type": "chat.moa_status", "operation_id": "reference", "phase": "reference", "status": "started"},
+    )
+    original = dict(event.payload)
+    runtime._bind_moa_control_execution(event, identity)
+    assert event.payload == original
+
+
+@pytest.mark.asyncio
+async def test_overlapping_moa_resume_matches_web_progress_contract(
+    harness: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from jiuwenswarm.server.runtime.moa_progress import MoaProgress
+    from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+
+    question_forwarded = asyncio.Event()
+    root_release = asyncio.Event()
+    resume_entered = asyncio.Event()
+    root_forwarded_done = asyncio.Event()
+    progress_forwarded = asyncio.Event()
+    finish = asyncio.Event()
+    root_request = replace(_request(), channel_id="web")
+    answer = _answer(channel_id="web").to_agent_request()
+    requests = {root_request.request_id: root_request, answer.request_id: answer}
+
+    async def original(request: AgentRequest) -> AsyncIterator[AgentResponseChunk]:
+        yield _chunk(request, "chat.ask_user_question", request_id="question_1", source="ask_user_interrupt")
+        question_forwarded.set()
+        await root_release.wait()
+
+    async def delivered(request: AgentRequest) -> AsyncIterator[AgentResponseChunk]:
+        resume_entered.set()
+        await root_forwarded_done.wait()
+        progress = MoaProgress()
+        mailbox = progress.open()
+        mailbox.record("resume-reference", "reference", "started")
+        mailbox.record("resume-reference", "reference", "completed")
+
+        async def source() -> AsyncIterator[dict]:
+            await finish.wait()
+            yield {"event_type": "chat.final", "content": "answer"}
+
+        async with aclosing(progress.stream(source())) as stream:
+            async for item in stream:
+                payload = parse_stream_chunk(item)
+                if payload is not None:
+                    yield AgentResponseChunk(request_id=request.request_id, channel_id="web", payload=payload)
+                    if payload.get("status") == "completed":
+                        progress_forwarded.set()
+
+    async def send_request_stream(env: SimpleNamespace) -> AsyncIterator[AgentResponseChunk]:
+        async with aclosing(harness.runtime.stream(requests[env.request_id], trigger_hook=False)) as stream:
+            async for event in stream:
+                yield AgentResponseChunk(
+                    request_id=event.request_id, channel_id=event.channel_id,
+                    payload=event.payload, is_complete=event.is_complete,
+                )
+
+    harness.agent.process_message_stream = original
+    harness.agent.deliver_control_input = delivered
+    monkeypatch.setattr(MessageHandler, "_instance", None)
+    handler = MessageHandler(SimpleNamespace(send_request_stream=send_request_stream))
+
+    def seed(request: AgentRequest) -> SimpleNamespace:
+        rid = request.request_id
+        handler._stream_emits_processing_status[rid] = True
+        handler._stream_methods[rid] = request.req_method.value
+        handler._stream_sessions[rid] = request.session_id
+        handler._stream_modes[rid] = "agent.code.normal"
+        handler._stream_channels[rid] = "web"
+        return SimpleNamespace(request_id=rid, channel="web", method=request.req_method.value, params=request.params)
+
+    tasks = []
+    try:
+        await handler._send_processing_status(root_request.request_id, SESSION_ID, "web", is_processing=True)
+        root_task = asyncio.create_task(handler.process_stream(seed(root_request), SESSION_ID, None))
+        tasks.append(root_task)
+        await asyncio.wait_for(question_forwarded.wait(), 2)
+        root_id = _execution(harness.coordinator.snapshot_session(SESSION_ID), "root-request").execution_id
+        tasks.append(asyncio.create_task(handler.process_stream(seed(answer), SESSION_ID, None)))
+        await asyncio.wait_for(resume_entered.wait(), 2)
+        root_release.set()
+        await asyncio.wait_for(root_task, 2)
+        root_forwarded_done.set()
+        await asyncio.wait_for(progress_forwarded.wait(), 2)
+        notices = []
+        while True:
+            message = await handler.consume_robot_messages(timeout=0)
+            if message is None:
+                break
+            payload = message.payload or {}
+            assert not (payload.get("event_type") == "chat.processing_status" and payload.get("is_processing") is False)
+            if payload.get("event_type") == "chat.moa_status":
+                wire = WebChannel._build_event_payload(message, "chat.moa_status")
+                assert wire["execution_id"] == root_id
+                wire["execution_id"] = "execution-A"
+                notices.append({"event": "chat.moa_status", "payload": wire})
+        fixture = Path(__file__).resolve().parents[3] / "jiuwenswarm/channels/web/frontend/tests/fixtures/moaControlResume.json"
+        assert notices == json.loads(fixture.read_text(encoding="utf-8"))
+    finally:
+        finish.set()
+        root_release.set()
+        root_forwarded_done.set()
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source",
     [
@@ -300,9 +523,15 @@ async def test_live_original_keeps_output_and_new_question_survives_answer_ack(
 
 
 @pytest.mark.asyncio
-async def test_original_eof_before_old_ack_preserves_next_permission(harness) -> None:
+@pytest.mark.parametrize("compatibility", [False, True])
+async def test_original_eof_before_old_ack_preserves_next_permission(harness, compatibility) -> None:
     first_received = asyncio.Event()
     release_ack = asyncio.Event()
+
+    def answer_stream(answer):
+        if compatibility:
+            return harness.runtime.stream(answer.to_agent_request(), trigger_hook=False)
+        return harness.client.stream_interaction_answer(answer)
 
     async def original(request):
         yield _chunk(request, "chat.ask_user_question", request_id="question_1")
@@ -329,7 +558,7 @@ async def test_original_eof_before_old_ack_preserves_next_permission(harness) ->
     async with aclosing(stream):
         assert (await anext(stream)).payload["request_id"] == "question_1"
         first_answer = asyncio.create_task(
-            _collect(harness.client.stream_interaction_answer(_answer()))
+            _collect(answer_stream(_answer()))
         )
         try:
             remaining = [event async for event in stream]
@@ -346,7 +575,7 @@ async def test_original_eof_before_old_ack_preserves_next_permission(harness) ->
             assert parent.state is SessionExecutionState.WAITING_FOR_CONTROL
             assert parent.waiting_control_id == "permission_2"
             events = await _collect(
-                harness.client.stream_interaction_answer(
+                answer_stream(
                     _answer("permission_2", source="permission_interrupt")
                 )
             )
@@ -359,7 +588,14 @@ async def test_original_eof_before_old_ack_preserves_next_permission(harness) ->
 
 
 @pytest.mark.asyncio
-async def test_wrong_or_completed_interaction_never_reaches_agent(harness) -> None:
+async def test_wrong_interaction_rejected_and_completed_duplicate_reroutes_to_chat(harness) -> None:
+    """Wrong-id answers stay coordinator-rejected while an interaction waits.
+
+    A duplicate answer for an already-completed interaction instead routes
+    to a chat round on the idle session; in production the adapter's resume
+    validation (prepare_nonpermission_resume) rejects it there. The harness
+    mocks the adapter, so the chat path reaches the mocked agent.
+    """
     await _seed_waiting(harness)
     delivered = Mock(wraps=harness.agent.deliver_control_input)
     harness.agent.deliver_control_input = delivered
@@ -367,8 +603,8 @@ async def test_wrong_or_completed_interaction_never_reaches_agent(harness) -> No
         await _collect(harness.client.stream_interaction_answer(_answer("wrong")))
     delivered.assert_not_called()
     await _collect(harness.client.stream_interaction_answer(_answer()))
-    with pytest.raises(RuntimeError, match="no active execution"):
-        await _collect(harness.client.stream_interaction_answer(_answer()))
+    events = await _collect(harness.client.stream_interaction_answer(_answer()))
+    assert [event.event_type for event in events] == ["chat.ask_user_question"]
     assert delivered.call_count == 1
 
 
@@ -679,7 +915,7 @@ async def test_awaitable_stream_factory_and_waiting_terminal_semantics(harness) 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source", ["ask_user_interrupt", "confirm_interrupt"])
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "confirm_interrupt", "permission_interrupt"])
 async def test_chat_send_question_answer_streams_before_resumed_turn_finishes(harness, source):
     """The WebSocket/mobile compatibility entry must not collect the whole turn."""
     await _seed_waiting(harness)
@@ -720,7 +956,8 @@ async def test_chat_send_question_answer_streams_before_resumed_turn_finishes(ha
 
 
 @pytest.mark.asyncio
-async def test_chat_send_question_answer_close_releases_control_and_restores_question(harness):
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
+async def test_chat_send_question_answer_close_releases_control_and_restores_question(harness, source):
     await _seed_waiting(harness)
     harness.admission.begin_control = AsyncMock()
     harness.admission.end_control = AsyncMock()
@@ -734,7 +971,7 @@ async def test_chat_send_question_answer_close_releases_control_and_restores_que
             closed.append(get_current_runtime())
 
     harness.agent.deliver_control_input = delivered
-    stream = harness.runtime.stream(_answer().to_agent_request(), trigger_hook=False)
+    stream = harness.runtime.stream(_answer(source=source).to_agent_request(), trigger_hook=False)
     async with aclosing(stream):
         async with asyncio.timeout(0.5):
             assert (await anext(stream)).event_type == "chat.delta"
@@ -745,7 +982,8 @@ async def test_chat_send_question_answer_close_releases_control_and_restores_que
 
 
 @pytest.mark.asyncio
-async def test_chat_send_question_answer_supports_followup_and_rejects_duplicate(harness):
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
+async def test_chat_send_question_answer_supports_followup_and_rejects_duplicate(harness, source):
     await _seed_waiting(harness)
     answered = asyncio.Event()
     deliveries = []
@@ -754,7 +992,7 @@ async def test_chat_send_question_answer_supports_followup_and_rejects_duplicate
         question = request.params["request_id"]
         deliveries.append(question)
         if question == "question_1":
-            yield _chunk(request, "chat.ask_user_question", request_id="question_2", source="ask_user_interrupt")
+            yield _chunk(request, "chat.ask_user_question", request_id="question_2", source=source)
             await answered.wait()
             yield _chunk(request, "chat.final", content="Done")
         else:
@@ -762,15 +1000,15 @@ async def test_chat_send_question_answer_supports_followup_and_rejects_duplicate
             yield _chunk(request, "runtime.accepted")
 
     harness.agent.deliver_control_input = delivered
-    stream = harness.runtime.stream(_answer().to_agent_request(), trigger_hook=False)
+    stream = harness.runtime.stream(_answer(source=source).to_agent_request(), trigger_hook=False)
     async with aclosing(stream):
         async with asyncio.timeout(0.5):
             question = await anext(stream)
         assert question.payload["request_id"] == "question_2"
         with pytest.raises(RuntimeError, match="already"):
-            await _collect(harness.runtime.stream(_answer().to_agent_request(), trigger_hook=False))
+            await _collect(harness.runtime.stream(_answer(source=source).to_agent_request(), trigger_hook=False))
         assert deliveries == ["question_1"]
-        ack = await _collect(harness.runtime.stream(_answer("question_2").to_agent_request(), trigger_hook=False))
+        ack = await _collect(harness.runtime.stream(_answer("question_2", source=source).to_agent_request(), trigger_hook=False))
         assert [event.event_type for event in ack] == ["runtime.accepted"]
         assert [event.event_type async for event in stream] == ["chat.final"]
     assert deliveries == ["question_1", "question_2"]
@@ -778,7 +1016,8 @@ async def test_chat_send_question_answer_supports_followup_and_rejects_duplicate
 
 
 @pytest.mark.asyncio
-async def test_chat_send_question_answer_failure_restores_pending_and_can_retry(harness):
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
+async def test_chat_send_question_answer_failure_restores_pending_and_can_retry(harness, source):
     await _seed_waiting(harness)
     harness.admission.begin_control = AsyncMock()
     harness.admission.end_control = AsyncMock()
@@ -788,7 +1027,7 @@ async def test_chat_send_question_answer_failure_restores_pending_and_can_retry(
         raise ValueError("resumed operation failed")
 
     harness.agent.deliver_control_input = failing
-    stream = harness.runtime.stream(_answer().to_agent_request(), trigger_hook=False)
+    stream = harness.runtime.stream(_answer(source=source).to_agent_request(), trigger_hook=False)
     async with aclosing(stream):
         assert (await anext(stream)).event_type == "chat.delta"
         with pytest.raises(ValueError, match="resumed operation failed"):
@@ -800,14 +1039,15 @@ async def test_chat_send_question_answer_failure_restores_pending_and_can_retry(
         yield _chunk(request, "chat.final", content="Recovered")
 
     harness.agent.deliver_control_input = retry
-    events = await _collect(harness.runtime.stream(_answer().to_agent_request(), trigger_hook=False))
+    events = await _collect(harness.runtime.stream(_answer(source=source).to_agent_request(), trigger_hook=False))
     assert events[-1].payload["content"] == "Recovered"
     assert harness.admission.end_control.await_count == 2
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("streaming_first", [True, False])
-async def test_chat_send_question_answer_rejects_mixed_stream_and_unary_duplicates(harness, streaming_first):
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
+async def test_chat_send_question_answer_rejects_mixed_stream_and_unary_duplicates(harness, streaming_first, source):
     await _seed_waiting(harness)
     started, finish = asyncio.Event(), asyncio.Event()
     deliveries = []
@@ -820,7 +1060,7 @@ async def test_chat_send_question_answer_rejects_mixed_stream_and_unary_duplicat
         yield _chunk(request, "chat.final", content="Done")
 
     harness.agent.deliver_control_input = delivered
-    request = _answer().to_agent_request()
+    request = _answer(source=source).to_agent_request()
     first = asyncio.create_task(
         _collect(harness.runtime.stream(request, trigger_hook=False))
         if streaming_first else harness.runtime.invoke(request, trigger_hook=False)
@@ -828,7 +1068,7 @@ async def test_chat_send_question_answer_rejects_mixed_stream_and_unary_duplicat
     try:
         async with asyncio.timeout(0.5):
             await started.wait()
-        duplicate = _answer().to_agent_request()
+        duplicate = _answer(source=source).to_agent_request()
         duplicate.request_id = "duplicate-transport"
         async with asyncio.timeout(0.5):
             with pytest.raises(RuntimeError, match="already"):
@@ -840,3 +1080,98 @@ async def test_chat_send_question_answer_rejects_mixed_stream_and_unary_duplicat
     finally:
         finish.set()
         await first
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("smart", [False, True])
+@pytest.mark.parametrize("decision", ["allow", "reject"])
+async def test_permission_chat_send_streams_large_continuation_before_eof(harness, smart, decision):
+    await _seed_waiting(harness)
+    finish = asyncio.Event()
+    deliveries, acknowledgements, closed = [], [], []
+    harness.admission.begin_control = AsyncMock()
+    harness.admission.end_control = AsyncMock()
+    request = _answer(source="permission_interrupt", channel_id="web").to_agent_request()
+    request.params["answers"][0]["selected_options"] = [decision]
+    if smart:
+        request.params["answers"][0]["card_id"] = "opaque-card"
+
+    async def delivered(answer):
+        deliveries.append(answer.request_id)
+        assert answer.params["answers"][0]["selected_options"] == [decision]
+        try:
+            yield _chunk(answer, "runtime.accepted", request_id=answer.request_id)
+            for index in range(300):
+                event_type = "chat.reasoning" if index % 2 == 0 else "chat.delta"
+                yield _chunk(answer, event_type, content=str(index))
+            await finish.wait()
+            yield _chunk(answer, "chat.final", content="Done")
+        finally:
+            closed.append(get_current_runtime())
+
+    async def accepted(event):
+        assert get_current_runtime() is harness.runtime
+        acknowledgements.append(event)
+
+    harness.agent.deliver_control_input = delivered
+    stream = harness.runtime.stream(request, trigger_hook=False, on_control_event=accepted)
+    async with aclosing(stream):
+        async with asyncio.timeout(1):
+            if not smart:
+                assert (await anext(stream)).event_type == "runtime.accepted"
+            for index in range(300):
+                event = await anext(stream)
+                assert event.event_type == ("chat.reasoning" if index % 2 == 0 else "chat.delta")
+                assert event.payload["content"] == str(index)
+                assert get_current_runtime() is None
+        assert not finish.is_set()
+        assert deliveries == [request.request_id]
+        assert len(acknowledgements) == int(smart)
+        harness.admission.end_control.assert_not_awaited()
+        finish.set()
+        assert [event.event_type async for event in stream] == ["chat.final"]
+    assert closed == [harness.runtime]
+    harness.admission.begin_control.assert_awaited_once_with(SESSION_ID)
+    harness.admission.end_control.assert_awaited_once_with(SESSION_ID)
+
+
+@pytest.mark.asyncio
+async def test_permission_ack_callback_failure_closes_stream_and_releases_control(harness):
+    await _seed_waiting(harness)
+    harness.admission.begin_control = AsyncMock()
+    harness.admission.end_control = AsyncMock()
+    closed, deliveries = [], []
+    request = _answer(source="permission_interrupt").to_agent_request()
+    request.params["answers"][0]["card_id"] = "opaque-card"
+
+    async def delivered(answer):
+        deliveries.append(answer.request_id)
+        try:
+            yield _chunk(answer, "runtime.accepted", request_id=answer.request_id)
+            await asyncio.Event().wait()
+        finally:
+            closed.append(get_current_runtime())
+
+    async def failing_callback(event):
+        assert get_current_runtime() is harness.runtime
+        raise RuntimeError("permission ACK delivery failed")
+
+    harness.agent.deliver_control_input = delivered
+    with pytest.raises(RuntimeError, match="permission ACK delivery failed"):
+        async with aclosing(harness.runtime.stream(
+            request, trigger_hook=False, on_control_event=failing_callback,
+        )) as stream:
+            await anext(stream)
+    assert get_current_runtime() is None
+    assert deliveries == [request.request_id]
+    assert closed == [harness.runtime]
+    harness.admission.end_control.assert_awaited_once_with(SESSION_ID)
+    assert harness.coordinator.has_control_target(SESSION_ID, "question_1")
+
+    async def retry(answer):
+        yield _chunk(answer, "runtime.accepted", request_id=answer.request_id)
+
+    harness.agent.deliver_control_input = retry
+    events = await _collect(harness.runtime.stream(request, trigger_hook=False))
+    assert [event.event_type for event in events] == ["runtime.accepted"]
+    assert harness.admission.end_control.await_count == 2

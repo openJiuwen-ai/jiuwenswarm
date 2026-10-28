@@ -56,6 +56,57 @@ def native_approval_question(payload):
     )
 
 
+def approval_cards(interaction):
+    """Summarize a pending approval card for voice; None for voice-answerable questions."""
+    interaction = interaction or {}
+    if interaction.get("source") not in NATIVE_APPROVAL_SOURCES or interaction.get("state") != "pending":
+        return None
+    return [
+        dict(header=str(q.get("header") or "")[:200], message=str(q.get("question") or "")[:500])
+        for q in (interaction.get("questions") or [])[:3]
+        if isinstance(q, dict)
+    ]
+
+
+def approval_option_labels(question):
+    """The labels a card offers; a spoken answer must be exactly one of them."""
+    labels = []
+    for option in question.get("options") or []:
+        label = option.get("label") if isinstance(option, dict) else option
+        if isinstance(label, str) and label.strip():
+            labels.append(label.strip())
+    return labels
+
+
+def voice_approval_answers(interaction, answers):
+    """Map spoken answers onto the card's own options; anything else is refused.
+
+    Whether the user clearly said yes or no is the voice prompt's job; this only
+    guarantees that what reaches Core is an option the card itself offered.
+    """
+    native_approval_question(interaction)
+    questions = interaction["questions"]
+    if not isinstance(answers, list) or len(answers) != len(questions):
+        raise ValueError("Answer every approval question exactly once")
+    result = []
+    for question, answer in zip(questions, answers):
+        labels = approval_option_labels(question)
+        if isinstance(answer, dict):
+            picked = answer.get("selected_options") or []
+            if answer.get("custom_input") or answer.get("answer"):
+                raise ValueError("Approval answer must be one of the card options: " + " / ".join(labels))
+        else:
+            picked = [answer]
+        picked = [str(p).strip() for p in picked if isinstance(p, str)]
+        if len(picked) != 1 or picked[0] not in labels:
+            raise ValueError("Approval answer must be one of the card options: " + " / ".join(labels))
+        item = dict(question=question["question"], selected_options=picked)
+        if isinstance(question.get("card_id"), str) and question["card_id"]:
+            item["card_id"] = question["card_id"]
+        result.append(item)
+    return result
+
+
 def validate_native_approval_answers(interaction, answers):
     native_approval_question(interaction)
     if not isinstance(answers, list) or len(answers) != len(interaction["questions"]):

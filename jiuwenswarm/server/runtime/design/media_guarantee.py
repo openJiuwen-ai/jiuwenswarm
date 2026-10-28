@@ -47,8 +47,8 @@ class MediaGuaranteeBackend:
     """Delegating worker backend that re-arms the old host guarantees per node.
 
     Wraps the engine-facing backend (``TeamWorkerBackend``): every attribute
-    forwards to the inner backend except ``run``, which enforces the
-    guarantees after the worker's turn.
+    forwards to the inner backend except ``run``, which dispatches handler
+    nodes directly and enforces the guarantees after agent worker turns.
     """
 
     def __init__(
@@ -78,9 +78,16 @@ class MediaGuaranteeBackend:
         call_key: str | None = None,
     ) -> AgentResult:
         node_id = str(opts.get("label") or "")
-        member_call = schema_json is not None and bool(node_id)
+        from jiuwenswarm.common.schema.designer_graph import node_uses_agent_runtime
+
+        node = next((item for item in self._graph.get("nodes") or [] if item.get("id") == node_id), None)
+        handler_node = node is not None and not node_uses_agent_runtime(node)
+        member_call = handler_node or (schema_json is not None and bool(node_id))
         try:
-            result = await self._inner.run(prompt, opts, schema_json, call_key=call_key)
+            if handler_node:
+                result = await self._execute_handler(node)
+            else:
+                result = await self._inner.run(prompt, opts, schema_json, call_key=call_key)
         except Exception as exc:
             if not member_call:
                 raise
@@ -103,6 +110,43 @@ class MediaGuaranteeBackend:
             # structured_output (a malformed one would trigger a retry).
             return self._receipt(node_id) or result
         return result
+
+    async def _execute_handler(self, node: dict[str, Any]) -> AgentResult:
+        """Imported workflows and upload nodes bypass the agent worker."""
+        from jiuwenswarm.server.runtime.designer.handlers import get_node_handler
+        from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+        from jiuwenswarm.server.runtime.designer.node_agent import (
+            _node_expects_media,
+            _result_satisfies_required_media,
+        )
+
+        node_id = str(node["id"])
+        ctx = NodeExecutionContext(
+            graph=self._graph,
+            run_id=str(self._run.get("run_id") or ""),
+            node_id=node_id,
+            run=self._run,
+            media_dir=self._media_root,
+            emit_activity=self._bridge.node_activity_sink(node_id),
+        )
+        result = await get_node_handler(node).execute(node, ctx)
+        if result is None or (
+            _node_expects_media(node) and not _result_satisfies_required_media(result, node, ctx)
+        ):
+            raise ValueError(f"node {node_id} handler did not produce required media")
+        produced = {
+            "text": str(result.message or ""),
+            "output_ref": result.output_ref,
+            "output_refs": result.output_refs,
+        }
+        self._bridge.on_node_result(node_id, produced)
+        return AgentResult(
+            text=produced["text"],
+            structured={
+                "output_ref": result.output_ref,
+                "output_refs": result.output_refs or [],
+            },
+        )
 
     def _receipt(self, node_id: str) -> AgentResult | None:
         produced = self._bridge.produced_for(node_id)
