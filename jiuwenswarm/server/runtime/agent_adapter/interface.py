@@ -2282,17 +2282,10 @@ class JiuWenSwarm:
 
         interactive_input = InteractiveInput()
 
-        def address(value: Any) -> None:
-            if interrupt_id:
-                interactive_input.answer(interrupt_id, value)
-            else:
-                interactive_input.update(request_id, value)
+        if source == "ask_user_interrupt":
+            from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
 
-        if source == CLIENT_TOOL_INTERRUPT_SOURCE:
-            # One result per paused client tool call, by its interrupt id; a call left unanswered stays paused.
-            for answer in client_tool_answers(answers):
-                interactive_input.answer(answer.interrupt_id, answer.result)
-            return interactive_input
+            return build_ask_user_interactive_input(request_id, answers)
 
         if source == "ask_user_interrupt":
             from jiuwenswarm.agents.harness.common.rails.ask_user_contract import build_ask_user_interactive_input
