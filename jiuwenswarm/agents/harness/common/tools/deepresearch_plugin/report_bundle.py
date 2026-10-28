@@ -33,6 +33,9 @@ DECODED_BINARY_TOTAL_MAX_BYTES = 100 * 1024 * 1024
 CITATION_COUNT_MAX = 10_000
 CITATION_FIELD_MAX_BYTES = 1024 * 1024
 FINAL_RESULT_MAX_BYTES = 64 * 1024 * 1024
+# Aggregate inference graphs JSON is written outside the snapshot byte budget,
+# so bound it independently as well.
+INFERENCE_GRAPH_MAX_BYTES = 64 * 1024 * 1024
 MAX_NESTING_DEPTH = 64
 MAX_CONTAINER_ITEMS = 100_000
 MAX_TOTAL_NODES = 1_000_000
@@ -717,6 +720,8 @@ def build_report_bundle(
                 "graphs": graphs,
             }
             graph_bytes = json.dumps(graph_data, ensure_ascii=False).encode("utf-8")
+            if len(graph_bytes) > INFERENCE_GRAPH_MAX_BYTES:
+                raise ValueError("inference_graphs exceeds the UTF-8 byte limit")
             graph_path = groups[0].directory / "inference_graphs.json"
             graph_path.write_bytes(graph_bytes)
             inference_graph_path = f"{groups[0].directory.name}/inference_graphs.json"

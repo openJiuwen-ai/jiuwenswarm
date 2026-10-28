@@ -114,6 +114,22 @@ def test_build_report_bundle_rejects_more_than_512_infer_before_writing(tmp_path
     assert not list(tmp_path.iterdir())
 
 
+def test_build_report_bundle_rejects_oversized_inference_graphs_before_writing(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(bundle_module, "INFERENCE_GRAPH_MAX_BYTES", 1)
+
+    with pytest.raises(
+        ValueError, match="inference_graphs exceeds the UTF-8 byte limit"
+    ):
+        build_report_bundle(
+            _payload(infer_messages=[_infer("one")]),
+            tmp_path / "report-v1",
+        )
+
+    assert not list(tmp_path.iterdir())
+
+
 @pytest.mark.parametrize(
     "occupied_kind",
     ["directory", "directory_symlink", "file_symlink", "file_hardlink"],
