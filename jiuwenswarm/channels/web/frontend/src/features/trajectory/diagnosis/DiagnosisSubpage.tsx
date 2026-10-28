@@ -185,18 +185,18 @@ function RecordCards({
             {t('trajectory.diagnosis.objectStepsCount', { count: record.input.resolved_span_count })}
           </p>
         ) : null}
+        {note === '' ? null : (
+          <p className={css.line} data-testid="trajectory-diagnosis-object-note">
+            <span className={css.lineLabel}>{t('trajectory.diagnosis.note')}</span>
+            <span className={css.noteInline}>{note}</span>
+          </p>
+        )}
         {record.input.excluded_running.length > 0 ? (
           <p className={css.hint} data-testid="trajectory-diagnosis-object-excluded">
             {t('trajectory.diagnosis.objectExcludedRunning', { count: record.input.excluded_running.length })}
           </p>
         ) : null}
       </Card>
-
-      {note === '' ? null : (
-        <Card title={t('trajectory.diagnosis.note')} testId="trajectory-diagnosis-note-card">
-          <p className={css.noteText}>{note}</p>
-        </Card>
-      )}
 
       <Card
         title={t('trajectory.diagnosis.details')}

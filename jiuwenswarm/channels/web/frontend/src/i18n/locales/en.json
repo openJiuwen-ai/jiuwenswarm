@@ -1208,7 +1208,7 @@
       "noSuggestions": "This diagnosis has no actionable suggestions",
       "details": "Diagnosis details",
       "dismiss": "Dismiss",
-      "note": "Diagnosis note",
+      "note": "User feedback",
       "object": "Diagnosis target",
       "objectAgents": "Agents",
       "objectFull": "Entire trajectory",

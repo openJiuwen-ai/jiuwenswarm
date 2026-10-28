@@ -1192,7 +1192,7 @@
       "noSuggestions": "本次诊断没有可执行的优化建议",
       "details": "诊断详情",
       "dismiss": "关闭提示",
-      "note": "诊断说明",
+      "note": "用户反馈",
       "object": "诊断对象",
       "objectAgents": "Agent",
       "objectFull": "全部轨迹",
