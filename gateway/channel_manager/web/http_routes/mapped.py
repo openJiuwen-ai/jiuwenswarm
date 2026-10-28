@@ -619,6 +619,27 @@ _SKILLS_ROUTES: tuple[WebHttpMappedRoute, ...] = (
         bind_session_param=True,
     ),
     WebHttpMappedRoute(
+        "GET", "/skills/{name}/files", "skills.files.list",
+        "skills", "技能文件列表（工作副本）",
+        path_to_param={"name": "name"},
+        query_keys=_SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/skills/{name}/files/content", "skills.files.get",
+        "skills", "技能文件预览（工作副本）",
+        path_to_param={"name": "name"},
+        query_keys=("path",) + _SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
+        "GET", "/skills/{name}/versions", "skills.versions.list",
+        "skills", "技能本地版本列表",
+        path_to_param={"name": "name"},
+        query_keys=_SKILL_SESSION_QUERY,
+        bind_session_param=True,
+    ),
+    WebHttpMappedRoute(
         "GET", "/skills/{name}", "skills.get",
         "skills", "技能详情",
         path_to_param={"name": "name"},

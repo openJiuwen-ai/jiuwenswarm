@@ -37,6 +37,10 @@ _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.list",
     "skills.get",
     "skills.toggle",
+    # 技能详情只读接口：文件预览 / 版本列表（与 skills.get 同属查看已安装 skill）。
+    "skills.files.list",
+    "skills.files.get",
+    "skills.versions.list",
     "skills.source.providers",
     "skills.source.search",
     "skills.source.install",
