@@ -2649,8 +2649,8 @@ body.workspace-resize-active iframe {
 
 @media (min-width: 1441px) {
   .conversation-sidebar {
-    width: 296px;
-    min-width: 296px;
+    width: 320px;
+    min-width: 320px;
   }
 }
 

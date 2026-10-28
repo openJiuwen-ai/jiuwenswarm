@@ -16,6 +16,15 @@ from typing import Any
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
 
 
+def session_type_from_metadata(meta: dict[str, Any]) -> str:
+    """Keep conversation type independent of the agent/team execution mode."""
+    if meta.get("type") == "group_chat":
+        return "group_chat"
+    if isinstance(meta.get("group_members"), list):
+        return "group_chat"
+    return "chat"
+
+
 def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
     """将会话元数据投影为 SessionInfo（排除内部字段，补齐兜底值）。
 
@@ -30,6 +39,7 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
         "last_message_at": meta.get("last_message_at", 0),
         "message_count": int(meta.get("message_count", 0)),
         "mode": str(meta.get("mode", "unknown")),
+        "type": session_type_from_metadata(meta),
         "team_name": str(meta.get("team_name", "")),
         "agent_group_name": str(meta.get("agent_group_name", "")),
         "pinned": bool(meta.get("pinned", False)),

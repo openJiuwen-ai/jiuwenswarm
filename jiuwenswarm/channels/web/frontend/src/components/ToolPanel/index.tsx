@@ -475,7 +475,10 @@ export function ToolPanel({
     const testId = isTeam ? 'tool-panel-expanded-team' : 'tool-panel-expanded-single-agent';
 
     return (
-      <div data-testid={testId} className="bg-panel h-full overflow-hidden flex-1 flex flex-col min-w-[512px]">
+      <div
+        data-testid={testId}
+        className="bg-panel h-full overflow-hidden flex-[0_0_368px] flex flex-col min-w-[320px] max-w-[40vw]"
+      >
         <div className="h-full bg-panel flex flex-col overflow-hidden">
           <ExpandedPanel
             activeTab={isTeam ? teamAreaActiveTab : singleAgentPanelActiveTab}

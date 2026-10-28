@@ -1,4 +1,5 @@
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
+import { GroupChatWorkspace } from './features/groupChat/GroupChatWorkspace';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -19,6 +20,9 @@ import { useState, useCallback, useEffect, useRef, Component, ReactNode, useMemo
 import { ChatPanel } from './components/ChatPanel';
 import { DesktopTextEditContextMenu } from './components/DesktopTextEditContextMenu';
 import { SessionSidebar } from './components/SessionSidebar';
+import { JiuwenMateApp } from './features/jiuwenmate/JiuwenMateApp';
+import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
+import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
 import { RsiPage } from './features/rsi/RsiPage';
@@ -483,8 +487,12 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  // 再次点击已激活的“实验”图标时递增，作为展开 RSI 实验栏的信号（对齐 chat 图标展开会话栏的行为）
+  const [rsiRailExpandNonce, setRsiRailExpandNonce] = useState(0);
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
   const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
+  const [isJiuwenMate, setIsJiuwenMate] = useState(false);
+  const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -734,6 +742,12 @@ function AppContent({
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
       setActiveNav('chat');
+    } else if (route.kind === 'group-chat') {
+      sessionIdRef.current = NEW_CONVERSATION_ID;
+      setSessionId(NEW_CONVERSATION_ID);
+      setActiveNav('groupChat');
+      setTeamAreaExpanded(false);
+      setSingleAgentPanelExpanded(false);
     } else if (route.kind === 'design-project') {
       sessionIdRef.current = NEW_CONVERSATION_ID;
       setSessionId(NEW_CONVERSATION_ID);
@@ -794,6 +808,14 @@ function AppContent({
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = useSessionStore((s) => s.currentSession);
   const routeSessionId = route.kind === 'chat-session' ? route.sessionId : null;
+  useEffect(() => {
+    if (!routeSessionId) return;
+    const session = currentSession?.session_id === routeSessionId
+      ? currentSession : sessions.find((item) => item.session_id === routeSessionId);
+    if (session?.type === 'group_chat') {
+      navigate({ kind: 'group-chat', groupId: routeSessionId }, { replace: true });
+    }
+  }, [currentSession, navigate, routeSessionId, sessions]);
   const projects = useWorkspaceStore((s) => s.projects);
   const sessionTitle = useMemo(() => {
     const session = currentSession?.session_id === sessionId
@@ -3917,6 +3939,10 @@ function AppContent({
         return;
       }
       closeSidebarPeek();
+      if (target !== 'new' && target.type === 'group_chat') {
+        navigate({ kind: 'group-chat', groupId: target.session_id });
+        return;
+      }
       if (target === 'new') {
         enterNewConversation(mode, options, { clearPreviousSession: options?.clearPreviousSession });
         return;
@@ -3931,6 +3957,7 @@ function AppContent({
     [
       confirmLeaveSettings,
       closeSidebarPeek,
+      navigate,
       enterNewConversation,
       handleRestoreSession,
       isToolPanelAutoHideViewport,
@@ -3952,7 +3979,9 @@ function AppContent({
       setRsiOpenCreateNonce(0);
       if (nav !== 'settings') setRequestedSettingsModuleId(null);
       setActiveNav(nav);
+      if (nav === 'groupChat') navigate({ kind: 'group-chat' });
       if (nav === 'chat') {
+        if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
         if (isMobile) {
           setTeamAreaExpanded(false);
           setSingleAgentPanelExpanded(false);
@@ -3975,6 +4004,8 @@ function AppContent({
     [
       closeSidebarPeek,
       openSidebarPeek,
+      navigate,
+      route.kind,
       confirmLeaveSettings,
       isMobile,
       modelSetupGuideStep,
@@ -4327,6 +4358,131 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     };
   }, [clearChatPanelResize, showWorkspaceDivider]);
 
+  const renderJiuwenMateExistingPage = (nav: JiuwenMateExistingPage) => {
+    if (nav === 'agents') {
+      return (
+        <div className="app-section min-h-0">
+          <AgentManagementPanel
+            isActive
+            onUseAgent={(packageName) => openInstalledExpertRef.current(packageName)}
+            onUsePrompt={handleUseAgentPrompt}
+            onUseAgentGroup={handleUseAgentGroup}
+            onUseGroupPrompt={handleUseGroupPrompt}
+            onCreateViaChat={() => requestSessionNavigation('new', {
+              initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
+              initialSelectedSkills: ['agent-creator'],
+            })}
+            onCreateGroupViaChat={() => requestSessionNavigation('new', {
+              initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+              initialSelectedSkills: ['agent-group-creator'],
+              forceMode: 'agent',
+            })}
+            navigationRequest={agentManagementNavigationRequest}
+          />
+        </div>
+      );
+    }
+    if (nav === 'personalContext') {
+      if (!FEATURE_PERSONAL_CONTEXT_UI) return null;
+      return (
+        <div className="app-section">
+          <PersonalContextPanel isConnected={isConnected} isActive />
+        </div>
+      );
+    }
+    if (nav === 'skills') {
+      return (
+        <div className="app-section">
+          <SkillPanel
+            sessionId={sessionId}
+            isConnected={isConnected}
+            isActive
+            symphonyEnabled={normalizeConfigBoolean(serverConfig?.symphony_enabled)}
+            onSymphonyEnabledChange={saveSymphonyEnabled}
+            onNavigateToSettings={() => requestSettingsModule('agent')}
+          />
+        </div>
+      );
+    }
+    if (nav === 'connectorMarket') {
+      return (
+        <div className="app-page-body">
+          <div className="page-content">
+            <ConnectorMarketPanel
+              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                detail: {
+                  skillName: 'plugin-creator',
+                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                  metadata: { scene: 'create_plugin' },
+                },
+              }))}
+              onUseExample={(initialInputValue, mcpName, displayName) =>
+                requestSessionNavigation('new', {
+                  initialInputValue,
+                  initialEnabledMcps: [mcpName],
+                  forceMode: 'agent',
+                  metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
+                })
+              }
+              onUsePluginExample={(initialInputValue, pluginId) =>
+                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+              }
+              onUseExtension={({ kind, id }) =>
+                requestSessionNavigation(
+                  'new',
+                  kind === 'plugin'
+                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                    : { initialEnabledMcps: [id], forceMode: 'agent' },
+                )
+              }
+            />
+          </div>
+        </div>
+      );
+    }
+    return (
+      <div className="app-section">
+        <SettingsPage
+          definition={settingsPageDefinition}
+          isConnected={isConnected}
+          connectionState={connectionState}
+          request={settingsRequest}
+          onHasChangesChange={handleSettingsHasChangesChange}
+          onDetectExternalCli={detectExternalCli}
+          onSelectExternalCliPath={selectExternalCliPath}
+          onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
+          externalCliInstallStatuses={externalCliInstallStatuses}
+          externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
+            (status) => status?.status === 'running',
+          )}
+          onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
+          onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
+          externalCliPendingChoices={externalCliPendingChoices}
+          onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
+          externalCliDetectResults={externalCliDetectResults}
+          onExternalCliDetectResultsChange={setExternalCliDetectResults}
+          initialModuleId={requestedSettingsModuleId ?? undefined}
+        />
+      </div>
+    );
+  };
+
+  if (isJiuwenMate) {
+    return (
+      <JiuwenMateApp
+        onExit={() => setIsJiuwenMate(false)}
+        renderExistingPage={renderJiuwenMateExistingPage}
+        useInstalledExpertRef={openInstalledExpertRef}
+        confirmDiscardSettings={() => {
+          if (!settingsHasChangesRef.current) return true;
+          if (!window.confirm(t('settingsPanel.dialog.discardConfirm'))) return false;
+          setRequestedSettingsModuleId(null);
+          return true;
+        }}
+      />
+    );
+  }
+
   return (
     <div
       className={`shell shell--icon-rail ${activeNav === 'agents' ? 'shell--agent-management' : ''}`}
@@ -4353,6 +4509,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         onNavItemPointerDownCapture={(key) => {
           if (key === sidebarPeek) peekSurfaceProps.onPointerDownCapture();
         }}
+        onToggleJiuwenMate={() => {
+          setIsJiuwenMate(reenterJiuwenMate({ isJiuwenMate, activeNav }).isJiuwenMate);
+        }}
       />
 
       {modelSetupGuideStep !== null ? (
@@ -4364,7 +4523,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main className={`content ${activeNav === 'chat' || activeNav === 'groupChat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
         {configError && (
           <div className="card mb-4" data-testid="app-config-error">
             <div className="text-sm text-text-muted">
@@ -4381,7 +4540,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="chat-layout--peek-host" {...peekSurfaceProps}>
             {sidebarPeek === 'chat' ? (
               <ConversationSidebar
-                activeSessionId={activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : activeNav === 'cron' || sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -4410,7 +4571,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <>
             <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
               <ConversationSidebar
-                activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                activeSessionId={route.kind === 'group-chat'
+                  ? route.groupId ?? null
+                  : sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
                 onSelectDesignSession={handleSelectDesignSession}
@@ -4619,6 +4782,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               )}
             </div>
           </>
+        )}
+        {activeNav === 'groupChat' && (
+          <GroupChatWorkspace
+            key={route.kind === 'group-chat' ? route.groupId ?? 'groups' : 'groups'}
+            groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+            onSelect={(groupId) => navigate({ kind: 'group-chat', groupId })}
+          />
         )}
         {activeNav === 'experiments' && (
           <div className="app-section">

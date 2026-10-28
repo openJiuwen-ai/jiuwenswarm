@@ -1,6 +1,6 @@
 import type { FormRule, FormRules, FormValues } from '../../../../components/form';
 import type {
-  DingtalkFormValues,
+  DingtalkAppDraft,
   DiscordFormValues,
   FeishuAppDraft,
   SlackFormValues,
@@ -15,7 +15,7 @@ type FieldRequirement = 'required' | 'optional' | 'defined';
 type ChannelFormValuesById = {
   xiaoyi: XiaoyiFormValues;
   feishu: FeishuAppDraft;
-  dingtalk: DingtalkFormValues;
+  dingtalk: DingtalkAppDraft;
   telegram: TelegramFormValues;
   discord: DiscordFormValues;
   slack: SlackFormValues;
@@ -51,8 +51,10 @@ export const CHANNEL_FIELD_REQUIREMENTS = {
     group_digital_avatar: 'defined',
   },
   dingtalk: {
+    name: 'optional',
     client_id: 'required',
     client_secret: 'required',
+    robot_code: 'optional',
     allow_from: 'optional',
   },
   telegram: {
@@ -118,7 +120,7 @@ function hasRequiredFields(channelId: SettingsChannelId, input: unknown): boolea
   });
 }
 
-function hasConfiguredApp(channelId: 'xiaoyi' | 'feishu', input: unknown): boolean {
+function hasConfiguredApp(channelId: 'xiaoyi' | 'feishu' | 'dingtalk', input: unknown): boolean {
   const apps = toRecord(input).apps;
   return Array.isArray(apps) && apps.some((app) => hasRequiredFields(channelId, app));
 }
@@ -131,10 +133,14 @@ export function isFeishuAppConfigured(input: unknown): boolean {
   return hasRequiredFields('feishu', input);
 }
 
+export function isDingtalkAppConfigured(input: unknown): boolean {
+  return hasRequiredFields('dingtalk', input);
+}
+
 export const channelConfigurationChecks: Record<SettingsChannelId, (input: unknown) => boolean> = {
   xiaoyi: (input) => hasConfiguredApp('xiaoyi', input),
   feishu: (input) => hasConfiguredApp('feishu', input),
-  dingtalk: (input) => hasRequiredFields('dingtalk', input),
+  dingtalk: (input) => hasConfiguredApp('dingtalk', input),
   telegram: (input) => hasRequiredFields('telegram', input),
   discord: (input) => hasRequiredFields('discord', input),
   slack: (input) => hasRequiredFields('slack', input),

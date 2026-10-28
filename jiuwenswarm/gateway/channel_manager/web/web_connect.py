@@ -140,6 +140,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "runtime.accepted",
         "execution.error",
         "proactive_recommendation",
+        # JiuwenMate 私聊的流式片段：前端按 request_id、execution_id 与 seq 合并，需要完整 payload。
+        "jiuwenmate.chat.stream",
         # RSI pushes contain the complete node/progress payload.  Reducing
         # them to {session_id, content} would make the evolution tree appear
         # empty in the browser.
@@ -1930,6 +1932,12 @@ class WebChannel(BaseWsChannel):
         _explicit_session_id = params.get("session_id")
         has_explicit_session = _explicit_session_id is not None and _explicit_session_id != ""
         try:
+            if method in {"chat.send", "chat.resume"} and "group_id" in params:
+                group_id = validate_session_id(params["group_id"])
+                if has_explicit_session and _explicit_session_id != group_id:
+                    raise InvalidProtocolId("group_id and session_id must match")
+                _explicit_session_id = group_id
+                has_explicit_session = True
             session_id = (
                 validate_session_id(_explicit_session_id)
                 if has_explicit_session

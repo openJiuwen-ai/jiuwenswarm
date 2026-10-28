@@ -146,6 +146,7 @@
 | `features/trajectory` | `trajectory` | 轨迹面板(zip/JSONL 归档流式导入/导出;保留期检查点播种;原始数据检视器;诊断与归因面板 `trajectory-diagnosis-*`) |
 | `features/trajectory` | `single-agent` | 单 Agent 工作台(chat/trajectory 双 tab 切换) |
 | `features/trajectory` | `team-trajectory` | 团队轨迹工作台(泳道视图) |
+| `features/jiuwenmate` | `jiuwenmate` | JiuwenMate 页面与同事工作台 |
 | `components/AssetPublishDrawer` | `asset-publish` | 四类资源发布表单、预检、任务及 OAuth 恢复 |
 | `components/marketplace` | `marketplace` | 公共市场布局与目录缓存状态 |
 | `App.tsx` | `app` | 应用外壳;全局布局与 toast |
@@ -155,3 +156,5 @@
 | `features/designer` | `designer` | 设计功能页;工作流画布与节点;Director 对话;运行控制;素材与分镜 |
 
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |
+
+| `features/groupChat` | `group-chat` | 群聊创建、成员、公开消息、任务卡片与产物 |

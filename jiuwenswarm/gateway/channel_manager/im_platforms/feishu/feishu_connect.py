@@ -2,15 +2,19 @@
 
 import asyncio
 import concurrent.futures
+import html
 import json
 import logging
+import math
 import os
 import re
 import threading
 import time
 import types
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import requests
@@ -35,8 +39,40 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_streaming_ca
 from jiuwenswarm.gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
 from jiuwenswarm.gateway.routing.keys import DeliveryTarget
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import (
+    FeishuInboundEvent,
+    InboundDisposition,
+)
 
 logger = logging.getLogger(__name__)
+
+
+class _FeishuWebSocketLogHandler(logging.Handler):
+    """Forward this channel's Lark SDK connection state into Gateway logs."""
+
+    def __init__(self, channel: "FeishuChannel", thread_id: int):
+        super().__init__()
+        self._channel = channel
+        self._thread_id = thread_id
+
+    def emit(self, record: logging.LogRecord) -> None:
+        if record.thread != self._thread_id:
+            return
+
+        message = record.getMessage()
+        app_id = self._channel.config.app_id
+        if "connected to " in message:
+            if not self._channel._websocket_connected.is_set():
+                self._channel._websocket_connected.set()
+                logger.info("飞书 WebSocket 握手成功 app_id=%s", app_id)
+        elif "connect failed, err:" in message:
+            self._channel._websocket_connected.clear()
+            logger.error("飞书 WebSocket 连接失败 app_id=%s；SDK 错误详情请查看标准输出", app_id)
+        elif "receive message loop exit, err:" in message or "disconnected to " in message:
+            self._channel._websocket_connected.clear()
+            logger.warning("飞书 WebSocket 连接已断开 app_id=%s，SDK 将尝试重连", app_id)
+        elif "trying to reconnect" in message:
+            logger.info("飞书 WebSocket 正在重连 app_id=%s", app_id)
 
 
 class FeishuConfig(BaseModel):
@@ -44,6 +80,7 @@ class FeishuConfig(BaseModel):
 
     enabled: bool = False  # 是否启用飞书通道
     app_id: str = ""  # 飞书开放平台的应用ID
+    agent_id: str = ""  # 所有者配置中的 JM-02 同事 ID
     app_secret: str = ""  # 飞书开放平台的应用密钥
     encrypt_key: str = ""  # 事件订阅的加密密钥（可选）
     verification_token: str = ""  # 事件订阅的验证令牌（可选）
@@ -82,6 +119,8 @@ try:
         CreateFileRequestBody,
         CreateMessageRequest,
         CreateMessageRequestBody,
+        ReplyMessageRequest,
+        ReplyMessageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
         Emoji,
@@ -170,6 +209,7 @@ class FeishuChannel(BaseChannel):
     name = "feishu"
     _ws_loop_proxy_lock = threading.Lock()
     _ws_loop_proxy_installed = False
+    WS_CONNECT_WARNING_SECONDS = 15
 
     def __init__(
         self,
@@ -191,10 +231,13 @@ class FeishuChannel(BaseChannel):
         self._api_client: Any = None  # 飞书API客户端（用于发送消息）
         self._websocket_client: Any = None  # WebSocket客户端（用于接收消息）
         self._websocket_thread: threading.Thread | None = None  # WebSocket运行线程
+        self._websocket_connected = threading.Event()
         self._message_dedup_cache: OrderedDict[str, None] = OrderedDict()  # 消息去重缓存
         self._main_loop: asyncio.AbstractEventLoop | None = None  # 主线程事件循环
         self._ws_thread_loop: asyncio.AbstractEventLoop | None = None  # WebSocket线程事件循环
         self._message_callback: Callable[[Message], None] | None = None  # 网关模式回调
+        self._persistent_group_fanout_callback: Callable[[FeishuInboundEvent], Any] | None = None
+        self._persistent_group_names: OrderedDict[str, tuple[float, str]] = OrderedDict()
         self._im_platform_adapter = im_platform_adapter
         self._message_storage = MessageStore(api_client=None, platform_adapter=self._im_platform_adapter)
         self._pending_message_batches: dict[tuple[str, str], dict[str, Any]] = {}
@@ -243,6 +286,336 @@ class FeishuChannel(BaseChannel):
             callback: 消息回调函数
         """
         self._message_callback = callback
+
+    def set_persistent_group_fanout_callback(
+        self,
+        callback: Callable[[FeishuInboundEvent], Any] | None,
+    ) -> None:
+        """Inject JM-08's pre-personal-route gate; None preserves legacy behavior."""
+        self._persistent_group_fanout_callback = callback
+
+    async def inspect_persistent_group(self, chat_id: str, message_ids: tuple[str, ...] = ()) -> dict[str, Any]:
+        """Check live membership, or refresh messages between the host's access checks."""
+        if not getattr(self.config, "agent_id", None) or self._api_client is None:
+            return {"status": "unknown"}
+        from lark_oapi.api.im.v1 import IsInChatChatMembersRequest, GetChatRequest, GetMessageRequest
+
+        try:
+            if message_ids:
+                semaphore = asyncio.Semaphore(4)
+
+                async def read_message(message_id):
+                    async with semaphore:
+                        try:
+                            read = await self._api_client.im.v1.message.aget(
+                                GetMessageRequest.builder().message_id(message_id).build())
+                            if not read.success():
+                                # Quota and transport failures are not proof the message was removed.
+                                logger.warning(
+                                    "[JM-11] Feishu message check unavailable: app_id=%s message_id=%s code=%s msg=%s",
+                                    getattr(self.config, "app_id", ""),
+                                    message_id,
+                                    getattr(read, "code", None),
+                                    getattr(read, "msg", None),
+                                )
+                                return message_id, {"status": "unknown"}
+                            items = getattr(getattr(read, "data", None), "items", None)
+                            if not items or len(items) != 1:
+                                return message_id, {"status": "unavailable"}
+                            item = items[0]
+                            if item.message_id != message_id or item.chat_id != chat_id:
+                                return message_id, {"status": "unavailable"}
+                            if item.deleted is True:
+                                return message_id, {"status": "recalled"}
+                            if item.deleted is not False:
+                                return message_id, {"status": "unavailable"}
+                            content = self._persistent_content(item.body)
+                            stamp = self._persistent_received_at(item.update_time or item.create_time)
+                            if stamp is None:
+                                return message_id, {"status": "unavailable"}
+                            return message_id, {"status": "edited" if item.updated else "normal",
+                                "text": self._persistent_text(content, item),
+                                "attachment_refs": list(self._persistent_attachment_refs(message_id, content)),
+                                "changed_at": stamp.isoformat()}
+                        except Exception as exc:
+                            logger.warning(
+                                "[JM-11] Feishu message check unavailable: app_id=%s message_id=%s error_type=%s",
+                                getattr(self.config, "app_id", ""),
+                                message_id,
+                                type(exc).__name__,
+                            )
+                            return message_id, {"status": "unknown"}
+
+                return {"status": "ok", "messages": dict(await asyncio.gather(
+                    *(read_message(mid) for mid in message_ids)))}
+
+            response = await self._api_client.im.v1.chat_members.ais_in_chat(
+                IsInChatChatMembersRequest.builder().chat_id(chat_id).build()
+            )
+            present = getattr(getattr(response, "data", None), "is_in_chat", None)
+            if not response.success() or type(present) is not bool:
+                logger.warning(
+                    "[JM-11] Feishu membership check unavailable: app_id=%s code=%s msg=%s",
+                    getattr(self.config, "app_id", ""),
+                    getattr(response, "code", None),
+                    getattr(response, "msg", None),
+                )
+                return {"status": "unknown"}
+            if not present:
+                return {"status": "left"}
+            result = {"status": "active"}
+            cached = self._persistent_group_names.get(chat_id)
+            if cached is not None and time.monotonic() - cached[0] < 300:
+                result["group_name"] = cached[1]
+                return result
+            try:
+                info = await self._api_client.im.v1.chat.aget(GetChatRequest.builder().chat_id(chat_id).build())
+                name = getattr(getattr(info, "data", None), "name", None)
+                if info.success() and isinstance(name, str) and name.strip():
+                    result["group_name"] = name
+                    self._persistent_group_names[chat_id] = (time.monotonic(), name)
+                    self._persistent_group_names.move_to_end(chat_id)
+                    if len(self._persistent_group_names) > 256:
+                        self._persistent_group_names.popitem(last=False)
+            except Exception:
+                pass
+            return result
+        except Exception as exc:
+            logger.warning(
+                "[JM-11] Feishu membership check unavailable: app_id=%s error_type=%s",
+                getattr(self.config, "app_id", ""),
+                type(exc).__name__,
+            )
+            return {"status": "unknown"}
+
+    @staticmethod
+    def _persistent_event_value(value: Any, name: str, default: Any = None) -> Any:
+        if isinstance(value, dict):
+            return value.get(name, default)
+        return getattr(value, name, default)
+
+    @classmethod
+    def _persistent_platform_id(cls, value: Any) -> str | None:
+        if isinstance(value, str):
+            return value.strip() or None
+        for name in ("open_id", "user_id", "union_id"):
+            candidate = cls._persistent_event_value(value, name)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return None
+
+    @staticmethod
+    def _persistent_received_at(value: Any) -> datetime | None:
+        """Convert Feishu's message create_time (milliseconds) without inventing a time."""
+        if isinstance(value, datetime):
+            if value.tzinfo is None or value.utcoffset() is None:
+                return None
+            return value.astimezone(timezone.utc)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                milliseconds = float(raw)
+            except ValueError:
+                try:
+                    parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                except ValueError:
+                    return None
+                if parsed.tzinfo is None or parsed.utcoffset() is None:
+                    return None
+                return parsed.astimezone(timezone.utc)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            milliseconds = float(value)
+        else:
+            return None
+        if not math.isfinite(milliseconds):
+            return None
+        try:
+            return datetime.fromtimestamp(milliseconds / 1000, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+
+    @staticmethod
+    def _persistent_content(message: Any) -> dict[str, Any]:
+        raw = FeishuChannel._persistent_event_value(message, "content")
+        if isinstance(raw, dict):
+            return raw
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (TypeError, json.JSONDecodeError):
+                return {}
+            return decoded if isinstance(decoded, dict) else {}
+        return {}
+
+    @staticmethod
+    def _persistent_text(content: dict[str, Any], message: Any) -> str | None:
+        message_type = str(FeishuChannel._persistent_event_value(message, "message_type", "") or "")
+        raw = FeishuChannel._persistent_event_value(message, "content")
+        if message_type == "text":
+            text = content.get("text")
+            if isinstance(text, str):
+                resolved = text or None
+            else:
+                resolved = raw if isinstance(raw, str) and not content else None
+            if isinstance(resolved, str):
+                resolved = FeishuChannel._replace_persistent_mention_placeholders(resolved, message)
+            return resolved
+
+        parts: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                if value.get("tag") == "at":
+                    mention = FeishuChannel._persistent_at_text(value)
+                    if mention:
+                        parts.append(mention)
+                    return
+                text = value.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                for key, child in value.items():
+                    if key != "text":
+                        collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(content)
+        body = "".join(parts)
+        text = body or None
+        if isinstance(text, str):
+            text = FeishuChannel._replace_persistent_mention_placeholders(text, message)
+        return text
+
+    @staticmethod
+    def _persistent_at_text(node: dict[str, Any]) -> str | None:
+        """Keep a rich-text @ in reading order. Feishu stores it beside the text, not inside it."""
+        user_id = node.get("user_id")
+        token = user_id.strip() if isinstance(user_id, str) else ""
+        if token in {"@_all", "all"}:
+            return "@all"
+        name = node.get("user_name")
+        if isinstance(name, str) and name.strip():
+            return f"@{name.strip()}"
+        if token.startswith("@_"):
+            return token
+        return None
+
+    @staticmethod
+    def _replace_persistent_mention_placeholders(text: str, message: Any) -> str:
+        """Show who was @ mentioned. Feishu stores only @_user_N in the body."""
+        mentions = FeishuChannel._persistent_event_value(message, "mentions", None) or ()
+        replacements: list[tuple[str, str]] = []
+        for mention in mentions:
+            key = FeishuChannel._persistent_event_value(mention, "key")
+            if not isinstance(key, str) or not key.strip():
+                continue
+            token = key.strip()
+            if not token.startswith("@"):
+                token = f"@{token}"
+            if token == "@_all":
+                replacements.append((token, "@all"))
+                continue
+            name = FeishuChannel._persistent_event_value(mention, "name")
+            if isinstance(name, str) and name.strip():
+                replacements.append((token, f"@{name.strip()}"))
+        for token, label in sorted(set(replacements), key=lambda item: len(item[0]), reverse=True):
+            text = text.replace(token, label)
+        # Push events often omit the @_all mention object. Refresh reads it back.
+        # Both paths must store the same body, or the archive rejects the message.
+        return text.replace("@_all", "@all")
+
+    @staticmethod
+    def _persistent_attachment_refs(message_id: str | None, content: dict[str, Any]) -> tuple[str, ...]:
+        if not message_id:
+            return ()
+        keys: list[str] = []
+
+        def collect(value: Any) -> None:
+            if isinstance(value, dict):
+                for key, child in value.items():
+                    if key in {"image_key", "file_key", "audio_key", "media_key", "video_key"}:
+                        if isinstance(child, str) and child.strip() and child not in keys:
+                            keys.append(child.strip())
+                    else:
+                        collect(child)
+            elif isinstance(value, list):
+                for child in value:
+                    collect(child)
+
+        collect(content)
+        return tuple(f"feishu:attachment:{message_id}:{key}" for key in keys)
+
+    def _normalize_persistent_event(self, data: Any) -> FeishuInboundEvent:
+        """Copy only platform event facts; never invoke the personal file service here."""
+        event = self._persistent_event_value(data, "event")
+        message = self._persistent_event_value(event, "message")
+        sender = self._persistent_event_value(event, "sender")
+        content = self._persistent_content(message)
+        message_id = self._persistent_event_value(message, "message_id")
+        message_id = message_id.strip() if isinstance(message_id, str) and message_id.strip() else None
+
+        sender_id_value = self._persistent_event_value(sender, "sender_id")
+        sender_id = self._persistent_platform_id(sender_id_value)
+        explicit_name = (
+            self._persistent_event_value(sender, "name")
+            or self._persistent_event_value(sender, "sender_name")
+        )
+        explicit_name = explicit_name.strip() if isinstance(explicit_name, str) and explicit_name.strip() else None
+        sender_type_value = self._persistent_event_value(sender, "sender_type")
+        sender_type_value = sender_type_value.strip().lower() if isinstance(sender_type_value, str) else ""
+        resolved_name = ""
+        if sender_id and sender_type_value in {"user", "human"} and explicit_name in {None, sender_id}:
+            resolved_name = self._resolve_user_display_name(sender_id, "")
+        sender_name = explicit_name if explicit_name not in {None, sender_id} else (resolved_name or sender_id)
+        sender_name = sender_name.strip() if isinstance(sender_name, str) and sender_name.strip() else None
+
+        mentions: list[str] = []
+        for mention in self._persistent_event_value(message, "mentions", None) or ():
+            mention_id = self._persistent_platform_id(self._persistent_event_value(mention, "id"))
+            if mention_id is None:
+                mention_id = self._persistent_platform_id(mention)
+            if mention_id and mention_id not in mentions:
+                mentions.append(mention_id)
+
+        reply_to = self._persistent_event_value(message, "parent_id") or self._persistent_event_value(
+            message, "root_id"
+        )
+        reply_to = reply_to.strip() if isinstance(reply_to, str) and reply_to.strip() else None
+        sender_app_id = self._persistent_event_value(sender, "app_id") or self._persistent_event_value(
+            event, "sender_app_id"
+        )
+        sender_app_id = (
+            sender_app_id.strip()
+            if isinstance(sender_app_id, str) and sender_app_id.strip()
+            else None
+        )
+
+        return FeishuInboundEvent(
+            receiving_app_id=str(getattr(self.config, "app_id", "") or "").strip(),
+            expected_agent_id=str(getattr(self.config, "agent_id", "") or "").strip() or None,
+            message_id=message_id,
+            chat_id=self._persistent_event_value(message, "chat_id"),
+            chat_type=self._persistent_event_value(message, "chat_type"),
+            sender_type=self._persistent_event_value(sender, "sender_type"),
+            sender_id=sender_id,
+            sender_name=sender_name,
+            sender_app_id=sender_app_id,
+            received_at=self._persistent_received_at(
+                self._persistent_event_value(message, "create_time")
+            ),
+            text=self._persistent_text(content, message),
+            mention_ids=tuple(mentions),
+            receiver_bot_mentioned=(
+                self._persistent_event_value(message, "chat_type") == "group"
+                and bool(self.config.bot_open_id)
+                and self.config.bot_open_id in mentions
+            ),
+            reply_to=reply_to,
+            attachment_refs=self._persistent_attachment_refs(message_id, content),
+        )
 
     def set_file_persist_hook(self, hook: Any) -> None:
         """注入 IM 附件落盘钩子（Phase 3）；文件服务未创建时缓存，创建后生效。"""
@@ -348,14 +721,26 @@ class FeishuChannel(BaseChannel):
 
         self._running = True
         self._main_loop = asyncio.get_running_loop()
+        self._websocket_connected.clear()
         self._initialize_api_client()
+        connect_started_at = time.monotonic()
         self._start_websocket_in_thread()
 
-        logger.info("飞书机器人已启动，使用WebSocket长连接接收消息")
-        logger.info("无需公网IP - 通过WebSocket接收事件")
+        logger.info("飞书 WebSocket 连接尝试已启动 app_id=%s", self.config.app_id)
 
         # 持续运行直到停止
+        connection_warning_logged = False
         while self._running:
+            if (
+                not connection_warning_logged
+                and not self._websocket_connected.is_set()
+                and time.monotonic() - connect_started_at >= self.WS_CONNECT_WARNING_SECONDS
+            ):
+                logger.warning(
+                    "飞书 WebSocket 尚未确认握手成功 app_id=%s；请检查网络、应用凭据及飞书长连接事件订阅",
+                    self.config.app_id,
+                )
+                connection_warning_logged = True
             await asyncio.sleep(1)
 
     def _validate_start_conditions(self) -> bool:
@@ -456,11 +841,16 @@ class FeishuChannel(BaseChannel):
                 )
                 # 持久化到配置文件（多应用模式下写入对应 app 条目）
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
-                    ok = update_channel_app_field(
-                        "feishu", self.config.app_id,
-                        {"bot_open_id": bot_open_id},
-                    )
+                    if self.config.channel_id.startswith("feishu_enterprise:") and self.config.bot_key:
+                        from jiuwenswarm.common.config import update_channel_subsection_in_config
+
+                        ok = update_channel_subsection_in_config(
+                            "feishu_enterprise", self.config.bot_key, {"bot_open_id": bot_open_id}
+                        )
+                    else:
+                        from jiuwenswarm.common.config import update_channel_app_field
+
+                        ok = update_channel_app_field("feishu", self.config.app_id, {"bot_open_id": bot_open_id})
                     if not ok:
                         logger.debug(
                             "[_fetch_bot_open_id] 未找到 app=%s 条目，bot_open_id 未持久化",
@@ -490,9 +880,6 @@ class FeishuChannel(BaseChannel):
         )
         self._websocket_thread.start()
 
-        # 等待WebSocket客户端创建完成
-        self._wait_for_websocket_client_ready()
-
     def _run_websocket_client(self, config: dict) -> None:
         """
         在子线程中运行WebSocket客户端。
@@ -508,8 +895,11 @@ class FeishuChannel(BaseChannel):
         self._ensure_thread_local_ws_loop_proxy()
 
         ws_client = None
+        sdk_logger = logging.getLogger("Lark")
+        status_handler = _FeishuWebSocketLogHandler(self, threading.get_ident())
+        sdk_logger.addHandler(status_handler)
         try:
-            event_handler = (
+            builder = (
                 lark.EventDispatcherHandler.builder(
                     config["encrypt_key"],
                     config["verification_token"],
@@ -517,8 +907,14 @@ class FeishuChannel(BaseChannel):
                 .register_p2_im_message_receive_v1(self._on_message_sync)
                 .register_p2_im_message_message_read_v1(self._on_message_read_event)
                 .register_p2_card_action_trigger(self._on_card_action_trigger_sync)
-                .build()
             )
+            if getattr(self.config, "agent_id", None):
+                builder = (builder
+                    .register_p2_im_message_recalled_v1(lambda data: self._on_persistent_change_sync(data, "recalled"))
+                    .register_p2_im_chat_member_bot_added_v1(lambda data: self._on_persistent_change_sync(data, "joined"))
+                    .register_p2_im_chat_member_bot_deleted_v1(lambda data: self._on_persistent_change_sync(data, "left"))
+                    .register_p2_im_chat_updated_v1(lambda data: self._on_persistent_change_sync(data, "group_updated")))
+            event_handler = builder.build()
 
             ws_client = lark.ws.Client(
                 config["app_id"],
@@ -531,10 +927,19 @@ class FeishuChannel(BaseChannel):
             ws_client.start()
         except Exception as e:
             if self._stopping or not self._running:
-                logger.info("飞书WebSocket线程退出: %s", e)
+                logger.info(
+                    "飞书 WebSocket 线程退出 app_id=%s error_type=%s",
+                    self.config.app_id,
+                    type(e).__name__,
+                )
             else:
-                logger.error("飞书WebSocket连接建立失败: %s", e)
+                logger.error(
+                    "飞书 WebSocket 线程异常 app_id=%s error_type=%s",
+                    self.config.app_id,
+                    type(e).__name__,
+                )
         finally:
+            sdk_logger.removeHandler(status_handler)
             self._cleanup_websocket_thread(ws_client, loop)
 
     @classmethod
@@ -569,17 +974,11 @@ class FeishuChannel(BaseChannel):
 
         self._ws_thread_loop = None
 
-    def _wait_for_websocket_client_ready(self) -> None:
-        """等待WebSocket客户端创建完成。"""
-        for _ in range(50):
-            if self._websocket_client is not None:
-                break
-            time.sleep(0.1)
-
     async def stop(self) -> None:
         """停止飞书机器人。"""
         self._running = False
         self._stopping = True
+        self._websocket_connected.clear()
         self._stream_text_buffers.clear()
         self._errored_stream_keys.clear()
         for session in list(self._cardkit_sessions.values()):
@@ -1555,6 +1954,162 @@ class FeishuChannel(BaseChannel):
                 "content": formatted
             }
         }
+
+    async def send_persistent_result(
+        self,
+        *,
+        chat_id: str,
+        text: str | None,
+        source_message_id: str | None,
+        idempotency_key: str,
+        file_path: str | None = None,
+        file_key: str | None = None,
+        mention_targets: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        """Send one JM-09 result and return Feishu's message receipt.
+
+        A text result is one Markdown card, without copying inbound mentions.
+        An attachment sends its caption, when it has one, then uploads unless
+        ``file_key`` names an earlier upload. Images are sent inline; other
+        attachments remain file messages. The receipt's ``file_key`` holds either
+        the image key (``img_*``) or file key, so retries need no new upload or
+        local file. The personal-agent ``send`` path below keeps its
+        existing routing and retry semantics; persistent results use this path.
+        """
+        if not self._api_client:
+            return {"outcome": "failed", "error_code": "FEISHU_CLIENT_UNAVAILABLE"}
+        has_text = isinstance(text, str) and bool(text.strip())
+        has_file = bool(file_path or file_key)
+        if not chat_id.strip() or not idempotency_key.strip() or not (has_text or has_file):
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+        if not has_file:
+            card_text = self._render_persistent_mentions(text or "", mention_targets or [])
+            return await self._send_persistent_message(
+                chat_id,
+                "interactive",
+                self._build_card_content(card_text),
+                source_message_id,
+                idempotency_key,
+            )
+
+        if has_text:
+            caption_key = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{idempotency_key}:caption"))
+            card_text = self._render_persistent_mentions(text or "", mention_targets or [])
+            caption = await self._send_persistent_message(
+                chat_id,
+                "interactive",
+                self._build_card_content(card_text),
+                source_message_id,
+                caption_key,
+            )
+            if caption.get("outcome") != "delivered":
+                return caption
+        is_image = bool(file_key and file_key.startswith("img_"))
+        if not file_key:
+            if not file_path:
+                return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+            is_image = self._is_image_file(file_path)
+            upload = self._upload_image if is_image else self._upload_file
+            file_key = await asyncio.get_running_loop().run_in_executor(None, upload, file_path)
+            if not file_key:
+                return {"outcome": "failed", "error_code": "FEISHU_UPLOAD_FAILED"}
+        msg_type = "image" if is_image else "file"
+        resource_field = "image_key" if is_image else "file_key"
+        result = await self._send_persistent_message(
+            chat_id, msg_type, json.dumps({resource_field: file_key}, ensure_ascii=False), source_message_id, idempotency_key
+        )
+        return {**result, "file_key": file_key}
+
+    @staticmethod
+    def _render_persistent_mentions(text: str, targets: list[dict[str, str]]) -> str:
+        """Render validated handoff tokens as Feishu-native Bot mentions in JM-09 cards."""
+        rendered = text
+        for target in targets:
+            agent_id = target.get("agent_id")
+            name = target.get("name")
+            if not isinstance(agent_id, str) or not isinstance(name, str):
+                continue
+            token = f"[[agent:{agent_id}]]"
+            open_id = target.get("open_id")
+            if isinstance(open_id, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,256}", open_id):
+                replacement = f"<at id={open_id}></at>"
+            else:
+                replacement = f"@{html.escape(name)}"
+            rendered = rendered.replace(token, replacement)
+        return re.sub(r"\[\[agent:[^\]]*\]\]", "", rendered)
+
+    async def _send_persistent_message(
+        self,
+        chat_id: str,
+        msg_type: str,
+        content: str,
+        source_message_id: str | None,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        """Send or reply with one message under a stable request UUID and return its receipt."""
+
+        def _send():
+            if source_message_id:
+                body = (
+                    ReplyMessageRequestBody.builder()
+                    .msg_type(msg_type)
+                    .content(content)
+                    .reply_in_thread(False)
+                    .uuid(idempotency_key)
+                    .build()
+                )
+                request = (
+                    ReplyMessageRequest.builder()
+                    .message_id(source_message_id)
+                    .request_body(body)
+                    .build()
+                )
+                return self._api_client.im.v1.message.reply(request)
+
+            body = (
+                CreateMessageRequestBody.builder()
+                .receive_id(chat_id)
+                .msg_type(msg_type)
+                .content(content)
+                .uuid(idempotency_key)
+                .build()
+            )
+            request = (
+                CreateMessageRequest.builder()
+                .receive_id_type("chat_id")
+                .request_body(body)
+                .build()
+            )
+            return self._api_client.im.v1.message.create(request)
+
+        try:
+            response = await asyncio.get_running_loop().run_in_executor(None, _send)
+        except Exception as exc:  # the platform may accept the send before transport fails
+            logger.warning(
+                "[Feishu] JM-09 send outcome unknown: app_id=%s error_type=%s",
+                self.config.app_id,
+                type(exc).__name__,
+            )
+            return {"outcome": "unknown", "error_code": "FEISHU_ACK_UNKNOWN"}
+
+        if not response.success():
+            code = getattr(response, "code", None)
+            logger.warning(
+                "[Feishu] JM-09 message rejected: app_id=%s code=%s msg=%s",
+                self.config.app_id,
+                code,
+                getattr(response, "msg", None),
+            )
+            return {
+                "outcome": "failed",
+                "error_code": f"FEISHU_{code}" if code is not None else "FEISHU_REJECTED",
+            }
+        data = getattr(response, "data", None)
+        message = getattr(data, "message", None)
+        message_id = getattr(message, "message_id", None) or getattr(data, "message_id", None)
+        if not isinstance(message_id, str) or not message_id.strip():
+            return {"outcome": "unknown", "error_code": "FEISHU_RECEIPT_MISSING"}
+        return {"outcome": "delivered", "external_message_id": message_id}
 
     async def send(
         self,
@@ -2667,6 +3222,27 @@ class FeishuChannel(BaseChannel):
             )
         )
 
+    def _on_persistent_change_sync(self, data: Any, kind: str) -> None:
+        if self._main_loop and self._main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._on_persistent_change(data, kind), self._main_loop)
+
+    async def _on_persistent_change(self, data: Any, kind: str) -> None:
+        callback = getattr(self, "_persistent_group_fanout_callback", None)
+        if callback is None or not getattr(self.config, "agent_id", None):
+            return
+        value = self._persistent_event_value
+        event, header = value(data, "event"), value(data, "header")
+        changed_at = self._persistent_received_at(value(header, "create_time"))
+        if changed_at is None:
+            return
+        name = value(value(event, "after_change"), "name") or value(event, "name")
+        await callback(FeishuInboundEvent(
+            receiving_app_id=self.config.app_id, expected_agent_id=self.config.agent_id,
+            message_id=value(event, "message_id"), chat_id=value(event, "chat_id"), chat_type="group",
+            sender_type=None, sender_id=None, sender_name=None, sender_app_id=None, received_at=changed_at,
+            text=None, event_kind=kind, event_id=value(header, "event_id"), changed_at=changed_at, group_name=name,
+        ))
+
     def _on_message_sync(self, data: "P2ImMessageReceiveV1") -> None:
         """
         传入消息的同步处理器（从WebSocket线程调用）。
@@ -2676,8 +3252,21 @@ class FeishuChannel(BaseChannel):
         Args:
             data: 飞书消息事件数据
         """
-        if self._main_loop and self._main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._on_message(data), self._main_loop)
+        if not self._main_loop or not self._main_loop.is_running():
+            logger.warning("收到飞书消息回调，但主事件循环不可用，事件无法调度 app_id=%s", self.config.app_id)
+            return
+
+        logger.info("收到飞书消息事件回调 app_id=%s", self.config.app_id)
+        coroutine = self._on_message(data)
+        try:
+            asyncio.run_coroutine_threadsafe(coroutine, self._main_loop)
+        except RuntimeError as exc:
+            coroutine.close()
+            logger.warning(
+                "飞书消息事件无法调度到主事件循环 app_id=%s error_type=%s",
+                self.config.app_id,
+                type(exc).__name__,
+            )
 
     async def _on_message(self, data: "P2ImMessageReceiveV1") -> None:
         """
@@ -2690,6 +3279,31 @@ class FeishuChannel(BaseChannel):
             event = data.event
             message = event.message
             sender = event.sender
+
+            # JM-08 gets the raw event before the personal-only in-memory
+            # dedup, bot filter, and file download. A claimed or rejected
+            # event is terminal here and can never fall through to personal mode.
+            if self._persistent_group_fanout_callback is not None:
+                try:
+                    # Resolve the Feishu-issued Bot identity before JM-08 consumes the event.
+                    # The personal route used to do this later, after the persistent callback.
+                    if (
+                        self.config.agent_id
+                        and not self.config.bot_open_id
+                        and self._persistent_event_value(message, "mentions", None)
+                    ):
+                        await asyncio.to_thread(self._fetch_bot_open_id)
+                    disposition = await self._persistent_group_fanout_callback(
+                        self._normalize_persistent_event(data)
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[FeishuChannel] Persistent inbound route failed closed: error_type=%s",
+                        type(exc).__name__,
+                    )
+                    return
+                if disposition is not InboundDisposition.UNCLAIMED:
+                    return
 
             # 消息去重检查
             if self._is_duplicate_message(message.message_id):
@@ -2909,7 +3523,6 @@ class FeishuChannel(BaseChannel):
                 self._user_question_card.pop(request_id)
             # 获取用户和上下文信息
             operator_id = event.operator.open_id if event.operator and event.operator.open_id else ""
-
             logger.info(
                 "[FeishuChannel] 收到卡片回调: token=%s, action=%s, user=%s",
                 token,

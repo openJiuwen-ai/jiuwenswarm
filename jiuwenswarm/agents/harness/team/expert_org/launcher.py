@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any
@@ -16,7 +17,6 @@ from jiuwenswarm.server.runtime.team_organization_identity_store import save_org
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.interaction import DeliverResult
-    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _UnattendedTeamRoundHistoryWriter
 
 logger = logging.getLogger(__name__)
 _recovery_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -35,6 +35,67 @@ class LaunchedExpertTeam:
         data = asdict(self)
         data["capabilities"] = list(self.capabilities)
         return data
+
+
+_DIRECT_HISTORY_EVENTS = frozenset({"chat.final", "chat.error"})
+_GROUP_HISTORY_EVENTS = frozenset({
+    "chat.final",
+    "chat.error",
+    "chat.tool_call",
+    "chat.tool_result",
+})
+
+
+def _is_swarm_group_session(session_id: str) -> bool:
+    """True when this session is a swarm group chat, not an ordinary team chat."""
+    if not str(session_id or "").strip():
+        return False
+    try:
+        from jiuwenswarm.server.runtime.group_service import read_group
+
+        return read_group(session_id) is not None
+    except Exception:
+        logger.debug(
+            "[ExpertTeamLauncher] group session lookup failed session=%s",
+            session_id,
+            exc_info=True,
+        )
+        return False
+
+
+def _is_group_organization_owner(session_id: str, team_id: str) -> bool:
+    if not str(team_id or "").strip():
+        return False
+    try:
+        from jiuwenswarm.server.runtime.group_service import (
+            group_organization_owner_team_ids,
+        )
+
+        return team_id in group_organization_owner_team_ids(session_id)
+    except Exception:
+        logger.debug(
+            "[ExpertTeamLauncher] group owner lookup failed session=%s team=%s",
+            session_id,
+            team_id,
+            exc_info=True,
+        )
+        return False
+
+
+def _should_record_expert_history(source: str, event_type: str, session_id: str) -> bool:
+    """Keep swarm group replies in session history.
+
+    Direct expert replies were already stored. Background organization turns
+    (the group owner, invited experts, and the summary team) only pushed live
+    frames, so reopening the group showed the prompt and an empty chat.
+    Ordinary team chats keep the previous rule.
+    """
+    if source == "org_expert_direct":
+        return event_type in _DIRECT_HISTORY_EVENTS
+    return (
+        event_type in _GROUP_HISTORY_EVENTS
+        and _is_swarm_group_session(session_id)
+    )
 
 
 def _leader_id_from_agent(agent: Any, team_id: str) -> str:
@@ -163,9 +224,6 @@ class JiuwenExpertTeamLauncher:
         self._push_transport = push_transport
         self._organization_runtime = organization_runtime
         self._team_channels: dict[tuple[str, str], str] = {}
-        self._history_writers: dict[
-            tuple[str, str, str, str, str], _UnattendedTeamRoundHistoryWriter
-        ] = {}
 
     def _get_runtime(self) -> Any:
         if self._runtime_manager is not None:
@@ -514,25 +572,22 @@ class JiuwenExpertTeamLauncher:
             return False
         finally:
             try:
-                try:
-                    await self._flush_expert_history(session_id, team_id, round_id)
-                finally:
-                    if ran_turn and activation is not None:
-                        if not finalized:
-                            logger.info(
-                                "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
-                                "source=%s trigger=finally",
-                                team_id,
-                                session_id,
-                                source,
-                            )
-                            await runtime.finalize(team_name=team_id, session_id=session_id)
-                        current = await runtime.pool.get(team_id)
-                        interact_gate = getattr(current, "interact_gate", None)
-                        close_and_drain = getattr(interact_gate, "close_and_drain", None)
-                        if callable(close_and_drain):
-                            await close_and_drain()
-                        await activation.session.post_run()
+                if ran_turn and activation is not None:
+                    if not finalized:
+                        logger.info(
+                            "[ExpertTeamLauncher] org turn finalize team=%s session=%s "
+                            "source=%s trigger=finally",
+                            team_id,
+                            session_id,
+                            source,
+                        )
+                        await runtime.finalize(team_name=team_id, session_id=session_id)
+                    current = await runtime.pool.get(team_id)
+                    interact_gate = getattr(current, "interact_gate", None)
+                    close_and_drain = getattr(interact_gate, "close_and_drain", None)
+                    if callable(close_and_drain):
+                        await close_and_drain()
+                    await activation.session.post_run()
             finally:
                 try:
                     if registered:
@@ -626,7 +681,11 @@ class JiuwenExpertTeamLauncher:
             _tag_team_output_origin,
         )
 
-        parsed = dict(payload)
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        parsed = await project_group_stream_event(session_id, dict(payload))
+        if parsed is None:
+            return True
         parsed["rid"] = round_id
         # WebGateway preserves request_id, not rid. Keep the browser turn
         # stable while the outer push ID remains unique for each frame.
@@ -637,13 +696,12 @@ class JiuwenExpertTeamLauncher:
         # They still need the same team identity as the corresponding output.
         parsed["team_id"] = team_id
         parsed["team_name"] = team_id
-        await self._persist_expert_history(
-            parsed,
-            team_id=team_id,
-            session_id=session_id,
-            channel_id=channel_id,
-            round_id=round_id,
-        )
+        if _is_group_organization_owner(session_id, team_id):
+            # The web client keeps org_* frames out of the main chat unless it
+            # can already see this team marked as the owner. Tag the frame so
+            # the group owner's reply stays on the conversation being viewed.
+            parsed["swarm_group_owner"] = True
+        event_type = str(parsed.get("event_type") or "")
 
         try:
             delivered = await self._get_push_transport().send_push(
@@ -673,73 +731,24 @@ class JiuwenExpertTeamLauncher:
             )
             if source == "org_expert_direct":
                 raise RuntimeError("failed to deliver direct expert output")
-            return False
 
-        return True
+        if _should_record_expert_history(source, event_type, session_id):
+            from jiuwenswarm.server.runtime.session.session_history import (
+                append_history_record,
+            )
 
-    async def _persist_expert_history(
-        self,
-        payload: dict[str, Any],
-        *,
-        team_id: str,
-        session_id: str,
-        channel_id: str,
-        round_id: str,
-    ) -> None:
-        """Persist organization output independently of Web delivery."""
-        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
-            _TEAM_ATTRIBUTED_EVENT_TYPES,
-            _UnattendedTeamRoundHistoryWriter,
-        )
-
-        event_type = str(payload.get("event_type") or "")
-        if event_type == "org.turn_completed":
-            await self._flush_expert_history(session_id, team_id, round_id)
-            return
-        if event_type not in _TEAM_ATTRIBUTED_EVENT_TYPES:
-            return
-        role = str(payload.get("role") or "leader")
-        member_name = str(payload.get("member_name") or "team_leader")
-        key = (session_id, team_id, round_id, role, member_name)
-        writer = self._history_writers.get(key)
-        if writer is None:
-            writer = _UnattendedTeamRoundHistoryWriter(
-                channel_id=channel_id,
+            append_history_record(
                 session_id=session_id,
-                request_id=f"{round_id}:{team_id}:{role}:{member_name}",
-                cross_session_marker=None,
-                event_metadata={
-                    "team_id": team_id,
-                    "team_name": team_id,
-                    "source": payload.get("source"),
-                    "role": role,
-                    "member_name": member_name,
-                    "request_id": round_id,
-                    "rid": round_id,
-                },
+                request_id=f"{round_id}:{frame_sequence}",
+                channel_id=channel_id,
+                role="assistant",
+                event_type=event_type,
+                content=parsed.get("content") or parsed.get("error") or "",
+                timestamp=time.time(),
+                extra=parsed,
+                mode="team",
             )
-            self._history_writers[key] = writer
-        try:
-            await writer.observe(payload)
-        except Exception:
-            logger.warning(
-                "[ExpertTeamLauncher] history persist failed team=%s session=%s round=%s",
-                team_id, session_id, round_id, exc_info=True,
-            )
-
-    async def _flush_expert_history(self, session_id: str, team_id: str, round_id: str) -> None:
-        """Close each member's history buffer when a turn finishes or fails."""
-        keys = [key for key in self._history_writers if key[:3] == (session_id, team_id, round_id)]
-        for key in keys:
-            writer = self._history_writers.pop(key)
-            try:
-                await writer.flush_pending_final()
-                await writer.flush_pending_reasoning()
-            except Exception:
-                logger.warning(
-                    "[ExpertTeamLauncher] history flush failed team=%s session=%s round=%s",
-                    team_id, session_id, round_id, exc_info=True,
-                )
+        return delivered
 
     async def _resolve_donor_backend(
         self,
@@ -785,6 +794,10 @@ class JiuwenExpertTeamLauncher:
         display_name: str | None,
         channel_id: str | None = None,
         shared_db: Any | None = None,
+        enable_organization: bool | None = None,
+        leader_tools: list[Any] | None = None,
+        leader_prompt_suffix: str = "",
+        extra_capabilities: list[str] | None = None,
     ) -> Any:
         """Base Team Spec from config, then AgentGroup overlay via assembly."""
         from jiuwenswarm.agents.harness.team.team_manager import TeamManager
@@ -819,8 +832,34 @@ class JiuwenExpertTeamLauncher:
             agent_group_name=agent_group_name,
             agent_group_package=agent_group_package,
         )
+        metadata = dict(getattr(spec, "metadata", None) or {})
+        metadata["capabilities"] = list(
+            dict.fromkeys(
+                [
+                    *metadata.get("capabilities", []),
+                    *(extra_capabilities or []),
+                ]
+            )
+        )
+        spec.metadata = metadata
         if shared_db is not None:
             _align_spec_storage(spec, shared_db)
+        if (
+            enable_organization is not None
+            and "enable_organization" in type(spec).model_fields
+        ):
+            spec.enable_organization = enable_organization
+        if leader_tools:
+            leader_agent = spec.agents["leader"]
+            leader_agent.tools = [*(leader_agent.tools or []), *leader_tools]
+        if leader_prompt_suffix:
+            spec.leader = spec.leader.model_copy(
+                update={
+                    "prompt": (spec.leader.prompt or "")
+                    + "\n"
+                    + leader_prompt_suffix
+                }
+            )
         return spec
 
     async def _materialize_expert_team_in_db(
@@ -983,6 +1022,11 @@ class JiuwenExpertTeamLauncher:
         display_name: str | None = None,
         channel_id: str | None = None,
         share_db_from_team_id: str | None = None,
+        team_id: str | None = None,
+        enable_organization: bool | None = None,
+        leader_tools: list[Any] | None = None,
+        leader_prompt_suffix: str = "",
+        extra_capabilities: list[str] | None = None,
     ) -> LaunchedExpertTeam:
         group_name = str(agent_group_name or "").strip()
         if not group_name:
@@ -1003,7 +1047,7 @@ class JiuwenExpertTeamLauncher:
         agent_group_package = load_agent_group_package_bundle(
             resolve_agent_group_dir(group_name)
         )
-        team_id = await self._allocate_team_id()
+        team_id = str(team_id or "").strip() or await self._allocate_team_id()
         runtime = self._get_runtime()
         resolved_channel = _resolve_launch_channel_id(channel_id, session_id)
         logger.info(
@@ -1031,6 +1075,10 @@ class JiuwenExpertTeamLauncher:
                 display_name=display_name,
                 channel_id=resolved_channel,
                 shared_db=shared_db,
+                enable_organization=enable_organization,
+                leader_tools=leader_tools,
+                leader_prompt_suffix=leader_prompt_suffix,
+                extra_capabilities=extra_capabilities,
             )
             activation_attempted = True
             activation = await runtime.activate(spec, session_id)

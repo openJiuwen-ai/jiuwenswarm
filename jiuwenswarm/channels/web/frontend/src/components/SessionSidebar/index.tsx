@@ -4,6 +4,7 @@
  * Redesigned sidebar with logo and navigation.
  */
 
+import { UsersRound } from 'lucide-react';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
@@ -17,6 +18,7 @@ import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 import type { ApplicationPluginContribution, ApplicationPluginNavKey } from '../../applicationPlugins/types';
+import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
 
 type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
 
@@ -30,6 +32,7 @@ interface SessionSidebarProps {
   /** 导航图标 hover 变化：进入传 key、移出传 null（multi-session 侧栏收起态的 hover 预览用） */
   onNavItemHover?: (key: MainNavKey | null) => void;
   onNavItemPointerDownCapture?: (key: MainNavKey) => void;
+  onToggleJiuwenMate?: () => void;
 }
 
 interface NavItem {
@@ -85,6 +88,7 @@ const personalContextNavIcon = (
 
 const mainNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
+  { key: 'groupChat', labelKey: 'groupChat.open', icon: <UsersRound size={18} aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
@@ -103,6 +107,7 @@ export function SessionSidebar({
   applicationPlugins = [],
   onNavItemHover,
   onNavItemPointerDownCapture,
+  onToggleJiuwenMate,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
 
@@ -174,6 +179,13 @@ export function SessionSidebar({
       ))}
 
       <div className="icon-rail-spacer" />
+      {onToggleJiuwenMate ? (
+        <JiuwenMateModeSwitch
+          active={false}
+          label={t('jiuwenmate.mode.enter')}
+          onToggle={onToggleJiuwenMate}
+        />
+      ) : null}
     </aside>
   );
 }

@@ -18,6 +18,7 @@ export type ModelSelection =
   { type: 'model'; id: string; route_id?: never } | { type: 'model_group'; id: string; route_id?: string | null };
 
 export interface Session {
+  type?: 'chat' | 'group_chat';
   session_id: string;
   title: string;
   project_id: string;

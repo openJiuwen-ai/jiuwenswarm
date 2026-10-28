@@ -996,6 +996,8 @@ channels:
       - name: 飞书默认应用
       # 飞书应用配置
         app_id:
+        # 新版 JiuwenMate 可填 JM-02 同事 ID；留空时保持个人版消息路由
+        agent_id:
         app_secret:
         encrypt_key:
         verification_token:
@@ -1013,6 +1015,7 @@ channels:
     # 企业飞书多 Bot 配置（每个 bot 会注册为独立 channel: feishu_enterprise:<app_id>）
     # bot_a:
     #   app_id:
+    #   agent_id:  # 可选：绑定到一个 JM-02 新版同事
     #   app_secret:
     #   encrypt_key:
     #   verification_token:
@@ -1020,6 +1023,15 @@ channels:
     #   enable_streaming: true
     #   chat_id:
     #   enabled: false
+  welink:
+    # 一个 AI 同事绑定一个 WeLink 账号。登录凭证写在 credential_dir，由办公室扫码写入。
+    enabled: false
+    account:
+    persistent_agent_id:
+    cli_path: welink-cli
+    env: pro
+    credential_dir:
+    poll_interval_seconds: 5
   xiaoyi:
     # 小艺渠道不做文件回传：send_file_to_user 不注册给模型，
     # 相关提示词也不再要求它发文件（见 file_delivery_policy / TeamWorkspaceReportPathRail）。

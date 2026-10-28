@@ -1204,7 +1204,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'name',
       'is_default',
     ],
-    buildDingtalkFormPayload: ['enabled', 'client_id', 'client_secret', 'allow_from'],
+    buildDingtalkApp: ['name', 'enabled', 'client_id', 'client_secret', 'robot_code', 'allow_from'],
     buildTelegramFormPayload: ['enabled', 'bot_token', 'allow_from', 'parse_mode', 'group_chat_mode'],
     buildDiscordFormPayload: [
       'enabled',
@@ -1657,7 +1657,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
   assert.doesNotMatch(modelsDefinition, /id: 'limited-free-models'|id: 'free-models'/);
-  assert.match(modelsSettings, /<FreeModelsSettings\s*\/>/);
+  assert.match(modelsSettings, /<FreeModelsSettings\b/);
   assert.match(modelsSettings, /settingsPanel\.models\.customModels/);
   assert.ok(
     modelsSettings.indexOf('<FreeModelsSettings') < modelsSettings.indexOf("settingsPanel.models.customModels"),

@@ -38,6 +38,8 @@ GROUP_METHODS = frozenset(
         "group.update",
         "group.member.add",
         "group.history.get",
+        "group.execution.list",
+        "group.execution.get",
     }
 )
 _locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
@@ -74,6 +76,19 @@ def group_path(group_id: str) -> Path:
     return get_agent_sessions_dir() / validate_session_id(group_id) / "group.json"
 
 
+def normalize_group_member(member: dict) -> dict:
+    """Read legacy roster fields without changing the stored or requested object."""
+    if not isinstance(member, dict):
+        raise GroupError("BAD_REQUEST", "invalid group member fields")
+    result = copy.deepcopy(member)
+    result["kind"] = {"expert": "agent_template", "expert_team": "agent_group"}.get(
+        result.get("kind"), result.get("kind")
+    )
+    if "definition_id" in result:
+        result.setdefault("id", result.pop("definition_id"))
+    return result
+
+
 def read_group(group_id: str) -> dict | None:
     path = group_path(group_id)
     if not path.is_file():
@@ -104,7 +119,148 @@ def read_group(group_id: str) -> dict | None:
         or not required <= state.keys()
     ):
         raise GroupError("GROUP_CORRUPT", "invalid persisted group")
+    state.setdefault("configs", {})
+    state.setdefault("avatar", "")
+    state["members"] = [normalize_group_member(member) for member in state["members"]]
+    state["receipts"] = {
+        key: normalize_group_member(member) for key, member in state["receipts"].items()
+    }
+    retired_tools = {"swarm.group_adjust_task", "swarm.group_submit_task"}
+    for member in state["compiled"].values():
+        template = member.get("template")
+        if template is not None:
+            template["tools"] = [
+                tool for tool in template.get("tools", []) if tool.get("type") not in retired_tools
+            ]
     return state
+
+
+def group_organization_teams(group_id: str) -> list[dict]:
+    """Expert-team instances recorded for a swarm group, or an empty list."""
+    try:
+        state = read_group(group_id)
+    except GroupError:
+        return []
+    if not isinstance(state, dict):
+        return []
+    teams = state.get("organization_teams")
+    if not isinstance(teams, list):
+        return []
+    return [
+        item
+        for item in teams
+        if isinstance(item, dict) and str(item.get("team_id") or "").strip()
+    ]
+
+
+def clear_group_organization_binding(group_id: str) -> None:
+    """Forget the live organization registration. Plans and messages stay."""
+    state = read_group(group_id)
+    if state is None:
+        return
+    state.pop("organization_id", None)
+    state["organization_teams"] = []
+    state["updated_at"] = time.time()
+    _save(state)
+
+
+def group_organization_owner_team_ids(group_id: str) -> set[str]:
+    """Team ids that own the organization created for this group chat."""
+    return {
+        str(item.get("team_id")).strip()
+        for item in group_organization_teams(group_id)
+        if item.get("role") == "owner"
+    }
+
+
+def mark_group_organization(
+    group_id: str,
+    organization_id: str,
+    teams: list[dict],
+) -> None:
+    """Remember the organization created for this group. Extra keys stay readable."""
+    state = read_group(group_id)
+    if state is None:
+        return
+    state["organization_id"] = organization_id
+    state["organization_teams"] = teams
+    state["updated_at"] = time.time()
+    _save(state)
+
+
+def upsert_group_organization_team(
+    group_id: str,
+    organization_id: str,
+    entry: dict,
+) -> None:
+    """Persist one proxy-to-instance binding without replacing the others."""
+    state = read_group(group_id)
+    if state is None:
+        return
+    previous = str(state.get("organization_id") or "")
+    # A different organization must not keep the previous round's members.
+    # Those rows would be invited into the new organization.
+    if previous and previous != organization_id:
+        stored = []
+    else:
+        stored = state.get("organization_teams") or []
+    teams = [
+        item
+        for item in stored
+        if isinstance(item, dict)
+        and item.get("member_name") != entry.get("member_name")
+    ]
+    teams.append(copy.deepcopy(entry))
+    state["organization_id"] = organization_id
+    state["organization_teams"] = teams
+    state["updated_at"] = time.time()
+    _save(state)
+
+
+def group_organization_plans(group_id: str) -> list[dict]:
+    """Queued multi-expert runs for this group, oldest first."""
+    try:
+        state = read_group(group_id)
+    except GroupError:
+        return []
+    plans = (state or {}).get("organization_plans")
+    if not isinstance(plans, list):
+        return []
+    return [
+        item
+        for item in plans
+        if isinstance(item, dict) and str(item.get("plan_id") or "").strip()
+    ]
+
+
+def add_group_organization_plan(group_id: str, plan: dict) -> bool:
+    """Queue a run idempotently by the group message id."""
+    state = read_group(group_id)
+    if state is None:
+        return False
+    plans = group_organization_plans(group_id)
+    if any(item["plan_id"] == plan.get("plan_id") for item in plans):
+        return False
+    state["organization_plans"] = [*plans, copy.deepcopy(plan)]
+    state["updated_at"] = time.time()
+    _save(state)
+    return True
+
+
+def update_group_organization_plan(
+    group_id: str, plan_id: str, **fields
+) -> None:
+    state = read_group(group_id)
+    if state is None:
+        return
+    plans = group_organization_plans(group_id)
+    for item in plans:
+        if item["plan_id"] == plan_id:
+            item.update(copy.deepcopy(fields))
+            break
+    state["organization_plans"] = plans
+    state["updated_at"] = time.time()
+    _save(state)
 
 
 def _save(state: dict) -> None:
@@ -146,6 +302,8 @@ def _public(state: dict) -> dict:
         "name",
         "description",
         "members",
+        "configs",
+        "avatar",
         "created_at",
         "updated_at",
         "status",
@@ -203,7 +361,7 @@ class GroupService:
         for member in members:
             if not isinstance(member, dict) or set(member) - {
                 "kind",
-                "definition_id",
+                "id",
                 "member_name",
                 "display_name",
             }:
@@ -218,6 +376,7 @@ class GroupService:
             request_metadata={"mode": state["mode"], "group_members": members},
         )
         from jiuwenswarm.agents.swarm.group_chat import RUN_TEAM
+        from jiuwenswarm.agents.swarm.group_execution import START_TASK
 
         compiled = {}
         for member in spec.predefined_members:
@@ -231,7 +390,7 @@ class GroupService:
                     *[
                         tool.model_dump(mode="json")
                         for tool in (agent.tools or [])
-                        if getattr(tool, "type", None) == RUN_TEAM
+                        if getattr(tool, "type", None) in {RUN_TEAM, START_TASK}
                     ],
                 ]
             compiled[member.member_name] = {
@@ -248,10 +407,15 @@ class GroupService:
         create_token = _text(
             params.get("create_token") or request_id, "create_token", maximum=256
         )
+        avatar = _text(params.get("avatar", ""), "avatar", maximum=4096, empty=True)
+        configs = params.get("configs", {})
+        if not isinstance(configs, dict):
+            raise GroupError("BAD_REQUEST", "configs must be an object")
+        configs = copy.deepcopy(configs)
         members = params.get("members", [])
-        if not isinstance(members, list) or len(members) > 100:
+        if not isinstance(members, list):
             raise GroupError(
-                "BAD_REQUEST", "members must be an array of at most 100 entries"
+                "BAD_REQUEST", "members must be an array"
             )
         await self.runtime.start()
         prepared = await self.runtime.prepare_session_create(
@@ -264,9 +428,6 @@ class GroupService:
                 team_hint=True,
                 title=name,
                 user_id=user_id,
-                project_id=params.get("project_id", ""),
-                project_dir=params.get("project_dir", ""),
-                model_name=params.get("model_name", ""),
             )
         )
         group_id = prepared.result.session_id
@@ -274,10 +435,19 @@ class GroupService:
             existing = read_group(group_id)
             if existing is not None:
                 self.owned(group_id, user_id, channel_id)
-                if (existing["name"], existing["description"], existing["members"]) != (
+                existing_config = (
+                    existing["name"],
+                    existing["description"],
+                    existing["members"],
+                    existing["configs"],
+                    existing["avatar"],
+                )
+                if existing_config != (
                     name,
                     description,
                     members,
+                    configs,
+                    avatar,
                 ):
                     raise GroupError(
                         "CONFLICT", "create_token was used for a different group"
@@ -291,6 +461,8 @@ class GroupService:
                 name=name,
                 description=description,
                 members=members,
+                configs=configs,
+                avatar=avatar,
                 user_id=user_id,
                 channel_id=channel_id,
                 mode=prepared.result.canonical_mode,
@@ -309,6 +481,7 @@ class GroupService:
             update_session_metadata(
                 session_id=group_id,
                 group_members=members,
+                conversation_type="group_chat",
                 team_name=spec.team_name,
                 touch_last_message_at=False,
                 sync_write=True,
@@ -320,7 +493,10 @@ class GroupService:
             raise
 
     def get(self, group_id, *, user_id, channel_id):
-        return _public(self.owned(group_id, user_id, channel_id))
+        from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+        return {**_public(self.owned(group_id, user_id, channel_id)),
+                "pending_questions": GroupQuestions(group_id).pending()}
 
     def list(self, params, *, user_id, channel_id):
         limit, offset = _page(params)
@@ -345,9 +521,9 @@ class GroupService:
     async def update(self, group_id, params, *, user_id, channel_id):
         async with group_lock(group_id):
             state = self.owned(group_id, user_id, channel_id)
-            if set(params) - {"group_id", "session_id", "name", "description"}:
+            if set(params) - {"group_id", "session_id", "name", "description", "avatar"}:
                 raise GroupError(
-                    "BAD_REQUEST", "group.update only accepts name and description"
+                    "BAD_REQUEST", "group.update only accepts name, description and avatar"
                 )
             if "name" in params:
                 state["name"] = _text(params["name"], "name", maximum=200)
@@ -355,6 +531,8 @@ class GroupService:
                 state["description"] = _text(
                     params["description"], "description", empty=True
                 )
+            if "avatar" in params:
+                state["avatar"] = _text(params["avatar"], "avatar", maximum=4096, empty=True)
             state["updated_at"] = time.time()
             _save(state)
             update_session_metadata(
@@ -383,8 +561,6 @@ class GroupService:
                     )
                 names = [item["member_name"] for item in state["members"]]
                 if previous is None:
-                    if len(names) >= 100:
-                        raise GroupError("GROUP_FULL", "group member limit reached")
                     if isinstance(member, dict) and member.get("member_name") in names:
                         raise GroupError("ALREADY_EXISTS", "member_name already exists")
                     proposed = [*state["members"], member]
@@ -484,6 +660,60 @@ class GroupService:
             next_offset=page_end if page_end < len(messages) else None,
         )
 
+    async def prepare_task(self, group_id, params, *, user_id, channel_id, request_id):
+        from jiuwenswarm.agents.swarm.group_execution import TASK_POLICY
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+        group = self.owned(group_id, user_id, channel_id)
+        members = params.get("mentions", [])
+        if not isinstance(members, list):
+            raise GroupError("BAD_REQUEST", "task mentions must be an array")
+        backend = await self.backend_resolver(group)
+        if backend is not None:
+            agents = backend.group_chat_spec.agents
+            for name in members:
+                if not isinstance(name, str):
+                    raise GroupError("BAD_REQUEST", "task members must be strings")
+                agent = agents.get(name) or agents.get("teammate")
+                rails = agent.rails if agent is not None else []
+                if not any(getattr(rail, "type", None) == TASK_POLICY for rail in (rails or [])):
+                    raise GroupError("GROUP_RESTART_REQUIRED", "task lifecycle policy requires cold recovery")
+        return await GroupExecutions(group_id).create(
+            params.get("mentions", []), params.get("query"), params.get("client_message_id") or request_id,
+            defer_card=True,
+        )
+
+    async def execution_list(self, group_id, params, *, user_id, channel_id):
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions, public_execution
+
+        self.owned(group_id, user_id, channel_id)
+        limit, offset = _page(params)
+        store = GroupExecutions(group_id)
+        await store.reconcile()
+        records = []
+        for record in store.read().values():
+            if record.get("presentation", "card") == "card":
+                records.append(record)
+        records.sort(key=lambda item: (item["created_at"], item["execution_id"]))
+        page_end = offset + limit
+        return {
+            "group_id": group_id,
+            "executions": [public_execution(item) for item in records[offset:page_end]],
+            "total": len(records), "limit": limit, "offset": offset,
+        }
+
+    async def execution_get(self, group_id, params, *, user_id, channel_id):
+        from jiuwenswarm.server.runtime.group_execution import GroupExecutions, public_execution
+
+        self.owned(group_id, user_id, channel_id)
+        execution_id = _text(params.get("execution_id"), "execution_id", maximum=256)
+        store = GroupExecutions(group_id)
+        await store.reconcile()
+        record = store.get(execution_id)
+        if record.get("presentation", "card") != "card":
+            raise GroupError("NOT_FOUND", "task card not found")
+        return {"group_id": group_id, **public_execution(record)}
+
     async def delete(self, group_id, *, user_id, channel_id):
         async with group_lock(group_id):
             state = self._authorized(group_id, user_id, channel_id)
@@ -492,6 +722,20 @@ class GroupService:
                 state["status"] = "deleting"
                 _save(state)
             try:
+                from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                for execution in GroupExecutions(group_id).read().values():
+                    child_session = execution.get("team_session_id")
+                    if child_session:
+                        await self.manager_factory(channel_id).stop_session_runtime(
+                            child_session, reason="group.delete.private",
+                        )
+                if state.get("organization_id"):
+                    from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+                        dissolve_group_organization,
+                    )
+
+                    await dissolve_group_organization(group_id)
                 await self.manager_factory(channel_id).stop_session_runtime(
                     group_id, reason="group.delete"
                 )
@@ -500,14 +744,23 @@ class GroupService:
                     group_id,
                     workspace_path=state.get("workspace_path"),
                 )
+                removed_teams = set()
                 for path in (log.history_path.parent / "team-runs").glob("*.json"):
                     run = json.loads(path.read_text(encoding="utf-8"))
+                    identity = (run.get("team_name"), run.get("session_id"))
+                    if identity in removed_teams:
+                        continue
                     if run.get("team_name") and run.get("session_id"):
+                        await self.manager_factory(channel_id).stop_session_runtime(
+                            run["session_id"], reason="group.delete.private",
+                        )
                         removed = await Runner.delete_agent_team(
                             team_name=run["team_name"],
                             session_ids=[run["session_id"]],
                             force=True,
                         )
+                        if removed:
+                            removed_teams.add(identity)
                         if not removed:
                             raise GroupError(
                                 "DELETE_FAILED",

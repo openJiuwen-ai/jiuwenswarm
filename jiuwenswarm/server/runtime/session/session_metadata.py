@@ -31,6 +31,8 @@ from jiuwenswarm.server.runtime.session.work_mode import (
     normalize_work_mode,
 )
 
+from jiuwenswarm.server.runtime.session.session_info import session_type_from_metadata
+
 logger = logging.getLogger(__name__)
 
 
@@ -261,6 +263,17 @@ def _apply_metadata_defaults_with_inference(
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()
+
+    conversation_type = session_type_from_metadata(metadata)
+    if conversation_type == "chat":
+        directory = session_dir if session_dir is not None else get_agent_sessions_dir() / session_id
+        if (directory / "group.json").is_file():
+            conversation_type = "group_chat"
+    if metadata.get("type") != conversation_type:
+        metadata["type"] = conversation_type
+        if conversation_type == "group_chat":
+            changed = True
+            changed_fields.add("type")
 
     # last_user_message_at: 多级回退
     # 优先用已有时间字段;不能用 ``or`` 短路——合法的 0.0 时间戳是 falsy。
@@ -709,6 +722,15 @@ def _write_metadata_unfenced(
         to_write = to_write.copy()
         _repair_session_project_dir(to_write)
 
+        # A stale ordinary-chat snapshot must never downgrade a persistent group.
+        conversation_type = session_type_from_metadata(to_write)
+        if current is not None and session_type_from_metadata(current) == "group_chat":
+            conversation_type = "group_chat"
+        if (fpath.parent / "group.json").is_file():
+            conversation_type = "group_chat"
+        if conversation_type == "group_chat":
+            to_write["type"] = conversation_type
+
         # Atomic write: write a temp file then rename, so that truncation by
         # write_text can never expose empty content to a concurrent reader
         # (precisely how session identity was being lost).
@@ -1068,6 +1090,7 @@ def update_session_metadata(
     session_runtime_binding: dict[str, Any] | None = None,
     session_harness_checkpoint: dict[str, Any] | None = None,
     group_members: list[dict[str, Any]] | None = None,
+    conversation_type: str | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1095,6 +1118,12 @@ def update_session_metadata(
     """
     if moa_enabled is not None and not isinstance(moa_enabled, bool):
         raise ValueError("moa_enabled must be a boolean")
+    if conversation_type is not None:
+        if not isinstance(conversation_type, str) or conversation_type not in {"chat", "group_chat"}:
+            raise ValueError("conversation_type must be chat or group_chat")
+        if conversation_type == "chat" and group_members is not None:
+            raise ValueError("a group roster requires group_chat type")
+
     metadata = _read_metadata(session_id, cache_bust=cache_bust)
 
     if not metadata:
@@ -1259,8 +1288,13 @@ def update_session_metadata(
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
 
+    if conversation_type == "chat" and session_type_from_metadata(metadata) == "group_chat":
+        raise ValueError("a group session cannot be changed to ordinary chat")
+    if conversation_type is not None:
+        metadata["type"] = conversation_type
     if group_members is not None:
         metadata["group_members"] = copy.deepcopy(group_members)
+        metadata["type"] = "group_chat"
 
     _enqueue_write(
         session_id,

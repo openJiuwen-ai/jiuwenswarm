@@ -91,6 +91,12 @@ async def dispatch_group_request(server, ws, request, send_lock) -> bool:
                         "BAD_REQUEST", "group_id and session_id must match"
                     )
                 group = service.owned(group_id, user_id, channel_id)
+                if method == "chat.send" and params.get("source") == "ask_user_interrupt":
+                    from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+                    payload = await GroupQuestions(group_id).answer(params.get("request_id"), params.get("answers"))
+                    await reply(payload)
+                    return True
                 if params.get("mode") and (
                     not isinstance(params["mode"], str)
                     or not is_team_mode(params["mode"])
@@ -100,13 +106,20 @@ async def dispatch_group_request(server, ws, request, send_lock) -> bool:
                     raise GroupError(
                         "MODE_MISMATCH", "group chat requires group_chat input"
                     )
+                intent = params.get("intent", "chat")
+                if not isinstance(intent, str) or intent not in {"chat", "task"}:
+                    raise GroupError("BAD_REQUEST", "intent must be chat or task")
                 request.session_id = group_id
                 request.params = {**params, "mode": group["mode"]}
                 if method == "chat.send":
                     request.params["type"] = "group_chat"
-                request.metadata = {**(request.metadata or {}), "mode": group["mode"]}
+                request.metadata = {**(request.metadata or {}), "mode": group["mode"], "type": "group_chat"}
                 return False
-            if method == "group.get":
+            if method == "group.execution.list":
+                payload = await service.execution_list(group_id, params, user_id=user_id, channel_id=channel_id)
+            elif method == "group.execution.get":
+                payload = await service.execution_get(group_id, params, user_id=user_id, channel_id=channel_id)
+            elif method == "group.get":
                 payload = service.get(group_id, user_id=user_id, channel_id=channel_id)
             elif method == "group.update":
                 payload = await service.update(

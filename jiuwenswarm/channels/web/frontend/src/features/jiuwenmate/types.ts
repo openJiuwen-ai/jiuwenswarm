@@ -1,0 +1,246 @@
+export type JiuwenMateExistingPage = 'agents' | 'personalContext' | 'skills' | 'connectorMarket' | 'settings';
+
+export type JiuwenMateView =
+  | 'office-intro'
+  | 'colleague-empty'
+  | 'colleague-create'
+  | 'colleague-workspace'
+  | 'colleague-profile'
+  | 'office-dashboard';
+
+export type JiuwenMateCreationStep = 'select' | 'refine';
+export type JiuwenMateCreationSource = 'template' | 'custom';
+
+export type JiuwenMateCategory =
+  | 'education'
+  | 'development'
+  | 'data'
+  | 'document'
+  | 'finance'
+  | 'legal'
+  | 'commerce'
+  | 'content'
+  | 'custom';
+
+export interface JiuwenMateModelOption {
+  id: string;
+  label: string;
+  provider: string;
+}
+
+export interface JiuwenMateCapabilities {
+  /** A model selection key from the model list; empty means the server default model. */
+  model: string;
+  skills: string[];
+  connectors: string[];
+  plugins: string[];
+  knowledge: string[];
+  starterPrompts: string[];
+}
+
+export interface JiuwenMateColleagueDraft {
+  name: string;
+  description: string;
+  persona?: string;
+  groupReplyMode?: 'passive' | 'adaptive';
+  permissionProfile?: 'default' | 'automatic' | 'full_access';
+  tags: string[];
+  category: JiuwenMateCategory;
+  avatarUrl?: string;
+  /** Palette shift of the default custom portrait. Saved as an avatar address of the form hue:N. */
+  avatarHue?: number;
+  /** Built-in template id or installed expert package. Each source can be used once. */
+  sourceTemplateId?: string;
+  /** Template name at selection time. Recognizes employees saved before the source id. */
+  sourceTemplateName?: string;
+  /** Set when the source is an installed expert package the server can copy. */
+  installedPackageName?: string;
+  capabilities: JiuwenMateCapabilities;
+}
+
+export type JiuwenMateImPlatform = 'feishu' | 'dingtalk';
+
+/** One place a colleague works: the Web page or one IM app, each served by its own agent and workspace. */
+export interface JiuwenMateConnection {
+  channel: 'web' | JiuwenMateImPlatform;
+  /** The app ID of an IM connection; "web" for the Web connection. */
+  connectionKey: string;
+  /** The agent whose conversations, files and records belong to this connection. */
+  agentId: string;
+  workspaceDir: string | null;
+}
+
+export interface JiuwenMateColleague extends JiuwenMateColleagueDraft {
+  /** The colleague's handle: its Web agent, whose ID is also the colleague's configuration ID. */
+  id: string;
+  configId: string;
+  /** The Web connection first, then each IM app currently bound to the colleague. */
+  connections: JiuwenMateConnection[];
+  imConfigured: boolean;
+  imPlatform?: 'feishu' | 'dingtalk';
+  feishuConfigured?: boolean;
+  dingtalkConfigured?: boolean;
+  welinkConfigured?: boolean;
+  disabled: boolean;
+  joinedAt: string;
+  isDefault?: boolean;
+  currentVersion?: string | null;
+  hasUnpublishedChanges?: boolean;
+  /** Office directory on the server host; the colleague may read the files placed here. */
+  workspaceDir?: string | null;
+}
+
+/** One named entry in an expert-style template: skill, tool, rail, or connector capability. */
+export interface JiuwenMateBoundItem {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface JiuwenMateTemplate extends JiuwenMateColleagueDraft {
+  id: string;
+  persona: string;
+  skills: readonly JiuwenMateBoundItem[];
+  tools: readonly JiuwenMateBoundItem[];
+  rails: readonly JiuwenMateBoundItem[];
+  mcps: readonly JiuwenMateBoundItem[];
+  /** Curated vocabulary for matching local skills and querying Skills Plaza. */
+  skillSearchTerms?: string[];
+  /** Set when this card comes from an installed expert package. */
+  installedPackageName?: string;
+}
+
+export interface JiuwenMateChannel {
+  id: string;
+  name: string;
+  platform: string;
+  artifacts: number;
+  tokenUsage: number;
+  lastResponseMinutes: number;
+}
+
+export interface JiuwenMateChannelMessage {
+  id: string;
+  sender: string;
+  fromColleague: boolean;
+  mentionColleague: boolean;
+  content: string;
+  status?: string;
+  attachment?: { title: string; kind: string };
+}
+
+export type JiuwenMateTraceRole = 'system' | 'context' | 'user' | 'assistant' | 'tool';
+export type JiuwenMateTraceLane = 'input' | 'model' | 'tools';
+
+export interface JiuwenMateTraceRow {
+  id: string;
+  traceId: string;
+  turn: number;
+  role: JiuwenMateTraceRole;
+  lane: JiuwenMateTraceLane;
+  content: string;
+  startMs: number;
+  durationMs: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface JiuwenMateDailyActivity {
+  date: string;
+  tasks: number;
+  hours: number;
+}
+
+export interface JiuwenMateActivityDay {
+  date: string;
+  tasks: number;
+  minutes: number;
+  calls: number;
+  tokens: number;
+}
+
+export interface JiuwenMateActivityKindDay {
+  date: string;
+  conversation: number;
+  channel: number;
+  schedule: number;
+}
+
+export type JiuwenMateActivityTaskKind = 'conversation' | 'channel' | 'schedule';
+
+export interface JiuwenMateActivityHistoryItem {
+  requestId: string;
+  title: string;
+  kind: JiuwenMateActivityTaskKind;
+  channel: string;
+  status: string;
+  tokens: number;
+  updatedAt: string | null;
+  startedAt: string;
+}
+
+export interface JiuwenMateActivityHour {
+  date: string;
+  hour: number;
+  minutes: number;
+  tasks: number;
+  tokens: number;
+}
+
+export interface JiuwenMateActivityChannel {
+  channel: string;
+  calls: number;
+  tokens: number;
+  tasks: number;
+  replies: number;
+  failures: number;
+}
+
+export interface JiuwenMateActivityGroup {
+  id: string;
+  name: string;
+  platform: string;
+  artifacts: number;
+  tokens: number;
+  tasks: number;
+  lastResponseAt: string | null;
+}
+
+export interface JiuwenMateActivityMember {
+  agentId: string;
+  calls: number;
+  tokens: number;
+  tasks: number;
+  replies: number;
+  failures: number;
+  companionDays: number;
+  lastResponseAt: string | null;
+  days: JiuwenMateActivityDay[];
+  kinds: JiuwenMateActivityKindDay[];
+  history: JiuwenMateActivityHistoryItem[];
+  hours: JiuwenMateActivityHour[];
+  channels: JiuwenMateActivityChannel[];
+  groups: JiuwenMateActivityGroup[];
+}
+
+export interface JiuwenMateActivity {
+  generatedAt: string;
+  members: JiuwenMateActivityMember[];
+}
+
+export type JiuwenMateTaskStatus = 'waiting' | 'running' | 'done' | 'failed';
+
+export interface JiuwenMateTask {
+  id: string;
+  title: string;
+  group: string;
+  status: JiuwenMateTaskStatus;
+  progress: number;
+  duration: string;
+  tokens: string;
+}
+
+export interface JiuwenMateTab<TValue extends string> {
+  value: TValue;
+  label: string;
+}

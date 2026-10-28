@@ -478,6 +478,10 @@ class TeamManager:
             return False
         return session_id in self._stream_tasks
 
+    def get_stream_task(self, session_id: str) -> asyncio.Task | None:
+        """Return the registered worker without changing its ownership."""
+        return self._stream_tasks.get(session_id)
+
     def pop_stream_task(
         self,
         session_id: str,
@@ -728,6 +732,12 @@ class TeamManager:
             }:
                 current_round.continued_after_flow = True
 
+        from jiuwenswarm.server.runtime.group_execution import project_group_stream_event
+
+        projected = await project_group_stream_event(session_id, event)
+        if projected is None:
+            return
+        event = projected
         waiters = self._select_broadcast_waiters(session_id)
 
         if not waiters:

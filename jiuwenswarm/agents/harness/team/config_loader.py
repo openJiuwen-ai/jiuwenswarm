@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from openjiuwen.agent_teams.paths import get_agent_teams_home
+from openjiuwen.harness.prompts import resolve_language
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.auth.login_credentials import bare_model_name
@@ -620,7 +621,8 @@ def load_team_spec_dict(
     spec_dict["progressive_tool"] = bool(spec_dict.pop("swarmflow_progressive_tool", False))
     spec_dict["leader"] = _build_leader_spec(team_raw)
     spec_dict["agents"] = agents
-    spec_dict["language"] = str(config_base.get("preferred_language", "zh")).strip().lower()
+    language = str(config_base.get("preferred_language", "zh")).strip().lower()
+    spec_dict["language"] = resolve_language("cn" if language == "zh" else language)
 
     workspace_spec = _build_workspace_spec(team_raw)
     if workspace_spec is not None:

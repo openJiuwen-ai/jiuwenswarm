@@ -30,6 +30,8 @@ def request(method, **params):
 @pytest.fixture
 def host():
     service = SimpleNamespace(
+        execution_list=AsyncMock(return_value={"executions": []}),
+        execution_get=AsyncMock(return_value={"execution_id": "exec-one"}),
         get=Mock(return_value={"group_id": "group-one"}),
         list=Mock(return_value={"groups": [], "total": 0}),
         update=AsyncMock(return_value={"name": "Updated"}),
@@ -61,7 +63,10 @@ async def test_management_methods_return_wire_result(host, method):
     wire = json.loads(ws.send.await_args.args[0])
     assert wire["request_id"] == "request"
     assert "response_kind" in wire
-    name = {"group.member.add": "add_member", "group.history.get": "history"}.get(
+    name = {
+        "group.member.add": "add_member", "group.history.get": "history",
+        "group.execution.list": "execution_list", "group.execution.get": "execution_get",
+    }.get(
         method, method.split(".")[1]
     )
     assert getattr(host._group_service, name).call_args.kwargs["user_id"] == "owner"
@@ -118,8 +123,12 @@ async def test_disconnected_create_aborts_and_does_not_leave_group(
 
 
 @pytest.mark.asyncio
-async def test_group_chat_normalizes_mode_and_keeps_existing_chat_path(host):
-    req = request("chat.send", group_id="group-one", query="hello", mentions=["expert"])
+@pytest.mark.parametrize("mode", [None, "team.work.normal"])
+async def test_group_chat_normalizes_mode_and_keeps_existing_chat_path(host, mode):
+    req = request("chat.send", group_id="group-one", content="hello", mentions=["expert"])
+    assert not req.session_id
+    if mode is not None:
+        req.params["mode"] = mode
     ws = SimpleNamespace(send=AsyncMock())
     assert not await dispatch_group_request(host, ws, req, asyncio.Lock())
     assert req.session_id == "group-one"
@@ -152,3 +161,72 @@ def test_group_methods_are_forwarded_by_gateway_and_no_remove_method():
     assert GROUP_METHODS <= _FORWARD_REQ_METHODS
     assert GROUP_METHODS <= _FORWARD_NO_LOCAL_HANDLER_METHODS
     assert "group.member.remove" not in {method.value for method in ReqMethod}
+
+
+def test_chat_send_contract_declares_optional_group_id():
+    from typing import get_type_hints
+
+    from jiuwenswarm.common.schema.chat_send import ChatSendParams
+
+    assert "group_id" in ChatSendParams.__optional_keys__
+    assert get_type_hints(ChatSendParams)["group_id"] is str
+
+
+@pytest.mark.asyncio
+async def test_group_only_chat_routes_through_web_gateway(host):
+    from jiuwenswarm.gateway.app_gateway import _normalize_gateway_message
+    from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
+    ws = SimpleNamespace(send=AsyncMock(), remote_address=("127.0.0.1", 12345))
+    received = []
+
+    async def forward(message):
+        normalized = _normalize_gateway_message(message)
+        req = request("chat.send", **normalized.params)
+        req.session_id = normalized.session_id
+        handled = await dispatch_group_request(host, ws, req, asyncio.Lock())
+        received.append((handled, req))
+        return True
+
+    channel.on_message(forward)
+    await channel._handle_raw_message(ws, json.dumps({
+        "type": "req", "id": "group-send", "method": "chat.send",
+        "params": {"group_id": "group-one", "content": "hello", "mode": "team.work.normal"},
+    }), {})
+    handled, req = received[0]
+    assert not handled
+    assert req.session_id == "group-one"
+    assert req.params["type"] == "group_chat"
+    host._group_service.owned.assert_called_once_with("group-one", "owner", "web")
+    ws.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_group_answer_is_owned_control_input_and_does_not_start_another_task(host, monkeypatch):
+    from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+    answer = AsyncMock(return_value={"request_id": "question", "accepted": True})
+    monkeypatch.setattr(GroupQuestions, "answer", answer)
+    ws = SimpleNamespace(send=AsyncMock())
+    req = request("chat.send", group_id="group-one", source="ask_user_interrupt", request_id="question",
+                  answers=[{"question": "Budget?", "selected_options": ["Low"]}])
+    assert await dispatch_group_request(host, ws, req, asyncio.Lock())
+    host.get_group_service().owned.assert_called_once_with("group-one", "owner", "web")
+    answer.assert_awaited_once_with("question", req.params["answers"])
+    assert "accepted" in ws.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_group_answer_cannot_bypass_group_ownership(host, monkeypatch):
+    from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+    answer = AsyncMock()
+    monkeypatch.setattr(GroupQuestions, "answer", answer)
+    host.get_group_service().owned.side_effect = GroupError("NOT_FOUND", "group not found")
+    ws = SimpleNamespace(send=AsyncMock())
+    req = request("chat.send", group_id="group-one", source="ask_user_interrupt", request_id="question", answers=[])
+    assert await dispatch_group_request(host, ws, req, asyncio.Lock())
+    answer.assert_not_awaited()
+    assert "NOT_FOUND" in ws.send.await_args.args[0]
