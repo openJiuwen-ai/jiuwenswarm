@@ -281,6 +281,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
 
         from openjiuwen.harness.tools.todo_store import bind_todo_batch, transact
         bind_todo_batch(ctx, tool)
+
         async def apply():
             try:
                 todos = await tool.load_todos(session_id)

@@ -252,8 +252,8 @@ async def test_later_complete_is_deferred_until_earlier_completes(monkeypatch) -
         for row in getattr(update, "payload", {}).get("tasks", [])
     }
     assert statuses["search_temp"] == "in_progress"
-    # Full snapshots expose actual completion; serial task.start remains deferred.
-    assert statuses["load_skill"] == "completed"
+    # Default legacy output keeps the serial mask until the earlier item completes.
+    assert statuses["load_skill"] == "pending"
 
     session.events.clear()
     after_search_done = [
@@ -336,4 +336,3 @@ async def test_rebuilt_deferred_flush_after_new_invoke(monkeypatch) -> None:
     assert payloads[0]["task_id"] == "todo:search_temp"
     assert payloads[1]["task_id"] == "todo:load_skill"
     assert payloads[2]["task_id"] == "todo:load_skill"
-

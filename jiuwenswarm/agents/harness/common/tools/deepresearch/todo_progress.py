@@ -16,7 +16,7 @@ from typing import Any
 from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
     DEEPRESEARCH_STAGES,
 )
-from jiuwenswarm.common.utils import get_tenant_agent_workspace_dir
+from jiuwenswarm.common.utils import get_tenant_agent_workspace_dir, logger
 
 _TODO_STATUSES = frozenset({"pending", "in_progress", "completed", "cancelled"})
 _INVALID_PATH = "deepresearch_todo_invalid_path"
@@ -262,7 +262,7 @@ async def capture_deepresearch_todo_target(todo_path: Path):
     tool, session_id = bound_todo_tool()
     if tool is None or session_id is None:
         return None
-    if Path(tool._get_file_path(session_id)).resolve() != todo_path.resolve():
+    if Path(tool.get_file_path(session_id)).resolve() != todo_path.resolve():
         return None
     owner = asyncio.current_task() if getattr(tool, "snapshot_guard", None) is not None else None
     return tool, session_id, await capture_plan(tool, session_id), owner
@@ -291,6 +291,7 @@ async def persist_deepresearch_task_update(
     try:
         _read_existing_todo(todo_path, trusted)
         _verify_named_parent(todo_path, trusted)
+
         async def update():
             _verify_named_parent(todo_path, trusted)
             tx = current_transaction(tool, session_id)
@@ -300,6 +301,7 @@ async def persist_deepresearch_task_update(
             # Only the workflow's canonical, already-present stages are eligible.
             if not all(any(row["id"] == ident and row.get("content") == change["content"]
                            for row in tx.snapshot.todos) for ident, change in updates.items()):
+                logger.warning("[deepresearch_stream] skip Todo persistence: canonical stages missing or changed")
                 return False
             now = datetime.now(timezone.utc).isoformat()
             tx.pending = [{**row, "status": "completed", "updatedAt": now}

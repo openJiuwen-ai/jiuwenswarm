@@ -129,6 +129,6 @@ def load_todo_snapshot_for_frontend(
     path = root / normalized / "todo.json"
     try:
         snapshot = decode_snapshot(path.read_bytes())
-    except (OSError, ValueError, TypeError, UnicodeError):
+    except (OSError, ValueError, TypeError):
         return None
     return project_todo_snapshot(snapshot, generation_token)

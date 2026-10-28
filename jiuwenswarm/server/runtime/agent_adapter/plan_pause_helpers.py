@@ -340,6 +340,7 @@ def pause_todo_items(todos: list[TodoItem]) -> bool:
 async def pause_pending_todos_on_tool(modify_tool: Any, session_id: str) -> bool:
     """Persist in_progress -> pending on the session todo file."""
     from openjiuwen.harness.tools.todo_store import transact
+
     async def apply():
         todos = await modify_tool.load_todos(session_id)
         if not todos:
@@ -358,6 +359,7 @@ async def snapshot_and_isolate_unfinished_todos(modify_tool: Any, session_id: st
     clearly new user message cannot parallelize with old plan steps via todo_start.
     """
     from openjiuwen.harness.tools.todo_store import transact
+
     async def apply():
         todos = await modify_tool.load_todos(session_id)
         if not todos:
@@ -395,6 +397,7 @@ async def delete_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
     plain string.
     """
     from openjiuwen.harness.tools.todo_store import transact
+
     async def apply():
         if not ids:
             return
@@ -406,6 +409,7 @@ async def delete_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
 async def cancel_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, session_id: str) -> None:
     """Cancel todos by id, bypassing ``invoke`` (same reason as delete above)."""
     from openjiuwen.harness.tools.todo_store import transact
+
     async def apply():
         if not ids:
             return
@@ -417,6 +421,7 @@ async def cancel_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
 async def cancel_pending_todos_on_tool(modify_tool: Any, session_id: str) -> bool:
     """Mark all non-completed todos cancelled (isolate old plan for a new-task turn)."""
     from openjiuwen.harness.tools.todo_store import transact
+
     async def apply():
         todos = await modify_tool.load_todos(session_id)
         if not todos:

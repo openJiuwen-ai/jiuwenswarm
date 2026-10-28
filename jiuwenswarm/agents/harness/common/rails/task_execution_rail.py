@@ -42,6 +42,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     is_persistent_todo,
 )
 from jiuwenswarm.common.todo_generation import todo_item_generation_token
+from jiuwenswarm.common.todo_output import versioned_todo_output
 from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
 from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
@@ -1898,6 +1899,7 @@ class TaskExecutionRail(DeepAgentRail):
         from openjiuwen.harness.tools.todo import TodoModifyTool
         from openjiuwen.harness.tools.todo_store import transact
         tool = TodoModifyTool(self._deep_agent.deep_config.sys_operation, str(todo_path.parent.parent))
+
         async def advance():
             items = await tool.load_todos(session_id)
             for item in items:
@@ -2102,9 +2104,9 @@ class TaskExecutionRail(DeepAgentRail):
         from openjiuwen.harness.tools.todo_store import bound_todo_tool, observe_plan
         tool, bound_session = bound_todo_tool()
         if (tool is not None and bound_session == session_id
-                and Path(tool._get_file_path(session_id)).resolve() == todo_path.resolve()):
+                and Path(tool.get_file_path(session_id)).resolve() == todo_path.resolve()):
             observe_plan(tool, session_id, snapshot)
-        if snapshot.versioned:
+        if snapshot.versioned and versioned_todo_output():
             meta = {"plan_id": snapshot.plan_id, "revision": snapshot.revision}
             return [{**row, "todo_meta": meta} for row in snapshot.todos]
         return snapshot.todos
@@ -2115,11 +2117,15 @@ class TaskExecutionRail(DeepAgentRail):
         # 执行地图：旧代条目和用户记下的待办都不进 _todo_map，
         # 因此不会被绑定，也不会在新一轮首帧回放。
         data = self._read_todo_file(session_id)
-        return filter_todos_for_execution(data, None if any("todo_meta" in row for row in data) else self._todo_generation_token)
+        return filter_todos_for_execution(
+            data, None if any("todo_meta" in row for row in data) else self._todo_generation_token
+        )
 
     def _load_todo_for_display(self, session_id: str) -> list[dict[str, Any]]:
         data = self._read_todo_file(session_id)
-        return filter_todos_for_display(data, None if any("todo_meta" in row for row in data) else self._todo_generation_token)
+        return filter_todos_for_display(
+            data, None if any("todo_meta" in row for row in data) else self._todo_generation_token
+        )
 
     def _get_todo_workspace_path(
         self, session_id: str
@@ -2155,7 +2161,8 @@ class TaskExecutionRail(DeepAgentRail):
             else:
                 normalized_status = str(status).lower()
             mapped[task_id] = {
-                **({"todo_meta": item["todo_meta"]} if "todo_meta" in item else {}),                "content": item.get(
+                **({"todo_meta": item["todo_meta"]} if "todo_meta" in item else {}),
+                "content": item.get(
                     "content", item.get("activeForm", "")
                 ),
                 "activeForm": str(item.get("activeForm", "") or ""),
@@ -2364,9 +2371,13 @@ class TaskExecutionRail(DeepAgentRail):
                 if snapshot["revision"] < self._todo_snapshot_revision:
                     return
                 self._todo_snapshot_revision = snapshot["revision"]
-                meta = {key: snapshot[key] for key in ("plan_id", "revision")}
+                todo_items = snapshot["todos"]
+                if versioned_todo_output():
+                    meta = {key: snapshot[key] for key in ("plan_id", "revision")}
+                    todo_items = [{**row, "todo_meta": meta} for row in todo_items]
                 todo_items = filter_todos_for_execution(
-                    [{**row, "todo_meta": meta} for row in snapshot["todos"]], None)
+                    todo_items, None if versioned_todo_output() else self._todo_generation_token
+                )
             else:
                 todo_items = self._load_todo_from_json(session_id)
         except Exception as exc:
@@ -2573,7 +2584,8 @@ class TaskExecutionRail(DeepAgentRail):
                         "parent_request_id": context.parent_request_id,
                         "timestamp": context.start_time,
                         "source": source,
-                        **({"todo_meta": task["todo_meta"]} if "todo_meta" in task else {}),
+                        **({"todo_meta": task["todo_meta"]}
+                           if versioned_todo_output() and "todo_meta" in task else {}),
                     },
                 )
             )
@@ -2633,7 +2645,8 @@ class TaskExecutionRail(DeepAgentRail):
                         "error": error,
                         "timestamp": timestamp,
                         "source": source,
-                        **({"todo_meta": task["todo_meta"]} if "todo_meta" in task else {}),
+                        **({"todo_meta": task["todo_meta"]}
+                           if versioned_todo_output() and "todo_meta" in task else {}),
                         "parent_request_id": parent_request_id,
                     },
                 )
@@ -2747,7 +2760,13 @@ class TaskExecutionRail(DeepAgentRail):
                 snapshot = decode_snapshot(path.read_bytes()).document()
             except (OSError, ValueError):
                 return
-        todo_items = snapshot["todos"]
+        generation = None if versioned_todo_output() else self._todo_generation_token
+        if include_persistent:
+            todo_items = filter_todos_for_display(snapshot["todos"], generation)
+        else:
+            todo_items = filter_todos_for_execution(snapshot["todos"], generation)
+        if not versioned_todo_output():
+            todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"
         )
@@ -2769,7 +2788,6 @@ class TaskExecutionRail(DeepAgentRail):
 
         payload: dict[str, Any] = {
             "tasks": all_tasks,
-            "todo_meta": {key: snapshot[key] for key in ("plan_id", "revision")},
             "total_tasks": total,
             "completed_tasks": completed,
             "in_progress_tasks": in_progress,
@@ -2777,6 +2795,8 @@ class TaskExecutionRail(DeepAgentRail):
             "timestamp": time.time(),
         }
 
+        if versioned_todo_output():
+            payload["todo_meta"] = {key: snapshot[key] for key in ("plan_id", "revision")}
         if parent_request_id:
             payload["parent_request_id"] = parent_request_id
 

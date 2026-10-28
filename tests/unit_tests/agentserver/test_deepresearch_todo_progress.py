@@ -11,7 +11,7 @@ import os
 import tempfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
@@ -62,6 +62,25 @@ async def _persist(payload, *, todo_path):
     tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(todo_path.parent.parent))
     return await persist_deepresearch_task_update(payload, todo_path=todo_path,
         target=(tool, todo_path.parent.name, "P", asyncio.current_task()))
+
+
+@pytest.mark.asyncio
+async def test_bound_callback_does_not_recreate_missing_stages(tmp_path, monkeypatch):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import todo_progress
+
+    path = tmp_path / "todo/session/todo.json"
+    _seed_plan(path)
+    document = json.loads(path.read_text())
+    document["todos"].pop()
+    path.write_text(json.dumps(document))
+    original = path.read_bytes()
+    warning = Mock()
+    monkeypatch.setattr(todo_progress.logger, "warning", warning)
+    assert not await _persist(_stage_snapshot(None), todo_path=path)
+    assert path.read_bytes() == original
+    warning.assert_called_once_with(
+        "[deepresearch_stream] skip Todo persistence: canonical stages missing or changed"
+    )
 
 
 def _stage_snapshot(active_stage: int | None) -> dict:

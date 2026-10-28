@@ -38,7 +38,7 @@ def business_tool(tool):
     """Retain isolated plan-algorithm mocks; satisfy the snapshot boundary."""
     items = tool.load_todos.return_value
     raw = json.dumps([t.to_dict() for t in items])
-    tool._get_file_path = lambda sid: f"/test/{id(tool)}/{sid}/todo.json"
+    tool.get_file_path = lambda sid: f"/test/{id(tool)}/{sid}/todo.json"
     tool.fs = SimpleNamespace(read_file=AsyncMock(return_value=SimpleNamespace(code=0,
         data=SimpleNamespace(content=raw, exists=True, content_sha256=hashlib.sha256(raw.encode()).hexdigest()))))
     return tool

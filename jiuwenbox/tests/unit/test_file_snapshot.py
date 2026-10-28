@@ -45,6 +45,39 @@ def test_missing_empty_and_raw_hash(tmp_path):
     assert meta["content_sha256"] == hashlib.sha256(raw).hexdigest()
 
 
+@pytest.mark.parametrize("failure", ["fdopen", "read", None])
+def test_snapshot_read_always_closes_descriptor(tmp_path, monkeypatch, failure):
+    from jiuwenbox.supervisor import sandbox_daemon
+
+    path = tmp_path / "todo.json"
+    path.write_bytes(b"old")
+    original_open, original_fdopen = os.open, os.fdopen
+    descriptors = []
+
+    def track_open(*args, **kwargs):
+        fd = original_open(*args, **kwargs)
+        descriptors.append(fd)
+        return fd
+
+    def fail_fdopen(*args, **kwargs):
+        if failure == "fdopen":
+            raise OSError("injected stream creation failure")
+        return original_fdopen(*args, **kwargs)
+
+    monkeypatch.setattr(os, "open", track_open)
+    monkeypatch.setattr(os, "fdopen", fail_fdopen)
+    if failure == "read":
+        monkeypatch.setattr(sandbox_daemon, "MAX_FILE_BYTES", 1)
+    if failure:
+        with pytest.raises(OSError):
+            sandbox_daemon._snapshot_read(str(path))
+    else:
+        assert sandbox_daemon._snapshot_read(str(path))[1] == b"old"
+    assert len(descriptors) == 1
+    with pytest.raises(OSError):
+        os.fstat(descriptors[0])
+
+
 def test_cross_process_compare_replace(tmp_path):
     path = tmp_path / "todo.json"
     path.write_bytes(b"old")

@@ -361,18 +361,21 @@ def _snapshot_read(path: str, directory_fd: int | None = None) -> tuple[dict, by
         before = os.stat(name, follow_symlinks=False, **kwargs)
         if not stat_module.S_ISREG(before.st_mode) or before.st_nlink > 1:
             raise OSError(errno.EINVAL, "Snapshot target must be a regular, non-hardlinked file")
-        fd = os.open(name, flags, **kwargs)
+        fd = os.open(name, flags, mode=0o600, **kwargs)
     except FileNotFoundError:
         return {"exists": False, "content_sha256": hashlib.sha256(b"").hexdigest()}, b""
-    with os.fdopen(fd, "rb") as stream:
-        info = os.fstat(stream.fileno())
-        if not stat_module.S_ISREG(info.st_mode) or info.st_nlink > 1:
-            raise OSError(errno.EINVAL, "Snapshot target must be a regular, non-hardlinked file")
-        if info.st_size > MAX_FILE_BYTES:
-            raise OSError(errno.EFBIG, "Snapshot exceeds file size limit")
-        content = stream.read(MAX_FILE_BYTES + 1)
-        if len(content) > MAX_FILE_BYTES:
-            raise OSError(errno.EFBIG, "Snapshot exceeds file size limit")
+    try:
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat_module.S_ISREG(info.st_mode) or info.st_nlink > 1:
+                raise OSError(errno.EINVAL, "Snapshot target must be a regular, non-hardlinked file")
+            if info.st_size > MAX_FILE_BYTES:
+                raise OSError(errno.EFBIG, "Snapshot exceeds file size limit")
+            content = stream.read(MAX_FILE_BYTES + 1)
+            if len(content) > MAX_FILE_BYTES:
+                raise OSError(errno.EFBIG, "Snapshot exceeds file size limit")
+    finally:
+        os.close(fd)
     return {"exists": True, "content_sha256": hashlib.sha256(content).hexdigest()}, content
 
 
@@ -382,7 +385,7 @@ def _snapshot_lock(path: str, timeout: float):
     parent = os.path.dirname(path)
     directory_fd = None
     if os.name != "nt":
-        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        directory_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, mode=0o600)
     kwargs = {"dir_fd": directory_fd} if directory_fd is not None else {}
     name = (
         ".jbx-cas-"
@@ -630,13 +633,12 @@ def file_snapshot_operation(header: dict, content: bytes = b"") -> tuple[dict, b
             raise TypeError("Snapshot options must be an object")
         expected = options.get("expected_exists")
         digest = options.get("expected_content_sha256")
-        if expected is not None and type(expected) is not bool:
+        if expected is not None and not isinstance(expected, bool):
             raise ValueError("expected_exists must be boolean")
-        if digest is not None and (
-            not isinstance(digest, str)
-            or len(digest) != 64
-            or any(c not in "0123456789abcdef" for c in digest)
-        ):
+        valid_digest = digest is None or (
+            isinstance(digest, str) and len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+        )
+        if not valid_digest:
             raise ValueError("expected_content_sha256 must be a SHA256 hex digest")
         if operation == "read":
             metadata, raw = _snapshot_read(path)
@@ -658,9 +660,7 @@ def file_snapshot_operation(header: dict, content: bytes = b"") -> tuple[dict, b
             metadata, _ = _snapshot_read(path, directory_fd)
             if not metadata["exists"] and options.get("create_if_not_exist") is False:
                 return {"ok": False, "error": "not_found"}, b""
-            if (expected is not None and expected != metadata["exists"]) or (
-                digest is not None and digest != metadata["content_sha256"]
-            ):
+            if expected != metadata["exists"] or digest != metadata["content_sha256"]:
                 return {"ok": False, "error": "conflict"}, b""
             _snapshot_replace(path, content, directory_fd, permissions)
         return {"ok": True, "atomic_replace": True, "content_size": len(content)}, b""

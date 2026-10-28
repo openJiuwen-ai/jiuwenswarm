@@ -44,7 +44,8 @@ def _unified_todo_description(language: str) -> str:
     if str(language).lower().startswith("en"):
         return (
             "Unified todo management tool. Select the operation via `action`:\n"
-            "- create: create a task list; active plans require explicit plan_action=new/rebuild. `tasks` is a JSON array; "
+            "- create: create a task list; active plans require explicit plan_action=new/rebuild. "
+            "`tasks` is a JSON array; "
             "each item requires content / activeForm / description and a short unique `id` "
             "(the id is the sole key for cross-turn status updates; do not use random strings). "
             "The first task is auto-set to in_progress; only one task can be in_progress at a time.\n"
@@ -187,7 +188,9 @@ class UnifiedTodoTool(Tool):
                     success=False,
                     error="'tasks' is required for action=create and must be a JSON array",
                 )
-            return await self._engines["create"].invoke({"tasks": tasks, "plan_action": data.get("plan_action")}, **kwargs)
+            return await self._engines["create"].invoke(
+                {"tasks": tasks, "plan_action": data.get("plan_action")}, **kwargs
+            )
 
         if action == "list":
             return await self._engines["list"].invoke({}, **kwargs)

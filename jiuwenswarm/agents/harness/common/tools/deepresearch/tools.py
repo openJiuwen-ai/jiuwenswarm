@@ -3248,6 +3248,9 @@ async def _deliver_race_completed_report(
 
         todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
 
+    if todo_path is not None and todo_target is None:
+        logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
+
     async def send(payload: dict[str, Any]) -> bool:
         try:
             safe_payload = _redact_json_value(payload, secrets)
@@ -3255,7 +3258,7 @@ async def _deliver_race_completed_report(
             return False
         if not isinstance(safe_payload, dict):
             return False
-        if todo_path is not None and safe_payload.get("event_type") == "task.update":
+        if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
                 await persist_deepresearch_task_update(safe_payload, todo_path=todo_path, target=todo_target)
             except Exception as exc:  # pylint: disable=broad-exception-caught
@@ -3503,11 +3506,14 @@ async def _consume_stream(
 
         todo_target = await capture_deepresearch_todo_target(todo_path) if todo_path is not None else None
 
+    if todo_path is not None and todo_target is None:
+        logger.warning("[deepresearch_stream] skip Todo persistence: no bound Todo owner")
+
     async def send(payload: dict[str, Any]) -> bool:
         safe_payload = _redact_json_value(payload, secrets)
         if not isinstance(safe_payload, dict):
             raise _StreamProtocolInvalid("Gateway payload is not an object")
-        if todo_path is not None and safe_payload.get("event_type") == "task.update":
+        if todo_target is not None and safe_payload.get("event_type") == "task.update":
             try:
                 await persist_deepresearch_task_update(
                     safe_payload, todo_path=todo_path, target=todo_target

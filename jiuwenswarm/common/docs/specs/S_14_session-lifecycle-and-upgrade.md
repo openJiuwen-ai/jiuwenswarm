@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_14 / session-lifecycle-and-upgrade |
 | 关联模块 | jiuwenswarm/common/{todo_generation, todo_snapshot, cleanup, cron_team_completion, git_safe_directory, updater, updater_restart_helper, upgrade_executor, version, version_source}.py |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-10-27 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -41,6 +41,8 @@ version.__version__（唯一版本真源）
   cancelled并应用原串行状态遮罩，不输出`todo_meta`，历史空表沿原发送条件处理。
   显式versioned保留内容对应的版本、真实状态及合法空表，不因generation隐藏已提交条目。
   `todo_output`通过连接/请求上下文选择展示方式，不影响文件提交或写入资格。
+  TaskExecutionRail 的 task.update/start/complete 同样按输出策略决定是否携带元信息；
+  task.update 从提交快照或文件读取时均保留提醒过滤，只有显式展示提醒的调用才计入提醒。
 - **N3 后台清理尽力而为**：保留期默认 30 天（`CLEANUP_PERIOD_DAYS`）；首次延迟 10min、
   之后每 24h 一轮；按目录 mtime 判过期；阻塞操作丢线程池且单步失败不中断循环；
   rmtree `ignore_errors=True`（可重复执行幂等）。装配点：`app_gateway` 启动。

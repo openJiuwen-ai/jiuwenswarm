@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import logging
 from typing import Annotated, Any, Literal
 
@@ -78,7 +77,7 @@ async def file_snapshot(sandbox_id: str, request: FileSnapshotRequest):
     """Conditional publish executes inside the sandbox's existing security context."""
     try:
         content = base64.b64decode(request.content_base64, validate=True)
-    except (ValueError, binascii.Error):
+    except ValueError:
         return JSONResponse(status_code=400, content={"ok": False, "error": "bad_request"})
     if request.operation != "compare_replace" and content:
         return JSONResponse(status_code=400, content={"ok": False, "error": "bad_request"})

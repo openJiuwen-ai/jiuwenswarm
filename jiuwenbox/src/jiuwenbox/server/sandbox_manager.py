@@ -1038,7 +1038,8 @@ class SandboxManager:
         self.audit.log(
                 AuditEventType.FILE_TRANSFER,
                 sandbox_id,
-                direction=operation,
+                direction="upload" if operation == "compare_replace" else "download",
+                operation=operation,
                 sandbox_path=payload["path"],
                 size=len(content) if content else len(raw),
                 ok=response.get("ok") is True,
