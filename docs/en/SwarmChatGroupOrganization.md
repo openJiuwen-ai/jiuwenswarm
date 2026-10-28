@@ -37,14 +37,22 @@ sequenceDiagram
     participant Owner as Owner background
 
     User->>Gate: Group message with mentions
-    alt At least two expert teams, including the Owner
+    alt At least two expert teams, no single expert, including the Owner
         Gate->>Gate: Record the plan and keep mentions
+    else A single expert is also mentioned
+        Gate->>Gate: No plan; record a direct reply
     else Otherwise
         Gate->>Group: No plan; later calls use the single-team path
     end
     Group->>Proxy: Wake only the mentioned proxies
     Proxy->>Proxy: run_team
-    alt This proxy belongs to a live plan
+    alt This message is a direct reply and this proxy is still in a live organization
+        Proxy-->>Proxy: Wait until that organization posts its result
+        Owner->>User: Owner writes the expert-result group message
+        Proxy->>User: Then the single-team path writes execution-result, without a new organization
+    else This message is a direct reply
+        Proxy->>User: Single-team finish writes execution-result, or a single expert replies itself
+    else This proxy belongs to a live plan
         Proxy->>Org: Launch or reuse the instance and join the organization
         Proxy-->>Proxy: Return immediately that the organization is running
         Owner->>Org: Create the root and one child per member, then claim each child
@@ -66,7 +74,7 @@ A message with empty mentions is still stored. `_begin_team_round` returns immed
 A team round calls `record_organization_plan` only when the message has more than one mention. The plan is stored only when all of the following hold:
 
 1. The session is a saved group.
-2. The mentions contain at least two expert teams (`agent_group`). Single experts do not count.
+2. The mentions contain at least two expert teams (`agent_group`) and no single expert (`agent_template`). A message that mentions an expert team and a single expert does not record a plan. It records a direct-reply mark instead. An expert team that is still in an organization waits until that organization posts its result, then uses the original single-team path. That direct reply does not open an organization and does not resume the organization instance. A single expert who is not in that organization may reply immediately.
 3. The group has no Owner yet, or the existing Owner is one of these mentions. If the Owner is absent, the message stays on the per-proxy single-team path.
 
 When there is no Owner yet, the first mentioned expert team becomes the Owner. The plan id is the message `client_message_id`. Mentions and body are left unchanged.
@@ -79,9 +87,9 @@ The woken model is the group proxy. After it calls `run_team`, the organization 
 
 ## 4. The run_team fork
 
-`RunTeam.invoke` handles `update` and `cancel` first. For `start` and `continue`, `pending_organization_plan` looks for a `pending` or `running` plan that includes this proxy.
+`RunTeam.invoke` handles `update` and `cancel` first. For `start` and `continue`, it takes the oldest message this proxy still owes. When that message is an organization that has not posted, this call joins it. When it is a direct reply and this proxy is still in a live organization, the call only returns a wait and does not start a single team. After that organization posts, the direct reply uses the ordinary single-team run. Any other message uses its own plan, or, when it has none, the oldest `pending` or `running` plan that includes this proxy.
 
-A matching plan calls `run_organization_member` and does not create a `GroupExecutions` record. With no match, a managed group uses the existing single-team background run. `GroupExecutions.finish` then posts `execution-result-{execution_id}`. A single expert and a single expert team stay on that path.
+A matching plan calls `run_organization_member` and does not create a `GroupExecutions` record. With no match, a managed group uses the existing single-team background run. `GroupExecutions.finish` then posts `execution-result-{execution_id}`. A single expert and a single expert team stay on that path. A direct reply does not resume the organization instance. While the organization is still running, the expert-team proxies it names still cannot post to the group. They may post for the direct reply only after that result is in the group. A single expert who is not in the organization is not held by that wait.
 
 Overlapping `run_team` calls from one proxy share one instance-setup task. Each plan has one Owner background wait.
 
@@ -136,7 +144,7 @@ Plans live in `organization_plans` on the group's `group.json`. Instance binding
 | `failed` | Setup failed, or the result wait ended before the organization finished. |
 | `expired` | No Owner background is alive and the plan is older than 62 minutes. |
 
-A repeated `run_team` for the same user message joins that message's plan. If this proxy has not joined an older live plan yet, this `run_team` joins that older plan first and does not skip it just because a newer mention is already in the history. Once the older plan has been accepted, a newer multi-@ plan returns immediately as queued. A background task starts it after every older live plan finishes, so the older plan does not consume the new request. A single @ while an organization is still live stays on that organization path and does not open a private team. When that same multi-@ message's plan is already `failed`, `expired`, or `done`, this `run_team` stops: it does not join the organization, does not create a single-team execution, and does not post to the group. A different message that is not this plan still follows the single-team path, a follow-up, or a new multi-@ plan.
+A repeated `run_team` for the same user message joins that message's plan. If this proxy has not joined an older live plan yet, this `run_team` joins that older plan first and does not skip it just because a newer mention is already in the history. Recording a later multi-@ plan that shares a member with an unfinished plan schedules that plan's Owner immediately. A proxy that is not in the older plan is queued as well and does not bind instances that the older plan still holds. A failed early attempt leaves the plan queued. Once the older plan has been accepted, another multi-@ call also returns queued. The Owner background starts the new plan after the older one finishes. A single @ while an organization is still live stays on that organization path and does not open a private team. When that same multi-@ message's plan is already `failed`, `expired`, or `done`, this `run_team` stops: it does not join the organization, does not create a single-team execution, and does not post to the group. A different message that is not this plan still follows the single-team path, a follow-up, or a new multi-@ plan.
 
 ## 8. Code map
 

@@ -300,17 +300,52 @@ class RunTeam(_GroupTool):
             organization_plan_for_member,
             pending_organization_plan,
             queue_organization_plan,
+            direct_route_for_member,
             recorded_organization_plan,
             release_organization_plan_claim,
+            remember_proxy_backend,
+            remember_proxy_tool,
             route_live_organization_plan,
+            organization_plan_accepted,
+            peek_member_turn,
+            consume_member_turn,
+            bind_member_turn_front,
+            queued_direct_result,
             run_instance_followup,
             run_organization_member,
             saved_organization_instance,
             triggering_plan_id,
         )
 
-        message_plan_id = await triggering_plan_id(self.backend, self.backend.member_name)
-        if message_plan_id:
+        remember_proxy_backend(session, self.backend)
+        remember_proxy_tool(session, self)
+
+        bound = peek_member_turn(session, self.backend.member_name)
+        message_plan_id = bound or await triggering_plan_id(
+            self.backend, self.backend.member_name
+        )
+        if bound and bound == message_plan_id:
+            consume_member_turn(session, self.backend.member_name)
+        direct = direct_route_for_member(
+            session, self.backend.member_name, message_plan_id
+        )
+        live = pending_organization_plan(session, self.backend.member_name)
+        plan = None
+        if (
+            direct
+            and live is not None
+            and not organization_plan_accepted(
+                session, str(live.get("plan_id") or ""), self.backend.member_name
+            )
+        ):
+            if message_plan_id:
+                bind_member_turn_front(
+                    session, self.backend.member_name, message_plan_id
+                )
+            plan = live
+        elif direct and live is not None:
+            return queued_direct_result(live)
+        elif not direct and message_plan_id:
             recorded = recorded_organization_plan(
                 session, self.backend.member_name, message_plan_id
             )
@@ -322,7 +357,7 @@ class RunTeam(_GroupTool):
             plan = organization_plan_for_member(
                 session, self.backend.member_name, message_plan_id
             )
-        else:
+        elif not direct:
             plan = pending_organization_plan(session, self.backend.member_name)
         if plan is not None:
             action, plan = route_live_organization_plan(
@@ -344,16 +379,17 @@ class RunTeam(_GroupTool):
                     session, str(plan.get("plan_id") or ""), self.backend.member_name
                 )
             return result
-        instance = await saved_organization_instance(
-            self.backend, self.backend.member_name, session
-        )
-        if instance is not None:
-            return await run_instance_followup(
-                backend=self.backend,
-                session_id=session,
-                run_id=run_id,
-                task=task,
+        if not direct:
+            instance = await saved_organization_instance(
+                self.backend, self.backend.member_name, session
             )
+            if instance is not None:
+                return await run_instance_followup(
+                    backend=self.backend,
+                    session_id=session,
+                    run_id=run_id,
+                    task=task,
+                )
         previous_id = inputs.get("execution_id") or inputs.get("continue_from_execution_id")
         if action == "continue" and not previous_id:
             return ToolOutput(success=False, error="continue requires a source execution_id")
