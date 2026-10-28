@@ -308,3 +308,57 @@ test('free models without IDs survive refresh before and after the catalog arriv
     else globalThis.localStorage = previousStorage;
   }
 });
+
+for (const cachedKind of ['legacy', 'model_group']) {
+  for (const updateKind of ['legacy', 'model', 'selection', 'clear']) {
+    test(`real session ${updateKind} updates preserve the draft ${cachedKind} cache`, () => {
+      const previousStorage = globalThis.localStorage;
+      const previousState = useSessionStore.getState();
+      const values = new Map();
+      globalThis.localStorage = {
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, String(value)),
+        removeItem: (key) => values.delete(key),
+      };
+      const store = useSessionStore.getState();
+      const free = { ...models[1], model_id: undefined, model_name: 'free-model', is_free: true };
+      const otherFree = { ...free, model_name: 'other-free-model' };
+      const selection = { type: 'model_group', id: 'grp-cached', route_id: 'route-main' };
+      try {
+        store.removeRuntime('new');
+        store.setAvailableModels([...models, free, otherFree], 'main-model');
+        store.setAvailableModelGroups([{
+          model_group_id: selection.id,
+          enabled: true,
+          routes: [{ route_id: 'route-main', model_id: 'mdl-main', enabled: true }],
+        }]);
+        store.ensureRuntime('new');
+        if (cachedKind === 'legacy') store.setSelectedModelName('new', free.model_name);
+        else store.setSelectedModelSelection('new', selection);
+        const expectedPayload = store.getModelSelectionPayload('new');
+        store.ensureRuntime('historical-cache-test');
+        const cachedValues = new Map(values);
+
+        if (updateKind === 'selection') {
+          store.setSelectedModelSelection('historical-cache-test', { type: 'model', id: 'mdl-agent' });
+          assert.deepEqual(store.getModelSelectionPayload('historical-cache-test'), {
+            model_selection: { type: 'model', id: 'mdl-agent' },
+          });
+        } else {
+          const name = updateKind === 'legacy' ? otherFree.model_name
+            : updateKind === 'model' ? models[1].model_name : null;
+          store.setSelectedModelName('historical-cache-test', name);
+          assert.equal(store.getRuntime('historical-cache-test').selectedModelName, name);
+        }
+        assert.deepEqual(values, cachedValues);
+        store.removeRuntime('new');
+        store.ensureRuntime('new');
+        assert.deepEqual(store.getModelSelectionPayload('new'), expectedPayload);
+      } finally {
+        useSessionStore.setState(previousState, true);
+        if (previousStorage === undefined) delete globalThis.localStorage;
+        else globalThis.localStorage = previousStorage;
+      }
+    });
+  }
+}

@@ -2323,24 +2323,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setSelectedModelName: (sessionId, name) => {
-    // 注意：这里只更新当次会话的内存态，不再写 MODEL_STORAGE_KEY——
-    // 该 key 专门保存后端配置的默认模型（见 setAvailableModels），
-    // 用户手动切模型不应污染"默认模型"这个标记，否则新建会话会继承到"最后用过的模型"。
+    const currentState = get();
+    if (!currentState.runtimes[sessionId]) return;
+    const model = name
+      ? currentState.availableModels.find((entry) => entry.model_name === name)
+        ?? currentState.chatAvailableModels.find((entry) => entry.model_name === name)
+      : null;
+    const selectionFromName: ModelSelection | null =
+      model?.model_id && model.model_id.trim()
+        ? { type: 'model', id: model.model_id.trim() }
+        : null;
+    // Historical restores and runtime updates must not change the next chat's cache.
+    // MODEL_STORAGE_KEY remains reserved for the configured backend default.
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      const model = name
-        ? state.availableModels.find((entry) => entry.model_name === name)
-          ?? state.chatAvailableModels.find((entry) => entry.model_name === name)
-        : null;
-      const selectionFromName: ModelSelection | null =
-        model?.model_id && model.model_id.trim()
-          ? { type: 'model', id: model.model_id.trim() }
-          : null;
-      if (model && name) {
-        if (!selectionFromName) cacheLastLegacyModelName(name);
-        else if (loadLastLegacyModelName()) cacheLastModelSelection(selectionFromName);
-      }
       return {
         runtimes: {
           ...state.runtimes,
@@ -2358,13 +2355,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       };
     });
+    if (sessionId === TRANSIENT_NEW_CONVERSATION_ID && model && name) {
+      if (!selectionFromName) cacheLastLegacyModelName(name);
+      else if (loadLastLegacyModelName()) cacheLastModelSelection(selectionFromName);
+    }
   },
 
   setSelectedModelSelection: (sessionId, selection) => {
+    if (!get().runtimes[sessionId]) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      if (selection) cacheLastModelSelection(selection);
       let selectedModelName = runtime.selectedModelName;
       if (selection?.type === 'model') {
         const model = state.availableModels.find((entry) => entry.model_id === selection.id)
@@ -2384,5 +2385,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       };
     });
+    if (sessionId === TRANSIENT_NEW_CONVERSATION_ID && selection) cacheLastModelSelection(selection);
   },
 }));
