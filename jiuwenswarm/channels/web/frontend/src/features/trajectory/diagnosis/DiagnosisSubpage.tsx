@@ -20,7 +20,7 @@ import {
   looksLikePath,
   processSummary,
   skillSuggestionText,
-  splitStageOutput,
+  stageOutputBlocks,
   stageViews,
   stripLeadingHeading,
   suggestionParts,
@@ -590,7 +590,11 @@ function StageItem({ view, expanded, onToggle }: {
   const hasBody = stage !== null && ((stage.skip_reason ?? '') !== '' || stage.output !== '');
   const iconKind = view.status;
   const bodyId = `trajectory-diagnosis-stage-body-${view.stageId}`;
-  const output = useMemo(() => splitStageOutput(stage?.output ?? ''), [stage?.output]);
+  const live = view.status === 'running';
+  const blocks = useMemo(
+    () => stageOutputBlocks(stage?.output ?? '', live),
+    [live, stage?.output],
+  );
   // The one-line conclusion and the time it took stay visible while the stage is folded.
   const conclusion = stage === null || view.status === 'pending' ? '' : (stage.summary ?? '');
   const elapsed = stage === null || view.status === 'running' ? '' : formatElapsed(stage.elapsed_ms);
@@ -638,15 +642,18 @@ function StageItem({ view, expanded, onToggle }: {
       {expanded && stage !== null && hasBody ? (
         <div className={css.stageBody} id={bodyId}>
           {stage.skip_reason === undefined ? null : <p className={css.hint}>{stage.skip_reason}</p>}
-          {output.body === '' ? null : <pre className={css.output}>{output.body}</pre>}
-          {output.requestCount === 0 ? null : (
-            <details className={css.requestFold}>
-              <summary data-testid="trajectory-diagnosis-stage-requests">
-                {t('trajectory.diagnosis.requestCount', { count: output.requestCount })}
-              </summary>
-              <pre className={css.output}>{output.requestLines.join('\n')}</pre>
-            </details>
-          )}
+          {blocks.map((block, index) => (
+            block.kind === 'body' ? (
+              <pre key={`body-${index}`} className={css.output}>{block.text}</pre>
+            ) : (
+              <details key={`requests-${index}`} className={css.requestFold}>
+                <summary data-testid="trajectory-diagnosis-stage-requests">
+                  {t('trajectory.diagnosis.requestCount', { count: block.count })}
+                </summary>
+                <pre className={css.output}>{block.lines.join('\n')}</pre>
+              </details>
+            )
+          ))}
         </div>
       ) : null}
     </li>
