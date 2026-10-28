@@ -1290,11 +1290,18 @@ class WebChannel(BaseWsChannel):
         # interrupt_result 根据 intent 决定 is_processing 状态
         # (busy 映射已在 send() 入口 _track_session_busy 统一维护,此处仅补发
         #  合成的 processing_status 事件让前端同步状态)
+        # 广播 processing_status{is_processing:false, paused:true}, 此处合成
+        # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
+        # pause 失败时也不合成 false — 状态未变, 合成会误报.
+        # resume 同样不合成: AgentServer 把 resume 当空操作处理 (提示"直接
+        # 发送下一条消息即可继续"), 真正的 running 态由下一条消息的新流广播;
+        # 无条件合成 true 会在无活跃轮次时把前端翻回转圈, 直到下一次 pause
+        # 才能终结 (issue 5762 的二次 pause 场景).
         if event_name == "chat.interrupt_result" and not str(payload.get("source") or "").startswith("org_"):
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
-            if intent == "pause":
+            if intent in ("pause", "resume"):
                 return
-            is_processing = intent in ("supplement", "resume")
+            is_processing = intent == "supplement"
             await self._broadcast_to({
                 "type": "event",
                 "event": "chat.processing_status",
