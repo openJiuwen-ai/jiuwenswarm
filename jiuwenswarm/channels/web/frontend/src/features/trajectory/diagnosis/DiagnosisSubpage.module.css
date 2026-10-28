@@ -256,6 +256,17 @@
   font-weight: 600;
 }
 
+.findingList {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  max-height: 24rem;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: 0.5rem;
+  padding: 0.5rem;
+}
+
 .cause {
   display: flex;
   flex-direction: column;
@@ -327,6 +338,26 @@
   line-height: 1.25rem;
   padding: 0.25rem 0.875rem;
   white-space: nowrap;
+}
+
+.suggestionScroll {
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.suggestionLines {
+  margin: 0;
+  padding: 0 0 0 1.25rem;
+  list-style: decimal;
+}
+
+.suggestionLines > li + li {
+  margin-top: 0.5rem;
+}
+
+.suggestionLines > li::marker {
+  color: var(--suggest-accent);
+  font-weight: 600;
 }
 
 .actionButton:hover:not(:disabled) {
@@ -403,12 +434,77 @@
   gap: 0.5rem;
 }
 
+.causeHeadTop {
+  align-items: flex-start;
+  flex-wrap: nowrap;
+}
+
+.causeAt {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.causeDimension {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  align-items: flex-start;
+  gap: 0.25rem;
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
 .badge {
   flex: 0 0 auto;
   border-radius: 0.625rem;
   background: var(--color-surface-muted);
   padding: 0 0.5rem;
   font-size: 0.6875rem;
+}
+
+.kind {
+  flex: 0 0 auto;
+  border-radius: 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1.25rem;
+  padding: 0 0.5rem;
+  white-space: nowrap;
+}
+
+.kind_artifact {
+  background: var(--color-action-primary);
+  color: var(--color-action-primary-text);
+}
+
+.kind_skill {
+  background: var(--color-brand-secondary);
+  color: var(--color-action-primary-text);
+}
+
+.kind_experience {
+  background: var(--color-feedback-warning);
+  color: var(--color-feedback-warning-text);
+}
+
+.findingLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+  margin: 0;
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.findingLineBody {
+  min-width: 0;
+  flex: 1 1 auto;
+  word-break: break-word;
+}
+
+.findingLineBody .markdownBox p {
+  margin-top: 0;
 }
 
 .rewardSummary {
@@ -551,13 +647,6 @@
   margin-top: 0.25rem;
 }
 
-.taskBox {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.25rem;
-}
-
 .linkButton {
   align-self: flex-start;
   border: 0;
@@ -617,6 +706,10 @@
   word-break: break-word;
 }
 
+.summaryBlock .plainText {
+  color: var(--color-text-primary);
+}
+
 .plainClamped {
   display: -webkit-box;
   overflow: hidden;
@@ -644,30 +737,6 @@
   flex-direction: column;
   gap: 0.25rem;
   margin-top: 0.25rem;
-}
-
-.relatedSignals {
-  gap: 0.5rem;
-}
-
-.relatedSignal {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.relatedSignal + .relatedSignal {
-  border-top: 1px dashed var(--color-border-default);
-  padding-top: 0.5rem;
-}
-
-.artifactItems {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-  margin: 0;
-  padding: 0;
-  list-style: none;
 }
 
 .tag {
@@ -702,7 +771,7 @@
 .rewardComment {
   min-width: 0;
   margin: 0;
-  color: var(--color-text-secondary);
+  color: var(--color-text-primary);
   font-size: 0.75rem;
 }
 

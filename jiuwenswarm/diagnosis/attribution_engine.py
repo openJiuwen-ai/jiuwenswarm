@@ -82,6 +82,9 @@ _CORE_STAGE_TO_ZHOU = {
     "attribution": "attribute",
 }
 
+#: Task-parse outcomes that still describe the trajectory. A model failure is not one of them.
+_SUMMARY_ONLY_PARSE_CODES = frozenset({"TASK_INCOMPLETE", "MULTIPLE_UNRELATED_TASKS"})
+
 _EXPERIENCE_SCORE = {"success": 1.0, "partial": 0.5, "fail": 0.0}
 
 _TEXTS: dict[str, dict[str, str]] = {
@@ -95,6 +98,8 @@ _TEXTS: dict[str, dict[str, str]] = {
         "file_artifact": "文件产物 {path}（{node_id} · {tool_type}）",
         "task_summary": "提取任务与 {artifacts} 个产物（消息 {messages} · 文件 {files}）",
         "parse_incomplete": "选中范围不包含完整任务，无法提取任务描述",
+        "summary_generating": "正在生成轨迹摘要",
+        "summary_only_skipped": "未解析出任务，已改为生成轨迹摘要",
         "parse_unrelated": "选中范围包含多个互不相关的任务，无法归因",
         "parse_invalid": "任务解析输出无法解析：{reason}",
         "model_failed": "任务解析模型调用失败：{reason}",
@@ -141,6 +146,8 @@ _TEXTS: dict[str, dict[str, str]] = {
         "file_artifact": "File artifact {path} ({node_id} · {tool_type})",
         "task_summary": "Task and {artifacts} artifacts extracted ({messages} messages · {files} files)",
         "parse_incomplete": "The selection does not contain a complete task; no task description could be extracted",
+        "summary_generating": "Generating the trajectory summary",
+        "summary_only_skipped": "No task was parsed; generating the trajectory summary instead",
         "parse_unrelated": "The selection contains multiple unrelated tasks; attribution is not possible",
         "parse_invalid": "The task parse output could not be parsed: {reason}",
         "model_failed": "Task parse model call failed: {reason}",
@@ -301,15 +308,36 @@ def _default_workspace_resolver(session_id: str) -> str:
     return str(candidate) if candidate.is_dir() else default
 
 
+def _skip_stage(
+    queue: asyncio.Queue[EngineEvent | None],
+    stage_id: str,
+    title: str,
+    reason: str,
+) -> None:
+    """Open a stage and close it as skipped, so a running diagnosis does not leave it waiting."""
+    queue.put_nowait(EngineEvent(stage_id, "stage_started", title=title))
+    queue.put_nowait(EngineEvent(stage_id, "stage_finished", status="skipped", skip_reason=reason))
+
+
 class _QueueStatusSink:
     """Render core LLM request events as text lines into the engine queue."""
 
     def __init__(self, queue: asyncio.Queue[EngineEvent | None], text: dict[str, str]) -> None:
         self._queue = queue
         self._text = text
+        self._stage_override: dict[str, str] = {}
+
+    def redirect_stage(self, source: str, target: str) -> None:
+        """Send later LLM status lines reported for ``source`` to ``target``."""
+        self._stage_override[source] = target
+
+    def clear_stage_redirect(self, source: str) -> None:
+        """Stop redirecting LLM status lines reported for ``source``."""
+        self._stage_override.pop(source, None)
 
     def report(self, event: Any) -> None:
-        stage_id = _CORE_STAGE_TO_ZHOU.get(str(getattr(event, "stage", "") or ""))
+        raw_stage = str(getattr(event, "stage", "") or "")
+        stage_id = self._stage_override.get(raw_stage) or _CORE_STAGE_TO_ZHOU.get(raw_stage)
         if stage_id is None:
             return
         try:
@@ -729,11 +757,12 @@ class AttributionCoreEngine:
             Results that the host filters and persists.
 
         Raises:
-            EngineError: ``EMPTY_SCOPE``, ``TASK_INCOMPLETE``,
-                ``MULTIPLE_UNRELATED_TASKS``, ``MODEL_CALL_FAILED``,
-                ``MODEL_OUTPUT_INVALID`` when the pipeline cannot produce a
-                diagnosis. A run without any signal is not an error: it ends
-                completed with the attribute stage skipped.
+            EngineError: ``EMPTY_SCOPE`` when the selection contains no complete
+                step. ``TASK_INCOMPLETE`` and ``MULTIPLE_UNRELATED_TASKS``
+                still return a trajectory summary and do not fail the
+                diagnosis. ``MODEL_CALL_FAILED`` and ``MODEL_OUTPUT_INVALID``
+                return a result error. A run without any signal is not an
+                error: it ends completed with the attribute stage skipped.
         """
         text = _TEXTS[inputs.locale]
         queue: asyncio.Queue[EngineEvent | None] = asyncio.Queue()
@@ -797,17 +826,34 @@ class AttributionCoreEngine:
         try:
             task_parse = await self._stage_task_parse(context)
         except EngineError as exc:
-            # A valid range must still produce a summary even when the task
-            # cannot be parsed; keep the record completed with a warning.
+            if exc.code not in _SUMMARY_ONLY_PARSE_CODES:
+                # A model outage or an unusable reply is a real failure. Keep
+                # it on the result so it is not presented as "no task parsed".
+                logger.warning("[diagnosis] task parse failed: %s", exc.code)
+                queue.put_nowait(
+                    EngineEvent("task_parse", "stage_finished", status="failed", summary=exc.message),
+                )
+                return EngineResult(error=DiagnosisError(code=exc.code, message=exc.message))
+            # A valid range must still produce a summary when the selection has
+            # no single task. The parse stage stays open and finishes completed
+            # with the reason; the summary's model requests stay on that stage.
+            # The later stages are skipped at once so they do not sit waiting,
+            # and this path has no record-level error.
             logger.warning("[diagnosis] task parse failed; summary only: %s", exc.code)
             queue.put_nowait(
-                EngineEvent("task_parse", "stage_finished", status="failed", summary=exc.message),
+                EngineEvent("task_parse", "output_delta", text_delta=text["summary_generating"]),
             )
-            summary = await self._summary_only(context)
-            return EngineResult(
-                trajectory_summary=summary,
-                error=DiagnosisError(code=exc.code, message=exc.message),
+            _skip_stage(queue, "diagnose", text["stage_diagnose"], text["summary_only_skipped"])
+            _skip_stage(queue, "attribute", text["stage_attribute"], text["summary_only_skipped"])
+            context.sink.redirect_stage("attribution", "task_parse")
+            try:
+                summary = await self._summary_only(context)
+            finally:
+                context.sink.clear_stage_redirect("attribution")
+            queue.put_nowait(
+                EngineEvent("task_parse", "stage_finished", status="completed", summary=exc.message),
             )
+            return EngineResult(trajectory_summary=summary)
         diagnosis = await self._stage_diagnose(context, task_parse)
         if diagnosis.signals:
             result = await self._stage_attribute(context, task_parse, diagnosis)

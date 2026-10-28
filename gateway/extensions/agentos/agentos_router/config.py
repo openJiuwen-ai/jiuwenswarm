@@ -13,12 +13,12 @@ from gateway.extensions.agentos.agentos_router.agent_manager import (
     normalize_agent_key_fields,
 )
 from gateway.extensions.agentos.agentos_router.logutil import log_agentos
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryConfig
-from jiuwenswarm.extensions.agentos.agentos_router.ssh_relay import (
+from gateway.extensions.agentos.agentos_router.registry_client import RegistryConfig
+from gateway.extensions.agentos.agentos_router.ssh_relay import (
     YuanrongSshSettings,
     load_yuanrong_ssh_settings,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import (
+from gateway.extensions.yuanrong_frontend_client import (
     DEFAULT_RUNTIME_PROBE_SETTINGS,
     DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
     RuntimeProbeSettings,

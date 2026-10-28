@@ -204,6 +204,11 @@ jiuwenswarm = [
     "server/runtime/designer/skills/*",
     "server/runtime/designer/skills/**/*",
 ]
+gateway = [
+    "extensions/**/*.yaml",
+    "extensions/**/*.yml",
+    "extensions/**/*.md",
+]
 jiuwenbox = [
     "configs/**/*",
     "configs/*",

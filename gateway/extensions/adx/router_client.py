@@ -8,24 +8,27 @@ import logging
 from collections.abc import Callable, Mapping
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.schema.agent import AgentResponse
+from openjiuwen_protocol.e2a.agent_models import AgentResponse
+from openjiuwen_protocol.e2a.models import E2AEnvelope
+
+from gateway.channel_manager.base import ChannelType
 from gateway.extensions.adx.config import AdxRouterConfig
 from gateway.extensions.adx.control_client import AdxControlClient
 from gateway.extensions.adx.errors import AdxRoutingError
 from gateway.extensions.adx.file_client import AdxFileMixin
 from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
-from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import RegistryClient
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
+from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
+    AgentOSAuthenticator,
+)
+from gateway.extensions.agentos.agentos_router.registry_client import RegistryClient
+from gateway.extensions.agentos.agentos_router.router_client import (
     AgentOSRouterClient,
     is_ws_connect_retryable,
     ws_connect_ready_timeout_seconds,
     ws_connect_retry_interval_seconds,
 )
-from jiuwenswarm.extensions.yuanrong_frontend_client import apply_trace_header
-from gateway.channel_manager.base import ChannelType
 from gateway.extensions.auth.credential_authenticator import AuthResult
+from gateway.extensions.yuanrong_frontend_client import apply_trace_header
 from gateway.health_check import HEALTH_CHECK_CHANNEL_ID, HEALTH_CHECK_OK
 
 

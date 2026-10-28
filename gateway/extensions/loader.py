@@ -7,7 +7,7 @@ import types
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.registry import ExtensionRegistry
 from gateway.extensions.sdk.application_plugin import (
     ApplicationPluginExtension,
     ManifestApplicationPlugin,
@@ -154,11 +154,11 @@ class ExtensionLoader:
             )
 
         module_name = root.name
-        full_name = f"jiuwenswarm.loaded_extension.{module_name}"
+        full_name = f"gateway.loaded_extension.{module_name}"
         # Relative imports (from .provider) need parent package
-        # jiuwenswarm.loaded_extension in sys.modules, and this module
+        # gateway.loaded_extension in sys.modules, and this module
         # needs __path__ so same-dir submodules resolve.
-        parent = "jiuwenswarm.loaded_extension"
+        parent = "gateway.loaded_extension"
         if parent not in sys.modules:
             pkg = types.ModuleType(parent)
             pkg.__path__ = []

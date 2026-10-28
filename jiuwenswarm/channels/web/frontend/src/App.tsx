@@ -197,6 +197,7 @@ import {
 import {
   shouldInsetTrajectoryForFloatingTasks,
   trajectoryComposerClearance,
+  type TrajectoryComposerPolicy,
 } from './features/trajectory/trajectoryLayout';
 import {
   normalizeTrajectoryDiagnosisEnabled,
@@ -482,6 +483,7 @@ function AppContent({
   // watch-only, per session, alongside which view that session last showed.
   const [trajectoryComposerCollapsed, setTrajectoryComposerCollapsed] = useState<Record<string, boolean>>({});
   const [trajectoryComposerHeight, setTrajectoryComposerHeight] = useState(0);
+  const [diagnosisComposerPolicy, setDiagnosisComposerPolicy] = useState<TrajectoryComposerPolicy>('available');
   const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
@@ -850,14 +852,26 @@ function AppContent({
   const leaveDiagnosisView = useCallback(() => {
     selectChatSurfaceView('chat');
   }, [selectChatSurfaceView]);
+  const returnToChatAfterFill = useCallback(() => {
+    selectChatSurfaceView('chat');
+    setComposerFocusNonce((nonce) => nonce + 1);
+  }, [selectChatSurfaceView]);
   const composerDocked = chatSurfaceView === 'diagnosis';
   const composerCollapsed = trajectoryComposerCollapsed[sessionId] ?? false;
+  const composerHeldClosed = composerDocked && diagnosisComposerPolicy !== 'available';
   const toggleTrajectoryComposer = useCallback(() => {
+    if (composerHeldClosed) return;
     setTrajectoryComposerCollapsed((current) => ({
       ...current,
       [sessionId]: !(current[sessionId] ?? false),
     }));
-  }, [sessionId]);
+  }, [composerHeldClosed, sessionId]);
+  useEffect(() => {
+    if (diagnosisComposerPolicy === 'available') return;
+    setTrajectoryComposerCollapsed((current) => (
+      current[sessionId] === true ? current : { ...current, [sessionId]: true }
+    ));
+  }, [diagnosisComposerPolicy, sessionId]);
   const teamTaskEvents = useSessionStore((s) => s.runtimes[sessionId]?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore((s) => s.runtimes[sessionId]?.teamTasks ?? []);
   const teamMembers = useSessionStore((s) => s.runtimes[sessionId]?.teamMembers ?? []);
@@ -3008,8 +3022,20 @@ function AppContent({
   // 监听从 SkillPanel 发来的"新建会话并插入技能"事件
   useEffect(() => {
     const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as { skillName: string; prefixText?: string; suffixText?: string; secondSkillName?: string; metadata?: Record<string, unknown>; mode?: AgentMode };
-      enterNewConversation(detail.mode);
+      const detail = (e as CustomEvent).detail as {
+        skillName: string;
+        prefixText?: string;
+        suffixText?: string;
+        secondSkillName?: string;
+        metadata?: Record<string, unknown>;
+        mode?: AgentMode;
+      };
+      // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
+      // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
+      enterNewConversation(
+        detail.mode,
+        detail.mode ? { forceMode: detail.mode } : {},
+      );
       // 存储 metadata，sendMessage 时随 chat.send 发送后清除（skill-creator 统一入口等场景）
       if (detail.metadata) {
         useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
@@ -4256,7 +4282,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     ...(effectiveTeamAreaExpanded ? { width: `${chatPanelWidthPct}%` } : {}),
                     '--trajectory-composer-clearance': `${trajectoryComposerClearance(
                       composerDocked,
-                      composerCollapsed,
+                      composerCollapsed || composerHeldClosed,
                       trajectoryComposerHeight,
                     )}px`,
                   } as CSSProperties}
@@ -4316,7 +4342,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onClearGoal={handleClearGoal}
                         onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
                         composerDocked={composerDocked}
-                        composerCollapsed={composerCollapsed}
+                        composerCollapsed={composerCollapsed || composerHeldClosed}
+                        composerToggleDisabled={composerHeldClosed}
                         onToggleComposerCollapsed={toggleTrajectoryComposer}
                         onComposerHeightChange={setTrajectoryComposerHeight}
                         onContinueQueuedSessionMessages={handleContinueQueuedSessionMessages}
@@ -4339,6 +4366,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                           mode={mode}
                           sessionId={sessionId}
                           onBack={leaveDiagnosisView}
+                          onComposerPolicyChange={setDiagnosisComposerPolicy}
+                          onComposerFilled={returnToChatAfterFill}
                         />
                       </Suspense>
                     )}

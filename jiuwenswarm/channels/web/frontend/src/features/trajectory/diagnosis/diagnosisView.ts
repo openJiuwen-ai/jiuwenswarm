@@ -232,7 +232,56 @@ export function stripLeadingHeading(text: string): string {
   return rest === '' ? trimmed : rest;
 }
 
-/** Node ids a failure cause / evolution item highlights, "main:23 → main:30"; empty when none exist. */
+/**
+ * Cited steps in trajectory order. A run of adjacent steps is one span
+ * ("main:18 → main:20"); a gap starts another segment ("main:15; main:18 → main:20").
+ */
+function nodeSpanLabel(ids: readonly string[]): string {
+  const groups = new Map<string, { seq: number; id: string }[]>();
+  const subjects: string[] = [];
+  const loose: string[] = [];
+  for (const id of ids) {
+    const split = splitNodeId(id);
+    if (split === null) {
+      if (!loose.includes(id)) loose.push(id);
+      continue;
+    }
+    let group = groups.get(split.subject);
+    if (group === undefined) {
+      group = [];
+      groups.set(split.subject, group);
+      subjects.push(split.subject);
+    }
+    if (!group.some(item => item.id === id)) group.push({ seq: split.seq, id });
+  }
+  const spans = subjects.map(subject => contiguousSpanLabel(groups.get(subject) ?? []));
+  return [...spans, ...loose].filter(item => item !== '').join('; ');
+}
+
+/** Adjacent steps collapse to their ends; a break in the sequence starts a new segment. */
+function contiguousSpanLabel(group: { seq: number; id: string }[]): string {
+  const sorted = [...group].sort((left, right) => left.seq - right.seq);
+  const parts: string[] = [];
+  let index = 0;
+  while (index < sorted.length) {
+    let end = index;
+    while (end + 1 < sorted.length && sorted[end + 1].seq === sorted[end].seq + 1) end += 1;
+    parts.push(end === index ? sorted[index].id : `${sorted[index].id} → ${sorted[end].id}`);
+    index = end + 1;
+  }
+  return parts.join('; ');
+}
+
+/** `<subject>:<sequence>` split; null when the id is not a trajectory step. */
+function splitNodeId(nodeId: string): { subject: string; seq: number } | null {
+  const index = nodeId.lastIndexOf(':');
+  if (index <= 0) return null;
+  const seq = Number(nodeId.slice(index + 1));
+  if (!Number.isInteger(seq) || seq < 0) return null;
+  return { subject: nodeId.slice(0, index), seq };
+}
+
+/** Node ids a failure cause / evolution item highlights; empty when none exist. */
 export function evidenceNodeLabel(item: Pick<RewardFailureCause | EvolutionJudge, 'evidence'>): string {
   const ids: string[] = [];
   const refs = (item as { evidence?: unknown }).evidence;
@@ -241,7 +290,7 @@ export function evidenceNodeLabel(item: Pick<RewardFailureCause | EvolutionJudge
     const nodeId = ref !== null && typeof ref === 'object' ? (ref as { node_id?: unknown }).node_id : undefined;
     if (typeof nodeId === 'string' && nodeId !== '' && !ids.includes(nodeId)) ids.push(nodeId);
   }
-  return ids.join(' → ');
+  return nodeSpanLabel(ids);
 }
 
 /** Legacy root-cause range helper (records written before the switch). */
@@ -250,7 +299,7 @@ export function causeNodeLabel(cause: Pick<LegacyRootCause, 'refs'>): string {
   for (const ref of cause.refs) {
     if (ref.node_id !== undefined && ref.node_id !== '' && !ids.includes(ref.node_id)) ids.push(ref.node_id);
   }
-  return ids.join(' → ');
+  return nodeSpanLabel(ids);
 }
 
 /** Whether a record only carries legacy findings (no new-interface tables). */
@@ -345,7 +394,9 @@ export function signalEvidenceBody(signal: SignalRef | null | undefined, dimensi
 
 export interface ArtifactSuggestionItem {
   id: string;
-  /** The suggestion text of this cause (its suggestions joined); the summary is the defensive fallback. */
+  /** Each suggestion of this cause; the summary stands in when the cause has none. */
+  parts: string[];
+  /** `parts` joined, kept for callers that still want one block. */
   text: string;
   dimension: string;
   summary: string;
@@ -353,13 +404,29 @@ export interface ArtifactSuggestionItem {
   signal?: SignalRef | null;
 }
 
-/** One expandable entry per failure cause, in report order (interface section 6.1). */
+/** Trimmed non-empty lines. `fallback` is used only when every line is blank. */
+export function suggestionParts(values: readonly string[], fallback = ''): string[] {
+  const parts = values.map(item => item.trim()).filter(item => item !== '');
+  if (parts.length > 0) return parts;
+  const standIn = fallback.trim();
+  return standIn === '' ? [] : [standIn];
+}
+
+/** One suggestion stays as written. Several are numbered so they are not run together. */
+export function numberedSuggestions(parts: readonly string[], separator = '\n\n'): string {
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  return parts.map((part, index) => `${index + 1}. ${part}`).join(separator);
+}
+
+/** One entry per failure cause, in report order (interface section 6.1). */
 export function artifactSuggestionItems(record: DiagnosisRecord): ArtifactSuggestionItem[] {
   return (record.reward_failure_causes ?? []).map((cause) => {
-    const text = cause.suggestion.map(item => item.trim()).filter(item => item !== '').join('\n\n');
+    const parts = suggestionParts(cause.suggestion, cause.summary);
     return {
       id: cause.id,
-      text: text === '' ? cause.summary : text,
+      parts,
+      text: parts.join('\n\n'),
       dimension: cause.dimension,
       summary: cause.summary,
       evidence: cause.evidence,
@@ -377,11 +444,10 @@ export function artifactSuggestion(record: DiagnosisRecord, useExperimentalArtif
   if (useExperimentalArtifactFix && (record.artifact_improvement ?? '').trim() !== '') {
     return (record.artifact_improvement ?? '').trim();
   }
-  return (record.reward_failure_causes ?? [])
-    .flatMap(cause => cause.suggestion)
-    .map(text => text.trim())
-    .filter(text => text !== '')
-    .join('\n\n');
+  return numberedSuggestions(
+    (record.reward_failure_causes ?? []).flatMap(cause => suggestionParts(cause.suggestion)),
+    '\n',
+  );
 }
 
 /** The artifact-fix text of a record written before the switch; empty once a new table exists. */
@@ -391,9 +457,9 @@ export function legacyArtifactInstruction(record: DiagnosisRecord): string {
   return record.suggestions?.artifact_fix?.instruction?.trim() ?? '';
 }
 
-/** The whole advice of one skill item (the md_string block). */
+/** The whole advice of one skill item. Several suggestion entries are numbered. */
 export function skillSuggestionText(judge: Pick<EvolutionJudge, 'suggestion'>): string {
-  return (judge.suggestion[0] ?? '').trim();
+  return numberedSuggestions(suggestionParts(judge.suggestion));
 }
 
 /**

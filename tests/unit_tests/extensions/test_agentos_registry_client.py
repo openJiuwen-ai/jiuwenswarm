@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+from gateway.extensions.agentos.agentos_router.registry_client import (
     ImageEntry,
     RegistryClient,
     RegistryConfig,

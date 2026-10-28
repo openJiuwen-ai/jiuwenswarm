@@ -3266,7 +3266,7 @@ def _patch_login_credential_lookup(
         else {"credential_ref": ref, "revoked": True},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.apig.resolve_apig_config",
+        "gateway.auth.apig.resolve_apig_config",
         lambda allow_refresh=True: SimpleNamespace(
             invoke_base_url="https://apig.example.com/v1"
         ),

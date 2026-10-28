@@ -253,36 +253,109 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
     snapshot = _snapshot([_chat_record(0, 1000, 2000)])
     inputs = _inputs(snapshot, [SubjectRange("main", 0, 10**9)])
 
-    async def emit(_event: EngineEvent) -> None:
-        return
-
-    async def summary(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+    async def summary(*_args: Any, **kwargs: Any) -> SimpleNamespace:
+        sink = kwargs.get("status_sink")
+        if sink is not None:
+            sink.report(
+                SimpleNamespace(
+                    request_id="llm-9",
+                    stage="attribution",
+                    iteration=1,
+                    status="succeeded",
+                    model="fake-model",
+                    response_preview=None,
+                    error=None,
+                ),
+            )
         return _summary_outcome("任务解析失败，但已阅读选中范围的轨迹。")
 
     monkeypatch.setattr(module, "run_trajectory_summary", summary)
+    events: list[EngineEvent] = []
+
+    async def emit(event: EngineEvent) -> None:
+        events.append(event)
+
+    expected_summary = {
+        "TASK_INCOMPLETE": "选中范围不包含完整任务，无法提取任务描述",
+        "MULTIPLE_UNRELATED_TASKS": "选中范围包含多个互不相关的任务，无法归因",
+    }
 
     for error_type, code in (
         ("incomplete_task", "TASK_INCOMPLETE"),
         ("multiple_unrelated_tasks", "MULTIPLE_UNRELATED_TASKS"),
-        ("invalid_response", "MODEL_OUTPUT_INVALID"),
     ):
 
         async def fail(*_args: Any, **_kwargs: Any) -> TaskParseResult:
             raise TaskParseError(error_type, "boom")
 
+        events.clear()
         monkeypatch.setattr(module, "run_task_parse", fail)
         result = await engine.run(inputs, emit)
-        assert result.error is not None and result.error.code == code
+        assert result.error is None
         assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
         assert result.reward_failure_causes == [] and result.evolution_judge == []
+        finished = {
+            (event.stage_id, event.status)
+            for event in events
+            if event.kind == "stage_finished"
+        }
+        assert ("task_parse", "completed") in finished
+        assert ("task_parse", "failed") not in finished
+        assert ("diagnose", "skipped") in finished
+        assert ("attribute", "skipped") in finished
+        assert any(
+            event.stage_id == "task_parse"
+            and event.kind == "output_delta"
+            and event.text_delta == "正在生成轨迹摘要"
+            for event in events
+        )
+        assert any(
+            event.stage_id == "task_parse" and event.kind == "output_delta" and "llm-9" in (event.text_delta or "")
+            for event in events
+        )
+        assert not any(event.stage_id == "attribute" and event.kind == "output_delta" for event in events)
+        finished_parse = next(
+            event for event in events
+            if event.stage_id == "task_parse" and event.kind == "stage_finished"
+        )
+        assert finished_parse.summary == expected_summary[code]
+        assert all(
+            event.skip_reason == "未解析出任务，已改为生成轨迹摘要"
+            for event in events
+            if event.kind == "stage_finished" and event.status == "skipped"
+        )
+
+    async def invalid(*_args: Any, **_kwargs: Any) -> TaskParseResult:
+        raise TaskParseError("invalid_response", "boom")
+
+    events.clear()
+    monkeypatch.setattr(module, "run_task_parse", invalid)
+    result = await engine.run(inputs, emit)
+    assert result.error is not None and result.error.code == "MODEL_OUTPUT_INVALID"
+    assert result.error.message == "任务解析输出无法解析：boom"
+    assert result.trajectory_summary == ""
+    failed = next(
+        event for event in events
+        if event.stage_id == "task_parse" and event.kind == "stage_finished"
+    )
+    assert failed.status == "failed" and failed.summary == result.error.message
+    assert not any(event.status == "skipped" for event in events)
 
     async def crash(*_args: Any, **_kwargs: Any) -> TaskParseResult:
         raise RuntimeError("network down")
 
+    events.clear()
     monkeypatch.setattr(module, "run_task_parse", crash)
     result = await engine.run(inputs, emit)
     assert result.error is not None and result.error.code == "MODEL_CALL_FAILED"
-    assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
+    assert result.error.message == "任务解析模型调用失败：network down"
+    assert result.trajectory_summary == ""
+    failed = next(
+        event for event in events
+        if event.stage_id == "task_parse" and event.kind == "stage_finished"
+    )
+    assert failed.status == "failed" and failed.summary == result.error.message
+    assert not any(event.status == "skipped" for event in events)
 
 
 @pytest.mark.asyncio

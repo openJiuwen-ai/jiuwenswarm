@@ -1,26 +1,15 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
-"""加解密 Provider 契约与默认 Provider 存取。
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-CryptoProvider Protocol 以 ``gateway_protocol.sdk.crypto_utility`` 为
-source of truth（转发别名同一对象）；set/get_crypto_provider 为本仓
-运行期状态存取，保留实现。
+"""转发别名（security 域拆分过渡）：真源已迁 ``gateway.extensions.base_crypto``。
+
+CryptoProvider 注入点的实现与装配（``_RegistryCryptoBridge`` 的注册）都在
+gateway 的 extensions 治理层；母仓消费方（config 凭据加解密、config_panel、
+agents memory rail）经本路径取用，B3 拆仓时随 shim 收敛退役。
 """
 
-from __future__ import annotations
-
-from typing import Optional
-
-from gateway_protocol.sdk.crypto_utility import CryptoProvider  # noqa: F401
-
-__all__ = ["CryptoProvider"]
-
-_default_provider: Optional[CryptoProvider] = None
-
-
-def set_crypto_provider(provider: CryptoProvider) -> None:
-    global _default_provider
-    _default_provider = provider
-
-
-def get_crypto_provider() -> Optional[CryptoProvider]:
-    return _default_provider
+from gateway.extensions.base_crypto import *  # noqa: F401,F403
+from gateway.extensions.base_crypto import (  # noqa: F401
+    CryptoProvider,
+    get_crypto_provider,
+    set_crypto_provider,
+)

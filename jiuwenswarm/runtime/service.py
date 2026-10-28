@@ -18,8 +18,52 @@ from contextlib import aclosing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
+from gateway.common.mode_matrix import (
+    deprecate_mode,
+    is_code_profile_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
 from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.session import (
+    RuntimeSessionCoordinator,
+    RuntimeSessionState,
+    SessionCloseTimeoutError,
+    SessionPersistencePolicy,
+    SessionWorkKind,
+)
+from jiuwenswarm.runtime.session.model import (
+    TEAM_ATTACH_ONLY_PARAM,
+    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+    ExecutionCancelCause,
+    ExecutionLifecycleContext,
+    SessionExecutionSnapshot,
+    SessionExecutionState,
+    SessionLifecycleContext,
+    TeamExecutionContext,
+    TeamExecutionDetails,
+    TeamWaiterKind,
+)
+from jiuwenswarm.runtime.session_delete import TeamDeleteResult
+from jiuwenswarm.runtime.session_input import (
+    resolve_session_input_mode,
+    validate_session_input,
+)
+from jiuwenswarm.runtime.session_lifecycle import (
+    RuntimeParticipantRegistry,
+    RuntimeResourceLease,
+    SessionExecutionEvent,
+    SessionExecutionFinishedEvent,
+    SessionInactiveEvent,
+    SessionInputIntentDisposition,
+    SessionInputIntentEvent,
+    SessionKind,
+    SessionLifecycleTarget,
+)
+from jiuwenswarm.runtime.session_lifecycle import (
+    SessionDescriptor as LifecycleSessionDescriptor,
+)
 from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     RuntimeSessionProvisioner,
@@ -36,39 +80,6 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
-from jiuwenswarm.runtime.session import (
-    RuntimeSessionCoordinator,
-    RuntimeSessionState,
-    SessionCloseTimeoutError,
-    SessionPersistencePolicy,
-    SessionWorkKind,
-)
-from jiuwenswarm.runtime.session_delete import TeamDeleteResult
-from jiuwenswarm.runtime.session_lifecycle import (
-    RuntimeParticipantRegistry,
-    RuntimeResourceLease,
-    SessionDescriptor as LifecycleSessionDescriptor,
-    SessionExecutionEvent,
-    SessionExecutionFinishedEvent,
-    SessionInactiveEvent,
-    SessionInputIntentDisposition,
-    SessionInputIntentEvent,
-    SessionKind,
-    SessionLifecycleTarget,
-)
-from jiuwenswarm.runtime.session.model import (
-    TEAM_ATTACH_ONLY_PARAM,
-    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
-    ExecutionCancelCause,
-    ExecutionLifecycleContext,
-    SessionExecutionSnapshot,
-    SessionExecutionState,
-    SessionLifecycleContext,
-    TeamExecutionContext,
-    TeamExecutionDetails,
-    TeamWaiterKind,
-)
-from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 if TYPE_CHECKING:
@@ -84,7 +95,10 @@ if TYPE_CHECKING:
     from jiuwenswarm.runtime.events import RuntimeEvent
     from jiuwenswarm.runtime.interaction import InteractionAnswerInput
     from jiuwenswarm.runtime.mcp_references import McpReferenceValidationResult
-    from jiuwenswarm.runtime.mode_catalog import ModeCatalogResult, RuntimeModeDescriptor
+    from jiuwenswarm.runtime.mode_catalog import (
+        ModeCatalogResult,
+        RuntimeModeDescriptor,
+    )
     from jiuwenswarm.runtime.model_catalog import (
         ModelCatalogResult,
         RuntimeModelDescriptor,
@@ -226,8 +240,8 @@ async def _acquire_process_runtime_extensions() -> bool:
 
     from openjiuwen.core.runner import Runner
 
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.manager import ExtensionManager
+    from gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         try:
@@ -285,7 +299,7 @@ async def _release_process_runtime_extensions() -> None:
     global _PROCESS_RUNTIME_EXTENSION_REGISTRY
     global _PROCESS_RUNTIME_EXTENSION_USERS
 
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.registry import ExtensionRegistry
 
     async with _PROCESS_RUNTIME_EXTENSION_LOCK:
         if _PROCESS_RUNTIME_EXTENSION_USERS <= 0:
@@ -1152,7 +1166,6 @@ class AgentRuntime:
         from gateway.common.mode_matrix import (
             NEW_AGENT_CODE_NORMAL,
             NEW_AGENT_WORK_NORMAL,
-            deprecate_mode,
         )
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
@@ -1189,7 +1202,6 @@ class AgentRuntime:
             channel_id,
             **prepare_kwargs,
         )
-        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.team_controller import LazyTeamExecutionController
 
         if (is_team_mode((request.params or {}).get("mode"))
@@ -1450,6 +1462,7 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
+        request = self._normalize_runtime_request(request)
         if self._is_session_input_request(request):
             async with aclosing(self.stream(
                 request, trigger_hook=trigger_hook, on_control_event=on_control_event,
@@ -3099,7 +3112,9 @@ class AgentRuntime:
         channel_id: str,
         session_id: str,
     ) -> None:
-        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import forks
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+            forks,
+        )
 
         forks.session_deleted(session_id)
         await self.stop_subagent_runtimes(
@@ -3406,7 +3421,6 @@ class AgentRuntime:
     @staticmethod
     def _request_targets_team(request: AgentRequest) -> bool:
         """Resolve Team admission before agent execution begins."""
-        from gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
         params = request.params if isinstance(request.params, dict) else {}
@@ -3443,11 +3457,9 @@ class AgentRuntime:
 
     @staticmethod
     def _normalize_runtime_request(request: AgentRequest) -> AgentRequest:
-        """Resolve a missing mode once before Runtime classification and dispatch."""
+        """Resolve the effective mode before Runtime classification and dispatch."""
         params = request.params if isinstance(request.params, dict) else {}
         raw_mode = params.get("mode")
-        if isinstance(raw_mode, str) and raw_mode.strip():
-            return request
         session_id = str(request.session_id or "").strip()
         if not session_id:
             return request
@@ -3473,6 +3485,22 @@ class AgentRuntime:
         resolved_mode = metadata.get("mode")
         if not isinstance(resolved_mode, str) or not resolved_mode.strip():
             return request
+        if isinstance(raw_mode, str) and raw_mode.strip():
+            from jiuwenswarm.runtime.request import resolve_request_runtime_mode
+
+            if not (is_single_agent_mode(deprecate_mode(resolved_mode)) or is_team_mode(resolved_mode)):
+                return request
+            work_mode = metadata.get("work_mode")
+            if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
+                work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
+            requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
+            if requested_mode.is_team == is_team_mode(resolved_mode):
+                return request
+            logger.warning(
+                "Runtime corrected cross-type mode: session=%s request=%s channel=%s "
+                "requested=%r effective=%r",
+                session_id, request.request_id, request.channel_id, raw_mode, resolved_mode,
+            )
         normalized_params = dict(params)
         normalized_params["mode"] = resolved_mode
         if not normalized_params.get("work_mode") and metadata.get("work_mode"):
@@ -3741,7 +3769,6 @@ class AgentRuntime:
         target = self._participant_registry.target(session_id)
         if target is not None:
             return target
-        from gateway.common.mode_matrix import is_team_mode
 
         mode = str(params.get("mode") or "agent.plan")
         target = SessionLifecycleTarget(
@@ -4056,8 +4083,9 @@ class AgentRuntime:
     async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from gateway_protocol.hooks import AgentServerChatHookContext, AgentServerHookEvents
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from gateway.extensions.registry import ExtensionRegistry
+        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):

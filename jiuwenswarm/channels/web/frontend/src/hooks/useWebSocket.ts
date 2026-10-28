@@ -138,6 +138,7 @@ import { useSubagentStore } from '../stores/subagentStore';
 import { expertTeamId, organizationOwnerStopTarget, selectedExpertTeamId, sendExpertMessage } from '../features/teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from '../features/teamOrganization/featureConfig';
 import { useOrganizationEvents } from '../features/teamOrganization/useOrganizationEvents';
+import { isOrganizationOwnerStopped, setOrganizationOwnerStopped } from '../features/teamOrganization/processing';
 import {
   normalizeSubagentActivityEvent,
   normalizeSubagentToolStatusUpdates,
@@ -1176,10 +1177,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   } = useSessionStore.getState();
 
   const resolveEventSessionId = useCallback(
-    (payload: Record<string, unknown>): string | null => {
+    (payload: Record<string, unknown>, eventType?: string): string | null => {
       const payloadSessionId = getPayloadSessionId(payload);
-        if (!payloadSessionId) return null;
-        if (expertTeamId(payload, payloadSessionId)) return null;
+      if (!payloadSessionId) return null;
+      const stoppedRootOutput = String(payload.source ?? '').startsWith('org_root_')
+        && isOrganizationOwnerStopped(payloadSessionId);
+      const incrementalOutput = ['chat.delta', 'chat.reasoning', 'chat.tool_call', 'chat.tool_result']
+        .includes(eventType ?? '');
+      if (stoppedRootOutput && incrementalOutput) return null;
+      if (expertTeamId(payload, payloadSessionId)) return null;
       ensureSessionRuntimes(payloadSessionId);
       if (typeof payload.execution_id === 'string' && payload.execution_id) {
         useChatStore.getState().setActiveExecutionId(payloadSessionId, payload.execution_id);
@@ -2296,6 +2302,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           },
         });
         clearConnectionPresentationForUserAction(sessionId);
+        setOrganizationOwnerStopped(sessionId, false);
         if (sessionMetadata) {
           useSessionStore.getState().setSessionMetadata(sessionId, null);
         }
@@ -2518,7 +2525,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (ownerStopTarget) {
           params.intent = 'cancel';
           params.target_team_id = ownerStopTarget;
-          params.organization_stop = true;
+          params.organization_owner_stop = true;
         }
         if (['pause', 'resume', 'cancel', 'supplement'].includes(intent)) {
           // 出站 mode 与普通消息/队列重发同一套组合逻辑（resolveOutgoingMode）：
@@ -2540,8 +2547,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (intent === 'supplement' || intent === 'resume') {
           Object.assign(params, useSessionStore.getState().getOutgoingModelParams(sessionId));
         }
-        await request('chat.interrupt', params);
+        const result = await request<{ success?: boolean }>('chat.interrupt', params);
+        if (result?.success === false) return false;
         if (intent === 'supplement' || intent === 'resume') {
+          setOrganizationOwnerStopped(sessionId, false);
           clearConnectionPresentationForUserAction(sessionId);
         }
         if (intent === 'supplement') {
@@ -3206,7 +3215,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.delta', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.delta', payload)) return;
-          const sessionId = resolveEventSessionId(payload);
+          const sessionId = resolveEventSessionId(payload, 'chat.delta');
           if (!sessionId) return;
 
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
@@ -3411,7 +3420,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.reasoning', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.reasoning', payload)) return;
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.reasoning');
         if (!sessionId) return;
         // 主动推荐来源的 reasoning 不进 session 全局 reasoningSegments——否则会并入
         // 上一轮 turn（segment 无 messageId 绑定，按 startedAt 排序），把上一条
@@ -4305,7 +4314,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_call', ({ payload }) => {
         if (shouldIgnoreSessionOutput(payload)) return;
         if (handleTaskInputReceipt('chat.tool_call', payload)) return;
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.tool_call');
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_call', payload)) return;
         // 页面刷新后收到活跃事件时恢复执行状态；已暂停会话的迟到事件不得重新拉起 processing
@@ -4403,7 +4412,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         applyToolUpdatePayload(sessionId, payload);
       }),
       webClient.on('chat.tool_result', ({ payload }) => {
-        const sessionId = resolveEventSessionId(payload);
+        const sessionId = resolveEventSessionId(payload, 'chat.tool_result');
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.tool_result', payload)) return;
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -5117,6 +5126,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         } else if (resultPayload.intent === 'resume') {
           if (resultPayload.success) {
+            setOrganizationOwnerStopped(sessionId, false);
             // 直接设置所有状态值
             if (hasActiveTask) {
               useChatStore.getState().setPaused(sessionId, false);

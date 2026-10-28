@@ -3264,7 +3264,7 @@ class MessageHandler(ABC):
         续期是同步 HTTP，放线程里跑；结果用 ``auth.credentials.update`` 推回去。
         全程失败都只记日志：AgentServer 会按自己的重试间隔再来要。
         """
-        from jiuwenswarm.common.auth.login_credentials import CREDENTIAL_REFRESH_EVENT
+        from gateway.auth.login_credentials import CREDENTIAL_REFRESH_EVENT
 
         payload = chunk.payload if isinstance(chunk.payload, dict) else None
         if payload is None or payload.get("event_type") != CREDENTIAL_REFRESH_EVENT:
@@ -4587,7 +4587,7 @@ class MessageHandler(ABC):
 
         try:
             from gateway.auth import session_owners
-            from jiuwenswarm.common.auth.login_credentials import bare_model_name
+            from gateway.auth.login_credentials import bare_model_name
 
             owner = session_owners.lookup(session_id)
             effective_model = await self._effective_session_model(
@@ -4890,9 +4890,11 @@ class MessageHandler(ABC):
                     continue
 
                 if msg.req_method == ReqMethod.CHAT_CANCEL:
-                    if await self._is_targeted_expert_cancel(msg):
-                        # The AgentServer validates membership and cancels only
-                        # this expert. Never enter the session-wide cancel path.
+                    params = msg.params if isinstance(msg.params, dict) else {}
+                    organization_stop = params.get("organization_owner_stop") is True
+                    organization_stop = organization_stop or params.get("organization_stop") is True
+                    if organization_stop or await self._is_targeted_expert_cancel(msg):
+                        # Preserve Team routing and return the actual AgentServer result.
                         agent_msg = await self._prepare_agent_dispatch_message(msg)
                         await self._process_non_stream_request(msg, self.message_to_e2a(agent_msg))
                         continue

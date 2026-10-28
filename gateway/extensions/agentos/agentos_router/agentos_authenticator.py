@@ -3,10 +3,10 @@ import logging
 import httpx
 
 from gateway.extensions.agentos.agentos_router.logutil import log_agentos
-from jiuwenswarm.extensions.agentos.auth.credential_authenticator import (
-    CredentialAuthenticator,
+from gateway.extensions.auth.credential_authenticator import (
     AuthContext,
     AuthResult,
+    CredentialAuthenticator,
 )
 
 logger = logging.getLogger(__name__)

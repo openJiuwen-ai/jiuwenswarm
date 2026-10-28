@@ -248,12 +248,23 @@ test('a heading the suggestion opens with is dropped, but never the only content
   assert.equal(stripLeadingHeading('  正文  '), '正文');
 });
 
-test('the node label joins the evidence refs of a failure cause', () => {
+test('the node label keeps gaps and collapses only adjacent steps', () => {
   const ref = (spanId, nodeId) => ({ trace_id: 't', span_id: spanId, subject_id: 'main', node_id: nodeId });
   assert.equal(
     evidenceNodeLabel({ evidence: [ref('1', 'main:23'), ref('2', 'main:30'), ref('3', 'main:23')] }),
-    'main:23 → main:30',
+    'main:23; main:30',
   );
+  assert.equal(
+    evidenceNodeLabel({ evidence: [ref('1', 'main:16'), ref('2', 'main:17'), ref('3', 'main:15')] }),
+    'main:15 → main:17',
+  );
+  assert.equal(
+    evidenceNodeLabel({
+      evidence: [ref('1', 'main:20'), ref('2', 'main:18'), ref('3', 'main:19'), ref('4', 'main:15')],
+    }),
+    'main:15; main:18 → main:20',
+  );
+  assert.equal(evidenceNodeLabel({ evidence: [ref('1', 'main:14')] }), 'main:14');
   assert.equal(evidenceNodeLabel({ evidence: [] }), '');
 });
 
@@ -311,7 +322,7 @@ test('artifactSuggestion joins cause suggestions, or uses the experimental whole
     ],
     artifact_improvement: 'legacy block',
   };
-  assert.equal(artifactSuggestion(record, false), 'first\n\nsecond');
+  assert.equal(artifactSuggestion(record, false), '1. first\n2. second');
   assert.equal(artifactSuggestion(record, true), 'legacy block');
 });
 
@@ -343,20 +354,22 @@ test('artifactSuggestionItems keeps cause order and the full attribution fields'
   });
   assert.deepEqual(items.map(item => item.id), ['rfc-1', 'rfc-2']);
   assert.equal(items[0].text, '先修 A\n\n再修 B');
+  assert.deepEqual(items[0].parts, ['先修 A', '再修 B']);
   assert.equal(items[0].dimension, '正确性');
   assert.equal(items[0].summary, '问题一');
   assert.equal(items[0].signal.id, 'diag-1');
   assert.equal(items[1].text, '问题二'); // defensive: an empty suggestion shows the summary
 });
 
-test('skillSuggestionText keeps the whole md_string block', () => {
+test('skillSuggestionText keeps one block and numbers several entries', () => {
   assert.equal(skillSuggestionText({ suggestion: ['# a\n\n- b'] }), '# a\n\n- b');
   assert.equal(skillSuggestionText({ suggestion: [] }), '');
+  assert.equal(skillSuggestionText({ suggestion: ['先改提示词', '再加自检'] }), '1. 先改提示词\n\n2. 再加自检');
 });
 
 test('the node label joins distinct node ids with an arrow', () => {
   const ref = nodeId => ({ trace_id: 't', span_id: 's', subject_id: 'main', ...(nodeId === undefined ? {} : { node_id: nodeId }) });
-  assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:30')] }), 'main:23 → main:30');
+  assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:30')] }), 'main:23; main:30');
   assert.equal(causeNodeLabel({ refs: [ref('main:23'), ref('main:23')] }), 'main:23');
   assert.equal(causeNodeLabel({ refs: [ref(undefined)] }), '');
   assert.equal(causeNodeLabel({ refs: [] }), '');

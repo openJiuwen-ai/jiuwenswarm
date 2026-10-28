@@ -57,8 +57,8 @@ def _login_credential_ref_from_session(auth_session: str) -> str:
     创建请求连接上的登录会话（``_auth_session``，由 web handler 注入）。
     没有可用会话时明确拒绝，不留一个到点必失败的任务。
     """
-    from jiuwenswarm.common.auth.login_credentials import credential_ref_for_user
-    from jiuwenswarm.common.auth.service import ModelAuthRequired, live_session
+    from gateway.auth.login_credentials import credential_ref_for_user
+    from gateway.auth.service import ModelAuthRequired, live_session
 
     try:
         session = live_session(auth_session or None, allow_refresh=False)

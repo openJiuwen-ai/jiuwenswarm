@@ -619,7 +619,7 @@ async def serve_file_chunks(
 
 def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
     """Mount ``/file-api`` when channel has an AgentOSRouterClient backend."""
-    from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
+    from gateway.extensions.agentos.agentos_router.router_client import (
         AgentOSFileTransferError,
         AgentOSRouterClient,
     )

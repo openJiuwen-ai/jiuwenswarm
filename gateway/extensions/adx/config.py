@@ -7,7 +7,12 @@ import os
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from jiuwenswarm.extensions.agentos.agentos_router.config import RouterConfig, load_router_config as load_agentos_config
+from gateway.extensions.agentos.agentos_router.config import (
+    RouterConfig,
+)
+from gateway.extensions.agentos.agentos_router.config import (
+    load_router_config as load_agentos_config,
+)
 
 
 @dataclass(frozen=True)

@@ -73,6 +73,49 @@ class TestAutoTitle:
         assert _auto_title("   ") == ""
 
 
+@pytest.mark.parametrize("initialized", [True, False], ids=["existing-session", "implicit-create"])
+@pytest.mark.parametrize(
+    ("user_content", "expected_title"),
+    [
+        ("/debug 帮我写一个排序算法", "帮我写一个排序算法"),
+        (" \t/debug\nhello\nworld  ", "hello world"),
+        (
+            '<system-reminder>plan guidance</system-reminder>\n'
+            '<file-content path="notes.txt">context</file-content>\n/debug hello',
+            "hello",
+        ),
+        ("/debug " + "a" * 60, "a" * 50 + "..."),
+        ("explain /debug flag", "explain /debug flag"),
+        ("/debugfoo hello", "/debugfoo hello"),
+        ("/debug", "/debug"),
+        ("/debug   ", "/debug"),
+        ("ordinary message", "ordinary message"),
+    ],
+    ids=[
+        "debug", "whitespace", "injected-tags", "truncate", "literal",
+        "lookalike", "bare", "bare-spaces", "ordinary",
+    ],
+)
+def test_auto_title_strips_only_debug_directive(sessions_dir, initialized, user_content, expected_title):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        init_session_metadata,
+        update_session_metadata,
+    )
+
+    session_id = "sess_debug_title"
+    if initialized:
+        init_session_metadata(session_id=session_id)
+
+    update_session_metadata(
+        session_id=session_id,
+        user_content=user_content,
+        sync_write=True,
+    )
+
+    data = json.loads((sessions_dir / session_id / "metadata.json").read_text(encoding="utf-8"))
+    assert data["title"] == expected_title
+
+
 # ===========================================================================
 # init_session_metadata
 # ===========================================================================

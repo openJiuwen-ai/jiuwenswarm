@@ -22,6 +22,31 @@ from weakref import WeakValueDictionary
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
+from gateway.common.mode_matrix import (
+    deprecate_mode,
+    is_plan_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
+from gateway.common.security.ws_origin import (
+    extract_handshake_request,
+    forbidden_origin_response,
+    get_header_value,
+    is_allowed_browser_origin,
+    is_origin_check_enabled,
+)
+from gateway.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_INTERNAL_KEY,
+    SESSION_MESSAGE_ORIGIN,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
+from gateway.common.ws_diagnostics import (
+    describe_ws_exception,
+    describe_ws_peer,
+    format_ws_diagnostics,
+)
+from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
 )
@@ -81,14 +106,10 @@ from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_response_for_wire,
     encode_json_parse_error_wire,
 )
+from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.common.log_preview import preview_text
-from gateway.common.mode_matrix import (
-    deprecate_mode,
-    is_plan_mode,
-    is_single_agent_mode,
-    is_team_mode,
-)
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.common.schema.agent import (
     AgentRequest,
@@ -96,19 +117,6 @@ from jiuwenswarm.common.schema.agent import (
     AgentResponseChunk,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.security.ws_origin import (
-    extract_handshake_request,
-    forbidden_origin_response,
-    get_header_value,
-    is_allowed_browser_origin,
-    is_origin_check_enabled,
-)
-from gateway.common.session_message import (
-    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
-    SESSION_MESSAGE_INTERNAL_KEY,
-    SESSION_MESSAGE_ORIGIN,
-    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
-)
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.utils import (
     get_agent_root_dir,
@@ -118,17 +126,6 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.common.version import get_runtime_version
-from gateway.common.ws_diagnostics import (
-    describe_ws_exception,
-    describe_ws_peer,
-    format_ws_diagnostics,
-)
-from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
-from jiuwenswarm.common.hook_event import AgentServerHookEvents
-from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
-from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_cli_trusted_directory
-from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
-from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
 from jiuwenswarm.runtime.host_services import (
@@ -230,49 +227,8 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
 )
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
-from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
-from jiuwenswarm.common.hooks_config import load_hooks_config
-from gateway.common.security.ws_origin import (
-    extract_handshake_request,
-    forbidden_origin_response,
-    get_header_value,
-    is_origin_check_enabled,
-    is_allowed_browser_origin,
-)
-from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
-    PLAN_MODE_EXITED_EVENT_TYPE,
-)
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.runtime.request import (
-    PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
-    apply_resolved_mode_to_request as _apply_resolved_mode_to_request,
-    prepare_chat_turn,
-    resolve_agent_request_mode,
-    resolve_request_project_dir,
-    resolve_request_runtime_mode,
-    sync_chat_request_metadata as _sync_chat_request_metadata,
-)
-from jiuwenswarm.runtime.events import RuntimeEvent, TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.runtime.host_services import (
-    install_runtime_push_handler,
-    restore_runtime_push_handler,
-)
-from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
-from jiuwenswarm.server.runtime.gateway_adapter import (
-    AdapterRegistry,
-    ConfigAdapter,
-    DesignerAdapter,
-    HarmonyOSAdapter,
-    MemoryAdapter,
-    ProjectAdapter,
-    SessionAdapter,
-    WorkspaceFileAdapter,
-)
-from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import (
-    reload_runtime_after_config_save,
-)
+from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
 from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
@@ -2842,7 +2798,12 @@ class AgentWebSocketServer:
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
             }
-            if guarded_method not in unguarded_methods:
+            # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
+            # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。
+            if (
+                guarded_method not in unguarded_methods
+                and not self._skips_session_lifecycle_guard(request)
+            ):
                 try:
                     guard(
                         str(guarded_params.get("session_id") or request.session_id or ""),
@@ -3214,7 +3175,9 @@ class AgentWebSocketServer:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
-                if self._is_targeted_expert_cancel_request(request):
+                params = request.params if isinstance(request.params, dict) else {}
+                owner_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
+                if owner_stop or self._is_targeted_expert_cancel_request(request):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get("wait_for_stop"):
@@ -3508,7 +3471,7 @@ class AgentWebSocketServer:
     async def _trigger_before_chat_request_hook(self, request: AgentRequest) -> None:
         if not self._should_trigger_before_chat_request_hook(request):
             return
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from gateway.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):
@@ -3541,15 +3504,30 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("organization_stop") is True:
+        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
             resp = await self._cancel_organization(request)
         elif self._is_targeted_expert_cancel_request(request):
             resp = await self._cancel_targeted_expert(request)
         else:
-            resp = await self._execution_runtime().cancel_request(
-                request,
-                allow_create=allow_create,
-            )
+            from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+            resume_owner = params.get("intent") in {"resume", "supplement"} and owner_is_stopped(request.session_id)
+            if resume_owner:
+                from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                owner_id = str((get_session_metadata(request.session_id) or {}).get("team_name") or "")
+                store = owner_inbox()
+                if await asyncio.to_thread(store.enabled_at, request.session_id, owner_id) is None:
+                    await asyncio.to_thread(store.enable, request.session_id, owner_id, 0.0)
+                set_owner_stopped(request.session_id, False)
+            try:
+                resp = await self._execution_runtime().cancel_request(request, allow_create=allow_create)
+            except (Exception, asyncio.CancelledError):
+                if resume_owner:
+                    set_owner_stopped(request.session_id, True)
+                raise
+            if resume_owner and (not resp.ok or (resp.payload or {}).get("success") is False):
+                set_owner_stopped(request.session_id, True)
 
         if send_response:
             wire = encode_agent_response_for_wire(
@@ -3636,6 +3614,34 @@ class AgentWebSocketServer:
                  "agent_groups.", "agent_templates.", "plugin_packages.")
             )
         )
+
+    # Skill plaza / catalog reads that must work even when the chat session
+    # attached by the UI has been permanently deleted (#5886). Write RPCs such
+    # as skills.toggle / skills.rebuild keep going through lifecycle.guard.
+    _SESSION_LIFECYCLE_GUARD_SKIP_METHODS = frozenset({
+        "skills.list",
+        "plugins.list",
+    })
+    _SESSION_LIFECYCLE_GUARD_SKIP_PREFIXES = (
+        "skills.swarmskillshub.",
+        "skills.online_search.",
+    )
+
+    @classmethod
+    def _skips_session_lifecycle_guard(cls, request: AgentRequest) -> bool:
+        """Return True when the RPC must not be blocked by a deleted session.
+
+        Narrower than ``_is_stateless_method_request``: that predicate only
+        means "skip adapter rebuild", and includes write methods under
+        ``skills.*`` / ``plugins.*``. This one is the session-lifecycle
+        bypass for plaza/catalog reads only.
+        """
+        if request.req_method is None:
+            return False
+        method = request.req_method.value
+        if method in cls._SESSION_LIFECYCLE_GUARD_SKIP_METHODS:
+            return True
+        return method.startswith(cls._SESSION_LIFECYCLE_GUARD_SKIP_PREFIXES)
 
     @staticmethod
     def _is_readonly_goal_get_request(request: AgentRequest) -> bool:
@@ -4614,7 +4620,10 @@ class AgentWebSocketServer:
             )
         try:
             if targeted_expert:
-                from jiuwenswarm.server.runtime.organization_execution import OrganizationTurn, register_turn
+                from jiuwenswarm.server.runtime.organization_execution import (
+                    OrganizationTurn,
+                    register_turn,
+                )
 
                 register_turn(OrganizationTurn(
                     str(request.session_id or ""), str(request.params["target_team_id"]),
@@ -4703,7 +4712,9 @@ class AgentWebSocketServer:
                             if not entries:
                                 self._session_stream_tasks.pop(session_id, None)
                         if targeted_expert:
-                            from jiuwenswarm.server.runtime.organization_execution import unregister_turn
+                            from jiuwenswarm.server.runtime.organization_execution import (
+                                unregister_turn,
+                            )
 
                             unregister_turn()
             finally:
@@ -5631,6 +5642,16 @@ class AgentWebSocketServer:
 
         existing_team_name = str(metadata.get("team_name") or "").strip()
         if existing_team_name:
+            has_input = any(params.get(key) for key in ("content", "query", "media_items", "files", "attachments"))
+            if has_input and not params.get("attach_only") and not self._is_targeted_expert_chat(request):
+                if metadata.get("organization_owner_stopped") is True:
+                    from jiuwenswarm.server.runtime.organization_execution import set_owner_stopped
+                    from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                    store = owner_inbox()
+                    if await asyncio.to_thread(store.enabled_at, session_id, existing_team_name) is None:
+                        await asyncio.to_thread(store.enable, session_id, existing_team_name, 0.0)
+                    set_owner_stopped(session_id, False)
             params.setdefault("team_name", existing_team_name)
             template_id = str(metadata.get("team_template_id") or "").strip()
             if template_id:
@@ -6842,12 +6863,15 @@ class AgentWebSocketServer:
             await runtime.stop_team(team_name=team_id, session_id=session_id)
 
     async def _cancel_organization(self, request: AgentRequest) -> AgentResponse:
-        """The Owner's stop action also stops its invited and Summary Teams."""
+        """Stop the Owner alone or, for legacy callers, its entire organization."""
         from dataclasses import replace
 
         from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
         from jiuwenswarm.server.runtime.organization_execution import stopping_teams
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            organization_enabled,
+        )
 
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
@@ -6869,12 +6893,25 @@ class AgentWebSocketServer:
         can_cancel_organization = organization_enabled() and is_team_request
         has_owner_binding = is_owner_target and bool(organization_id)
         intent = str(params.get("intent") or "cancel")
+        owner_only = params.get("organization_owner_stop") is True
         success = can_cancel_organization and has_owner_binding and intent == "cancel"
         cancelled = []
+        owner_was_stopped = False
+        inbox_was_enabled = None
         if success:
+            if owner_only:
+                from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+                owner_was_stopped = owner_is_stopped(session_id)
+                from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                store = owner_inbox()
+                inbox_was_enabled = await asyncio.to_thread(store.enabled_at, session_id, owner_id)
+                await asyncio.to_thread(store.enable, session_id, owner_id)
+                set_owner_stopped(session_id, True)
             runtime = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
             team_ids = {owner_id}
-            if runtime is not None:
+            if runtime is not None and not owner_only:
                 for entry in await runtime.pool.teams_for_session(session_id):
                     backend = getattr(entry.agent, "team_backend", None)
                     org_id = getattr(getattr(backend, "org_task_manager", None), "organization_id", None)
@@ -6882,7 +6919,8 @@ class AgentWebSocketServer:
                         team_ids.add(entry.team_name)
             async with stopping_teams(session_id, team_ids) as cancelled:
                 owner_params = {
-                    key: value for key, value in params.items() if key not in {"target_team_id", "organization_stop"}
+                    key: value for key, value in params.items()
+                    if key not in {"target_team_id", "organization_stop", "organization_owner_stop"}
                 }
                 owner_params["intent"] = "cancel"
                 owner_request = replace(request, params=owner_params)
@@ -6897,13 +6935,25 @@ class AgentWebSocketServer:
                     logger.warning("[AgentWebSocketServer] organization Owner cancellation failed: %s", exc)
                 finally:
                     for team_id in team_ids:
-                        await self._stop_organization_team(session_id, team_id)
+                        try:
+                            await self._stop_organization_team(session_id, team_id)
+                        except Exception as exc:
+                            if not owner_only:
+                                raise
+                            success = False
+                            recovery_error = str(exc) or "Owner runtime could not be stopped"
+                            logger.warning("[AgentWebSocketServer] organization Owner stop failed: %s", exc)
+            if owner_only and not success:
+                set_owner_stopped(session_id, owner_was_stopped)
+                if inbox_was_enabled is None:
+                    await asyncio.to_thread(store.disable, session_id, owner_id)
         return AgentResponse(
             request_id=request.request_id, channel_id=request.channel_id, ok=success,
             payload={
                 "event_type": "chat.interrupt_result", "session_id": session_id,
-                "team_id": owner_id, "source": "org_stop", "intent": "cancel",
+                "team_id": owner_id, "source": "org_owner_stop" if owner_only else "org_stop", "intent": "cancel",
                 "success": success, "has_active_task": False, "cancelled_requests": cancelled,
+                **({"organization_owner_stopped": True} if owner_only and success else {}),
                 **(
                     {"error": recovery_error or "organization stop requires its Owner in Team mode"}
                     if not success else {}
@@ -7095,7 +7145,9 @@ class AgentWebSocketServer:
 
     async def _targeted_expert_response_stream(self, request: AgentRequest) -> Any:
         """Run one selected expert as a normal cancellable AgentServer stream."""
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            organization_enabled,
+        )
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(request.session_id or "").strip()
         team_id = str(params.get("target_team_id") or "").strip()
@@ -7129,7 +7181,9 @@ class AgentWebSocketServer:
         has_team_target = bool(session_id and team_id)
         has_organization_binding = bool(owner_org_id and target_org_id)
         needs_recovery = target_backend is None or not has_organization_binding
-        from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+        from jiuwenswarm.server.runtime.organization_packages import (
+            team_package_availability,
+        )
 
         availability = team_package_availability(team_id) if has_team_target else {}
         if not organization_enabled():
@@ -7143,7 +7197,9 @@ class AgentWebSocketServer:
                 if persisted is None:
                     error = "target expert team does not belong to the owner's organization"
                 else:
-                    from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
+                    from jiuwenswarm.agents.harness.team.expert_org.launcher import (
+                        JiuwenExpertTeamLauncher,
+                    )
 
                     db, organization = persisted
                     owner_org_id = organization.organization_id
@@ -7170,14 +7226,16 @@ class AgentWebSocketServer:
 
         succeeded = False
         if not error:
-            from jiuwenswarm.agents.harness.team.expert_org.launcher import (
-                JiuwenExpertTeamLauncher,
-            )
             from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
                 HOST_USER_ORIGIN_EXTERNAL,
                 HOST_USER_ORIGIN_INTERNAL,
             )
-            from jiuwenswarm.server.runtime.agent_adapter.interface import is_external_user_authored_dispatch
+            from jiuwenswarm.agents.harness.team.expert_org.launcher import (
+                JiuwenExpertTeamLauncher,
+            )
+            from jiuwenswarm.server.runtime.agent_adapter.interface import (
+                is_external_user_authored_dispatch,
+            )
 
             query = _request_query_text(request)
             append_history_record(
@@ -7516,7 +7574,9 @@ class AgentWebSocketServer:
                     source="metadata",
                 )
 
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            organization_enabled,
+        )
 
         try:
             persisted = await self._load_persisted_organization(session_id) if organization_enabled() else None
@@ -7537,7 +7597,9 @@ class AgentWebSocketServer:
                     source="database",
                 )
             try:
-                from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+                from jiuwenswarm.server.runtime.team_organization_identity_store import (
+                    load_organization_team_identity,
+                )
             except ImportError:
                 load_organization_team_identity = None
                 logger.warning("[AgentWebSocketServer] historical Team identity loader unavailable", exc_info=True)
@@ -7591,11 +7653,23 @@ class AgentWebSocketServer:
                     entry["organization_id"] = org_id
 
         if organization_enabled():
-            from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+            from jiuwenswarm.server.runtime.organization_packages import (
+                team_package_availability,
+            )
+            from jiuwenswarm.server.runtime.organization_team_models import load_team_model
 
             for entry in entries.values():
                 if entry.get("organization_id") or entry.get("source") == "database":
                     entry.update(team_package_availability(entry["team_id"], entry.get("agent_group_name") or ""))
+                if not entry.get("organization_id") or entry.get("is_owner"):
+                    continue
+                try:
+                    selection = load_team_model(entry["team_id"], session_id)
+                    if selection is not None:
+                        entry["execution_model_name"] = selection.model_name
+                        entry["execution_model_selection"] = selection.selection.model_dump(exclude_none=True)
+                except (ValueError, OSError):
+                    logger.warning("Cannot read expert Team model for %s", entry["team_id"], exc_info=True)
         return list(entries.values())
 
     async def _load_persisted_organization(
@@ -7679,6 +7753,9 @@ class AgentWebSocketServer:
                 "session_id": session_id, "teams": teams, "default_team_id": default_team_id,
                 "expert_requests": self._expert_request_snapshot(session_id),
                 "organization_requests": self._organization_request_snapshot(session_id),
+                "organization_owner_stopped": (get_session_metadata(session_id) or {}).get(
+                    "organization_owner_stopped", False,
+                ),
             },
         )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
@@ -7692,7 +7769,9 @@ class AgentWebSocketServer:
         to the session's owner. A caller-supplied ``organization_id`` is only
         a consistency check and never selects the organization to query.
         """
-        from jiuwenswarm.server.runtime.team_organization_history import organization_enabled
+        from jiuwenswarm.server.runtime.team_organization_history import (
+            organization_enabled,
+        )
 
         enabled = organization_enabled()
         params = request.params if isinstance(request.params, dict) else {}
@@ -7825,7 +7904,9 @@ class AgentWebSocketServer:
             key = str(task.status)
             status_counts[key] = status_counts.get(key, 0) + 1
 
-        from jiuwenswarm.server.runtime.organization_packages import team_package_availability
+        from jiuwenswarm.server.runtime.organization_packages import (
+            team_package_availability,
+        )
 
         return {
             "organization": {
@@ -10656,8 +10737,8 @@ class AgentWebSocketServer:
         ``connected``/``auth_failed`` response. Holds the RPC open for minutes;
         the frontend shows a "connecting…" spinner while waiting.
         """
-        from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
         from jiuwenswarm.server.runtime.mcp.oauth_flow import is_host_oauth_mcp
+        from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
         try:
             params = request.params or {}
             name = str(params.get("name", "")).strip()

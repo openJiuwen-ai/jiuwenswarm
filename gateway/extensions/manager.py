@@ -1,20 +1,37 @@
+from __future__ import annotations
+
+import importlib.util
 from pathlib import Path
 from typing import Any
 
+from gateway.extensions.loader import ExtensionLoader
+from gateway.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.extensions.loader import ExtensionLoader
-from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.utils import get_root_dir, logger
 
-
-_DEFAULT_PACKAGE_EXTENSION_DIR = ("jiuwenswarm", "extensions")
+_DEFAULT_PACKAGE_EXTENSION_DIR = ("gateway", "extensions")
 _DEFAULT_EXTENSION_DIR = "/".join(_DEFAULT_PACKAGE_EXTENSION_DIR)
+# 过渡期兼容：video_duplex 扩展仍留在母仓 extensions 下。
+_LEGACY_PACKAGE_EXTENSION_DIR = ("jiuwenswarm", "extensions")
 _USER_APPLICATION_PLUGIN_DIR = "application_plugins"
 
 
 def _is_default_package_extension_dir(path: Path) -> bool:
     parts = tuple(part.lower() for part in path.parts if part not in ("", "."))
-    return parts == _DEFAULT_PACKAGE_EXTENSION_DIR
+    return parts in (_DEFAULT_PACKAGE_EXTENSION_DIR, _LEGACY_PACKAGE_EXTENSION_DIR)
+
+
+def _legacy_package_extension_dir() -> Path | None:
+    """母仓 extensions 目录；过渡期仍需发现留在母仓的扩展。"""
+    try:
+        spec = importlib.util.find_spec("jiuwenswarm")
+    except (ImportError, ValueError):
+        return None
+    locations = getattr(spec, "submodule_search_locations", None)
+    if not locations:
+        return None
+    path = Path(next(iter(locations))) / "extensions"
+    return path if path.is_dir() else None
 
 
 def _extension_search_path_candidates(path_value: str) -> list[Path]:
@@ -25,6 +42,9 @@ def _extension_search_path_candidates(path_value: str) -> list[Path]:
     candidates = [path.resolve()]
     if _is_default_package_extension_dir(path):
         candidates.append(Path(__file__).resolve().parent)
+        legacy = _legacy_package_extension_dir()
+        if legacy is not None:
+            candidates.append(legacy)
     return candidates
 
 
@@ -50,9 +70,9 @@ def _extension_dir_paths_from_config(cfg: dict) -> list[str]:
 
     - ``extensions.extension_dirs``：额外搜索目录，';' 分割（支持绝对路径）；
     - ``extensions.include_package_extensions``：是否包含包内默认目录
-      ``jiuwenswarm/extensions``（默认 true 保持兼容）。gateway 独立部署/
-      拆仓形态下置 false，仅经显式目录加载所需扩展，避免扫出母仓包内的
-      server 侧扩展。
+      ``gateway/extensions``（默认 true）。gateway 独立部署形态下置 false，
+      仅经显式目录加载所需扩展；过渡期仍会兼容发现母仓 ``jiuwenswarm/extensions``
+      下尚未迁移的扩展（如 video_duplex）。
     """
     ext = cfg.get("extensions")
     dirs = ext.get("extension_dirs") if isinstance(ext, dict) else None

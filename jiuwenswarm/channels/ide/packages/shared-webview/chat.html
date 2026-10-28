@@ -1419,18 +1419,26 @@
 
   /* ── Resend button on user messages ── */
   .resend-btn {
-    background: none;
-    border: none;
-    color: var(--text-dim);
-    font-size: 10px;
-    padding: 0;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 2px 7px;
+    border-radius: 10px;
     cursor: pointer;
     opacity: 0;
-    transition: opacity 0.15s;
+    transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
     line-height: 1;
+    align-self: flex-end;
+    margin-top: 2px;
   }
-  .msg:hover .resend-btn { opacity: 0.6; }
-  .resend-btn:hover { opacity: 1 !important; color: var(--accent); }
+  .msg:hover .resend-btn { opacity: 0.95; }
+  .resend-btn:hover {
+    opacity: 1 !important;
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--bg3);
+  }
 
   /* ── Session title inline edit ── */
   .session-title-input {

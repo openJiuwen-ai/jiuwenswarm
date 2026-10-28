@@ -2,7 +2,7 @@
 
 """AgentOS extension entry (discovered by ExtensionLoader)."""
 
-from jiuwenswarm.extensions.agentos.agentos_router.extension import (
+from gateway.extensions.agentos.agentos_router.extension import (
     AgentOSRouter,
     register_extensions,
 )

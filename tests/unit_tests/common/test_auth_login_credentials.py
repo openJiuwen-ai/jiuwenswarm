@@ -4,8 +4,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from jiuwenswarm.common.auth import login_credentials
-from jiuwenswarm.common.auth.login_credentials import (
+from gateway.auth import login_credentials
+from gateway.auth.login_credentials import (
     build_login_model_entry,
     inject_login_credential,
     login_auth_from_params,

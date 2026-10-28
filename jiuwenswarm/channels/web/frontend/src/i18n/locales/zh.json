@@ -1242,6 +1242,7 @@
         "cancelDelete": "取消",
         "deleteRunning": "诊断进行中，无法删除"
       },
+      "rewardResult": "产物评估结果",
       "rewardDimensions": "共 {{count}} 项评分维度，其中 {{perfect}} 项无需优化；点击类别查看各维度评分，需优化的在诊断发现中展开",
       "rewardTotal": "总分 {{score}}",
       "artifactFix": "产物修复建议",
@@ -1263,7 +1264,11 @@
         "user": "用户补充"
       },
       "signalSourceLabel": "信号来源：{{source}}",
-      "attributionLabel": "归因：{{kind}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}：{{dimension}}",
+      "findingDimension": "维度",
+      "findingProblem": "问题",
+      "findingReason": "原因",
       "attributionKind": {
         "artifact": "产物",
         "skill": "技能",
@@ -1298,10 +1303,12 @@
         "partial": "任务部分完成"
       },
       "ttseHint": "从这次轨迹中提取可复用的经验，由 TTSE 在后台生成并保存",
+      "ttseTriggeredNotice": "已触发TTSE，将在后台完成经验生成和保存",
       "ttseReady": "可生成经验",
       "skillFillPrefix": "根据以下优化建议对相应skill进行演进：",
+      "artifactFillPrefix": "请根据以下建议进行优化：",
       "ttseResult": {
-        "triggered": "已触发，TTSE 正在后台生成并保存经验",
+        "triggered": "已触发",
         "failed": "触发失败"
       },
       "blocked": "暂不可用：{{reason}}",
@@ -1321,7 +1328,8 @@
     },
     "composer": {
       "collapse": "收起输入框",
-      "expand": "展开输入框"
+      "expand": "展开输入框",
+      "unavailable": "诊断时不能使用输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",

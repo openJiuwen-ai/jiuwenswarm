@@ -42,7 +42,7 @@ from openjiuwen_protocol.e2a.models import (
 from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early
+from gateway.dotenv_early import parse_dotenv_early
 
 parse_dotenv_early("jiuwenswarm-acp-channel")
 

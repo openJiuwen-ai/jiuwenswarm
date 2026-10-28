@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 from gateway.extensions.agentos.agentos_router.logutil import log_agentos
-from jiuwenswarm.extensions.yuanrong_frontend_client import bind_southbound_trace_id
+from gateway.extensions.yuanrong_frontend_client import bind_southbound_trace_id
 
 logger = logging.getLogger(__name__)
 
