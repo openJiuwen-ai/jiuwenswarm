@@ -3658,13 +3658,15 @@ class MessageHandler(ABC):
 
         try:
             if action == "list":
+                # 个人版：无 user 时传 None，与 develop 一致可列全部；有 user 时按属主筛。
+                # 企业版额外带 project/group/bot；控制器若忽略筛选，下面再兜一层归属。
                 data = await cc.list_jobs(
                     project_id=(
                         str(params.get("project_id") or "")
                         if "project_id" in params
                         else None
                     ),
-                    user_id=owner_user_id,
+                    user_id=owner_user_id or None,
                     group_id=str(params.get("group_id") or ""),
                     bot_id=str(params.get("bot_id") or ""),
                 )
@@ -4095,7 +4097,7 @@ class MessageHandler(ABC):
 
     @staticmethod
     def _should_emit_processing_status_for_stream(msg: "Message") -> bool:
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.message import ReqMethod
         from gateway.runtime.session_input import SessionInputMode
 
         if msg.req_method != ReqMethod.CHAT_SEND:
@@ -5822,7 +5824,6 @@ class MessageHandler(ABC):
                 "request_id": request_id,
                 **({"team_id": team_id, "team_name": team_id, "source": "org_expert_direct"} if team_id else {}),
                 "session_id": session_id,
-                "request_id": request_id,
                 "is_processing": is_processing,
                 "is_complete": not is_processing
             },
@@ -6008,8 +6009,11 @@ class MessageHandler(ABC):
             await asyncio.gather(self._forward_task, return_exceptions=True)
             self._forward_task = None
 
-        # 先 interrupt AgentServer，再拆本机 unary/stream；删 gateway 副本时依赖此路径。
-        await self._interrupt_in_flight_sessions_on_shutdown()
+        # 企业版删 gateway 副本前需先 interrupt AgentServer；个人版保持 develop：只拆本地 consumer。
+        from gateway.enterprise import is_enterprise
+
+        if is_enterprise():
+            await self._interrupt_in_flight_sessions_on_shutdown()
 
         unary_tasks = list(self._non_stream_chat_tasks.values())
         for task in unary_tasks:
