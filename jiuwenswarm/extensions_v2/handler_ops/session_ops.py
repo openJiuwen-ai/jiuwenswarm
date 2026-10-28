@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from functools import partial
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -31,6 +32,12 @@ from jiuwenswarm.server.runtime.session.session_history_ops import (
     SessionHistoryError,
     prepare_extension_append,
     read_session_messages,
+)
+from jiuwenswarm.server.runtime.session.session_statistics import (
+    SESSION_USAGE_INFO_KEY,
+    read_session_turns,
+    read_session_usage,
+    select_usage_breakdown,
 )
 
 
@@ -151,6 +158,25 @@ async def session_append(
         fingerprint=fingerprint, update_metadata=False,
     )
     return result.to_dict()
+async def session_turns(ops: EventHandlerOps) -> int | None:
+    """Read committed main user-input turns, or None for an unknown session."""
+    context = _require_session(ops, "session.turns")
+    return await asyncio.to_thread(read_session_turns, context.session_id)
+
+
+async def session_usage(ops: EventHandlerOps, breakdown: bool = False) -> dict | None:
+    """Read observed context and per-turn usage without measuring or billing."""
+    context = _require_session(ops, "session.usage")
+    if not is_valid_session_id(context.session_id):
+        raise ValueError("invalid session_id")
+    if SESSION_USAGE_INFO_KEY in context.metadata:
+        snapshot = context.metadata[SESSION_USAGE_INFO_KEY]
+        if snapshot is not None and (
+            not isinstance(snapshot, Mapping) or snapshot.get("session_id") != context.session_id
+        ):
+            raise ValueError("session.usage requires a matching host snapshot")
+        return select_usage_breakdown(snapshot, breakdown)
+    return await asyncio.to_thread(read_session_usage, context.session_id, breakdown)
 
 
 async def session_ops_build(
@@ -172,6 +198,8 @@ async def session_ops_build(
     builder.add_method("session", "repo", session_repo)
     builder.add_method("session", "messages", session_messages)
     builder.add_method("session", "append", partial(session_append, bus=bus))
+    builder.add_method("session", "turns", session_turns)
+    builder.add_method("session", "usage", session_usage)
     return builder
 
 
