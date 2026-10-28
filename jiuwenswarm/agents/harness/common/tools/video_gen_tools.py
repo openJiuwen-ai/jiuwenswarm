@@ -72,6 +72,10 @@ _WATCH_MAX_SECONDS = 30 * 60
 # paths below.
 _PENDING_JOB_ID_RE = re.compile(r"^Video job (\S+) (?:submitted and still|is still) \w+")
 _SAVED_TO_RE = re.compile(r"Saved to: (.+?)\n")
+# Every backend's provider-reported terminal failure shares this exact shape
+# (gen_toolkits.py's four _*_finish helpers and this module's own direct
+# path all format it as f"[ERROR]: video job {id} ended with status {status}: ...").
+_TERMINAL_FAILURE_RE = re.compile(r"^\[ERROR\]: video job \S+ ended with status \w+")
 # job_ids with an active background watcher - guards against piling up a
 # second watcher every time the agent (or this module itself) polls a job
 # that is still pending.
@@ -83,6 +87,23 @@ _BACKGROUND_WATCH_TASKS: set[asyncio.Task[None]] = set()
 def _extract_pending_job_id(message: str) -> str | None:
     match = _PENDING_JOB_ID_RE.match(message or "")
     return match.group(1) if match else None
+
+
+def _is_terminal_job_result(result: str) -> bool:
+    """Whether *result* is a definitive outcome - success, or a provider-
+    reported terminal status - rather than a transient/intermediate error
+    (a non-200 poll response, invalid JSON, a momentary download hiccup,
+    credentials cleared mid-watch, an unrecognized error shape, ...) that
+    should just be retried instead of reported as a false failure.
+
+    Used instead of "not a recognized still-pending message" to decide
+    whether the watcher has something final to deliver: every result string
+    this module or gen_toolkits.py can produce for an error that is NOT a
+    genuine terminal outcome is also not one of these two shapes, so
+    treating anything else as "keep polling" never mistakes a transient
+    hiccup for completion.
+    """
+    return result.startswith("Video generated successfully!") or bool(_TERMINAL_FAILURE_RE.match(result))
 
 
 def _schedule_completion_watch_if_pending(result: str, save_dir: str | None) -> None:
@@ -110,9 +131,17 @@ async def _watch_until_settled(
             await asyncio.sleep(_WATCH_POLL_INTERVAL_SECONDS)
             elapsed += _WATCH_POLL_INTERVAL_SECONDS
             result = await _check_video_status_impl(job_id, save_dir)
-            if _extract_pending_job_id(result) != job_id:
+            if _is_terminal_job_result(result):
                 await _deliver_watch_result(job_id, result, context)
                 return
+            if _extract_pending_job_id(result) is None:
+                # Not a recognized "still pending" message either - a
+                # transient/intermediate error. Keep waiting rather than
+                # guessing: see _is_terminal_job_result.
+                logger.warning(
+                    "[generate_video] non-terminal error while watching job %s, retrying: %s",
+                    job_id, result,
+                )
         logger.warning(
             "[generate_video] gave up watching job %s for completion after %ss",
             job_id, elapsed,
@@ -121,6 +150,13 @@ async def _watch_until_settled(
         logger.exception("[generate_video] background completion watch failed for job %s", job_id)
     finally:
         _WATCHED_PENDING_JOBS.discard(job_id)
+
+
+# SendFileToolkit.send_file never raises - a failure to deliver (no active
+# Runtime push host, which is exactly the "turn already ended" scenario this
+# watcher exists for) comes back as one of these Chinese failure strings
+# instead (see send_file_to_user.py's _send_file_with_envelope/send_file).
+_SEND_FILE_FAILURE_PREFIXES = ("发送文件失败", "提交文件失败")
 
 
 async def _deliver_watch_result(job_id: str, result: str, context: RootDecisionContext) -> None:
@@ -135,23 +171,39 @@ async def _deliver_watch_result(job_id: str, result: str, context: RootDecisionC
     if saved_to:
         from jiuwenswarm.agents.harness.common.tools.send_file_to_user import SendFileToolkit
 
+        local_path = saved_to.group(1).strip()
         toolkit = SendFileToolkit(context.request_id, context.session_id, context.channel_id)
-        delivery = await toolkit.send_file(saved_to.group(1).strip())
+        delivery = await toolkit.send_file(local_path)
+        if delivery.startswith(_SEND_FILE_FAILURE_PREFIXES):
+            # The video itself is fine - only the chat delivery failed - so
+            # don't claim success, and don't lose the user's generated video
+            # either: fall back to the same text-notice push as a true
+            # generation failure, but say where the local file is.
+            logger.warning(
+                "[generate_video] send_file_to_user failed delivering completed job %s to session %s: %s",
+                job_id, context.session_id, delivery,
+            )
+            await _push_fallback_notice(
+                job_id, context,
+                f"视频已生成，但自动投递到会话失败：{delivery}\n本地文件：{local_path}",
+            )
+            return
         logger.info(
             "[generate_video] delivered completed job %s to session %s: %s",
             job_id, context.session_id, delivery,
         )
         return
 
+    await _push_fallback_notice(job_id, context, f"视频生成任务 {job_id} 未能成功完成：{result}")
+
+
+async def _push_fallback_notice(job_id: str, context: RootDecisionContext, content: str) -> None:
     pushed = await send_runtime_push(
         {
             "request_id": context.request_id,
             "channel_id": context.channel_id,
             "session_id": context.session_id,
-            "payload": annotate_chat_final(
-                {"content": f"视频生成任务 {job_id} 未能成功完成：{result}"},
-                final_mode=FINAL_MODE_APPEND,
-            ),
+            "payload": annotate_chat_final({"content": content}, final_mode=FINAL_MODE_APPEND),
             "is_complete": False,
         }
     )
@@ -518,6 +570,19 @@ async def _check_video_status_impl(job_id: str, save_dir: str | None = None) -> 
             pending_message = f"Video job {job_id} is still {status}."
             _schedule_completion_watch_if_pending(pending_message, save_dir)
             return pending_message
+    except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as exc:
+        # A transient provider-reachability blip is not a terminal outcome -
+        # the job keeps running server-side. Reporting it as [ERROR] here
+        # would fail _PENDING_JOB_ID_RE and make _watch_until_settled treat
+        # the job as settled, pushing a bogus failure notice and giving up
+        # instead of retrying (matches gen_toolkits' own backends, which all
+        # distinguish these via _TRANSIENT_HTTP_ERRORS/_unreachable_job_message).
+        pending_message = (
+            f"Video job {job_id} is still unconfirmed - the provider could not be reached ({exc!r}). "
+            "Call check_video_status again to keep waiting (do not use shell sleep)."
+        )
+        _schedule_completion_watch_if_pending(pending_message, save_dir)
+        return pending_message
     except httpx.HTTPError as exc:
         return f"[ERROR]: checking video job {job_id} failed: {exc!r}"
 
