@@ -3187,16 +3187,19 @@
       "disabled": "Disabled",
       "builtin": "Builtin",
       "prebuilt": "Prebuilt",
-      "user": "User-installed"
+      "user": "User-installed",
+      "local": "Local"
     },
     "mySkillsGroups": {
       "added": "Added Skills",
       "prebuilt": "Prebuilt Skills",
       "builtin": "Built-in Skills",
+      "local": "Local Skills",
       "skillPack": "Skill Packs"
     },
     "noPrebuiltSkills": "No prebuilt skills",
     "noUserSkills": "No user-installed skills",
+    "noLocalSkills": "No local skills",
     "skillTypes": {
       "skill": "Skill Pack",
       "skillpack": "Skill Pack",
