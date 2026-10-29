@@ -356,7 +356,7 @@ def test_pool_accepts_absent_null_and_legacy_strategy(routing):
 
 
 def test_pool_uses_first_enabled_route_and_route_parameter_overrides():
-    from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
+    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
 
     config = _config()
     group = config["models"]["groups"][0]

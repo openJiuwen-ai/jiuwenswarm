@@ -210,8 +210,11 @@ def bind_request_subject(metadata: Mapping[str, Any] | None) -> Iterator[None]:
     try:
         yield
     finally:
-        _ALLOWLIST.reset(allowlist_token)
-        _SUBJECT.reset(subject_token)
+        for var, token in ((_ALLOWLIST, allowlist_token), (_SUBJECT, subject_token)):
+            try:
+                var.reset(token)
+            except ValueError:
+                var.set(None)
 
 
 def _current_identity() -> dict[str, str]:

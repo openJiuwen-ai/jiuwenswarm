@@ -215,7 +215,9 @@ def test_runtime_does_not_reintroduce_alternate_agent_implementations() -> None:
 @pytest.mark.asyncio
 async def test_agentserver_injects_runtime_manager_into_teammate_daemon(monkeypatch) -> None:
     """The control-plane daemon runs outside a request ContextVar."""
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "lifecycle.py"
+    from jiuwenswarm.server.worker.capabilities import _spawn_teammate_bootstrap
+
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "capabilities.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     daemon_calls = [
         node
@@ -224,6 +226,7 @@ async def test_agentserver_injects_runtime_manager_into_teammate_daemon(monkeypa
         and isinstance(node.func, ast.Name)
         and node.func.id == "run_teammate_bootstrap_daemon"
     ]
+    assert daemon_calls, "teammate bootstrap must still be spawned from Worker capabilities"
 
     manager = object()
     observed = []

@@ -1330,13 +1330,19 @@ def test_is_team_chat_send_recognizes_all_team_modes(mode: str, expected: bool) 
 
 
 @pytest.mark.asyncio
-async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel() -> None:
+async def test_stop_forwarding_interrupts_in_flight_sessions_before_local_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Multi-replica gateway delete must interrupt AgentServer by session.
 
     Local stream task cancel alone leaves AgentServer running until
     output_detached; stop_forwarding must CHAT_CANCEL first (hard stop, not
     client_disconnect pause).
     """
+    monkeypatch.setattr(
+        "gateway.enterprise.is_enterprise",
+        lambda: True,
+    )
     handler = _TestMessageHandler.create()
     task_a = _seed_stream_task(
         handler, rid="rid-a", channel_id="web", session_id="sess_a",

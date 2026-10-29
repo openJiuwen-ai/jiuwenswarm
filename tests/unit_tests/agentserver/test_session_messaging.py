@@ -70,6 +70,20 @@ from gateway.common.session_message import (
 )
 
 
+def _stub_ws() -> SimpleNamespace:
+    """Minimal WebSocket stand-in for build_ws_request_context / WSSink."""
+
+    return SimpleNamespace(send=AsyncMock())
+
+
+async def _send_runtime_event_ok(*_args: object, **_kwargs: object) -> bool:
+    return True
+
+
+async def _send_runtime_event_fail(*_args: object, **_kwargs: object) -> bool:
+    return False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt"])
 @pytest.mark.parametrize("cancel_stream", [False, True])
@@ -2433,16 +2447,14 @@ async def test_resume_turn_persists_each_repeated_question_correlation(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
-    await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     rebound = store.waiting_for_resume(
         "target-1", "tool-call-third", "ask_user_interrupt"
@@ -2489,16 +2501,14 @@ async def test_stream_delivery_abort_marks_resumed_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=False
-    )
+    server.send_runtime_event = _send_runtime_event_fail
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
         lambda *args, **kwargs: None,
     )
 
-    await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
+    await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2537,13 +2547,13 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
                 )
             ]
 
-    async def disconnect(*args, **kwargs):
+    async def disconnect(*args: object, **kwargs: object) -> bool:
         raise agent_ws_server_module.WebSocketConnectionClosed(None, None)
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._session_message_service = service
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = disconnect
+    server.send_runtime_event = disconnect
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2551,7 +2561,7 @@ async def test_unary_disconnect_marks_resumed_message_unknown(
     )
 
     with pytest.raises(agent_ws_server_module.WebSocketConnectionClosed):
-        await handle_unary(build_ws_request_context(server, object(), request, asyncio.Lock()))
+        await handle_unary(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_delivery = store.get(waiting.message_id)
     assert failed_delivery.status == "unknown"
@@ -2596,9 +2606,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2606,7 +2614,7 @@ async def test_repeated_question_persistence_failure_marks_message_unknown(
     )
 
     with pytest.raises(RuntimeError, match="uncorrelated follow-up question"):
-        await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
+        await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
     failed_persistence = store.get(waiting.message_id)
     assert failed_persistence.status == "unknown"
@@ -2938,9 +2946,7 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     server._session_message_service = service
     server._session_stream_tasks = {}
     server._execution_runtime = lambda: _Runtime()
-    server._send_runtime_event = lambda *args, **kwargs: asyncio.sleep(
-        0, result=True
-    )
+    server.send_runtime_event = _send_runtime_event_ok
     monkeypatch.setattr(
         agent_ws_server_module,
         "enqueue_history_request_completion",
@@ -2948,9 +2954,9 @@ async def test_resumed_runtime_accepted_without_final_is_unknown(
     )
     try:
         if streaming:
-            await handle_stream(build_ws_request_context(server, object(), request, asyncio.Lock()))
+            await handle_stream(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
         else:
-            await handle_unary(build_ws_request_context(server, object(), request, asyncio.Lock()))
+            await handle_unary(build_ws_request_context(server, _stub_ws(), request, asyncio.Lock()))
 
         record = store.get(waiting.message_id)
         assert record is not None

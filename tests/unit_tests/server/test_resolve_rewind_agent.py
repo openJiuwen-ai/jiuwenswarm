@@ -59,11 +59,13 @@ def test_resolve_rewind_agent_prefers_session_scoped_instance(server_cls):
     agent.get_instance = lambda: root_deep
     agent.ensure_instance = _returning(root_deep)
 
-    server = MagicMock()
-    server._agent_manager = MagicMock()
-    server._agent_manager.get_agent_for_session_nowait.return_value = agent
-    server._agent_manager.get_agent_nowait.return_value = agent
-    server._resolve_adapter = server_cls._resolve_adapter
+    manager = MagicMock()
+    manager.get_agent_for_session_nowait.return_value = agent
+    manager.get_agent_nowait.return_value = agent
+    server = SimpleNamespace(
+        _agent_manager=manager,
+        _resolve_adapter=server_cls._resolve_adapter,
+    )
 
     pair = asyncio.run(_resolve(server, "tui", "sess-1"))
     assert pair is not None
@@ -87,11 +89,13 @@ def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(server_
     agent.get_instance = lambda: root_deep
     agent.ensure_instance = _returning(root_deep)
 
-    server = MagicMock()
-    server._agent_manager = MagicMock()
-    server._agent_manager.get_agent_for_session_nowait.return_value = None
-    server._agent_manager.get_agent_nowait.return_value = agent
-    server._resolve_adapter = server_cls._resolve_adapter
+    manager = MagicMock()
+    manager.get_agent_for_session_nowait.return_value = None
+    manager.get_agent_nowait.return_value = agent
+    server = SimpleNamespace(
+        _agent_manager=manager,
+        _resolve_adapter=server_cls._resolve_adapter,
+    )
 
     pair = asyncio.run(_resolve(server, "tui", "missing"))
     assert pair is not None
