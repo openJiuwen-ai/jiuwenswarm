@@ -836,6 +836,7 @@ def _build_team_permission_rail(params: dict[str, Any], context: Any) -> Any | N
     from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
     from openjiuwen.harness.security.host import ToolPermissionHost
     from openjiuwen.agent_teams.security.narrowing import narrow_permissions
+    from uuid import uuid4
 
     override = get_permissions_override(context)
     narrowed_config = narrow_permissions(inp.permissions_config, override) if override else inp.permissions_config
@@ -858,4 +859,5 @@ def _build_team_permission_rail(params: dict[str, Any], context: Any) -> Any | N
     return TeamPermissionRail(
         config=narrowed_config,
         host=host,
+        permission_key=f"team:{backend.team_name}:member:{backend.member_name}:{uuid4().hex}",
     )

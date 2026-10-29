@@ -6,8 +6,7 @@ dev-stable 适配说明（相对 0708
 ``jiuwenclaw...deep_agent/rails/subagent_permission_rail.py``）：
 
 - 基类为 agent-core ``openjiuwen.harness.rails.interrupt.confirm_rail.ConfirmInterruptRail``；
-- ACTIVE Grant 的 overlay 由本 rail 手工合成后经
-  ``get_permission_manager().check_permission(..., config=)`` 一次性裁决；
+- ACTIVE Grant 的 overlay 在生命周期写入侧发布，本 rail 只传已发布的 key；
 - agent-core ``PermissionResult`` 无 ``risk`` 字段：审批卡不再展示风险等级；
 - ``EXCLUDED_TOOLS_SPAWN``（见 ``leader_exclusive_tools``）由装配期
   ``excluded_spawn_tools`` 在 GP inject 的 ``tools=`` 参数剔除；本 rail
@@ -37,10 +36,9 @@ from openjiuwen.harness.rails.skills.skill_lifecycle_events import (
     is_skill_complete,
     parse_tool_call_arguments,
 )
-from agent_shield.tool_permission import get_permission_manager
 from openjiuwen.harness.security.models import PermissionLevel
+from openjiuwen.harness.security.permission_checks import fail_closed_permission_callback
 from openjiuwen.harness.security.skill_authorization import (
-    compose_skill_permissions,
     is_skill_authorization_enabled,
 )
 from openjiuwen.harness.security.skill_authorization.grant_store import (
@@ -71,7 +69,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
 )
 from jiuwenswarm.agents.harness.common.rails.subagent_skill_authorization_rail import (
     _resolve_subagent_scope,
-    build_context_approval_sender,
     build_context_expiry_sender,
     emit_subagent_approval,
     _parent_stream_session,
@@ -174,8 +171,7 @@ def _tighten_permission_level(
 class SubagentPermissionRail(ConfirmInterruptRail):
     """Apply normal tool permission semantics during a subagent Skill window.
 
-    有 ACTIVE Skill overlay 时一次性 ``check_permission(..., config=)``；
-    否则走父 Agent 已发布的 ``permission_key``（不造临时配置）。
+    选择父 Agent 已发布的会话/Skill key，不在工具调用时构造或补登记配置。
     """
 
     priority: int = 90
@@ -242,30 +238,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
                 "[skill_authorization] subagent.permission.flag_read_failed",
                 exc_info=True,
             )
-            return False
-
-    def _ensure_published_config(self) -> dict[str, Any]:
-        """已发布 permissions；key 未登记时按空配置补登记（不回落 yaml）。"""
-        manager = get_permission_manager()
-        try:
-            return dict(manager.get_config(self._permission_key))
-        except KeyError:
-            logger.warning(
-                "[skill_authorization] subagent.permission.register_empty_key key=%s",
-                self._permission_key,
-            )
-            manager.update_config({}, self._permission_key)
-            return dict(manager.get_config(self._permission_key))
-
-    def _skill_overlay_config(
-        self, session_id: str, agent_scope_id: str
-    ) -> dict[str, Any] | None:
-        """ACTIVE grant overlay 时返回合成配置；否则 None（调用方走已发布 key）。"""
-        grant = self._grant_store.get_active(session_id, agent_scope_id)
-        overlay = grant.overlay_snapshot if grant is not None else None
-        if not overlay:
-            return None
-        return compose_skill_permissions(self._ensure_published_config(), overlay)
+            raise
 
     @staticmethod
     def _approved(answer: Any) -> bool:
@@ -311,6 +284,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         )
         return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
+    @fail_closed_permission_callback
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         # 执行期兜底：EXCLUDED_TOOLS_SPAWN 中的工具在装配时已从子 Agent 工具列表
         # 剔除；若经其他路径混入子 Agent（如继承异常、直接注入），在此无条件拒绝。
@@ -351,7 +325,10 @@ class SubagentPermissionRail(ConfirmInterruptRail):
             )
 
             bind_session_file_context(session_id, self._sessions_root)
-        active_skill_name = self._grant_store.get_active_skill_execution(
+        read_execution = getattr(
+            self._grant_store, "get_active_skill_execution_for_permission", self._grant_store.get_active_skill_execution,
+        )
+        active_skill_name = read_execution(
             session_id,
             agent_scope_id,
         )
@@ -368,28 +345,19 @@ class SubagentPermissionRail(ConfirmInterruptRail):
         ):
             return
 
-        # Real one-off config only when Skill overlay exists; else published key.
-        overlay_cfg = self._skill_overlay_config(session_id, agent_scope_id)
+        from openjiuwen.harness.security.permission_checks import check_tool_permission
+        from jiuwenswarm.agents.harness.common.rails.permissions.published_scopes import find_published_scopes
+
+        publisher = find_published_scopes(self._permission_key, session_id)
+        key = publisher.key_for(session_id, agent_scope_id)
         normalized = TOOL_NAME_ALIASES.get(tool_name, tool_name)
-        if overlay_cfg is not None:
-            result = await get_permission_manager().check_permission(
-                normalized,
-                tool_args,
-                config=overlay_cfg,
-            )
-        else:
-            self._ensure_published_config()
-            result = await get_permission_manager().check_permission(
-                normalized,
-                tool_args,
-                self._permission_key,
-            )
+        result = await check_tool_permission(normalized, tool_args, key)
 
         # 与主 Agent 一致：owner_scopes 只能在引擎（含 Skill overlay）之后收紧。
         try:
             perm_ctx = TOOL_PERMISSION_CONTEXT.get()
             if perm_ctx is not None and perm_ctx.principal_user_id:
-                config = self._ensure_published_config()
+                config = publisher.projection_config(session_id)
                 owner_scopes = config.get("owner_scopes", {}) if isinstance(config, dict) else {}
                 cid = perm_ctx.channel_id.strip()
                 uid = perm_ctx.principal_user_id.strip()
@@ -445,6 +413,12 @@ class SubagentPermissionRail(ConfirmInterruptRail):
                 )
         ctx.extra["_interrupt_decision"] = decision
         self._apply_decision(ctx, tool_call, tool_name, decision)
+        from openjiuwen.core.common.security.outbound import OUTBOUND_PERMISSION_KEY
+
+        ctx.extra = dict(ctx.extra)
+        ctx.extra.pop(OUTBOUND_PERMISSION_KEY, None)
+        if publisher.projection_config(session_id).get("net_guard", {}).get("enabled", False):
+            ctx.extra[OUTBOUND_PERMISSION_KEY] = key
 
     async def _resolve_ask(
         self,

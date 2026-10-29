@@ -9,7 +9,6 @@ import asyncio
 import contextvars
 import copy
 import logging
-import os
 from typing import Any, Callable, Literal
 
 logger = logging.getLogger(__name__)
@@ -83,10 +82,12 @@ def clear_session_permissions_overlay(session_id: str | None = None) -> None:
     """清除企业版会话级 runtime overlay（可选：单会话或全部）。"""
     if session_id is None:
         _session_overlays.clear()
+        _refresh_published_session_overlays(None, remove=True)
         return
     normalized = session_id.strip()
     if normalized:
         _session_overlays.pop(normalized, None)
+        _refresh_published_session_overlays(normalized, remove=True)
 
 
 def _load_permissions_from_yaml() -> dict[str, Any]:
@@ -423,6 +424,33 @@ def _file_guard_delta(base_fg: dict[str, Any], effective_fg: dict[str, Any]) -> 
     return delta
 
 
+def _merge_net_guard(base, overlay):
+    merged = copy.deepcopy(base) if isinstance(base, dict) else {}
+    for key, value in overlay.items():
+        merged[key] = (_merge_net_guard(merged.get(key), value) if isinstance(value, dict)
+                       else copy.deepcopy(value))
+    return merged
+
+
+def _net_guard_delta(base, effective):
+    base = base if isinstance(base, dict) else {}
+    delta = {}
+    for key, value in effective.items():
+        if isinstance(value, dict):
+            nested = _net_guard_delta(base.get(key), value)
+            if nested:
+                delta[key] = nested
+        elif key not in base or base[key] != value:
+            delta[key] = copy.deepcopy(value)
+    return delta
+
+
+def _refresh_published_session_overlays(session_id, *, remove=False):
+    from .published_scopes import refresh_session_overlays
+
+    refresh_session_overlays(session_id, remove=remove)
+
+
 def _merge_permissions_config(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
     if not overlay:
         return copy.deepcopy(base)
@@ -463,6 +491,9 @@ def _merge_permissions_config(base: dict[str, Any], overlay: dict[str, Any]) -> 
             merged["file_guard"] = fg
         _deep_merge_file_guard(fg, overlay_fg)
 
+    overlay_net = overlay.get("net_guard")
+    if isinstance(overlay_net, dict):
+        merged["net_guard"] = _merge_net_guard(merged.get("net_guard"), overlay_net)
     return merged
 
 
@@ -495,6 +526,12 @@ def _extract_session_overlay(base: dict[str, Any], effective: dict[str, Any]) ->
     fg_delta = _file_guard_delta(base_fg, eff_fg)
     if fg_delta:
         overlay["file_guard"] = fg_delta
+
+    effective_net = effective.get("net_guard")
+    if isinstance(effective_net, dict):
+        net_delta = _net_guard_delta(base.get("net_guard"), effective_net)
+        if net_delta:
+            overlay["net_guard"] = net_delta
 
     return overlay
 
@@ -627,13 +664,14 @@ def persist_permissions_mutate(
             logger.warning(
                 "[permissions_config] session persist skipped: no session_id",
             )
-            return get_effective_permissions_config()
+            raise ValueError("Enterprise session permission persistence requires session_id")
 
         base = get_base_permissions_config()
         overlay = _session_overlays.get(sid, {})
         effective = _merge_permissions_config(base, overlay)
         mutate_fn(effective)
         _session_overlays[sid] = _extract_session_overlay(base, effective)
+        _refresh_published_session_overlays(sid)
         logger.info(
             "[permissions_config] session overlay updated session_id=%s",
             sid,
