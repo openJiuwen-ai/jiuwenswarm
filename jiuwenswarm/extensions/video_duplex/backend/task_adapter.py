@@ -24,6 +24,33 @@ from .qwen_omni_tools import delegate_matches_input, parse_qwen_omni_tool_call
 from .core_receipts import receipt_payload
 
 logger = logging.getLogger(__name__)
+
+
+def _login_credential_ref(ws, target) -> str:
+    """登录下发的免费模型：把发起连接上的华为账号绑定到任务（凭据句柄，不存 token）。
+
+    任务直发 AgentServer，不经过 Gateway 转发时挂凭据那一步；与 cron 一样创建时绑定、执行时补挂。
+    """
+    from jiuwenswarm.common.auth.passthrough import _is_login_model
+    from jiuwenswarm.gateway.cron.controller import _login_credential_ref_from_session
+
+    model_name = str(target.get("model_name") or "").strip()
+    auth_session = str(getattr(ws, "_jiuwen_auth_session", "") or "").strip()
+    if not model_name or not _is_login_model(model_name, auth_session or None):
+        return ""
+    return _login_credential_ref_from_session(auth_session)
+
+
+async def _login_model_auth(task) -> dict[str, Any] | None:
+    ref = (task.get("request") or {}).get("credential_ref")
+    if not ref:
+        return None
+    from types import SimpleNamespace
+    from jiuwenswarm.gateway.cron.scheduler import _login_model_auth_for_job
+
+    return await asyncio.to_thread(_login_model_auth_for_job, SimpleNamespace(credential_ref=ref))
+
+
 AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
 STOP_SETTLEMENT_TIMEOUT = 90
@@ -204,7 +231,7 @@ class AgentTaskExecutor:
         except Exception as exc:
             current = self.store.read(task["id"])
             if current.get("execution_bound") and not current.get("execution_settled"):
-                raise ExecutionUncertain("Execution cleanup is unconfirmed; no work was replayed") from exc
+                raise ExecutionUncertain(f"Execution cleanup is unconfirmed; no work was replayed: {exc}") from exc
             raise
 
     async def pending_interrupt(self, task):
@@ -260,9 +287,11 @@ class AgentTaskExecutor:
         )
 
     async def answer(self, task):
+        from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 
         request = self.answer_input(task).to_agent_request()
+        model_auth = await _login_model_auth(task)
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
@@ -276,6 +305,7 @@ class AgentTaskExecutor:
                     **request.params,
                     "managed_task_request": task["request_id"],
                     "managed_task_binding": self.endpoint.binding(task),
+                    **({E2A_MODEL_AUTH_PARAM_KEY: model_auth} if model_auth else {}),
                 },
                 is_stream=False,
                 timestamp=time.time(),
@@ -312,6 +342,7 @@ class AgentTaskExecutor:
             else None,
             managed_task_binding=self.endpoint.binding(task),
             execution_target=target,
+            model_auth=await _login_model_auth(task),
         )
 
     async def cancel(self, task, *, probe=False):
@@ -792,6 +823,7 @@ class VideoSearchManager:
         from .mode_routing import resolve_execution_target
 
         target = await resolve_execution_target(self.client, owner, scope)
+        credential_ref = _login_credential_ref(ws, target)
         request = dict(
             title=title,
             query=query,
@@ -804,6 +836,8 @@ class VideoSearchManager:
         )
         request.update(scheduling or {})
         request["execution_target"] = target
+        if credential_ref:
+            request["credential_ref"] = credential_ref
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )
