@@ -150,6 +150,26 @@ function causeTopic(
   return name !== '' ? name : requirement;
 }
 
+function subjectIdsOf(evidence: readonly { subject_id: string }[]): string[] {
+  const subjectIds: string[] = [];
+  for (const ref of evidence) {
+    if (ref.subject_id !== '' && !subjectIds.includes(ref.subject_id)) subjectIds.push(ref.subject_id);
+  }
+  return subjectIds;
+}
+
+function SubjectChips({ subjectIds, subjectLabels }: {
+  subjectIds: readonly string[];
+  subjectLabels: ReadonlyMap<string, string>;
+}) {
+  if (subjectLabels.size <= 1) return null;
+  return subjectIds.map(subjectId => (
+    <span key={subjectId} className={css.chip} data-testid="trajectory-diagnosis-cause-agent">
+      {subjectLabels.get(subjectId) ?? subjectId}
+    </span>
+  ));
+}
+
 function CauseLocation({ causes, subjectLabels, focusedFindingId, onFocusFinding }: {
   causes: readonly RewardFailureCause[];
   subjectLabels: ReadonlyMap<string, string>;
@@ -158,20 +178,13 @@ function CauseLocation({ causes, subjectLabels, focusedFindingId, onFocusFinding
 }) {
   const { t } = useTranslation();
   const nodes = evidenceNodeLabel({ evidence: causes.flatMap(cause => cause.evidence) });
-  const subjectIds: string[] = [];
-  for (const cause of causes) {
-    for (const ref of cause.evidence) {
-      if (ref.subject_id !== '' && !subjectIds.includes(ref.subject_id)) subjectIds.push(ref.subject_id);
-    }
-  }
   const focused = causes.some(cause => cause.id === focusedFindingId);
   return (
     <>
-      {subjectLabels.size > 1 ? subjectIds.map(subjectId => (
-        <span key={subjectId} className={css.chip} data-testid="trajectory-diagnosis-cause-agent">
-          {subjectLabels.get(subjectId) ?? subjectId}
-        </span>
-      )) : null}
+      <SubjectChips
+        subjectIds={subjectIdsOf(causes.flatMap(cause => cause.evidence))}
+        subjectLabels={subjectLabels}
+      />
       {nodes === '' ? null : (
         <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
           {t('trajectory.diagnosis.causeAt', { nodes })}
@@ -264,7 +277,6 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
   const { t } = useTranslation();
   const skill = judge.category === 'skill';
   const nodes = evidenceNodeLabel(judge);
-  const subjectId = judge.evidence[0]?.subject_id ?? '';
   return (
     <div className={css.cause} data-testid="trajectory-diagnosis-finding">
       <div className={`${css.causeHead} ${css.causeHeadTop}`}>
@@ -277,10 +289,8 @@ function EvolutionFindingCard({ judge, subjectLabels, focused, onFocusFinding }:
             {t('trajectory.diagnosis.confidence', { value: Math.round(judge.score * 100) })}
           </span>
         ) : null}
-        {subjectLabels.size > 1 && subjectId !== '' ? (
-          <span className={css.chip}>{subjectLabels.get(subjectId) ?? subjectId}</span>
-        ) : null}
         <span className={css.spacer} />
+        <SubjectChips subjectIds={subjectIdsOf(judge.evidence)} subjectLabels={subjectLabels} />
         {nodes === '' ? null : (
           <span className={`${css.hint} ${css.causeAt}`} data-testid="trajectory-diagnosis-cause-nodes">
             {t('trajectory.diagnosis.causeAt', { nodes })}
