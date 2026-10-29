@@ -501,6 +501,26 @@ def _is_foreign_stream_source(payload: Any) -> bool:
     return isinstance(source_id, str) and bool(source_id) and source_id != "main"
 
 
+def _a2ui_suppress_should_engage(
+        suppress_active: bool,
+        a2ui_split: tuple[str, str] | None,
+        foreign: bool,
+) -> bool:
+    """Gate the a2ui withhold state machine for one stream frame.
+
+    Mirror frames from a nested stream (subagent / skill node) must never
+    engage suppression on the parent turn: their markers belong to the child
+    timeline, and letting them trip the state machine withholds the parent's
+    deltas, emits a spurious render probe and mixes child text into the
+    finalized parent answer. Once suppression is already active, every frame
+    stays withheld (unchanged) — the flag belongs to the parent turn, not to
+    the frame that set it.
+    """
+    if suppress_active:
+        return True
+    return not foreign and a2ui_split is not None
+
+
 def _is_duplicate_full_body_delta(pending_chunks: list[str], content: str) -> bool:
     """True when ``content`` is an exact replay of the already-buffered answer body.
 
@@ -3844,8 +3864,10 @@ class JiuWenSwarm:
                                 )
                                 continue
                             if et == "chat.delta":
-                                final_answer_chunks.append(payload_content)
-                                if suppress_a2ui_stream or a2ui_split is not None:
+                                delta_is_foreign = _is_foreign_stream_source(data.payload)
+                                if not delta_is_foreign:
+                                    final_answer_chunks.append(payload_content)
+                                if _a2ui_suppress_should_engage(suppress_a2ui_stream, a2ui_split, delta_is_foreign):
                                     first_a2ui_suppression = not suppress_a2ui_stream
                                     if first_a2ui_suppression:
                                         logger.info(
@@ -3901,7 +3923,9 @@ class JiuWenSwarm:
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
-                                if suppress_a2ui_stream or a2ui_split is not None:
+                                if _a2ui_suppress_should_engage(
+                                    suppress_a2ui_stream, a2ui_split, _is_foreign_stream_source(data.payload)
+                                ):
                                     first_a2ui_suppression = not suppress_a2ui_stream
                                     if first_a2ui_suppression:
                                         logger.info(
@@ -4063,8 +4087,10 @@ class JiuWenSwarm:
                         if et == "chat.final":
                             ensure_final_mode_inplace(data)
                         if et == "chat.delta":
-                            final_answer_chunks.append(payload_content)
-                            if suppress_a2ui_stream or a2ui_split is not None:
+                            delta_is_foreign = _is_foreign_stream_source(data)
+                            if not delta_is_foreign:
+                                final_answer_chunks.append(payload_content)
+                            if _a2ui_suppress_should_engage(suppress_a2ui_stream, a2ui_split, delta_is_foreign):
                                 first_a2ui_suppression = not suppress_a2ui_stream
                                 if first_a2ui_suppression:
                                     logger.info(
@@ -4108,7 +4134,9 @@ class JiuWenSwarm:
                                 _persist_pending_final_text()
                                 final_answer_chunks = []
                         elif et == "chat.final":
-                            if suppress_a2ui_stream or a2ui_split is not None:
+                            if _a2ui_suppress_should_engage(
+                                suppress_a2ui_stream, a2ui_split, _is_foreign_stream_source(data)
+                            ):
                                 first_a2ui_suppression = not suppress_a2ui_stream
                                 if first_a2ui_suppression:
                                     logger.info(

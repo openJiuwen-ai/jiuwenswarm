@@ -579,3 +579,37 @@ def test_partial_marker_triggers_on_long_dataModel_prefix():
     )
 
     assert _looks_like_partial_a2ui_marker("content\ndataModel") is True
+
+
+def test_suppress_engage_ignores_foreign_frames():
+    """Nested-stream mirror frames must never engage the parent's suppression.
+
+    Regression: a member/skill-node delta whose mirrored text carries a2ui
+    markers used to trip the parent state machine — withholding the parent's
+    stream, emitting a spurious render probe and mixing child text into the
+    finalized answer.
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _a2ui_suppress_should_engage,
+    )
+
+    # Main-chain marker frame engages first-time suppression; foreign does not.
+    assert _a2ui_suppress_should_engage(False, ("prefix", "rest"), False) is True
+    assert _a2ui_suppress_should_engage(False, ("prefix", "rest"), True) is False
+    # No marker: nobody engages.
+    assert _a2ui_suppress_should_engage(False, None, False) is False
+    # Once the parent is suppressing, every frame stays withheld (flag belongs
+    # to the parent turn, not the frame that set it).
+    assert _a2ui_suppress_should_engage(True, None, True) is True
+
+
+def test_foreign_source_predicate_semantics():
+    """chat.delta guards must use the same foreign predicate as reasoning/tool_call."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _is_foreign_stream_source,
+    )
+
+    assert _is_foreign_stream_source({"stream_source_id": "node-7"}) is True
+    assert _is_foreign_stream_source({"stream_source_id": "main"}) is False
+    assert _is_foreign_stream_source({}) is False
+    assert _is_foreign_stream_source(None) is False
