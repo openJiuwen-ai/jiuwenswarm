@@ -451,7 +451,17 @@ class AgentManager:
             project_dir or None,
         )
         agent = JiuWenSwarm()
-        await agent.create_instance(config, mode=mode_key, sub_mode=sub_mode_key or None)
+        from jiuwenswarm.server.request_context import await_request_cleanup, raise_if_request_cancelled
+
+        try:
+            await agent.create_instance(config, mode=mode_key, sub_mode=sub_mode_key or None)
+            raise_if_request_cancelled()
+        except BaseException:
+            try:
+                await await_request_cleanup(agent.cleanup())
+            except (Exception, asyncio.CancelledError):
+                logger.warning("[AgentManager] unpublished agent cleanup failed", exc_info=True)
+            raise
         setattr(agent, "_jiuwenswarm_agent_cache_key", agent_cache_key)
         setattr(agent, "_jiuwenswarm_agent_mode", mode_key)
         setattr(agent, "_jiuwenswarm_agent_sub_mode", sub_mode_key)

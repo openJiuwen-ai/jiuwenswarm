@@ -158,11 +158,16 @@ from jiuwenswarm.common.reverse_rpc.errors import ReverseRpcTransportDisconnecte
 from jiuwenswarm.common.reverse_rpc.models import ReverseRpcResponse
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.server.request_context import (
+    await_request_cleanup,
     build_device_context_from_request,
+    raise_if_request_cancelled,
+    get_current_stream_stop,
     reset_current_agent_request,
     reset_device_context,
+    reset_current_stream_stop,
     set_current_agent_request,
     set_device_context,
+    set_current_stream_stop,
 )
 from jiuwenswarm.server.reverse_rpc import (
     SingleGatewayReverseRpcTransport,
@@ -2437,66 +2442,33 @@ class AgentWebSocketServer:
                 intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
                 cleanup_after_cancel = self._is_client_disconnect_cancel_request(request)
 
-                # 只有 cancel/supplement 才取消流式任务
-                # pause/resume 不取消，因为任务仍在运行（pause 在 checkpoint 阻塞，resume 解除阻塞）
-                stream_tasks: list[asyncio.Task] = []
-                if intent in ("cancel", "supplement"):
-                    entries = self._session_stream_tasks.get(sid, {})
-                    for stream_task, stream_stop_event in list(entries.items()):
-                        if stream_task.done():
-                            continue
-                        logger.info(
-                            "[AgentWebSocketServer] cancel: 终止 session 流式任务: session_id=%s intent=%s",
-                            sid,
-                            intent,
-                        )
-                        stream_stop_event.set()
-                        stream_task.cancel()
-                        stream_tasks.append(stream_task)
+                if intent not in ("cancel", "supplement"):
+                    await self._handle_cancel(ws, request, send_lock, allow_create=False)
+                    return
 
-                cancel_response: AgentResponse | None = None
-                try:
-                    # 专门处理 cancel，复用已有 agent（不再 fallthrough 到 _handle_unary）
-                    # allow_create=False：找不到已有 agent 时不 fallback 新建（见 _handle_cancel docstring）。
+                cancel_response = None
+
+                async def cancel_agent():
+                    nonlocal cancel_response
                     cancel_response = await self._handle_cancel(
-                        ws,
-                        request,
-                        send_lock,
-                        allow_create=False,
-                        send_response=not cleanup_after_cancel,
+                        ws, request, send_lock, allow_create=False, send_response=False,
                     )
-                finally:
-                    if stream_tasks:
-                        results = await asyncio.gather(*stream_tasks, return_exceptions=True)
-                        for result in results:
-                            if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
-                                logger.warning(
-                                    "[AgentWebSocketServer] cancel: stream task cleanup failed: "
-                                    "session_id=%s intent=%s error=%s",
-                                    sid,
-                                    intent,
-                                    result,
-                                )
-                    if cleanup_after_cancel and intent in ("cancel", "supplement"):
-                        cleanup_succeeded = (
-                            await self._cleanup_client_disconnect_session_runtime(
-                                request
-                            )
-                        )
-                        if cancel_response is not None:
-                            if not cleanup_succeeded:
-                                cancel_response.ok = False
-                                cancel_response.payload = {
-                                    "event_type": "chat.interrupt_result",
-                                    "success": False,
-                                    "error": "session runtime cleanup failed",
-                                }
-                            wire = encode_agent_response_for_wire(
-                                cancel_response,
-                                response_id=request.request_id,
-                            )
-                            async with send_lock:
-                                await send_wire_payload(ws, wire)
+                    return cancel_response
+
+                succeeded = await self._terminate_session_streams(
+                    request, cancel_agent, cleanup_runtime=cleanup_after_cancel,
+                )
+                if cancel_response is None:
+                    cancel_response = AgentResponse(request_id=request.request_id,
+                        channel_id=request.channel_id, ok=succeeded,
+                        payload={"event_type": "chat.interrupt_result", "success": succeeded})
+                if not succeeded:
+                    cancel_response.ok = False
+                    cancel_response.payload = {"event_type": "chat.interrupt_result", "success": False,
+                        "code": "CANCEL_FAILED", "error": "session runtime cleanup failed"}
+                wire = encode_agent_response_for_wire(cancel_response, response_id=request.request_id)
+                async with send_lock:
+                    await send_wire_payload(ws, wire)
                 return
             if request.is_stream:
                 if not defer_admission_preparation:
@@ -2576,12 +2548,11 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _should_defer_admission_preparation(request: AgentRequest) -> bool:
-        """准入 ACK 请求先确认，再执行可能耗时的聊天前置处理。"""
+        """Desktop streams register cancellation before potentially slow preparation."""
         return (
             request.is_stream
             and request.req_method == ReqMethod.CHAT_SEND
             and str(request.channel_id or "").strip().lower() == "desktop"
-            and (request.metadata or {}).get("require_admission_ack") is True
         )
 
     @staticmethod
@@ -3421,11 +3392,35 @@ class AgentWebSocketServer:
         *,
         defer_admission_preparation: bool = False,
     ) -> None:
+        sid = request.session_id or "default"
+        closing = any(key[0] == sid and not job.done()
+                      for key, job in getattr(self, "_stream_shutdown_jobs", {}).items())
+        if request.req_method == ReqMethod.CHAT_SEND and (closing or sid in getattr(self, "_deleting_sessions", set())):
+            response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                ok=False, payload={"code": "BUSY", "error": "会话正在清理，请稍后重试"})
+            async with send_lock:
+                await send_wire_payload(ws, encode_agent_response_for_wire(response, response_id=request.request_id))
+            return
         desktop_stream_admitted = self._begin_desktop_chat_stream(request)
         if desktop_stream_admitted is False:
             await self._send_desktop_session_limit_message(ws, request, send_lock)
             return
 
+        # Own the entire admitted request, including acknowledgement and setup.
+        # A missing adapter during initialization must not make it uncancellable.
+        current_task = asyncio.current_task()
+        session_id = request.session_id or "default"
+        stop_event = asyncio.Event()
+        registry = getattr(self, "_session_stream_tasks", None)
+        if registry is None:
+            registry = self._session_stream_tasks = {}
+        requests = getattr(self, "_session_stream_requests", None)
+        if requests is None:
+            requests = self._session_stream_requests = {}
+        if current_task is not None:
+            registry.setdefault(session_id, {})[current_task] = stop_event
+            requests[current_task] = request.request_id
+        stop_token = set_current_stream_stop(stop_event)
         manager = getattr(self, "_agent_manager", None)
         foreground = (
             request.req_method in _CODE_MODE_SYNC_METHODS
@@ -3448,14 +3443,22 @@ class AgentWebSocketServer:
             if defer_admission_preparation:
                 await self._trigger_before_chat_request_hook(request)
                 await self._ensure_auto_team_binding_for_chat(request)
-            if foreground:
-                await manager.begin_foreground_chat()
             try:
+                if foreground:
+                    await await_request_cleanup(manager.begin_foreground_chat())
+                raise_if_request_cancelled()
                 await self._handle_stream_impl(ws, request, send_lock)
             finally:
                 if foreground:
-                    await manager.end_foreground_chat()
+                    await await_request_cleanup(manager.end_foreground_chat())
         finally:
+            reset_current_stream_stop(stop_token)
+            if current_task is not None:
+                requests.pop(current_task, None)
+                entries = registry.get(session_id, {})
+                entries.pop(current_task, None)
+                if not entries:
+                    registry.pop(session_id, None)
             if desktop_stream_admitted is True:
                 self._end_desktop_chat_stream(request)
 
@@ -3566,10 +3569,10 @@ class AgentWebSocketServer:
                 request.params,
                 request_metadata,
             )
-        current_task = asyncio.current_task()
+        # Normal completion stops heartbeats without cancelling the request's
+        # post-processing or background tasks that inherited its context.
         stream_stop_event = asyncio.Event()
-        if current_task is not None:
-            self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
+        request_stop_event = get_current_stream_stop()
 
         # 无状态流式请求（skills / skilldev / plugins / symphony）不需要 mode 解析和
         # code mode 状态管理，直接走 process_message_stream 即可。用轻量 agent 获取，
@@ -3620,10 +3623,26 @@ class AgentWebSocketServer:
                 while True:
                     # 等待心跳间隔，如果期间有真实 chunk 发送则 heartbeat_event 被设置，重置等待
                     try:
-                        await asyncio.wait_for(
-                            heartbeat_event.wait(),
-                            timeout=_STREAM_HEARTBEAT_INTERVAL_SECONDS,
-                        )
+                        waiters = [
+                            asyncio.create_task(heartbeat_event.wait()),
+                            asyncio.create_task(stream_stop_event.wait()),
+                        ]
+                        if request_stop_event is not None:
+                            waiters.append(asyncio.create_task(request_stop_event.wait()))
+                        try:
+                            done, _ = await asyncio.wait(waiters,
+                                timeout=_STREAM_HEARTBEAT_INTERVAL_SECONDS,
+                                return_when=asyncio.FIRST_COMPLETED)
+                        finally:
+                            for waiter in waiters:
+                                waiter.cancel()
+                            await asyncio.gather(*waiters, return_exceptions=True)
+                        if stream_stop_event.is_set() or (
+                            request_stop_event is not None and request_stop_event.is_set()
+                        ):
+                            return
+                        if not done:
+                            raise asyncio.TimeoutError
                         # 有真实 chunk 发送，重置 event 继续等待
                         heartbeat_event.clear()
                     except asyncio.TimeoutError:
@@ -3798,12 +3817,7 @@ class AgentWebSocketServer:
                     pass
                 except TRANSPORT_CLOSED_ERRORS:
                     pass
-            # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
-            entries = self._session_stream_tasks.get(session_id)
-            if entries is not None and current_task is not None:
-                entries.pop(current_task, None)
-                if not entries:
-                    self._session_stream_tasks.pop(session_id, None)
+            # Registration belongs to _handle_stream's outermost finally.
             # Push plan.mode_exited if exit_plan_mode restored mode during processing
             if not readonly_goal_get:
                 await self._check_post_process_plan_exit(request, agent)
@@ -4875,6 +4889,38 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _handle_session_delete(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        from jiuwenswarm.server.runtime.session.session_history import resolve_session_dir
+
+        target = str((request.params or {}).get("session_id") or "").strip()
+        path, _ = resolve_session_dir(target, sessions_root=get_agent_sessions_dir())
+        if not target or path is None:
+            await self._delete_session_records(ws, request, send_lock)
+            return
+        locks = getattr(self, "_session_delete_locks", None)
+        if locks is None:
+            locks = self._session_delete_locks = WeakValueDictionary()
+        # A local strong reference keeps this lock alive for holders and waiters.
+        lock = locks.setdefault(target, asyncio.Lock())
+        deleting = getattr(self, "_deleting_sessions", None)
+        if deleting is None:
+            deleting = self._deleting_sessions = set()
+        counts = getattr(self, "_session_delete_counts", None)
+        if counts is None:
+            counts = self._session_delete_counts = {}
+        counts[target] = counts.get(target, 0) + 1
+        deleting.add(target)
+        try:
+            async with lock:
+                # The RPC caller can disappear, but runtime and record cleanup
+                # still own the barrier until their entire operation finishes.
+                await await_request_cleanup(self._delete_session_records(ws, request, send_lock))
+        finally:
+            counts[target] -= 1
+            if counts[target] == 0:
+                counts.pop(target)
+                deleting.discard(target)
+
+    async def _delete_session_records(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> bool:
         """Delete a single session and its recoverable runtime state."""
         from openjiuwen.core.runner import Runner
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
@@ -4904,15 +4950,7 @@ class AgentWebSocketServer:
                     payload={"error": invalid_reason or "invalid session_id", "code": "BAD_REQUEST"},
                     metadata=request.metadata,
                 )
-            elif not session_dir.exists():
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={"error": "session not found", "code": "NOT_FOUND"},
-                    metadata=request.metadata,
-                )
-            elif not session_dir.is_dir():
+            elif session_dir.exists() and not session_dir.is_dir():
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
@@ -4921,25 +4959,42 @@ class AgentWebSocketServer:
                     metadata=request.metadata,
                 )
             else:
+                metadata = get_session_metadata(target)
+                is_team_mode = self._is_team_metadata_mode(metadata)
+                team_name = str(metadata.get("team_name") or "").strip()
+                channel_id = str(metadata.get("channel_id") or request.channel_id or "").strip() or None
+                if not is_team_mode:
+                    # session.delete must also stop what the session *does*, not
+                    # just erase its records: an in-flight round keeps streaming
+                    # and re-persists the session dir right after rmtree(), which
+                    # is exactly why session.list resurrects a "deleted" session
+                    # and the chat stream never ends. Cancel the round first via
+                    # the same chat.interrupt routing used by _handle_cancel.
+                    # Team sessions own their teardown through
+                    # team_manager.delete_session_runtime below — skip to avoid
+                    # double cancellation.
+                    if not await self._cancel_inflight_round_for_delete(request, target):
+                        resp = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                            ok=False, payload={"code": "DELETE_FAILED", "error": "session runtime cleanup failed"})
+                        async with send_lock:
+                            await send_wire_payload(ws, encode_agent_response_for_wire(resp, response_id=request.request_id))
+                        return False
+                    cleanup = getattr(self._agent_manager, "cleanup_session_runtime", None)
+                    if callable(cleanup):
+                        try:
+                            await await_request_cleanup(cleanup(
+                                channel_id=channel_id or request.channel_id or "", session_id=target))
+                        except Exception:
+                            resp = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                                ok=False, payload={"code": "DELETE_FAILED", "error": "session runtime cleanup failed"})
+                            async with send_lock:
+                                await send_wire_payload(ws, encode_agent_response_for_wire(resp, response_id=request.request_id))
+                            return False
                 checkpoint_resp = await self._ensure_persistent_checkpointer_response(request)
                 if checkpoint_resp is not None:
                     resp = checkpoint_resp
                 else:
-                    metadata = get_session_metadata(target)
-                    is_team_mode = self._is_team_metadata_mode(metadata)
-                    team_name = str(metadata.get("team_name") or "").strip()
-                    channel_id = str(metadata.get("channel_id") or request.channel_id or "").strip() or None
                     if not is_team_mode:
-                        # session.delete must also stop what the session *does*, not
-                        # just erase its records: an in-flight round keeps streaming
-                        # and re-persists the session dir right after rmtree(), which
-                        # is exactly why session.list resurrects a "deleted" session
-                        # and the chat stream never ends. Cancel the round first via
-                        # the same chat.interrupt routing used by _handle_cancel.
-                        # Team sessions own their teardown through
-                        # team_manager.delete_session_runtime below — skip to avoid
-                        # double cancellation.
-                        await self._cancel_inflight_round_for_delete(request, target)
                         from jiuwenswarm.server.runtime.session.kv_cache_product_hooks import (
                             evict_plan_session,
                         )
@@ -4996,7 +5051,8 @@ class AgentWebSocketServer:
                             metadata=request.metadata,
                         )
                     else:
-                        shutil.rmtree(session_dir)
+                        if session_dir.exists():
+                            shutil.rmtree(session_dir)
                         _plan_exited_sessions.discard(target)
                         _plan_active_sessions.discard(target)
                         remove_session_metadata_cache(target)
@@ -5043,27 +5099,94 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+        return bool(resp.ok)
+
+    async def _terminate_session_streams(
+        self, request: AgentRequest, cancel_agent=None, *, cleanup_runtime: bool = False,
+    ) -> bool:
+        """Cancel each matching owner once and await one retained shutdown job.
+
+        A deadline bounds the RPC wait, not the resource cleanup. If shutdown
+        is still running, the owner and its capacity entry remain registered.
+        """
+        sid = request.session_id or "default"
+        target = (request.params or {}).get("request_id")
+        # A disconnect cleanup may join an earlier manual stop, but must still
+        # perform its additional runtime teardown under the same RPC deadline.
+        key = (sid, str(target or ""), cleanup_runtime)
+        jobs = getattr(self, "_stream_shutdown_jobs", None)
+        if jobs is None:
+            jobs = self._stream_shutdown_jobs = {}
+        job = jobs.get(key)
+        if job is None or job.done():
+            entries = getattr(self, "_session_stream_tasks", {}).get(sid, {})
+            ids = getattr(self, "_session_stream_requests", {})
+            owners = [task for task in list(entries) if not task.done()
+                      and task is not asyncio.current_task()
+                      and (not target or ids.get(task) == target)]
+            # A delayed cancel for an old round must not touch a newer owner.
+            if target and not owners and any(not task.done() for task in entries):
+                return True
+            owner_requests = {task: ids.get(task) for task in owners}
+            for task in owners:
+                event = entries[task]
+                if not event.is_set():
+                    event.set()
+                    task.cancel()
+
+            related = [pending for other_key, pending in jobs.items()
+                       if other_key[0] == sid and not pending.done()]
+
+            async def shutdown():
+                succeeded = True
+                try:
+                    if related:
+                        # A stop followed by delete shares the same adapter
+                        # shutdown, while still joining any additional owners.
+                        results = await asyncio.gather(*related, return_exceptions=True)
+                        succeeded = all(result is True for result in results)
+                    elif cancel_agent is not None:
+                        response = await cancel_agent()
+                        if isinstance(response, AgentResponse) and not response.ok:
+                            succeeded = False
+                except Exception:
+                    succeeded = False
+                    logger.warning("[AgentWebSocketServer] session cancellation failed: session=%s", sid, exc_info=True)
+                results = await asyncio.gather(*owners, return_exceptions=True)
+                for owner, result in zip(owners, results):
+                    if isinstance(result, Exception):
+                        succeeded = False
+                        logger.warning(
+                            "[AgentWebSocketServer] stream task cleanup failed: "
+                            "session=%s request_id=%s error=%s",
+                            sid, owner_requests[owner], result,
+                            exc_info=(type(result), result, result.__traceback__),
+                        )
+                if cleanup_runtime:
+                    # Even a failed stream finalizer may leave recoverable
+                    # runtime state. Try this only after all owners have exited.
+                    cleaned = await self._cleanup_client_disconnect_session_runtime(request)
+                    succeeded = succeeded and cleaned
+                return succeeded
+
+            job = asyncio.create_task(shutdown(), name=f"session-shutdown-{sid}")
+            jobs[key] = job
+
+            def finished(task):
+                if jobs.get(key) is task:
+                    jobs.pop(key, None)
+
+            job.add_done_callback(finished)
+        done, _ = await asyncio.wait({job}, timeout=getattr(self, "_stream_cancel_timeout", 5.0))
+        return bool(job.result()) if done else False
 
     async def _cancel_inflight_round_for_delete(
         self, request: AgentRequest, target: str
-    ) -> None:
-        """Best-effort cancel of the session's in-flight chat round before delete.
-
-        Mirrors _handle_cancel's session reverse-lookup (no mode-based fallback:
-        hitting an unrelated agent would spin without reaching this session's
-        round). Never raises — a failed cancel must not block the user's delete;
-        it only degrades back to the old behavior.
-        """
+    ) -> bool:
+        """Stop the request owner even if its adapter has not been cached yet."""
         channel_id = request.channel_id or "default"
         lookup = getattr(self._agent_manager, "get_agent_for_session", None)
         agent = lookup(channel_id, target) if callable(lookup) else None
-        if agent is None:
-            logger.info(
-                "[AgentWebSocketServer] session.delete: no live agent for "
-                "session=%s, nothing to cancel",
-                target,
-            )
-            return
         cancel_request = AgentRequest(
             request_id=f"session.delete-cancel-{target[:16]}",
             channel_id=channel_id,
@@ -5071,20 +5194,11 @@ class AgentWebSocketServer:
             req_method=ReqMethod.CHAT_CANCEL,
             params={"session_id": target, "intent": "cancel"},
         )
-        try:
-            await agent.process_message(cancel_request)
-            logger.info(
-                "[AgentWebSocketServer] session.delete: cancelled in-flight "
-                "round session=%s",
-                target,
-            )
-        except Exception:
-            logger.warning(
-                "[AgentWebSocketServer] session.delete: cancel in-flight round "
-                "failed, proceeding with delete session=%s",
-                target,
-                exc_info=True,
-            )
+        # Delete always targets every in-flight turn, never the RPC's own id.
+        async def cancel_agent():
+            return await agent.process_message(cancel_request) if agent is not None else None
+
+        return await self._terminate_session_streams(cancel_request, cancel_agent)
 
     async def _resolve_rewind_agent(
         self,

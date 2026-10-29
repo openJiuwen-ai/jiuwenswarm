@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import weakref
+from unittest.mock import AsyncMock
 
 import pytest
 from websockets.exceptions import ConnectionClosedError
@@ -12,7 +13,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import (
 )
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.invocation_context import get_current_invocation_context
-from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -128,6 +129,7 @@ class _PinRecordingAgentManager:
 
 async def _handle_cancel_cleanup_case(env) -> list[tuple[str, str]]:
     server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
     manager = _CleanupRecordingAgentManager()
     server._agent_manager = manager
     server._session_stream_tasks = {}
@@ -260,6 +262,7 @@ async def test_disconnect_cancel_response_waits_for_runtime_cleanup() -> None:
     )
     env.channel_context["_jiuwenswarm_cancel_source"] = "client_disconnect"
     server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
     manager = _BlockingCleanupAgentManager()
     server._agent_manager = manager
     server._session_stream_tasks = {}
@@ -272,7 +275,7 @@ async def test_disconnect_cancel_response_waits_for_runtime_cleanup() -> None:
             asyncio.Lock(),
         )
     )
-    await manager.cleanup_started.wait()
+    await asyncio.wait_for(manager.cleanup_started.wait(), 1)
 
     assert ws.sent == []
 
@@ -297,6 +300,7 @@ async def test_disconnect_cancel_response_reports_runtime_cleanup_failure() -> N
     )
     env.channel_context["_jiuwenswarm_cancel_source"] = "client_disconnect"
     server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
     server._agent_manager = _FailedCleanupAgentManager()
     server._session_stream_tasks = {}
     ws = FakeWebSocket()
@@ -313,6 +317,7 @@ async def test_disconnect_cancel_response_reports_runtime_cleanup_failure() -> N
     assert response.payload == {
         "event_type": "chat.interrupt_result",
         "success": False,
+        "code": "CANCEL_FAILED",
         "error": "session runtime cleanup failed",
     }
 
@@ -332,6 +337,7 @@ def test_session_mode_sync_lock_cache_does_not_retain_idle_sessions() -> None:
 
 def test_scheduler_agent_pin_moves_with_persistent_owner() -> None:
     server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
     manager = _PinRecordingAgentManager()
     first = object()
     second = object()
@@ -350,6 +356,7 @@ def test_scheduler_agent_pin_moves_with_persistent_owner() -> None:
 @pytest.mark.asyncio
 async def test_disconnect_cancel_does_not_create_agent_when_runtime_missing() -> None:
     server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
     manager = _NoCreateCleanupAgentManager()
     server._agent_manager = manager
     server._session_stream_tasks = {}
@@ -378,6 +385,7 @@ async def test_disconnect_cancel_does_not_create_agent_when_runtime_missing() ->
 @pytest.mark.asyncio
 async def test_disconnect_cancel_cleans_session_runtime_when_cancel_reply_send_fails() -> None:
     server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
     manager = _CleanupRecordingAgentManager()
     server._agent_manager = manager
     server._session_stream_tasks = {}
@@ -403,16 +411,21 @@ async def test_disconnect_cancel_cleans_session_runtime_when_cancel_reply_send_f
 
 @pytest.mark.asyncio
 async def test_disconnect_cancel_cleans_session_runtime_when_stream_task_cleanup_fails() -> None:
+    started = asyncio.Event()
+
     async def failing_stream_task() -> None:
+        started.set()
         try:
-            await asyncio.sleep(60)
+            await asyncio.Event().wait()
         finally:
             raise RuntimeError("stream cleanup failed")
 
     server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
     manager = _CleanupRecordingAgentManager()
     server._agent_manager = manager
     stream_task = asyncio.create_task(failing_stream_task())
+    await asyncio.wait_for(started.wait(), 1)
     server._session_stream_tasks = {"sess-stream-cleanup-fails": {stream_task: asyncio.Event()}}
     env = e2a_from_agent_fields(
         request_id="req-disconnect-stream-cleanup-fails",
@@ -433,7 +446,6 @@ async def test_disconnect_cancel_cleans_session_runtime_when_stream_task_cleanup
         json.dumps(env.to_dict(), ensure_ascii=False),
         asyncio.Lock(),
     )
-
     assert manager.cleaned == [("tui", "sess-stream-cleanup-fails")]
     assert stream_task.done() is True
 
@@ -510,3 +522,105 @@ async def test_manual_cancel_keeps_session_runtime() -> None:
     )
 
     assert await _handle_cancel_cleanup_case(env) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_request", [False, True])
+async def test_disconnect_runtime_cleanup_remains_owned_after_rpc_leaves(cancel_request):
+    sid = "disconnect-slow-runtime"
+    server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
+    server._session_stream_tasks = {}
+    server._stream_cancel_timeout = 0.02
+    manager = _BlockingCleanupAgentManager()
+    server._agent_manager = manager
+    ws = FakeWebSocket()
+    env = e2a_from_agent_fields(
+        request_id="disconnect-slow", channel_id="tui", session_id=sid,
+        req_method=ReqMethod.CHAT_CANCEL, params={"intent": "cancel", "session_id": sid},
+        is_stream=False, timestamp=0.0,
+    )
+    env.channel_context["_jiuwenswarm_cancel_source"] = "client_disconnect"
+    task = asyncio.create_task(server.handle_message_for_test(ws, json.dumps(env.to_dict()), asyncio.Lock()))
+    try:
+        await asyncio.wait_for(manager.cleanup_started.wait(), 1)
+        if cancel_request:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        else:
+            done, _ = await asyncio.wait({task}, timeout=0.2)
+            assert task in done, "RPC deadline must include runtime cleanup"
+            assert ws.sent[-1]["status"] == "failed"
+            assert ws.sent[-1]["body"]["details"]["code"] == "CANCEL_FAILED"
+        server._handle_stream_impl = AsyncMock()
+        chat = AgentRequest(request_id="new-disconnect-round", channel_id="desktop", session_id=sid,
+                            req_method=ReqMethod.CHAT_SEND, params={"query": "hello"}, is_stream=True)
+        await server._handle_stream(ws, chat, asyncio.Lock())
+        server._handle_stream_impl.assert_not_awaited()
+        assert manager.cleaned == []
+        manager.allow_cleanup.set()
+        await asyncio.gather(*list(server._stream_shutdown_jobs.values()))
+        assert manager.cleaned == [("tui", sid)]
+        await server._handle_stream(ws, chat, asyncio.Lock())
+        server._handle_stream_impl.assert_awaited_once()
+    finally:
+        manager.allow_cleanup.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await asyncio.gather(*list(getattr(server, "_stream_shutdown_jobs", {}).values()), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_joining_manual_stop_still_owns_runtime_cleanup():
+    sid = "stop-then-disconnect"
+    server = _AgentWsTestHarness.__new__(_AgentWsTestHarness)
+    server._channel_conns = {}
+    server._session_stream_tasks = {}
+    server._stream_cancel_timeout = 0.03
+    manager = _BlockingCleanupAgentManager()
+    server._agent_manager = manager
+    cancel_entered, release_cancel = asyncio.Event(), asyncio.Event()
+    cancel_calls = 0
+
+    async def cancel_agent(request):
+        nonlocal cancel_calls
+        cancel_calls += 1
+        cancel_entered.set()
+        await release_cancel.wait()
+        return AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                             ok=True, payload={"success": True})
+
+    manager.agent.process_message = cancel_agent
+    def envelope(request_id, disconnected):
+        env = e2a_from_agent_fields(
+            request_id=request_id, channel_id="tui", session_id=sid,
+            req_method=ReqMethod.CHAT_CANCEL, params={"intent": "cancel", "session_id": sid},
+            is_stream=False, timestamp=0.0,
+        )
+        if disconnected:
+            env.channel_context["_jiuwenswarm_cancel_source"] = "client_disconnect"
+        return json.dumps(env.to_dict())
+
+    manual_ws, disconnect_ws = FakeWebSocket(), FakeWebSocket()
+    manual = asyncio.create_task(server.handle_message_for_test(manual_ws, envelope("manual", False), asyncio.Lock()))
+    disconnected = None
+    try:
+        await asyncio.wait_for(cancel_entered.wait(), 1)
+        disconnected = asyncio.create_task(server.handle_message_for_test(
+            disconnect_ws, envelope("disconnect", True), asyncio.Lock()))
+        await asyncio.sleep(0)
+        release_cancel.set()
+        await asyncio.wait_for(manager.cleanup_started.wait(), 1)
+        await asyncio.wait_for(manual, 1)
+        done, _ = await asyncio.wait({disconnected}, timeout=0.2)
+        assert disconnected in done
+        assert manual_ws.sent[-1]["status"] == "succeeded"
+        assert disconnect_ws.sent[-1]["status"] == "failed"
+        assert cancel_calls == 1
+        manager.allow_cleanup.set()
+        await asyncio.gather(*list(server._stream_shutdown_jobs.values()))
+        assert manager.cleaned == [("tui", sid)]
+    finally:
+        release_cancel.set()
+        manager.allow_cleanup.set()
+        await asyncio.gather(*[task for task in (manual, disconnected) if task is not None], return_exceptions=True)
+        await asyncio.gather(*list(getattr(server, "_stream_shutdown_jobs", {}).values()), return_exceptions=True)

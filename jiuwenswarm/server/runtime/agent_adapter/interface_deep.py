@@ -1755,6 +1755,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         warmup_exclude_request_id: str | None = None,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
+        from jiuwenswarm.server.request_context import await_request_cleanup, raise_if_request_cancelled
+
+        raise_if_request_cancelled()
         if self._is_session_scoped_adapter:
             self._touch_session_adapter(session_id)
             return self
@@ -1765,6 +1768,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             existing = self._session_adapters.get(sid)
             if existing is not None:
                 await self._reload_session_adapter_if_stale(sid, existing)
+                raise_if_request_cancelled()
                 # 预热实例的 create 期专家重放早于 metadata 写入（空放）；
                 # 复用前对账补挂（一次性、幂等，详见 expert_capability）。
                 reconcile = getattr(existing, "_reconcile_expert_binding_on_reuse", None)
@@ -1797,6 +1801,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         sid,
                         exc,
                     )
+                raise_if_request_cancelled()
                 self._touch_session_adapter(sid)
                 return existing
 
@@ -1806,81 +1811,95 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 if isinstance(self._session_instance_config, dict)
                 else None
             )
-            create_started_at = time.monotonic()
-            from jiuwenswarm.common.stall_watchdog import stall_watchdog
-
-            async with stall_watchdog(f"create_instance sid={sid}"):
-                await adapter.create_instance(
-                    config,
-                    mode=self._session_instance_mode,
-                    sub_mode=self._session_instance_sub_mode,
-                )
-            instance_ready_at = time.monotonic()
-
-            async with stall_watchdog(f"start_interaction sid={sid}", first_after_seconds=15.0):
-                await adapter.start_interaction(session_id=sid)
-            interaction_ready_at = time.monotonic()
-
-            self._session_adapters[sid] = adapter
-            # A brand-new session adapter is created from ``_session_instance_config``
-            # (which may predate the latest global reload). If a global reload left a
-            # pending ``config_base``, apply it now so the new session reflects the
-            # same configuration as already-existing sessions that reload lazily.
-            # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
-            # (including the no-pending case, where it silently catches up).
-            await self._reload_session_adapter_if_stale(sid, adapter)
-            # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
-            # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
-            # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
-            # （全新会话磁盘无历史，warmup 内部会静默跳过）。
             try:
-                from jiuwenswarm.agents.harness.common.session_ops_service import (
-                    refresh_session_context_if_stale,
-                    warmup_session_context,
-                )
+                create_started_at = time.monotonic()
+                from jiuwenswarm.common.stall_watchdog import stall_watchdog
 
-                # warmup 返回本次恢复实际覆盖到的 history 尾：快照恢复时是
-                # 快照尾指纹（可能早于磁盘尾，如团队期不经默认 agent、快照
-                # 停在装团前）。落后时立刻补一轮增量同步，让本轮就带上快照后
-                # 的历史——否则本轮失忆，且轮末指纹无条件推进会把这段缺口
-                # 永久跳过（后续 refresh 指纹相等静默不补）。
-                adapter._synced_history_tail_request_id = await warmup_session_context(
-                    deep_agent=getattr(adapter, "_instance", None),
-                    session_id=sid,
-                    exclude_request_id=warmup_exclude_request_id,
-                )
-                adapter._synced_history_tail_request_id = (
-                    await refresh_session_context_if_stale(
+                async with stall_watchdog(f"create_instance sid={sid}"):
+                    await adapter.create_instance(
+                        config,
+                        mode=self._session_instance_mode,
+                        sub_mode=self._session_instance_sub_mode,
+                    )
+                raise_if_request_cancelled()
+                instance_ready_at = time.monotonic()
+
+                async with stall_watchdog(f"start_interaction sid={sid}", first_after_seconds=15.0):
+                    await adapter.start_interaction(session_id=sid)
+                raise_if_request_cancelled()
+                interaction_ready_at = time.monotonic()
+
+                # A brand-new session adapter is created from ``_session_instance_config``
+                # (which may predate the latest global reload). If a global reload left a
+                # pending ``config_base``, apply it now so the new session reflects the
+                # same configuration as already-existing sessions that reload lazily.
+                # ``_reload_session_adapter_if_stale`` owns the version bookkeeping
+                # (including the no-pending case, where it silently catches up).
+                await self._reload_session_adapter_if_stale(sid, adapter)
+                # 服务重启 / adapter 被驱逐后重建时，context_engine 内存池为空，
+                # 而 chat.send 主路径不会回灌磁盘 history.jsonl——继续历史会话时
+                # 模型将拿到空上下文。这里在新建 adapter 后从磁盘恢复上下文
+                # （全新会话磁盘无历史，warmup 内部会静默跳过）。
+                try:
+                    from jiuwenswarm.agents.harness.common.session_ops_service import (
+                        refresh_session_context_if_stale,
+                        warmup_session_context,
+                    )
+
+                    # warmup 返回本次恢复实际覆盖到的 history 尾：快照恢复时是
+                    # 快照尾指纹（可能早于磁盘尾，如团队期不经默认 agent、快照
+                    # 停在装团前）。落后时立刻补一轮增量同步，让本轮就带上快照后
+                    # 的历史——否则本轮失忆，且轮末指纹无条件推进会把这段缺口
+                    # 永久跳过（后续 refresh 指纹相等静默不补）。
+                    adapter._synced_history_tail_request_id = await warmup_session_context(
                         deep_agent=getattr(adapter, "_instance", None),
                         session_id=sid,
                         exclude_request_id=warmup_exclude_request_id,
-                        synced_tail_request_id=adapter._synced_history_tail_request_id,
                     )
-                )
-                adapter._history_sync_lagged = _history_tail_lagged(
-                    adapter._synced_history_tail_request_id,
+                    adapter._synced_history_tail_request_id = (
+                        await refresh_session_context_if_stale(
+                            deep_agent=getattr(adapter, "_instance", None),
+                            session_id=sid,
+                            exclude_request_id=warmup_exclude_request_id,
+                            synced_tail_request_id=adapter._synced_history_tail_request_id,
+                        )
+                    )
+                    adapter._history_sync_lagged = _history_tail_lagged(
+                        adapter._synced_history_tail_request_id,
+                        sid,
+                        warmup_exclude_request_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session context warmup failed: "
+                        "session_id=%s error=%s",
+                        sid,
+                        exc,
+                    )
+                self._touch_session_adapter(sid)
+                # Cold-start cost of a session's first turn, split so a slow one can
+                # be attributed to agent assembly vs. interaction startup.
+                server_logger.info(
+                    "[AgentServer] session adapter created: session_id=%s create_instance_ms=%.1f"
+                    " start_interaction_ms=%.1f total_ms=%.1f",
                     sid,
-                    warmup_exclude_request_id,
+                    (instance_ready_at - create_started_at) * 1000,
+                    (interaction_ready_at - instance_ready_at) * 1000,
+                    (time.monotonic() - create_started_at) * 1000,
                 )
-            except Exception as exc:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] session context warmup failed: "
-                    "session_id=%s error=%s",
-                    sid,
-                    exc,
-                )
-            self._touch_session_adapter(sid)
-            # Cold-start cost of a session's first turn, split so a slow one can
-            # be attributed to agent assembly vs. interaction startup.
-            server_logger.info(
-                "[AgentServer] session adapter created: session_id=%s create_instance_ms=%.1f"
-                " start_interaction_ms=%.1f total_ms=%.1f",
-                sid,
-                (instance_ready_at - create_started_at) * 1000,
-                (interaction_ready_at - instance_ready_at) * 1000,
-                (time.monotonic() - create_started_at) * 1000,
-            )
-            return adapter
+                raise_if_request_cancelled()
+                self._session_adapters[sid] = adapter
+                return adapter
+            except BaseException:
+                # This child has not been published. No other session owns it.
+                # Discard its reload bookkeeping too, but keep the held lock and
+                # persisted runtime state for the next initialization attempt.
+                self._drop_session_adapter_cache_entry(sid, remove_lock=False, remove_runtime_state=False)
+                try:
+                    await await_request_cleanup(adapter.cleanup())
+                except (Exception, asyncio.CancelledError):
+                    logger.warning("[JiuWenSwarmDeepAdapter] incomplete session initialization cleanup failed: session=%s", sid, exc_info=True)
+                raise
 
     @staticmethod
     def _get_a2x_config(config_base: dict[str, Any]) -> dict[str, Any]:
@@ -10509,6 +10528,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     dynamic_expert_round = self._dynamic_expert_rounds.get(session_id)
                 # Idle → become the reader; busy → inject into the existing stream.
                 interaction_stream = await self._instance.attach_output()
+                from jiuwenswarm.server.request_context import raise_if_request_cancelled
+                raise_if_request_cancelled()
                 await self._instance.send_input(
                     SendInputRequest(
                         request_id=request.request_id,
@@ -10519,6 +10540,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             else:
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is not None:
+                    from jiuwenswarm.server.request_context import raise_if_request_cancelled
+                    raise_if_request_cancelled()
                     await self._instance.send_input(
                         SendInputRequest(
                             request_id=request.request_id,
@@ -10600,9 +10623,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 reset_current_multimodal_image_files(image_files_token)
             if interaction_stream is not None:
                 try:
-                    await interaction_stream.close(
+                    from jiuwenswarm.server.request_context import await_request_cleanup
+                    await await_request_cleanup(interaction_stream.close(
                         abort_active_round=interaction_stream_abort,
-                    )
+                    ))
                 except Exception:
                     logger.debug("[Goal] interaction stream close failed", exc_info=True)
             if dynamic_expert_round is not None and interaction_stream is not None:
@@ -11375,6 +11399,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     mode,
                     preview_text(inputs.get("query", "")),
                 )
+                from jiuwenswarm.server.request_context import raise_if_request_cancelled
+                raise_if_request_cancelled()
                 await self._instance.send_input(
                     SendInputRequest(
                         request_id=rid,
@@ -11440,6 +11466,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     (time.monotonic() - stream_impl_started_at) * 1000,
                     preview_text(inputs.get("query", "")),
                 )
+                from jiuwenswarm.server.request_context import raise_if_request_cancelled
+                raise_if_request_cancelled()
                 await self._instance.send_input(
                     SendInputRequest(
                         request_id=rid,
@@ -11882,9 +11910,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     try:
                         logger.info("[JiuWenSwarmDeepAdapter] output stream close begin: request_id=%s session=%s abort=%s",
                                     rid, session_id, interaction_stream_abort)
-                        await interaction_stream.close(
+                        from jiuwenswarm.server.request_context import await_request_cleanup
+                        await await_request_cleanup(interaction_stream.close(
                             abort_active_round=interaction_stream_abort,
-                        )
+                        ))
                         logger.info("[JiuWenSwarmDeepAdapter] output stream close end: request_id=%s session=%s", rid, session_id)
                     except Exception:
                         logger.warning("[JiuWenSwarmDeepAdapter] output stream close failed: request_id=%s session=%s",
