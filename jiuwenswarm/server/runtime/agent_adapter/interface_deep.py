@@ -8982,6 +8982,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         *,
         timeout_seconds: float = 5.0,
         poll_interval_seconds: float = 0.1,
+        settle_seconds: float = 10.0,
     ) -> Optional["InteractionOutputStream"]:
         """普通对话取输出租约；被旧轮悬挂占用时重放 interrupt 收回。
 
@@ -9018,6 +9019,29 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             request.request_id,
         )
         await self._process_interaction_interrupt(request, "cancel", None)
+        # ── 顶替栅栏（fence）：等待被取消的旧轮回调完全退出后再放行 ──
+        # cancel_round 内部对旧 exec task 的取消是"有界等待(1.5s) + 后台收尾"：
+        # 返回 cancelled=True 时旧轮的 LLM I/O 可能仍在排空。若此刻立即 attach
+        # 并派发新消息：(a) 旧轮残余产出会流入新租约（内容串味）；(b) 新回合的
+        # dispatch 可能被旧轮未完成的收尾阻塞（实测 120s 僵尸、仅 keepalive，
+        # 见 docs/bug_busy_default_lease_reclaim_cancel_race.md）。这里轮询等待
+        # 旧轮回调彻底退出（_active_interaction_round 清空）后再放行；超时则
+        # 返回 None 走 OUTPUT_LEASE_BUSY 显式报错路径（宁可显式失败，不僵尸）。
+        settle_deadline = time.monotonic() + settle_seconds
+        while True:
+            active_round = getattr(self._instance, "active_round", None)
+            if active_round is None:
+                break
+            if time.monotonic() >= settle_deadline:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] 顶替后旧轮回调未完全退出，放弃接管: "
+                    "session=%s request_id=%s settle_timeout_s=%.1f",
+                    session_id,
+                    request.request_id,
+                    settle_seconds,
+                )
+                return None
+            await asyncio.sleep(0.2)
         started_at = time.monotonic()
         deadline = started_at + timeout_seconds
         while True:
@@ -10369,8 +10393,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         )
         self._mark_session_active(session_id)
         self._register_session_agent_task(session_id)
-        if self._stream_event_rail is not None:
-            self._stream_event_rail.reset_abort(session_id)
+        # No reset_abort here (nor before dispatch below): the stream_event_rail
+        # abort is epoch-scoped — a round only honours aborts requested after it
+        # started (see StreamEventRail._ABORT_EPOCH_KEY), so a stale abort can
+        # never kill a fresh round and no explicit reset is needed anywhere.
         image_files_token = None
         _run_span: Any = None
         collected_content: list[str] = []
@@ -11062,8 +11088,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     user_message_context=inputs.get("user_message_context"),
                 )
             )
-            if self._stream_event_rail is not None:
-                self._stream_event_rail.reset_abort(session_id)
+            # Epoch-scoped abort makes an explicit reset unnecessary here: the
+            # rewind round snapshots the epoch at its own before_invoke.
             inputs = dict(inputs)
             # 取 cancel 分支预置的 rewind session，让 core 复用其预置的 rewind history
             # 防丢上下文。None 时 core 新建 session (现状不变)。
@@ -11396,6 +11422,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     inputs["query"] = (
                         f"{inputs.get('query') or ''}\n\n{stopped_reminder}"
                     )
+                # 顶替收尾：历史方案（!7970）在此 reset 会话级 abort 标志，
+                # 但 reset 是按名清除——既清不掉重放之后的再度置位，也会
+                # 误复活正在收尾的旧轮。现由 StreamEventRail 的世代化
+                # abort 取代：新回合在 before_invoke 快照当前 epoch，
+                # 重放 cancel 早于快照，天然免疫，无需任何显式 reset。
                 server_logger.info(
                     "[AgentServer] message entering runner streaming: session_id=%s request_id=%s"
                     " channel_id=%s mode=%s prepare_ms=%.1f query=%s",
