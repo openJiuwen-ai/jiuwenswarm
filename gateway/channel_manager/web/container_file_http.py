@@ -220,6 +220,17 @@ def _resolve_user_id(request: Request, explicit: str | None = None) -> str:
     return uid
 
 
+def resolve_request_user_id(request: Request, explicit: str | None = None) -> str:
+    """Resolve the caller ``user_id`` for sibling HTTP APIs on this app.
+
+    Same chain as the file API routes: the claimed ``explicit`` value, the
+    ``x-user-id`` header, then the token username, checked against the IAM
+    identity when authentication ran for the request. Raises
+    FileApiUserMismatch when a claim contradicts the token.
+    """
+    return _resolve_user_id(request, explicit)
+
+
 def _bind_file_api_session(request: Request, session_id: str) -> None:
     sid = str(session_id or "").strip()
     if sid:
@@ -696,7 +707,7 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             return _error_json(error="user_id is required", code="BAD_REQUEST", status_code=400)
 
         if token_payload.get("kind") == _VERIFIED_ASSET_TOKEN_KIND:
-            from jiuwenswarm.common.schema.message import ReqMethod
+            from openjiuwen_protocol.message import ReqMethod
             from gateway.routing.e2a_proxy import fetch_agent_unary
             session_id_value = token_payload.get("sid")
             if not isinstance(session_id_value, str):

@@ -560,7 +560,7 @@ async def test_shared_jev_config_reaches_actual_client_wire_format(
     import httpx
     from openjiuwen.core.foundation.llm.system_one import JevSystemOneClient
 
-    from jiuwenswarm.agents.harness.common.browser_config import browser_decision_state
+    from jiuwenswarm.common.browser_config import browser_decision_state
 
     monkeypatch.setenv(key_env, "shared-provider-secret")
     monkeypatch.setattr("jiuwenswarm.common.config.get_crypto_provider", lambda: None)

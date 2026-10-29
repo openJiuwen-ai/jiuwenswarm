@@ -5,8 +5,8 @@ from typing import Any, Iterable
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 
-from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.extensions.sdk.application_plugin import (
+from gateway.extensions.registry import ExtensionRegistry
+from gateway.extensions.sdk.application_plugin import (
     ApplicationPluginExtension,
     WebSocketRouteContribution,
 )

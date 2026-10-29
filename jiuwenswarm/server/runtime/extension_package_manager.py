@@ -329,6 +329,13 @@ def _i18n(value: Any, fallback: str = "") -> dict[str, str]:
     return {"zh": fallback, "en": fallback}
 
 
+def _manifest_display_description(manifest: dict[str, Any]) -> dict[str, str]:
+    """UI short copy: ``display_description`` with ``description`` fallback (agent_template)."""
+    description = manifest.get("description")
+    fallback = description.strip() if isinstance(description, str) else ""
+    return _i18n(manifest.get("display_description"), fallback)
+
+
 def _resolve_agent_group_member_display_name_i18n(
     package_dir: Path,
     member_id: str,
@@ -775,10 +782,12 @@ async def _build_agent_template_list_card(
         manifest_card = await read_agent_template_card(pkg_dir / "manifest.json")
     except ValueError:
         return None
+    card_description = getattr(manifest_card, "description", "")
+    card_description = card_description.strip() if isinstance(card_description, str) else ""
     card: dict[str, Any] = {
         "id": pkg_dir.name,
         "displayName": manifest_card.display_name or pkg_dir.name,
-        "displayDescription": manifest_card.display_description or {},
+        "displayDescription": _i18n(manifest_card.display_description, card_description),
         "category": manifest_card.category,
         "tags": list(manifest_card.tags),
         "source": source,
@@ -826,10 +835,15 @@ def _build_show_card(
     if package_type == "agent_template":
         description = manifest.get("description")
         details = description if isinstance(description, str) else ""
+    display_description = (
+        _manifest_display_description(manifest)
+        if package_type == "agent_template"
+        else (manifest.get("display_description") or {})
+    )
     card: dict[str, Any] = {
         "id": pkg_dir.name,
         "displayName": manifest.get("display_name") or pkg_dir.name,
-        "displayDescription": manifest.get("display_description") or {},
+        "displayDescription": display_description,
         "source": resolved_source,
         "avatar": _resolve_package_avatar(pkg_dir, manifest),
         "version": version if isinstance(version, str) else "",
@@ -2779,10 +2793,15 @@ def _build_show_card_from_zip(
     if package_type == "agent_template":
         description = manifest.get("description")
         details = description if isinstance(description, str) else ""
+    display_description = (
+        _manifest_display_description(manifest)
+        if package_type == "agent_template"
+        else (manifest.get("display_description") or {})
+    )
     card: dict[str, Any] = {
         "id": package_id,
         "displayName": manifest.get("display_name") or package_id,
-        "displayDescription": manifest.get("display_description") or {},
+        "displayDescription": display_description,
         "source": "hub",
         "avatar": _resolve_zip_avatar(body, package_root, manifest),
         "version": version if isinstance(version, str) else "",

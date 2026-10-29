@@ -2,9 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  beginHistoryRestore,
+  fetchHistoryCursorBatch,
+  webClient,
   mergeHistoryToolReplayItems,
   parseHistoryJsonFileToTimelinePreview,
   parseSubagentHistoryReplay,
+  readDiscoveredSubagentIds,
   recoverSubagentToolHistory,
   shouldProcessHistoryPayload,
   parseHistoryJsonFileToPreviewMessages,
@@ -12,6 +16,105 @@ import {
 
 const sessionId = 'web_session';
 const subagentId = 'web_session_sub_general-purpose_1';
+
+test('history completion restores current totals even when the page has no usage records', () => {
+  const usage = {
+    schema_version: 1,
+    revision: 12,
+    session_id: sessionId,
+    main: { input_tokens: 300, output_tokens: 40, input_calls: 2, output_calls: 2, calls_total: 2 },
+    others: { input_tokens: 150, output_tokens: 20, input_calls: 1, output_calls: 1, calls_total: 1 },
+  };
+  const done = {
+    type: 'event',
+    event: 'history.message',
+    payload: {
+      session_id: sessionId,
+      status: 'done',
+      cursor: null,
+      next_cursor: null,
+      has_more: false,
+      snapshot_id: 'history-snapshot',
+      snapshot_end: 0,
+      session_usage: usage,
+    },
+  };
+  let restored = null;
+  const handle = beginHistoryRestore({
+    sessionId,
+    onReady: () => {},
+    onSessionTokenUsage: (snapshot) => { restored = snapshot; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.deepEqual(restored, usage);
+  } finally {
+    handle.dispose();
+  }
+
+  let batch = null;
+  const batchHandle = fetchHistoryCursorBatch({
+    sessionId,
+    cursor: null,
+    onReady: (result) => { batch = result; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.deepEqual(batch.tokenUsageSnapshot, usage);
+  } finally {
+    batchHandle.dispose();
+  }
+});
+
+test('history restore ignores zero-revision token usage snapshots', () => {
+  const emptyUsage = {
+    schema_version: 1,
+    revision: 0,
+    session_id: sessionId,
+    main: { input_tokens: null, output_tokens: null, input_calls: 0, output_calls: 0, calls_total: 0 },
+    others: { input_tokens: null, output_tokens: null, input_calls: 0, output_calls: 0, calls_total: 0 },
+  };
+  const done = {
+    type: 'event',
+    event: 'history.message',
+    payload: {
+      session_id: sessionId,
+      status: 'done',
+      cursor: null,
+      next_cursor: null,
+      has_more: false,
+      snapshot_id: 'empty-history',
+      snapshot_end: 0,
+      session_usage: emptyUsage,
+    },
+  };
+
+  let restored = null;
+  const handle = beginHistoryRestore({
+    sessionId,
+    onReady: () => {},
+    onSessionTokenUsage: (snapshot) => { restored = snapshot; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.equal(restored, null);
+  } finally {
+    handle.dispose();
+  }
+
+  let batch = null;
+  const batchHandle = fetchHistoryCursorBatch({
+    sessionId,
+    cursor: null,
+    onReady: (result) => { batch = result; },
+  });
+  try {
+    webClient.dispatchEventNow(done);
+    assert.equal(batch.tokenUsageSnapshot, null);
+  } finally {
+    batchHandle.dispose();
+  }
+});
 
 test('existing full-duplex spoken replies stay expanded after history restore without changing normal chat', () => {
   const messages = parseHistoryJsonFileToPreviewMessages([
@@ -59,6 +162,85 @@ test('history restores an unmatched chat.ask_user_question as a read-only qa.sum
     { header: 'Question', question: '用哪种方案?', answers: [] },
   ]);
 });
+
+for (const nested of [false, true]) {
+  for (const smart of [false, true]) {
+    for (const allowed of [false, true]) {
+      test(`permission history skips QA without changing tool or reasoning records (${nested}, ${smart}, ${allowed})`, () => {
+        const question = {
+          source: 'permission_interrupt',
+          questions: [{
+            header: 'Permission', question: 'Allow this tool?', options: [],
+            ...(smart ? { card_id: 'opaque-card' } : {}),
+          }],
+        };
+        const records = [
+          { id: 'user', role: 'user', content: 'Read the file', timestamp: 1792553400001 },
+          {
+            id: 'permission', role: 'assistant', event_type: 'chat.ask_user_question',
+            request_id: 'permission-request', timestamp: 1792553400002,
+            ...(nested ? { event_payload: question } : question),
+          },
+          {
+            id: 'call', role: 'assistant', event_type: 'chat.tool_call', timestamp: 1792553400003,
+            tool_call: { tool_call_id: 'call', name: 'read_file', arguments: '{"file_path":"/sample.txt"}' },
+          },
+          {
+            id: 'result', role: 'assistant', event_type: 'chat.tool_result', timestamp: 1792553400004,
+            tool_call_id: 'call', tool_name: 'read_file', success: allowed,
+            result: allowed ? 'file contents' : 'Permission denied',
+          },
+          {
+            id: 'final', role: 'assistant', event_type: 'chat.final', timestamp: 1792553400005,
+            content: allowed ? 'Read completed' : 'Read rejected', reasoning_content: 'Check the permission',
+          },
+        ];
+        const original = structuredClone(records);
+        const expected = parseHistoryJsonFileToTimelinePreview(records.filter((record) => record.id !== 'permission'), sessionId);
+        const preview = parseHistoryJsonFileToTimelinePreview(records, sessionId);
+        assert.equal(expected.executions.length, 1);
+        assert.equal(expected.reasoningSegments.length, 1);
+        assert.deepEqual(preview, expected);
+        assert.deepEqual(records, original);
+        assert.deepEqual(parseHistoryJsonFileToPreviewMessages(records, sessionId), expected.messages);
+      });
+    }
+  }
+}
+
+for (const source of [undefined, 'unknown_interrupt', ' permission_interrupt', 'ask_user_interrupt']) {
+  test(`permission history preserves genuine and compatible questions in a mixed turn (${source})`, () => {
+    const records = [
+      {
+        id: 'permission', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1792553400001,
+        request_id: 'permission-request', source: 'permission_interrupt',
+        questions: [{ header: 'Permission', question: 'Allow?', options: [] }],
+      },
+      {
+        id: 'answered', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1792553400002,
+        request_id: 'answered-request', source: 'ask_user_interrupt',
+        questions: [{ header: 'Topic', question: 'Which topic?', options: [{ label: 'Streaming' }] }],
+      },
+      {
+        id: 'answer', role: 'assistant', event_type: 'chat.ask_user_answer', timestamp: 1792553400003,
+        request_id: 'answered-request', source: 'ask_user_interrupt',
+        answers: [{ question: 'Which topic?', selected_options: ['Streaming'] }],
+      },
+      {
+        id: 'unanswered', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1792553400004,
+        request_id: 'unanswered-request', ...(source === undefined ? {} : { source }),
+        questions: [{ header: 'Details', question: 'Any details?', options: [] }],
+      },
+    ];
+    const preview = parseHistoryJsonFileToTimelinePreview(records, sessionId);
+    assert.equal(preview.pendingQuestions.length, 0);
+    assert.equal(preview.answeredQuestions.length, 1);
+    assert.deepEqual(preview.messages.map((message) => JSON.parse(message.content.slice('qa.summary:'.length)).items), [
+      [{ header: 'Topic', question: 'Which topic?', answers: ['Streaming'], answerSources: ['option'] }],
+      [{ header: 'Details', question: 'Any details?', answers: [] }],
+    ]);
+  });
+}
 
 test('history skips chat.ask_user_question with empty or missing questions', () => {
   const preview = parseHistoryJsonFileToTimelinePreview([
@@ -390,7 +572,26 @@ test('subagent history replays persisted activity without treating it as final t
   });
 });
 
-test('session history restores persisted usage summary onto the preceding assistant message', () => {
+test('session history restores persisted usage summary and session token totals', () => {
+  const sessionUsage = {
+    schema_version: 1,
+    revision: 3,
+    session_id: sessionId,
+    main: {
+      input_tokens: 210,
+      output_tokens: 40,
+      input_calls: 2,
+      output_calls: 2,
+      calls_total: 2,
+    },
+    others: {
+      input_tokens: 70,
+      output_tokens: 15,
+      input_calls: 1,
+      output_calls: 1,
+      calls_total: 1,
+    },
+  };
   const preview = parseHistoryJsonFileToTimelinePreview([
     {
       id: 'r1:user',
@@ -419,6 +620,7 @@ test('session history restores persisted usage summary onto the preceding assist
         output_cost: 0.02,
         total_cost: 0.03,
       },
+      session_usage: sessionUsage,
     },
   ], sessionId);
 
@@ -431,6 +633,29 @@ test('session history restores persisted usage summary onto the preceding assist
     output_cost: 0.02,
     total_cost: 0.03,
   });
+  assert.deepEqual(preview.tokenUsageSnapshot, sessionUsage);
+});
+
+test('session history ignores a cumulative snapshot belonging to another session', () => {
+  const preview = parseHistoryJsonFileToTimelinePreview([
+    {
+      id: 'foreign-usage-summary',
+      role: 'assistant',
+      event_type: 'chat.usage_summary',
+      timestamp: 1787019581,
+      content: '',
+      usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 },
+      session_usage: {
+        schema_version: 1,
+        revision: 1,
+        session_id: 'another-session',
+        main: { input_tokens: 10, output_tokens: 2, input_calls: 1, output_calls: 1, calls_total: 1 },
+        others: { input_tokens: 0, output_tokens: 0, input_calls: 0, output_calls: 0, calls_total: 0 },
+      },
+    },
+  ], sessionId);
+
+  assert.equal(preview.tokenUsageSnapshot, null);
 });
 
 test('session history restores the complete context usage payload without adding a chat message', () => {
@@ -1041,6 +1266,18 @@ test('history skips chat.error with empty content', () => {
     },
   ], sessionId);
   assert.equal(messages.length, 0);
+});
+
+test('history.done subagent_ids discovery parses unique non-empty ids (#4887)', () => {
+  assert.deepEqual(
+    readDiscoveredSubagentIds({
+      status: 'done',
+      subagent_ids: [' sub-a ', 'sub-b', 'sub-a', '', 12, null],
+    }),
+    ['sub-a', 'sub-b'],
+  );
+  assert.deepEqual(readDiscoveredSubagentIds({ status: 'done' }), []);
+  assert.deepEqual(readDiscoveredSubagentIds({ subagentIds: ['legacy-id'] }), ['legacy-id']);
 });
 
 test('4470 history preserves token-related choices while masking custom input', () => {

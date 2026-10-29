@@ -43,7 +43,7 @@ def test_all_desktop_builds_run_the_frozen_rsi_smoke_check():
     assert "set -euo pipefail" in macos
     assert (
         '"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" '
-        '"$PROJECT_ROOT/scripts/verify_rsi_bundle.py"'
+        '"$PACKAGING_ROOT/scripts/verify_rsi_bundle.py"'
     ) in macos
 
 

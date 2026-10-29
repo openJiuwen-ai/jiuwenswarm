@@ -91,7 +91,8 @@ async def _serve_one(
     instance: str,
     code_identity_value: str | None = None,
 ) -> bool:
-    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
+    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    import psutil
 
     send = getattr(conn, "send")
     recv = getattr(conn, "recv")
@@ -105,6 +106,8 @@ async def _serve_one(
             "runtime_loaded": runtime_loaded,
             "generation": generation,
             "data_scope": data_scope(),
+            "deployment_scope": deployment_scope(),
+            "process_created": psutil.Process().create_time(),
             "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
     )

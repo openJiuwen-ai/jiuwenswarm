@@ -6,8 +6,8 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from gateway.common.mode_matrix import is_team_mode
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from gateway.message_handler.message_handler import (
     _KNOWN_TEAM_MODE_INPUTS,
     MessageHandler,

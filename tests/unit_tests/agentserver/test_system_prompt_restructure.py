@@ -221,6 +221,58 @@ async def test_response_prompt_rail_splits_input_and_output_rules():
 
 
 @pytest.mark.asyncio
+async def test_response_prompt_rail_omits_send_file_for_xiaoyi(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"channels": {"xiaoyi": {"send_file_allowed": True}}},
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+    assert "生成并投递文件" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_response_prompt_rail_fails_closed_without_config(monkeypatch):
+    def unavailable_config():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        unavailable_config,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = ResponsePromptRail()
+    rail.init(agent)
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs={"channel": "xiaoyi"},
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "send_file_to_user" not in prompt
+    assert "当前渠道不支持文件投递" in prompt
+
+
+@pytest.mark.asyncio
 async def test_symphony_orchestration_rail_respects_config_snapshot():
     enabled_builder = SystemPromptBuilder(language="cn")
     enabled_agent = _FakeAgent(enabled_builder)
@@ -1959,6 +2011,32 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     # Runtime context is attached separately and rendered by the attachment
     # manager, rather than being part of the main system-prompt sections.
     assert "当前语言：cn" in rendered
+
+
+@pytest.mark.parametrize("language", ["cn", "en"])
+def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(language: str) -> None:
+    from openjiuwen.core.context_engine.base import ContextWindow
+    from openjiuwen.core.context_engine.token.string_length_counter import StringLengthCounter
+    from openjiuwen.core.context_engine.usage.analyzer import ContextUsageAnalyzer
+    from openjiuwen.core.foundation.llm import SystemMessage
+    from openjiuwen.core.single_agent.agents.react_agent import ReActAgent
+
+    builder = SystemPromptBuilder(language=language)
+    builder.add_section(PromptSection(name="identity", content={language: "Core rules."}, priority=10))
+    rail = SkillRetrievalPromptRail(config_base={"symphony": {"skill_retrieval": {"enabled": True}}})
+    rail.system_prompt_builder = builder
+    rail._add_prompt_builder_section(language, "Use demo Skill.")
+    sections = ReActAgent._context_usage_prompt_sections(SimpleNamespace(prompt_builder=builder))
+    snapshot = ContextUsageAnalyzer(StringLengthCounter(), context_window_limit=1000).analyze(
+        ContextWindow(system_messages=[SystemMessage(content=builder.build())]),
+        request_id="skill-classification",
+        session_id="skill-classification",
+        system_prompt_sections=sections,
+    )
+
+    assert snapshot.parts["skills"].tokens == 5
+    assert snapshot.parts["system_prompt"].tokens == 3
+    assert snapshot.context_window.input_tokens == 8
 
 
 @pytest.mark.asyncio

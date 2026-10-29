@@ -5,16 +5,18 @@
  * Kept free of React and browser APIs so it can be tested with node --test.
  */
 
-import { isTtseCategory } from './diagnosisState';
 import type {
   DiagnosisRecord,
   DiagnosisStage,
   DiagnosisStatus,
   DiagnosisSummary,
+  EvolutionJudge,
+  LegacyRootCause,
+  RewardFailureCause,
   RewardPayload,
-  RootCause,
   SignalRef,
   StageStatus,
+  StepRef,
 } from './diagnosisTypes';
 
 /** Stages the engine runs, in order. Shown as waiting until the engine starts them. */
@@ -102,8 +104,23 @@ export function formatRecordTime(value: string | undefined): string {
   return `${dateOf(date)} ${clockOf(date)}`;
 }
 
-/** Second line of a record row: the engine's headline, else the scope kind. */
-export function recordLabel(summary: Pick<DiagnosisSummary, 'headline' | 'scope_kind'>, scopeLabel: string): string {
+/** Cap a display string at ``limit`` characters, ellipsis included; never cuts a short string. */
+export function truncateText(text: string, limit: number): string {
+  const trimmed = text.trim();
+  if (limit <= 0) return '';
+  if (trimmed.length <= limit) return trimmed;
+  return `${trimmed.slice(0, Math.max(0, limit - 1)).trimEnd()}…`;
+}
+
+/** Second line of a record row: the trajectory summary, else the legacy headline, else the scope kind. */
+export function recordLabel(
+  summary: Pick<DiagnosisSummary, 'trajectory_summary' | 'headline' | 'scope_kind'> & {
+    trajectory_summary?: string;
+  },
+  scopeLabel: string,
+): string {
+  const summaryText = truncateText(summary.trajectory_summary ?? '', 500);
+  if (summaryText !== '') return summaryText;
   return summary.headline === undefined || summary.headline === '' ? scopeLabel : summary.headline;
 }
 
@@ -136,16 +153,36 @@ export interface DiagnosisTargetGroup {
 }
 
 export interface DiagnosisTarget {
-  /** The whole trajectory was diagnosed, so there is no window to show. */
+  /** The whole trajectory was diagnosed. */
   full: boolean;
+  /** Wall-clock span of a full-trajectory diagnosis. Null when the record stored no ranges. */
+  window: { startMs: number; endMs: number } | null;
   /** Agents sharing one window; a single group when the selection came from the time axis. */
   groups: DiagnosisTargetGroup[];
+}
+
+/** Earliest start and latest end across the ranges a full-trajectory run was fixed to. */
+function fullWindow(
+  ranges: readonly { start_unix_nano: string; end_unix_nano: string }[] | undefined,
+): { startMs: number; endMs: number } | null {
+  if (ranges === undefined || ranges.length === 0) return null;
+  let startMs = Number.POSITIVE_INFINITY;
+  let endMs = Number.NEGATIVE_INFINITY;
+  for (const range of ranges) {
+    const start = unixNanoToMs(range.start_unix_nano);
+    const end = unixNanoToMs(range.end_unix_nano);
+    if (start === null || end === null) continue;
+    if (start < startMs) startMs = start;
+    if (end > endMs) endMs = end;
+  }
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+  return { startMs, endMs };
 }
 
 /** What a record diagnosed: the whole trajectory, or windows grouped by identical time span. */
 export function diagnosisTarget(record: Pick<DiagnosisRecord, 'input'>): DiagnosisTarget {
   const scope = record.input.scope;
-  if (scope.kind === 'full') return { full: true, groups: [] };
+  if (scope.kind === 'full') return { full: true, window: fullWindow(record.input.resolved_ranges), groups: [] };
   const groups: DiagnosisTargetGroup[] = [];
   for (const range of scope.ranges) {
     const startMs = unixNanoToMs(range.start_unix_nano);
@@ -155,7 +192,7 @@ export function diagnosisTarget(record: Pick<DiagnosisRecord, 'input'>): Diagnos
     if (group === undefined) groups.push({ startMs, endMs, subjectIds: [range.subject_id] });
     else group.subjectIds.push(range.subject_id);
   }
-  return { full: false, groups };
+  return { full: false, window: null, groups };
 }
 
 /** `YYYY-MM-DD HH:mm:ss – HH:mm:ss`; the end repeats the date only when it falls on another day. */
@@ -215,35 +252,257 @@ export function stripLeadingHeading(text: string): string {
   return rest === '' ? trimmed : rest;
 }
 
-/** Whether to draw the category badge: `other` without a confidence says nothing. */
-export function showCategoryBadge(cause: Pick<RootCause, 'category' | 'confidence'>): boolean {
-  if (isTtseCategory(cause.category)) return false;
-  return !(cause.category === 'other' && (cause.confidence === undefined || cause.confidence === null));
+/**
+ * Cited steps in trajectory order. A run of adjacent steps is one span
+ * ("main:18 → main:20"); a gap starts another segment ("main:15; main:18 → main:20").
+ * A team subject id repeats the session and member path, so the label keeps only the
+ * agent short name ("team-leader:14").
+ */
+function nodeSpanLabel(ids: readonly string[]): string {
+  const groups = new Map<string, { seq: number; id: string }[]>();
+  const subjects: string[] = [];
+  const loose: string[] = [];
+  for (const id of ids) {
+    const split = splitNodeId(id);
+    if (split === null) {
+      if (!loose.includes(id)) loose.push(id);
+      continue;
+    }
+    let group = groups.get(split.subject);
+    if (group === undefined) {
+      group = [];
+      groups.set(split.subject, group);
+      subjects.push(split.subject);
+    }
+    if (!group.some(item => item.id === id)) group.push({ seq: split.seq, id });
+  }
+  const spans = subjects.map(subject => contiguousSpanLabel(subject, groups.get(subject) ?? []));
+  return [...spans, ...loose].filter(item => item !== '').join('; ');
 }
 
-/**
- * The findings of a diagnosis in reading order: the attribution root causes as they were reported,
- * then the experience verdict on the whole stretch, which only arrives once attribution is done.
- * Every finding is one root cause.
- */
-export function orderFindings(causes: readonly RootCause[]): RootCause[] {
-  return [
-    ...causes.filter(cause => !isTtseCategory(cause.category)),
-    ...causes.filter(cause => isTtseCategory(cause.category)),
-  ];
+/** Adjacent steps collapse to their ends; a break in the sequence starts a new segment. */
+function contiguousSpanLabel(subject: string, group: { seq: number; id: string }[]): string {
+  const shortName = subject.slice(subject.lastIndexOf(':') + 1);
+  const token = (seq: number) => `${shortName}:${seq}`;
+  const sorted = [...group].sort((left, right) => left.seq - right.seq);
+  const parts: string[] = [];
+  let index = 0;
+  while (index < sorted.length) {
+    let end = index;
+    while (end + 1 < sorted.length && sorted[end + 1].seq === sorted[end].seq + 1) end += 1;
+    parts.push(end === index ? token(sorted[index].seq) : `${token(sorted[index].seq)} → ${token(sorted[end].seq)}`);
+    index = end + 1;
+  }
+  return parts.join('; ');
+}
+
+/** `<subject>:<sequence>` split; null when the id is not a trajectory step. */
+function splitNodeId(nodeId: string): { subject: string; seq: number } | null {
+  const index = nodeId.lastIndexOf(':');
+  if (index <= 0) return null;
+  const seq = Number(nodeId.slice(index + 1));
+  if (!Number.isInteger(seq) || seq < 0) return null;
+  return { subject: nodeId.slice(0, index), seq };
+}
+
+/** Node ids a failure cause / evolution item highlights; empty when none exist. */
+export function evidenceNodeLabel(item: Pick<RewardFailureCause | EvolutionJudge, 'evidence'>): string {
+  const ids: string[] = [];
+  const refs = (item as { evidence?: unknown }).evidence;
+  const list = Array.isArray(refs) ? refs : [];
+  for (const ref of list) {
+    const nodeId = ref !== null && typeof ref === 'object' ? (ref as { node_id?: unknown }).node_id : undefined;
+    if (typeof nodeId === 'string' && nodeId !== '' && !ids.includes(nodeId)) ids.push(nodeId);
+  }
+  return nodeSpanLabel(ids);
+}
+
+/** Legacy root-cause range helper (records written before the switch). */
+export function causeNodeLabel(cause: Pick<LegacyRootCause, 'refs'>): string {
+  const ids: string[] = [];
+  for (const ref of cause.refs) {
+    if (ref.node_id !== undefined && ref.node_id !== '' && !ids.includes(ref.node_id)) ids.push(ref.node_id);
+  }
+  return nodeSpanLabel(ids);
+}
+
+/** Whether a record only carries legacy findings (no new-interface tables). */
+export function usesLegacyFindings(record: DiagnosisRecord): boolean {
+  return (record.reward_failure_causes ?? []).length === 0
+    && (record.evolution_judge ?? []).length === 0
+    && (record.root_causes ?? []).length > 0;
 }
 
 export interface FindingCounts {
-  /** Problems the attribution located; this is the number the headline reports. */
-  issues: number;
-  /** Experience verdicts, which judge the whole stretch and are not problems. */
+  /** Reward evaluation failure causes (4.3), one per submitted entry. */
+  causes: number;
+  /** Skill evolution suggestions in ``evolution_judge``. */
+  skill: number;
+  /** Experience (TTSE) verdicts, at most one per diagnosis. */
   experience: number;
+  /** The record predates the switch and is shown through the legacy fallback. */
+  legacy: boolean;
 }
 
-/** How many of the findings are problems and how many are experience verdicts. */
-export function findingCounts(causes: readonly RootCause[]): FindingCounts {
-  const experience = causes.filter(cause => isTtseCategory(cause.category)).length;
-  return { issues: causes.length - experience, experience };
+/** How many reward failure causes, skill suggestions and experience verdicts a record reports. */
+export function findingCounts(record: DiagnosisRecord): FindingCounts {
+  if (usesLegacyFindings(record)) {
+    const experience = (record.root_causes ?? []).filter((cause) => (
+      cause.category === 'ttse_success' || cause.category === 'ttse_partial' || cause.category === 'ttse_fail'
+    )).length;
+    return {
+      causes: (record.root_causes ?? []).length - experience,
+      skill: 0,
+      experience,
+      legacy: true,
+    };
+  }
+  const judges = record.evolution_judge ?? [];
+  return {
+    causes: (record.reward_failure_causes ?? []).length,
+    skill: judges.filter(judge => judge.category === 'skill').length,
+    experience: judges.filter(judge => judge.category === 'experience').length,
+    legacy: false,
+  };
+}
+
+export type FindingKind = 'artifact' | 'skill' | 'experience';
+
+export interface FindingItem {
+  kind: FindingKind;
+  id: string;
+  cause?: RewardFailureCause;
+  judge?: EvolutionJudge;
+}
+
+/**
+ * Every finding of a new-interface record in display order: Reward failure causes first, then skill
+ * judgments, then the experience verdict (at most one).
+ */
+export function findingItems(record: DiagnosisRecord): FindingItem[] {
+  const causes = (record.reward_failure_causes ?? []).map(cause => ({
+    kind: 'artifact' as const,
+    id: cause.id,
+    cause,
+  }));
+  const judges = record.evolution_judge ?? [];
+  const skill = judges.filter(judge => judge.category === 'skill').map(judge => ({
+    kind: 'skill' as const,
+    id: judge.id,
+    judge,
+  }));
+  const experience = judges.filter(judge => judge.category === 'experience').map(judge => ({
+    kind: 'experience' as const,
+    id: judge.id,
+    judge,
+  }));
+  return [...causes, ...skill, ...experience];
+}
+
+/** The original signal text shown in a finding's evidence fold; empty when the record predates it. */
+export function signalEvidenceText(signal: SignalRef | null | undefined): string {
+  return (signal?.text ?? '').trim();
+}
+
+/**
+ * The evidence body of a finding: the signal's comment only, because the requirement is
+ * already shown as the dimension. A text without that shape is shown whole.
+ */
+export function signalEvidenceBody(signal: SignalRef | null | undefined, dimension: string): string {
+  const text = signalEvidenceText(signal);
+  if (text === '') return '';
+  const { requirement, comment } = splitRewardSignalText(text);
+  if (comment !== '') return comment;
+  return requirement === dimension.trim() ? '' : text;
+}
+
+export interface ArtifactSuggestionItem {
+  id: string;
+  /** Each suggestion of this cause; the summary stands in when the cause has none. */
+  parts: string[];
+  /** `parts` joined, kept for callers that still want one block. */
+  text: string;
+  dimension: string;
+  summary: string;
+  evidence: StepRef[];
+  signal?: SignalRef | null;
+}
+
+/** Trimmed non-empty lines. `fallback` is used only when every line is blank. */
+export function suggestionParts(values: readonly string[], fallback = ''): string[] {
+  const parts = values.map(item => item.trim()).filter(item => item !== '');
+  if (parts.length > 0) return parts;
+  const standIn = fallback.trim();
+  return standIn === '' ? [] : [standIn];
+}
+
+/** One suggestion stays as written. Several are numbered so they are not run together. */
+export function numberedSuggestions(parts: readonly string[], separator = '\n\n'): string {
+  if (parts.length === 0) return '';
+  if (parts.length === 1) return parts[0];
+  return parts.map((part, index) => `${index + 1}. ${part}`).join(separator);
+}
+
+/** One entry per failure cause, in report order (interface section 6.1). */
+export function artifactSuggestionItems(record: DiagnosisRecord): ArtifactSuggestionItem[] {
+  return (record.reward_failure_causes ?? []).map((cause) => {
+    const parts = suggestionParts(cause.suggestion, cause.summary);
+    return {
+      id: cause.id,
+      parts,
+      text: parts.join('\n\n'),
+      dimension: cause.dimension,
+      summary: cause.summary,
+      evidence: cause.evidence,
+      signal: cause.signal,
+    };
+  });
+}
+
+/**
+ * The artifact-fix text of a new-interface record: the experimental whole block when enabled,
+ * else the causes' suggestions. Legacy records keep their own outlet, see
+ * `legacyArtifactInstruction`, so the two cards can never both render.
+ */
+export function artifactSuggestion(record: DiagnosisRecord, useExperimentalArtifactFix: boolean): string {
+  if (useExperimentalArtifactFix && (record.artifact_improvement ?? '').trim() !== '') {
+    return (record.artifact_improvement ?? '').trim();
+  }
+  return numberedSuggestions(
+    (record.reward_failure_causes ?? []).flatMap(cause => suggestionParts(cause.suggestion)),
+    '\n',
+  );
+}
+
+/** The artifact-fix text of a record written before the switch; empty once a new table exists. */
+export function legacyArtifactInstruction(record: DiagnosisRecord): string {
+  const hasNew = (record.reward_failure_causes ?? []).length > 0 || (record.evolution_judge ?? []).length > 0;
+  if (hasNew) return '';
+  return record.suggestions?.artifact_fix?.instruction?.trim() ?? '';
+}
+
+/** The whole advice of one skill item. Several suggestion entries are numbered. */
+export function skillSuggestionText(judge: Pick<EvolutionJudge, 'suggestion'>): string {
+  return numberedSuggestions(suggestionParts(judge.suggestion));
+}
+
+/**
+ * Text for the composer from the chosen skill suggestions.
+ * One skill is the advice alone. Several are headed by the skill name so each block stays tied to its skill.
+ */
+export function skillBatchFillText(
+  judges: readonly Pick<EvolutionJudge, 'id' | 'target' | 'suggestion'>[],
+  prefix: string,
+): string {
+  const blocks = judges.flatMap((judge) => {
+    const body = skillSuggestionText(judge);
+    if (body === '') return [];
+    if (judges.length === 1) return [body];
+    const name = (judge.target ?? '').trim() || judge.id;
+    return [`## ${name}\n\n${body}`];
+  });
+  if (blocks.length === 0) return prefix;
+  return `${prefix}\n\n${blocks.join('\n\n')}`;
 }
 
 /**
@@ -255,48 +514,6 @@ export function commentPoints(text: string): string[] {
     .split(/\r?\n|；/)
     .map(point => point.replace(/^\s*[-*•]\s+/, '').trim())
     .filter(point => point !== '');
-}
-
-/** What the lead tag of a finding says: the experience verdict, or how its signal fared. */
-export type FindingTag =
-  | { kind: 'experience'; tier: RewardTier; outcome: string }
-  | { kind: 'signal'; tier: RewardTier | null; source: string | null };
-
-/** The lead tag of a finding; a Reward signal carries a tier, a rule signal only its source. */
-export function findingTag(cause: Pick<RootCause, 'category' | 'signal'>): FindingTag | null {
-  if (isTtseCategory(cause.category)) {
-    return { kind: 'experience', tier: ttseTier(cause.category), outcome: cause.category.slice('ttse_'.length) };
-  }
-  const signal = cause.signal ?? null;
-  if (signal === null) return null;
-  const known = signal.source === 'keyword_tool' || signal.source === 'keyword_user';
-  return { kind: 'signal', tier: signalTier(signal), source: known ? signal.source : null };
-}
-
-export interface FindingEvidence {
-  /** Requirement a Reward signal was scored against; empty for a rule signal. */
-  requirement: string;
-  /** The signal text a finding stands on: the Reward comment, or the raw rule hit. */
-  text: string;
-}
-
-/** The signal behind a finding, or `null` when it has none (the experience verdict). */
-export function findingEvidence(cause: Pick<RootCause, 'evidence' | 'signal'>): FindingEvidence | null {
-  if (cause.evidence.trim() === '') return null;
-  if (cause.signal?.source === 'reward') {
-    const { requirement, comment } = splitRewardSignalText(cause.evidence);
-    return { requirement, text: comment };
-  }
-  return { requirement: '', text: cause.evidence };
-}
-
-/** Root cause range, "main:23 → main:30", or a single node; empty when no node ids exist. */
-export function causeNodeLabel(cause: Pick<RootCause, 'refs'>): string {
-  const ids: string[] = [];
-  for (const ref of cause.refs) {
-    if (ref.node_id !== undefined && ref.node_id !== '' && !ids.includes(ref.node_id)) ids.push(ref.node_id);
-  }
-  return ids.join(' → ');
 }
 
 /** Elapsed time of a stage, "850ms", "20.4s" or "1m 5s"; empty when unknown. */
@@ -347,6 +564,63 @@ export function splitStageOutput(output: string): StageOutputView {
     }
   }
   return { body: body.join('\n').trim(), requestLines, requestCount: requests.size };
+}
+
+export type StageOutputBlock =
+  | { kind: 'body'; text: string }
+  | { kind: 'requests'; lines: string[]; count: number };
+
+/**
+ * Paint order for one stage's output.
+ *
+ * While the stage is running, blocks follow arrival order, so text that lands
+ * after a model call stays under the request lines already on screen. Once the
+ * stage stops, the body is gathered above a single folded request log.
+ */
+export function stageOutputBlocks(output: string, live: boolean): StageOutputBlock[] {
+  if (!live) {
+    const view = splitStageOutput(output);
+    const blocks: StageOutputBlock[] = [];
+    if (view.body !== '') blocks.push({ kind: 'body', text: view.body });
+    if (view.requestCount > 0) {
+      blocks.push({ kind: 'requests', lines: view.requestLines, count: view.requestCount });
+    }
+    return blocks;
+  }
+  const blocks: StageOutputBlock[] = [];
+  let body: string[] = [];
+  let requestLines: string[] = [];
+  let requestIds = new Set<string>();
+  const flushBody = () => {
+    const text = body.join('\n').trim();
+    body = [];
+    if (text !== '') blocks.push({ kind: 'body', text });
+  };
+  const flushRequests = () => {
+    if (requestLines.length === 0) return;
+    blocks.push({ kind: 'requests', lines: requestLines, count: requestIds.size });
+    requestLines = [];
+    requestIds = new Set();
+  };
+  for (const line of output.split('\n')) {
+    // A blank line must not split a request run that is still arriving.
+    if (line.trim() === '') {
+      if (requestLines.length === 0) body.push(line);
+      continue;
+    }
+    const match = LLM_LINE.exec(line);
+    if (match === null) {
+      flushRequests();
+      body.push(line);
+    } else {
+      flushBody();
+      requestLines.push(line);
+      requestIds.add(match[1]);
+    }
+  }
+  flushBody();
+  flushRequests();
+  return blocks;
 }
 
 /** Tone of a TTSE experience verdict: success reads like a met tier, failure like a missed one. */

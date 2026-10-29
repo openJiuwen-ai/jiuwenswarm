@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jiuwenswarm.common.cron_session import cron_session_matches_job
-from jiuwenswarm.common.work_mode import is_default_project_id
+from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.session import lifecycle as lc, project_store
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
@@ -479,6 +479,7 @@ class SessionArchiveService:
             operation = lc.state("session", session_id).get("operation") or {}
             operation_id = str(operation.get("operation_id") or "")
         async with self._finalize_semaphore:
+            busy_exc: BaseException | None = None
             for _ in range(40):
                 try:
                     async with self.lock("session", session_id):
@@ -519,6 +520,7 @@ class SessionArchiveService:
                         # teardown).  Wait briefly instead of dropping the
                         # cleanup; a genuinely busy user action falls through
                         # after the retry budget and recovery picks it up.
+                        busy_exc = exc
                         await asyncio.sleep(0.05)
                         continue
                     operation = lc.state("session", session_id).get("operation") or {}
@@ -530,6 +532,20 @@ class SessionArchiveService:
             logger.warning(
                 "session finalizer deferred by a live operation: session_id=%s",
                 session_id,
+            )
+            # 「拿不到锁」也是失败：此前这里只打日志 + `_poke_recovery()`，既不写
+            # `cleanup_next_at` 也不加 `cleanup_attempts`，有界重试预算对它完全无效——
+            # `_recover` 每 10 秒重新 spawn 一次，同一个被残留 flock 占住的会话会被
+            # 无限重试，每次还占一个收尾槽位约 2 秒。记一次可重试失败：退避按
+            # `_cleanup_backoff` 生效，达到 `_MAX_CLEANUP_ATTEMPTS` 后转入 abandoned。
+            operation = lc.state("session", session_id).get("operation") or {}
+            attempts = int(operation.get("cleanup_attempts") or 0) + 1
+            await self._record_finalize_failure(
+                session_id,
+                action,
+                attempts,
+                busy_exc or RuntimeError("session operation still in progress"),
+                operation_id,
             )
             self._poke_recovery()
 
@@ -732,10 +748,17 @@ class SessionArchiveService:
         operation_id: str,
         reason: str,
         *,
+        attempts: int | None = None,
         next_at: float = 0.0,
         exhausted: bool = False,
     ) -> dict | None:
-        """Compare and save one operation's failure in the same worker thread."""
+        """Compare and save one operation's failure in the same worker thread.
+
+        ``attempts`` 必须随失败一起落盘，不能只留局部变量：占用路径（拿不到跨进程锁）
+        永远进不到 ``_finalize_session_locked``，而那是唯一写 ``cleanup_attempts`` 的地方。
+        不落盘时 ``attempts`` 恒为 1，``_MAX_CLEANUP_ATTEMPTS`` 永不达成、
+        ``_abandon_cleanup`` 不可达，收尾退化成无限重试。
+        """
         with lc.resource_lock("session", session_id):
             operation = lc.state("session", session_id).get("operation") or {}
             if operation.get("operation_id") != operation_id or operation.get("status") in {
@@ -743,9 +766,7 @@ class SessionArchiveService:
                 "abandoned",
             }:
                 return None
-            return lc.update(
-                "session",
-                session_id,
+            changes: dict = dict(
                 status="abandoned" if exhausted else "failed",
                 stop_pending=False,
                 retryable=not exhausted,
@@ -753,6 +774,12 @@ class SessionArchiveService:
                 cleanup_exhausted=exhausted,
                 errors=[reason],
             )
+            if attempts is not None:
+                # 单调不减：并发/重入时不要把已经记下的次数写回更小的值。
+                changes["cleanup_attempts"] = max(
+                    int(attempts), int(operation.get("cleanup_attempts") or 0)
+                )
+            return lc.update("session", session_id, **changes)
 
     async def _record_finalize_failure(
         self,
@@ -779,6 +806,7 @@ class SessionArchiveService:
             session_id,
             operation_id,
             str(exc),
+            attempts=attempts,
             next_at=next_at,
         )
         if updated is None:
@@ -807,6 +835,7 @@ class SessionArchiveService:
             session_id,
             operation_id,
             reason,
+            attempts=attempts,
             exhausted=True,
         )
         if operation is None:

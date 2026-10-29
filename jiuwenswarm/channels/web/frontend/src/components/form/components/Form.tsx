@@ -92,6 +92,7 @@ function FormItemRenderer<TValues extends FormValues>({
         id={controlId}
         value={String(field.value ?? '')}
         options={item.options}
+        placeholder={item.placeholder}
         disabled={finalDisabled}
         invalid={Boolean(field.error)}
         data-testid={testIdPrefix ? `${testIdPrefix}-field-input` : undefined}

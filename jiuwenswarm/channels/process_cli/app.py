@@ -25,7 +25,7 @@ from jiuwenswarm.channels.process_cli.live_input import (
 )
 from jiuwenswarm.channels.process_cli.persistence import flush_session_writes
 from jiuwenswarm.channels.process_cli.render import EventRenderer
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import (

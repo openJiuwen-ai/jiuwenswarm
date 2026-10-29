@@ -18,7 +18,7 @@ from tests.unit_tests.gateway.config_routing_harness import (
 )
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.registry import ExtensionRegistry
 from gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.common.config_panel.config_set_handlers import (
     flatten_external_cli_agents_for_config_panel as _flatten_external_cli_agents_for_config_panel,
@@ -36,11 +36,22 @@ from gateway.channel_manager.web.app_web_handlers import (
     _validate_wechat_numeric_params,
 )
 from gateway.heartbeat import HeartbeatServiceUnavailableError
-from gateway.server_store_bridge import install as _install_server_stores
 
-# 与 gateway 进程启动装配一致（B1' 注入点）：config 面板 handler 经
-# common.external_providers 取 server 侧存储实现
-_install_server_stores()
+# gateway 进程的 bridge 已退役；测试进程按 server 侧同款"import 即注册"
+# 装配注入点（tests 不受 R3 约束），使 config 面板等 common 消费路径
+# 在本测试进程内可执行（生产形态为 gateway 经 WS 访问 AgentServer）。
+import jiuwenswarm.server.runtime.a2ui.integration  # noqa: F401,E402
+import jiuwenswarm.server.runtime.mcp.credential  # noqa: F401,E402
+import jiuwenswarm.server.runtime.mcp.state_store  # noqa: F401,E402
+import jiuwenswarm.server.runtime.session.session_metadata  # noqa: F401,E402
+import jiuwenswarm.server.runtime.team_binding_store  # noqa: F401,E402
+import jiuwenswarm.server.runtime.team_entity_store  # noqa: F401,E402
+from gateway.runtime.cron import factory as _cron_factory_module
+from jiuwenswarm.common.external_providers import register as _register_test_provider
+from jiuwenswarm.server.runtime.mcp import registry as _mcp_registry_module
+
+_register_test_provider("cron_store_factory", _cron_factory_module)
+_register_test_provider("mcp_registry", _mcp_registry_module)
 from gateway.routing.agent_client import WebSocketAgentServerClient
 from gateway.routing.keys import AgentRef, RoutingKey
 
@@ -1091,6 +1102,7 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
             "jev_key_configured": False,
             "decision_model": "jev-1.13.0",
             "decision_api_base": "https://api.typesafe.ai/v1",
+            "decision_display_name": "",
         },
         "error": None,
         "code": None,
@@ -1127,6 +1139,103 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "BAD_REQUEST"
     assert writes == []
+
+
+@pytest.mark.asyncio
+async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
+    from jiuwenswarm.common import config as config_module
+
+    current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: current)
+    monkeypatch.setattr(app_web_handlers, "update_browser_in_config", lambda updates: None)
+    def save_decision(updates):
+        for key, value in updates.items():
+            if key == "display_name" and value is None:
+                current["browser"]["decision"].pop(key, None)
+            else:
+                current["browser"]["decision"][key] = value
+
+    monkeypatch.setattr(config_module, "update_browser_decision_in_config", save_decision)
+
+    async def no_runtime_change(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", no_runtime_change)
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", no_runtime_change)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    await channel.methods["path.set"](
+        object(), "req-name", {"chrome_path": "", "decision_display_name": "  My Jev  "}, "sess-1",
+    )
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["decision_display_name"] == "My Jev"
+    assert current["browser"]["decision"]["display_name"] == "My Jev"
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_jev_clear_gateway_route_persists_and_reloads_in_agentserver(tmp_path, monkeypatch, legacy):
+    from unittest.mock import AsyncMock
+
+    from dotenv import dotenv_values
+    import yaml
+
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.browser_settings import JEV_PROVIDER_DEFAULTS
+
+    config_path = tmp_path / "config.yaml"
+    env_path = tmp_path / ".env"
+    decision = {
+        **JEV_PROVIDER_DEFAULTS["openrouter"],
+        "mode": "hybrid", "provider": "openrouter", "display_name": "Shared Jev",
+    }
+    config_path.write_text(yaml.safe_dump({
+        "browser": {"chrome_path": "/custom/chrome", "headless": False, "decision": decision},
+        "experimental": {"multi_model_collaboration_enabled": True,
+                         "multi_model_collaboration": {"jev_enabled": True, "verifier_interval": 5}},
+    }), encoding="utf-8")
+    env_path.write_text("OPENROUTER_API_KEY=synthetic-router\nTYPESAFE_API_KEY=synthetic-typesafe\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
+    monkeypatch.setattr(config_set_handlers, "ENV_FILE", env_path)
+    monkeypatch.setattr(config_set_handlers, "_get_crypto_provider", lambda: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-router")
+    monkeypatch.setenv("TYPESAFE_API_KEY", "synthetic-typesafe")
+    reload = AsyncMock(return_value=True)
+    restart = AsyncMock()
+    client = make_legacy_config_routing_client(reload) if legacy else make_config_routing_client(reload)
+    monkeypatch.setattr(app_web_handlers, "_clear_agent_config_cache", AsyncMock())
+    monkeypatch.setattr(app_web_handlers, "_restart_agent_browser_runtime", restart)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
+    await channel.methods["path.set"](
+        object(), "clear-browser", {
+            "chrome_path": "/custom/chrome", "headless": False,
+            "decision_mode": "llm", "decision_display_name": "",
+        }, "session", user_id="user-one",
+    )
+    assert channel.responses[-1]["ok"] is True
+    await channel.methods["config.save_all"](
+        object(), "clear-key", {"config": {"jev_openrouter_api_key": "", "moa_jev_enabled": "false"}},
+        "session", user_id="user-one",
+    )
+    assert channel.responses[-1]["ok"] is True
+    await channel.methods["path.get"](object(), "read-browser", {}, "session", user_id="user-one")
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"]["jev_key_configured"] is False
+    assert response["payload"]["decision_display_name"] == ""
+    saved = yaml.safe_load(config_path.read_text())
+    assert saved["browser"] == {
+        "chrome_path": "/custom/chrome", "headless": False,
+        "decision": {**decision, "mode": "llm", "display_name": ""},
+    }
+    assert saved["experimental"]["multi_model_collaboration_enabled"] is True
+    assert saved["experimental"]["multi_model_collaboration"] == {"jev_enabled": False, "verifier_interval": 5}
+    assert dotenv_values(env_path) == {"OPENROUTER_API_KEY": "", "TYPESAFE_API_KEY": "synthetic-typesafe"}
+    reload.assert_awaited_once()
+    restart.assert_awaited_once_with(client, previous_chrome_path="/custom/chrome", previous_headless=False)
 
 
 class FakeUpdaterService:
@@ -1517,7 +1626,7 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     reload_calls: list[tuple[set[str], dict, dict]] = []
 
     monkeypatch.setattr(
-        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        "gateway.extensions.registry.ExtensionRegistry.get_instance",
         lambda: SimpleNamespace(get_crypto_provider=lambda: None),
     )
     for key in keys:
@@ -4704,8 +4813,8 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
 
 
 def _a4p_config_request(method, params, channel="web", session="session"):
-    from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.e2a.agent_models import AgentRequest
+    from openjiuwen_protocol.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
                         req_method=ReqMethod(method), params=params)
 

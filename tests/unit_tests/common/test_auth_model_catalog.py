@@ -6,13 +6,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import apig, model_catalog
+from gateway.auth import apig
+from gateway.auth import model_catalog
 from jiuwenswarm.common.auth.model_catalog import (
     LOGIN_MODEL_SOURCE,
     build_model_entry,
     is_login_model,
 )
-from jiuwenswarm.common.auth.service import ModelAuthRequired
+from gateway.auth.service import ModelAuthRequired
 
 _REAL_LOGIN_MODEL_SETTINGS = model_catalog.login_model_settings
 
@@ -33,14 +34,14 @@ def _isolated(tmp_path, monkeypatch):
     _remote(monkeypatch)
     yield auth_path
     model_catalog._memo = None
-    from jiuwenswarm.common.auth import remote_config
+    from gateway.auth import remote_config
 
     remote_config.set_config_for_test(None)
 
 
 def _remote(monkeypatch, *, effective=True, apig_base="https://apig.example.com",
             whitelist=None, blocklist=None, login=None, **apig_paths):
-    from jiuwenswarm.common.auth import remote_config
+    from gateway.auth import remote_config
 
     remote_config.set_config_for_test(remote_config.parse_config({
         "is_effective": effective,
@@ -265,7 +266,7 @@ def test_campaign_off_yields_no_models_even_with_a_warm_cache(monkeypatch, _isol
     _login(monkeypatch)
     assert [m.model_name for m in model_catalog.get_models(SESSION)] == ["glm-5"]  # 缓存已预热
 
-    from jiuwenswarm.common.auth import remote_config
+    from gateway.auth import remote_config
 
     for config in (None, remote_config.parse_config({"is_effective": False})):
         remote_config.set_config_for_test(config)

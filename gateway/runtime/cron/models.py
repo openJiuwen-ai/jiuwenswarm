@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
 )
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
     deprecate_mode,
@@ -311,8 +311,8 @@ def resolve_cron_model(
     # 登录送的免费模型：名字可能带 "#index"
     # 通道侧全局序号后缀，取前半段再匹配（与 passthrough._build_model_auth 一致）。
     try:
-        from jiuwenswarm.common.auth.login_credentials import bare_model_name
-        from jiuwenswarm.common.auth.model_catalog import get_models
+        from gateway.auth.login_credentials import bare_model_name
+        from gateway.auth.model_catalog import get_models
 
         bare = bare_model_name(value)
         for login_model in get_models(allow_refresh=False):
@@ -594,7 +594,7 @@ class CronJob:
         selection_raw = data.get("model_selection")
         job_model_selection = None
         if isinstance(selection_raw, dict):
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             job_model_selection = ModelSelection.model_validate(selection_raw).model_dump()
         # mcp：老数据兜底（无 mcp 字段 → None，行为与改造前一致）
         job_mcp = normalize_cron_job_mcp(data.get("mcp", None))

@@ -24,7 +24,7 @@ from gateway.routing.keys import AgentRef, RoutingKey, make_delivery_target
 from gateway.routing.session_sharing import LogicalTarget
 
 if TYPE_CHECKING:
-    from jiuwenswarm.common.schema.message import Message
+    from openjiuwen_protocol.message import Message
     from gateway.message_handler.command_parser.slash_command import (
         ParsedChannelControl,
     )
@@ -34,6 +34,18 @@ logger = logging.getLogger(__name__)
 
 # Team seat ownership is implemented only for these IM channels.
 _TEAM_SEAT_SUPPORTED_CHANNELS: frozenset[str] = frozenset({"feishu", "xiaoyi"})
+
+
+def _with_xiaoyi_team_task_hold(
+    user_infos: dict[str, Any],
+    channel_id: str,
+) -> dict[str, Any]:
+    """Return join notice routing info that keeps the Xiaoyi task open."""
+    if channel_id != "xiaoyi":
+        return user_infos
+    metadata = dict(user_infos.get("meta_data") or {})
+    metadata["xiaoyi_team_task_hold"] = True
+    return {**user_infos, "meta_data": metadata}
 
 
 # 已 /join 认领 team 席位后仍允许执行的控制指令白名单。
@@ -219,8 +231,9 @@ class JoinExitHandlers:
                 "session=%s member=%s channel=%s",
                 sid, parsed.member_name, msg.channel_id,
             )
+            notice_user_infos = _with_xiaoyi_team_task_hold(user_infos, msg.channel_id)
             await self._h.send_channel_notice(
-                user_infos, channel_id, msg.session_id,
+                notice_user_infos, channel_id, msg.session_id,
                 f"已加入 session {sid}，席位：{parsed.member_name}。"
                 f"后续消息将以 {parsed.member_name} 身份参与团队对话。"
                 f"可通过 @team-leader 询问成员信息和任务状态。",
@@ -235,7 +248,7 @@ class JoinExitHandlers:
             # ── V2: 推送该 member 加入前的团队历史消息 ──
             asyncio.create_task(
                 self.push_join_history(
-                    user_infos, msg,
+                    notice_user_infos, msg,
                     sid, parsed.member_name, anchor_ts,
                 )
             )
@@ -261,7 +274,7 @@ class JoinExitHandlers:
 
         action: "joined" | "left"，控制消息 ID 前缀、emoji/动词和 member_action 字段。
         """
-        from jiuwenswarm.common.schema.message import Message, EventType
+        from openjiuwen_protocol.message import Message, EventType
 
         # 根据动作类型设置不同的显示内容
         if action == "joined":
@@ -354,8 +367,8 @@ class JoinExitHandlers:
         timestamp < anchor_ts 的记录：anchor 之后的消息已走实时 fan_out 转发，
         不再进历史，避免同一条消息既实时又历史造成重复。
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.message import ReqMethod
 
         channel_id = msg.channel_id
         reply_session_id = msg.session_id
@@ -445,8 +458,8 @@ class JoinExitHandlers:
         查到返回席位名列表，查不到（server ok=False / members 空 / RPC 异常）返回 None，
         由调用方统一拼"team 不存在"文案。channel_id 不参与业务查询，仅回填 E2A envelope。
         """
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-        from jiuwenswarm.common.schema.message import ReqMethod
+        from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+        from openjiuwen_protocol.message import ReqMethod
 
         try:
             env = e2a_from_agent_fields(

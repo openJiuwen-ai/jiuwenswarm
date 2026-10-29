@@ -7,9 +7,10 @@ import uuid
 from dataclasses import dataclass
 from typing import Any
 
+from openjiuwen_protocol.e2a.acp.acp_tool_updates import is_reasoning_event
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+
 from gateway.channel_manager.base import BaseChannel
-from jiuwenswarm.common.e2a.acp.acp_tool_updates import is_reasoning_event
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 
@@ -95,12 +96,14 @@ class _A2AAgentExecutor(_AgentExecutorBase):
         from a2a.helpers import new_text_status_update_event
         from a2a.types import (
             Artifact,
-            Message as A2AMessage,
             Role,
             TaskArtifactUpdateEvent,
             TaskState,
             TaskStatus,
             TaskStatusUpdateEvent,
+        )
+        from a2a.types import (
+            Message as A2AMessage,
         )
 
         task = self._resolve_task(context)
@@ -290,9 +293,20 @@ class A2AChannel(BaseChannel):
 
         try:
             from a2a.server.request_handlers import DefaultRequestHandler
-            from a2a.server.routes import create_agent_card_routes, create_jsonrpc_routes
-            from a2a.server.tasks import InMemoryPushNotificationConfigStore, InMemoryTaskStore
-            from a2a.types import AgentCapabilities, AgentCard, AgentInterface, AgentSkill
+            from a2a.server.routes import (
+                create_agent_card_routes,
+                create_jsonrpc_routes,
+            )
+            from a2a.server.tasks import (
+                InMemoryPushNotificationConfigStore,
+                InMemoryTaskStore,
+            )
+            from a2a.types import (
+                AgentCapabilities,
+                AgentCard,
+                AgentInterface,
+                AgentSkill,
+            )
             from fastapi import FastAPI
         except ImportError as exc:
             _raise_missing_a2a_sdk(exc)

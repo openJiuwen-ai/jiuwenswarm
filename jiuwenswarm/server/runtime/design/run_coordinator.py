@@ -25,9 +25,7 @@ Semantics (user-ruled):
   node's current slots the same way: ``history`` is the old-version log (the
   previous current output is archived before each overwrite, so
   ``history[-1]`` is the true previous version) and ``text``/``output_ref``/
-  ``output_refs`` always hold the latest accepted output. The legacy
-  ``candidate_*`` fields are no longer written; ``choose_output`` stays only
-  to promote candidates left in pre-existing run records;
+  ``output_refs`` always hold the latest accepted output;
 * the run record's ``node_states`` is the cache/history store — per-node
   ``text`` snapshots feed compile-time inlining and ``history`` keeps one
   entry per trigger.
@@ -54,6 +52,7 @@ from openjiuwen.agent_teams.workflow.engine.runtime import AbortSignal as _Abort
 
 from jiuwenswarm.common.schema.designer_graph import (
     RUN_SCHEMA_VERSION,
+    RUN_TRIGGER_SOURCE_CANVAS,
     DesignerExecutionGraph,
 )
 from jiuwenswarm.server.runtime.design.context import (
@@ -169,6 +168,7 @@ class RunCoordinator:
         node_ids: list[str] | None = None,
         cascade: bool = False,
         on_update: RunUpdateCallback | None = None,
+        source: str = RUN_TRIGGER_SOURCE_CANVAS,
     ) -> dict[str, Any]:
         """Execute one trigger.
 
@@ -181,7 +181,11 @@ class RunCoordinator:
         async with self._lock:
             self.heal_zombie_runs(graph)
             return await self._execute(
-                graph, node_ids=node_ids, cascade=cascade, on_update=on_update
+                graph,
+                node_ids=node_ids,
+                cascade=cascade,
+                on_update=on_update,
+                source=source,
             )
 
     def heal_zombie_runs(self, graph: DesignerExecutionGraph) -> None:
@@ -229,6 +233,7 @@ class RunCoordinator:
         node_ids: list[str] | None,
         cascade: bool,
         on_update: RunUpdateCallback | None,
+        source: str = RUN_TRIGGER_SOURCE_CANVAS,
     ) -> dict[str, Any]:
         run_id, minted = self._ensure_run_id(graph)
         run = self._load_run(run_id, graph)
@@ -261,6 +266,7 @@ class RunCoordinator:
         trigger_scope = f"{run_id}-t{secrets.token_hex(4)}"
         run["status"] = "running"
         run["current_node_ids"] = []
+        run["metadata"] = {**(run.get("metadata") or {}), "trigger_source": source}
         # A new trigger invalidates the previous trigger's run-level error;
         # leaving it would keep showing a stale refusal on every later run.
         run.pop("error", None)
@@ -414,7 +420,10 @@ class RunCoordinator:
                 wal_path=wal_path,
                 abort_event=abort_signal,
             )
-        except _WorkflowAborted:
+        except (_WorkflowAborted, asyncio.CancelledError) as exc:
+            # CancelledError: the awaiting task died (a leader trigger when the
+            # leader is paused). Unrecorded, the run stays 'running' and the
+            # canvas stays read-only with no live trigger behind it.
             run["status"] = "cancelled"
             run["current_node_ids"] = []
             for state in (run.get("node_states") or {}).values():
@@ -423,6 +432,8 @@ class RunCoordinator:
             self._store.save_run(run)
             if on_update is not None:
                 on_update(dict(run))
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             return run
         except Exception as exc:
             logger.exception("[design-run] trigger failed: run_id=%s", run_id)
@@ -568,41 +579,6 @@ class RunCoordinator:
                 changed = True
         if changed:
             self._store.save_graph(graph)
-
-    # ------------------------------------------------------------------
-    # revision chooser
-    # ------------------------------------------------------------------
-
-    def choose_output(self, run_id: str, node_id: str, choice: str) -> dict[str, Any]:
-        """Resolve a single-node rerun candidate (``new`` promotes it).
-
-        Legacy compatibility only: triggers no longer write ``candidate_*``
-        fields, so this resolves candidates left in run records created
-        before that change. May later be re-pointed at ``history`` picks.
-        """
-        run = self._store.get_run(run_id)
-        if run is None:
-            raise ValueError(f"designer run not found: {run_id!r}")
-        states = run.setdefault("node_states", {})
-        state = states.get(node_id)
-        if state is None or not state.get("candidate_text"):
-            raise ValueError(
-                f"node '{node_id}' has no rerun candidate to choose from"
-            )
-        if choice == "new":
-            entry = {"ts": _now_ms(), "text": state["candidate_text"]}
-            if state.get("candidate_output_ref"):
-                entry["output_ref"] = state["candidate_output_ref"]
-                state["output_ref"] = state["candidate_output_ref"]
-            state["text"] = state["candidate_text"]
-            state.setdefault("history", []).append(entry)
-            graph = self._store.get_graph(str(run.get("graph_id") or ""))
-            if graph is not None:
-                self._write_outputs_to_graph(graph, run)
-        state.pop("candidate_output_ref", None)
-        state.pop("candidate_text", None)
-        self._store.save_run(run)
-        return run
 
 
 def _write_script(run_dir: Path, trigger_scope: str, source: str) -> Path:

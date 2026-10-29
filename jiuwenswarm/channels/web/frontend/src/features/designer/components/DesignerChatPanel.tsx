@@ -1,14 +1,14 @@
-import { PanelRight, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { LoaderCircle, PanelRight, Square, X } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
-import { ModelProviderIcon } from '../../../components/ModelProviderIcon';
+import ChatModelSelector from '../../../components/ChatPanel/ChatModelSelector';
 import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
 import { webClient } from '../../../services/webClient';
 import { useChatStore } from '../../../stores/chatStore';
-import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
+import { useSessionStore } from '../../../stores/sessionStore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
@@ -18,6 +18,7 @@ import {
   sendDesignerLeaderMessage,
 } from '../designerEntry';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import {
@@ -115,23 +116,24 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
-  const activeSessionId = useChatStore((state) => state.activeSessionId);
-  // The canvas session owns the model the leader runs with; the binding above
-  // makes activeSessionId agree, but the graph's session id wins if they diverge.
-  const modelSessionId = sessionId ?? activeSessionId ?? '';
-  const chatAvailableModels = useSessionStore((state) => state.chatAvailableModels);
-  const selectedModelName = useSessionStore(
-    (state) => state.runtimes[modelSessionId]?.selectedModelName ?? null,
+  const stopRequestedRef = useRef(false);
+  // The canvas owns exactly one session: read and write the model against that
+  // session id. `activeSessionId` follows the app route and can point at
+  // another conversation while this panel stays mounted (#5394, #8995).
+  const selectedModelName = useSessionStore((state) =>
+    sessionId ? state.runtimes[sessionId]?.selectedModelName ?? null : null,
   );
-  const selectedModelSelection = useSessionStore(
-    (state) => state.runtimes[modelSessionId]?.selectedModelSelection ?? null,
+  const selectedModelSelection = useSessionStore((state) =>
+    sessionId ? state.runtimes[sessionId]?.selectedModelSelection ?? null : null,
   );
-  const defaultModelName = useSessionStore((state) => state.defaultModelName);
-  const selectedModel = useMemo(
-    () => resolveChatModelSelection(chatAvailableModels, selectedModelName, defaultModelName),
-    [chatAvailableModels, defaultModelName, selectedModelName],
-  );
-  const modelLabel = selectedModel?.alias || selectedModel?.model_name || '';
+  const setChatModel = useDesignerStore((state) => state.setChatModel);
+  // The director chain resolves its preferred model from graph.metadata.model_name,
+  // and leader rounds run on the session selection: keep both in sync so a pick
+  // made here takes effect on the next round instead of only relabelling the UI.
+  useEffect(() => {
+    if (!sessionId || !selectedModelName) return;
+    setChatModel(selectedModelName);
+  }, [selectedModelName, sessionId, setChatModel]);
 
   const chatBusy = isProcessing || sending;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
@@ -145,6 +147,12 @@ export function DesignerChatPanel() {
   useEffect(() => {
     if (sessionId) bindDesignerChatSession(sessionId);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (isProcessing || !stopRequestedRef.current) return;
+    stopRequestedRef.current = false;
+    useDesignerRunStore.getState().applyLeaderActivity(null);
+  }, [isProcessing]);
 
   const limitError = useCallback(
     (kind: DesignerReferenceKind) => {
@@ -245,6 +253,24 @@ export function DesignerChatPanel() {
         setSending(false);
       });
   }, [attachments, chatBusy, domainGraph, draft, sessionId, t]);
+
+  const handleStop = useCallback(() => {
+    if (!sessionId) return;
+    setAttachError('');
+    stopRequestedRef.current = true;
+    const runStore = useDesignerRunStore.getState();
+    const leaderRunActive = runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
+    // Cancel through the engine first: pausing the leader kills its trigger
+    // task outright, skipping the abort that unwinds the run cleanly.
+    void (leaderRunActive ? runStore.cancel(domainGraph) : Promise.resolve())
+      .then(() =>
+        webClient.request('chat.interrupt', { session_id: sessionId, intent: 'pause', mode: DESIGNER_TEAM_MODE }),
+      )
+      .catch(() => {
+        stopRequestedRef.current = false;
+        setAttachError(t('designer.chat.stopError'));
+      });
+  }, [domainGraph, sessionId, t]);
 
   const handleUserAnswer = useCallback(
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
@@ -352,36 +378,51 @@ export function DesignerChatPanel() {
             className="designer-chat-panel__input"
             placeholder={t('designer.chat.inputPlaceholder')}
             value={draft}
-            disabled={chatBusy}
+            disabled={sending}
             data-testid="designer-chat-panel-input"
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onKeyDown}
           />
           <div className="designer-chat-panel__composer-actions">
-            {modelLabel ? (
-              <span
-                className="designer-chat-panel__model"
-                title={modelLabel}
-                data-testid="designer-chat-panel-model"
-              >
-                {selectedModel ? (
-                  <span className="designer-chat-panel__model-icon" aria-hidden>
-                    <ModelProviderIcon model={selectedModel} />
-                  </span>
-                ) : null}
-                <span className="designer-chat-panel__model-label">{modelLabel}</span>
-              </span>
+            {sessionId ? (
+              <ChatModelSelector sessionId={sessionId} disabled={chatBusy} />
             ) : null}
-            <button
-              type="button"
-              className="designer-chat-panel__send"
-              disabled={chatBusy || !canSend}
-              onClick={handleSend}
-              aria-label={t('designer.chat.send')}
-              data-testid="designer-chat-panel-send"
-            >
-              <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-            </button>
+            {isProcessing ? (
+              <button
+                type="button"
+                className="designer-chat-panel__send"
+                onClick={handleStop}
+                aria-label={t('designer.chat.stop')}
+                title={t('designer.chat.stop')}
+                data-testid="designer-chat-panel-stop"
+              >
+                <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="designer-chat-panel__send"
+                disabled={chatBusy || !canSend}
+                onClick={handleSend}
+                aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
+                aria-busy={chatBusy}
+                title={chatBusy ? t('designer.chat.running') : undefined}
+                data-testid="designer-chat-panel-send"
+                data-variant={chatBusy ? 'running' : 'idle'}
+              >
+                {/* Between send and the round reporting processing, the button
+                    must read as "working", never as the idle send plane (#5410). */}
+                {chatBusy ? (
+                  <LoaderCircle
+                    className="designer-chat-panel__send-spinner animate-spin"
+                    size={18}
+                    aria-hidden
+                  />
+                ) : (
+                  <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                )}
+              </button>
+            )}
           </div>
         </div>
       </div>

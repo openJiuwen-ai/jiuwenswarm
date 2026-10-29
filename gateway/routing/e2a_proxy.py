@@ -28,8 +28,9 @@ import uuid
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import ReqMethod
+
 from gateway.routing.agent_client import (
     DuplicateRequestIdError,
     WebSocketAgentServerClient,
@@ -75,12 +76,13 @@ def is_agentos_routing_client(agent_client: Any) -> bool:
     stable module/class name instead.
     """
     client_type = type(agent_client)
+    module = client_type.__module__
     return (
         client_type.__name__ == "AgentOSRouterClient"
-        and client_type.__module__.startswith("jiuwenswarm.extensions.agentos.")
+        and module.startswith("gateway.extensions.agentos.")
     ) or (
         client_type.__name__ == "AdxRouterClient"
-        and client_type.__module__ == "jiuwenswarm.extensions.adx.router_client"
+        and module == "gateway.extensions.adx.router_client"
     )
 
 
@@ -240,7 +242,8 @@ async def fetch_agent_unary(
 
     与 ``proxy_unary_request`` 不同，本函数不回写通道响应，供 Gateway 侧
     需要消费 AgentServer 结果后自行决策的桥接场景（如 Git watch 快照计算）
-    使用。目标 AgentServer 不可达/超时/失败时返回 ``(False, {error, code})``。
+    使用。目标 AgentServer 不可达/超时/失败时返回 ``(False, {error, code})``；
+    失败 payload 自带整数 ``status`` 时一并转发。
     """
     if agent_client is None or getattr(agent_client, "server_ready", True) is False:
         return False, {
@@ -312,10 +315,14 @@ async def fetch_agent_unary(
         else (response.payload if response.payload is not None else {})
     )
     if not response.ok:
-        return False, {
+        forwarded: dict[str, Any] = {
             "error": str(payload.get("error") or f"{req_method.value} failed"),
             "code": str(payload.get("code") or "BAD_REQUEST"),
         }
+        reported_status = payload.get("status")
+        if isinstance(reported_status, int) and not isinstance(reported_status, bool):
+            forwarded["status"] = reported_status
+        return False, forwarded
     return True, payload
 
 

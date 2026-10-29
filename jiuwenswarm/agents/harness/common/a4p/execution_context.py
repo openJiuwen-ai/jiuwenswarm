@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from jiuwenswarm.common.mode_matrix import deprecate_mode
+from gateway.common.mode_matrix import deprecate_mode
 
 
 @dataclass(frozen=True)

@@ -8,7 +8,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
@@ -331,7 +331,7 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         if raw_selection is None:
             updated = replace(updated, model_selection=None)
         else:
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             selection = ModelSelection.model_validate(raw_selection)
             from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             ModelSelectionResolver().resolve(selection)

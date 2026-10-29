@@ -2213,7 +2213,7 @@ async def _run_team_followup_stream(
 
 @pytest.mark.anyio
 async def test_team_followup_session_message_uses_mailbox_admission(monkeypatch):
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     calls = await _run_team_followup_stream(
         monkeypatch,
@@ -2232,7 +2232,7 @@ async def test_team_followup_session_message_uses_mailbox_admission(monkeypatch)
 async def test_team_followup_session_message_steer_uses_interactive_admission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     calls = await _run_team_followup_stream(
         monkeypatch,
@@ -4704,7 +4704,14 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch):
+async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    ledger = SessionTokenUsageLedger(tmp_path / "sess-leader-only", "sess-leader-only")
+    ledger.record("call-leader", "main", 100, 20)
+    ledger.record("call-member", "others", 50, 10)
     broadcasted: list[dict] = []
     ready_calls: list[tuple[str, str]] = []
 
@@ -4811,6 +4818,10 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     )
 
     assert ready_calls == [("sess-leader-only", "demo-team")]
+    for event in broadcasted:
+        if event["event_type"] == "chat.final":
+            assert event["session_usage"]["main"]["input_tokens"] == 100
+            assert event["session_usage"]["others"]["output_tokens"] == 10
     # Leader finals are content events, not Team round terminals.  The runtime
     # may emit several of them before team.completed; only the framework
     # terminal or a terminal-less stream close produces
@@ -6655,8 +6666,9 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
 
 @pytest.mark.anyio
-async def test_consume_workflow_events_reports_session_budget_exhaustion_as_chat_error(monkeypatch):
-    """The web UI must show a terminal session-budget failure even with no active run."""
+async def test_consume_workflow_events_does_not_emit_budget_exhausted_chat_error(monkeypatch):
+    """Budget exhaustion is conveyed by the workflow.updated frame's
+    budget_exhausted_scope; the consumer must not emit a separate chat.error."""
     broadcasted: list[dict[str, object]] = []
     event = {
         "event_type": "workflow.updated",
@@ -6689,13 +6701,8 @@ async def test_consume_workflow_events_reports_session_budget_exhaustion_as_chat
         "web", "sess-budget", _FakeWorkflowHandler(),
     )
 
-    errors = [item for item in broadcasted if item.get("event_type") == "chat.error"]
-    assert errors == [{
-        "event_type": "chat.error",
-        "session_id": "sess-budget",
-        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
-        "error": "Session budget exhausted",
-    }]
+    assert "workflow.updated" in [item.get("event_type") for item in broadcasted]
+    assert not [item for item in broadcasted if item.get("event_type") == "chat.error"]
 
 
 @pytest.mark.anyio

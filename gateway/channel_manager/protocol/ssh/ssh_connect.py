@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from jiuwenswarm.common.schema.message import Message, ReqMethod
+from openjiuwen_protocol.message import Message, ReqMethod
 from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from gateway.extensions.auth.ssh_authenticator import SshPublicKeyAuthenticator
 from gateway.extensions.auth.ssh_key_issuer import AgentOSSshKeyIssuer, SshKeyIssuer

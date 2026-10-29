@@ -22,7 +22,7 @@ from jiuwenswarm.channels.process_cli.protocol import (
     SingleAgentMode,
     WorkspaceSpec,
 )
-from jiuwenswarm.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
+from gateway.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
 from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 from jiuwenswarm.runtime.events import RuntimeEvent
 

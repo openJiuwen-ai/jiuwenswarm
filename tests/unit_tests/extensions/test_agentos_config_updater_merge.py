@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.extensions.agentos.config_updater.merge import (
+from gateway.extensions.agentos.config_updater.merge import (
     extract_section,
     filter_managed_section,
     merge_section,

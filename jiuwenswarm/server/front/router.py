@@ -36,6 +36,7 @@ _HANDLE_CONFIG = None
 _HANDLE_HISTORY = None
 _LOAD_HISTORY_QUERY = None
 _LOAD_HISTORY_TODO_SNAPSHOT = None
+_LOAD_HISTORY_SESSION_USAGE = None
 _STREAM_HISTORY_RECORDS = None
 _INVALID_HISTORY_CURSOR = None
 _HISTORY_SNAPSHOT_CHANGED = None
@@ -70,6 +71,7 @@ def _load_config_service() -> None:
 
 def _load_history_service() -> None:
     global _HANDLE_HISTORY, _LOAD_HISTORY_QUERY, _LOAD_HISTORY_TODO_SNAPSHOT
+    global _LOAD_HISTORY_SESSION_USAGE
     global _STREAM_HISTORY_RECORDS, _INVALID_HISTORY_CURSOR, _HISTORY_SNAPSHOT_CHANGED
     if _HANDLE_HISTORY is not None:
         return
@@ -78,6 +80,7 @@ def _load_history_service() -> None:
         InvalidHistoryCursor,
         handle_history_request,
         load_history_query,
+        load_history_session_usage,
         load_history_todo_snapshot,
         stream_history_records,
     )
@@ -85,6 +88,7 @@ def _load_history_service() -> None:
     _HANDLE_HISTORY = handle_history_request
     _LOAD_HISTORY_QUERY = load_history_query
     _LOAD_HISTORY_TODO_SNAPSHOT = load_history_todo_snapshot
+    _LOAD_HISTORY_SESSION_USAGE = load_history_session_usage
     _STREAM_HISTORY_RECORDS = stream_history_records
     _INVALID_HISTORY_CURSOR = InvalidHistoryCursor
     _HISTORY_SNAPSHOT_CHANGED = HistorySnapshotChanged
@@ -165,6 +169,11 @@ class MethodRouter:
                             if isinstance(snapshot.get("is_processing"), bool):
                                 response.payload["is_processing"] = snapshot["is_processing"]
                                 response.payload["status"] = "processing" if snapshot["is_processing"] else "idle"
+                    # Runtime may still contain child work after the Owner stops.
+                    # Keep its snapshot intact while projecting the Owner composer as idle.
+                    if response.payload.get("organization_owner_stopped") is True:
+                        response.payload["is_processing"] = False
+                        response.payload["status"] = "idle"
             elif method in CONTROL_PROJECT_METHODS:
                 _load_project_service()
                 response = await _HANDLE_PROJECT(request)
@@ -312,6 +321,11 @@ class MethodRouter:
                     len(todos),
                 )
             next_seq += 1
+        session_usage = None
+        if not subagent_id and isinstance(session_id, str) and session_id.strip():
+            session_usage = await asyncio.to_thread(
+                _LOAD_HISTORY_SESSION_USAGE, session_id.strip()
+            )
         done = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -327,6 +341,7 @@ class MethodRouter:
                 "has_more": has_more,
                 "snapshot_id": snapshot_id,
                 "snapshot_end": snapshot_end,
+                **({"session_usage": session_usage} if session_usage is not None else {}),
             },
             is_complete=True,
         )

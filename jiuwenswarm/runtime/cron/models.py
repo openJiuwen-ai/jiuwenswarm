@@ -5,11 +5,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
 )
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
     deprecate_mode,
@@ -594,7 +594,7 @@ class CronJob:
         selection_raw = data.get("model_selection")
         job_model_selection = None
         if isinstance(selection_raw, dict):
-            from jiuwenswarm.common.model_selection import ModelSelection
+            from gateway.common.model_selection import ModelSelection
             job_model_selection = ModelSelection.model_validate(selection_raw).model_dump()
         # mcp：老数据兜底（无 mcp 字段 → None，行为与改造前一致）
         job_mcp = normalize_cron_job_mcp(data.get("mcp", None))

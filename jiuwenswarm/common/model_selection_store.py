@@ -5,9 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from gateway.common.model_selection import ModelSelection
+from gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 

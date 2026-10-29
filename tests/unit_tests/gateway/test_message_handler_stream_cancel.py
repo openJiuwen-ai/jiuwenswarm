@@ -12,9 +12,9 @@ import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.agent import AgentResponseChunk
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import ReqMethod
 from gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from gateway.routing.session_sharing import SubRole
 
@@ -397,16 +397,24 @@ async def test_owner_status_with_team_identity_still_waits_for_other_owner_work(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("intent", ["cancel", "pause", "resume", "supplement"])
-async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent):
+@pytest.mark.parametrize("owner_flag", [None, "organization_owner_stop", "organization_stop"])
+async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, intent, owner_flag):
     handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": "owner"}
+
     monkeypatch.setattr(
         "jiuwenswarm.common.external_providers.provider",
-        lambda _: SimpleNamespace(get_session_metadata=lambda *args, **kwargs: {"team_name": "owner"}),
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
     msg.req_method = ReqMethod.CHAT_CANCEL
     msg.is_stream = False
-    msg.params.update({"target_team_id": "expert", "intent": intent})
+    target = "owner" if owner_flag else "expert"
+    msg.params.update({"target_team_id": target, "intent": intent})
+    if owner_flag:
+        msg.params[owner_flag] = True
     session_cancel = AsyncMock()
     monkeypatch.setattr(handler, "_cancel_agent_work_for_session", session_cancel)
     owner = _seed_stream_task(handler, rid="owner", channel_id="web", session_id="session")
@@ -417,7 +425,9 @@ async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, inte
             while not _FakeAgentClient.sent_requests:
                 await asyncio.sleep(0)
         env = _FakeAgentClient.sent_requests[0]
-        assert env.params["target_team_id"] == "expert"
+        assert env.params["target_team_id"] == target
+        if owner_flag:
+            assert env.params[owner_flag] is True
         assert env.params["intent"] == intent
         assert not owner.done()
         session_cancel.assert_not_awaited()
@@ -448,19 +458,51 @@ async def test_org_root_terminal_is_the_stream_terminal(source):
 
 
 @pytest.mark.parametrize("mode,target,owner,expected", [
+    # owner 未知（metadata 里没有 team_name）时保守判为「定向」：替代路径是会话级中断，
+    # 会把 owner 团队正在跑的 turn 一起取消。交 AgentServer 裁决，由它明确报错。
     ("agent", "expert", "owner", False), ("team", "owner", "owner", False),
-    ("team", "expert", "", False), ("team", "", "owner", False),
+    ("team", "expert", "", True), ("team", "", "owner", False),
     ("team", "expert", "owner", True),
 ])
-def test_targeted_cancel_requires_team_mode_and_non_owner(monkeypatch, mode, target, owner, expected):
+@pytest.mark.asyncio
+async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_known_owner(
+    monkeypatch, mode, target, owner, expected
+):
     handler = _TestMessageHandler.create()
+
+    async def _metadata(*args, **kwargs):
+        return {"team_name": owner}
+
     monkeypatch.setattr(
         "jiuwenswarm.common.external_providers.provider",
-        lambda _: SimpleNamespace(get_session_metadata=lambda *args, **kwargs: {"team_name": owner}),
+        lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
     msg.params["target_team_id"] = target
-    assert handler._is_targeted_expert_cancel(msg) is expected
+    assert await handler._is_targeted_expert_cancel(msg) is expected
+
+
+@pytest.mark.asyncio
+async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypatch):
+    """元数据传输失败（非"读为空"）时，定向取消不被放大成会话级取消。"""
+    from gateway.routing.session_metadata_remote import SessionMetadataRemoteUnavailable
+
+    handler = _TestMessageHandler.create()
+
+    async def _unavailable(*args, **kwargs):
+        raise SessionMetadataRemoteUnavailable("session metadata read failed")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.external_providers.provider",
+        lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
+    )
+    msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
+    msg.req_method = ReqMethod.CHAT_CANCEL
+    msg.is_stream = False
+    msg.params.update({"target_team_id": "expert", "intent": "cancel"})
+
+    # owner 未知 → 照常按定向取消转发（成员校验由 AgentServer 权威执行）
+    assert await handler._is_targeted_expert_cancel(msg) is True
 
 
 @pytest.mark.asyncio

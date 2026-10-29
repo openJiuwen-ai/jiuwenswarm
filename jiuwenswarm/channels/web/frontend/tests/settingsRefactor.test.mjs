@@ -1138,6 +1138,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'multi_model_collaboration_enabled',
       'symphony_evolution_enabled',
       'kv_cache_affinity_enabled',
+      'comfyui_workflow_enabled',
       'team_organization_ui_enabled',
       'team_scheduled_dispatch_enabled',
       'team_task_verification_enabled',
@@ -1151,6 +1152,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
+    'comfyui_workflow_enabled',
     'external_cli_agent_claude_cli_path',
     'external_cli_agent_claude_enabled',
     'external_cli_agent_claude_use_builtin',
@@ -2018,6 +2020,8 @@ test('Jev browser settings preserve mode, independent provider credentials and r
   assert.match(provider, /jev_key_configured: value\?\.jev_key_configured === true/);
   assert.match(keySettings, /createJevDraft\(\{ decision_provider: provider \}, config\)/);
   assert.match(keySettings, /decision_mode: 'llm'/);
+  assert.match(keySettings, /decision_display_name: ''/);
+  assert.match(keySettings, /moa_jev_enabled: 'false'/);
   assert.match(keySettings, /await saveConfigFields\([\s\S]*await save\(/);
   assert.doesNotMatch(keySettings, /name: '(?:protocol|context_window_tokens|alias)'/);
   assert.match(keySettings, /patchLocal\(await request<Record<string, unknown>>\('path\.get'\)\)/);

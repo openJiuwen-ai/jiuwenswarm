@@ -12,7 +12,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server import agent_ws_server
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
@@ -273,6 +273,39 @@ async def test_non_expert_interrupt_uses_session_runtime(monkeypatch, mode, team
     await server._handle_cancel(None, req, asyncio.Lock(), send_response=False)
     cancel.assert_awaited_once_with(req, allow_create=False)
     targeted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_owner_unknown_cancel_never_degrades_to_session_level(monkeypatch):
+    """owner 未知的定向取消必须走 _cancel_targeted_expert 明确拒绝，而不是会话级取消。
+
+    `_is_targeted_expert_request` 在 metadata 缺 `team_name` 时返回 False，若 `_handle_cancel`
+    用它重判，就会掉进 `cancel_request(...)` 的会话级取消，把 owner 团队正在跑的 turn
+    一起取消——这正是本 MR 要修的行为。
+    """
+    server = object.__new__(AgentWebSocketServer)
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {})
+    cancel = AsyncMock(return_value=SimpleNamespace(ok=True))
+    targeted = AsyncMock(return_value=SimpleNamespace(ok=False))
+    monkeypatch.setattr(server, "_cancel_targeted_expert", targeted)
+    monkeypatch.setattr(
+        server, "_execution_runtime", lambda: SimpleNamespace(cancel_request=cancel)
+    )
+    req = request(ReqMethod.CHAT_CANCEL)
+    await server._handle_cancel(None, req, asyncio.Lock(), send_response=False)
+    targeted.assert_awaited_once_with(req)
+    cancel.assert_not_awaited()
+
+
+def test_cancel_predicate_is_lenient_where_the_send_predicate_is_strict(monkeypatch):
+    """两个判定的唯一差异就是 owner 未知时的兜底方向，别把它们合并成一个。"""
+    monkeypatch.setattr(agent_ws_server, "get_session_metadata", lambda _: {})
+    cancel_req = request(ReqMethod.CHAT_CANCEL)
+    send_req = request(ReqMethod.CHAT_SEND)
+    assert AgentWebSocketServer._is_targeted_expert_cancel_request(cancel_req)
+    assert not AgentWebSocketServer._is_targeted_expert_request(cancel_req)
+    assert not AgentWebSocketServer._is_targeted_expert_request(send_req)
+    assert not AgentWebSocketServer._is_targeted_expert_cancel_request(send_req)
 
 
 @pytest.mark.asyncio

@@ -16,7 +16,7 @@ import aiohttp
 from aiohttp.client_exceptions import ContentTypeError
 from pydantic import BaseModel, Field
 
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 from gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter

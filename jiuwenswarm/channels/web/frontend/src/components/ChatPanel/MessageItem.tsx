@@ -5,6 +5,7 @@
  */
 
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
+import { useConversationLeaderIdentity } from '../../features/teamOrganization/leaderIdentity';
 import { useState, useCallback, useContext, useEffect, useRef, useMemo, memo } from 'react';
 import type { ReactNode } from 'react';
 import {
@@ -418,9 +419,7 @@ export const MessageItem = memo(function MessageItem({
   // 任务素材（@名称 引用）：素材存在后端，历史消息里只有 @名称 文本。
   // 渲染用户气泡时按名称解析成缩略图，这样刷新/重进会话依然能看到素材。
   const sessionAssets = useSessionAssetsStore(selectSessionAssets(activeSessionId));
-  const sessionTeamLeaderIdentity = useSessionStore(
-    (state) => state.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
-  );
+  const sessionTeamLeaderIdentity = useConversationLeaderIdentity(activeSessionId);
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? sessionTeamLeaderIdentity;
 
   // TTS
@@ -1173,7 +1172,7 @@ function FileDownloadList({
     const downloadToken = resolveFileDownloadToken(file);
     if (!downloadToken) return;
     if (!sessionId) {
-      window.alert('当前无活跃会话，无法保存 Skill');
+      window.alert(t('chatUi.saveSkillNoSession'));
       return;
     }
 
@@ -1193,7 +1192,7 @@ function FileDownloadList({
     } catch (error) {
       if (isImportOverwriteRequired(error)) {
         const errorMsg = error instanceof Error ? error.message : String(error);
-        const overwrite = window.confirm(`${errorMsg}\n是否覆盖保存？`);
+        const overwrite = window.confirm(t('chatUi.saveSkillOverwriteConfirm', { message: errorMsg }));
         if (!overwrite) return;
         try {
           await webRequest('skills.import_local', importParams(true));
@@ -1289,7 +1288,7 @@ function FileDownloadList({
             {isSkill ? (
               <div className="flex-shrink-0 flex items-center gap-2">
                 {saveSuccessIndex === index && (
-                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">保存成功</span>
+                  <span className="text-xs font-medium text-green-600 whitespace-nowrap">{t('chatUi.saveSkillSuccess')}</span>
                 )}
                 <button
                   type="button"
@@ -1306,9 +1305,9 @@ function FileDownloadList({
                     event.stopPropagation();
                     void handleSaveSkill(file, index);
                   }}
-                  title={isSaved ? '已保存' : '保存'}
+                  title={isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 >
-                  {isSaving ? '保存中...' : isSaved ? '已保存' : '保存'}
+                  {isSaving ? t('chatUi.saveSkillSaving') : isSaved ? t('chatUi.saveSkillSaved') : t('chatUi.saveSkill')}
                 </button>
               </div>
             ) : (

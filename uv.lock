@@ -3681,7 +3681,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.19"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd#0ab5913b250d565b35bff3828dae438939cb1acd" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=b2a0a248c554753ba31727415fe17a03eed60b46#b2a0a248c554753ba31727415fe17a03eed60b46" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -7151,8 +7151,8 @@ requires-dist = [
     { name = "certifi", specifier = ">=2024.8.30,<2027" },
     { name = "chromadb", specifier = ">=1.5.0,<2" },
     { name = "coverage", marker = "extra == 'test'", specifier = ">=7.7.1" },
-    { name = "croniter", specifier = ">=2.0.0,<7" },
-    { name = "croniter", marker = "extra == 'harmony'", specifier = ">=2.0.0" },
+    { name = "croniter", specifier = ">=3.0.0,<7" },
+    { name = "croniter", marker = "extra == 'harmony'", specifier = ">=3.0.0" },
     { name = "cryptography", marker = "extra == 'test'", specifier = ">=44.0.0" },
     { name = "dingtalk-stream", specifier = ">=0.24.3,<0.25" },
     { name = "dingtalk-stream", marker = "extra == 'harmony'", specifier = ">=0.24.3" },
@@ -7192,12 +7192,12 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=0ab5913b250d565b35bff3828dae438939cb1acd" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=b2a0a248c554753ba31727415fe17a03eed60b46" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=b2a0a248c554753ba31727415fe17a03eed60b46" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=b2a0a248c554753ba31727415fe17a03eed60b46" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=b2a0a248c554753ba31727415fe17a03eed60b46" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=b2a0a248c554753ba31727415fe17a03eed60b46" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=b2a0a248c554753ba31727415fe17a03eed60b46" },
     { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=10a03dd263c33042558bbd67a815952458a25fa9" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },

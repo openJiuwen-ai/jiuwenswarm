@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
+from gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session import lifecycle as lc
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -248,6 +248,8 @@ def _copy_fork_history_value(
 
     copied: dict[str, Any] = {}
     for key, item in value.items():
+        if key == "session_usage":
+            continue
         if key in _FORK_HISTORY_SESSION_KEYS and item == source_session_id:
             copied[key] = target_session_id
             continue

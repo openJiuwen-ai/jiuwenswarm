@@ -11,10 +11,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import aclosing
-from copy import deepcopy
-from dataclasses import replace
-from concurrent.futures import Future
 import inspect
 import json
 import logging
@@ -22,63 +18,46 @@ import re
 import shutil
 import tempfile
 import time
+from concurrent.futures import Future
+from contextlib import aclosing
+from copy import deepcopy
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
-from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.session_message import (
+from gateway.common.mode_matrix import (
+    canonicalize_mode_text,
+    is_code_profile_mode,
+    is_team_plan_mode,
+    is_web_composable_mode,
+    read_request_work_mode,
+)
+from gateway.common.mode_matrix import (
+    is_team_mode as is_team_runtime_mode,
+)
+from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     with_cross_session_history_metadata,
 )
-
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
-    SKILLS_REBUILD_SILENT,
-)
-from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
-    AgentAdapter,
-    create_adapter,
-    resolve_sdk_choice,
-)
-from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
-from jiuwenswarm.server.runtime.session.history_io import run_history_io as _run_history_io
-from jiuwenswarm.server.runtime.session.session_history import (
-    SESSION_REQUEST_COMPLETED_EVENT,
-    append_compact_history_records,
-    append_history_record,
-    collapse_file_content_blocks,
-    enqueue_history_request_completion,
-    resolve_final_record_timestamp,
-)
-from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
-    MEMBER_SEGMENT_BOUNDARY_EVENTS,
-    TeamMemberStreamHistory,
-    team_member_stream_key,
-)
-from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
-from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
-    STATUSLINE_SETUP_SYSTEM_PROMPT,
-    build_statusline_setup_dispatch,
-)
-from jiuwenswarm.server.runtime.session.session_manager import SessionManager
-from jiuwenswarm.runtime.session.model import (
-    TEAM_ATTACH_ONLY_PARAM,
-    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
-)
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
-from jiuwenswarm.server.runtime.session_assets import get_session_asset_manager
-from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
-from jiuwenswarm.server.utils.utils import is_team_params
-from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.e2a.constants import (
-    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
-    E2A_INTERNAL_CANCEL_SOURCE_KEY,
-)
+from gateway.extensions.registry import ExtensionRegistry
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_EXECUTE_OPTION_VALUES,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
     PLAN_REVISE_OPTION_VALUES,
     PLAN_SKIP_OPTION_VALUES,
     plan_skip_feedback,
+)
+from jiuwenswarm.agents.harness.common.auto_memory import (
+    _execute_auto_memory_extraction,
+)
+from jiuwenswarm.agents.harness.common.memory.config import (
+    get_memory_mode,
+    is_auto_memory_enabled,
+    is_memory_enabled,
+)
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    EVOLUTION_INTERRUPT_METADATA_SOURCES,
+    is_interrupt_resume_payload,
 )
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
     ALLOW_ONCE,
@@ -89,25 +68,34 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from jiuwenswarm.common.mode_matrix import (
-    canonicalize_mode_text,
-    is_code_profile_mode,
-    is_team_mode as is_team_runtime_mode,
-    is_team_plan_mode,
-    is_web_composable_mode,
-    read_request_work_mode,
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+    SKILLS_REBUILD_SILENT,
+)
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+    USER_INTERACTION_EVENTS,
+)
+from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
-from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
+from jiuwenswarm.common.e2a.constants import (
+    E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
+    E2A_INTERNAL_CANCEL_SOURCE_KEY,
+)
 from jiuwenswarm.common.hook_event import AgentServerHookEvents
 from jiuwenswarm.common.hooks_context import MemoryHookContext
+from jiuwenswarm.common.schema.agent import (
+    AgentRequest,
+    AgentResponse,
+    AgentResponseChunk,
+)
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     configure_skill_library,
@@ -116,26 +104,54 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     migrate_team_skill_views,
 )
+from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.runtime.session.model import (
+    TEAM_ATTACH_ONLY_PARAM,
+    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+)
+from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
+from jiuwenswarm.server.runtime import extension_package_manager as package_manager
 from jiuwenswarm.server.runtime.a2ui.integration import (
     TeamA2UIBlockBuffer,
     finalize_assistant_response_if_a2ui,
 )
-from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
-from jiuwenswarm.server.runtime import extension_package_manager as package_manager
-from jiuwenswarm.agents.harness.common.auto_memory import (
-    _execute_auto_memory_extraction,
+from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import (
+    should_finalize_a2ui_content,
 )
-from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
-    EVOLUTION_INTERRUPT_METADATA_SOURCES,
-    is_interrupt_resume_payload,
+from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
+    AgentAdapter,
+    create_adapter,
+    resolve_sdk_choice,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
-    HOST_USER_ORIGIN_EXTERNAL,
-    HOST_USER_ORIGIN_INTERNAL,
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    STATUSLINE_SETUP_SYSTEM_PROMPT,
+    build_statusline_setup_dispatch,
 )
-from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
-    USER_INTERACTION_EVENTS,
+from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import (
+    MEMBER_SEGMENT_BOUNDARY_EVENTS,
+    TeamMemberStreamHistory,
+    team_member_stream_key,
 )
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
+    TEAM_USER_TURN_KEY,
+    UserTurn,
+)
+from jiuwenswarm.server.runtime.session.history_io import (
+    run_history_io as _run_history_io,
+)
+from jiuwenswarm.server.runtime.session.session_history import (
+    SESSION_REQUEST_COMPLETED_EVENT,
+    append_compact_history_records,
+    append_history_record,
+    collapse_file_content_blocks,
+    enqueue_history_request_completion,
+    resolve_final_record_timestamp,
+)
+from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+from jiuwenswarm.server.runtime.session_assets import get_session_asset_manager
+from jiuwenswarm.server.runtime.skill.archive_store import ARCHIVE_DIRNAME
+from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
+from jiuwenswarm.server.utils.utils import is_team_params
 
 
 def _with_request_runtime_context(
@@ -1285,6 +1301,7 @@ _SESSION_ASSET_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SESSION_ASSETS_LIST: "handle_session_assets_list",
     ReqMethod.SESSION_ASSETS_REGISTER: "handle_session_assets_register",
     ReqMethod.SESSION_ASSETS_RENAME: "handle_session_assets_rename",
+    ReqMethod.SESSION_ASSETS_REMOVE: "handle_session_assets_remove",
 }
 
 # Handlers that persist a Skill visibility document; every one of them must
@@ -2923,7 +2940,9 @@ class JiuWenSwarm:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                from jiuwenswarm.server.runtime.organization_packages import uninstall_organization_agent_group
+                from jiuwenswarm.server.runtime.organization_packages import (
+                    uninstall_organization_agent_group,
+                )
 
                 await uninstall_organization_agent_group(params)
                 payload = {}
@@ -4390,18 +4409,24 @@ class JiuWenSwarm:
             merged["reasoning_updated_at"] = updated_at or started_at or (time.time() * 1000)
             return merged
 
-        async def _persist_pending_reasoning() -> None:
-            """异常/非 Goal 结束兜底：把未随 tool_call/final 落盘的思考补落一条记录。
-
-            正常完成时 reasoning 已被最后一条 tool_call/final 附走、缓冲为空，这里 no-op。
-            单独落成 chat.reasoning 记录（不带正文 final），前端按 reasoning_content 提取。
-            """
-            started_at = durable_pending_reasoning_started_at
-            updated_at = durable_pending_reasoning_updated_at
-            reasoning_text, _, _ = _consume_durable_reasoning_content()
-            if not reasoning_text.strip():
-                return
+        async def _persist_pending_reasoning(member_key: str | None = None) -> None:
+            """Persist reasoning left unattached at an interaction or stream boundary."""
             now_ms = time.time() * 1000
+            if member_key is not None:
+                pending = team_member_history.take_pending_reasoning(member_key)
+                if pending is None:
+                    return
+                started_at, extra_fields = pending
+            else:
+                reasoning_text, started_at, updated_at = _consume_durable_reasoning_content()
+                if not reasoning_text.strip():
+                    return
+                extra_fields = {
+                    **output_phase_metadata,
+                    "reasoning_output_order": durable_pending_reasoning_order,
+                    "reasoning_content": reasoning_text,
+                    "reasoning_updated_at": updated_at or started_at or now_ms,
+                }
             await _run_history_io(
                 append_history_record,
                 session_id=session_id,
@@ -4412,12 +4437,7 @@ class JiuWenSwarm:
                 content="",
                 timestamp=(started_at or now_ms) / 1000,
                 extra=_with_web_agent_template_metadata(
-                    {
-                        **output_phase_metadata,
-                        "reasoning_output_order": durable_pending_reasoning_order,
-                        "reasoning_content": reasoning_text,
-                        "reasoning_updated_at": updated_at or started_at or now_ms,
-                    },
+                    extra_fields,
                     request.params,
                     cid,
                     event_type="chat.reasoning",
@@ -4542,6 +4562,8 @@ class JiuWenSwarm:
                 return False
             if event_type in MEMBER_SEGMENT_BOUNDARY_EVENTS:
                 await _persist_team_member_pending_final(member_key)
+                if event_type in USER_INTERACTION_EVENTS:
+                    await _persist_pending_reasoning(member_key)
             elif event_type == "chat.final":
                 ensure_final_mode_inplace(payload)
                 if content:
@@ -5054,17 +5076,13 @@ class JiuWenSwarm:
                                 _note_durable_reasoning_delta(data.payload)
                                 durable_pending_reasoning_chunks.append(payload_content)
                                 should_record = False
-                            elif et in (
-                                "chat.tool_call",
-                                # 中断边界（ask_user / 权限确认）结束本轮输出且不会再有
-                                # 收尾 chat.final；不冲刷的话中断前流出的正文整段
-                                # 不落盘，刷新后这段回答凭空消失（#3785）。
-                                "chat.ask_user_question",
-                                "harness.activate_interaction",
-                            ):
+                            elif et == "chat.tool_call" or et in USER_INTERACTION_EVENTS:
                                 if is_proactive_request and et == "chat.tool_call":
                                     saw_proactive_tool_call_since_final = True
                                 await _persist_pending_final_text()
+                                if et in USER_INTERACTION_EVENTS:
+                                    # A pause may have reasoning without any text or final.
+                                    await _persist_pending_reasoning()
                             elif et == "chat.final":
                                 if isinstance(data.payload, dict):
                                     ensure_final_mode_inplace(data.payload)
@@ -5338,15 +5356,12 @@ class JiuWenSwarm:
                             _note_durable_reasoning_delta(data)
                             durable_pending_reasoning_chunks.append(payload_content)
                             should_record = False
-                        elif et in (
-                            "chat.tool_call",
-                            # 同上：中断边界结束本轮输出，冲刷 pending 正文（#3785）。
-                            "chat.ask_user_question",
-                            "harness.activate_interaction",
-                        ):
+                        elif et == "chat.tool_call" or et in USER_INTERACTION_EVENTS:
                             if is_proactive_request and et == "chat.tool_call":
                                 saw_proactive_tool_call_since_final = True
                             await _persist_pending_final_text()
+                            if et in USER_INTERACTION_EVENTS:
+                                await _persist_pending_reasoning()
                         elif et == "chat.final":
                             if suppress_a2ui_stream or a2ui_split is not None:
                                 first_a2ui_suppression = not suppress_a2ui_stream

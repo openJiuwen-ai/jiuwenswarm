@@ -1,4 +1,4 @@
-import { useState, ReactNode } from 'react';
+import { useState, useRef, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
 import ScheduleEditor from './ScheduleEditor';
@@ -190,6 +190,12 @@ export default function CronTaskDrawer({
 }: CronTaskDrawerProps) {
   const { t } = useTranslation();
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
+  // 修复"在名称/描述输入框里选中文字、拖动选区移出抽屉后松开鼠标，抽屉被误关"：
+  // 该手势的 mousedown 在抽屉内、mouseup 在遮罩上，浏览器会把产生的 click 派发到
+  // 两者的最近公共祖先（即遮罩层本身），click 不经过抽屉冒泡，抽屉上的
+  // stopPropagation 拦不住，遮罩的 onClick 便会直接关闭抽屉。因此记录按下起点，
+  // 只有"按下与松开都落在遮罩自身"（一次真正的点空白关闭）才执行 onClose。
+  const pressedOnOverlayRef = useRef(false);
 
   const handleModeChange = (nextMode: AgentMode) => {
     setForm((current) => ({ ...current, mode: nextMode }));
@@ -291,7 +297,16 @@ export default function CronTaskDrawer({
     <div
       className="fixed inset-0 z-40 flex justify-end bg-overlay-cron-drawer"
       data-testid="cron-drawer-overlay"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        // 只有按下时起点就在遮罩自身（而非从抽屉内部元素冒泡上来）才记为"点空白"，
+        // 输入框内按下拖选文字移出抽屉松开的场景不会置位，click 时便不会误关
+        pressedOnOverlayRef.current = e.target === e.currentTarget;
+      }}
+      onClick={(e) => {
+        if (pressedOnOverlayRef.current && e.target === e.currentTarget) {
+          onClose();
+        }
+      }}
     >
       <div
         className="relative flex h-full w-[560px] flex-col bg-card p-6 shadow-xl animate-slide-in-right"

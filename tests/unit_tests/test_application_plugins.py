@@ -13,15 +13,15 @@ from gateway.extensions.application_host import (
     iter_websocket_routes,
     mount_application_plugin_http_routes,
 )
-from jiuwenswarm.extensions.loader import ExtensionLoader
-from jiuwenswarm.extensions.registry import ExtensionRegistry
+from gateway.extensions.loader import ExtensionLoader
+from gateway.extensions.registry import ExtensionRegistry
+from gateway.extensions.types import ExtensionMetadata
 from jiuwenswarm.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
     FrontendContribution,
     WebSocketRouteContribution,
 )
-from jiuwenswarm.extensions.types import ExtensionMetadata
 
 
 class _FakeChannel:

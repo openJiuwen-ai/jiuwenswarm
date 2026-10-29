@@ -86,10 +86,10 @@ from typing import Any, Mapping
 import httpx
 import requests
 
+from gateway.common.volcengine_endpoints import normalize_ark_api_base
 from jiuwenswarm.agents.harness.common.tools import vllm_omni_gen
 from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_verify
 from jiuwenswarm.common.utils import get_agent_workspace_dir
-from jiuwenswarm.common.volcengine_endpoints import normalize_ark_api_base
 
 logger = logging.getLogger(__name__)
 
@@ -1108,7 +1108,9 @@ def _dashscope_video_body(model: str, request: VideoRequest, file_url: str | Non
 def _dashscope_upload_file(model: str, path: str, api_key: str, base: str) -> str:
     """Upload a local file to DashScope's temporary OSS storage and return its oss:// URL."""
     import dashscope  # pylint: disable=import-outside-toplevel
-    from dashscope.utils.oss_utils import OssUtils  # pylint: disable=import-outside-toplevel
+    from dashscope.utils.oss_utils import (
+        OssUtils,  # pylint: disable=import-outside-toplevel
+    )
 
     with _DASHSCOPE_SDK_LOCK:
         previous = dashscope.base_http_api_url

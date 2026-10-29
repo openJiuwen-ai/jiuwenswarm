@@ -14,8 +14,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.schema.message import Message
+from openjiuwen_protocol.message import Message
+
+from gateway.common.mode_matrix import is_team_mode
 from gateway.runtime.session_input import SessionInputMode, resolve_session_input_mode
 
 _SHARED_IM_CHANNELS = frozenset({

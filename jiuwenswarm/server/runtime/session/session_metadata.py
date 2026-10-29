@@ -17,13 +17,14 @@ from typing import Any
 from datetime import datetime, timezone
 
 from jiuwenswarm.common.utils import get_agent_sessions_dir
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_CODE_NORMAL,
     NEW_AGENT_WORK_NORMAL,
     deprecate_mode,
     is_new_canonical_mode,
     is_team_mode,
 )
+from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
 from jiuwenswarm.server.runtime.session.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     SUPPORTED_WORK_MODES,
@@ -235,7 +236,7 @@ def _build_project_lookup() -> tuple[
 
 def _repair_session_project_dir(metadata: dict[str, Any]) -> None:
     """Keep an explicitly bound session's directory consistent with its project ID."""
-    from jiuwenswarm.common.work_mode import is_default_project_id
+    from gateway.common.work_mode import is_default_project_id
     from jiuwenswarm.server.runtime.session.project_store import get_project_by_id
 
     project_id = str(metadata.get("project_id") or "").strip()
@@ -296,6 +297,8 @@ def _apply_metadata_defaults_with_inference(
     if not isinstance(metadata, dict) or not metadata:
         return metadata
     original = metadata.copy() if background_writeback else None
+    if not metadata.get("session_id"):
+        metadata["session_id"] = session_id
 
     # 标题清理(原三处入口都有,统一到此处)
     if metadata.get("title"):
@@ -1036,6 +1039,7 @@ def _auto_title(content: str) -> str:
     # 先剥离所有小写 XML 注入标签，
     # 避免将系统提示/文件注入/工具标签误识别为会话标题
     cleaned = _INJECTED_TAG_RE.sub("", content).strip()
+    cleaned, _ = strip_debug_directive(cleaned)
     if not cleaned:
         return ""
     title = cleaned.replace("\n", " ")
@@ -1141,6 +1145,7 @@ def update_session_metadata(
     session_runtime_binding: dict[str, Any] | None = None,
     session_harness_checkpoint: dict[str, Any] | None = None,
     group_members: list[dict[str, Any]] | None = None,
+    organization_owner_stopped: bool | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -1335,8 +1340,11 @@ def update_session_metadata(
 
     if group_members is not None:
         metadata["group_members"] = copy.deepcopy(group_members)
+    if organization_owner_stopped is not None:
+        metadata["organization_owner_stopped"] = organization_owner_stopped
 
     explicit_fields = (
+        ("organization_owner_stopped", organization_owner_stopped),
         ("accent_color", accent_color), ("pinned", pinned), ("pin_order", pin_order),
         ("moa_enabled", moa_enabled), ("session_harness_checkpoint", session_harness_checkpoint),
         ("group_members", group_members),
@@ -1638,6 +1646,29 @@ def preserve_agent_group_display_identity(
         _refresh_written_cache(session_id, written, options)
 
 
+async def get_session_metadata_async(
+    session_id: str,
+    cache_bust: bool = False,
+    *,
+    enable_writeback: bool = True,
+    user_id: str | None = None,
+) -> dict[str, Any]:
+    """Async twin of :func:`get_session_metadata`（``to_thread`` 包装）。
+
+    统一异步入口：gateway 侧 WS 远端实现（``gateway/routing/
+    session_metadata_remote``）同签名互换；``user_id`` 仅供远端路由使用，
+    本地实现接受即忽略。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(
+        get_session_metadata,
+        session_id,
+        cache_bust,
+        enable_writeback=enable_writeback,
+    )
+
+
 def get_session_metadata(
     session_id: str,
     cache_bust: bool = False,
@@ -1656,7 +1687,10 @@ def get_session_metadata(
     """
     from jiuwenswarm.server.runtime.session import lifecycle as lc
     if lc.state("session", session_id).get("write_blocked") or lc.session_paths(session_id)[1].exists():
-        return lc.raw_metadata(session_id)
+        metadata = lc.raw_metadata(session_id)
+        if isinstance(metadata, dict) and metadata and not metadata.get("session_id"):
+            metadata = {**metadata, "session_id": session_id}
+        return metadata
     metadata = _read_metadata(session_id, cache_bust)
     if isinstance(metadata, dict) and metadata:
         metadata = _apply_metadata_defaults_with_inference(

@@ -42,7 +42,7 @@ class SessionOwner:
 
 
 def _path() -> Path:
-    from jiuwenswarm.common.auth.session_store import auth_dir
+    from gateway.auth.session_store import auth_dir
 
     return auth_dir() / _FILE_NAME
 
@@ -89,7 +89,7 @@ def _prune(entries: dict[str, dict], now: float) -> None:
 
 
 def remember(session_id: str, credential_ref: str, model_name: str) -> None:
-    from jiuwenswarm.common.auth.login_credentials import bare_model_name, is_credential_ref
+    from gateway.auth.login_credentials import bare_model_name, is_credential_ref
 
     session_id = str(session_id or "").strip()
     model_name = bare_model_name(model_name)
@@ -122,8 +122,8 @@ def lookup(session_id: str) -> SessionOwner | None:
 
 
 def login_auth_for_owner(owner: SessionOwner) -> dict | None:
-    from jiuwenswarm.common.auth.apig import resolve_apig_config
-    from jiuwenswarm.common.auth.model_catalog import get_models
+    from gateway.auth.apig import resolve_apig_config
+    from gateway.auth.model_catalog import get_models
     from gateway.auth.passthrough import refreshed_credential_for_ref
 
     if owner.model_name not in {model.model_name for model in get_models(allow_refresh=False)}:

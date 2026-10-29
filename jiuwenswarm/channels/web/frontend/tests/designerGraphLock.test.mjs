@@ -50,6 +50,40 @@ test('building and an active run lock the graph', () => {
   );
 });
 
+test('the graph stays locked while the leader answers the first prompt', () => {
+  const emptyPromptGraph = { graph_id: 'g3', source: 'prompt', nodes: [] };
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      leaderBusy: true,
+      graph: emptyPromptGraph,
+      nodeStates: {},
+      runStatus: null,
+    }),
+    true,
+  );
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      leaderBusy: true,
+      graph: { graph_id: 'g2', source: 'manual', nodes: [{ id: 'n1' }] },
+      nodeStates: {},
+      runStatus: null,
+    }),
+    true,
+  );
+  assert.equal(
+    isDesignerGraphEditingLocked({
+      bootstrapInProgress: false,
+      leaderBusy: false,
+      graph: emptyPromptGraph,
+      nodeStates: {},
+      runStatus: null,
+    }),
+    false,
+  );
+});
+
 test('a failed built graph unlocks so it can be edited', () => {
   assert.equal(
     isDesignerGraphEditingLocked({

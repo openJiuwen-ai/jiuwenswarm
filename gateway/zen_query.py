@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.schema.message import ReqMethod
+from openjiuwen_protocol.message import ReqMethod
 from gateway.routing.e2a_proxy import fetch_agent_unary
 
 logger = logging.getLogger(__name__)

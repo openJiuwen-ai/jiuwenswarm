@@ -241,7 +241,7 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
     # per-key BrowserInstanceConfig) into spec.factory_kwargs; preserve it and
     # only add the workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
-    from jiuwenswarm.agents.harness.common.browser_config import apply_browser_decision_config
+    from jiuwenswarm.common.browser_config import apply_browser_decision_config
 
     apply_browser_decision_config(spec, ctx.config)
     # Explicit Chrome settings opt Swarm into managed browsers; single-agent

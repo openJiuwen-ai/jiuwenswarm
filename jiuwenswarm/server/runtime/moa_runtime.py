@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.browser_settings import resolve_jev_connection
-from jiuwenswarm.common.model_selection import ModelSelection
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.moa_config import build_moa_config_from_frontend
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
@@ -21,7 +21,7 @@ from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionCont
 def effective_moa_enabled(config: dict[str, Any], selection: ModelSelection | dict | None,
                           *, mode: str, is_cron: bool = False) -> bool:
     """Derive product MoA solely from experimental settings and stable selection."""
-    from jiuwenswarm.common.mode_matrix import is_team_mode
+    from gateway.common.mode_matrix import is_team_mode
 
     if is_cron or is_team_mode(mode):
         return False

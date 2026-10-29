@@ -99,7 +99,7 @@ def _decrypt_api_key(value: str) -> str:
     if not value:
         return ""
     try:
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from gateway.extensions.registry import ExtensionRegistry
 
         crypto = ExtensionRegistry.get_instance().get_crypto_provider()
         return str(crypto.decrypt(value)) if crypto else value

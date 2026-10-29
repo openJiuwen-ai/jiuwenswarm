@@ -176,7 +176,9 @@ def test_callback_uses_providers_registered_by_real_process_setup(tmp_path, setu
         "from gateway.channel_manager.web.mcp_oauth_http import attach_mcp_oauth_routes\n"
         "assert 'jiuwenswarm.server.runtime.mcp.oauth_flow' not in sys.modules\n"
         f"if {setup!r} == 'gateway':\n"
-        "    from gateway.server_store_bridge import install\n"
+        "    # bridge 已退役：gateway 形态 = mcp_registry 远端壳；无 WS 客户端\n"
+        "    # 时 fetch 直接失败（McpOAuthError → 400 落地），同样覆盖断言。\n"
+        "    from gateway.routing.mcp_remote import install\n"
         "else:\n"
         "    from jiuwenswarm.server.runtime.provider_setup import install_front as install\n"
         "install()\n"
@@ -186,7 +188,11 @@ def test_callback_uses_providers_registered_by_real_process_setup(tmp_path, setu
         "with TestClient(app) as client:\n"
         "    response = client.get('/mcp/oauth/callback', params={'code':'mock-code','state':'unknown-state'})\n"
         "assert response.status_code == 400, response.text\n"
-        "assert 'OAuth flow is unknown or expired' in response.text\n"
+        f"if {setup!r} == 'gateway':\n"
+        "    # 远端壳无客户端：降级文案（McpOAuthError 透传 transport 失败）\n"
+        "    assert 'unavailable' in response.text or '授权未完成' in response.text\n"
+        "else:\n"
+        "    assert 'OAuth flow is unknown or expired' in response.text\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],

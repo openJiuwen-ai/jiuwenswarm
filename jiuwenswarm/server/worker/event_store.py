@@ -19,7 +19,7 @@ from typing import Any
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
+from gateway.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.server.ipc.protocol import request_scope
 

@@ -63,7 +63,7 @@ from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_TEAM_DESIGN,
     is_code_profile_mode,
     is_team_mode,
@@ -237,6 +237,7 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "全新的创作需求用 designer_graph_autorun 自动建图，小改动用 designer_graph_patch；执行入口是 swarmflow 和画布运行按钮。"
     "\n\n画布硬规则（每次编辑必须遵守）：\n1. 全新创作需求（用户提出\"帮我做一个关于X的视频/广告/故事\"）必须调 designer_graph_autorun，"
     "把用户的完整需求原文传给 prompt 参数——导演链（分析→简报→审核→分镜→审核→建图→校验）在服务端完成，产出带完整锁体系的图。不要自己用 graph_patch 从零拼整图。"
+    "designer_graph_autorun 返回 error 时，把错误原因转告用户并等用户决定，不要改用 graph_patch 手动拼图。"
     "\n2. designer_graph_patch 只用于用户要求的小改：加减个别节点、改 config.prompt、连线/断连、删节点。"
     "patch 字段是 {\"upsert_nodes\": [...], \"upsert_edges\": [{\"id\",\"source\",\"target\"}], \"remove_node_ids\": [], "
     "\"remove_edge_ids\": []}。\n3. 节点 type 只能是五种模态之一：text、table、image、video、"
@@ -244,10 +245,14 @@ _DESIGN_LEADER_SYSTEM_PROMPT = (
     "config.role 合法值：text、table、image、video、audio；"
     "config.pipeline 合法值：brief、character、scene、storyboard、clip、compose、music、speech。不要自创其他取值。"
     "\n4. 不要重建整张图，只 patch 用户要求改动的部分；保留既有节点 ID 与无关内容。"
+    "插入、删除或调换镜头时，镜头节点 ID 照旧保留，但要把所有镜头节点的 config.clip_index 按新顺序重排为 1..N"
+    "（每个镜头按这个序号读取分镜表的对应行，成片也按它排序），并把上一镜→下一镜的连线改成新顺序；"
+    "用户给某一镜指定了时长时，写到该镜节点的 config.duration_sec。graph_patch 返回 clip_order_warning 时按提示再 patch 一次。"
     "\n5. designer_graph_autorun 建图成功后直接调用 swarmflow 开始执行（用户明确说先不要跑时除外）；graph_patch 小改后询问用户是否重跑（等用户确认或点运行按钮）。"
     "执行完成后如果用户反馈不满意，给出具体优化建议（哪个节点改什么提示词），询问是否按建议调整后重跑。"
-    "\n6. 上传参考图节点（id 以 n_ref_ 开头，config 带 user_reference_path）是用户上传的素材，"
-    "系统已创建：不要删除、不要重建、不要改它们的连线——创作节点（角色/场景/分镜）应引用这些参考（参考图是视觉权威，从中提取可兼容的可见特征）。"
+    "\n6. 上传参考节点（id 以 n_ref_ 开头，config 带 user_reference_path）是用户上传的素材，"
+    "系统已创建并连好线：不要删除、不要重建、不要改它们的连线。只有图片参考可以被角色/场景节点引用"
+    "（参考图是视觉权威，从中提取可兼容的可见特征）；音频和视频参考只连创意简报（brief），不要把它们连到分镜或其他节点。"
     "\nuser_canvas_edits 是用户的画布操作日志（add/remove/connect/disconnect/replace）——把这些当作已发生的事实，不要恢复被删除的节点或被断开的边。"
     "\n详细创作规则见你的成员设定（team-context）。"
 )

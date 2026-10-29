@@ -53,7 +53,8 @@ import { AGENT_TAG_OPTIONS } from '../../features/agentManagement/tagOptions';
 import { findDefaultDefinitionFile } from './DefinitionFilePreview';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
-import { CategoryTabs, PageHeader, PageToolbarSearch, Tabs, toast } from '../ui';
+import { Button, CategoryTabs, CloseButton, Dialog, PageHeader, PageToolbarSearch, Tabs, toast } from '../ui';
+import { webRequest } from '../../services/webClient';
 
 type PanelView = 'catalog' | 'teams' | 'mine' | 'detail' | 'group-detail' | 'create' | 'group-create';
 
@@ -260,6 +261,7 @@ export function AgentManagementPanel({
   const [groupDetailOrigin, setGroupDetailOrigin] = useState<'teams' | 'mine'>('teams');
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [actionNoticeError, setActionNoticeError] = useState(false);
+  const [groupRuntimeNotice, setGroupRuntimeNotice] = useState<string | null>(null);
   const [connectorFlowId, setConnectorFlowId] = useState<string | null>(null);
   const [pendingInstallQueue, setPendingInstallQueue] = useState<PendingInstallQueue>(() =>
     createPendingInstallQueue(),
@@ -396,12 +398,12 @@ export function AgentManagementPanel({
   );
   const mineView = useMemo(
     () =>
-      buildCatalogViewModel(state.catalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
+      buildCatalogViewModel(state.mineCatalog.filter(item => matchesInstallation(item.installed, installationFilter)), {
         scope: 'mine',
         category: '',
         query: mineQuery,
       }),
-    [state.catalog, mineQuery, installationFilter],
+    [state.mineCatalog, mineQuery, installationFilter],
   );
   const groupCatalogView = useMemo(
     () => buildGroupCatalogViewModel(groupCatalog, {
@@ -441,12 +443,8 @@ export function AgentManagementPanel({
       ]);
       if (requestScope !== catalogScope()) return;
       const cache = scheduleCatalogRefresh('agent-catalog', marketplaceCatalog.cache, () => { void loadCatalog(options); }, () => catalogRevisionRef.current === revision);
-      const mineNames = new Map(mineCatalog.map(item => [item.id, item.searchNames]));
       const catalog = Array.from(
-        new Map([...mineCatalog, ...marketplaceCatalog].map(item => [item.id, {
-          ...item,
-          searchNames: mineNames.get(item.id) ?? item.searchNames,
-        }])).values(),
+        new Map([...mineCatalog, ...marketplaceCatalog].map(item => [item.id, item])).values(),
       );
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, cache);
@@ -454,7 +452,7 @@ export function AgentManagementPanel({
       if (options.includeTeamCompatibility) dispatch({ type: 'catalog.compatibility.loaded' });
       // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
       if (!options.query) seedAgentCatalog(catalog);
-      dispatch({ type: 'catalog.loaded', catalog });
+      dispatch({ type: 'catalog.loaded', catalog, mineCatalog });
     } catch (error) {
       if (revision !== catalogRevisionRef.current) return;
       const message = formatActionError(error, t('agentManagement.states.loadError'));
@@ -973,16 +971,41 @@ export function AgentManagementPanel({
     [groupSelectedId, loadGroups, openGroupDetail, view],
   );
 
-  const handleUseGroup = (id: string) => {
+  const getSelectableGroup = async (id: string) => {
     const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
-    if (!item?.installed || !item.capabilities.canUse) return;
+    if (!item?.installed || !item.capabilities.canUse) return null;
+    try {
+      const result = await webRequest<{ group?: { disabledRuntimes?: string[] } }>(
+        'agent_groups.show', { id: item.id },
+      );
+      const disabled = result.group?.disabledRuntimes ?? [];
+      if (disabled.length > 0) {
+        setGroupRuntimeNotice(t('chat.agentGroupRuntimeDisabled', {
+          agents: disabled.map((name) => {
+            if (name === 'claude') return 'Claude';
+            if (name === 'codex') return 'Codex';
+            return name;
+          }).join(', '),
+        }));
+        return null;
+      }
+    } catch (error) {
+      setGroupRuntimeNotice(String(error));
+      return null;
+    }
+    return item;
+  };
+
+  const handleUseGroup = async (id: string) => {
+    const item = await getSelectableGroup(id);
+    if (!item) return;
     seedSelectedAgentGroup(item);
     onUseAgentGroup?.(item.name);
   };
 
-  const handleUseGroupPrompt = (id: string, prompt: string) => {
-    const item = [...groupCatalogRef.current, ...groupMineRef.current].find(candidate => candidate.id === id);
-    if (!item?.installed || !item.capabilities.canUse) return;
+  const handleUseGroupPrompt = async (id: string, prompt: string) => {
+    const item = await getSelectableGroup(id);
+    if (!item) return;
     seedSelectedAgentGroup(item);
     onUseGroupPrompt?.(item.name, prompt);
   };
@@ -1010,11 +1033,11 @@ export function AgentManagementPanel({
       const fromDetail = view === 'group-detail' && groupSelectedId === id;
       const result = await groupClient.uninstallGroup(id);
       await Promise.all([loadGroups('catalog'), loadGroups('mine')]);
-      if (fromDetail && before?.source === 'local') {
-        setView('mine');
+      if (fromDetail) {
+        setView(groupDetailOrigin);
         setMineKind('group');
-      } else if (fromDetail) {
-        await openGroupDetail(id);
+        setGroupSelectedId(null);
+        setGroupDetail(null);
       }
       if (result.notice) { setActionNoticeError(false); setActionNotice(result.notice); }
     } catch (error) {
@@ -1573,6 +1596,32 @@ export function AgentManagementPanel({
           onSave={handleGroupCreate}
         />
       )}
+      <Dialog
+        open={groupRuntimeNotice !== null}
+        titleId="agent-management-group-runtime-notice-title"
+        className="agent-management-group-runtime-dialog"
+        onCancel={() => setGroupRuntimeNotice(null)}
+        onBackdropClick={() => setGroupRuntimeNotice(null)}
+      >
+        <header data-testid="agent-management-group-runtime-notice-header">
+          <h2 id="agent-management-group-runtime-notice-title"
+            data-testid="agent-management-group-runtime-notice-title">
+            {t('chat.agentGroupRuntimeDisabledTitle')}
+          </h2>
+          <CloseButton
+            testId="agent-management-group-runtime-notice-close"
+            ariaLabel={t('common.close')}
+            onClick={() => setGroupRuntimeNotice(null)}
+          />
+        </header>
+        <p data-testid="agent-management-group-runtime-notice">{groupRuntimeNotice}</p>
+        <footer data-testid="agent-management-group-runtime-notice-actions">
+          <Button variant="primary" data-testid="agent-management-group-runtime-notice-confirm"
+            onClick={() => setGroupRuntimeNotice(null)}>
+            {t('chat.agentGroupRuntimeDisabledConfirm')}
+          </Button>
+        </footer>
+      </Dialog>
       {pendingConnectorModals}
       {uploadDialog}
       {groupUploadDialog}
