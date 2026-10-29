@@ -180,6 +180,12 @@ class SkillTurboPlanner:
 3. 禁止输出执行代码、plan_code、额外解释文字、Markdown 格式，仅返回纯净 JSON。
 4. reason 使用简短中文，一句话说明选中 / 未匹配的核心依据。
 
+## 按技能独立匹配
+根据 registered_skills 中各技能的 description、match_keywords 和用户要求的目标产物逐个判断。
+Word 文档、Excel 工作簿等任务按相应技能的支持范围匹配，包含其支持的模板填写、编辑和转换。
+以下 PPT 准入与排除规则仅约束 PPT 候选，不得据此排除其他技能。
+排除 PPT 后仍须检查其他已注册技能，只有全部不适配时才返回 skill_name=null。
+
 ## PPT pipeline 准入规则（满足任意一条，PPT skill 参与候选）
 1. 新建空白 PPT 演示文稿
 2. 依据给定主题、素材生成整套演示文稿
@@ -195,7 +201,7 @@ class SkillTurboPlanner:
 5. 上传.ppt/.pptx 文件，要求直接编辑、修改原有 PPT 文件（参考旧内容重做新版不受本条限制）
 6. 当涉及定时任务、计划任务、调度、提醒、指定某个时间 / 周期再执行等调度类诉求，
    即便文案中出现"PPT / 演示文稿"等字样，也不视为当前要立即生成 PPT，
-   应判定为非 PPT pipeline（skill_name 固定为 null）
+   PPT skill 不参与当前立即执行任务的候选，仍按其他技能的支持范围判断
 
 （历史注：曾有 rule 7 依据 context 中 "__skill_turbo_prior_artifacts__" 字段识别
 "基于已有产物的增量操作"并排除 PPT skill，但该字段的注入代码已随 bbc64b25c

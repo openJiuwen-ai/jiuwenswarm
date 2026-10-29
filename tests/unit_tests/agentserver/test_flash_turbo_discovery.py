@@ -49,20 +49,22 @@ def _skill_env(root=None):
 
 
 @pytest.fixture
-def skill_roots(tmp_path, monkeypatch):
+def skill_roots(tmp_path, monkeypatch, request):
     empty = tmp_path / "relay-default-skills"
     empty.mkdir()
     shared = tmp_path / "office-claw-skills"
-    turbo = shared / "pptx-craft" / "turbo"
-    codes = turbo / "turbo_codes" / "ppt"
+    external, internal, kind = getattr(request, "param", ("pptx-craft", "ppt", "PPT"))
+    turbo = shared / external / "turbo"
+    codes = turbo / "turbo_codes" / internal
     codes.mkdir(parents=True)
-    (shared / "pptx-craft" / "SKILL.md").write_text(
-        "---\nname: pptx-craft\ndescription: Create PPT presentations\n---\n# Workflow\nGenerate a deck.\n",
+    (shared / external / "SKILL.md").write_text(
+        f"---\nname: {external}\ndescription: Create {kind} files\n---\n# Workflow\nGenerate a file.\n",
         encoding="utf-8",
     )
-    (codes / "ppt_gen_root.py").write_text("root = None\n", encoding="utf-8")
+    (codes / f"{internal}_gen_root.py").write_text("root = None\n", encoding="utf-8")
     (turbo / "meta.json").write_text(json.dumps({
-        "external_name": "pptx-craft", "description": "生成 PPT", "match_keywords": ["ppt"],
+        "external_name": external, "enable_turbo": True,
+        "description": f"生成 {kind}", "match_keywords": [kind],
     }), encoding="utf-8")
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: empty)
     monkeypatch.setattr(skill_turbo_tools, "_entries_cache", {})
@@ -145,10 +147,22 @@ class _Model:
 @pytest.mark.parametrize("mode", ["invoke", "stream"])
 @pytest.mark.parametrize("lazy", [True, False])
 @pytest.mark.parametrize("selection", [False, True])
+@pytest.mark.parametrize("skill_roots", [
+    ("pptx-craft", "ppt", "PPT"), ("docx-craft", "docx", "Word"), ("xlsx-craft", "xlsx", "Excel"),
+], indirect=True)
 async def test_relay_empty_prewarm_refreshes_before_first_real_model_call(
     monkeypatch, tmp_path, skill_roots, mode, lazy, selection,
 ):
     _, shared = skill_roots
+    external = next(shared.iterdir()).name
+    queries = PPT_QUERIES if external == "pptx-craft" else (
+        f"请使用 {external} 技能生成季度汇报文件",
+        "你收到一条消息：\n" + json.dumps({
+            "content": "生成季度汇报文件", "skills_to_use": [external],
+            "type": "user input", "source": "web", "preferred_response_language": "zh",
+        }, ensure_ascii=False),
+        "生成季度汇报 Word 文档" if external == "docx-craft" else "生成季度销售额 Excel 工作簿",
+    )
     with _skill_env():
         initial = skill_turbo_tools._build_tool_description()
         assert "当前内部支持：暂无" in initial
@@ -171,7 +185,7 @@ async def test_relay_empty_prewarm_refreshes_before_first_real_model_call(
         adapter._init_skill_turbo_tool()
         assert core.ability_manager.get(TURBO_TOOL_NAME) is not None
         # Reuse the assembled SDK for all entry texts; config combinations remain independent.
-        for query in PPT_QUERIES:
+        for query in queries:
             session = Session(session_id=f"relay-flash-{uuid4().hex}", card=core.card)
             with _skill_env(shared):
                 await adapter._update_runtime_config(SimpleNamespace(mode="flash"))
@@ -183,18 +197,19 @@ async def test_relay_empty_prewarm_refreshes_before_first_real_model_call(
                 else:
                     await core.invoke({"query": query}, session=session)
                 await session.post_run()
-        assert len(model.calls) == len(PPT_QUERIES)
-        for query, (messages, tools) in zip(PPT_QUERIES, model.calls, strict=True):
+        assert len(model.calls) == len(queries)
+        for query, (messages, tools) in zip(queries, model.calls, strict=True):
             cards = [tool for tool in tools if tool.name == TURBO_TOOL_NAME]
             assert len(cards) == 1
-            assert "当前内部支持：pptx-craft" in cards[0].description
+            assert f"当前内部支持：{external}" in cards[0].description
             assert "暂无" not in cards[0].description
             assert not any("当前内部支持：暂无" in str(message.content) for message in messages)
             # The model needs routing guidance, not just a visible tool card.
             system_text = "\n".join(str(message.content) for message in messages if message.role == "system")
             assert "## 技能加速通道" in system_text
             assert "todo_modify" not in system_text
-            assert "当前支持：pptx-craft" in system_text
+            assert f"当前支持：{external}" in system_text
+            assert "对当前支持范围内的任务，第一个工具调用必须是 skill_acceleration_exec" in system_text
             assert "第一个工具调用必须是 skill_acceleration_exec" in system_text
             assert "这条规则不依赖技能检索开关" in system_text
             assert "__skill_turbo_hitl__" in system_text
@@ -392,6 +407,49 @@ async def test_flash_guide_preserves_priority_and_cleans_up(monkeypatch, skill_r
     rail.uninit(agent)
     assert builder.get_section("skill_turbo_guide") is None
     assert rail.system_prompt_builder is None
+
+
+@pytest.mark.parametrize("language,scope,restriction", [
+    ("cn", "Word 文档和 Excel 工作簿", "以下排除仅适用于 PPT"),
+    ("en", "Word documents and Excel workbooks", "exclusions apply ONLY to PPT"),
+])
+def test_flash_office_guide_scopes_ppt_exclusions(language, scope, restriction):
+    from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import (
+        FlashTurboPromptRail,
+    )
+
+    text = FlashTurboPromptRail()._build_guide_text(language, ["docx-craft", "xlsx-craft"])
+    assert scope in text
+    assert restriction in text
+    assert "docx-craft" in text and "xlsx-craft" in text
+    assert "__skill_turbo_hitl__" in text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("skill_roots", [
+    ("docx-craft", "docx", "Word"), ("xlsx-craft", "xlsx", "Excel"),
+], indirect=True)
+async def test_disabled_office_turbo_is_absent_from_flash_guide(monkeypatch, skill_roots):
+    from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import (
+        FlashTurboPromptRail,
+    )
+
+    _, shared = skill_roots
+    metadata_path = next(shared.iterdir()) / "turbo/meta.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["enable_turbo"] = False
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    builder = SystemPromptBuilder(language="cn")
+    agent = SimpleNamespace(system_prompt_builder=builder)
+    rail = FlashTurboPromptRail()
+    rail.init(agent)
+    with _skill_env(shared):
+        await rail.before_model_call(SimpleNamespace(
+            agent=agent, inputs=SimpleNamespace(tools=[skill_turbo_tools.skill_turbo.card]),
+        ))
+    assert builder.get_section("skill_turbo_guide") is None
+    assert metadata["external_name"] not in skill_turbo_tools.skill_turbo.card.description
+    rail.uninit(agent)
 
 
 @pytest.mark.asyncio
