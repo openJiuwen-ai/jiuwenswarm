@@ -116,6 +116,7 @@ _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 _TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 _TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
 _TEAM_MEMBER_MESSAGING_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
+_TEAM_MEMBER_SUBTASK_DEPTH_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -140,6 +141,16 @@ def _nested(raw: dict[str, Any], path: tuple[str, ...], default: Any = None) -> 
             return default
         current = current.get(segment)
     return default if current is None else current
+
+
+def _depth_switch_text(value: Any) -> str:
+    """Render ``max_subtask_depth`` as the member-subtask switch: on iff a depth > 0 (core F_128)."""
+    if isinstance(value, bool):
+        return "false"
+    try:
+        return "true" if int(value) > 0 else "false"
+    except (TypeError, ValueError):
+        return "false"
 
 
 def _bool_text(value: Any, default: bool = False) -> str:
@@ -459,6 +470,9 @@ def get_panel() -> dict[str, Any]:
         payload["team_member_messaging_enabled"] = _bool_text(
             _nested(raw, _TEAM_MEMBER_MESSAGING_PATH, False)
         )
+        payload["team_member_subtasks_enabled"] = _depth_switch_text(
+            _nested(raw, _TEAM_MEMBER_SUBTASK_DEPTH_PATH, 0)
+        )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
@@ -503,6 +517,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("team_scheduled_dispatch_enabled", "false")
         payload.setdefault("team_task_verification_enabled", "false")
         payload.setdefault("team_member_messaging_enabled", "false")
+        payload.setdefault("team_member_subtasks_enabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
         payload.setdefault("proactive_recommendation_enabled", "false")

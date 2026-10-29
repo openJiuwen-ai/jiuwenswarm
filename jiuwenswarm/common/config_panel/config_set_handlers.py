@@ -48,7 +48,9 @@ from jiuwenswarm.common.config import (
     SWARMFLOW_WORKTREE_CONFIG_PATH,
     TEAM_DISPATCH_MODE_CONFIG_PATH,
     TEAM_MEMBER_MESSAGING_CONFIG_PATH,
+    TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
+    coerce_subtask_depth,
     get_config,
     get_config_raw,
     resolve_env_vars,
@@ -79,6 +81,7 @@ from jiuwenswarm.common.config import (
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
     update_team_member_messaging_in_config,
+    update_team_member_subtasks_in_config,
     update_team_task_verification_in_config,
     update_trajectory_diagnosis_in_config,
     update_default_models_in_config,
@@ -401,6 +404,7 @@ CONFIG_YAML_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
+    "team_member_subtasks_enabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -416,11 +420,12 @@ CONFIG_YAML_KEYS = frozenset({
     "progressive_tool_optimize",
 })
 # 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
-# enable_member_messaging），改动后需重载 team。
+# enable_member_messaging / max_subtask_depth），改动后需重载 team。
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
+    "team_member_subtasks_enabled",
 })
 # Settings toggles that only change YAML; AgentServer reads the file next turn.
 RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
@@ -651,10 +656,13 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         TEAM_MEMBER_MESSAGING_CONFIG_PATH,
         DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     )
+    subtask_depth = get_nested_config_value(raw, TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, 0)
     return {
         "team_scheduled_dispatch_enabled": "true" if str(dispatch_mode).strip() == "scheduled" else "false",
         "team_task_verification_enabled": "true" if parse_config_switch_bool(verification) else "false",
         "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
+        # The depth doubles as the switch (core F_128): on means any depth > 0.
+        "team_member_subtasks_enabled": "true" if coerce_subtask_depth(subtask_depth) > 0 else "false",
     }
 
 
@@ -1546,12 +1554,18 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者与成员间通信只在调度模式下生效，关闭调度模式时一并关闭。
+                    # 验证者、成员间通信与成员子任务只在调度模式下生效，关闭调度模式时一并关闭。
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
                     update_team_member_messaging_in_config(False)
                     yaml_updated.append("team_member_messaging_enabled")
-            elif param_key in ("team_task_verification_enabled", "team_member_messaging_enabled"):
+                    update_team_member_subtasks_in_config(False)
+                    yaml_updated.append("team_member_subtasks_enabled")
+            elif param_key in (
+                "team_task_verification_enabled",
+                "team_member_messaging_enabled",
+                "team_member_subtasks_enabled",
+            ):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
                     if "team_scheduled_dispatch_enabled" in params
@@ -1559,8 +1573,10 @@ def apply_config_payload(
                 )
                 if param_key == "team_task_verification_enabled":
                     update_team_task_verification_in_config(parsed and scheduled)
-                else:
+                elif param_key == "team_member_messaging_enabled":
                     update_team_member_messaging_in_config(parsed and scheduled)
+                else:
+                    update_team_member_subtasks_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1908,6 +1924,7 @@ async def config_get_handler(
             "team_member_messaging_enabled",
             "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
         )
+        payload.setdefault("team_member_subtasks_enabled", "false")
         for key, value in _default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")

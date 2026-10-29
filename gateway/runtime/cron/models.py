@@ -5,15 +5,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from gateway.common.work_mode import (
-    DEFAULT_WEB_WORK_MODE,
-    normalize_work_mode,
-)
 from gateway.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
     deprecate_mode,
     is_team_mode,
+)
+from gateway.common.work_mode import (
+    DEFAULT_WEB_WORK_MODE,
+    normalize_work_mode,
 )
 from gateway.runtime.cron.cron_expr import validate_cron_expression
 
@@ -283,7 +283,7 @@ def resolve_cron_model(
     value = str(raw).strip()
     if not value:
         return None, ""
-    from jiuwenswarm.common.config import (
+    from gateway.common.config import (
         get_model_config,
         get_model_names,
         resolve_env_vars,

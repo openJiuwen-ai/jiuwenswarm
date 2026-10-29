@@ -33,6 +33,7 @@ const {
   organizationProcessingRevision,
   organizationOwnerStateRevision,
   useOrganizationConversationKey,
+  isReachableTeamMemberStatus,
   useOrganizationEvents,
   useChatStore,
   useSessionStore,
@@ -1350,7 +1351,7 @@ test('composer mentions follow the selected Team and discard old member chips', 
     && node.declarationList.declarations.some((d) => d.name.getText(source) === 'EMPTY_TEAM_MEMBERS'));
   assert.ok(fallback, 'composer fallback must be stable before the component renders');
   const fallbackBody = ts.transpileModule(fallback.getText(source), { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText;
-  const probe = new Function('useOrganizationConversationKey', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
+  const probe = new Function('useOrganizationConversationKey', 'isReachableTeamMemberStatus', 'useSessionStore', 'useChatStore', 'React', 'editor', 'report', `
     const { useMemo, useRef, useEffect, useCallback } = React;
     ${fallbackBody}
     return function Probe({ activeSessionId }) {
@@ -1368,7 +1369,7 @@ test('composer mentions follow the selected Team and discard old member chips', 
   globalThis.IS_REACT_ACT_ENVIRONMENT = true;
   const editor = document.getElementById('editor');
   const report = { closed: [] };
-  const Probe = probe(useOrganizationConversationKey, useSessionStore, useChatStore, React, editor, report);
+  const Probe = probe(useOrganizationConversationKey, isReachableTeamMemberStatus, useSessionStore, useChatStore, React, editor, report);
   const root = createRoot(document.getElementById('root'));
   const originalRequest = webClient.request;
   webClient.request = async () => { throw new Error('snapshot unavailable'); };
@@ -1434,6 +1435,35 @@ test('expert member mentions retain their IDs and selected Team in chat.send', a
   } finally {
     webClient.request = originalRequest;
     setTeamOrganizationUiEnabled(false);
+  }
+});
+
+test('snapshot keeps departed members off the roster but in the departed directory', () => {
+  for (const snapshot of [
+    // 新后端：离队成员单独放在 departed_members
+    {
+      members: [
+        { member_id: 'worker', status: 'ready' },
+        { member_id: 'sleeper', status: 'dormant' },
+      ],
+      departed_members: [{ member_id: 'retired', name: 'Retired', status: 'shut_down' }],
+      tasks: [],
+    },
+    // 旧后端：离队成员混在 members 里
+    {
+      members: [
+        { member_id: 'worker', status: 'ready' },
+        { member_id: 'retired', name: 'Retired', status: 'shut_down' },
+        { member_id: 'sleeper', status: 'dormant' },
+      ],
+      tasks: [],
+    },
+  ]) {
+    seed();
+    applyTeamSnapshotToSession('session', 'expert', snapshot);
+    const runtime = useSessionStore.getState().runtimes['session::expert'];
+    assert.deepEqual(runtime.teamMembers.map((m) => m.member_id), ['worker', 'sleeper']);
+    assert.deepEqual(runtime.teamDepartedMembers.map((m) => [m.member_id, m.name]), [['retired', 'Retired']]);
   }
 });
 

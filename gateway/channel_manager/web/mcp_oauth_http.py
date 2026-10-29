@@ -10,7 +10,7 @@ import logging
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 
-from jiuwenswarm.common.mcp_oauth import McpOAuthError, complete_oauth_flow_async
+from gateway.common.mcp_oauth import McpOAuthError, complete_oauth_flow_async
 
 logger = logging.getLogger(__name__)
 

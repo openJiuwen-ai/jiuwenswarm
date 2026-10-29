@@ -349,6 +349,7 @@ function newConversationTopicProjectId(selectedProject: ProjectInfo | null): str
 function clearTeamRuntimeState(sessionId: string): void {
   const sessionStore = useSessionStore.getState();
   sessionStore.setTeamMembers(sessionId, []);
+  sessionStore.setTeamDepartedMembers(sessionId, []);
   sessionStore.setTeamTaskEvents(sessionId, []);
   sessionStore.setTeamTasks(sessionId, []);
   sessionStore.setTeamMemberExecutionEvents(sessionId, []);

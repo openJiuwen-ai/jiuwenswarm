@@ -3117,7 +3117,7 @@ class _MemoryCronStore:
 class TestCrashRecoverySkip:
     @pytest.mark.asyncio
     async def test_skips_wake_when_offset_already_passed(self):
-        from jiuwenswarm.runtime.cron.cron_job_mutations import build_new_cron_job
+        from gateway.runtime.cron.cron_job_mutations import build_new_cron_job
 
         job = build_new_cron_job(
             name="past-wake",
@@ -3143,7 +3143,7 @@ class TestCrashRecoverySkip:
 
     @pytest.mark.asyncio
     async def test_future_wake_is_scheduled(self):
-        from jiuwenswarm.runtime.cron.cron_job_mutations import build_new_cron_job
+        from gateway.runtime.cron.cron_job_mutations import build_new_cron_job
 
         job = build_new_cron_job(
             name="future-wake",
@@ -3165,12 +3165,12 @@ class TestCrashRecoverySkip:
 
 @pytest.mark.asyncio
 async def test_crash_recovery_skip_after_etcd_full_load(tmp_path, monkeypatch):
-    from jiuwenswarm.runtime.cron.etcd_store import EtcdCronJobStore
+    from gateway.runtime.cron.etcd_store import EtcdCronJobStore
     from tests.unit_tests.gateway.test_cron_etcd_store import FakeEtcdJsonClient
 
     # etcd 后端没有本地 cron 文件，生命周期归属记录会退化到默认本地路径：
     # 这里改到 tmp_path，避免测试写用户主目录。
-    import jiuwenswarm.common.utils as utils_module
+    import gateway.common.paths as utils_module
 
     monkeypatch.setattr(
         utils_module, "get_cron_jobs_path", lambda: tmp_path / "cron_jobs.json"
@@ -3759,7 +3759,7 @@ def test_enterprise_db_label_does_not_create_a_folder(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     home_jobs = tmp_path / "agent-home" / "cron_jobs.json"
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_cron_jobs_path",
+        "gateway.common.paths.get_cron_jobs_path",
         lambda: home_jobs,
     )
     source = _cron_lifecycle_source(SimpleNamespace(path=Path("db://cron_job")))

@@ -155,6 +155,7 @@ import { useAgentCatalogStore } from '../stores/agentCatalogStore';
 import { readAgentTemplateName } from '../features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from '../features/teamLeaderIdentity';
 import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
+import { isDepartedTeamMemberStatus, reconcileSnapshotRoster } from '../features/teamMemberDeparture';
 import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { toTaskTimelineEntry } from '../components/teamArea/groupChatTimeline';
 
@@ -1339,7 +1340,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     const requestState = { revision: 0, changedMemberIds: new Set<string>() };
     teamMemberSnapshotRequestRef.current.set(sessionId, requestState);
     try {
-      const response = await request<{ members?: unknown; members_source?: string }>(
+      const response = await request<{ members?: unknown; departed_members?: unknown; members_source?: string }>(
         'team.snapshot',
         { session_id: sessionId },
         { timeoutMs: 5000 },
@@ -1349,12 +1350,16 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         requestState.revision !== 0
       ) return;
       if (response?.members_source !== 'live') return;
-      if (!Array.isArray(response?.members) || response.members.length === 0) return;
+      if (!Array.isArray(response?.members)) return;
+      // 旧后端不带 departed_members；新后端在队友全部离队时 members 为空，靠它收敛。
+      const rawDepartedMembers = Array.isArray(response.departed_members) ? response.departed_members : [];
+      if (response.members.length === 0 && rawDepartedMembers.length === 0) return;
       const runtime = useSessionStore.getState().getRuntime(sessionId);
       if (runtime?.mode !== 'team') return;
 
       const timestamp = Date.now();
-      const snapshotMembers = response.members.flatMap((item) => {
+      const knownMembers = [...runtime.teamMembers, ...(runtime.teamDepartedMembers ?? [])];
+      const toSnapshotMembers = (items: unknown[]) => items.flatMap((item) => {
         if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
         const snapshotMember = item as Record<string, unknown>;
         const memberId = typeof snapshotMember.member_id === 'string'
@@ -1362,7 +1367,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           : '';
         const status = typeof snapshotMember.status === 'string' ? snapshotMember.status : '';
         if (!memberId || !status) return [];
-        const existing = runtime.teamMembers.find((member) => member.member_id === memberId);
+        const existing = knownMembers.find((member) => member.member_id === memberId);
         return [{
           id: existing?.id ?? `team-snapshot-${memberId}`,
           member_id: memberId,
@@ -1393,31 +1398,30 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               : existing?.display_name,
         }];
       });
-      if (snapshotMembers.length !== response.members.length || snapshotMembers.length === 0) return;
+      const snapshotMembers = toSnapshotMembers(response.members);
+      if (snapshotMembers.length !== response.members.length) return;
+      // 旧后端把离队成员混在 members 里，这里与 departed_members 合成同一份离队目录。
+      const departedMembers = [
+        ...toSnapshotMembers(rawDepartedMembers),
+        ...snapshotMembers.filter((member) => isDepartedTeamMemberStatus(member.status)),
+      ];
 
       const changedMemberIds = requestState.changedMemberIds;
-      const reconciledMemberIds = snapshotMembers
-        .filter((member) => !changedMemberIds.has(member.member_id))
-        .map((member) => member.member_id);
-      if (reconciledMemberIds.length === 0) return;
-
-      const snapshotMemberIds = new Set(snapshotMembers.map((member) => member.member_id));
-      const members = snapshotMembers.flatMap((member) => {
-        if (!changedMemberIds.has(member.member_id)) return [member];
-        const currentMember = runtime.teamMembers.find(
-          (candidate) => candidate.member_id === member.member_id
-        );
-        return currentMember ? [currentMember] : [];
-      });
-      for (const member of runtime.teamMembers) {
-        if (changedMemberIds.has(member.member_id) && !snapshotMemberIds.has(member.member_id)) {
-          members.push(member);
-        }
-      }
+      const reconciled = reconcileSnapshotRoster(
+        snapshotMembers,
+        new Set(departedMembers.map((member) => member.member_id)),
+        runtime.teamMembers,
+        changedMemberIds,
+      );
+      if (!reconciled) return;
+      const { members, reconciledMemberIds } = reconciled;
 
       const currentRuntime = useSessionStore.getState().getRuntime(sessionId);
       if (currentRuntime?.mode !== 'team') return;
       useSessionStore.getState().setTeamMembers(sessionId, members);
+      for (const member of departedMembers) {
+        useSessionStore.getState().rememberDepartedTeamMember(sessionId, member);
+      }
       if (changedMemberIds.size === 0) {
         useSessionStore.getState().clearTeamConnectionPresentation(sessionId);
       } else {
@@ -3067,12 +3071,15 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const sessionStore = useSessionStore.getState();
       const runtime = sessionStore.getRuntime(sessionId);
       const currentMembers = runtime?.teamMembers ?? [];
+      const departed = currentMembers.find((member) => member.member_id === normalizedMemberId);
+      if (!departed) {
+        return;
+      }
       const nextMembers = currentMembers.filter(
         (member) => member.member_id !== normalizedMemberId
       );
-      if (nextMembers.length === currentMembers.length) {
-        return;
-      }
+      // 离开名册但保留身份：它做过的任务卡片还要按 member_id 显示名字 / 头像。
+      sessionStore.rememberDepartedTeamMember(sessionId, { ...departed, status: 'shut_down' });
       clearPendingTeamMemberContextCompressionStart(sessionId, normalizedMemberId);
       clearTeamMemberContextCompressionStatus(sessionId, normalizedMemberId);
       sessionStore.setTeamMembers(sessionId, nextMembers);
@@ -5506,9 +5513,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           if (memberId && e.status && isRunningTeamTaskStatus(e.status)) {
             clearPendingTeamConnectionMember(sessionId, memberId);
             useSessionStore.getState().clearTeamConnectionPresentation(sessionId, memberId);
-          }
-          if (e.type === 'team.task.created' && e.task_id) {
-            useSessionStore.getState().registerConfirmedTeamTaskCreation(sessionId, e.task_id);
           }
           useSessionStore.getState().addTeamTaskEvent(sessionId, {
             id: `task-${Date.now()}`,

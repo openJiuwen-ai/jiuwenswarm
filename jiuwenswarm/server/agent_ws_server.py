@@ -7331,7 +7331,7 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         channel_id = request.channel_id or "web"
-        empty_payload = {"members": [], "tasks": [], "team_id": None}
+        empty_payload = {"members": [], "departed_members": [], "tasks": [], "team_id": None}
 
         # ``team_name`` 显式指定了要看的 team（team 选择器切 team 时就是这么调的）。
         requested_team_name = str(params.get("team_name") or "").strip()

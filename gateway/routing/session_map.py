@@ -4,7 +4,7 @@ import json
 from enum import Enum
 from pathlib import Path
 
-from jiuwenswarm.common.utils import get_checkpoint_dir, logger
+from gateway.common.paths import get_checkpoint_dir, logger
 
 
 class SessionMapScope(str, Enum):
@@ -19,7 +19,7 @@ class SessionMapScope(str, Enum):
 def load_session_map_scope() -> SessionMapScope:
     default = SessionMapScope.PER_CHAT_BOT
     try:
-        from jiuwenswarm.common.config import get_config
+        from gateway.common.config import get_config
 
         raw = str((get_config().get("gateway") or {}).get("session_map_scope") or default.value).strip().lower()
         return SessionMapScope(raw)

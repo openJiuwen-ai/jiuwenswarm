@@ -10,11 +10,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 from sqlalchemy.exc import TimeoutError as DatabaseTimeoutError
-
-from jiuwenswarm.common.schema import Message
 from openjiuwen_protocol.e2a.agent_models import AgentResponseChunk
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
 from openjiuwen_protocol.message import ReqMethod
+
+from jiuwenswarm.common.schema import Message
 from gateway.message_handler.message_handler import ChannelMode, MessageHandler
 from gateway.routing.session_sharing import SubRole
 
@@ -405,7 +405,7 @@ async def test_targeted_interrupt_bypasses_session_wide_cancel(monkeypatch, inte
         return {"team_name": "owner"}
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.external_providers.provider",
+        "gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")
@@ -474,7 +474,7 @@ async def test_targeted_cancel_requires_team_mode_and_a_target_that_is_not_a_kno
         return {"team_name": owner}
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.external_providers.provider",
+        "gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_metadata),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode=mode)
@@ -493,7 +493,7 @@ async def test_targeted_cancel_stays_targeted_when_metadata_unavailable(monkeypa
         raise SessionMetadataRemoteUnavailable("session metadata read failed")
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.external_providers.provider",
+        "gateway.common.external_providers.provider",
         lambda _: SimpleNamespace(get_session_metadata_async=_unavailable),
     )
     msg = _chat_send_message(channel_id="web", session_id="session", mode="team")

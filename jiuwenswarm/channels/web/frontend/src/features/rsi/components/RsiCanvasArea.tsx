@@ -11,7 +11,7 @@ import evaluatingIcon from '../../../assets/rsi/rsi-evaluating.svg';
 import expandIcon from '../../../assets/rsi/rsi-expand.svg';
 import pauseIcon from '../../../assets/rsi/rsi-pause.svg';
 import waitingIcon from '../../../assets/rsi/rsi-waiting.svg';
-import type { RsiArtifactType, RsiTaskGetResult, RsiTreeGetResult } from '../types';
+import type { RsiArtifactType, RsiScenario, RsiTaskGetResult, RsiTreeGetResult } from '../types';
 import {
   legendDotClass,
   formatCost,
@@ -363,6 +363,7 @@ const TreeEdges = memo(function TreeEdges({
 interface RsiNodeCardProps {
   presentation: RsiNodePresentation;
   artifactType: RsiArtifactType | null;
+  scenario: RsiScenario;
   ln: LayoutNode;
   selected: boolean;
   edgeHover: boolean;
@@ -375,6 +376,7 @@ interface RsiNodeCardProps {
 const RsiNodeCard = memo(function RsiNodeCard({
   presentation,
   artifactType,
+  scenario,
   ln,
   selected,
   edgeHover,
@@ -392,7 +394,7 @@ const RsiNodeCard = memo(function RsiNodeCard({
   const rootStageRunning = presentation.lifecycle === 'baseline' && nodeStageSpec(ln.node)?.status === 'running';
   const rootStageHint = rootStageRunning && stageLabel ? <div className="rsi-node__stage">{stageLabel}</div> : null;
 
-  const scoreLines = nodeScoreLines(ln.node, artifactType);
+  const scoreLines = nodeScoreLines(ln.node, artifactType, scenario);
   // 折叠态最多 3 行，展开最多 5 行（超出滚动）
   const COLLAPSE_LIMIT = 3;
   const EXPAND_LIMIT = 5;
@@ -545,8 +547,8 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
   const layout = useMemo(() => {
     if (!tree) return null;
     const roots = tree.nodes.filter((n) => n.parent_id === null);
-    return layoutTree(roots, tree.nodes, collapsed, running, scoreExpanded);
-  }, [tree, collapsed, running, scoreExpanded]);
+    return layoutTree(roots, tree.nodes, collapsed, running, scoreExpanded, task.scenario);
+  }, [tree, collapsed, running, scoreExpanded, task.scenario]);
   const presentationContext = useMemo(
     () => ({
       scenario: task.scenario,
@@ -815,8 +817,8 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
           <div className="rsi-canvas-queued">
             <img className="rsi-canvas-queued__icon" src={emptyExamsIcon} alt="" aria-hidden />
             <div className="rsi-canvas-queued__text">
-              <span className="rsi-canvas-queued__strong">
-                {t('rsi.detail.queuedTitle', { defaultValue: '本实验正在排队中' })}
+              <span className="rsi-canvas-queued__strong" data-testid="rsi-canvas-queued-title">
+                {t('rsi.detail.queuedTitle', { defaultValue: '当前 RSI 任务正在排队' })}
               </span>
             </div>
             <div className="rsi-canvas-queued__sub">
@@ -857,6 +859,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                       key={ln.node.node_id}
                       presentation={presentationById.get(ln.node.node_id)!}
                       artifactType={task.artifact_type}
+                      scenario={task.scenario}
                       ln={ln}
                       selected={selected}
                       edgeHover={hoveredEdgeParentId === ln.node.node_id}
@@ -960,6 +963,7 @@ export function RsiCanvasArea({ task, tree }: RsiCanvasAreaProps) {
                           key={ln.node.node_id}
                           presentation={presentationById.get(ln.node.node_id)!}
                           artifactType={task.artifact_type}
+                          scenario={task.scenario}
                           ln={ln}
                           selected={selected}
                           edgeHover={hoveredEdgeParentId === ln.node.node_id}

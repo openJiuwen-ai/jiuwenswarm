@@ -18,9 +18,9 @@ import re
 import secrets
 from typing import TYPE_CHECKING, Any
 
+from gateway.common.config import _parse_custom_headers
+from gateway.common.reasoning_injector import build_reasoning_model_request_kwargs
 from gateway.routing.interaction_context import PendingInteraction
-from jiuwenswarm.common.config import _parse_custom_headers
-from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 
 if TYPE_CHECKING:
     from openjiuwen_protocol.message import Message
@@ -69,7 +69,7 @@ class IMOutboundPipeline:
             return True
 
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
             cfg = get_config() or {}
         except Exception:
             cfg = {}

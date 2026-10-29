@@ -48,9 +48,9 @@ parse_dotenv_early("jiuwenswarm-acp-channel")
 
 # --- Now safe to import jiuwenswarm modules ---
 from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from gateway.common.version import get_runtime_version
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.version import get_runtime_version
 
 logger = logging.getLogger(__name__)
 
@@ -1790,7 +1790,7 @@ class AcpChannel(BaseChannel):
 
 
 def _load_acp_channel_config() -> AcpChannelConfig:
-    from jiuwenswarm.common.config import get_config
+    from gateway.common.config import get_config
 
     try:
         full_cfg = get_config()
@@ -1826,6 +1826,11 @@ def main() -> None:
     # Keep ACP stdio protocol frames on the original stdout while redirecting
     # incidental process logs away from the protocol stream.
     sys.stdout = sys.stderr
+
+    # 独立入口自行初始化日志，输出路径与 Gateway 一致（共同安装时复用母仓配置）
+    from gateway.common.logging_setup import setup_gateway_logger
+
+    setup_gateway_logger()
 
     parser = argparse.ArgumentParser(
         prog="jiuwenswarm-acp",
