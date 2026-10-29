@@ -60,7 +60,6 @@ from jiuwenswarm.common.config import (
     update_kv_cache_release_enabled_in_config,
     update_skill_retrieval_in_config,
     update_symphony_in_config,
-    update_permissions_enabled_in_config,
     update_permissions_mode_in_config,
     get_permissions_mode_from_config,
     update_setup_guide_enabled_in_config,
@@ -95,6 +94,7 @@ from jiuwenswarm.gateway.config.memory.access import (
     update_memory_forbidden_in_config,
 )
 from jiuwenswarm.gateway.config.permissions.access import (
+    update_permissions_enabled_in_config,
     update_permissions_owner_scopes_in_config,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
@@ -2633,7 +2633,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif param_key == "kv_cache_affinity_enabled":
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
-                    update_permissions_enabled_in_config(parsed)
+                    # gateway access 层异步实现：企业版经 repo 持久化，
+                    # 标准版回落 common.config 的 enabled→mode 映射（检视
+                    # 2026-10-29：同步版会绕过企业仓库层）。
+                    await update_permissions_enabled_in_config(parsed)
                 elif param_key == "permissions_mode":
                     mode_value = str(val or "").strip()
                     # 非法值拒绝而非静默归一 auto，与 TUI/RPC 校验一致（CR-7）

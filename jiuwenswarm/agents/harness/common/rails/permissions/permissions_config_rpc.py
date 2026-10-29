@@ -276,11 +276,16 @@ def dispatch_permissions_config_request(
     """执行一条 permissions 配置 RPC（与原先 WebSocket register_method 语义一致）。"""
     from jiuwenswarm.common.config import (
         build_permissions_tools_list_view,
+        get_permissions_file_guard_workspace_access,
+        update_permissions_file_guard_workspace_access_in_config,
+    )
+    # 规则/覆盖写入走 gateway access 层：企业版经 repo 持久化，标准版回落
+    # common.config 同步实现；run_awaitable 包裹要求 awaitable（检视
+    # 2026-10-29：误接同步实现会 asyncio.run(dict) 抛 TypeError）。
+    from jiuwenswarm.gateway.config.permissions.access import (
         create_permissions_rule_in_config,
         delete_permissions_approval_override_in_config,
         delete_permissions_rule_in_config,
-        get_permissions_file_guard_workspace_access,
-        update_permissions_file_guard_workspace_access_in_config,
         update_permissions_rule_in_config,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
@@ -300,8 +305,30 @@ def dispatch_permissions_config_request(
             # 按 mode 派生，与 web/TUI 载荷对齐（CR-3）：update_permissions_mode
             # 恒写 enabled: true，读原始键在 full_access 下返回 true，令
             # OfficeAce relay 的 enabled 自愈机制对 full_access 失明。
+            # agent 作用域读 agents[id] 生效 body 按 mode 派生，与
+            # ENABLED_SET 的 mode 写入同一真相源（检视 2026-10-29）。
             from jiuwenswarm.common.config import get_permissions_mode_from_config
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                normalize_permission_mode,
+            )
 
+            target = _rpc_persist_target(request)
+            if target:
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                    resolve_yaml_agent_permissions_body,
+                )
+
+                body = resolve_yaml_agent_permissions_body(target) or {}
+                mode_val = body.get("mode")
+                if isinstance(mode_val, str) and mode_val.strip():
+                    enabled = normalize_permission_mode(mode_val) != "full_access"
+                elif body.get("enabled") is False:
+                    # 兼容未迁移：enabled false ≈ full_access
+                    enabled = False
+                else:
+                    # body 未声明 mode 时与全局生效模式同源
+                    enabled = get_permissions_mode_from_config() != "full_access"
+                return _ok(request, {"enabled": enabled})
             enabled = get_permissions_mode_from_config() != "full_access"
             return _ok(request, {"enabled": enabled})
 
@@ -311,7 +338,42 @@ def dispatch_permissions_config_request(
             value = params.get("enabled")
             if not isinstance(value, bool):
                 return _err(request, "enabled must be boolean")
-            if not _write_agent_permissions(request, lambda perms: perms.__setitem__("enabled", value)):
+            # enabled 是 mode 的兼容投影（False→full_access；True 且当前
+            # full_access→auto，其余保持现值）：SET 落 mode 而非裸 enabled
+            # 键，与按 mode 派生的 ENABLED_GET 同一真相源（检视 2026-10-29）。
+            target = _rpc_persist_target(request)
+            agent_mode_now: str | None = None
+            if target:
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+                    resolve_yaml_agent_permissions_body,
+                )
+
+                body = resolve_yaml_agent_permissions_body(target) or {}
+                mode_val = body.get("mode")
+                if isinstance(mode_val, str) and mode_val.strip():
+                    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                        normalize_permission_mode,
+                    )
+
+                    agent_mode_now = normalize_permission_mode(mode_val)
+                elif body.get("enabled") is False:
+                    agent_mode_now = "full_access"
+                else:
+                    from jiuwenswarm.common.config import get_permissions_mode_from_config
+
+                    agent_mode_now = get_permissions_mode_from_config()
+
+            def _mutate_enabled(perms: dict[str, Any]) -> None:
+                perms["enabled"] = True
+                perms.pop("permission_mode", None)
+                if not value:
+                    perms["mode"] = "full_access"
+                elif agent_mode_now == "full_access":
+                    perms["mode"] = "auto"
+
+            if target:
+                _write_agent_permissions(request, _mutate_enabled)
+            else:
                 run_awaitable(update_permissions_enabled_in_config(value))
             # 不做 hot reload：persist_permissions_mutate 已同步更新缓存
             # （企业版仅内存 base，标准版写 yaml 后缓存同步）；clear 会
