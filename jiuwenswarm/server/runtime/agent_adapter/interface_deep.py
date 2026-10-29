@@ -426,7 +426,7 @@ from jiuwenswarm.common.context_window import (
     parse_positive_int,
     resolve_context_window_tokens,
 )
-from jiuwenswarm.symphony.llm import (
+from jiuwenswarm.runtime.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     register_request_model,
 )
@@ -561,7 +561,7 @@ from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processo
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
 )
-from jiuwenswarm.symphony.config import load_symphony_config
+from jiuwenswarm.common.symphony_config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import read_pdf
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
@@ -7505,7 +7505,7 @@ class JiuWenSwarmDeepAdapter:
         ):
             return
         try:
-            from jiuwenswarm.symphony.skill_retrieval import SkillTaxonomyRuntime
+            from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
             await asyncio.to_thread(
                 SkillTaxonomyRuntime(
@@ -11156,7 +11156,7 @@ class JiuWenSwarmDeepAdapter:
         if not config.enabled or not config.evolution.flow.enabled:
             return None
         try:
-            from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
+            from jiuwenswarm.runtime.symphony.experience import _build_graph_evolution_rail
 
             return _build_graph_evolution_rail(
                 config.paths.graph_dir,
@@ -16728,7 +16728,7 @@ class JiuWenSwarmDeepAdapter:
                 "resolved": False,
                 "reason": "client_path_rejected",
             }
-        from jiuwenswarm.symphony.experience import _parse_recipe_reference
+        from jiuwenswarm.runtime.symphony.experience import _parse_recipe_reference
 
         try:
             recipe_id, recipe_version = _parse_recipe_reference(
@@ -16737,7 +16737,7 @@ class JiuWenSwarmDeepAdapter:
             )
         except ValueError as exc:
             return {"accepted": False, "resolved": False, "reason": str(exc)}
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         service = get_swarm_symphony_service()
         if not answers_select_option(answers, ("安装", "install")):

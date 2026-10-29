@@ -21,7 +21,7 @@ from openjiuwen.symphony.agent import (
 from openjiuwen.symphony.discovery import SkillRecord
 
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.symphony.llm import LLMConfig as SwarmLLMConfig
+from jiuwenswarm.runtime.symphony.llm import LLMConfig as SwarmLLMConfig
 
 
 RecordsProvider = Callable[[], Sequence[SkillRecord]]

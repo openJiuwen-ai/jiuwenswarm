@@ -67,7 +67,7 @@ def build_symphony_graph_evolution_rail(
     """Build one Team graph rail only for the leader."""
 
     del params
-    from jiuwenswarm.symphony.config import load_symphony_config
+    from jiuwenswarm.common.symphony_config import load_symphony_config
 
     config = load_symphony_config(ctx.config)
     if ctx.role != "leader":
@@ -76,9 +76,9 @@ def build_symphony_graph_evolution_rail(
     if not core_evolution_enabled:
         return None
     try:
-        from jiuwenswarm.symphony.adapter import model_from_config
-        from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
-        from jiuwenswarm.symphony.llm import LLMConfig
+        from jiuwenswarm.runtime.symphony.adapter import model_from_config
+        from jiuwenswarm.runtime.symphony.experience import _build_graph_evolution_rail
+        from jiuwenswarm.runtime.symphony.llm import LLMConfig
 
         return _build_graph_evolution_rail(
             config.paths.graph_dir,

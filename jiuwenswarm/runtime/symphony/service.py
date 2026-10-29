@@ -29,7 +29,7 @@ from jiuwenswarm.server.runtime.skill.skillpack import (
     read_skillpack_section,
     scan_skillpacks,
 )
-from jiuwenswarm.symphony.adapter import (
+from jiuwenswarm.runtime.symphony.adapter import (
     candidate_ids_from_skill_ids,
     graph_config_from_swarm,
     llm_config_signature,
@@ -37,16 +37,16 @@ from jiuwenswarm.symphony.adapter import (
     model_response_observer_from_config,
     orchestration_config_from_swarm,
 )
-from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.runtime.symphony.llm import LLMConfig, probe_model_connection
+from jiuwenswarm.common.symphony_config import (
     SymphonyConfig,
     evolution_flow_enabled,
     load_symphony_config,
 )
-from jiuwenswarm.symphony.build import build_graph as service_build_graph
-from jiuwenswarm.symphony.build import graph_status
-from jiuwenswarm.symphony.graph_state import GRAPH_STATE_FILENAME
-from jiuwenswarm.symphony.graph_storage import (
+from jiuwenswarm.runtime.symphony.build import build_graph as service_build_graph
+from jiuwenswarm.runtime.symphony.build import graph_status
+from jiuwenswarm.runtime.symphony.graph_state import GRAPH_STATE_FILENAME
+from jiuwenswarm.runtime.symphony.graph_storage import (
     BUILD_RUNS_DIRNAME,
     CURRENT_POINTER_FILENAME,
     resolve_graph_artifact_dir,
@@ -68,21 +68,12 @@ VERDICT_APPROVED = core_symphony.flow.VERDICT_APPROVED
 
 
 def _symphony_flow_config(flow_cfg: Any) -> SymphonyFlowConfig:
-    """Pass distill thresholds only when this openjiuwen build accepts them."""
+    """Map Host distillation thresholds to the supported Core contract."""
 
-    accepted = inspect.signature(SymphonyFlowConfig).parameters
-    kwargs: dict[str, Any] = {}
-    if "min_successes" in accepted:
-        kwargs["min_successes"] = flow_cfg.min_successes
-    else:
-        for name in ("min_successes_candidate", "min_successes_verified"):
-            if name in accepted:
-                kwargs[name] = flow_cfg.min_successes
-    if "min_pack_success_rate" in accepted:
-        kwargs["min_pack_success_rate"] = flow_cfg.min_pack_success_rate
-    elif "min_pack_success_rate_verified" in accepted:
-        kwargs["min_pack_success_rate_verified"] = flow_cfg.min_pack_success_rate
-    return SymphonyFlowConfig(**kwargs)
+    return SymphonyFlowConfig(
+        min_successes=flow_cfg.min_successes,
+        min_pack_success_rate=flow_cfg.min_pack_success_rate,
+    )
 
 
 ProgressCallback = Callable[[dict[str, Any]], Any]
@@ -454,7 +445,6 @@ class SwarmSymphonyService:
                 graph_dir=graph_dir,
                 min_edge_confidence=config.orchestration.min_edge_confidence,
                 disabled_skill_names=load_execution_disabled_skills(),
-                dynamic_overlay=None,
                 skills_root=config.paths.skills_root,
             )
         payload.update(_build_log_payload(graph_dir))
@@ -1293,7 +1283,6 @@ def _web_graph_payload(
     graph_dir: Path,
     min_edge_confidence: float,
     disabled_skill_names: set[str] | list[str] | tuple[str, ...],
-    dynamic_overlay: dict[str, Any] | None,
     skills_root: Path | None = None,
 ) -> dict[str, Any]:
     """Adapt the public capability graph for the existing Skill Graph panel."""
@@ -1424,7 +1413,7 @@ def _web_graph_payload(
         # If pack scanning fails, continue without packs
         pass
 
-    result_graph = _graph_with_runtime_weights(graph, dynamic_overlay)
+    result_graph = graph
 
     # Add pack member nodes that are not in the main graph
     existing_node_ids = {node.get("id") for node in result_graph.get("nodes", [])}
@@ -1444,28 +1433,6 @@ def _web_graph_payload(
         "graph": result_graph,
         "diagnostics": {"diagnostics": list(artifact.get("diagnostics") or [])},
     }
-
-
-def _graph_with_runtime_weights(
-    graph: dict[str, Any],
-    overlay: dict[str, Any] | None,
-) -> dict[str, Any]:
-    runtime_edges = overlay.get("edges") if isinstance(overlay, dict) else None
-    if not isinstance(runtime_edges, dict) or not runtime_edges:
-        return graph
-    edges = []
-    for raw_edge in graph.get("edges") or []:
-        edge = dict(raw_edge)
-        key = (
-            f"{_capability_id(edge.get('source'))}->"
-            f"{_capability_id(edge.get('target'))}:"
-            f"{str(edge.get('type') or 'can_feed')}"
-        )
-        stats = runtime_edges.get(key)
-        if isinstance(stats, dict):
-            edge["runtime_weight"] = float(stats.get("runtime_weight") or 1.0)
-        edges.append(edge)
-    return {**graph, "edges": edges}
 
 
 def _capability_id(value: Any) -> str:
@@ -2165,10 +2132,16 @@ def _build_token_usage_payload(
             return current
         return {}
 
+    try:
+        artifact_dir = resolve_graph_artifact_dir(graph_dir)
+    except (OSError, ValueError):
+        artifact_dir = None
     for usage in (
         _read_manifest_token_usage(graph_dir),
-        _read_json_token_usage(
-            resolve_graph_artifact_dir(graph_dir) / "llm_token_usage.json"
+        (
+            _read_json_token_usage(artifact_dir / "llm_token_usage.json")
+            if artifact_dir is not None
+            else {}
         ),
         _read_json_token_usage(graph_dir / "llm_token_usage.json"),
     ):
@@ -2180,7 +2153,7 @@ def _build_token_usage_payload(
 
 def _current_token_usage_summary() -> dict[str, Any]:
     try:
-        from jiuwenswarm.symphony.llm import get_llm_token_usage_summary
+        from jiuwenswarm.runtime.symphony.llm import get_llm_token_usage_summary
 
         usage = get_llm_token_usage_summary()
     except Exception:  # noqa: BLE001
@@ -2195,7 +2168,7 @@ def _read_manifest_token_usage(graph_dir: Path) -> dict[str, Any]:
                 encoding="utf-8"
             )
         )
-    except (OSError, json.JSONDecodeError):
+    except (OSError, ValueError):
         return {}
     if not isinstance(payload, dict):
         return {}

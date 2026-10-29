@@ -11,7 +11,7 @@ from typing import Any, Iterable, Mapping
 
 from openjiuwen.symphony import CapabilityDescriptor, CapabilityFingerprint
 
-from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
+from jiuwenswarm.runtime.symphony.graph_storage import resolve_graph_artifact_dir
 
 GRAPH_STATE_FILENAME = "graph_state.json"
 
@@ -170,7 +170,11 @@ class GraphStateBuilder:
 def load_graph_state(graph_dir: str | Path) -> GraphState:
     """Load graph_state.json, returning an empty state when it is missing."""
 
-    path = resolve_graph_artifact_dir(graph_dir) / GRAPH_STATE_FILENAME
+    try:
+        path = resolve_graph_artifact_dir(graph_dir) / GRAPH_STATE_FILENAME
+    except (OSError, ValueError):
+        # Invalid published graphs must remain rebuildable from the skill scan.
+        return GraphState()
     if not path.exists():
         return GraphState()
     return GraphState.from_dict(json.loads(path.read_text(encoding="utf-8")))

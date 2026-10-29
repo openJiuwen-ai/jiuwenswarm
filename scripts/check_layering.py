@@ -5,9 +5,9 @@
 
 规则（白名单内为已知存量，即燃尽清单；白名单外为新增违规）：
 
-  R1  common  禁止 import server / agents / channels / gateway / extensions / symphony
+  R1  common  禁止 import server / agents / channels / gateway / extensions / runtime
   R2  server  禁止 import gateway
-  R3  gateway 禁止 import server / agents / channels
+  R3  gateway 禁止 import server / agents / channels / runtime
 
 例外：``gateway.common`` 是无状态纯函数/常量的唯一真源（M1 策略调整），
 common / server / runtime 允许反向引用；扩展治理层
@@ -395,8 +395,8 @@ def run_rules(graph: ImportGraph) -> int:
         KNOWN_R2_SERVER_TO_GATEWAY,
     )
     exit_code |= _check_rule(
-        graph, "R3 gateway 禁止 import server/agents/channels/runtime/symphony",
-        ("gateway.",), ("server", "agents", "channels", "runtime", "symphony"),
+        graph, "R3 gateway 禁止 import server/agents/channels/runtime",
+        ("gateway.",), ("server", "agents", "channels", "runtime"),
         KNOWN_R3_GATEWAY_FOREIGN,
     )
     return exit_code
@@ -443,7 +443,7 @@ def run_baseline(graph: ImportGraph) -> None:
     backref_modules, backref_imports = 0, 0
     foreign_prefixes = tuple(
         f"{PKG}.{p}."
-        for p in ("server", "agents", "channels", "gateway", "extensions", "symphony")
+        for p in ("server", "agents", "channels", "gateway", "extensions", "runtime")
     )
     for mod, known in KNOWN_R1_COMMON_BACKREFS.items():
         targets: set[str] = set()

@@ -249,7 +249,7 @@ for package_root in DISPATCH_PACKAGE_ROOTS:
 
 # openjiuwen 使用动态导入，需要收集全部子模块
 openjiuwen_submodules = collect_submodules("openjiuwen")
-symphony_submodules = collect_submodules("jiuwenswarm.symphony")
+symphony_submodules = collect_submodules("jiuwenswarm.runtime.symphony")
 # Gateway adapters are re-exported through package-level __getattr__ and
 # import_module(), so PyInstaller cannot discover them from the import graph.
 gateway_adapter_submodules = collect_submodules(

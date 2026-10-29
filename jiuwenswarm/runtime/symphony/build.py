@@ -24,13 +24,12 @@ from openjiuwen.symphony import (
     SymphonyRuntime,
 )
 
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.common.symphony_config import (
     SymphonyConfig,
     default_symphony_config,
 )
-from jiuwenswarm.symphony.adapter import (
+from jiuwenswarm.runtime.symphony.adapter import (
     FingerprintArtifactCapabilityProvider,
-    FingerprintLLMAdapter,
     ScanResultCapabilityProvider,
     fingerprint_settings_from_swarm,
     graph_build_orchestration_config_from_swarm,
@@ -39,18 +38,18 @@ from jiuwenswarm.symphony.adapter import (
     model_from_config,
     model_response_observer_from_config,
 )
-from jiuwenswarm.symphony.llm import (
+from jiuwenswarm.runtime.symphony.llm import (
     LLMConfig,
     get_llm_token_usage_summary,
     reset_llm_token_usage,
 )
-from jiuwenswarm.symphony.graph_state import (
+from jiuwenswarm.runtime.symphony.graph_state import (
     GRAPH_STATE_FILENAME,
     GraphStateBuilder,
     load_graph_state,
     write_graph_state,
 )
-from jiuwenswarm.symphony.graph_storage import (
+from jiuwenswarm.runtime.symphony.graph_storage import (
     build_run_dir,
     latest_incomplete_build,
     graph_exists,
@@ -146,7 +145,12 @@ class GraphBuildRuntimeFactory:
         return FingerprintService(
             ScanResultCapabilityProvider(scan_result),
             artifact_root,
-            llm=(FingerprintLLMAdapter(llm_config) if llm_config is not None else None),
+            llm=(model_from_config(llm_config) if llm_config is not None else None),
+            model_response_observer=(
+                model_response_observer_from_config(llm_config)
+                if llm_config is not None
+                else None
+            ),
             settings=fingerprint_settings_from_swarm(
                 runtime_config,
                 llm_config,

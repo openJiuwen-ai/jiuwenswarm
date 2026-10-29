@@ -1882,7 +1882,7 @@ class SkillManager:
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             skill_retrieval_artifact_root,
         )
-        from jiuwenswarm.symphony.skill_retrieval import SkillTaxonomyRuntime
+        from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
         return SkillTaxonomyRuntime(
             records_provider=records_provider or self._skill_retrieval_records,
@@ -2225,7 +2225,7 @@ class SkillManager:
 
     async def handle_skills_graph_build(self, params: dict) -> dict:
         """Start a background Skill Graph build."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         value = (params or {}).get("force", False)
         force = (
@@ -2237,36 +2237,36 @@ class SkillManager:
 
     async def handle_skills_graph_status(self, params: dict) -> dict:
         """Return Skill Graph build and freshness status."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().graph_status()
 
     async def handle_skills_graph_get(self, params: dict) -> dict:
         """Return the current published Skill Graph."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().graph()
 
     async def handle_skills_graph_cancel(self, params: dict) -> dict:
         """Cancel the active Skill Graph build while retaining checkpoints."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return await get_swarm_symphony_service().cancel_build()
 
     async def handle_skills_experience_list(self, params: dict) -> dict:
         """List retained Symphony experience candidates."""
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         del params
         return get_swarm_symphony_service().list_experience_candidates()
 
     async def handle_skills_experience_request(self, params: dict) -> dict:
         """Re-open one retained candidate through the normal approval prompt."""
-        from jiuwenswarm.symphony.experience import _parse_recipe_reference
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+        from jiuwenswarm.runtime.symphony.experience import _parse_recipe_reference
+        from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
         allowed = {
             "recipe_id",

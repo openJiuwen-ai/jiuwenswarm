@@ -432,10 +432,6 @@ def get_llm_token_usage_summary() -> Dict[str, Any]:
     return _TOKEN_USAGE_TRACKER.summary()
 
 
-def create_llm_client(config: LLMConfig) -> "JiuwenSwarmChatClient":
-    if config is None:
-        raise ValueError("create_llm_client requires LLMConfig.")
-    return JiuwenSwarmChatClient(config)
 
 
 async def probe_model_connection(config: LLMConfig) -> None:
@@ -477,7 +473,7 @@ async def probe_model_connection(config: LLMConfig) -> None:
 
 
 def create_model_response_observer(config: LLMConfig):
-    """Bridge native orchestration model responses to the existing usage tracker."""
+    """Bridge native Symphony model responses to the existing usage tracker."""
 
     def observe(response: Any, stage: str, operation: str | None) -> None:
         with llm_usage_context(stage, operation):
@@ -501,92 +497,6 @@ def thinking_disabled_request_overrides() -> Dict[str, Any]:
     }
 
 
-class JiuwenSwarmChatClient:
-    """Adapter over openjiuwen's async model invocation."""
-
-    def __init__(self, config: LLMConfig) -> None:
-        self.config = config
-        self._model = None
-
-    async def complete_json_async(
-        self,
-        *,
-        system_prompt: str,
-        user_content: str,
-        timeout: Optional[int] = None,
-        error_context: str = "LLM",
-        request_overrides: Optional[Dict[str, Any]] = None,
-    ) -> str:
-        try:
-            response = await self._invoke(
-                system_prompt=system_prompt,
-                user_content=user_content,
-                timeout=timeout,
-                request_overrides=request_overrides,
-            )
-        except Exception as exc:
-            raise RuntimeError(f"{error_context} request failed: {exc}") from exc
-
-        return self._json_content_from_response(response, error_context)
-
-    async def complete_json_many_async(
-        self,
-        requests: List[Dict[str, str]],
-        *,
-        timeout: Optional[int] = None,
-        error_context: str = "LLM",
-        request_overrides: Optional[Dict[str, Any]] = None,
-    ) -> List[str]:
-        return [
-            await self.complete_json_async(
-                system_prompt=request["system_prompt"],
-                user_content=request["user_content"],
-                timeout=timeout,
-                error_context=f"{error_context} item {index}",
-                request_overrides=request_overrides,
-            )
-            for index, request in enumerate(requests, start=1)
-        ]
-
-    def _json_content_from_response(self, response: Any, error_context: str) -> str:
-        from json_repair import repair_json
-
-        content = extract_message_content(response)
-        if not content:
-            raise RuntimeError(f"{error_context} response content is empty.")
-        _record_usage_from_response(
-            config=self.config,
-            response=response,
-            operation=error_context,
-        )
-        return repair_json(content, return_objects=False)
-
-    async def _invoke(
-        self,
-        *,
-        system_prompt: str,
-        user_content: str,
-        timeout: Optional[int],
-        request_overrides: Optional[Dict[str, Any]],
-    ) -> Any:
-        if self._model is None:
-            self._model = self.config.create_model()
-
-        invoke_kwargs: Dict[str, Any] = {}
-        if timeout is not None:
-            invoke_kwargs["timeout"] = timeout
-        invoke_kwargs["temperature"] = self.config.temperature
-        invoke_kwargs["top_p"] = self.config.top_p
-        if request_overrides:
-            invoke_kwargs.update(request_overrides)
-
-        return await self._model.invoke(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_content},
-            ],
-            **invoke_kwargs,
-        )
 
 
 def _stable_identity_sha256(value: Any) -> str:
@@ -692,44 +602,5 @@ def _usage_int(usage: Any, *names: str) -> int:
     return 0
 
 
-def extract_message_content(message: Any) -> str:
-    """Extract text from common openjiuwen/OpenAI-compatible response shapes."""
-
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content.strip()
-    if isinstance(content, list):
-        return "".join(_content_part_text(item) for item in content).strip()
-
-    choices = getattr(message, "choices", None)
-    if choices:
-        first = choices[0]
-        choice_message = getattr(first, "message", None)
-        if choice_message is not None:
-            return extract_message_content(choice_message)
-
-    for attr in ("parsed", "json", "output_text", "text"):
-        value = getattr(message, attr, None)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-        if isinstance(value, dict):
-            return json.dumps(value, ensure_ascii=False)
-
-    if isinstance(message, dict):
-        for key in ("content", "output_text", "text"):
-            value = message.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-            if isinstance(value, dict):
-                return json.dumps(value, ensure_ascii=False)
-    return ""
 
 
-def _content_part_text(item: Any) -> str:
-    if isinstance(item, str):
-        return item
-    if isinstance(item, dict):
-        value = item.get("text") or item.get("content") or ""
-        return value if isinstance(value, str) else ""
-    value = getattr(item, "text", None) or getattr(item, "content", None)
-    return value if isinstance(value, str) else ""

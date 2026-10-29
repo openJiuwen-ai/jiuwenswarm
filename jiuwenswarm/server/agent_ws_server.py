@@ -1591,7 +1591,7 @@ class AgentWebSocketServer:
         try:
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
-            from jiuwenswarm.symphony.config import (
+            from jiuwenswarm.common.symphony_config import (
                 evolution_flow_enabled,
                 load_symphony_config,
             )
@@ -1601,7 +1601,7 @@ class AgentWebSocketServer:
                 return True
             import importlib
 
-            service_module = await asyncio.to_thread(importlib.import_module, "jiuwenswarm.symphony.service")
+            service_module = await asyncio.to_thread(importlib.import_module, "jiuwenswarm.runtime.symphony.service")
             get_swarm_symphony_service = service_module.get_swarm_symphony_service
 
             await get_swarm_symphony_service().start()
@@ -1806,7 +1806,7 @@ class AgentWebSocketServer:
         preparation.register("personal_context", self._start_personal_context_best_effort)
         self._personal_context_start_task = preparation.start("personal_context")
         preparation.register("symphony", self._start_symphony_recovery,
-                             imports=("jiuwenswarm.symphony.config",))
+                             imports=("jiuwenswarm.common.symphony_config",))
         # 登录模型的 id_token 一小时过期：在用且快过期的，请Gateway续期后推回来
 
         async def _start_login_refresh() -> None:
@@ -2351,7 +2351,7 @@ class AgentWebSocketServer:
                 self._ensure_app_services().adapter_registry = self._adapter_registry
 
         try:
-            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+            from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
 
             await get_swarm_symphony_service().close()
         except Exception as exc:  # noqa: BLE001

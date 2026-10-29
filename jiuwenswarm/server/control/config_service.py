@@ -27,7 +27,7 @@ from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.common.symphony_config import (
     resolve_symphony_enabled,
     resolve_symphony_evolution_enabled,
 )
