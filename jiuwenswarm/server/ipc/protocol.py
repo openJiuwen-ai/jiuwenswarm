@@ -5,6 +5,8 @@
 The frame is a 4-byte big-endian length followed by UTF-8 JSON. Messages
 carry a ``kind`` so one connection can multiplex request streams, cancel,
 readiness, and server push.
+
+Protocol 1 peers advertising ``shutdown_result`` must report ``shutdown.done``.
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ KIND_READINESS = "readiness"
 KIND_CANCEL = "cancel"
 KIND_HEARTBEAT = "heartbeat"
 KIND_SHUTDOWN = "shutdown"
+KIND_SHUTDOWN_DONE = "shutdown.done"
 KIND_GATEWAY_ATTACH = "gateway.attach"
 KIND_GATEWAY_DETACH = "gateway.detach"
 KIND_ERROR = "error"

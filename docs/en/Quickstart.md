@@ -62,6 +62,12 @@ After successful startup, the terminal will display a service port banner:
 
 When you see similar output, the service is ready. Open `http://localhost:5173` in your browser to use.
 
+### Stop services before upgrading
+
+Before upgrading source or WHL installations, stop the service in its original environment: use `jiuwenswarm-start --stop <name>` for a named instance or `jiuwenswarm-stop` for a background debug service. A failed stop retains the debug service record so the command can be retried after addressing the reported cause.
+
+An unverified Worker on a historical endpoint is preserved with a warning, while the new version starts on its current endpoint. Stopping the new version also leaves that unknown process untouched. Validation failures on the current endpoint, or cleanup failures for a proven owner, still block the operation. Desktop applications only clean up Workers verified as belonging to their deployment. Configuration and session files in the same data directory remain shared; use a separate `JIUWENSWARM_DATA_DIR` and available ports for independent concurrent instances. Deleting socket or lock files alone does not prove process exit.
+
 ### Find the application version and build date
 
 The update page shows the full current version with a secondary “Built on YYYY-MM-DD” label. WHL, Windows EXE, and macOS DMG packages use UTC+08:00 for the packaging date. Installing, starting, or checking for updates does not change it. Older packages and source checkouts without a build date show only the version.

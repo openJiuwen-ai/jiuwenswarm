@@ -8,7 +8,6 @@ import asyncio
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 
 from jiuwenswarm.server.ipc.stream import (
     _PIPE_AUTHKEY,
@@ -33,21 +32,42 @@ async def connect(path: str) -> IpcConnection:
 async def _connect_pipe(path: str) -> IpcConnection:
     from multiprocessing.connection import Client
 
-    address = endpoint_address(path)
-    raw = await asyncio.get_running_loop().run_in_executor(
-        _PIPE_CONNECT_POOL, partial(Client, address, "AF_PIPE", _PIPE_AUTHKEY)
-    )
+    pending = _PIPE_CONNECT_POOL.submit(Client, endpoint_address(path), "AF_PIPE", _PIPE_AUTHKEY)
+    connecting = asyncio.wrap_future(pending)
+    try:
+        raw = await asyncio.shield(connecting)
+    except asyncio.CancelledError:
+        # Native Client cannot be cancelled once running. Its completion must
+        # close the handle even after this Front's event loop has closed.
+        connecting.cancel()
+
+        def close_late(future):
+            if not future.cancelled() and future.exception() is None:
+                future.result().close()
+
+        pending.add_done_callback(close_late)
+        raise
     return PipeConnection(raw)
 
 
 def endpoint_is_listening(path: str) -> bool:
     """Return True when a Worker has already bound this endpoint.
 
-    POSIX checks the socket file. Windows named pipes are not files, so this
+    POSIX checks the lifetime owner lease. Windows named pipes are not files, so this
     waits briefly for a pipe instance without connecting to it.
     """
+    if os.path.exists(path + ".owner.lock"):
+        # The lifetime lease also detects a busy Windows pipe instance, for
+        # which WaitNamedPipeW returns false while its Front is disconnecting.
+        from filelock import FileLock, Timeout
+        lease = FileLock(path + ".owner.lock", timeout=0)
+        try:
+            with lease:
+                return False
+        except Timeout:
+            return True
     if os.name != "nt":
-        return os.path.exists(path)
+        return False
     return _windows_pipe_is_listening(endpoint_address(path))
 
 
@@ -66,13 +86,20 @@ def _windows_pipe_is_listening(address: str) -> bool:
 
 
 async def try_connect(path: str, *, timeout: float = 0.5) -> IpcConnection | None:
-    """Return a connection when a Worker is already listening, else ``None``."""
+    """Return None for absence/refusal; busy/reset probes raise retryable TimeoutError."""
     if os.name != "nt" and not os.path.exists(path):
         return None
     try:
         return await asyncio.wait_for(connect(path), timeout=timeout)
-    except (OSError, asyncio.TimeoutError):
+    except (FileNotFoundError, ConnectionRefusedError):
         return None
+    except OSError as exc:
+        if (isinstance(exc, (BlockingIOError, ConnectionResetError, ConnectionAbortedError))
+                or getattr(exc, "winerror", None) in (121, 231, 232, 233)):
+            # Busy/reset is uncertain availability, never proof of absence.
+            # Keep it on callers' bounded retry paths instead of spawning.
+            raise TimeoutError(f"runtime worker IPC temporarily unavailable: {path}: {exc}") from exc
+        raise
 
 
 async def connect_with_retry(path: str, *, timeout: float) -> IpcConnection:
@@ -81,8 +108,8 @@ async def connect_with_retry(path: str, *, timeout: float) -> IpcConnection:
     last_error: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            return await connect(path)
-        except OSError as exc:
+            return await asyncio.wait_for(connect(path), timeout=max(.001, deadline - time.monotonic()))
+        except (OSError, asyncio.TimeoutError) as exc:
             last_error = exc
-            await asyncio.sleep(0.05)
+            await asyncio.sleep(min(0.05, max(0.0, deadline - time.monotonic())))
     raise TimeoutError(f"runtime worker ipc not ready: {path}") from last_error

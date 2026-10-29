@@ -98,8 +98,10 @@ not included in this public packaging path.
 
 The 0.2.8 backport retains IPC protocol 1 and its existing request handling.
 Modern HELLO messages add build/deployment identity without importing develop's
-event replay or readiness changes. Protocol 1 has no shutdown acknowledgement;
-retirement must observe the validated process exit. Source identity uses full
+event replay or readiness changes. New Workers advertise `shutdown_result` and
+send `shutdown.done`; failed or missing results block stop/update success even
+after process exit. Legacy peers without this capability retain exit-based
+compatibility. Retirement must still observe the validated process exit. Source identity uses full
 content/dependency hashing rather than develop's filesystem identity cache.
 
 Backend builds embed `jiuwenswarm/_worker_build_identity.json`. Rebuilding the

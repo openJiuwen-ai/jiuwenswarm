@@ -16,6 +16,7 @@ from jiuwenswarm.server.front.event_forwarder import EventForwarder
 from jiuwenswarm.server.front.protocol import encode_response
 from jiuwenswarm.server.ipc.client import connect_with_retry, endpoint_is_listening, try_connect
 from jiuwenswarm.server.ipc.protocol import (
+    IpcError,
     KIND_GATEWAY_ATTACH,
     KIND_GATEWAY_DETACH,
     KIND_HELLO,
@@ -24,6 +25,7 @@ from jiuwenswarm.server.ipc.protocol import (
     KIND_REQUEST,
     KIND_REQUEST_DONE,
     KIND_SHUTDOWN,
+    KIND_SHUTDOWN_DONE,
     KIND_WIRE,
     PROTOCOL_VERSION,
     dump_agent_request,
@@ -109,6 +111,8 @@ class RuntimeSupervisor:
         self._registry = WorkerRegistry()
         self._conn: IpcConnection | None = None
         self._validated_conn: IpcConnection | None = None
+        self._expects_shutdown_result = False
+        self._shutdown_done: asyncio.Future[dict[str, Any]] | None = None
         self._process: WorkerProcess | None = None
         self._owns_process = False
         self._worker_pid: int | None = None
@@ -401,7 +405,7 @@ class RuntimeSupervisor:
             try:
                 await self._bring_up()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[Supervisor] worker bring-up failed: %s", exc)
+                logger.warning("[Supervisor] worker bring-up failed: %s: %s", type(exc).__name__, exc, exc_info=True)
                 if not await self._schedule_restart(str(exc)):
                     break
                 continue
@@ -437,6 +441,7 @@ class RuntimeSupervisor:
                 if self._stopping or self._terminating:
                     raise RuntimeError("Worker startup cancelled by supervisor stop")
                 await self._migrate_legacy_workers()
+                deadline = time.monotonic() + self._connect_timeout
                 for attempt in range(2):
                     if self._stopping or self._terminating:
                         raise RuntimeError("Worker startup cancelled by supervisor stop")
@@ -445,7 +450,14 @@ class RuntimeSupervisor:
                     process = None
                     conn = None
                     try:
-                        existing = await try_connect(self._socket_path, timeout=0.05)
+                        try:
+                            existing = await try_connect(
+                                self._socket_path, timeout=min(0.5, max(.001, deadline - time.monotonic()))
+                            )
+                        except TimeoutError:
+                            existing = await connect_with_retry(
+                                self._socket_path, timeout=max(.001, deadline - time.monotonic())
+                            )
                         conn = existing
                         if self._stopping or self._terminating:
                             raise RuntimeError("Worker startup cancelled by supervisor stop")
@@ -557,6 +569,7 @@ class RuntimeSupervisor:
         instance = hello.get("instance")
         self._worker_instance = instance if isinstance(instance, str) and instance else None
         self._validated_conn = conn
+        self._expects_shutdown_result = hello.get("protocol") != 1 or hello.get("shutdown_result") is True
         self._registry.upsert(
             WorkerSlot(
                 worker_id="primary",
@@ -602,6 +615,9 @@ class RuntimeSupervisor:
             await asyncio.gather(writer, return_exceptions=True)
             if self._forward_queue is queue:
                 self._forward_queue = None
+            if (conn is self._validated_conn and self._shutdown_done is not None
+                    and not self._shutdown_done.done()):
+                self._shutdown_done.set_exception(RuntimeError("Worker disconnected without a shutdown result"))
 
     async def _forward_messages(self, queue: _ForwardQueue, generation: int) -> None:
         while not self._stopping and self._generation == generation:
@@ -737,6 +753,10 @@ class RuntimeSupervisor:
             self._apply_readiness(message)
             return
         if kind == KIND_HEARTBEAT:
+            return
+        if kind == KIND_SHUTDOWN_DONE:
+            if self._shutdown_done is not None and not self._shutdown_done.done():
+                self._shutdown_done.set_result(message)
             return
         if kind == KIND_HELLO:
             return
@@ -1068,13 +1088,34 @@ class RuntimeSupervisor:
             conn = None
         # IPC and graceful exit must leave time for forced exit observation.
         grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 2)
+        shutdown_error = None
         if conn is not None:
+            if self._expects_shutdown_result and self._loop_task is not None:
+                self._shutdown_done = asyncio.get_running_loop().create_future()
             try:
                 await asyncio.wait_for(
                     conn.send({"kind": KIND_SHUTDOWN}), timeout=max(0.0, grace - time.monotonic())
                 )
-            except (OSError, RuntimeError, asyncio.TimeoutError):
-                logger.warning("[Supervisor] Worker shutdown send failed or shutdown deadline exhausted")
+                if self._expects_shutdown_result:
+                    if self._loop_task is not None:
+                        outcome = await asyncio.wait_for(
+                            asyncio.shield(self._shutdown_done), timeout=max(0.0, grace - time.monotonic())
+                        )
+                    else:
+                        # Direct lifecycle callers have no pump consuming this connection.
+                        while True:
+                            outcome = await asyncio.wait_for(conn.recv(), timeout=max(0.0, grace - time.monotonic()))
+                            if outcome.get("kind") == KIND_SHUTDOWN_DONE:
+                                break
+                    if outcome.get("ok") is not True:
+                        raise RuntimeError(f"Worker reported incomplete shutdown: {outcome.get('error', '')}")
+            except (OSError, RuntimeError, TimeoutError, IpcError) as exc:
+                if self._expects_shutdown_result:
+                    shutdown_error = RuntimeError(f"Worker shutdown result could not be verified: {exc}")
+                logger.warning("[Supervisor] Worker shutdown incomplete: %s: %s", type(exc).__name__, exc)
+            finally:
+                if self._shutdown_done is not None and not self._shutdown_done.done():
+                    self._shutdown_done.cancel()
         if process is not None:
             if conn is None:
                 # No validated peer received a shutdown request. Stop only the
@@ -1086,6 +1127,8 @@ class RuntimeSupervisor:
             await asyncio.to_thread(self._reap_validated_worker, deadline=deadline)
         self._process = None
         self._validated_conn = None
+        if shutdown_error is not None:
+            raise shutdown_error
 
     async def _stop_spawned_process(self) -> None:
         process = self._process
@@ -1110,35 +1153,48 @@ class RuntimeSupervisor:
 
 
     async def _migrate_legacy_workers(self) -> None:
-        """Retire an owned historical endpoint instead of merely abandoning it."""
+        """Retire proven owners; unknown historical endpoints stay untouched."""
         from jiuwenswarm.server.supervisor.worker_process import legacy_socket_paths
-        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
+        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock, worker_process
 
         if self._socket_path != default_socket_path():
             return
         for path in legacy_socket_paths():
             if path == self._socket_path:
                 continue
-            deadline = time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT
-            async with startup_lock(path, deadline):
-                connection = await try_connect(path, timeout=.05)
-                if connection is None:
-                    if not endpoint_is_listening(path):
+            connection = None
+            owned = False
+            # Historical discovery must not consume the new endpoint's startup budget.
+            deadline = time.monotonic() + .5
+            try:
+                async with startup_lock(path, deadline):
+                    connection = await try_connect(path, timeout=max(.001, deadline - time.monotonic()))
+                    if connection is None:
                         continue
-                    connection = await connect_with_retry(path, timeout=max(.001, deadline - time.monotonic()))
-                try:
-                    hello = await asyncio.wait_for(connection.recv(), timeout=_HELLO_TIMEOUT)
-                    if not isinstance(hello, dict) or bool(hello.get("stub")) != self._stub:
+                    hello = await asyncio.wait_for(connection.recv(), timeout=max(.001, deadline - time.monotonic()))
+                    worker_process(hello, path, allow_legacy=True)
+                    owned = True
+                    if bool(hello.get("stub")) != self._stub:
                         raise RuntimeError("legacy Worker execution profile mismatch")
-                    await retire_worker(connection, hello, path, deadline=deadline, allow_legacy=True)
-                except Exception:
-                    self._fatal = True
-                    self._fatal_reason = "legacy Worker migration failed"
-                    self._readiness.mark_failed(self._fatal_reason)
-                    raise
-                finally:
-                    await connection.close()
-
+                    await retire_worker(connection, hello, path,
+                                        deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT, allow_legacy=True)
+            except Exception as exc:
+                if not owned:
+                    logger.warning(
+                        "[Supervisor] historical Worker ownership unconfirmed at %s; preserving it and "
+                        "continuing on %s: %s: %s", path, self._socket_path, type(exc).__name__, exc,
+                    )
+                    continue
+                self._fatal = True
+                self._fatal_reason = f"legacy Worker migration failed at {path}: {type(exc).__name__}: {exc}"
+                self._readiness.mark_failed(self._fatal_reason)
+                raise
+            finally:
+                if connection is not None:
+                    try:
+                        await connection.close()
+                    except (OSError, RuntimeError):
+                        logger.warning("[Supervisor] historical Worker IPC close failed at %s", path, exc_info=True)
 
 
     def _reap_validated_worker(self, *, deadline: float) -> None:

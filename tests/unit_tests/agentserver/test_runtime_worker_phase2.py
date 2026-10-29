@@ -861,8 +861,8 @@ async def test_shutdown_does_not_wait_out_a_stuck_runtime_load() -> None:
     assert await asyncio.to_thread(entered.wait, 1.0)
     started = time.monotonic()
     try:
-        runtime = await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
-        assert runtime is None
+        with pytest.raises(WorkerForceExit, match="runtime load exceeded"):
+            await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
         assert time.monotonic() - started < 1.0
         assert task.cancelling()
     finally:

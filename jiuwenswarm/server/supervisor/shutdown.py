@@ -9,9 +9,9 @@ import logging
 import sys
 import time
 
-from jiuwenswarm.server.ipc.client import connect, endpoint_is_listening, try_connect
+from jiuwenswarm.server.ipc.client import endpoint_is_listening, try_connect
 from jiuwenswarm.server.supervisor.worker_process import default_socket_path, legacy_socket_paths
-from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
+from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock, worker_process
 
 
 def detach_front_process(pid: int, *, force: bool = False, timeout: float = 5.0) -> None:
@@ -93,26 +93,54 @@ async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | 
     upgrade. Unvalidated processes are never terminated.
     """
     deadline = time.monotonic() + timeout
-    paths = [socket_path] if socket_path else list(dict.fromkeys([default_socket_path(), *legacy_socket_paths()]))
+    current_path = socket_path or default_socket_path()
+    paths = [current_path] if socket_path else list(dict.fromkeys([current_path, *legacy_socket_paths()]))
     result = {"ok": True, "absent": True}
     for path in paths:
-        async with startup_lock(path, deadline):
-            connection = await try_connect(path, timeout=.05)
-            if connection is None and not endpoint_is_listening(path):
-                continue
-            while connection is None and time.monotonic() < deadline:
-                try:
-                    connection = await asyncio.wait_for(connect(path), min(.2, deadline - time.monotonic()))
-                except (OSError, RuntimeError):
-                    await asyncio.sleep(.025)
-            if connection is None:
-                raise TimeoutError("Worker shutdown could not acquire its detached IPC connection")
-            try:
-                hello = await asyncio.wait_for(connection.recv(), max(.001, deadline - time.monotonic()))
+        historical = path != current_path
+        owned = False
+        connection = None
+        failure = None
+        probe_deadline = min(deadline, time.monotonic() + .5) if historical else deadline
+        try:
+            async with startup_lock(path, probe_deadline):
+                while True:
+                    remaining = probe_deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError(f"Worker shutdown could not acquire IPC connection: {path}")
+                    try:
+                        connection = await try_connect(path, timeout=min(0.5, remaining))
+                    except TimeoutError:
+                        if historical:
+                            raise
+                        continue
+                    if connection is not None or historical or not endpoint_is_listening(path):
+                        break
+                    await asyncio.sleep(min(.025, max(0.0, probe_deadline - time.monotonic())))
+                if connection is None:
+                    continue
+                hello = await asyncio.wait_for(connection.recv(), max(.001, probe_deadline - time.monotonic()))
+                if historical:
+                    worker_process(hello, path, allow_legacy=True)
+                    owned = True
                 result = await retire_worker(connection, hello, path, deadline=deadline, allow_legacy=True)
                 result = {**result, "pid": hello["pid"]}
-            finally:
-                await connection.close()
+        except BaseException as exc:
+            if not isinstance(exc, Exception) or not historical or owned:
+                failure = exc
+                raise
+            logging.getLogger(__name__).warning(
+                "Historical Worker ownership unconfirmed at %s; preserving it outside this deployment: %s: %s",
+                path, type(exc).__name__, exc,
+            )
+        finally:
+            if connection is not None:
+                try:
+                    await connection.close()
+                except (OSError, RuntimeError, asyncio.CancelledError) as exc:
+                    if failure is None and (not historical or isinstance(exc, asyncio.CancelledError)):
+                        raise
+                    logging.getLogger(__name__).warning("Worker IPC close failed at %s", path, exc_info=True)
     return result
 
 
