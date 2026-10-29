@@ -188,6 +188,8 @@ async def test_push_refreshes_bound_session_same_turn(
     assert child_refreshed is True
     # Same lazy bookkeeping path: stamped current at the root stamp (2).
     assert root._session_skill_versions.get("sess_a") == 2
+    # Live session: the lock entry stays for subsequent turns.
+    assert "sess_a" in root._session_adapter_locks
 
 
 @pytest.mark.asyncio
@@ -333,3 +335,44 @@ async def test_push_survives_adapter_evicted_while_waiting_on_lock(
     # No refresh was even attempted: no version stamp, no failure stamp.
     assert root._session_skill_versions == {}
     assert root._session_skill_refresh_failures == {}
+    # The orphaned lock entry is dropped: has_session_runtime must not keep
+    # reporting runtime for a session cleaned up while the push waited.
+    assert "sess_a" not in root._session_adapter_locks
+
+
+@pytest.mark.asyncio
+async def test_refresh_enabled_skills_from_db_serializes_concurrent_swaps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent refresh entry points must not interleave the rail swap.
+
+    The push path (root session lock held), the turn-boundary refresh and the
+    in-session ``_on_installed_skills_changed`` callback can all call
+    ``refresh_enabled_skills_from_db`` on one adapter concurrently; the swap
+    section has await points, so the public entry serializes the whole body.
+    """
+    root = _make_push_root(_instance=object(), _skill_refresh_lock=asyncio.Lock())
+    monkeypatch.setattr(interface_deep_module, "is_skill_prebuilt_tenant", lambda *_a, **_k: True)
+
+    in_flight = 0
+    max_in_flight = 0
+
+    async def _locked_body() -> bool:
+        nonlocal in_flight, max_in_flight
+        in_flight += 1
+        max_in_flight = max(max_in_flight, in_flight)
+        try:
+            await asyncio.sleep(0)  # yield so the peer task can queue on the lock
+            return True
+        finally:
+            in_flight -= 1
+
+    root._refresh_enabled_skills_from_db_locked = _locked_body  # type: ignore[method-assign]
+
+    results = await asyncio.gather(
+        root.refresh_enabled_skills_from_db(),
+        root.refresh_enabled_skills_from_db(),
+    )
+
+    assert results == [True, True]
+    assert max_in_flight == 1
