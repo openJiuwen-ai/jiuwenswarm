@@ -4,13 +4,13 @@
 | --- | --- |
 | 编号 | F_21 / session-usage-ops |
 | 建档日期 | 2026-10-28 |
-| 后续修订 | 2026-10-28，评审修订后按事件与方法编写指南重整，验证记录见第 6 节 |
+| 后续修订 | 2026-10-29，逐字段明确输入输出、填写责任、示例、时间/比例单位与缺失行为；业务代码不变 |
 | 关联计划 | [EXTV2-17 / Server PR-05](../designs/extensions-v2-development-plan.md#extv2-17-会话轮次与用量查询) |
 | 主责规约 | [S_11 会话轮次与用量查询](../specs/S_11_session-usage-ops.md) |
 
 ## 1. 范围、状态与依据
 
-两项只读 Ops 已实现并在 [PR !90](https://gitcode.com/huenrui_/jiuwenswarm/pull/90) 评审。本文核对实现为 `6434207a1c0615c2f5940efdc2e37f4a75ba7c07`，目标分支 `rsi_native_agent_os`，实现基线 `7795851916dd5ce1d34b70f5a20d6d30eafc25e3`；配套 Core 为 `ead700d7d18a247968d64de54918cf5d201a207a`，Core 本身未修改。本次只调整文档，不改变接口或业务代码。
+两项只读 Ops 已实现并在 [PR !90](https://gitcode.com/huenrui_/jiuwenswarm/pull/90) 评审。本次核对业务实现与既有真实验收收据的源码哈希一致，文档修订前 PR head 为 `d86ec910189252ad5d4e42dbca3fee569891f1be`，目标分支 `rsi_native_agent_os`，实现基线 `7795851916dd5ce1d34b70f5a20d6d30eafc25e3`；配套 Core 为 `ead700d7d18a247968d64de54918cf5d201a207a`，Core 本身未修改。本次只调整文档，不改变接口或业务代码。
 
 目标是让用户 Handler 读取平台主会话已提交的用户输入次数，以及已观测的窗口占用/回合用量。沿用 Worker 唯一 EventBus、已有 ops.build 和可信 SessionContext，不依赖 PR04 的 messages/append。两项查询直接读取，不新增 session.turns、session.usage、session.measure 或 server.request.handle 事件，也不调用模型重新测量。
 
@@ -42,17 +42,33 @@ CORE 的回执返回该通知任务，只确认事件输入类型已接受；它
 
 ### 3.2 Handler 输入、输出与可修改范围
 
-Handler 的 event_input 是已有 `ContextUsageUpdate`，下表解释订阅所需字段；完整默认值见 [S_11 第 5 节](../specs/S_11_session-usage-ops.md#5-复用通知的接口与边界)。
+**这些字段由平台填写。用户只注册 Handler 并读取，不需要自己组装用量事件或从 Adapter 收集资料。**实际类型是 `ContextUsageUpdate`；不是调用 turns/usage 时的参数。所有 Token 计数单位均为 Token，不是字符、字节或费用。
 
-| 字段 | 含义 |
-| --- | --- |
-| session_id / request_id | 此次业务通知的会话和请求关联标识 |
-| input_tokens / output_tokens / total_tokens / cache_tokens | 当前回合汇总计数，不能作为窗口类别明细 |
-| cache_hit_rate / context_window_tokens / usage_percent / model | 平台已有的缓存比例、窗口容量/占用和模型名称，可缺失；不能与 Ops 的 occupancy_rate 比例值混用 |
+| 输入字段 | 声明类型 / 必填或默认 | 准确含义与填写责任 | 示例与消费方式 |
+| --- | --- | --- | --- |
+| session_id | str，平台必填 | 发布本次通知的主会话关联标识；查询实际目标取 Core 绑定的 SessionContext，不能靠改这个字段查询另一会话 | session-demo；用户核对、记录即可 |
+| request_id | str，平台必填 | 产生本次汇总的业务请求 ID，不是窗口快照 ID 或新消息 ID | request-summary-demo；用于关联本轮通知 |
+| input_tokens | int，默认 0 | 本次业务回合由平台汇总的 provider 输入 Token，不是只统计用户本条文字 | 1200；作为通知计数读取，不累加为生命周期账单 |
+| output_tokens | int，默认 0 | 同一回合汇总的 provider 输出 Token | 80；不是输出字符数 |
+| total_tokens | int，默认 0 | 平台提供的本回合总 Token；原生入口仅 total_tokens>0 时尝试发布 | 1280；不是当前窗口容量 |
+| cache_tokens | int，默认 0 | 当前通知的缓存计数，保留生产者的统计口径；转为 Ops 的 turn 快照时，仅 input_tokens>0 才携带该字段 | 0 可以是实际携带的零值，不能与未报告混淆 |
+| cache_hit_rate | str 或 None，默认 None | 既有百分比展示文本；不是可直接乘算的比例浮点数 | "25.00%"；显示时原样使用或明确解析 |
+| context_window_tokens | int 或 None，默认 None | 平台已知的模型窗口容量，单位 Token；未知为 None | 6000；不是本回合消耗量 |
+| usage_percent | float 或 None，默认 None | 既有平台展示百分值，20.0 表示 20%；与 Ops 的 occupancy_rate=0.2 单位不同 | 20.0；不要再次当比例乘 100 |
+| model | str 或 None，默认 None | 平台提供的模型名称，不是可调用模型对象、配置键或授权信息 | "demo-model"；仅做显示/筛选 |
 
-该 dataclass 为 frozen；示例只观察输入，用 `return await next_handler(event)` 继续原链。既有 CORE 只检查输入为 ContextUsageUpdate，返回 `ContextUsageOutput(accepted=True, request_id=...)`；本项没有为该事件增加完整数值/输出校验或拒绝协议。USER 异常沿用 Core 故障隔离。提前返回至多跳过后续通知处理，不撤销已完成回合，不修改平台用量或历史。
+上述为 dataclass 的声明类型与缺省值。现有事件没有完整数值 Validator，默认 CORE 仅检查输入对象类型；不能把“Handler 收到通知”理解成所有数字已通过严格校验。Ops 查询使用独立校验后的可信快照，不直接相信被改写的事件数字。
 
-Event payload 与 Ops 可信资料是两条不同通道：即使 Handler 构造新的输入转给下游，也不会据此覆盖本次 SessionContext 里的宿主快照。用户通过 Ops 查询平台事实，无需也不能靠改 Event 数字来生成权威读数。
+默认 CORE 返回 `ContextUsageOutput`，字段如下；用户正常接入应原样返回 `await next_handler(event)`，无需自己构造：
+
+| 输出字段 | 类型 / 默认 | 准确含义、由谁填写及如何使用 |
+| --- | --- | --- |
+| accepted | bool，构造时必填；默认 CORE 填 True | 只表示默认 CORE 接受 ContextUsageUpdate 类型；不证明历史已落盘、UI 已展示、用量重新测量或用户业务成功 |
+| request_id | str，默认空字符串；默认 CORE 回显输入 request_id | 通知关联回执。由 CORE 填写，用户通常直接转交，不用于指定下一次查询目标 |
+
+输入 dataclass 为 frozen；本示例只观察，不改写。USER 的异常按 Core 故障隔离；提前返回至多跳过剩余通知处理，不能撤销已完成回合或改写平台历史。这里没有新增拒绝协议或输出 Validator。
+
+Event payload 与 `ops.session_context` 是两条不同通道。即使用户构造新输入再 next，也不会据此覆盖本次宿主快照；next 继续原通知链，两个查询 Ops 均不触发新事件。
 
 ### 3.3 可复制的注册与调用示例
 
@@ -115,35 +131,183 @@ extensions:
 
 压缩摘要本身不增加轮次，显式截断按保留记录重算；它不是生命周期累计值。旧 user/human 行缺少来源标记时按历史用户输入解释，所有非空 source 行按当前规则排除。查询无独立事件和业务 CORE，直接返回 int/None，不存在 `{value}` 事件结果解包。
 
+
+
+**调用方应该填写什么：无需填写任何参数。**使用 `await ops.session.turns()`；不要传 session_id、request_id、轮次初值或文件路径。会话由平台随当前事件提供，Core 绑定到本次 Ops。
+
+例如保留历史含 r1 用户记录两条、r1 助手/工具多条、r2 用户记录一条，则返回 2。历史截断只保留 r2 后返回 1；存在但没有有效用户输入返回 0；会话不存在/已删除返回 None。缺失或读取失败时不能自行用 0 冒充正常统计。
+
 ### 4.2 await ops.session.usage(breakdown: bool = False) -> dict | None
 
-| 参数 | 默认值与要求 | 可观察效果 |
-| --- | --- | --- |
-| breakdown | False，只接受 bool；数字/字符串会抛 TypeError | True 保留 context.parts，False 省略；两者都不会重新测量 |
+#### 调用参数：唯一需要用户填写的值
 
-非 None 返回的必要字段如下；完整嵌套字段和测量来源以 [S_11 第 2 节](../specs/S_11_session-usage-ops.md#2-接口) 为主责。
+| 参数 | 类型 / 必填或默认 | 应该填写什么 | 结果如何变化 |
+| --- | --- | --- | --- |
+| breakdown | bool，可省略，默认 False | 不需要类别明细时用 `await ops.session.usage()`；需要已有明细时用 `await ops.session.usage(breakdown=True)`。只能 True/False，不能写 1、0、"true"、"full" 或 "summary" | False 删除 context.parts；True 保留已存在的 parts。不重新测量、不补齐缺少类别、不改变统计来源 |
 
-| 字段 | 含义 |
-| --- | --- |
-| schema_version / session_id | 固定 session-usage.v1 结构版本与可信目标会话 |
-| source | host 为本次 Handler 绑定快照；history 为本次查询读取的已提交历史 |
-| context | 最新已观测主模型窗口：含 request_id、phase、timestamp、sequence、context_window、measurement；可为 None |
-| context.context_window | 容量、输入、occupancy_rate 等窗口资料；0.2 表示占用 20%，不是数值 20 |
-| context.measurement / parts | 保留总量与类别的估算/实测来源；parts 仅在 breakdown=True 时出现 |
-| turn | 最近可用回合 provider 汇总：含 request_id、timestamp、input/output/total/cache_tokens 与来源；可为 None |
+不填写其他查询目标或 Token 数字。下面所有输出字段都是**平台返回的只读事实副本**：用户应读取、记录或展示，不需要回填；修改副本不会写回平台。说明中的默认值是底层模型补齐缺省字段时的值，不是“provider 已报告”的证明。
 
-两部分都缺失时整个返回 None；两部分可以来自不同 request_id/时点，不自动对齐。turn 的缺失计数为 None，携带的 0 保留；cache 字段在通知/summary 中均按 input_tokens>0 才携带。窗口和类别默认字段沿用 Core 结构化模型，不能仅凭某个零值就断言 provider 已实测，应一起查看 measurement / estimated / tokens_source。
+#### 顶层输出：先判断 None，再区分两种观察
 
-```text
-breakdown 参数 + Ops.session_context
-  → 校验会话和 bool 参数
-  → metadata 包含 session_usage_info：选择宿主快照副本（包括明确的 None）
-    或未包含该键：线程中严格读取主历史，选择最新 context / turn
-  → 仅投影公开统计字段、默认移除 parts
-  → 返回 dict / None，无新事件、无事件结果解包
+| 字段 | 类型 / 何时出现 | 准确含义、合法取值与来源 | 示例与正确用法 |
+| --- | --- | --- | --- |
+| schema_version | str，非 None 返回必有 | 固定本地返回结构版本 session-usage.v1，不是宿主版本、模型版本或会话修订号 | "session-usage.v1"；做格式识别即可 |
+| session_id | str，非 None 返回必有 | 当前 Ops 可信绑定的目标主会话 | "session-demo"；不是用户新传的目标 |
+| source | str，非 None 返回必有 | host：本次 SessionContext 绑定快照；history：本次查询从已提交历史选择。不同于 measurement/turn/parts 内的 source | "host"；显示“本次通知快照”而不是“实时重新计算” |
+| context | dict 或 None，键必有 | 最近已观测主模型输入窗口占用，字段见下表；无合格窗口时为 None | 窗口数据缺失时仍可使用有效 turn |
+| turn | dict 或 None，键必有 | 最近可用业务回合的 provider 汇总，不是单次工具或模型步骤；字段见下表 | 与 context 的 request_id/时间可以不同，不能假定两者对齐 |
+
+context 和 turn 都没有有效观测时，整个 usage 返回 None，不是两项均空的字典，也不表示总量为 0。turns 和 usage 分别读取，不保证两次调用组成原子快照。
+
+#### context：模型窗口的观察标识
+
+| 字段 | 类型 / 缺省 | 准确含义、单位和来源 | 示例与消费方式 |
+| --- | --- | --- | --- |
+| request_id | str，合格窗口必有 | 原模型观测的请求 ID；可能是内部模型请求，不必等于外层业务 turn.request_id | "request-window-demo"；按原值关联 |
+| phase | str，Core 默认 pre_call | 原观测阶段，常见 pre_call/post_call；不是会话正在运行/已完成状态，当前不限制为封闭枚举 | "post_call"；显示观测阶段 |
+| timestamp | str，合格窗口必有 | 原窗口观测时间；生产路径生成 ISO 8601 UTC 字符串，保留原值，不改成查询时间。当前 Core 仅要求 str，不额外保证所有旧字符串都可按日期解析 | "2026-10-29T10:00:00+00:00"；不要按 Unix 秒直接计算 |
+| sequence | int，Core 默认 0 | 原观测序号，作用于原生产者的观测序列；不是用户轮数，也不保证跨生产者/重启全局单调 | 7；需与 request_id/快照标识一起关联 |
+| context_window | dict，合格窗口必有 | 窗口容量、占用和来源等字段，见下一表 | 不与本回合消耗相加 |
+| measurement | dict，合格窗口必有 | 类别及总量的测量方式和来源；用来解释是否估算 | 允许 estimated=True 且 authoritative_total=True |
+| parts | dict，仅 breakdown=True 时保留 | 已有类别字典；键通常为 system_prompt/tools/skills/messages，不承诺齐全或四类必有。旧兼容 memory 可能存在 | 先检查键是否存在；不能自己用 0 补成“已实测” |
+
+#### context.context_window：窗口总量
+
+| 字段 | 类型 / Core 缺省 | 准确含义、单位和取值规则 | 示例与消费方式 |
+| --- | --- | --- | --- |
+| limit_tokens | int 或 None，默认 None | 模型窗口容量，单位 Token；None 表示未知，不是 0 容量 | 6000 |
+| input_tokens | int 或 None，默认 None | 本次观测窗口的输入总量，单位 Token；结合 tokens_source 解释，不能当作本轮新写入文本的 Token | 1200 |
+| occupancy_rate | float 或 None，默认 None | 输入/容量的比例；0.2 表示 20%。当前校验非负有限数，不额外承诺不超过 1；容量未知或无效时可 None | UI 百分数可在非 None 时乘 100 |
+| tokens_source | str，默认 not_reported | input_tokens 的来源标签，如 provider_usage、本地计数/回退或混合来源；不是封闭枚举，不与顶层 host/history 混用 | "provider_usage"；保留原标签 |
+| local_estimated_input_tokens | int，默认 0 | 本地预估输入总量，单位 Token；默认零值不证明已做过精确测量 | 1100 |
+| reconciliation_delta_tokens | int 或 None，默认 None | provider 输入与本地预估的对账差值，单位 Token；可正、可负、可 0；不是额外消耗 | 100 表示 provider 比本地估计多 100，不能累加计费 |
+| context_snapshot_id | str 或 None，默认 None | Core 对该窗口的关联标识，不是新建会话 ID，也不是任何历史消息的 uuid | "window-demo"；可与 measurement 中标识一起核对，不假定缺省时一定能补齐 |
+
+#### context.measurement：怎么得到这些数字
+
+| 字段 | 类型 / Core 缺省 | 准确含义与填写责任 | 示例与消费方式 |
+| --- | --- | --- | --- |
+| category_source | str，默认 not_reported | 类别统计的合并来源，由 Core 填写；分项估算或按 provider 总量分配不等于逐项由 provider 实测 | "provider_usage_proportional" |
+| total_source | str，默认 not_reported | 窗口总量的测量来源，与类别来源可以不同 | "provider_usage" |
+| tokenizer | str 或 None，默认 None | Core 使用的 tokenizer/回退计数器名称，不是模型连接或可调用对象 | "unicode_codepoints" 表示该计数器标签，应结合 estimated 解释 |
+| estimated | bool，默认 True | 类别/本次测量是否包含估算语义；不能仅据它否认 provider 总量的权威来源 | True |
+| authoritative_total | bool，默认 False | 总量是否由生产者标为权威来源；不保证类别也均为精确值 | True 可与 estimated=True 同时存在 |
+| measurement_version | str，默认 "1" | Core 测量规则版本，不是顶层 session-usage.v1 返回结构版本 | "1"；兼容识别，不自行递增 |
+| context_snapshot_id | str 或 None，默认 None | 测量对应的快照关联标识；平台原样保留，不在查询时重建或强制与另一字段相等 | "window-demo" |
+
+#### context.parts[类别键]：每一个类别的全部字段
+
+| 字段 | 类型 / Core 缺省 | 准确含义、单位与示例 | 消费约束 |
+| --- | --- | --- | --- |
+| category | str，该项必有 | 本项类别标签，通常与字典键对应；system_prompt/tools/skills/messages，旧兼容 memory 亦可能出现 | 保留返回值，不伪造新类别 |
+| tokens | int，默认 0 | 本类别 Token 计数，例如 300；严格投影校验非负 | 查看 estimated 和来源，不能把默认 0 直接当实测 0 |
+| percentage_of_window | float 或 None，默认 None | 本项 Token / 窗口容量的**比例**；0.05 表示 5%，不是数值 5 | 展示为百分数时乘 100；未知为 None |
+| percentage_of_input | float 或 None，默认 None | 本项 Token / 输入总量的**比例**；0.25 表示 25%，不是数值 25 | 分母与窗口容量不同，不混用 |
+| estimated | bool，默认 True | 这一项是否估算；与总量 authoritative_total 可不同 | True 不表示不能展示，但应保留估算含义 |
+| tokenizer | str 或 None，默认 None | 本项使用的计数器标签 | 如 unicode_codepoints；只读标签 |
+| carrier | str 或 None，默认 None | 本项在模型请求中的承载位置 | 如 system_message、tools、context_message；不等于事件入口或包名 |
+| source | str，默认 not_reported | 本项统计来源 | 如 provider_usage_proportional；不是 usage.source 的 host/history |
+| measurement_source | str，默认 not_reported | 本项具体测量/分配途径 | 可与 source 相同；按生产者标签解释，不封闭枚举 |
+| fallback_reason | str 或 None，默认 None | 使用回退或对账策略的原因；None 表示没有该说明，不是查询失败 | 如 provider_total_proportional_reconciliation |
+| fallback_tokenizer_model | str 或 None，默认 None | 回退计数器使用的模型标识，不是当前 Agent 主模型已激活的证明 | 未提供时 None |
+| order | int 或 None，默认 None | Core 保留的逻辑片段顺序关联值；当前仍按类别聚合，不据此宣称已返回逐消息明细 | 未提供时 None |
+| stable_id | str 或 None，默认 None | Core 保留的稳定逻辑片段关联标识；不是会话 ID 或 JSONL 行 uuid | 未提供时 None |
+
+名字中带 percentage 的两个 parts 字段在当前 Core 中同样是比例值。当前投影不额外限制这些比例到 [0,1]，也不承诺分项齐全、分项之和等于总量或一定等于 100%。
+
+#### turn：最近业务回合的 provider 消耗
+
+| 字段 | 类型 / 缺失行为 | 准确含义、单位和来源 | 示例与消费方式 |
+| --- | --- | --- | --- |
+| request_id | 生产路径 str；旧值原样保留，可为 None | 回合汇总的业务请求 ID；当前投影不额外强制旧字段类型，调用方关联前先检查 | "request-summary-demo"；不要求等于 context.request_id |
+| timestamp | 生产路径 float Unix 秒；旧值原样保留，可为 None | 回合汇总的源时间。历史未额外校验或统一格式/单位，不能套用 context.timestamp 的字符串解析 | 生产路径例 1793268000.0；旧数据应先确认类型和来源 |
+| source | str，存在 turn 时固定 provider_usage | 当前回合计数的来源标签；不表示这份快照顶层来自 host 还是 history | "provider_usage" |
+| input_tokens | int / float / None，缺失为 None | 回合汇总的 provider 输入 Token；已有 0 保留；只能非负有限数，不接受 bool | 1200；不是只计算本条用户输入的 Token |
+| output_tokens | int / float / None，缺失为 None | 同一业务回合的 provider 输出 Token | 80 |
+| total_tokens | int / float / None，缺失为 None | provider/平台汇总的原始总量，不在查询侧重算为 input+output | 1280；保留原口径 |
+| cache_tokens | int / float / None，缺失为 None | 已携带的缓存 Token 数；通知/原生 summary 只有 input_tokens>0 才携带，零输入时可缺失 | 0 与 None 含义不同；不额外承诺缓存读/写拆分或费用 |
+
+上述四个计数全部缺失时 turn 为 None。窗口 input_tokens 与 turn.total_tokens 是不同观察维度，不能把两者相加当账单；也不能把 usage 重复查询后的同一结果反复累加。
+
+#### 完整形状示例与读取方式
+
+下例为代码生成的说明数据，仅包含已提供的 messages 类别；不是本轮重新调用模型的结果。None 在 JSON 中表现为 null。
+
+```json
+{
+  "schema_version": "session-usage.v1",
+  "session_id": "session-demo",
+  "source": "host",
+  "context": {
+    "request_id": "request-window-demo",
+    "phase": "post_call",
+    "timestamp": "2026-10-29T10:00:00+00:00",
+    "sequence": 7,
+    "context_window": {
+      "limit_tokens": 6000,
+      "input_tokens": 1200,
+      "occupancy_rate": 0.2,
+      "tokens_source": "provider_usage",
+      "local_estimated_input_tokens": 1100,
+      "reconciliation_delta_tokens": 100,
+      "context_snapshot_id": "window-demo"
+    },
+    "measurement": {
+      "category_source": "provider_usage_proportional",
+      "total_source": "provider_usage",
+      "tokenizer": "unicode_codepoints",
+      "estimated": true,
+      "authoritative_total": true,
+      "measurement_version": "1",
+      "context_snapshot_id": "window-demo"
+    },
+    "parts": {
+      "messages": {
+        "category": "messages",
+        "tokens": 300,
+        "percentage_of_window": 0.05,
+        "percentage_of_input": 0.25,
+        "estimated": true,
+        "tokenizer": "unicode_codepoints",
+        "carrier": "context_message",
+        "source": "provider_usage_proportional",
+        "measurement_source": "provider_usage_proportional",
+        "fallback_reason": null,
+        "fallback_tokenizer_model": null,
+        "order": null,
+        "stable_id": null
+      }
+    }
+  },
+  "turn": {
+    "request_id": "request-summary-demo",
+    "timestamp": 1793268000.0,
+    "source": "provider_usage",
+    "input_tokens": 1200,
+    "output_tokens": 80,
+    "total_tokens": 1280,
+    "cache_tokens": 0
+  }
+}
 ```
 
-宿主 context 和 turn 分别校验：坏窗口不丢弃有效回合，坏回合不丢弃有效窗口；两者都坏则返回 None，不用上一轮历史替换本轮。历史回读保持严格错误语义，不能把损坏伪装成缺失。返回值是独立副本，调用方修改它不影响宿主快照或另一 Handler。
+```python
+async def read_usage_for_display(ops):
+    usage = await ops.session.usage(breakdown=True)
+    if usage is None:
+        return {"available": False}
+    context = usage["context"]
+    turn = usage["turn"]
+    rate = context["context_window"]["occupancy_rate"] if context is not None else None
+    return {
+        "available": True,
+        "occupancy_percent": None if rate is None else rate * 100,
+        "turn_tokens": None if turn is None else turn["total_tokens"],
+        "source": usage["source"],
+    }
+```
+
+读取路径为：校验会话与 bool → metadata **包含** session_usage_info 时选择本次宿主副本（即使明确为 None）→ 否则在线程中读主历史并分别选最新窗口/回合 → 默认移除 parts → 返回独立 dict/None。宿主分量分别校验，坏窗口不丢有效 turn，坏 turn 不丢有效 context；两者都坏为 None，不用旧历史冒充本轮。历史损坏仍明确报错。
 
 ### 4.3 上下文、异常和典型消费
 
@@ -311,13 +475,17 @@ python -m pytest -o addopts= -q tests/unit_tests/extensions_v2 tests/unit_tests/
 
 本地证据在 `D:\work_space\.codex-temp\server-session-usage-ops-20261028`：regression.xml、live-run-receipt.json 及其 runDirectory 内的 validation-summary.json / cleanup.json。收据保存五个实现文件的 SHA256，确认真实验收期间源码不变。真实验收未 mock 模型、Ops、Adapter，也未手工提供 SessionContext；使用隔离运行目录和既有 WebSocket 协议，未改用户日常配置。运行日志和凭据不提交源码仓库。
 
-### 6.4 本次文档校核与未决事项
+### 6.4 历史文档校核（2026-10-28）及未决事项
 
 本次按编写指南核对两项方法、复用通知与 CORE、平台触发位置、可信资料和固定 Claude 类型；检查示例、链接与差异。第 6.2 节为评审修订实现的既有业务验证证据，本次为纯文档修订，不将历史结果写成新跑的业务测试。
 
-本次文档检查已通过：20 处相对链接及锚点、2 个 Python 代码块语法、示例 Handler 注册、两项 Ops 调用与原通知链继续、None 处理和 SessionStatisticsError 降级分支；manifest 与仓库可安装示例一致，方法签名与源码一致。原真实验收收据的五个实现文件哈希保持一致，本次未重跑业务回归。检查记录位于 `D:\work_space\.codex-temp\server-pr05-docs-guide-20261028\documentation-verification.json`。
+2026-10-28 文档检查已通过：20 处相对链接及锚点、2 个 Python 代码块语法、示例 Handler 注册、两项 Ops 调用与原通知链继续、None 处理和 SessionStatisticsError 降级分支；manifest 与仓库可安装示例一致，方法签名与源码一致。该次原真实验收收据的五个实现文件哈希保持一致，未重跑业务回归。历史检查记录位于 `D:\work_space\.codex-temp\server-pr05-docs-guide-20261028\documentation-verification.json`。
 
 当前两项方法的已实现契约无待决项。不承诺实时正在生成的窗口、所有模型/工具累计计费、Team 汇总或新前端。无结构化窗口的旧历史可能只有 turn；所有主用量均无观测时为 None。Gateway / 浏览器展示、非 Windows 实机、大历史性能或远端 CI 未纳入通过结论，后续由 Server 与对应接入端按专项任务联合验收。
+
+### 6.5 本轮字段文档验证（2026-10-29）
+
+本轮仅修改 F_21、S_11、示例 README 与文档台账引用，不改变任何业务 Python 文件或接口。逐项核对实际 Core 模型字段、默认值、比例计算、平台投影与通知定义；说明用 JSON 由当前构造函数生成。检查命令和结果见 `D:\work_space\.codex-temp\server-pr05-field-docs-20261029\documentation-verification.json`。历史测试/真实模型证据仍保留原日期，本轮未重跑业务回归或模型验收。
 
 ## 7. 参考资料
 

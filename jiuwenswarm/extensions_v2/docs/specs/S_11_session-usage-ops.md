@@ -3,14 +3,14 @@
 | 项 | 值 |
 | --- | --- |
 | 编号 | S_11 / session-usage-ops |
-| 最近修订 | 2026-10-28 |
+| 最近修订 | 2026-10-29 |
 | 关联 feature | [F_21](../features/F_21_session-usage-ops.md) |
 
 ## 1. 范围与条件
 
 PR05 两个无业务写入的 BUILTIN Ops，由现有 `ops.build` 的 session BUILTIN 登记。用户在宿主已绑定有效 SessionContext 的 Handler 调用，查询目标只取 `ops.session_context.session_id`，不接受会话 ID 或路径参数。`ops.session_context` 是 Core 的只读属性，不是本项新增的异步方法。包身份不改变统计范围。
 
-不依赖 PR04 或用量通知触发，不新增查询事件和查询 CORE。功能、注册示例、完整链路和版本化验证见 [F_21](../features/F_21_session-usage-ops.md)。本次按编写指南补齐接口说明，不改变实现行为。
+不依赖 PR04 或用量通知触发，不新增查询事件和查询 CORE。功能、注册示例、完整链路和版本化验证见 [F_21](../features/F_21_session-usage-ops.md)。本次补齐字段含义、填写责任、具体取值、时间/比例单位和缺失规则，不改变实现行为。完整逐字段使用说明在 F_21 第 3.2、4.1、4.2 节，权威类型仍来自实际 Core 模型和 Server 投影。
 
 ## 2. 接口
 
@@ -117,3 +117,11 @@ matcher 按原输入的字段相等条件合取，空字典匹配全部，不在
 ## 6. Claude 对照依据
 
 对照锁定官方 [claude-code.d.ts](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)，文件头标记 2.1.277。turns 语义相近但本项明确保留历史/过滤/None 规则且无同名查询 Hook。usage 不采用其 full/summary breakdown 参数，不提供 columns、rateLimits 或 cost；只读已有统计而不进行额外计算。现有通知也不等同其 session.measure 的测量变化语义。完整比较见 [F_21 第 2 节](../features/F_21_session-usage-ops.md#2-能力说明与-claude-对照)。
+
+## 7. 字段填写与单位补充（2026-10-29）
+
+用户只填写 usage 的严格 bool breakdown；turns 不接受参数。所有返回和通知字段由平台/Core 提供，不要求用户填统计值或传其他会话身份。F_21 将所有字段逐行列出，含 context_window、measurement、parts、turn 和 ContextUsageUpdate/Output。
+
+context.timestamp 为 Core 声明的 str，生产路径为 ISO 8601 UTC；turn.timestamp 原值透传，生产路径为 Unix 秒，旧数据未额外统一类型或格式。context.request_id 与 turn.request_id 可以不同，不能强行认定同一观测。occupancy_rate、percentage_of_window、percentage_of_input 均为比例（0.2=20%）；通知 usage_percent 是百分值（20.0=20%），cache_hit_rate 是展示文本。
+
+来源字符串不是封闭枚举；parts 缺类不补 0，缺失 turn 计数保留 None；底层模型默认 0 与实测 0 需结合来源区分。reconciliation_delta_tokens 可为负；比例不额外钳制为 [0,1]，不同来源分项不承诺齐全或总和相等。当前通知仅类型检查，不把 dataclass 声明解释为完整数值 Validator。本轮文档检查不重复历史业务验证。
