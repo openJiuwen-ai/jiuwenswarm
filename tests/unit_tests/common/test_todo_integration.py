@@ -74,6 +74,64 @@ async def env(tmp_path, monkeypatch):
     await ReadWriteLockManager.stop()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "cn", "unsupported"])
+async def test_code_tools_preserve_native_creation_and_incremental_updates(env, language):
+    from jiuwenswarm.agents.harness.code.tools.code_todo_tools import (
+        CodeTodoCreateTool,
+        CodeTodoGetTool,
+        CodeTodoListTool,
+        CodeTodoModifyTool,
+    )
+
+    _, base, session, path = env
+    op = SimpleNamespace(fs=lambda: base.fs)
+    workspace = str(path.parent.parent)
+    create = CodeTodoCreateTool(op, workspace, language=language, agent_id="code")
+    modify = CodeTodoModifyTool(op, workspace, language=language, agent_id="code")
+    get = CodeTodoGetTool(op, workspace, language=language, agent_id="code")
+    listing = CodeTodoListTool(op, workspace, language=language, agent_id="code")
+
+    await create.invoke(
+        {"tasks": [{"id": "A", "content": "first"}, {"id": "B", "content": "second"}]}, session=session
+    )
+    await modify.invoke({"action": "update", "todos": [{"id": "A", "status": "completed"}]}, session=session)
+    await modify.invoke(
+        {"action": "append", "todos": [{"id": "C", "content": "third", "status": "pending"}]}, session=session
+    )
+    assert [task["id"] for task in (await listing.invoke({}, session=session))["tasks"]] == ["B", "C"]
+    assert (await get.invoke({"id": "A"}, session=session))["todo"]["status"] == "completed"
+    assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["A", "B", "C"]
+    # Code keeps the prior default: a new turn may replace an active plan.
+    create.reset_invoke_marker(session.get_session_id())
+    await create.invoke({"tasks": [{"id": "D", "content": "new plan"}]}, session=session)
+    assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["D"]
+
+
+@pytest.mark.asyncio
+async def test_code_read_tools_preserve_read_only_legacy_backend(env):
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.agents.harness.code.tools.code_todo_tools import (
+        CodeTodoGetTool,
+        CodeTodoListTool,
+    )
+
+    _, _, session, path = env
+    data = SimpleNamespace(
+        content=json.dumps([{"id": "A", "content": "old task", "status": "pending"}]),
+        exists=None,
+        content_sha256=None,
+    )
+    fs = SimpleNamespace(mode="sandbox", read_file=AsyncMock(return_value=SimpleNamespace(code=0, data=data)))
+    op = SimpleNamespace(fs=lambda: fs)
+    listing = CodeTodoListTool(op, str(path.parent.parent))
+    get = CodeTodoGetTool(op, str(path.parent.parent))
+
+    assert (await listing.invoke({}, session=session))["tasks"][0]["id"] == "A"
+    assert (await get.invoke({"id": "A"}, session=session))["todo"]["id"] == "A"
+
+
 @pytest.mark.parametrize("language", ["cn", "en"])
 def test_flash_prompt_keeps_explicit_rebuild_rule(language):
     from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail

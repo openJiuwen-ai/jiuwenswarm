@@ -69,6 +69,39 @@ async def _persist(payload, *, todo_path):
 
 
 @pytest.mark.asyncio
+async def test_flash_research_updates_sandbox_without_host_file(tmp_path):
+    import hashlib
+
+    class SandboxFS:
+        mode = "sandbox"
+
+        def __init__(self):
+            self.content = json.dumps({"plan_id": "P", "revision": 1, "todos": [
+                {"id": f"deepresearch_stage_{i}", "content": title, "activeForm": title, "status": "pending"}
+                for i, title in enumerate(DEEPRESEARCH_STAGES, 1)
+            ]})
+
+        async def read_file(self, _path, **_kwargs):
+            data = SimpleNamespace(content=self.content, exists=True,
+                                   content_sha256=hashlib.sha256(self.content.encode()).hexdigest())
+            return SimpleNamespace(code=0, data=data)
+
+        async def write_file(self, _path, content, **kwargs):
+            assert kwargs["options"]["expected_content_sha256"] == hashlib.sha256(self.content.encode()).hexdigest()
+            self.content = content
+            return SimpleNamespace(code=0, data=SimpleNamespace(conflict=False, atomic_replace=True))
+
+    fs = SandboxFS()
+    todo_path = tmp_path / "sandbox-only" / "s" / "todo.json"
+    tool = SimpleNamespace(fs=fs, snapshot_guard=AsyncMock(), get_file_path=lambda _sid: str(todo_path))
+    target = ResearchTodoTarget(tool, "s", "P", asyncio.current_task())
+
+    assert await persist_deepresearch_task_update(_stage_snapshot(None), todo_path=todo_path, target=target)
+    assert all(row["status"] == "completed" for row in json.loads(fs.content)["todos"])
+    assert not todo_path.parent.exists()
+
+
+@pytest.mark.asyncio
 async def test_bound_callback_does_not_recreate_missing_stages(tmp_path, monkeypatch):
     from jiuwenswarm.agents.harness.common.tools.deepresearch import todo_progress
 

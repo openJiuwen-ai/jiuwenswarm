@@ -374,6 +374,23 @@ def _todo_workspace_key(route: dict[str, object]) -> str:
     return str(route.get("workspace_key") or context.get("workspace_key") or "default")
 
 
+def _research_todo_path(route: dict[str, object], tool=None) -> Path:
+    """Resolve the Todo path from its owning tool when available."""
+    session_id = str(route.get("session_id") or "")
+    if tool is None:
+        from openjiuwen.harness.tools.todo_store import bound_todo_tool
+
+        bound_tool, bound_session = bound_todo_tool()
+        if bound_session == session_id:
+            tool = bound_tool
+        if tool is None:
+            provider = (_deepresearch_route_ctx.get() or {}).get("todo_tool_provider")
+            tool = provider() if callable(provider) else None
+    return deepresearch_todo_path(
+        session_id=session_id, workspace_key=_todo_workspace_key(route), tool=tool,
+    )
+
+
 async def _capture_todo_target(todo_path: Path, session_id: str, *, tool=None):
     """Prefer the tool-call binding; otherwise ask the owning adapter lazily."""
     target = await capture_deepresearch_todo_target(todo_path)
@@ -3152,10 +3169,7 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             if selected_tool is None:
                 selected_tool = provider()
             if selected_tool is not None:
-                todo_path = deepresearch_todo_path(
-                    session_id=str(route.get("session_id") or ""),
-                    workspace_key=_todo_workspace_key(route),
-                )
+                todo_path = _research_todo_path(route, selected_tool)
                 todo_target = await _capture_todo_target(
                     todo_path, str(route.get("session_id") or ""), tool=selected_tool,
                 )
@@ -3590,10 +3604,7 @@ async def _deliver_race_completed_report(
     else:
         todo_path: Path | None = None
         try:
-            todo_path = deepresearch_todo_path(
-                session_id=str(route["session_id"]),
-                workspace_key=_todo_workspace_key(route),
-            )
+            todo_path = _research_todo_path(route)
         except Exception as exc:  # pylint: disable=broad-exception-caught
             logger.warning(
                 "[deepresearch_stream] resolve todo path failed type=%s",
@@ -3853,10 +3864,7 @@ async def _consume_stream(
         todo_path: Path | None = None
         if route.get("session_id"):
             try:
-                todo_path = deepresearch_todo_path(
-                    session_id=str(route["session_id"]),
-                    workspace_key=_todo_workspace_key(route),
-                )
+                todo_path = _research_todo_path(route)
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 logger.warning(
                     "[deepresearch_stream] resolve todo path failed type=%s",

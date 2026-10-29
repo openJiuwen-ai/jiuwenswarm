@@ -61,9 +61,13 @@ def deepresearch_todo_path(
     *,
     session_id: str,
     workspace_key: str | None = None,
+    tool: Any = None,
 ) -> Path:
     """Return the standard harness todo.json path for one tenant session."""
     safe_session = _validate_component(session_id)
+    if tool is not None:
+        # The owning tool knows the actual workspace, including project overrides.
+        return Path(os.path.abspath(tool.get_file_path(safe_session)))
     if workspace_key is None:
         wk = "default"
     else:
@@ -309,15 +313,19 @@ async def persist_deepresearch_task_update(
     check_active()
     if owner is not None and plan_id is None:
         return False
-    trusted = _open_trusted_parent(todo_path)
+    _validate_direct_path(todo_path)
+    mode = getattr(tool.fs, "mode", "local")
+    local = getattr(mode, "value", mode) == "local" and not hasattr(tool.fs, "endpoint")
+    trusted = _open_trusted_parent(todo_path) if local else None
     try:
-        _read_existing_todo(todo_path, trusted)
-        _verify_named_parent(todo_path, trusted)
+        if trusted is not None:
+            _read_existing_todo(todo_path, trusted)
+            _verify_named_parent(todo_path, trusted)
 
         async def update():
-            _verify_named_parent(todo_path, trusted)
             tx = current_transaction(tool, session_id)
-            if getattr(tool.fs, "mode", None) == "local":
+            if trusted is not None:
+                _verify_named_parent(todo_path, trusted)
                 tx.write_options["expected_parent_identity"] = trusted.identity
             if owner is None:
                 # Ordinary research used to publish its own completed stage plan.
@@ -343,5 +351,5 @@ async def persist_deepresearch_task_update(
             return True
         return await transact(tool, session_id, update, expected_plan=plan_id, check_active=check_active)
     finally:
-        if trusted.fd is not None:
+        if trusted is not None and trusted.fd is not None:
             os.close(trusted.fd)

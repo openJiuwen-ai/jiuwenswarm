@@ -574,7 +574,7 @@ class ProgressiveToolRail(DeepAgentRail):
         if tool_name and await self._skill_gate_blocks_direct_call(ctx, tool_name):
             self._reject_tool_not_available(ctx, tool_name)
             return
-        if tool_name != "deepresearch_execute":
+        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
             return
         manager = self._bind_deepresearch_context(tool_name)
         manager.__enter__()
@@ -591,7 +591,7 @@ class ProgressiveToolRail(DeepAgentRail):
             or getattr(tool_call, "name", "")
             or ""
         ).strip()
-        if tool_name != "deepresearch_execute":
+        if tool_name not in {"deepresearch_execute", "deepresearch_stream"}:
             return
         tool_call_id = str(getattr(tool_call, "id", "") or id(inputs))
         bindings = ctx.extra.get(_EAGER_DEEPRESEARCH_BINDINGS_KEY, {})
