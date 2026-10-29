@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.server import agent_ws_server as server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
 
@@ -64,17 +63,28 @@ def _reset_fake_host() -> None:
     _FakePersonalContextHost.instances.clear()
 
 
-def _server(monkeypatch: pytest.MonkeyPatch) -> AgentWebSocketServer:
+def _server(
+    monkeypatch: pytest.MonkeyPatch, *, activate: bool = True
+) -> AgentWebSocketServer:
     monkeypatch.setattr(
-        server_module, "PersonalContextHostAPI", _FakePersonalContextHost
+        "jiuwenswarm.server.personal_context.PersonalContextHostAPI",
+        _FakePersonalContextHost,
     )
     server = AgentWebSocketServer(host="127.0.0.1", port=0)
+    # These tests isolate PersonalContext admission and shutdown; core SDK and
+    # Heartbeat startup are covered independently by real Worker acceptance.
+    server._runtime._initializer = _noop_async
+    monkeypatch.setattr(server._heartbeat_runtime, "start", _noop_async)
+    if activate:
+        server._personal_context_host
     monkeypatch.setattr(server, "_schedule_tokenizer_warmup", lambda *_args, **_kwargs: None)
     return server
 
 
 def test_personal_context_cancellation_handlers_do_not_raise_inside_except() -> None:
-    tree = ast.parse(AGENT_WS_SERVER_PATH.read_text(encoding="utf-8"))
+    from jiuwenswarm.server.worker import execution_host
+
+    tree = ast.parse(Path(execution_host.__file__).read_text(encoding="utf-8"))
     functions = {
         node.name: node
         for node in ast.walk(tree)
@@ -99,17 +109,22 @@ def test_personal_context_cancellation_handlers_do_not_raise_inside_except() -> 
 
 @pytest.mark.asyncio
 async def test_agentserver_constructs_one_host_at_deployment_data_home(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(Path, "home", staticmethod(lambda: Path("C:/users/tester")))
     data_home = tmp_path / "agentos-data"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(data_home))
     monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", data_home)
-    server = _server(monkeypatch)
+    server = _server(monkeypatch, activate=False)
 
+    assert _FakePersonalContextHost.instances == []
+    host = server._personal_context_host
     assert len(_FakePersonalContextHost.instances) == 1
     assert _FakePersonalContextHost.instances[0].home == data_home / ".personal_context"
-    assert server._personal_context_host is _FakePersonalContextHost.instances[0]  # pylint: disable=protected-access
+    assert (
+        server._personal_context_host is host is _FakePersonalContextHost.instances[0]
+    )  # pylint: disable=protected-access
 
 
 @pytest.mark.asyncio
@@ -132,7 +147,10 @@ async def test_start_opens_websocket_without_waiting_for_personal_context(
         return _FakeWebSocketServer(events)
 
     host.start = _delayed_start  # type: ignore[method-assign]
-    monkeypatch.setattr(server_module, "reset_harness_packages_state", lambda: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.worker.execution_host.reset_harness_packages_state",
+        lambda: None,
+    )
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     async def _checkpointer() -> None:
@@ -176,7 +194,10 @@ async def test_start_restores_enabled_personal_context_state_to_agent_manager(
         events.append("ws-serve")
         return _FakeWebSocketServer(events)
 
-    monkeypatch.setattr(server_module, "reset_harness_packages_state", lambda: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.worker.execution_host.reset_harness_packages_state",
+        lambda: None,
+    )
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
     async def _checkpointer() -> None:
@@ -226,7 +247,10 @@ async def test_personal_context_start_failure_does_not_fail_agentserver_start(
         return _FakeWebSocketServer(events)
 
     host.start = _failed_start  # type: ignore[method-assign]
-    monkeypatch.setattr(server_module, "reset_harness_packages_state", lambda: None)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.worker.execution_host.reset_harness_packages_state",
+        lambda: None,
+    )
     monkeypatch.setattr("websockets.legacy.server.serve", _serve)
     monkeypatch.setattr(server, "_bootstrap_internal_jiuwenbox", _noop_async)
 

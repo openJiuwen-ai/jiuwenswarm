@@ -203,7 +203,8 @@ async def test_team_errors_pushed_without_a_request_are_classified(monkeypatch):
 
     lc.note_session_model("team-session", uses_login_model=True)
     captured: list = []
-    monkeypatch.setattr(module, "build_server_push_wire", lambda msg: captured.append(msg) or {"ok": True})
+    monkeypatch.setattr("jiuwenswarm.server.gateway_push.wire.build_server_push_wire",
+                        lambda msg: captured.append(msg) or {"ok": True})
 
     async def _send(_ws, _wire):
         return True

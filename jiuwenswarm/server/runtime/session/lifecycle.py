@@ -398,9 +398,11 @@ def session_paths(
     root = get_agent_sessions_dir() if sessions_root is None else sessions_root
     active, archived = root / session_id, root.parent / "sessions_archived" / session_id
     for path in (active, archived):
+        from jiuwenswarm.runtime.kernel import canonical_path
+
         # Junctions and symlinks must never widen physical deletion scope.
         if path.is_symlink() or (
-            path.exists() and path.resolve().parent != path.parent.resolve()
+            path.exists() and Path(canonical_path(path)).parent != Path(canonical_path(path.parent))
         ):
             raise LifecycleError("BAD_REQUEST", "session path escapes managed storage")
     if active.exists() and archived.exists():

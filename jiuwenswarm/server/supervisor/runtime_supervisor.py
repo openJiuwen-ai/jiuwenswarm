@@ -158,7 +158,7 @@ class RuntimeSupervisor:
 
     async def get_runtime_snapshot(self, request: AgentRequest) -> dict[str, Any]:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._validated_conn is not conn:
             return self._recovery_pending("worker_disconnected")
         query_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
@@ -341,7 +341,8 @@ class RuntimeSupervisor:
         worker_id = self._affinity.worker_for(request.session_id)
         # connect() publishes the transport before hello validates its identity
         # and registers the Worker. Requests must wait for that whole barrier.
-        if (self._conn is None or self._registry.get(worker_id) is None) and not self._fatal:
+        if (self._conn is None or self._validated_conn is not self._conn
+                or self._registry.get(worker_id) is None) and not self._fatal:
             try:
                 await asyncio.wait_for(self.run_until_ipc_ready(), timeout=self._connect_timeout)
             except asyncio.TimeoutError:
@@ -425,7 +426,7 @@ class RuntimeSupervisor:
                 shutdown_error = exc
                 logger.exception("[Supervisor] final Worker shutdown failed")
         self._stopping = True
-        if conn is not None and not terminate_worker:
+        if conn is not None and conn is self._validated_conn and not terminate_worker:
             try:
                 await conn.send({"kind": KIND_GATEWAY_DETACH, "remote": "front-stop"})
             except (OSError, RuntimeError):
@@ -454,6 +455,16 @@ class RuntimeSupervisor:
             shutdown_error = shutdown_error or RuntimeError("Owned Worker exit incomplete after final stop")
         if shutdown_error is not None:
             raise shutdown_error
+
+    async def abort_startup(self) -> None:
+        """A failed Front startup only stops the process it just spawned."""
+        process = self._process if self._owns_process else None
+        if self._loop_task is not None and not self._loop_task.done():
+            self._loop_task.cancel()
+            await asyncio.gather(self._loop_task, return_exceptions=True)
+        await self.stop()
+        if process is not None:
+            await process.stop(timeout=5)
 
     async def _finish_stop(self, conn: IpcConnection | None) -> None:
         if conn is not None:
@@ -488,6 +499,10 @@ class RuntimeSupervisor:
                 )
             if self._stopping or self._terminating:
                 await self._fail_pending("runtime worker stopped")
+                if self._shutdown_done is not None and not self._shutdown_done.done():
+                    self._shutdown_done.set_result(
+                        {"ok": False, "error": "worker closed before shutdown acknowledgement"}
+                    )
                 break
             async with self._session_lock:
                 self._conn = None
@@ -535,6 +550,7 @@ class RuntimeSupervisor:
         await self._cancel_side_tasks()
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
         from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
+        from jiuwenswarm.server.supervisor.identity_probe import probe_identity
 
         async with self._session_lock:
             self._validated_conn = None
@@ -594,7 +610,7 @@ class RuntimeSupervisor:
                             kind = hello.get("kind") if isinstance(hello, dict) else type(hello).__name__
                             raise RuntimeError(f"expected hello, got {kind!r}")
                         protocol = hello.get("protocol")
-                        if protocol not in (1, PROTOCOL_VERSION):
+                        if protocol not in (1, 2, PROTOCOL_VERSION):
                             self._fatal = True
                             self._fatal_reason = "runtime ipc protocol mismatch"
                             raise RuntimeError("runtime ipc protocol mismatch")
@@ -607,7 +623,7 @@ class RuntimeSupervisor:
                             self._fatal = True
                             self._fatal_reason = "resident Worker execution profile mismatch"
                             raise RuntimeError(self._fatal_reason)
-                        expected = launch_identity or await asyncio.to_thread(code_identity)
+                        expected = launch_identity or (await probe_identity())[0]
                         if protocol != PROTOCOL_VERSION or hello.get("code_identity") != expected:
                             if existing is None or attempt:
                                 raise RuntimeError("new Worker build identity did not match its parent")
@@ -633,6 +649,9 @@ class RuntimeSupervisor:
                             self._fatal = True
                             self._fatal_reason = str(exc)
                             raise
+                        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+                        await conn.send(startup_acceptance(hello))
                         break
                     except (Exception, asyncio.CancelledError):
                         self._conn = None
@@ -1082,7 +1101,7 @@ class RuntimeSupervisor:
 
     async def _notify_gateway(self, *, attached: bool, remote: Any = None) -> None:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._validated_conn is not conn:
             return
         try:
             if attached:

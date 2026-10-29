@@ -620,4 +620,4 @@ def test_session_fork_handler_keeps_transport_and_runtime_boundary() -> None:
     assert "prepare_session_fork" in source
     assert "commit_session_provision" in source
     assert "send_lock" in source
-    assert "send_wire_payload" in source
+    assert "self.services.send" in source

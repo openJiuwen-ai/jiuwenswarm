@@ -35,8 +35,19 @@ def stream_chunk_writes_history(chunk: Any) -> bool:
     )
 
 
-async def run_stream_parser(parser: Callable[..., Any], chunk: Any, **kwargs: Any) -> Any:
-    """Only persistence-bearing chunks need a thread; tokens stay on the loop."""
-    if stream_chunk_writes_history(chunk):
-        return await run_history_io(parser, chunk, **kwargs)
-    return parser(chunk, **kwargs)
+async def run_stream_parser(
+    parser: Callable[..., Any], chunk: Any, *, projection_owner: Any = None,
+    projection_parent_session_id: str | None = None, **kwargs: Any,
+) -> Any:
+    """Parse on the loop, then explicitly commit neutral subagent events.
+
+    A parser is a pure SDK adapter. The consumer owns projection and commits;
+    ordinary tokens never dispatch a thread, and silent transcripts still pass
+    through the accepted-write cancellation barrier.
+    """
+    parsed = parser(chunk, **kwargs)
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import project_stream_event
+
+    return await project_stream_event(
+        parsed, owner=projection_owner, parent_session_id=projection_parent_session_id,
+    )

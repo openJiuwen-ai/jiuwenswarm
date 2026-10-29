@@ -26,6 +26,8 @@ class WorkerRuntime:
     proactive_task: asyncio.Task | None = None
     image_task: asyncio.Task | None = None
     background_tasks: set[asyncio.Task] = field(default_factory=set)
+    profile_prewarmer: Any = None
+    idle_import: Any = None
 
     def spawn(self, coroutine: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task:
         """Keep finite background notifications attached to this owner."""
@@ -57,6 +59,15 @@ class WorkerRuntime:
     async def _shutdown_owned_resources(self) -> None:
         """Keep registry dispatch available until SDK teardown has settled."""
         self.stop_event.set()
+        if self.profile_prewarmer is not None:
+            await self.profile_prewarmer.close()
+        import_errors = []
+        for prefetch in (self.idle_import,):
+            if prefetch is not None:
+                try:
+                    await prefetch.close()
+                except TimeoutError as error:
+                    import_errors.append(error)
         owned = (self.image_task, self.proactive_task, self.teammate_task, self.zen_task, *self.background_tasks)
         tasks = list(dict.fromkeys(task for task in owned if task is not None))
         for task in tasks:
@@ -79,6 +90,9 @@ class WorkerRuntime:
         )
         if not all(flushed):
             raise RuntimeError("Worker shutdown persistence barrier did not complete")
+        from jiuwenswarm.server.runtime.agent_adapter.request_completion import drain_completion_announcements
+
+        await drain_completion_announcements()
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )
@@ -88,3 +102,8 @@ class WorkerRuntime:
         from jiuwenswarm.runtime.kernel import process_kernel
 
         await process_kernel().close()
+        from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import clear_blank_registration_cache
+
+        clear_blank_registration_cache()
+        if import_errors:
+            raise RuntimeError("Worker optional imports still running after resource cleanup") from import_errors[0]

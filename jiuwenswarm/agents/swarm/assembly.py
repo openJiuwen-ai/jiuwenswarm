@@ -405,6 +405,9 @@ def enrich_team_spec_for_swarm(
         agent_group_name: Optional AgentGroup package selected for this Team.
         agent_group_package: Optional preloaded package for this AgentGroup.
     """
+    from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
+
+    configure_agent_teams_home()
     register_swarm_providers()
     _ensure_external_team_transport(spec, channel_id)
 

@@ -49,6 +49,7 @@ async def test_snapshot_wait_retries_the_same_query_without_duplicate_subscripti
                                                   {"is_processing": True, "cursor": 7})
 
     supervisor._conn = Connection()
+    supervisor._validated_conn = supervisor._conn
     assert await supervisor.get_runtime_snapshot(request()) == {"is_processing": True, "cursor": 7}
     assert len(frames) == 1
     assert supervisor._queries == {}
@@ -66,6 +67,7 @@ async def test_snapshot_timeout_is_bounded_and_explicit(monkeypatch, blocked_sen
                 await asyncio.Event().wait()
 
     supervisor._conn = Connection()
+    supervisor._validated_conn = supervisor._conn
     before = time.perf_counter()
     state = await supervisor.get_runtime_snapshot(request())
     assert time.perf_counter() - before < 0.25
@@ -205,6 +207,7 @@ async def test_persistent_subprocess_recovers_two_sessions_while_replaying_2048_
 
         supervisor = RuntimeSupervisor(Readiness(), forwarder=Capture())
         supervisor._conn = conn
+        supervisor._validated_conn = conn
         supervisor._peer_generation = resumed["generation"]
         supervisor._worker_instance = resumed["instance"]
         supervisor._gateway_ws = object()

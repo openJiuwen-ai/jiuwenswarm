@@ -23,6 +23,8 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.wire_truncate import _HISTORY_WIRE_RECORD_MAX_BYTES
 
+from jiuwenswarm.server.management import history as owner_history
+
 
 class FakeWebSocket:
     def __init__(self) -> None:
@@ -81,9 +83,9 @@ def _make_history_records() -> list[dict]:
 
 
 def _patch_history(monkeypatch, records: list[dict]) -> None:
-    monkeypatch.setattr(agent_ws_server_module, "history_exists", lambda session_id, **_kwargs: True)
+    monkeypatch.setattr(owner_history, "history_exists", lambda session_id, **_kwargs: True)
     monkeypatch.setattr(
-        agent_ws_server_module,
+        owner_history,
         "load_history_records",
         lambda session_id, **_kwargs: records,
     )

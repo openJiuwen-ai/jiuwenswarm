@@ -41,11 +41,30 @@ def _read_text_ride_out_sharing(path: Path) -> str:
 
 
 def get_session_model_selection(session_id: str) -> ModelSelection | None:
+    from jiuwenswarm.common.external_providers import ExternalProviderUnregistered, provider
+
+    session_id = str(session_id or "").strip()
     path = _metadata_path(session_id)
-    if not path.is_file():
-        return None
     try:
-        raw = json.loads(_read_text_ride_out_sharing(path)).get("model_selection")
+        try:
+            reader = getattr(provider("session_metadata"), "_read_model_selection_snapshot", None)
+        except ExternalProviderUnregistered:
+            reader = None
+        if callable(reader):
+            text = reader(session_id)
+        else:
+            # Standalone common users may have no server provider installed.
+            # A transient Windows replacement must still not become a missing selection.
+            try:
+                text = _read_text_ride_out_sharing(path)
+            except FileNotFoundError:
+                return None
+        if text is None:
+            return None
+        metadata = json.loads(text)
+        if not isinstance(metadata, dict):
+            raise ValueError("session metadata must be a JSON object")
+        raw = metadata.get("model_selection")
         return ModelSelection.model_validate(raw) if isinstance(raw, dict) else None
     except (OSError, ValueError) as exc:
         raise ModelSelectionError(MODEL_GROUP_INVALID, "cannot read the session's model selection") from exc
@@ -54,6 +73,7 @@ def get_session_model_selection(session_id: str) -> ModelSelection | None:
 def set_session_model_selection(session_id: str, selection: ModelSelection) -> None:
     from jiuwenswarm.common.external_providers import provider
 
+    session_id = str(session_id or "").strip()
     _metadata_path(session_id)  # Validate before entering the shared writer.
     provider("session_metadata").update_session_model_selection(
         session_id, selection.model_dump()

@@ -288,7 +288,7 @@ def test_agentserver_does_not_bypass_runtime_for_global_team_cancel() -> None:
 
 
 def test_agentserver_session_delete_is_transport_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "execution_requests.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node
@@ -369,7 +369,7 @@ def test_agentserver_session_delete_is_transport_only() -> None:
 
 
 def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "worker" / "execution_requests.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node
@@ -394,12 +394,12 @@ def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
         "_execution_runtime",
         "prepare_session_switch",
         "commit_session_provision",
+        "encode_response",
+        "send",
     } <= called_attributes
     assert {
         "SessionSwitchInput",
         "SessionProvisionCommitContext",
-        "encode_agent_response_for_wire",
-        "send_wire_payload",
     } <= called_names
     assert {
         "_prepare_session_switch_owner",
@@ -430,7 +430,7 @@ def test_legacy_kvc_delete_orchestration_modules_are_removed() -> None:
 
 
 def test_agentserver_team_delete_is_transport_only() -> None:
-    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "management" / "teams.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
     handlers = [
         node

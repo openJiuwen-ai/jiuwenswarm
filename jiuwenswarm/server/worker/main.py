@@ -57,6 +57,10 @@ def main() -> None:
     parser.add_argument("--stub-exit-on-request", action="store_true")
     parser.add_argument("--identity-from-parent", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
+    if not args.stub:
+        from jiuwenswarm.server.worker.early_import import start_early_import
+
+        start_early_import()
     code_identity_value = None
     if args.identity_from_parent:
         from jiuwenswarm.server.supervisor.identity import read_launch_identity

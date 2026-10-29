@@ -14,13 +14,13 @@ hook_event / hooks_context 已下沉 ``jiuwenswarm.common``；
   client、ssh_relay、stale_cleanup、third_agent 与扩展入口）、``adx``、
   ``agent_client``、``yuanrong_frontend_client``、
   ``video_duplex/backend/tasks/bridge`` 以本包为**唯一实现**，
-  ``jiuwenswarm.extensions`` 侧已删除原文件并反向 import 本包；
+  ``gateway.extensions`` 侧已删除原文件并反向 import 本包；
 - ``registry``、``manager``、``loader`` 同样收敛到本包：扩展发现与加载治理
-  只在 Gateway 进程与母仓之间共享一份实现，``jiuwenswarm.extensions`` 的
+  只在 Gateway 进程与母仓之间共享一份实现，``gateway.extensions`` 的
   同名导出指向本包；
 - ``sdk``、``types``、``callback_compat`` 同样是本包**唯一实现**（均为无状态
-  基类/数据类/纯函数），``jiuwenswarm.extensions.sdk`` 只保留惰性转发 shim，
-  第三方扩展的 ``from jiuwenswarm.extensions.sdk import ...`` 仍可用；
+  基类/数据类/纯函数），``gateway.extensions.sdk`` 只保留惰性转发 shim，
+  第三方扩展的 ``from gateway.extensions.sdk import ...`` 仍可用；
 - 默认扩展发现目录为 ``gateway/extensions``；过渡期仍兼容发现母仓
   ``jiuwenswarm/extensions`` 下尚未迁移的 ``video_duplex``（其执行侧依赖
   AgentServer 会话历史，待按宿主/执行拆分后再迁）。

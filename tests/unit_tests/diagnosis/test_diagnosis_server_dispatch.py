@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -31,6 +32,10 @@ class _Host:
 def _server(host: Any) -> AgentWebSocketServer:
     server = object.__new__(AgentWebSocketServer)
     server._diagnosis_host = host
+    server._host_services = SimpleNamespace(
+        encode_response=lambda response, **kwargs: agent_ws_server.encode_agent_response_for_wire(response, **kwargs),
+        send=lambda ws, wire: agent_ws_server.send_wire_payload(ws, wire),
+    )
     return server
 
 

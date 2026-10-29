@@ -246,17 +246,19 @@ def preload_shared_execution_code() -> None:
 
 def preload_runtime_backend() -> None:
     """Join independent SDK code/config work before global patches or consumers."""
-    if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
+    from jiuwenswarm.server.worker.early_import import current_import_ticket, _clean_description_layout
+
+    ticket = current_import_ticket()
+    if (os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1"
+            or (ticket is None and not _clean_description_layout())):
         # Description indexes may be consumed by SDK module imports. Repair
         # stale description layouts first, then overlap only code imports with
         # user-workspace/configuration writes. SDK imports do not read Swarm
-        # config; execution Runtime imports remain after this joined barrier.
+        # config; all Swarm Runtime imports remain after this joined barrier.
         from jiuwenswarm.common.utils import cleanup_stale_openjiuwen_descs
 
         cleanup_stale_openjiuwen_descs()
-    # Configuration migrations use common's injected stores. Install every
-    # server provider before either required-preparation branch can consume one.
-    from jiuwenswarm.server.runtime.provider_setup import install as install_providers
+    from jiuwenswarm.server.runtime.provider_setup import install_front as install_providers
 
     began = time.monotonic()
     install_providers()
@@ -264,7 +266,7 @@ def preload_runtime_backend() -> None:
     began = time.monotonic()
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="worker-required") as preparation:
         config = preparation.submit(_prepare_worker_configuration)
-        sdk = preparation.submit(_preload_sdk_execution_modules)
+        sdk = preparation.submit(ticket.wait if ticket is not None else _preload_sdk_execution_modules)
         config.result()
         sdk.result()
     _log_preparation_stage("required_parallel_join", began)
@@ -289,8 +291,8 @@ def preload_runtime_backend() -> None:
     import gateway.extensions.registry  # noqa: F401
     _log_preparation_stage("extension_imports", began)
     began = time.monotonic()
-    import jiuwenswarm.server.agent_ws_server  # noqa: F401
-    _log_preparation_stage("server_import", began)
+    import jiuwenswarm.server.worker.execution_host  # noqa: F401
+    _log_preparation_stage("execution_host_import", began)
     # Core persistence is independent of agent mode and optional Rail imports.
     began = time.monotonic()
     import jiuwenswarm.runtime.checkpointer  # noqa: F401

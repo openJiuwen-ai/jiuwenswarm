@@ -13,6 +13,14 @@ from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
 from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
 
+@pytest.fixture(autouse=True)
+def cold_preparation_ticket(monkeypatch):
+    from jiuwenswarm.server.worker import early_import
+
+    # Each case models a fresh Worker rather than a ticket installed by another case.
+    monkeypatch.setattr(early_import, "current_import_ticket", lambda: None)
+
+
 @pytest.mark.asyncio
 async def test_required_configuration_and_sdk_import_overlap_before_runtime_patches(monkeypatch):
     barrier = threading.Barrier(2, timeout=2)
@@ -32,6 +40,28 @@ async def test_required_configuration_and_sdk_import_overlap_before_runtime_patc
     monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", apply_after_join)
     monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches", apply_after_join)
     await asyncio.to_thread(runtime_backend.preload_runtime_backend)
+
+
+def test_dirty_description_layout_is_cleaned_even_with_parent_workspace_marker(monkeypatch):
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.worker import early_import
+
+    calls = []
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
+    monkeypatch.setattr(early_import, "current_import_ticket", lambda: None)
+    monkeypatch.setattr(early_import, "_clean_description_layout", lambda: False)
+    monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: calls.append("cleanup"))
+    monkeypatch.setattr(runtime_backend, "_prepare_worker_configuration", lambda: None)
+
+    def load_sdk():
+        assert calls == ["cleanup"]
+        calls.append("sdk")
+
+    monkeypatch.setattr(runtime_backend, "_preload_sdk_execution_modules", load_sdk)
+    monkeypatch.setattr(runtime_backend, "_configure_openjiuwen_logging", lambda: None)
+    monkeypatch.setattr(runtime_backend, "_apply_runtime_entry_patches", lambda: None)
+    runtime_backend.preload_runtime_backend()
+    assert calls == ["cleanup", "sdk"]
 
 
 @pytest.mark.asyncio
@@ -60,7 +90,7 @@ async def test_successful_construction_retains_cleanup_owner_when_parallel_exten
 ):
     from gateway.extensions.manager import ExtensionManager
     from gateway.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker import execution_host
     from jiuwenswarm.server.worker import service
 
     loop = asyncio.get_running_loop()
@@ -81,7 +111,7 @@ async def test_successful_construction_retains_cleanup_owner_when_parallel_exten
     monkeypatch.setattr(runtime_backend, "preload_runtime_backend", lambda: None)
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
     monkeypatch.setattr(ExtensionRegistry, "_instance", None)
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(execution_host, "WorkerExecutionHost", construct)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
     signals = SimpleNamespace(failed=Mock())
     dispatcher = SimpleNamespace(bind_runtime=AsyncMock(), mark_failed=AsyncMock())
@@ -111,7 +141,7 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
 ):
     from gateway.extensions.manager import ExtensionManager
     from gateway.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker import execution_host
 
     barrier = threading.Barrier(2, timeout=2)
     server = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
@@ -130,7 +160,7 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
 
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", prepare_code)
     monkeypatch.setattr(ExtensionRegistry, "_instance", None)
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(execution_host, "WorkerExecutionHost", construct)
     load_extensions = AsyncMock()
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
     with pytest.raises(ImportError, match="required execution module failed"):
@@ -148,7 +178,7 @@ async def test_extensions_observe_execution_patches_after_parallel_server_constr
 ):
     from gateway.extensions.manager import ExtensionManager
     from gateway.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker import execution_host
 
     overlap = threading.Barrier(2, timeout=2)
     patches_installed = threading.Event()
@@ -176,7 +206,7 @@ async def test_extensions_observe_execution_patches_after_parallel_server_constr
 
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", prepare_code)
     monkeypatch.setattr(ExtensionRegistry, "_instance", None)
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
+    monkeypatch.setattr(execution_host, "WorkerExecutionHost", construct)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
 
     actual = await runtime_bootstrap.construct_runtime_server(

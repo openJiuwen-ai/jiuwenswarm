@@ -16,7 +16,7 @@ from gateway.extensions.application_host import (
 from gateway.extensions.loader import ExtensionLoader
 from gateway.extensions.registry import ExtensionRegistry
 from gateway.extensions.types import ExtensionMetadata
-from jiuwenswarm.extensions.sdk import (
+from gateway.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
     FrontendContribution,

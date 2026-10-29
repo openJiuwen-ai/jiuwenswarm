@@ -25,6 +25,7 @@ from jiuwenswarm.server.ipc.protocol import request_scope
 
 
 _SESSION_INSPECTION_METHODS = frozenset({
+    ReqMethod.HISTORY_GET,
     ReqMethod.TEAM_LIST,
     ReqMethod.ORG_SNAPSHOT,
     ReqMethod.TEAM_SNAPSHOT,
@@ -237,6 +238,9 @@ class WorkerEventStore:
             "worker_instance": self.instance,
             "cursor": self._sequence,
             "history_required": after < self._expired_sequence,
+            # Management RPCs can queue during startup without doing session
+            # work. A busy snapshot here can strand the first UI input in its
+            # task queue before chat.send is ever submitted.
             "is_processing": any(
                 record.has_pending_execution or record.is_processing
                 for record in records if not record.is_passive_subscription

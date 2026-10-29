@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+from jiuwenswarm.server.management import agents as agents_management_module
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
@@ -556,15 +558,6 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
         "stop_all_paused_team_session_runtimes_across_managers",
         stop_paused,
     )
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
-    )
     # model scope 会调度 Zen 免费模型缓存 warm（后台任务），patch 掉防止真实网络请求
     from jiuwenswarm.server.runtime import opencode_zen as _opencode_zen
 
@@ -618,15 +611,6 @@ async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch)
         reconfigure,
     )
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", fake_reload)
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
-    )
 
     request = AgentRequest(
         request_id="reload-disable-a4p",
@@ -644,7 +628,7 @@ async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch)
     assert order == ["reload"]
     reconfigure.assert_not_awaited()
     assert request.params["config"] == {"a4p": {"enabled": False}}
-    assert json.loads(ws.sent[-1])["ok"] is True
+    assert parse_agent_server_wire_unary(json.loads(ws.sent[-1])).ok is True
 
 
 @pytest.mark.asyncio
@@ -659,15 +643,6 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
         team_harness_module,
         "stop_all_paused_team_session_runtimes_across_managers",
         stop_paused,
-    )
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
     )
 
     request = AgentRequest(
@@ -686,7 +661,7 @@ async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(
 
     reload_agents.assert_not_awaited()
     stop_paused.assert_not_awaited()
-    assert json.loads(ws.sent[-1])["ok"] is True
+    assert parse_agent_server_wire_unary(json.loads(ws.sent[-1])).ok is True
 
 
 @pytest.mark.asyncio
@@ -698,18 +673,9 @@ async def test_agent_reload_config_handler_applies_proactive_scope_without_agent
 
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", reload_agents)
     monkeypatch.setattr(
-        agent_ws_server_module,
+        agents_management_module,
         "get_config",
         lambda: {"proactive_recommendation": {"enabled": True}},
-    )
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
     )
 
     request = AgentRequest(
@@ -728,7 +694,7 @@ async def test_agent_reload_config_handler_applies_proactive_scope_without_agent
 
     reload_agents.assert_not_awaited()
     proactive_engine.reload_config.assert_called_once_with({"enabled": True})
-    assert json.loads(ws.sent[-1])["ok"] is True
+    assert parse_agent_server_wire_unary(json.loads(ws.sent[-1])).ok is True
 
 
 @pytest.mark.asyncio
@@ -758,15 +724,6 @@ async def test_agent_reload_config_handler_warms_zen_cache_on_model_scope(monkey
         image_modality_warmup,
         "refresh_image_modality_cache",
         AsyncMock(),
-    )
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
     )
 
     request = AgentRequest(
@@ -811,15 +768,6 @@ async def test_tool_reload_refreshes_agents_without_model_probes(monkeypatch, sc
         refresh_image_modality,
     )
     monkeypatch.setattr(opencode_zen, "warm_zen_free_models", warm_zen)
-    monkeypatch.setattr(
-        agent_ws_server_module,
-        "encode_agent_response_for_wire",
-        lambda resp, response_id: {
-            "response_id": response_id,
-            "ok": resp.ok,
-            "payload": resp.payload,
-        },
-    )
 
     request = AgentRequest(
         request_id="reload-multimodal",

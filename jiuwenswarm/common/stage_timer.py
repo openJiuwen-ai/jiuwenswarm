@@ -13,6 +13,9 @@ one line, so a slow turn can be read straight out of the log stream.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from typing import ParamSpec, TypeVar
+
 # Bound as a module attribute rather than used as ``time.monotonic`` so tests can
 # substitute a deterministic clock here without touching the global ``time``
 # module — patching that would also retime asyncio timers and socket timeouts.
@@ -69,4 +72,32 @@ class StageTimer:
         return " ".join(f"{name}={elapsed_ms:.1f}" for name, elapsed_ms in stages)
 
 
-__all__ = ["StageTimer"]
+_P = ParamSpec("_P")
+_T = TypeVar("_T")
+
+
+def async_stage(name: str) -> Callable[[Callable[_P, Awaitable[_T]]], Callable[_P, Awaitable[_T]]]:
+    """Observe one async preparation boundary, including failed/cancelled runs."""
+    from functools import wraps
+    import logging
+
+    def decorate(function: Callable[_P, Awaitable[_T]]) -> Callable[_P, Awaitable[_T]]:
+        @wraps(function)
+        async def measured(*args: _P.args, **kwargs: _P.kwargs) -> _T:
+            began = monotonic()
+            complete = False
+            try:
+                result = await function(*args, **kwargs)
+                complete = True
+                return result
+            finally:
+                logging.getLogger(function.__module__).info(
+                    "[Worker] preparation stage=%s duration_ms=%.3f complete=%s",
+                    name, (monotonic() - began) * 1000, complete)
+
+        return measured
+
+    return decorate
+
+
+__all__ = ["StageTimer", "async_stage"]

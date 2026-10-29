@@ -74,7 +74,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     resolve_final_record_timestamp,
 )
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
-from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.utils.stream_utils import decode_stream_chunk as parse_stream_chunk
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import TEAM_USER_TURN_KEY, UserTurn
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.runtime.session_input import SessionInputMode, resolve_session_input_mode
@@ -4660,7 +4660,9 @@ async def _consume_stream_with_query(
             # _is_leader_output returns True.
             if _team_hide_teammate_enabled() and not is_leader:
                 continue
-            parsed = await run_stream_parser(parse_stream_chunk, chunk)
+            parsed = await run_stream_parser(
+                parse_stream_chunk, chunk, projection_parent_session_id=session_id,
+            )
             if parsed is not None:
                 if (
                     parsed.get("event_type") == "chat.error"

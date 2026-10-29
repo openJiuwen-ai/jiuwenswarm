@@ -8,7 +8,7 @@ import pytest
 
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.server import agent_ws_server as server_module
+from jiuwenswarm.server.worker import execution_requests as server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.runtime.execution_telemetry import sdk_entry_sink

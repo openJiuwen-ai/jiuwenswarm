@@ -44,8 +44,6 @@ from dataclasses import dataclass
 from typing import Any, Literal, Optional
 import logging
 from logging.handlers import BaseRotatingHandler
-import portalocker
-from ruamel.yaml import YAML
 
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
@@ -326,6 +324,8 @@ class _CompositeFilter(logging.Filter):
 
 def _load_logging_config_from_yaml() -> dict[str, Any]:
     """读取 ~/.jiuwenswarm/config/config.yaml 中的 logging 段（无则空）。"""
+    from ruamel.yaml import YAML
+
     try:
         cf = get_config_file()
         if not cf.exists():
@@ -536,6 +536,8 @@ def _resolve_preferred_language(
     config_yaml_dest: Path, explicit: Optional[str]
 ) -> str:
     """确定初始化使用的语言：显式参数优先，否则读已复制的 config，默认 zh。"""
+    from ruamel.yaml import YAML
+
     if explicit is not None:
         lang = str(explicit).strip().lower()
         return lang if lang in ("zh", "en") else "zh"
@@ -916,6 +918,8 @@ def ensure_config_migrated_from_template(
     """
     if is_agentos_runtime():
         return False
+
+    import portalocker
 
     from jiuwenswarm.common.config import migrate_config_from_template
     from jiuwenswarm.common.version import get_runtime_version_label
@@ -1897,7 +1901,71 @@ def _is_directory_link(path: Path) -> bool:
     return bool(file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def _library_skill_names(library: Path) -> set[str]:
+def _is_link_stat(info: os.stat_result) -> bool:
+    """Recognize links without following them, including Windows junctions."""
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, "st_file_attributes", 0)
+        & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    )
+
+
+def _safe_team_migration_path(path: Path, teams_home: Path, *, strict: bool) -> bool:
+    """Reject linked Team roots, workspaces and documents before traversing them."""
+    try:
+        root = teams_home.absolute()
+        relative = path.absolute().relative_to(root)
+        if ".." in relative.parts:
+            raise ValueError(f"Team migration path leaves its home: {path}")
+        current = root
+        for part in (None, *relative.parts):
+            if part is not None:
+                current /= part
+            try:
+                info = current.lstat()
+            except FileNotFoundError:
+                # A missing tail is safe to create; no descendant can exist yet.
+                return True
+            if _is_link_stat(info):
+                raise ValueError(f"linked Team migration path is not supported: {current}")
+        if not path.resolve().is_relative_to(root.resolve()):
+            raise ValueError(f"Team migration path leaves its home: {path}")
+        return True
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise
+        logger.warning("[SkillViewMigration] kept unsafe path %s: %s", path, exc)
+        return False
+
+
+def _skill_tree_snapshot(root: Path) -> dict[str, tuple[str, str]] | None:
+    """Fingerprint a complete ordinary tree, refusing links and special files."""
+    info = root.lstat()
+    if _is_link_stat(info) or not stat.S_ISDIR(info.st_mode):
+        return None
+    result: dict[str, tuple[str, str]] = {}
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        for child in directory.iterdir():
+            child_info = child.lstat()
+            if _is_link_stat(child_info):
+                return None
+            relative = child.relative_to(root).as_posix()
+            if stat.S_ISDIR(child_info.st_mode):
+                result[relative] = ("directory", "")
+                pending.append(child)
+            elif stat.S_ISREG(child_info.st_mode):
+                digest = hashlib.sha256()
+                with child.open("rb") as stream:
+                    for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                        digest.update(chunk)
+                result[relative] = ("file", digest.hexdigest())
+            else:
+                return None
+    return result
+
+
+def _library_skill_names(library: Path, *, strict: bool = False) -> set[str]:
     """Return the names of every valid Skill directory in the shared library.
 
     Args:
@@ -1909,7 +1977,11 @@ def _library_skill_names(library: Path) -> set[str]:
     names: set[str] = set()
     try:
         entries = list(library.iterdir())
+    except FileNotFoundError:
+        return names
     except OSError:
+        if strict:
+            raise
         return names
     for entry in entries:
         if entry.is_dir() and (entry / "SKILL.md").is_file():
@@ -1917,7 +1989,7 @@ def _library_skill_names(library: Path) -> set[str]:
     return names
 
 
-def _is_library_replica(entry: Path, library: Path) -> bool:
+def _is_library_replica(entry: Path, library: Path, *, strict: bool = False) -> bool:
     """Return whether a real directory is an untouched copy of a library Skill.
 
     Sandboxed runtimes (e.g. the HarmonyOS app sandbox) forbid ``symlink(2)``
@@ -1931,21 +2003,24 @@ def _is_library_replica(entry: Path, library: Path) -> bool:
         library: The single Skill library directory.
 
     Returns:
-        True when the library holds a Skill of the same name and the same
-        ``SKILL.md`` bytes, meaning nothing would be lost by removing the copy.
+        True only when every file and directory matches the library copy.
+        Links and special files are retained without traversing their targets.
     """
     source = library / entry.name
-    entry_md = entry / "SKILL.md"
-    source_md = source / "SKILL.md"
-    if not entry_md.is_file() or not source_md.is_file():
-        return False
     try:
-        return entry_md.read_bytes() == source_md.read_bytes()
+        source_tree = _skill_tree_snapshot(source)
+        if source_tree is None or source_tree.get("SKILL.md", (None,))[0] != "file":
+            return False
+        return _skill_tree_snapshot(entry) == source_tree
+    except FileNotFoundError:
+        return False
     except OSError:
+        if strict:
+            raise
         return False
 
 
-def _read_skill_view_names(view_dir: Path) -> set[str]:
+def _read_skill_view_names(view_dir: Path, *, strict: bool = False) -> set[str]:
     """Return the Skill names a legacy view directory exposed.
 
     The scan reports every directory-shaped entry, including one a user dropped
@@ -1964,6 +2039,8 @@ def _read_skill_view_names(view_dir: Path) -> set[str]:
     try:
         entries = list(view_dir.iterdir())
     except OSError:
+        if strict:
+            raise
         return names
     for entry in entries:
         if entry.name.startswith(".") or entry.name.startswith("_"):
@@ -1973,7 +2050,7 @@ def _read_skill_view_names(view_dir: Path) -> set[str]:
     return names
 
 
-def _remove_skill_view_entry(entry: Path, library: Path) -> bool:
+def _remove_skill_view_entry(entry: Path, library: Path, *, strict: bool = False) -> bool:
     """Remove one legacy view entry, never a real directory the user owns.
 
     Only three shapes are removable: a POSIX symlink (``unlink``), a Windows
@@ -1991,22 +2068,26 @@ def _remove_skill_view_entry(entry: Path, library: Path) -> bool:
     """
     try:
         if entry.is_symlink():
-            entry.unlink()
-            return True
+            if entry.is_dir():
+                entry.unlink()
+                return True
+            return False
         if _is_directory_link(entry):
             # Junction: rmdir detaches the link and leaves the target intact.
             os.rmdir(entry)
             return True
-        if entry.is_file():
+        if entry.is_file() and entry.name == ".workspace" and entry.stat().st_size == 0:
             entry.unlink()
             return True
-        if entry.is_dir() and _is_library_replica(entry, library):
+        if entry.is_dir() and _is_library_replica(entry, library, strict=strict):
             shutil.rmtree(entry)
             return True
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to remove legacy view entry %s: %s", entry, exc)
         return False
-    logger.info("[SkillViewMigration] kept user-owned directory: %s", entry)
+    logger.info("[SkillViewMigration] kept user-owned entry: %s", entry)
     return False
 
 
@@ -2016,7 +2097,9 @@ def _seed_visibility_from_view(
     entity_id: str,
     view_names: set[str],
     library_names: set[str],
-) -> None:
+    *,
+    strict: bool = False,
+) -> bool:
     """Seed a workspace visibility document from its legacy view directory.
 
     The seed is written at ``AUTHORITY_MIGRATION``, which ranks above the
@@ -2046,6 +2129,9 @@ def _seed_visibility_from_view(
         entity_id: Member name or team name.
         view_names: Skill names the legacy view exposed.
         library_names: Skill names currently in the shared library.
+
+    Returns:
+        Whether the visibility seed completed safely; failed seeds retain views.
     """
     from openjiuwen.agent_teams.skill.visibility import AUTHORITY_MIGRATION, bootstrap_skill_visibility
 
@@ -2053,6 +2139,16 @@ def _seed_visibility_from_view(
     unrestricted = not granted or granted >= library_names
     allow: list[str] = [] if unrestricted else sorted(granted)
     try:
+        # SDK reads intentionally degrade unreadable/corrupt declarations to an
+        # unrestricted document. Migration must not turn that fallback into a
+        # successful authorization rewrite and delete its only legacy evidence.
+        try:
+            text = metadata_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            pass
+        else:
+            if not isinstance(json.loads(text), dict):
+                raise ValueError(f"visibility declaration is not a JSON object: {metadata_path}")
         bootstrap_skill_visibility(
             metadata_path,
             scope=scope,
@@ -2061,11 +2157,15 @@ def _seed_visibility_from_view(
             bootstrapped_from="migration:symlinks",
             authority=AUTHORITY_MIGRATION,
         )
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to seed %s: %s", metadata_path, exc)
+        return False
+    return True
 
 
-def _remove_empty_skill_view(view_dir: Path, library: Path) -> None:
+def _remove_empty_skill_view(view_dir: Path, library: Path, *, strict: bool = False) -> None:
     """Drop a ``skills/`` directory that exposes no Skill.
 
     Older workspace schemas materialized an empty ``skills/`` directory in every
@@ -2082,14 +2182,18 @@ def _remove_empty_skill_view(view_dir: Path, library: Path) -> None:
     try:
         entries = list(view_dir.iterdir())
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to scan %s: %s", view_dir, exc)
         return
     for entry in entries:
-        if not _remove_skill_view_entry(entry, library):
+        if not _remove_skill_view_entry(entry, library, strict=strict):
             return
     try:
         view_dir.rmdir()
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to remove empty view dir %s: %s", view_dir, exc)
 
 
@@ -2101,6 +2205,8 @@ def _migrate_one_skill_view(
     entity_id: str,
     library: Path,
     library_names: set[str],
+    teams_home: Path,
+    strict: bool = False,
 ) -> int:
     """Migrate one legacy view directory into visibility metadata and drop it.
 
@@ -2125,29 +2231,40 @@ def _migrate_one_skill_view(
     Returns:
         1 when the workspace still carried a legacy view directory, 0 otherwise.
     """
+    if not _safe_team_migration_path(view_dir, teams_home, strict=strict):
+        return 0
+    if not _safe_team_migration_path(metadata_path, teams_home, strict=strict):
+        return 0
     if not view_dir.is_dir():
         return 0
 
-    view_names = _read_skill_view_names(view_dir)
+    view_names = _read_skill_view_names(view_dir, strict=strict)
     if not view_names:
-        _remove_empty_skill_view(view_dir, library)
+        _remove_empty_skill_view(view_dir, library, strict=strict)
         return 0
 
-    _seed_visibility_from_view(metadata_path, scope, entity_id, view_names, library_names)
+    if not _seed_visibility_from_view(
+        metadata_path, scope, entity_id, view_names, library_names, strict=strict,
+    ):
+        return 0
 
     kept = 0
     try:
         entries = list(view_dir.iterdir())
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to scan %s: %s", view_dir, exc)
         return 1
     for entry in entries:
-        if not _remove_skill_view_entry(entry, library):
+        if not _remove_skill_view_entry(entry, library, strict=strict):
             kept += 1
     if kept == 0:
         try:
             view_dir.rmdir()
         except OSError as exc:
+            if strict:
+                raise
             logger.warning("[SkillViewMigration] failed to remove empty view dir %s: %s", view_dir, exc)
     logger.info(
         "[SkillViewMigration] migrated %s view: names=%d kept=%d -> %s",
@@ -2159,7 +2276,7 @@ def _migrate_one_skill_view(
     return 1
 
 
-def migrate_team_skill_views(library_dir: Path | None = None) -> int:
+def migrate_team_skill_views(library_dir: Path | None = None, *, strict: bool = False) -> int:
     """Convert legacy per-workspace Skill view directories into visibility metadata.
 
     Teams used to materialize a ``skills/`` directory inside every team and
@@ -2183,6 +2300,8 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
     Args:
         library_dir: The single Skill library. Defaults to
             :func:`get_agent_skills_dir`.
+        strict: Propagate migration failures to a caller that caches success.
+            A failed visibility write never proceeds to delete its legacy view.
 
     Returns:
         Number of workspaces that still carried a legacy view directory.
@@ -2196,18 +2315,27 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
         )
         from openjiuwen.agent_teams.skill.visibility import SCOPE_MEMBER, SCOPE_TEAM
     except ImportError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] openjiuwen skill visibility unavailable: %s", exc)
         return 0
 
     teams_home = get_agent_teams_home()
+    if not _safe_team_migration_path(teams_home, teams_home, strict=strict):
+        return 0
     if not teams_home.is_dir():
         return 0
 
-    library_names = _library_skill_names(library)
+    library_names = _library_skill_names(library, strict=strict)
     migrated = 0
     try:
-        team_dirs = sorted(entry for entry in teams_home.iterdir() if entry.is_dir())
+        team_dirs = sorted(
+            entry for entry in teams_home.iterdir()
+            if _safe_team_migration_path(entry, teams_home, strict=strict) and entry.is_dir()
+        )
     except OSError as exc:
+        if strict:
+            raise
         logger.warning("[SkillViewMigration] failed to scan %s: %s", teams_home, exc)
         return 0
 
@@ -2220,13 +2348,22 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
             entity_id=team_name,
             library=library,
             library_names=library_names,
+            teams_home=teams_home,
+            strict=strict,
         )
         workspaces_root = team_dir / "workspaces"
+        if not _safe_team_migration_path(workspaces_root, teams_home, strict=strict):
+            continue
         if not workspaces_root.is_dir():
             continue
         try:
-            member_dirs = sorted(entry for entry in workspaces_root.iterdir() if entry.is_dir())
+            member_dirs = sorted(
+                entry for entry in workspaces_root.iterdir()
+                if _safe_team_migration_path(entry, teams_home, strict=strict) and entry.is_dir()
+            )
         except OSError as exc:
+            if strict:
+                raise
             logger.warning("[SkillViewMigration] failed to scan %s: %s", workspaces_root, exc)
             continue
         for member_ws in member_dirs:
@@ -2242,6 +2379,8 @@ def migrate_team_skill_views(library_dir: Path | None = None) -> int:
                 entity_id=member_name,
                 library=library,
                 library_names=library_names,
+                teams_home=teams_home,
+                strict=strict,
             )
     if migrated:
         logger.info("[SkillViewMigration] migrated %d legacy skill views", migrated)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
@@ -85,13 +86,13 @@ def _load_history_service() -> None:
         stream_history_records,
     )
 
-    _HANDLE_HISTORY = handle_history_request
     _LOAD_HISTORY_QUERY = load_history_query
     _LOAD_HISTORY_TODO_SNAPSHOT = load_history_todo_snapshot
     _LOAD_HISTORY_SESSION_USAGE = load_history_session_usage
     _STREAM_HISTORY_RECORDS = stream_history_records
     _INVALID_HISTORY_CURSOR = InvalidHistoryCursor
     _HISTORY_SNAPSHOT_CHANGED = HistorySnapshotChanged
+    _HANDLE_HISTORY = handle_history_request
 
 
 def _load_control_services() -> None:
@@ -118,6 +119,39 @@ class MethodRouter:
         self._readiness = readiness
         self._admission = admission
         self._forwarder = forwarder
+        self._active_controls = 0
+        self._control_warmup: asyncio.Task | None = None
+
+    def start_control_warmup(self) -> None:
+        if self._control_warmup is None:
+            self._control_warmup = asyncio.create_task(
+                self._warm_control_services(), name="front-control-preparation")
+
+    async def _warm_control_services(self) -> None:
+        # Give an already queued connection/request priority over background imports.
+        await asyncio.sleep(0.05)
+        for loader in (_load_session_service, _load_project_service,
+                       _load_config_service, _load_history_service):
+            while self._active_controls:
+                await asyncio.sleep(0.01)
+            began = time.monotonic()
+            task = asyncio.create_task(asyncio.to_thread(loader))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await asyncio.shield(task)
+                raise
+            except Exception:  # noqa: BLE001 - first use retains its normal error path
+                logger.warning("[Front] optional control preparation failed", exc_info=True)
+            logger.info("[Front] preparation stage=%s duration_ms=%.3f",
+                        loader.__name__, (time.monotonic() - began) * 1000)
+            await asyncio.sleep(0)
+
+    async def close_control_warmup(self) -> None:
+        task, self._control_warmup = self._control_warmup, None
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
 
     async def dispatch(
         self,
@@ -126,13 +160,16 @@ class MethodRouter:
         send_lock: Any,
     ) -> None:
         if is_control_method(request):
-            if request.req_method == ReqMethod.HEALTH_CHECK_GET_CONF:
-                await self._dispatch_health(ws, request, send_lock)
-                return
-            if request.req_method == ReqMethod.HISTORY_GET and request.is_stream:
-                await self._dispatch_history_stream(ws, request, send_lock)
-                return
-            await self._dispatch_control(ws, request, send_lock)
+            self._active_controls += 1
+            try:
+                if request.req_method == ReqMethod.HEALTH_CHECK_GET_CONF:
+                    await self._dispatch_health(ws, request, send_lock)
+                elif request.req_method == ReqMethod.HISTORY_GET and request.is_stream:
+                    await self._dispatch_history_stream(ws, request, send_lock)
+                else:
+                    await self._dispatch_control(ws, request, send_lock)
+            finally:
+                self._active_controls -= 1
             return
         await self._admission.dispatch(ws, request, send_lock)
 
@@ -155,7 +192,8 @@ class MethodRouter:
         method = request.req_method.value if request.req_method is not None else ""
         try:
             if method in CONTROL_SESSION_METHODS:
-                _load_session_service()
+                if _HANDLE_SESSION is None:
+                    await asyncio.to_thread(_load_session_service)
                 response = await _HANDLE_SESSION(request)
                 if request.req_method == ReqMethod.SESSION_GET_METADATA and response.ok:
                     backend = self._admission.backend
@@ -175,13 +213,16 @@ class MethodRouter:
                         response.payload["is_processing"] = False
                         response.payload["status"] = "idle"
             elif method in CONTROL_PROJECT_METHODS:
-                _load_project_service()
+                if _HANDLE_PROJECT is None:
+                    await asyncio.to_thread(_load_project_service)
                 response = await _HANDLE_PROJECT(request)
             elif method in CONTROL_CONFIG_METHODS:
-                _load_config_service()
+                if _HANDLE_CONFIG is None:
+                    await asyncio.to_thread(_load_config_service)
                 response = await _HANDLE_CONFIG(request)
             elif method in CONTROL_HISTORY_METHODS:
-                _load_history_service()
+                if _HANDLE_HISTORY is None:
+                    await asyncio.to_thread(_load_history_service)
                 response = await _HANDLE_HISTORY(request)
             elif method in CONTROL_HEALTH_METHODS:
                 response = handle_readiness(request, self._readiness)
@@ -201,7 +242,8 @@ class MethodRouter:
         request: AgentRequest,
         send_lock: Any,
     ) -> None:
-        _load_history_service()
+        if _HANDLE_HISTORY is None:
+            await asyncio.to_thread(_load_history_service)
         params = request.params if isinstance(request.params, dict) else {}
         session_id = params.get("session_id")
         page_idx = params.get("page_idx")

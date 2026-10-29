@@ -22,16 +22,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.harness.schema.task import TodoStatus
-
 from gateway.common.mode_matrix import is_code_profile_mode, is_team_mode, normalize_work_mode
 from jiuwenswarm.common.utils import get_deepagent_todo_dir
 
 _STATUS_TO_FRONTEND = {
-    TodoStatus.PENDING: "pending",
-    TodoStatus.IN_PROGRESS: "in_progress",
-    TodoStatus.COMPLETED: "completed",
-    TodoStatus.CANCELLED: "cancelled",
     "pending": "pending",
     "waiting": "pending",
     "in_progress": "in_progress",
@@ -44,6 +38,12 @@ _STATUS_TO_FRONTEND = {
 # Items removed via todo ``delete`` are gone from the workspace by design;
 # ``cancel`` keeps the item so the progress view can file it under "cancelled".
 _DELETED_STATUSES = frozenset({"deleted"})
+
+
+def _status_value(status: Any) -> str:
+    """Accept SDK enums through their value without importing the SDK in Front."""
+    value = getattr(status, "value", status)
+    return str(value or "pending").lower()
 
 
 def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
@@ -60,7 +60,7 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
 
         if isinstance(item, dict):
             status_raw = item.get("status", "pending")
-            status_key = status_raw.value if hasattr(status_raw, "value") else str(status_raw).lower()
+            status_key = _status_value(status_raw)
             if status_key in _DELETED_STATUSES:
                 continue
             todo_id = item.get("id")
@@ -75,14 +75,14 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
                     "id": str(todo_id),
                     "content": content,
                     "activeForm": active_form,
-                    "status": _STATUS_TO_FRONTEND.get(status_raw, _STATUS_TO_FRONTEND.get(status_key, "pending")),
+                    "status": _STATUS_TO_FRONTEND.get(status_key, "pending"),
                 }
             )
             continue
 
         status = getattr(item, "status", None)
-        status_value = getattr(status, "value", None)
-        if isinstance(status_value, str) and status_value.lower() in _DELETED_STATUSES:
+        status_value = _status_value(status)
+        if status_value in _DELETED_STATUSES:
             continue
 
         todo_id = getattr(item, "id", None)
@@ -98,7 +98,7 @@ def format_todos_for_frontend(todos_data: list[Any]) -> list[dict[str, Any]]:
                 "id": str(todo_id),
                 "content": content if isinstance(content, str) else "",
                 "activeForm": active_form,
-                "status": _STATUS_TO_FRONTEND.get(status, status_value or "pending"),
+                "status": _STATUS_TO_FRONTEND.get(status_value, "pending"),
             }
         )
     return formatted

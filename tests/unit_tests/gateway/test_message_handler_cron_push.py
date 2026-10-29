@@ -109,7 +109,7 @@ async def test_single_user_cron_push_marks_project_binding_verified() -> None:
 async def test_agentos_cron_push_marks_remote_project_binding_verified() -> None:
     controller = _CapturingCronController()
     client_type = type("AgentOSRouterClient", (), {})
-    client_type.__module__ = "jiuwenswarm.extensions.agentos.routing"
+    client_type.__module__ = "gateway.extensions.agentos.routing"
     handler = _bare_handler(client_type(), controller)
 
     await handler._handle_cron_push_payload(
@@ -208,7 +208,7 @@ async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, 
         ),
     )
     client_type = type("AgentOSRouterClient", (), {})
-    client_type.__module__ = "jiuwenswarm.extensions.agentos.routing"
+    client_type.__module__ = "gateway.extensions.agentos.routing"
     handler = _bare_handler(client_type(), controller)
     handler._stream_metadata["req-1"] = {"auth_session": "huawei-login-session"}
 
@@ -278,7 +278,7 @@ async def test_agentos_cron_push_rejects_other_users_job() -> None:
     controller = _CapturingCronController()
     controller.user_id = "user-b"
     client_type = type("AgentOSRouterClient", (), {})
-    client_type.__module__ = "jiuwenswarm.extensions.agentos.routing"
+    client_type.__module__ = "gateway.extensions.agentos.routing"
     handler = _bare_handler(client_type(), controller)
 
     await handler._handle_cron_push_payload(
@@ -298,7 +298,7 @@ async def test_late_cron_push_keeps_authenticated_owner_after_stream_cleanup() -
     """A delayed server-push must not create an invisible ownerless job."""
     controller = _CapturingCronController()
     client_type = type("AgentOSRouterClient", (), {})
-    client_type.__module__ = "jiuwenswarm.extensions.agentos.routing"
+    client_type.__module__ = "gateway.extensions.agentos.routing"
     handler = _bare_handler(client_type(), controller)
 
     # Simulate the normal race: the stream finalizer has already removed the
@@ -325,7 +325,7 @@ async def test_late_cron_push_keeps_authenticated_owner_after_stream_cleanup() -
 async def test_cron_command_id_survives_wire_projection_for_gateway_ack() -> None:
     controller = _CapturingCronController()
     client_type = type("AgentOSRouterClient", (), {})
-    client_type.__module__ = "jiuwenswarm.extensions.agentos.routing"
+    client_type.__module__ = "gateway.extensions.agentos.routing"
     handler = _bare_handler(client_type(), controller)
     acknowledgements: list[tuple[str, object]] = []
 

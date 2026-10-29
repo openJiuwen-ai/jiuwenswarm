@@ -23,21 +23,40 @@
 - 时间戳转换: convert_timestamp_to_utc8_time
 """
 
-from .location_tool import get_user_location
-from .note_tools import create_note, search_notes, modify_note
-from .calendar_tools import create_calendar_event, search_calendar_event
-from .contact_tools import search_contact
-from .photo_tools import search_photo_gallery, upload_photo
-from .file_tools import search_file, upload_file
-from .phone_tools import call_phone
-from .message_tools import send_message, search_message
-from .alarm_tools import create_alarm, search_alarms, modify_alarm, delete_alarm
-from .xiaoyi_collection_tool import query_collection, add_collection, delete_collection
-from .save_tools import save_media_to_gallery, save_file_to_file_manager
-from .push_result_tool import view_push_result
-from .timestamp_tool import convert_timestamp_to_utc8_time
-from .xiaoyi_gui_tool import xiaoyi_gui_agent
-from .image_reading_tool import image_reading
+from importlib import import_module
+
+
+# Permission policy imports the timestamp tool to verify its callable identity.
+# Resolving that one local utility must not also prepare every handset tool.
+_EXPORT_MODULES = {
+    "get_user_location": ".location_tool",
+    "create_note": ".note_tools",
+    "search_notes": ".note_tools",
+    "modify_note": ".note_tools",
+    "create_calendar_event": ".calendar_tools",
+    "search_calendar_event": ".calendar_tools",
+    "search_contact": ".contact_tools",
+    "search_photo_gallery": ".photo_tools",
+    "upload_photo": ".photo_tools",
+    "search_file": ".file_tools",
+    "upload_file": ".file_tools",
+    "call_phone": ".phone_tools",
+    "send_message": ".message_tools",
+    "search_message": ".message_tools",
+    "create_alarm": ".alarm_tools",
+    "search_alarms": ".alarm_tools",
+    "modify_alarm": ".alarm_tools",
+    "delete_alarm": ".alarm_tools",
+    "query_collection": ".xiaoyi_collection_tool",
+    "add_collection": ".xiaoyi_collection_tool",
+    "delete_collection": ".xiaoyi_collection_tool",
+    "save_media_to_gallery": ".save_tools",
+    "save_file_to_file_manager": ".save_tools",
+    "view_push_result": ".push_result_tool",
+    "convert_timestamp_to_utc8_time": ".timestamp_tool",
+    "xiaoyi_gui_agent": ".xiaoyi_gui_tool",
+    "image_reading": ".image_reading_tool",
+}
 
 __all__ = [
     "get_user_location",
@@ -68,3 +87,12 @@ __all__ = [
     "xiaoyi_gui_agent",
     "image_reading",
 ]
+
+
+def __getattr__(name: str):
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value

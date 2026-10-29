@@ -1476,7 +1476,7 @@ class TestProjectRemoveRestore:
             scans += 1
             return collect()
 
-        monkeypatch.setattr(project_adapter, "collect_all_sessions_metadata", counted_collect)
+        monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_metadata.collect_all_sessions_metadata", counted_collect)
         response = await ProjectAdapter(runtime_probe=lambda: runtime).handle(
             AgentRequest(
                 request_id="req-busy-scan",
@@ -1734,7 +1734,7 @@ def test_project_busy_scan_covers_all_channels_and_legacy_cron(monkeypatch):
         dict(session_id="cron_meta", channel_id="feishu", project_id="p", cron_id="job"),
         dict(session_id="other_running", channel_id="feishu", project_id="other"),
     ]
-    monkeypatch.setattr(project_adapter, "collect_all_sessions_metadata", lambda: sessions)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_metadata.collect_all_sessions_metadata", lambda: sessions)
     runtime = _FakeRemoveRuntime(running={s["session_id"] for s in sessions[1:]})
     assert project_adapter._project_conversation_state("p", runtime) == (1, ["feishu_running"])
     assert project_adapter._project_conversation_state("p") == (1, [])

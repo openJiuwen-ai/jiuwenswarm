@@ -13,6 +13,11 @@ import os
 import time
 from typing import Any, Callable
 
+from jiuwenswarm.runtime.project_activity import (
+    project_busy_sessions as _project_busy_sessions,  # noqa: F401 - compatibility export
+    project_conversation_state as _project_conversation_state,
+)
+
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from gateway.common.work_mode import (
@@ -171,34 +176,6 @@ def _count_project_conversations(project_id: str) -> int:
     return _project_conversation_state(project_id)[0]
 
 
-def _project_conversation_state(
-    project_id: str, runtime: Any = None, *, ignore_heartbeats: bool = False,
-) -> tuple[int, list[str]]:
-    """Count Web conversations and check all channels for running sessions.
-
-    与会话删除/归档共用 Runtime 的执行判定：空闲团队和常驻响应流不算 busy。
-
-    ``ignore_heartbeats`` 把后台 Heartbeat 执行排除在读之外,回答"停掉心跳后
-    本会话是否仍在跑"。预检用它,避免把即将被停掉的心跳读成阻塞项。
-    """
-    count = 0
-    busy: list[str] = []
-    for session in collect_all_sessions_metadata():
-        session_id = str(session.get("session_id") or "")
-        if session.get("cron_id") or session_id.startswith("cron_"):
-            continue
-        if str(session.get("project_id") or "") != project_id:
-            continue
-        if session.get("channel_id") == "web":
-            count += 1
-        if runtime is None:
-            continue
-        if not session_id or not runtime.is_session_running(
-            session_id, ignore_heartbeats=ignore_heartbeats
-        ):
-            continue
-        busy.append(session_id)
-    return count, busy
 
 
 def _project_running_sessions(project_id: str, runtime: Any) -> list[str]:

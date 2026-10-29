@@ -68,7 +68,7 @@ async def _invoke(
         _stub,
     ):
         await agent_ws_server.AgentWebSocketServer._handle_team_members_get(
-            None, ws, request, lock
+            object.__new__(agent_ws_server.AgentWebSocketServer), ws, request, lock
         )
     assert len(ws.sent) == 1
     return parse_agent_server_wire_unary(json.loads(ws.sent[0]))

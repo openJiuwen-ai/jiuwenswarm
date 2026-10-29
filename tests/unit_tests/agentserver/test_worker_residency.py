@@ -411,6 +411,39 @@ async def test_resume_does_not_treat_attach_execution_as_busy(real_state):
     assert any(item["request_id"] == "observer" for item in snapshot["executions"])
 
 
+@pytest.mark.parametrize("method", [ReqMethod.COMMAND_GOAL, ReqMethod.SESSION_PLAN_STATUS,
+                                   ReqMethod.SESSION_ASSETS_LIST, ReqMethod.HISTORY_GET])
+def test_pending_observation_does_not_mark_session_as_executing(method):
+    store = WorkerEventStore()
+    observer = request("observation", method=method)
+    record = store.register(observer, "observation-dispatch")
+    snapshot = store.snapshot(observer)
+    assert snapshot["is_processing"] is False
+    assert snapshot["dispatches"][0]["active"] is True
+    assert record.active is True
+
+    store.append({"request_id": observer.request_id, "body": {
+        "event_type": "chat.processing_status", "is_processing": True,
+    }}, record.dispatch_id)
+    assert store.snapshot(observer)["is_processing"] is True
+    store.append({"request_id": observer.request_id, "body": {
+        "event_type": "chat.processing_status", "is_processing": False,
+    }}, record.dispatch_id)
+    assert store.snapshot(observer)["is_processing"] is False
+
+
+@pytest.mark.parametrize("method", [ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME,
+                                   ReqMethod.CHAT_ANSWER, ReqMethod.CHAT_SWARMFLOW_REPLY])
+def test_queued_input_keeps_session_busy_before_execution_entry(method):
+    store = WorkerEventStore()
+    queued = request("queued-input", method=method)
+    record = store.register(queued, "queued-dispatch")
+    assert record.entered_at_ns is None
+    assert store.snapshot(queued)["is_processing"] is True
+    store.finish(record.dispatch_id)
+    assert store.snapshot(queued)["is_processing"] is False
+
+
 def test_summary_turn_end_does_not_finish_owner_execution():
     store = WorkerEventStore()
     record = store.register(request(), "owner-dispatch")
@@ -558,9 +591,14 @@ async def test_resident_service_pins_identity_even_after_failed_first_hello(
                 raise OSError("first Front disappeared while receiving HELLO")
 
         async def recv(self):
+            if not getattr(self, "accepted", False):
+                from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+                self.accepted = True
+                return startup_acceptance(self.frames[0])
             await runtime_started.wait()
             if self.index == 0:
-                raise disconnect_error("Front restarted or sent a malformed frame after Runtime loaded")
+                raise disconnect_error("Front restarted after Runtime loaded")
             return {"kind": KIND_SHUTDOWN}
 
         async def close(self):
@@ -647,6 +685,11 @@ async def test_stub_pins_identity_across_front_reconnections(monkeypatch):
             frames[self.position].append(frame)
 
         async def recv(self):
+            if not getattr(self, "accepted", False):
+                from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+                self.accepted = True
+                return startup_acceptance(frames[self.position][0])
             if self.position == 0:
                 disk["identity"] = "stub-new-disk-code"
                 raise OSError("Front detached")
@@ -682,7 +725,7 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     from jiuwenswarm.server.lifecycle import Readiness
     from jiuwenswarm.server.supervisor import resident_lifecycle, runtime_supervisor as module
 
-    conn = SimpleNamespace(recv=AsyncMock(return_value={
+    conn = SimpleNamespace(send=AsyncMock(), close=AsyncMock(), recv=AsyncMock(return_value={
         "kind": KIND_HELLO, "protocol": module.PROTOCOL_VERSION,
         "data_scope": "scope", "deployment_scope": "deployment", "code_identity": "code", "stub": False,
         "instance": "original-worker",
@@ -696,6 +739,8 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     monkeypatch.setattr(identity, "data_scope", lambda: "scope")
     monkeypatch.setattr(identity, "deployment_scope", lambda: "deployment")
     monkeypatch.setattr(identity, "code_identity", lambda: "code")
+    monkeypatch.setattr("jiuwenswarm.server.supervisor.identity_probe.probe_identity",
+                        AsyncMock(return_value=("code", None)))
     ownership = Mock(return_value=(SimpleNamespace(pid=123), 1.0))
     monkeypatch.setattr(resident_lifecycle, "worker_process", ownership)
     supervisor = module.RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), connect_timeout=.5)

@@ -618,14 +618,16 @@ class JiuwenExpertTeamLauncher:
             _is_teammate_output,
             _truncate_team_tool_result_event,
         )
+        from jiuwenswarm.server.utils.stream_utils import decode_stream_chunk
         from jiuwenswarm.server.runtime.session.history_io import run_stream_parser
-        from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
 
         is_leader = _is_leader_output(chunk)
         is_teammate = _is_teammate_output(chunk)
         if not is_leader and not is_teammate:
             return None
-        parsed = await run_stream_parser(parse_stream_chunk, chunk)
+        parsed = await run_stream_parser(
+            decode_stream_chunk, chunk, projection_parent_session_id=session_id,
+        )
         if parsed is None or parsed.get("event_type") not in _TEAM_ATTRIBUTED_EVENT_TYPES:
             return None
 

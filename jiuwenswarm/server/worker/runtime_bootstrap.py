@@ -61,10 +61,9 @@ async def _construct_runtime_server(
     its cleanup owner before a sibling preparation failure is propagated.
     """
     from openjiuwen.core.runner import Runner
-
     from gateway.extensions.manager import ExtensionManager
     from gateway.extensions.registry import ExtensionRegistry
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 
     extension_registry = ExtensionRegistry.create_instance(
         callback_framework=Runner.callback_framework,
@@ -75,7 +74,7 @@ async def _construct_runtime_server(
     telemetry.stage("extension_manager_created")
 
     def construct_server() -> Any:
-        return AgentWebSocketServer.get_instance(host=host, port=port)
+        return WorkerExecutionHost(host=host, port=port)
 
     async def load_extensions() -> None:
         # Shared adapter definitions install SDK compatibility patches. User

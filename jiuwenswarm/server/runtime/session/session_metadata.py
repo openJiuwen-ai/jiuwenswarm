@@ -1,6 +1,8 @@
 """会话元数据管理模块"""
 from __future__ import annotations
 
+
+
 import copy
 from concurrent.futures import Future
 from dataclasses import dataclass
@@ -80,15 +82,27 @@ _COLLECT_INFLIGHT: dict[tuple[str, str, bool], Future] = {}
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
 _METADATA_CACHE_GENERATIONS: dict[str, int] = {}
 _CACHE_LOCK = threading.Lock()
-_CACHE_DISK_STAMPS: dict[str, tuple[int, int] | None] = {}
+_CACHE_DISK_STAMPS: dict[str, tuple[int, ...] | None] = {}
 _PENDING_FIELDS: dict[str, dict[str, tuple[int, Any]]] = {}
 _WRITE_REVISION = 0
 
 
-def _disk_stamp(session_id: str) -> tuple[int, int] | None:
+def _read_model_selection_snapshot(session_id: str) -> str | None:
+    """Expose a strict byte snapshot under the metadata writer's process lock."""
+    from jiuwenswarm.server.runtime.session.lifecycle import resource_lock
+    from jiuwenswarm.common.model_selection_store import _read_text_ride_out_sharing
+
+    with resource_lock("session", session_id):
+        try:
+            return _read_text_ride_out_sharing(get_agent_sessions_dir() / session_id / "metadata.json")
+        except FileNotFoundError:
+            return None
+
+
+def _disk_stamp(session_id: str) -> tuple[int, ...] | None:
     try:
         stat = (get_agent_sessions_dir() / session_id / "metadata.json").stat()
-        return stat.st_mtime_ns, stat.st_size
+        return stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns, stat.st_ino
     except OSError:
         return None
 
@@ -99,7 +113,9 @@ def _changed_fields(before: dict[str, Any], after: dict[str, Any]) -> frozenset[
 
 
 def _refresh_written_cache(session_id: str, written: dict[str, Any], options: _MetadataWriteOptions) -> None:
-    stamp = _disk_stamp(session_id)
+    # Another process may have written after our atomic replacement. Force a
+    # disk comparison before trusting this write snapshot on the next read.
+    stamp = None
     with _CACHE_LOCK:
         pending = _PENDING_FIELDS.get(session_id, {})
         if options.write_revision:
@@ -561,8 +577,15 @@ def _read_metadata(
     # replaces the whole file, so an unlocked read can land inside the
     # replacement window and observe empty content.
     try:
-        with _FILE_LOCK:
-            raw = fpath.read_text(encoding="utf-8")
+        for _attempt in range(3):
+            with _FILE_LOCK:
+                before_stamp = _disk_stamp(session_id)
+                raw = fpath.read_text(encoding="utf-8")
+                read_stamp = _disk_stamp(session_id)
+            if before_stamp == read_stamp:
+                break
+        else:
+            raise OSError("metadata changed repeatedly during read")
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "failed to read metadata.json: %s (session_id=%s)", exc, session_id,

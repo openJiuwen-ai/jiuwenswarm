@@ -13,6 +13,7 @@ import psutil
 from filelock import FileLock, Timeout
 
 from jiuwenswarm.server.supervisor.identity import data_scope, deployment_scope
+from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
 
 
 @asynccontextmanager
@@ -36,7 +37,7 @@ async def startup_lock(socket_path: str, deadline: float):
 
 def worker_process(hello: dict, socket_path: str, *, allow_legacy: bool = False) -> tuple[psutil.Process, float]:
     """Establish ownership from the OS as well as the peer's HELLO fields."""
-    if not isinstance(hello, dict) or hello.get("kind") != "hello" or hello.get("protocol") not in (1, 2):
+    if not isinstance(hello, dict) or hello.get("kind") != "hello" or hello.get("protocol") not in (1, 2, PROTOCOL_VERSION):
         raise RuntimeError("Worker lifecycle refused an unknown IPC protocol")
     legacy = hello.get("deployment_scope") is None
     if legacy and not allow_legacy:
@@ -105,6 +106,10 @@ async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: 
     outcome = None
     error = None
     try:
+        if hello.get("protocol") == PROTOCOL_VERSION:
+            from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+            await asyncio.wait_for(connection.send(startup_acceptance(hello)), max(.001, grace - time.monotonic()))
         await asyncio.wait_for(connection.send({"kind": "shutdown"}), max(.001, grace - time.monotonic()))
         while time.monotonic() < grace:
             frame = await asyncio.wait_for(connection.recv(), max(.001, grace - time.monotonic()))

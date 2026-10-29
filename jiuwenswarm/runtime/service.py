@@ -26,6 +26,7 @@ from gateway.common.mode_matrix import (
 )
 from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.hooks import ExtensionRequestHooks, RequestHooks
 from jiuwenswarm.runtime.session import (
     RuntimeSessionCoordinator,
     RuntimeSessionState,
@@ -346,8 +347,10 @@ class AgentRuntime:
         resource_lease: RuntimeResourceLease | None = None,
         team_execution_controller: object | None = None,
         session_runtime_lifecycle: object | None = None,
+        hooks: RequestHooks | None = None,
     ) -> None:
         self._agent_manager = agent_manager or AgentManager()
+        self._hooks = hooks if hooks is not None else ExtensionRequestHooks()
         self._initializer = initializer or _initialize_runtime_dependencies
         self._initialize_extensions = initializer is None
         self._manage_runner = initializer is None
@@ -406,6 +409,7 @@ class AgentRuntime:
         self._pending_session_provisions: set[PreparedSessionProvision[Any]] = set()
         self._started = False
         self._closed = False
+        self._closing = False
         self.set_admission_controller(admission_controller)
 
     @property
@@ -520,6 +524,8 @@ class AgentRuntime:
         async with self._lifecycle_lock:
             if self._closed:
                 raise RuntimeStateError("runtime is already closed")
+            if self._closing:
+                raise RuntimeStateError("runtime is closing")
             if self._started:
                 return
             try:
@@ -2990,6 +2996,7 @@ class AgentRuntime:
                     "runtime has unfinished session provisions; "
                     "commit or abort them before close"
                 )
+            self._closing = True
             cleanup_errors: list[BaseException] = []
             for snapshot in self._session_coordinator.snapshot_sessions():
                 quiesce_admission = getattr(
@@ -3047,6 +3054,30 @@ class AgentRuntime:
                 BaseException
             ) as exc:  # preserve cancellation until cleanup completes
                 cleanup_errors.append(exc)
+            owners_pending = False
+            for key, agent in list(self._stateless_agents.items()):
+                cleanup = getattr(agent, "cleanup", None)
+                if callable(cleanup):
+                    try:
+                        await cleanup()
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
+                        owners_pending = True
+                        continue
+                if self._stateless_agents.get(key) is agent:
+                    self._stateless_agents.pop(key, None)
+            try:
+                await self._agent_manager.cleanup()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+                owners_pending = owners_pending or bool(
+                    getattr(self._agent_manager, "_cleanup_pending", True)
+                )
+            if owners_pending:
+                # This same Runtime remains the cleanup owner. Dependencies,
+                # extensions and application leases cannot disappear beneath
+                # an adapter that still holds SDK work or Kernel references.
+                raise cleanup_errors[0]
             if self._resource_lease is not None:
                 try:
                     await self._resource_lease.release()
@@ -3054,18 +3085,6 @@ class AgentRuntime:
                     cleanup_errors.append(exc)
                 finally:
                     self._resource_lease = None
-            for agent in self._stateless_agents.values():
-                cleanup = getattr(agent, "cleanup", None)
-                if callable(cleanup):
-                    try:
-                        await cleanup()
-                    except BaseException as exc:
-                        cleanup_errors.append(exc)
-            self._stateless_agents.clear()
-            try:
-                await self._agent_manager.cleanup()
-            except BaseException as exc:
-                cleanup_errors.append(exc)
             async with self._agent_execution_owner_lock:
                 self._agent_execution_owners.clear()
             if self._shared_extensions_acquired:
@@ -3092,6 +3111,8 @@ class AgentRuntime:
     def _require_started(self) -> None:
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
+        if self._closing:
+            raise RuntimeStateError("runtime is closing")
         if not self._started:
             raise RuntimeStateError("runtime is not started")
 
@@ -3411,6 +3432,10 @@ class AgentRuntime:
             return SessionWorkKind.CONTROL_INPUT
         if request.req_method is ReqMethod.COMMAND_GOAL:
             action = str(params.get("action") or "get").strip().lower()
+            # Reading a goal must not create a running execution: the UI uses
+            # its snapshot to decide whether the first input needs queueing.
+            if action == "get":
+                return None
             return (
                 SessionWorkKind.GOAL_STREAM
                 if action in {"set", "resume"}
@@ -3906,30 +3931,10 @@ class AgentRuntime:
             ),
         )
 
-    @staticmethod
-    async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
+    async def _trigger_before_chat_request_hook(self, request: AgentRequest) -> None:
         if request.req_method not in AgentRuntime._chat_turn_methods():
             return
-        from gateway.extensions.registry import ExtensionRegistry
-        from jiuwenswarm.common.hook_event import AgentServerHookEvents
-        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
-
-        params = request.params if isinstance(request.params, dict) else {}
-        if not isinstance(request.params, dict):
-            request.params = params
-        context = AgentServerChatHookContext(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            session_id=request.session_id,
-            req_method=(
-                request.req_method.value if request.req_method is not None else None
-            ),
-            params=params,
-        )
-        await ExtensionRegistry.get_instance().trigger(
-            AgentServerHookEvents.BEFORE_CHAT_REQUEST,
-            context,
-        )
+        await self._hooks.before_chat(request)
 
 
 __all__ = ["AgentRuntime", "RuntimeStateError"]

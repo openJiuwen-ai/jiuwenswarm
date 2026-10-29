@@ -17,6 +17,7 @@ from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server
+from jiuwenswarm.server.worker import execution_support
 
 
 class _SessionRuntimeStub:
@@ -193,7 +194,7 @@ async def test_closed_connection_cleans_keepalive_and_registry(monkeypatch) -> N
                 )
 
     monkeypatch.setattr(
-        agent_ws_server,
+        execution_support,
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.001,
     )
@@ -333,7 +334,7 @@ async def test_stream_keepalive_roundtrips_over_live_websocket(monkeypatch) -> N
         agent_ref={"mode": "agent", "id": "live-socket-agent"},
     )
     monkeypatch.setattr(
-        agent_ws_server,
+        execution_support,
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.01,
     )
@@ -459,7 +460,7 @@ async def test_stream_keepalive_shutdown_does_not_depend_on_task_cancellation(
                     payload=None,
                 )
 
-    monkeypatch.setattr(agent_ws_server, "asyncio", AsyncioProxy())
+    monkeypatch.setattr(execution_support, "asyncio", AsyncioProxy())
     server = agent_ws_server.AgentWebSocketServer.__new__(
         agent_ws_server.AgentWebSocketServer
     )
@@ -539,12 +540,12 @@ async def test_stream_keepalive_cleanup_is_bounded_when_cancellation_is_ignored(
                 )
 
     monkeypatch.setattr(
-        agent_ws_server,
+        execution_support,
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.001,
     )
     monkeypatch.setattr(
-        agent_ws_server,
+        execution_support,
         "_STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS",
         0.01,
     )
@@ -621,7 +622,7 @@ async def test_stream_keepalive_is_sent_only_before_terminal_chunk(
             )
 
     monkeypatch.setattr(
-        agent_ws_server,
+        execution_support,
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.01,
     )
@@ -737,7 +738,7 @@ async def test_stream_keepalive_rechecks_activity_after_waiting_for_send_lock(
             )
 
     monkeypatch.setattr(
-        agent_ws_server,
+        execution_support,
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.001,
     )
@@ -821,7 +822,7 @@ async def test_stream_keepalive_rechecks_stop_after_waiting_for_send_lock(
                 )
 
     monkeypatch.setattr(
-        agent_ws_server,
+        execution_support,
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.001,
     )

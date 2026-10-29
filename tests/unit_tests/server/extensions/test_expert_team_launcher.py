@@ -32,7 +32,7 @@ async def test_only_summary_errors_notify_organization_runtime(monkeypatch, sour
     monkeypatch.setattr(team_helpers, "_is_leader_output", lambda chunk: False)
     monkeypatch.setattr(team_helpers, "_is_teammate_output", lambda chunk: True)
     monkeypatch.setattr(team_helpers, "_enrich_teammate_event", lambda parsed, chunk: parsed)
-    monkeypatch.setattr(stream_utils, "parse_stream_chunk", lambda chunk: {
+    monkeypatch.setattr(stream_utils, "decode_stream_chunk", lambda chunk: {
         "event_type": "chat.error", "member_name": "delivery-drafter", "error": "iteration limit",
     })
     org_runtime = SimpleNamespace(notify_summary_member_failure=AsyncMock())

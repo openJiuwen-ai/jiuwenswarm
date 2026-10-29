@@ -56,13 +56,14 @@ def _is_launch_parent(parent_pid: int) -> bool:
         return False
 
 
-def launch_identity_payload(fingerprint: str) -> bytes:
+def launch_identity_payload(fingerprint: str, *, source_observation: dict | None = None) -> bytes:
     """Describe the parent's validated deployment on a private spawn pipe."""
-    observation = None
+    observation = source_observation
     if not getattr(sys, "frozen", False) and not _identity_path().is_file():
         from jiuwenswarm.server.supervisor.identity_cache import launch_source_observation
 
-        observation = launch_source_observation()
+        if observation is None:
+            observation = launch_source_observation()
     return (json.dumps({"schema": 1, "parent_pid": os.getpid(),
         "package": _deployment_path(),
         "data_scope": data_scope(), "deployment_scope": deployment_scope(),

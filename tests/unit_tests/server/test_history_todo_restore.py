@@ -39,7 +39,7 @@ async def test_history_get_stream_emits_todo_updated_on_page_one(tmp_path, monke
         lambda: tmp_path / "todo",
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server._todo_snapshot_session_fields",
+        "jiuwenswarm.server.management.history._todo_snapshot_session_fields",
         lambda _session_id: {},
     )
     monkeypatch.setattr(
@@ -208,7 +208,7 @@ async def test_history_get_stream_reads_code_project_todo(tmp_path, monkeypatch)
         lambda: tmp_path / "unused-default-todo",
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server._todo_snapshot_session_fields",
+        "jiuwenswarm.server.management.history._todo_snapshot_session_fields",
         lambda _session_id: {
             "project_dir": str(project),
             "work_mode": "code",

@@ -820,20 +820,11 @@ class TeamManager:
         channel_id: str | None = None,
     ) -> None:
         """Deliver a waiter-less terminal event via gateway server push."""
-        try:
-            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+        from jiuwenswarm.runtime.host_services import send_runtime_push
 
-            server = AgentWebSocketServer.get_instance()
-        except Exception:
-            logger.debug(
-                "[TeamManager] waiter-less push fallback: server unavailable: session_id=%s",
-                session_id,
-                exc_info=True,
-            )
-            return
         payload = dict(event)
         payload.setdefault("session_id", session_id)
-        pushed = await server.send_push(
+        pushed = await send_runtime_push(
             {
                 "request_id": "",
                 "channel_id": str(channel_id or "").strip() or "web",

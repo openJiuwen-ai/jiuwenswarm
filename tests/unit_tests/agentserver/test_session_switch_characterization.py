@@ -24,7 +24,7 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionSwitchInput,
     SessionSwitchResult,
 )
-from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.worker import execution_requests
 from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketServer
 
 
@@ -146,7 +146,7 @@ class SessionSwitchServer(AgentWebSocketServer):
 @pytest.fixture(autouse=True)
 def isolated_switch_locks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        agent_ws_server_module,
+        execution_requests,
         "_session_switch_locks",
         WeakValueDictionary(),
     )
@@ -517,7 +517,7 @@ async def test_cancelled_prepare_releases_switch_lock_for_successor() -> None:
         )
         await asyncio.wait_for(owner_entered.wait(), timeout=1.0)
         lock_key = f"{id(ws)}:web"
-        owner_lock = agent_ws_server_module._session_switch_locks[lock_key]
+        owner_lock = execution_requests._session_switch_locks[lock_key]
         assert owner_lock.locked()
 
         owner.cancel()
@@ -586,7 +586,7 @@ async def test_cancelled_commit_is_terminal_and_does_not_strand_lease() -> None:
         assert runtime.abort_calls == []
         assert ws.sent == []
         lock_key = f"{id(ws)}:web"
-        assert not agent_ws_server_module._session_switch_locks[lock_key].locked()
+        assert not execution_requests._session_switch_locks[lock_key].locked()
     finally:
         never_release.set()
         if not task.done():

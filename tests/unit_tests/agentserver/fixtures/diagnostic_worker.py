@@ -241,6 +241,11 @@ def configure(mode: str) -> None:
         return runtime
 
     service._load_runtime = load_runtime
+    # This fixture replaces Runtime construction. Keep SDK imports out of its
+    # injected transport/logging stalls; real SDK startup is tested separately.
+    from jiuwenswarm.server.worker import early_import
+
+    early_import.start_early_import = lambda: None
     if mode == "crash":
 
         async def crashing_session(conn, dispatcher):

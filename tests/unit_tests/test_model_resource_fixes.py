@@ -1,4 +1,4 @@
-"""Regression coverage for the stable-ID model-pool contract."""
+﻿"""Regression coverage for the stable-ID model-pool contract."""
 
 from copy import deepcopy
 from importlib import import_module
@@ -379,11 +379,23 @@ def test_model_selection_accepts_cron_session_id(tmp_path, monkeypatch, runtime)
         store.set_session_model_selection("../escape", selection)
 
 
-def test_model_selection_read_rides_out_metadata_replacement(tmp_path, monkeypatch):
+@pytest.mark.parametrize("with_provider", [False, True])
+def test_model_selection_read_rides_out_metadata_replacement(tmp_path, monkeypatch, with_provider):
     import json
     from pathlib import Path
 
     store = import_module("jiuwenswarm.common.model_selection_store")
+    from jiuwenswarm.common import external_providers
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    def resolve_provider(domain):
+        assert domain == "session_metadata"
+        if not with_provider:
+            raise external_providers.ExternalProviderUnregistered(domain)
+        return session_metadata
+
+    monkeypatch.setattr(external_providers, "provider", resolve_provider)
+    monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(store.time, "sleep", lambda _seconds: None)
     selection = {"type": "model_group", "id": "mgp_a", "route_id": "rte_b"}
@@ -614,3 +626,4 @@ async def test_strict_file_store_rejects_corruption(tmp_path):
     assert await store.list_jobs() == []
     with pytest.raises(ValueError):
         await store.list_jobs(strict=True)
+

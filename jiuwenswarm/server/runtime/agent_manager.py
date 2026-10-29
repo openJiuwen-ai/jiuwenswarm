@@ -246,6 +246,8 @@ class AgentManager:
         self._last_model_conn_configs: dict[tuple, Any] = {}
         self._session_create_tokens: dict[tuple[str, str], tuple[Any, Any]] = {}
         self._session_create_token_lock = asyncio.Lock()
+        self._preparation_admission: Any | None = None
+        self._foreground_preparation_tokens: list[tuple[Any, object]] = []
         from jiuwenswarm.server.runtime.agent_warm_pool import AgentWarmPool
 
         self.warm_pool = AgentWarmPool(self)
@@ -253,7 +255,7 @@ class AgentManager:
     def set_heartbeat_service(self, service: Any | None) -> None:
         """Inject the process-owned Heartbeat service into single and Team agents."""
         self._heartbeat_service = service
-        from jiuwenswarm.agents.swarm.context import set_heartbeat_job_service
+        from jiuwenswarm.common.heartbeat_service import set_heartbeat_job_service
 
         set_heartbeat_job_service(service)
         for agents in self.agents.values():
@@ -1311,11 +1313,31 @@ class AgentManager:
         if session_id:
             await self.warm_pool.wait_for_session(session_id)
 
+    def set_preparation_admission(self, admission: Any) -> None:
+        """Let the Worker pause its profile for the full Runtime chat turn."""
+        self._preparation_admission = admission
+
     async def begin_foreground_chat(self) -> None:
-        await self.warm_pool.begin_foreground()
+        admission = getattr(self, "_preparation_admission", None)
+        token = admission.pause_background() if admission is not None else None
+        try:
+            await self.warm_pool.begin_foreground()
+        except BaseException:
+            if admission is not None and token is not None:
+                admission.resume_background(token)
+            raise
+        if token is not None:
+            self._foreground_preparation_tokens.append((admission, token))
 
     async def end_foreground_chat(self) -> None:
-        await self.warm_pool.end_foreground()
+        tokens = getattr(self, "_foreground_preparation_tokens", [])
+        owner = tokens.pop() if tokens else None
+        try:
+            await self.warm_pool.end_foreground()
+        finally:
+            if owner is not None:
+                admission, token = owner
+                admission.resume_background(token)
 
     def activate_session_prewarm(self, session_id: str | None) -> None:
         """Mark a claimed prewarm workspace as a normal persisted session."""
@@ -2252,6 +2274,7 @@ class AgentManager:
 
     async def cleanup(self) -> None:
         """清理所有 agent 实例."""
+        self._cleanup_pending = True
         self._permissions_reload_closing = True
         reload_tasks = [
             task for task in self._permissions_reload_tasks
@@ -2274,14 +2297,26 @@ class AgentManager:
         ]
         if retirement_tasks:
             await asyncio.gather(*retirement_tasks, return_exceptions=True)
+        failures: list[BaseException] = []
         for key, agents in list(self.agents.items()):
-            for agent in agents.values():
+            for cache_key, agent in list(agents.items()):
                 if hasattr(agent, "cleanup"):
                     try:
                         await agent.cleanup()
-                    except Exception as e:
+                    except BaseException as e:
                         logger.warning("[AgentManager] Agent cleanup failed: %s", e)
-            del self.agents[key]
+                        failures.append(e)
+                        continue
+                if agents.get(cache_key) is agent:
+                    agents.pop(cache_key, None)
+                    self._agent_create_params.get(key, {}).pop(cache_key, None)
+            if not agents and self.agents.get(key) is agents:
+                self.agents.pop(key, None)
+        if failures:
+            # Failed facades still own their adapters, SDK tasks and leases.
+            # Keep them reachable for the same Runtime's next close attempt.
+            raise failures[0]
+        self._cleanup_pending = False
         self._agent_create_params.clear()
         self._client_capabilities_by_channel.clear()
         self._session_create_tokens.clear()

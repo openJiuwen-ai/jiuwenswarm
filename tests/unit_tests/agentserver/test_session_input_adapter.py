@@ -207,6 +207,7 @@ async def test_bound_steer_checks_target_at_sdk_enqueue_without_idle_dispatch(ra
         _send_input_with_permission_resume_guard=permission_send,
         _permission_dispatch=SimpleNamespace(finalize=Mock()),
     )
+    adapter._get_execution_driver = lambda: JiuWenSwarmDeepAdapter._get_execution_driver(adapter)
     request = SimpleNamespace(
         params={"input_mode": "steer", "expected_execution_id": "execution-A"},
         request_id="supplement-request", session_id="session",
@@ -277,6 +278,7 @@ async def test_protected_steer_is_refused_before_sdk_submission(
         _send_input_with_permission_resume_guard=permission_send,
         _permission_dispatch=SimpleNamespace(finalize=Mock()),
     )
+    adapter._get_execution_driver = lambda: JiuWenSwarmDeepAdapter._get_execution_driver(adapter)
     adapter._require_cross_session_task_admission = lambda request: (
         JiuWenSwarmDeepAdapter._require_cross_session_task_admission(adapter, request)
     )
@@ -320,6 +322,7 @@ async def test_bound_input_cannot_fall_back_after_sdk_round_ends(monkeypatch, is
         deliver_active_session_input=AsyncMock(return_value=False),
         process_message_impl=AsyncMock(), process_message_stream_impl=Mock(),
     )
+    adapter._get_execution_driver = lambda: JiuWenSwarmDeepAdapter._get_execution_driver(adapter)
     request = SimpleNamespace(
         params={"input_mode": "steer", **(
             {SESSION_MESSAGE_INTERNAL_KEY: {"message_id": "sm-cross"}}

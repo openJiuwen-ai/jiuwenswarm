@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from jiuwenswarm.common.stage_timer import async_stage
 from gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session import lifecycle as lc
@@ -1506,6 +1507,7 @@ def _build_context_messages_from_history(
     return filtered_messages, skipped
 
 
+@async_stage("context_warmup")
 async def warmup_session_context(
     *,
     deep_agent: "DeepAgent",

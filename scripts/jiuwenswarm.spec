@@ -282,11 +282,17 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.tools",
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
+    # Management providers are selected by an explicit import_module registry.
+    "jiuwenswarm.server.management",
     "jiuwenswarm.agents.swarm",
 ):
     lazy_runtime_submodules += collect_submodules(lazy_package)
 
 hiddenimports = collect_submodules("jiuwenswarm.server.worker") + lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+    # Compatibility and optional voice providers are intentionally absent from
+    # the cold Worker import graph. Include their supported lazy entrypoints.
+    "jiuwenswarm.server.agent_ws_server",
+    "jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter",
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
@@ -325,6 +331,12 @@ excludes = [
     "tkinter",
     "scipy",
     "numpy.tests",
+    # Build-time CFFI helpers must not pull setuptools and its startup rthook
+    # into every Front/Worker/MCP process. Runtime CFFI wheels stay collected.
+    "setuptools",
+    "_distutils_hack",
+    "distutils",
+    "pkg_resources",
     # External CLI SDKs and their native executables are optional runtimes.
     # Frozen Windows builds install verified wheels under the application directory on demand.
     # Other platforms keep their managed optional runtimes in the user data directory.
@@ -385,11 +397,20 @@ _exe_dir = os.path.dirname(sys.executable) if sys.executable else None
 if _exe_dir:
     _scripts_subdir = "Scripts" if sys.platform == "win32" else "bin"
     _ruff_candidates.append(os.path.join(_exe_dir, _scripts_subdir, "ruff" + _ruff_suffix))
+# Inherited site-packages can provide ruff while its executable lives in the
+# base environment's Scripts/bin. Resolve that installed package's own binary.
+try:
+    from ruff import find_ruff_bin as _find_ruff_bin
+    _ruff_candidates.append(_find_ruff_bin())
+except (ImportError, FileNotFoundError):
+    pass
+_ruff_bundled = False
 for _c in _ruff_candidates:
     if _c and os.path.isfile(_c):
         _bundled_binaries.append((_c, "."))
+        _ruff_bundled = True
         break
-if not _bundled_binaries:
+if not _ruff_bundled:
     print("WARNING: ruff binary not found in venv; auto-harness lint will be "
           "unavailable in the frozen exe (install ruff in the build venv)")
 

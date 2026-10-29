@@ -1,6 +1,6 @@
 """兼容入口：扩展 SDK 契约的唯一实现位于 ``gateway.extensions.sdk``。
 
-第三方扩展仍可按 ``from jiuwenswarm.extensions.sdk import BaseExtension`` 导入，
+第三方扩展仍可按 ``from gateway.extensions.sdk import BaseExtension`` 导入，
 本模块只做惰性转发，不再保留第二份类定义（避免 BaseExtension / CryptoUtility
 等基类出现两套类身份）。
 """

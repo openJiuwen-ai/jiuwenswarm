@@ -10,7 +10,7 @@ from jiuwenswarm.runtime.session_provisioner import (
     SessionProvisionCommitTiming,
     SessionProvisionState,
 )
-from jiuwenswarm.server.runtime.group_service import (
+from jiuwenswarm.server.runtime.group_metadata import (
     GROUP_METHODS,
     GroupError,
     group_path,

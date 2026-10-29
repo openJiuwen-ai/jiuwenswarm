@@ -1274,6 +1274,7 @@ def _write_item(
     item: dict[str, Any],
     *,
     subagent_id: str | None = None,
+    require_written: bool = False,
 ) -> None:
     with FILE_LOCK:
         if subagent_id:
@@ -1283,6 +1284,8 @@ def _write_item(
                 create=True,
             )
             if error is not None or target_path is None:
+                if require_written:
+                    raise ValueError(f"subagent history target rejected: {error or 'invalid path'}")
                 logger.warning(
                     "skip subagent history write: session_id=%s subagent_id=%s error=%s",
                     session_id,
@@ -1327,7 +1330,10 @@ def _ensure_worker_started() -> None:
                     from jiuwenswarm.server.runtime.session import lifecycle as lc
                     with lc.resource_lock("session", sid):
                         lc.write_guard(sid, generation)
-                        _write_item(sid, item, subagent_id=subagent_id)
+                        if receipt is not None and subagent_id:
+                            _write_item(sid, item, subagent_id=subagent_id, require_written=True)
+                        else:
+                            _write_item(sid, item, subagent_id=subagent_id)
                 except Exception as exc:  # noqa: BLE001
                     _settle_history_receipt(receipt, error=exc)
                     logger.warning("history 异步写入失败: %s", exc)
@@ -1435,8 +1441,15 @@ def append_history_record(
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
     subagent_id: str | None = None,
+    wait_for_write: bool = False,
 ) -> None:
-    """向指定 session 的当前激活历史文件异步追加一条记录."""
+    """Append history, optionally awaiting this exact writer-owned receipt.
+
+    The default preserves asynchronous queue admission. ``wait_for_write=True``
+    must run off the event loop: it waits without a timeout or re-enqueue until
+    the writer has either appended this record or raised its actual error.
+    Filtered heartbeat/empty assistant records intentionally perform no write.
+    """
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
         logger.debug(
@@ -1496,7 +1509,12 @@ def append_history_record(
         and extra.get("message_origin") == SESSION_MESSAGE_ORIGIN
     )
 
-    _enqueue_history_item(sid, item, subagent_id=subagent_id)
+    if wait_for_write:
+        receipt: Future[None] = Future()
+        _enqueue_history_item(sid, item, subagent_id=subagent_id, receipt=receipt)
+        receipt.result()
+    else:
+        _enqueue_history_item(sid, item, subagent_id=subagent_id)
 
     # 更新会话元数据
     try:

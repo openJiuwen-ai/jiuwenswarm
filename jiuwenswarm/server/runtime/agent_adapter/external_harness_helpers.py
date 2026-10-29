@@ -769,12 +769,14 @@ async def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: boo
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
     )
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import project_stream_event
 
-    return await run_stream_parser(
-        JiuWenSwarmDeepAdapter.parse_stream_chunk,
+    parsed = await run_stream_parser(
+        JiuWenSwarmDeepAdapter.decode_stream_chunk,
         chunk,
         has_streamed_content=has_streamed_answer,
     )
+    return await project_stream_event(parsed)
 
 
 async def process_external_harness_stream(

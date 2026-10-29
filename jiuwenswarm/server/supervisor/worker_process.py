@@ -146,12 +146,8 @@ class WorkerProcess:
         return self._proc.poll()
 
     async def spawn(self) -> None:
-        from jiuwenswarm.server.supervisor.identity import code_identity, launch_identity_payload
-
-        # Verify source once before the spawn, then hand that exact observation
-        # to the child. Reattached resident Workers still require fresh checks.
-        self.launch_identity = await asyncio.to_thread(code_identity)
-        payload = launch_identity_payload(self.launch_identity)
+        from jiuwenswarm.server.supervisor.identity import launch_identity_payload
+        from jiuwenswarm.server.supervisor.identity_probe import probe_identity
         command = build_worker_command(
             self.socket_path,
             host=self._host,
@@ -175,11 +171,19 @@ class WorkerProcess:
                 stderr=stderr,
             )
         try:
+            # The child can import code while the private launch identity is
+            # calculated. It cannot migrate configuration or execute yet.
+            self.launch_identity, observation = await probe_identity()
+            payload = launch_identity_payload(self.launch_identity, source_observation=observation)
             self._proc.stdin.write(payload)
             self._proc.stdin.close()
-        except OSError:
-            self._proc.kill()
-            await self.wait(timeout=5)
+        except BaseException:
+            if self._proc.stdin is not None:
+                try:
+                    self._proc.stdin.close()
+                except OSError:
+                    logger.debug("[Supervisor] closing failed launch pipe", exc_info=True)
+            await self.stop(timeout=5)
             raise
         logger.info("[Supervisor] worker pid=%s stderr=%s", self.pid, self._stderr_path)
 
