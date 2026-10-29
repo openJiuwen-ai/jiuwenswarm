@@ -16,6 +16,7 @@ from jiuwenswarm.server.lifecycle import Readiness
 from jiuwenswarm.server.supervisor import runtime_supervisor as supervisor_module
 from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+from jiuwenswarm.server.ipc.protocol import PROTOCOL_VERSION
 
 
 @pytest.mark.asyncio
@@ -130,11 +131,13 @@ async def test_shutdown_ack_timeout_keeps_owned_exit_budget(monkeypatch):
 @pytest.mark.parametrize("phase", ["lookup", "spawn_before", "spawn_after", "connect", "connect_timeout"])
 async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path, phase):
     from jiuwenswarm.server.supervisor import identity, worker_process as worker_module
+    from jiuwenswarm.server.supervisor import identity_probe
 
     entered = asyncio.Event()
     release = asyncio.Event()
     children = []
     monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr(identity_probe, "probe_identity", AsyncMock(return_value=("a" * 64, None)))
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
 
     async def lookup(*args, **kwargs):
@@ -168,6 +171,7 @@ async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path
     monkeypatch.setattr(worker_module, "build_worker_command", lambda *a, **kw: [
         getattr(sys, "_base_executable", sys.executable), "-c", "import time; time.sleep(60)"])
     front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True, max_restarts=0)
+    monkeypatch.setattr(front, "_migrate_legacy_workers", AsyncMock())
     start = None
     stop = None
     try:
@@ -200,6 +204,7 @@ async def test_owned_startup_is_cleaned_across_every_await(monkeypatch, tmp_path
 @pytest.mark.parametrize("reused", [False, True])
 async def test_published_pid_retains_the_identity_checked_during_hello(monkeypatch, tmp_path, reused):
     from jiuwenswarm.server.supervisor import identity
+    from jiuwenswarm.server.supervisor import identity_probe
 
     pid = 987654
     lookup_count = 0
@@ -216,14 +221,16 @@ async def test_published_pid_retains_the_identity_checked_during_hello(monkeypat
             cmdline=lambda: [sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", str(tmp_path / "worker")],
             wait=lambda **kw: 0, kill=killed)
 
-    hello = {"kind": "hello", "protocol": 2, "pid": pid, "process_created": 1,
+    hello = {"kind": "hello", "protocol": PROTOCOL_VERSION, "pid": pid, "process_created": 1,
              "deployment_scope": identity.deployment_scope(), "data_scope": identity.data_scope(),
              "code_identity": "a" * 64, "stub": True}
     peer = SimpleNamespace(recv=AsyncMock(return_value=hello), send=AsyncMock(), close=AsyncMock())
     monkeypatch.setattr(identity, "code_identity", lambda: "a" * 64)
+    monkeypatch.setattr(identity_probe, "probe_identity", AsyncMock(return_value=("a" * 64, None)))
     monkeypatch.setattr(supervisor_module, "try_connect", AsyncMock(return_value=peer))
     monkeypatch.setattr(psutil, "Process", lookup)
     front = RuntimeSupervisor(Readiness(), socket_path=str(tmp_path / "worker"), stub=True)
+    monkeypatch.setattr(front, "_migrate_legacy_workers", AsyncMock())
     monkeypatch.setattr(front, "_start_side_tasks", Mock())
     await front._bring_up()
     assert front._worker_create_time == 1 and lookup_count == 1
@@ -280,6 +287,7 @@ async def test_public_complete_stop_during_unverified_hello_does_not_terminate_p
         monkeypatch.setattr(supervisor_module, "endpoint_is_listening", lambda _: True)
         monkeypatch.setattr(supervisor_module, "connect_with_retry", AsyncMock(return_value=peer))
         front = RuntimeSupervisor(Readiness(), socket_path=path, stub=True)
+        monkeypatch.setattr(front, "_migrate_legacy_workers", AsyncMock())
         start = asyncio.create_task(front.run_until_ipc_ready())
         await asyncio.wait_for(pending.wait(), 5)
         assert front._worker_pid is None and front._validated_conn is None

@@ -21,8 +21,7 @@ from typing import Any
 
 from json_repair import loads as json_repair_loads
 
-from jiuwenswarm.common.utils import get_user_workspace_dir
-
+from gateway.common.paths import get_user_workspace_dir
 
 SCHEMA_VERSION = 1
 MAX_DESCRIPTOR_BYTES = 2 * 1024 * 1024

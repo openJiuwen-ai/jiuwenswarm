@@ -18,6 +18,7 @@ from tests.unit_tests.gateway.config_routing_harness import (
     make_legacy_config_routing_client,
 )
 from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
+from gateway.common.config_panel import config_set_handlers as _gw_config_set_handlers
 from jiuwenswarm.common.config_panel import config_set_handlers, models_handlers
 from gateway.extensions.registry import ExtensionRegistry
 from gateway.channel_manager.web import app_web_handlers
@@ -170,7 +171,7 @@ async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
 async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
     monkeypatch, tmp_path, cli_agent, package, relative, runtime_state, platform_name
 ):
-    from jiuwenswarm.common import external_cli_runtime as runtime
+    from gateway.common import external_cli_runtime as runtime
 
     site = tmp_path / cli_agent / "site-packages"
     suffix = ".exe" if platform_name == "nt" else ""
@@ -195,17 +196,17 @@ async def test_external_cli_detect_finds_compatible_sdk_on_cold_gateway(
     monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: site)
     monkeypatch.setattr(runtime, "get_external_cli_runtime_status", lambda _agent: {"runtime_state": runtime_state})
     # Replace only this module's reference, not the process-wide os.name.
-    monkeypatch.setattr(config_set_handlers, "os", SimpleNamespace(name=platform_name))
+    monkeypatch.setattr(_gw_config_set_handlers, "os", SimpleNamespace(name=platform_name))
     competing_cli = tmp_path / "path-bin" / (cli_agent + suffix)
     competing_cli.parent.mkdir()
     competing_cli.touch()
     monkeypatch.setattr(
-        config_set_handlers.shutil, "which",
+        _gw_config_set_handlers.shutil, "which",
         lambda name: str(competing_cli) if name == cli_agent and runtime_state == "current" else None,
     )
-    monkeypatch.setattr(config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
-    monkeypatch.setattr(config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
-    assert config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
+    monkeypatch.setattr(_gw_config_set_handlers, "external_cli_reference_version", lambda _agent: "1.2.3")
+    monkeypatch.setattr(_gw_config_set_handlers, "run_external_cli_version_command", lambda *_args: ("1.2.3", ""))
+    assert _gw_config_set_handlers.external_cli_managed_cli_path(cli_agent) == ""
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True)))
 
@@ -1177,7 +1178,7 @@ async def test_path_set_refuses_jev_without_its_key_and_changes_nothing(
 
 @pytest.mark.asyncio
 async def test_path_set_round_trips_jev_display_name(monkeypatch) -> None:
-    from jiuwenswarm.common import config as config_module
+    from gateway.common import config as config_module
 
     current = {"browser": {"decision": {"mode": "llm", "provider": "typesafe"}}}
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: current)
@@ -1215,7 +1216,8 @@ async def test_jev_clear_gateway_route_persists_and_reloads_in_agentserver(tmp_p
     from dotenv import dotenv_values
     import yaml
 
-    from jiuwenswarm.common import config as config_module
+    from gateway.common import config as config_module
+    from jiuwenswarm.common import config as server_config_module
     from jiuwenswarm.common.browser_settings import JEV_PROVIDER_DEFAULTS
 
     config_path = tmp_path / "config.yaml"
@@ -1232,6 +1234,8 @@ async def test_jev_clear_gateway_route_persists_and_reloads_in_agentserver(tmp_p
     env_path.write_text("OPENROUTER_API_KEY=synthetic-router\nTYPESAFE_API_KEY=synthetic-typesafe\n", encoding="utf-8")
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
     monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
+    monkeypatch.setattr(server_config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(server_config_module, "get_config_file", lambda: config_path)
     monkeypatch.setattr(config_set_handlers, "ENV_FILE", env_path)
     monkeypatch.setattr(config_set_handlers, "_get_crypto_provider", lambda: None)
     monkeypatch.setenv("OPENROUTER_API_KEY", "synthetic-router")
@@ -3173,7 +3177,7 @@ async def test_external_cli_validate_paths_reports_existence(tmp_path):
 
 @pytest.mark.asyncio
 async def test_external_cli_prune_path_histories_drops_only_confirmed_misses(monkeypatch):
-    """The handler forwards the request to the server-side intersection prune."""
+    """The handler runs the intersection prune against gateway-side config copy."""
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
     pruned: list[tuple[str, list[str]]] = []
@@ -3182,8 +3186,10 @@ async def test_external_cli_prune_path_histories_drops_only_confirmed_misses(mon
         pruned.append((cli_agent, list(remove_paths)))
         return ["/kept/codex"]
 
+    # 该 prune 由 gateway 本地执行（读本进程 CONFIG_YAML_PATH），patch 必须落在
+    # gateway 副本上；母仓同名函数只在 ConfigAdapter 代理路径下才被执行。
     monkeypatch.setattr(
-        "jiuwenswarm.common.config.prune_external_cli_path_histories_in_config",
+        "gateway.common.config.prune_external_cli_path_histories_in_config",
         fake_prune,
     )
 
@@ -3749,7 +3755,7 @@ def test_build_optional_dependency_install_args_repair_mode_uses_force_reinstall
     """Repair mode must add --force-reinstall --no-deps and reinstall only the
     pinned SDK wheel: a plain install of an already-installed package is a pip
     no-op and cannot restore a deleted bundled CLI."""
-    from jiuwenswarm.common import external_cli_runtime
+    from gateway.common import external_cli_runtime
 
     monkeypatch.setattr(external_cli_runtime, "pinned_sdk_requirements", lambda _cli_agent: ["claude-agent-sdk==0.2.115"])
     monkeypatch.setattr(app_web_handlers.shutil, "which", lambda _name: None)
@@ -3774,7 +3780,7 @@ def test_optional_dependency_install_restates_openjiuwen_url_requirements(
     """uv pip refuses a URL dependency that is only transitive, so openjiuwen's
     git-pinned requirements must ride the install command as direct requirements;
     requirements gated on another extra stay out."""
-    from jiuwenswarm.common import external_cli_runtime
+    from gateway.common import external_cli_runtime
 
     monkeypatch.setattr(external_cli_runtime, "pinned_sdk_requirements", lambda _cli_agent: ["claude-agent-sdk==0.2.115"])
     monkeypatch.setattr(app_web_handlers.shutil, "which", lambda _name: None)
@@ -4244,7 +4250,7 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
     script_path = tmp_path / "claude.cmd"
     script_path.write_text("@echo off\n", encoding="utf-8")
 
-    monkeypatch.setattr(config_set_handlers, "is_windows_platform", lambda: True)
+    monkeypatch.setattr(_gw_config_set_handlers, "is_windows_platform", lambda: True)
 
     result = _detect_external_cli_agent("claude", str(script_path))
 
@@ -4260,17 +4266,17 @@ def test_resolve_external_cli_path_replaces_windows_script_shim_with_executable(
     exe.parent.mkdir()
     exe.write_bytes(b"MZ")
     monkeypatch.setattr(
-        config_set_handlers,
+        _gw_config_set_handlers,
         "os",
         SimpleNamespace(name="nt", environ={"PATH": str(exe.parent)}, pathsep=os.pathsep),
     )
     monkeypatch.setattr(
-        config_set_handlers.shutil,
+        _gw_config_set_handlers.shutil,
         "which",
         lambda name: str(shim) if name == "claude" else None,
     )
 
-    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
+    resolved, error, reason = _gw_config_set_handlers.resolve_external_cli_path("claude", "")
 
     assert resolved == str(exe)
     assert error == ""
@@ -4282,17 +4288,17 @@ def test_detect_external_cli_agent_reports_windows_script_shim_without_executabl
     shim.parent.mkdir()
     shim.write_text("@echo off\n", encoding="utf-8")
     monkeypatch.setattr(
-        config_set_handlers,
+        _gw_config_set_handlers,
         "os",
         SimpleNamespace(name="nt", environ={"PATH": str(shim.parent)}, pathsep=os.pathsep),
     )
     monkeypatch.setattr(
-        config_set_handlers.shutil,
+        _gw_config_set_handlers.shutil,
         "which",
         lambda name: str(shim) if name == "claude" else None,
     )
 
-    resolved, error, reason = config_set_handlers.resolve_external_cli_path("claude", "")
+    resolved, error, reason = _gw_config_set_handlers.resolve_external_cli_path("claude", "")
     assert resolved == ""
     assert reason == "windows_script"
 
@@ -4954,7 +4960,7 @@ async def test_channel_wechat_set_conf_accepts_valid_numeric(monkeypatch):
 def test_update_channel_subsection_in_config_persists_to_disk(tmp_path, monkeypatch):
     """验证 update_channel_subsection_in_config 确实将数据写到 config.yaml 文件。"""
     import yaml
-    from jiuwenswarm.common import config as cfg
+    from gateway.common import config as cfg
 
     # 1. 准备一个临时的 config.yaml，包含已有内容
     temp_config = tmp_path / "config.yaml"
@@ -4998,7 +5004,7 @@ def test_update_channel_subsection_in_config_persists_to_disk(tmp_path, monkeypa
 def test_update_channel_subsection_in_config_creates_missing_sections(tmp_path, monkeypatch):
     """当 channels / channel_id / subsection 不存在时，应自动创建。"""
     import yaml
-    from jiuwenswarm.common import config as cfg
+    from gateway.common import config as cfg
 
     temp_config = tmp_path / "config.yaml"
     # 只有顶层字段，没有任何 channels
@@ -5023,7 +5029,7 @@ def test_update_channel_subsection_in_config_creates_missing_sections(tmp_path, 
 def test_update_channel_subsection_in_config_overwrites_existing(tmp_path, monkeypatch):
     """相同 subsection 多次写入应覆盖而不是追加。"""
     import yaml
-    from jiuwenswarm.common import config as cfg
+    from gateway.common import config as cfg
 
     temp_config = tmp_path / "config.yaml"
     initial_data = {
@@ -5352,7 +5358,7 @@ def _use_managed_provider_runtime(
     runtime_state: str = "not_installed",
 ) -> list[SimpleNamespace]:
     """Expose a third-party ``acme`` runtime and capture install threads instead of running them."""
-    from jiuwenswarm.common import external_cli_runtime
+    from gateway.common import external_cli_runtime
 
     monkeypatch.setattr(
         app_web_handlers,
@@ -5458,8 +5464,8 @@ async def test_external_cli_install_status_reports_managed_provider_runtime(
 async def test_external_cli_custom_agent_remove_drops_config_before_uninstalling(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.common import config as config_module
-    from jiuwenswarm.common import custom_agent_runtime
+    from gateway.common import config as config_module
+    from gateway.common import custom_agent_runtime
 
     calls: list[tuple[str, object]] = []
     configured = [{"cli_agent": "claude"}, {"cli_agent": "acme", "cli_path": "/opt/acme"}]

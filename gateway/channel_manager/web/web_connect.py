@@ -33,6 +33,7 @@ from gateway.channel_manager.base import (
 from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
+from gateway.common.paths import get_logs_dir
 from gateway.common.protocol_ids import (
     InvalidProtocolId,
     validate_session_id,
@@ -53,7 +54,6 @@ from gateway.common.ws_diagnostics import (
 from gateway.routing.base_ws_channel import BaseWsChannel
 from gateway.routing.keys import AgentRef, RoutingKey
 from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.utils import get_logs_dir
 
 logger = logging.getLogger(__name__)
 

@@ -90,10 +90,11 @@ _WRITE_REVISION = 0
 def _read_model_selection_snapshot(session_id: str) -> str | None:
     """Expose a strict byte snapshot under the metadata writer's process lock."""
     from jiuwenswarm.server.runtime.session.lifecycle import resource_lock
+    from jiuwenswarm.common.model_selection_store import _read_text_ride_out_sharing
 
     with resource_lock("session", session_id):
         try:
-            return (get_agent_sessions_dir() / session_id / "metadata.json").read_text(encoding="utf-8")
+            return _read_text_ride_out_sharing(get_agent_sessions_dir() / session_id / "metadata.json")
         except FileNotFoundError:
             return None
 

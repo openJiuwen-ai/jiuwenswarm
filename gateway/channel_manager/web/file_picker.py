@@ -153,7 +153,7 @@ ATTACHMENT_DIALOG_EXTENSIONS: tuple[str, ...] = (
 
 def _last_dir_state_path() -> Path:
     try:
-        from jiuwenswarm.common.utils import get_user_workspace_dir
+        from gateway.common.paths import get_user_workspace_dir
 
         base = get_user_workspace_dir()
     except Exception:  # noqa: BLE001

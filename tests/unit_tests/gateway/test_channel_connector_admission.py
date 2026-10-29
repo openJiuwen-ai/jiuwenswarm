@@ -13,7 +13,7 @@ import pytest
 
 
 def _channel_update(name, monkeypatch):
-    source = Path(__file__).parents[3] / "jiuwenswarm/gateway/app_gateway.py"
+    source = Path(__file__).parents[3] / "gateway/app_gateway.py"
     tree = ast.parse(source.read_text(encoding="utf-8"))
     apply = next(node for node in ast.walk(tree)
                  if isinstance(node, ast.AsyncFunctionDef) and node.name == "_apply_channel_config")

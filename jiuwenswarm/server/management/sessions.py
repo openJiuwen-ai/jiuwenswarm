@@ -211,13 +211,13 @@ class SessionsManagement:
                         )
 
                         try:
-                            host = active_recommendation_host()
+                            recommendation = active_recommendation_host()
                             if (
-                                host is not None
+                                recommendation is not None
                                 and previous_project_id
                                 and previous_project_id != project.project_id
                             ):
-                                await host.session_left_project(previous_project_id, sid)
+                                await recommendation.session_left_project(previous_project_id, sid)
                         except Exception:  # noqa: BLE001 - rebind already persisted
                             logger.warning(
                                 "[AgentWebSocketServer] session rebind recommendation "

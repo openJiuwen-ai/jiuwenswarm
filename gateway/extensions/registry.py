@@ -11,6 +11,8 @@ from gateway.extensions import base_crypto
 from gateway.extensions.base_crypto import CryptoProvider
 
 if TYPE_CHECKING:
+    from gateway.common.client.agent_client import AgentServerClient
+    from gateway.common.client.third_agent import ThirdAgent
     from gateway.extensions.sdk.agent_server_client import (
         AgentServerClientExtension,
     )
@@ -18,8 +20,6 @@ if TYPE_CHECKING:
         ApplicationPluginExtension,
     )
     from gateway.extensions.sdk.third_agent import ThirdAgentExtension
-    from jiuwenswarm.common.client.agent_client import AgentServerClient
-    from jiuwenswarm.common.client.third_agent import ThirdAgent
 else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.

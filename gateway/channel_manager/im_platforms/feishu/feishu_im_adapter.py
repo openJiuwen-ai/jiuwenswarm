@@ -12,8 +12,8 @@ from gateway.im_pipeline.im_inbound import IMHistoryMessage
 
 try:
     import lark_oapi as lark
-    from lark_oapi.api.contact.v3 import GetUserRequest
     from lark_oapi.api.application.v6 import GetApplicationRequest
+    from lark_oapi.api.contact.v3 import GetUserRequest
     FEISHU_AVAILABLE = True
 except ImportError:
     FEISHU_AVAILABLE = False
@@ -21,7 +21,7 @@ except ImportError:
     GetUserRequest = None
     GetApplicationRequest = None
 
-from jiuwenswarm.common.utils import logger
+from gateway.common.paths import logger
 
 
 class FeishuIMPlatformAdapter:
@@ -214,7 +214,7 @@ class FeishuIMPlatformAdapter:
         if not name or not self._api_client:
             return ""
         try:
-            from jiuwenswarm.common.utils import get_interactions_dir
+            from gateway.common.paths import get_interactions_dir
 
             interactions_dir = get_interactions_dir()
             for fp in interactions_dir.glob("*.json"):

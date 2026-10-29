@@ -254,7 +254,7 @@ class SandboxManagement:
             await host.services.send(ws, wire)
 
     async def _handle_sandbox_enable(self, channel_id: str) -> dict[str, Any]:
-        host = self.host
+        owner = self.host
         endpoint = get_sandbox_endpoint()
         url = endpoint.get("url") or "http://127.0.0.1:8321"
         sandbox_type = endpoint.get("type") or "jiuwenbox"
@@ -270,9 +270,9 @@ class SandboxManagement:
             raise RuntimeError(
                 f"sandbox policy 文件不存在: {policy_path} (原始配置 sandbox.policy_file={raw_policy or f'<default:{DEFAULT_SANDBOX_POLICY_FILE}>'!r})"
             )
-        host, preferred_port = host._parse_sandbox_host_port(url)
+        host, preferred_port = owner._parse_sandbox_host_port(url)
         if startup_mode == "internal":
-            port = host._allocate_internal_jiuwenbox_port(host, preferred_port)
+            port = owner._allocate_internal_jiuwenbox_port(host, preferred_port)
             if port != preferred_port:
                 url = f"http://{host}:{port}"
                 logger.info(
@@ -284,7 +284,7 @@ class SandboxManagement:
             port = preferred_port
         api_token = resolve_sandbox_api_token(startup_mode=startup_mode)
         sync_sandbox_api_token_environ(api_token)
-        ok = await host._jiuwenbox_runner.ensure_running(
+        ok = await owner._jiuwenbox_runner.ensure_running(
             host=host,
             port=port,
             startup_mode=startup_mode,
@@ -296,7 +296,7 @@ class SandboxManagement:
                 raise RuntimeError(
                     f"jiuwenbox 未在 {host}:{port} 监听 (sandbox.startup_mode=external); 请在另一终端先启动 jiuwenbox-server, 例如:\n  sudo -E .venv/bin/python -m uvicorn jiuwenbox.server.app:app --host {host} --port {port}\n  (JIUWENBOX_POLICY_PATH={policy_path})"
                 )
-            stderr_tail = host._jiuwenbox_runner.get_stderr_tail(20)
+            stderr_tail = owner._jiuwenbox_runner.get_stderr_tail(20)
             hint = (
                 "\n--- jiuwenbox stderr (tail) ---\n" + stderr_tail
                 if stderr_tail
@@ -315,7 +315,7 @@ class SandboxManagement:
         except Exception as exc:
             logger.warning("[command.sandbox] persist sandbox endpoint failed: %s", exc)
         runtime = update_sandbox_runtime({"enabled": True})
-        await host._agent_manager.recreate_agent(channel_id, immediate=True)
+        await owner._agent_manager.recreate_agent(channel_id, immediate=True)
         return {
             "runtime": runtime,
             "endpoint": {
@@ -336,14 +336,14 @@ class SandboxManagement:
         }
 
     async def _handle_sandbox_disable(self, channel_id: str) -> dict[str, Any]:
-        host = self.host
+        owner = self.host
         runtime = update_sandbox_runtime({"enabled": False})
-        await host._agent_manager.recreate_agent(channel_id, immediate=True)
-        owned_endpoint = host._jiuwenbox_runner.get_owned_endpoint()
+        await owner._agent_manager.recreate_agent(channel_id, immediate=True)
+        owned_endpoint = owner._jiuwenbox_runner.get_owned_endpoint()
         jiuwenbox_stopped = False
         if owned_endpoint is not None:
             try:
-                await host._jiuwenbox_runner.stop()
+                await owner._jiuwenbox_runner.stop()
                 jiuwenbox_stopped = True
             except Exception as exc:
                 logger.warning(
@@ -715,7 +715,7 @@ class SandboxManagement:
 
     async def _attach_landlock_status(self, payload: dict[str, Any]) -> None:
         """Attach jiuwenbox Landlock capability summary to sandbox responses."""
-        host = self.host
+        owner = self.host
         try:
             endpoint = get_sandbox_endpoint()
             jb = payload.get("jiuwenbox")
@@ -724,14 +724,14 @@ class SandboxManagement:
                 port = int(jb["port"])
             else:
                 url = endpoint.get("url") or "http://127.0.0.1:8321"
-                host, port = host._parse_sandbox_host_port(url)
-            health = await host._jiuwenbox_runner.fetch_health(host, port)
+                host, port = owner._parse_sandbox_host_port(url)
+            health = await owner._jiuwenbox_runner.fetch_health(host, port)
             landlock_supported = (
                 bool(health.get("landlock_supported")) if health else False
             )
             policy_file = endpoint.get("policy_file") or DEFAULT_SANDBOX_POLICY_FILE
             policy_path = resolve_sandbox_policy_path(policy_file)
-            compatibility = host._read_landlock_compatibility(policy_path)
+            compatibility = owner._read_landlock_compatibility(policy_path)
             payload["landlock"] = {
                 "supported": landlock_supported,
                 "compatibility": compatibility,
@@ -823,12 +823,12 @@ class SandboxManagement:
         - 否则若 ``preferred_port`` 当前无人占用, 用之;
         - 再否则让内核挑一个空闲端口返回。
         """
-        host = self.host
-        if host._jiuwenbox_runner.is_owned_listener(host, preferred_port):
+        owner = self.host
+        if owner._jiuwenbox_runner.is_owned_listener(host, preferred_port):
             return preferred_port
-        if host._is_tcp_port_bindable(host, preferred_port):
+        if owner._is_tcp_port_bindable(host, preferred_port):
             return preferred_port
-        new_port = host._pick_free_tcp_port(host)
+        new_port = owner._pick_free_tcp_port(host)
         logger.warning(
             "[command.sandbox] preferred port %s:%d is busy; allocating fresh port %d for new jiuwenbox instance",
             host,

@@ -13,6 +13,14 @@ from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
 from jiuwenswarm.server.worker.telemetry import StartupTelemetry
 
 
+@pytest.fixture(autouse=True)
+def cold_preparation_ticket(monkeypatch):
+    from jiuwenswarm.server.worker import early_import
+
+    # Each case models a fresh Worker rather than a ticket installed by another case.
+    monkeypatch.setattr(early_import, "current_import_ticket", lambda: None)
+
+
 @pytest.mark.asyncio
 async def test_required_configuration_and_sdk_import_overlap_before_runtime_patches(monkeypatch):
     barrier = threading.Barrier(2, timeout=2)

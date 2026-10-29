@@ -172,7 +172,7 @@ async def test_push_prefers_bound_dingtalk_session_over_last_star(tmp_path) -> N
             }
         }
     }
-    with patch("jiuwenswarm.common.config.get_config_raw", return_value=fake_cfg):
+    with patch("gateway.common.config.get_config_raw", return_value=fake_cfg):
         await svc._push_to_targets(job, state, text="hello from T1", is_placeholder=False)
 
     assert len(handler.published) == 1
@@ -219,7 +219,7 @@ async def test_push_internal_session_id_falls_back_to_last_star(tmp_path) -> Non
             }
         }
     }
-    with patch("jiuwenswarm.common.config.get_config_raw", return_value=fake_cfg):
+    with patch("gateway.common.config.get_config_raw", return_value=fake_cfg):
         await svc._push_to_targets(job, state, text="hello", is_placeholder=False)
 
     msg = handler.published[0]

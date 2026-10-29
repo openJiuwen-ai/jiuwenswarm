@@ -11,7 +11,7 @@ binds/listens without allocating a port itself.
 Do not conflate the two rows: ``web`` is the *container* web port used by the
 southbound ``?port=`` query; ``web_svc_port`` is the Gateway northbound port.
 
-The etcd transport lives in ``jiuwenswarm.common.etcd``; the Gateway injects the
+The etcd transport lives in ``gateway.common.etcd``; the Gateway injects the
 apply callback and owns this service's process lifecycle.
 
 Trust boundary: this prefix is registry input and decides which ports the

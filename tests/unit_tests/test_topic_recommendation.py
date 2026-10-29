@@ -2239,7 +2239,7 @@ async def test_rebind_reports_success_when_recommendation_hook_fails(monkeypatch
             raise RuntimeError("sqlite locked")
 
     monkeypatch.setattr(
-        "jiuwenswarm.server.agent_ws_server.get_session_metadata",
+        "jiuwenswarm.server.management.sessions.get_session_metadata",
         metadata,
     )
     monkeypatch.setattr(

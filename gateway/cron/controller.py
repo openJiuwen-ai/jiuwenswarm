@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from functools import wraps
-
-
 from datetime import datetime, timedelta
+from functools import wraps
 from typing import Any, ClassVar
 from zoneinfo import ZoneInfo
 
-
+from gateway.common.scheduled_task_policy import is_scheduled_task_supported
 from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
@@ -33,8 +31,6 @@ from gateway.cron.models import (
 from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from gateway.cron.scheduler import CronSchedulerService, _cron_next_push_dt
 from gateway.cron.store_base import CronJobStoreBackend
-from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
-
 
 # 列表/调度等批量路径查询"项目准入"闸门时的最大并发数。
 _GATE_QUERY_CONCURRENCY = 8
@@ -365,8 +361,8 @@ class CronController:
         )
         model_selection = params.get("model_selection")
         if model_selection is not None:
+            from gateway.common.model_routing_registry import ModelSelectionResolver
             from gateway.common.model_selection import ModelSelection
-            from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             selection = ModelSelection.model_validate(model_selection)
             ModelSelectionResolver().resolve(selection)
             model_selection = selection.model_dump()

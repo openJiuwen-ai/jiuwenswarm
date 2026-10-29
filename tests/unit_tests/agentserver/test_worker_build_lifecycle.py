@@ -237,6 +237,11 @@ async def test_owned_protocol_one_without_shutdown_ack_waits_for_exit(isolated_w
         await worker.spawn()
         connection = await connect_with_retry(isolated_worker, timeout=15)
         hello = await connection.recv()
+        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+        # This process is a current Worker. Release its real startup barrier
+        # before simulating only a legacy peer's missing shutdown acknowledgement.
+        await connection.send(startup_acceptance(hello))
         # Protocol-one exit handling does not waive the deployment check.
         hello["protocol"] = 1
 
@@ -436,6 +441,9 @@ async def test_dmg_cannot_retire_python_or_whl_worker(isolated_worker, tmp_path,
         await worker.spawn()
         connection = await connect_with_retry(isolated_worker, timeout=15)
         hello = await connection.recv()
+        from jiuwenswarm.server.ipc.startup import startup_acceptance
+
+        await connection.send(startup_acceptance(hello))
         if legacy:
             hello.pop("deployment_scope")
             hello["protocol"] = 1

@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.common.etcd.client import (
+from gateway.common.etcd.client import (
     EtcdCasError,
     EtcdError,
     EtcdJsonClient,
@@ -14,7 +14,7 @@ from jiuwenswarm.common.etcd.client import (
     EtcdRangeResult,
     prefix_range_end,
 )
-from jiuwenswarm.runtime.cron.etcd_store import EtcdCronJobStore
+from gateway.runtime.cron.etcd_store import EtcdCronJobStore
 
 
 class FakeEtcdJsonClient:

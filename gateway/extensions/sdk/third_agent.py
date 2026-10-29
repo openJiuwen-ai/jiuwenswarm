@@ -2,8 +2,8 @@
 
 from abc import abstractmethod
 
+from gateway.common.client.third_agent import ThirdAgent
 from gateway.extensions.sdk.base import BaseExtension
-from jiuwenswarm.common.client.third_agent import ThirdAgent
 
 
 class ThirdAgentExtension(BaseExtension):
