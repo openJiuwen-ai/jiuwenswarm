@@ -750,13 +750,15 @@ def _derive_user_overlay_delta(
             ):
                 base_map[key] = action
         cfg_overrides = permissions.get("approval_overrides")
-        kept_overrides = [
-            entry
-            for entry in (cfg_overrides if isinstance(cfg_overrides, list) else [])
-            if isinstance(entry, dict)
-            and _LEVEL_RANK.get(str(entry.get("action") or "allow").lower(), 0)
-            > _LEVEL_RANK.get(base_map.get(_approval_override_key(entry), "deny"), 0)
-        ]
+        kept_overrides = []
+        for entry in cfg_overrides if isinstance(cfg_overrides, list) else []:
+            if not isinstance(entry, dict):
+                continue
+            action = str(entry.get("action") or "allow").lower()
+            base_action = base_map.get(_approval_override_key(entry), "deny")
+            # 仅基线外或更放行条目入增量（G.EXP.04：推导式不承载多条件）
+            if _LEVEL_RANK.get(action, 0) > _LEVEL_RANK.get(base_action, 0):
+                kept_overrides.append(entry)
         if kept_overrides:
             payload["approval_overrides"] = kept_overrides
         else:
