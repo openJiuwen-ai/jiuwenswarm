@@ -208,22 +208,28 @@ def _load_yaml_cache(*, force_reload: bool = False) -> dict[str, Any]:
     覆盖表，必须读 ``_cached_agents``，**禁止**对返回值做 ``.get("agents")``
     （返回值永远不含该键）。
     """
+    global _cached_yaml_stat
     if not force_reload and _cached_global is not None:
         if not _yaml_cache_stale():
             return copy.deepcopy(_cached_global)
-        # 跨进程写入失步：先失效 get_config 的 20s TTL 解析缓存再整段
-        # 重读，否则 _load_permissions_from_yaml 拿到的仍是陈旧解析。
-        try:
-            from jiuwenswarm.common.config import clear_config_cache
+    # get_config 的 20s TTL 解析缓存可能早于外部写入：读取前先失效再整段
+    # 重读，保证 raw 内容与随后记录的 stat 指向同一份文件。否则首次加载
+    # 落在 TTL 窗口内时，raw 是旧解析、基线却记了新 mtime/size，
+    # _yaml_cache_stale 恒 False，跨进程失步探测永久失效（检视 2026-10-29）。
+    try:
+        from jiuwenswarm.common.config import clear_config_cache
 
-            clear_config_cache()
-        except Exception:  # 失效失败不阻塞重读
-            logger.warning(
-                "[permissions_config] clear_config_cache failed on stale reload",
-                exc_info=True,
-            )
+        clear_config_cache()
+    except Exception:  # 失效失败不阻塞重读
+        logger.warning(
+            "[permissions_config] clear_config_cache failed before reload",
+            exc_info=True,
+        )
+    stat_before = _current_yaml_stat()
     raw = _load_permissions_from_yaml()
-    _record_yaml_stat()
+    # 读取期间文件又被改写：以读取前 stat 为基线，下一次调用判 stale 重读。
+    stat_after = _current_yaml_stat()
+    _cached_yaml_stat = stat_before if stat_after != stat_before else stat_after
     return _ingest_permissions_raw(raw, "yaml")
 
 

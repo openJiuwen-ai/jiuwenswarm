@@ -48,6 +48,7 @@ from jiuwenswarm.common.config import (
     get_skill_create_enabled,
     resolve_string_or_list_config,
 )
+from jiuwenswarm.common.utils import DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
     resolve_model_config,
@@ -61,6 +62,19 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
 logger = logging.getLogger(__name__)
+
+
+def _resolve_member_image_multimodal(config: dict[str, Any]) -> bool:
+    """成员侧图片多模态开关：config 显式 bool 优先，否则产品默认值。
+
+    与 interface_deep._resolve_enable_read_image_multimodal 同口径
+    （顶层 ``enable_read_image_multimodal`` 键，缺省
+    ``DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL``）。
+    """
+    configured = (config or {}).get("enable_read_image_multimodal")
+    if isinstance(configured, bool):
+        return configured
+    return DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
@@ -932,6 +946,12 @@ def build_member_deep_agent_spec(
         "tools": merged_tools,
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
+        # 与 Agent 路径 _resolve_enable_read_image_multimodal 同口径显式
+        # 落 bool：成员 spec 缺省 None 时 MultimodalImageRail 的
+        # deep_config 回退读到 None→False，恒走剥离分支，与 Agent 模式
+        # 在 enable_read_image_multimodal:true 下行为分叉（检视
+        # 2026-10-29）。
+        "enable_read_image_multimodal": _resolve_member_image_multimodal(config),
     }
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
