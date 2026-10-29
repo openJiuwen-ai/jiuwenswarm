@@ -22,7 +22,7 @@ export type JiuwenMateChatApi = Pick<
   | 'renameConversation'
   | 'setConversationPinned'
   | 'deleteConversation'
->;
+> & Partial<Pick<JiuwenMateApi, 'sharing'>>;
 
 /** Messages run on the server; pushed fragments show progress, and asking again covers missed pushes. */
 const POLL_INTERVAL_MS = 1500;

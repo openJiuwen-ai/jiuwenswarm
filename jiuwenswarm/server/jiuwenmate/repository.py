@@ -83,10 +83,11 @@ _TEMPLATE_SAVE_LOCK = RLock()
 
 
 class PersistentAgentRepository(SQLiteStore):
-    """Colleague configurations, their IM agents and the published configuration versions.
+    """Colleague configurations, dedicated channel agents and published configuration versions.
 
-    A configuration's row is its Web agent. Each IM agent has its own row plus one
-    ``colleague_connections`` row naming the configuration and the platform app it serves.
+    A configuration's row is the canonical Web/Feishu agent. Dedicated channels such as
+    DingTalk have their own row plus one ``colleague_connections`` row. Older Feishu rows
+    remain readable so existing bindings can keep working until they are rebound.
     """
 
     _schema = _SCHEMA

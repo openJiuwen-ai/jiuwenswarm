@@ -615,6 +615,9 @@ _FORWARD_REQ_METHODS = frozenset({
     "jiuwenmate.request.get",
     "jiuwenmate.request.abort",
     "jiuwenmate.permission.decide",
+    "jiuwenmate.sharing.list",
+    "jiuwenmate.sharing.decide",
+    "jiuwenmate.sharing.revoke",
     "jiuwenmate.conversation.list",
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.pin",
@@ -656,6 +659,9 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "jiuwenmate.request.get",
     "jiuwenmate.request.abort",
     "jiuwenmate.permission.decide",
+    "jiuwenmate.sharing.list",
+    "jiuwenmate.sharing.decide",
+    "jiuwenmate.sharing.revoke",
     "jiuwenmate.conversation.list",
     "jiuwenmate.conversation.rename",
     "jiuwenmate.conversation.pin",
@@ -4465,7 +4471,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         return True
 
     async def _channel_feishu_bind_agent(ws, req_id, params, session_id):
-        """Bind one Feishu app to a colleague through the agent AgentServer keeps for that app."""
+        """Bind one Feishu app to the colleague's canonical JiuwenMate Agent ID."""
         cm = _resolve(channel_manager)
         if cm is None:
             await channel.send_response(
@@ -4827,7 +4833,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _channel_feishu_unbind_agent(ws, req_id, params, session_id):
-        """Delete one colleague's Feishu app; its agent keeps its data and returns if the app is bound again."""
+        """Delete one colleague's Feishu app binding while keeping the shared Agent data."""
         cm = _resolve(channel_manager)
         app_id = str(params.get("app_id") or "").strip() if isinstance(params, dict) else ""
         if cm is None or not app_id:

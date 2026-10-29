@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Literal
@@ -134,7 +135,7 @@ class PermissionApprovalRepository(SQLiteStore):
             ]
         }).model_dump(mode="json")
 
-    def create(self, state: RequestState, event, *, now: datetime) -> PermissionApproval:
+    def create(self, state: RequestState, event, *, now: datetime, recovered: bool = False) -> PermissionApproval:
         """Create or return one pending approval from a durably recorded pause event."""
         record = state.record
         payload = event.payload
@@ -143,7 +144,8 @@ class PermissionApprovalRepository(SQLiteStore):
             raise PersistentAgentError("execution is not awaiting permission confirmation")
         route = record.route_snapshot
         approval_id = secrets.token_hex(6)
-        expires_at = now + APPROVAL_TIMEOUT
+        created_at = event.occurred_at if recovered else now
+        expires_at = created_at + APPROVAL_TIMEOUT
         with self._transaction() as conn:
             existing = conn.execute(
                 "SELECT * FROM permission_approvals WHERE namespace_id = ? AND execution_id = ?",
@@ -151,6 +153,11 @@ class PermissionApprovalRepository(SQLiteStore):
             ).fetchone()
             if existing is not None:
                 return self._approval(existing)
+            if recovered and not any(
+                row["event_id"] == event.event_id
+                for row in self._unregistered_pauses(conn, record.namespace_id, record.session_id)
+            ):
+                raise PersistentAgentError("confirmation pause is no longer current", code="CONFLICT")
             # A previous one-time decision has now been applied; a new pause replaces it.
             conn.execute(
                 "UPDATE permission_approvals SET status = 'consumed' WHERE namespace_id = ? AND request_id = ?"
@@ -171,7 +178,7 @@ class PermissionApprovalRepository(SQLiteStore):
                     record.access.principal_ref,
                     None if route is None else json.dumps(route.to_dict(), ensure_ascii=False),
                     json.dumps(intercepted, ensure_ascii=False),
-                    now.isoformat(),
+                    created_at.isoformat(),
                     expires_at.isoformat(),
                 ),
             )
@@ -179,6 +186,51 @@ class PermissionApprovalRepository(SQLiteStore):
                 "SELECT * FROM permission_approvals WHERE approval_id = ?", (approval_id,)
             ).fetchone()
         return self._approval(row)
+
+    @staticmethod
+    def _unregistered_pauses(conn: sqlite3.Connection, namespace_id: str, session_id: str | None) -> list[sqlite3.Row]:
+        # Permission-only repositories do not own host request/log tables.
+        tables = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' "
+            "AND name IN ('requests','executions','execution_events')",
+        ).fetchall()
+        if len(tables) != 3:
+            return []
+        session_clause = " AND r.session_id=?" if session_id is not None else ""
+        params = (namespace_id, session_id) if session_id is not None else (namespace_id,)
+        return conn.execute(
+            "SELECT event.event_id, event.event_json FROM requests r "
+            "JOIN executions e ON e.namespace_id=r.namespace_id AND e.request_id=r.request_id "
+            "JOIN execution_events event ON event.namespace_id=e.namespace_id "
+            "AND event.execution_id=e.execution_id AND event.request_id=r.request_id "
+            "WHERE r.namespace_id=?" + session_clause + " "
+            "AND (r.status='dispatched' OR (r.status='ended' AND r.outcome='paused')) "
+            "AND e.rowid=(SELECT latest.rowid FROM executions latest "
+            "WHERE latest.namespace_id=r.namespace_id AND latest.request_id=r.request_id "
+            "ORDER BY latest.started_at DESC, latest.rowid DESC LIMIT 1) "
+            "AND event.local_seq=(SELECT MAX(tail.local_seq) FROM execution_events tail "
+            "WHERE tail.namespace_id=e.namespace_id AND tail.execution_id=e.execution_id) "
+            "AND event.event_type='execution.paused' "
+            "AND json_extract(event.event_json, '$.payload.reason')='awaiting_confirmation' "
+            "AND NOT EXISTS (SELECT 1 FROM permission_approvals native "
+            "WHERE native.namespace_id=e.namespace_id AND native.execution_id=e.execution_id) "
+            "ORDER BY event.rowid",
+            params,
+        ).fetchall()
+
+    def unregistered_pauses(self, namespace_id: str, session_id: str | None = None) -> list:
+        """Latest live confirmation pauses without a native row, including the crash/write-failure gap.
+
+        Any native row, even a consumed one, prevents historical re-registration.
+        The creation transaction rechecks eligibility before repairing the gap.
+        """
+        from contextlib import closing
+
+        from openjiuwen.harness.persistent_agent import AgentEvent
+
+        with closing(self._connect()) as conn:
+            rows = self._unregistered_pauses(conn, namespace_id, session_id)
+        return [AgentEvent.model_validate_json(row["event_json"]) for row in rows]
 
     def pending_for_request(self, namespace_id: str, request_id: str) -> PermissionApproval | None:
         from contextlib import closing
@@ -271,13 +323,19 @@ class PermissionApprovalRepository(SQLiteStore):
         from contextlib import closing
 
         with closing(self._connect()) as conn:
-            row = conn.execute(
-                "SELECT 1 FROM permission_approvals WHERE namespace_id = ? AND session_id = ?"
-                " AND status IN ('pending', 'approved', 'rejected', 'expired')"
-                " LIMIT 1",
-                (namespace_id, session_id),
-            ).fetchone()
-        return row is not None
+            # Both lookups must see one snapshot: registration can move the
+            # barrier from the durable pause to a native row between reads.
+            conn.execute("BEGIN")
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM permission_approvals WHERE namespace_id = ? AND session_id = ?"
+                    " AND status IN ('pending', 'approved', 'rejected', 'expired')"
+                    " LIMIT 1",
+                    (namespace_id, session_id),
+                ).fetchone()
+                return row is not None or bool(self._unregistered_pauses(conn, namespace_id, session_id))
+            finally:
+                conn.rollback()
 
     def is_ready_for_request(self, namespace_id: str, session_id: str, request_id: str) -> bool:
         """Whether this queued Request is the continuation authorized by a durable decision."""
@@ -396,6 +454,45 @@ class PermissionApprovalRepository(SQLiteStore):
                 ).fetchone()
                 expired.append(self._approval(updated))
         return expired
+
+    def decide_sharing(self, approval_id: str, *, decisions: dict[str, bool], now: datetime) -> PermissionApproval:
+        """Apply host-authenticated owner decisions to the exact business-search interruptions only.
+
+        This internal entry is never a tool-approval API. The caller authenticates the owner and
+        binds each decision to its sharing record; unrelated intercepted operations remain denied.
+        """
+        from openjiuwen.harness.persistent_agent import ConfirmReply
+
+        with self._transaction() as conn:
+            row = conn.execute("SELECT * FROM permission_approvals WHERE approval_id = ?", (approval_id,)).fetchone()
+            if row is None:
+                raise PersistentAgentError("permission approval not found", code="NOT_FOUND")
+            approval = self._approval(row)
+            if approval.status != "pending":
+                return approval
+            calls = {item["tool_call_id"]: item for item in approval.intercepted}
+            if not decisions or any(
+                call_id not in calls or calls[call_id]["tool_name"] != "search_group_messages"
+                or not calls[call_id].get("approval_ref") or not isinstance(choice, bool)
+                for call_id, choice in decisions.items()
+            ):
+                raise PersistentAgentError("sharing decisions must name exact business search calls", code="FORBIDDEN")
+            expired = now >= approval.expires_at
+            allowed = {key for key, choice in decisions.items() if choice and not expired}
+            reply = ConfirmReply.model_validate({"responses": [
+                {"kind": "permission", "tool_call_id": item["tool_call_id"],
+                 "choice": "approve" if item["tool_call_id"] in allowed else "reject",
+                 "feedback": None if item["tool_call_id"] in allowed else "Cross-group sharing was not approved."}
+                for item in approval.intercepted
+            ]}).model_dump(mode="json")
+            status = "expired" if expired else "approved" if allowed else "rejected"
+            conn.execute(
+                "UPDATE permission_approvals SET status = ?, decision = ?, reply_json = ?"
+                " WHERE approval_id = ? AND status = 'pending'",
+                (status, "approve" if allowed else "reject", json.dumps(reply, ensure_ascii=False), approval_id),
+            )
+            updated = conn.execute("SELECT * FROM permission_approvals WHERE approval_id = ?", (approval_id,)).fetchone()
+        return self._approval(updated)
 
     def resume_reply(self, namespace_id: str, request_id: str) -> PermissionApproval | None:
         """Return the newest decided reply, retained until the resumed execution is durably terminal."""
