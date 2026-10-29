@@ -534,7 +534,20 @@ function AppContent({
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
   // 再次点击已激活的“实验”图标时递增，作为展开 RSI 实验栏的信号（对齐 chat 图标展开会话栏的行为）
   const [rsiRailExpandNonce, setRsiRailExpandNonce] = useState(0);
-  const [isJiuwenMate, setIsJiuwenMate] = useState(false);
+  const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
+    try {
+      return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', String(isJiuwenMate));
+    } catch {
+      // Keep the mode switch usable when browser storage is unavailable.
+    }
+  }, [isJiuwenMate]);
   const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,

@@ -14,6 +14,7 @@ from jiuwenswarm.common.file_download_token import WebFileDownloadManager, valid
 from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
 from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel, FeishuConfig
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.gateway.routing.keys import ChannelKey
 from jiuwenswarm.server.jiuwenmate.agent_manager import AgentManager
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
 from jiuwenswarm.server.jiuwenmate.execution_models import (
@@ -68,14 +69,20 @@ def _access(*features: str) -> AccessSnapshot:
     )
 
 
-def _accept(repository, source_ref, *, access=None, route=None):
-    session = repository.resolve_session(NS, AGENT, ConversationRef.web("conv-1"), now=NOW)
+def _accept(repository, source_ref, *, access=None, route=None, request_input=None):
+    request_input = request_input or core.RequestInput(kind="scheduled", text="整理周报", reply_target="reply-1")
+    conversation = (
+        ConversationRef.group("cid_group")
+        if request_input.kind == "group_message"
+        else ConversationRef.web("conv-1")
+    )
+    session = repository.resolve_session(NS, AGENT, conversation, now=NOW)
     state, _ = repository.accept_request(
         session,
         snapshot=SNAPSHOT,
         source_ref=source_ref,
         access=access or _access(WORKSPACE_READ),
-        request_input=core.RequestInput(kind="scheduled", text="整理周报", reply_target="reply-1"),
+        request_input=request_input,
         received_at=NOW,
         route_snapshot=route or RequestRouteSnapshot(channel="web", target_id="conv-1", source_message_id="m-1"),
     )
@@ -89,12 +96,12 @@ def _start(repository, state):
 
 def _file_event(
     execution, seq, *, output_id="out-file", file_ref=FILE_REF, size=len(CONTENT),
-    caption="本周周报", file_path="output/周报.md",
+    caption="本周周报", file_path="output/周报.md", share_mode="attachment",
 ):
     payload = {
         "output_id": output_id,
         "target_ref": "reply-1",
-        "share_mode": "attachment",
+        "share_mode": share_mode,
         "file_ref": file_ref,
         "file_path": file_path,
         "file_size": size,
@@ -294,6 +301,75 @@ async def test_paused_hands_off_files_and_feishu_claims_the_shared_workspace_out
         file_key="fk_1",
     )
     assert row["file_key"] == "fk_1"
+
+
+async def test_dingtalk_group_upload_carries_trusted_sender_and_share_mode(host):
+    route = RequestRouteSnapshot(
+        channel="dingtalk", target_id="cid_group", app_id="ding-app", source_message_id="msg-1",
+    )
+    source = core.GroupMessage(
+        message_id="msg-1", sender_id="staff-1", sender_name="Staff",
+        sender_kind="human", received_at=NOW, text="upload this",
+    )
+    request_input = core.RequestInput(
+        kind="group_message", text="upload this", reply_target="cid_group", source=source,
+    )
+    state = _accept(host.repository, "dingtalk:msg-1", route=route, request_input=request_input)
+    execution = _start(host.repository, state)
+    await host.port.record(execution, _file_event(execution, 1, caption=None, share_mode="upload"))
+    await host.port.record(execution, _final(execution, 2))
+
+    jobs = host.repository.claim_pending_result_deliveries(
+        NS, channels=frozenset({"dingtalk"}), now=NOW,
+    )
+    file_job, = [job for job in jobs if "file" in job]
+    assert file_job["sender_staff_id"] == "staff-1"
+    assert file_job["file"]["share_mode"] == "upload"
+
+
+async def test_channel_manager_passes_dingtalk_group_upload_context(tmp_path):
+    source = tmp_path / "slides.pptx"
+    source.write_bytes(b"pptx")
+    channel = SimpleNamespace(
+        channel_id="dingtalk",
+        persistent_app_id="ding-app",
+        send_persistent_result=AsyncMock(return_value={"outcome": "delivered", "external_message_id": "dentry-1"}),
+    )
+    manager = ChannelManager(object.__new__(MessageHandler))
+    manager._channels[ChannelKey("dingtalk", "default")] = channel
+    manager._persistent_output_file = lambda _file: source
+
+    result = await manager.deliver_persistent_result({
+        "channel": "dingtalk",
+        "app_id": "ding-app",
+        "chat_id": "cid-group",
+        "is_direct_message": False,
+        "sender_staff_id": "staff-1",
+        "idempotency_key": "delivery-1",
+        "text": None,
+        "file": {
+            "key": f"{NS}/{AGENT}/output/slides.pptx",
+            "name": "slides.pptx",
+            "size": 4,
+            "file_ref": FILE_REF,
+            "file_key": None,
+            "share_mode": "upload",
+        },
+    })
+
+    assert result["outcome"] == "delivered"
+    channel.send_persistent_result.assert_awaited_once_with(
+        chat_id="cid-group",
+        text=None,
+        source_message_id=None,
+        idempotency_key="delivery-1",
+        file_path=str(source),
+        file_key=None,
+        share_mode="upload",
+        file_name="slides.pptx",
+        is_direct_message=False,
+        sender_staff_id="staff-1",
+    )
 
 
 async def test_delivery_service_wakes_on_paused_and_keeps_the_uploaded_file_key(host):
