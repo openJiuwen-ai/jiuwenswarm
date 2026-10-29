@@ -42,3 +42,25 @@ def test_frozen_installation_is_stable_across_extraction_directories(monkeypatch
     assert deployment_scope() == first
     monkeypatch.setattr(sys, "executable", str(tmp_path / "other" / "backend.exe"))
     assert deployment_scope() != first
+
+
+def test_controlled_wheel_uses_build_manifest_and_still_observes_installed_dependencies(monkeypatch, tmp_path):
+    from jiuwenswarm.server.supervisor import dependency_identity, identity, identity_cache
+
+    manifest = tmp_path / "build.json"
+    value = {"schema": 2, "backend_build_id": "a" * 64, "source_digest": "b" * 64,
+             "dependency_digest": "c" * 64, "packaging_digest": "d" * 64}
+    manifest.write_text(json.dumps(value))
+    monkeypatch.setattr(sys, "frozen", False, raising=False)
+    monkeypatch.setattr(identity, "_identity_path", lambda: manifest)
+    monkeypatch.setattr(identity_cache, "source_fingerprint",
+        lambda *args: pytest.fail("A controlled wheel must not recursively rescan package data at startup"))
+    dependency = ["installed-sdk-one"]
+    monkeypatch.setattr(dependency_identity, "environment_identity", lambda: dependency[0])
+    first = identity.code_identity()
+    dependency[0] = "installed-sdk-two"
+    second = identity.code_identity()
+    assert second != first
+    value["backend_build_id"] = "e" * 64
+    manifest.write_text(json.dumps(value))
+    assert identity.code_identity() != second
