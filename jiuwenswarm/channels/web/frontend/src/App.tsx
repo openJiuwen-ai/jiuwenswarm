@@ -3109,6 +3109,7 @@ function AppContent({
         prefixText?: string;
         suffixText?: string;
         secondSkillName?: string;
+        preserveDraft?: boolean;
         metadata?: Record<string, unknown>;
         mode?: AgentMode;
       };
@@ -3126,7 +3127,13 @@ function AppContent({
       // 延迟派发，确保 ChatPanel/InputArea 已挂载并注册了事件监听器
       setTimeout(() => {
         window.dispatchEvent(new CustomEvent('chat-input-insert-skill', {
-          detail: { skillName: detail.skillName, prefixText: detail.prefixText, suffixText: detail.suffixText, secondSkillName: detail.secondSkillName }
+          detail: {
+            skillName: detail.skillName,
+            prefixText: detail.prefixText,
+            suffixText: detail.suffixText,
+            secondSkillName: detail.secondSkillName,
+            preserveDraft: detail.preserveDraft,
+          }
         }));
       }, 0);
     };
