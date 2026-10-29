@@ -293,6 +293,7 @@ def create_default_persistent_group_fanout(
         budgets,
         delivery_service=delivery_service,
         thinking_notice_sender=thinking_notice_sender,
+        approval_channels=frozenset({"feishu", "dingtalk", "welink"}),
     )
     if verify_membership is not None:
         async def verify(access, group):
@@ -693,18 +694,24 @@ class PersistentGroupFanout:
         return InboundDisposition.HANDLED
 
     async def _serves_only_this_app(self, binding: FeishuBinding) -> bool:
-        """The bound agent must be the one created for this app, so it never serves another connection.
-
-        An enterprise bot has no recorded connection yet and is accepted unless its agent
-        belongs to another connection.
-        """
+        """Accept the canonical colleague ID or a matching legacy Feishu connection ID."""
         try:
             connection = await asyncio.to_thread(self._service.connection_of, binding.namespace_id, binding.agent_id)
         except Exception as exc:
             logger.warning("[JiuwenMate] Feishu connection lookup failed closed: error_type=%s", type(exc).__name__)
             return False
         if connection is None:
-            return binding.enterprise
+            # A current Web/Feishu binding uses the canonical colleague ID and has
+            # no per-app connection row. Require that it resolves to a visible config.
+            try:
+                await asyncio.to_thread(self._service.get_config, binding.namespace_id, binding.agent_id)
+            except Exception as exc:
+                logger.warning(
+                    "[JiuwenMate] Feishu colleague lookup failed closed: error_type=%s",
+                    type(exc).__name__,
+                )
+                return False
+            return True
         return connection.channel == "feishu" and connection.connection_key == binding.app_id
 
     async def _im_open(self, binding: FeishuBinding) -> bool:

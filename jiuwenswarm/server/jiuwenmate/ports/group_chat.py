@@ -128,6 +128,16 @@ class HostGroupChatPort:
         except Exception:
             return self._search_result(execution, "failed", reason="Group history search failed.")
 
+    async def sharing_sources(self, execution: ExecutionContext, query: GroupMessageQuery) -> tuple[dict, ...]:
+        """Resolve the authorized search scope for the host's owner-approval gate only."""
+        self._identity(execution)
+        authorized = await self._authorized_groups(execution, query)
+        targets, _ = self._resolve_targets(query, authorized)
+        return tuple({"group_id": group_id, "name": authorized[group_id]["name"] or group_id,
+                      "app_id": authorized[group_id]["access"].app_id,
+                      "visible_from": authorized[group_id]["access"].visible_from.isoformat()}
+                     for group_id in targets)
+
     async def _search_authorized(self, execution: ExecutionContext,
                                 query: GroupMessageQuery) -> GroupMessageSearchResult:
         now = self._clock()

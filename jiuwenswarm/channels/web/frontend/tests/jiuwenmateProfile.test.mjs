@@ -68,6 +68,61 @@ function renderProfile(extra) {
   );
 }
 
+async function mountProfile(extra) {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = {
+    window: globalThis.window,
+    document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT,
+  };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  dom.window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+  const timers = new Map();
+  let timerId = 0;
+  dom.window.setInterval = (callback) => { timers.set(++timerId, callback); return timerId; };
+  dom.window.clearInterval = (id) => timers.delete(id);
+  const container = dom.window.document.getElementById('root');
+  const root = createRoot(container);
+  await act(async () => {
+    root.render(React.createElement(ColleagueProfilePage, {
+      colleague,
+      initialSection: 'permissions',
+      resourceCatalog: catalog,
+      onSaveSettings: noop,
+      onOpenOffice: noop,
+      onChat: noop,
+      onConfigureIm: noop,
+      onConfigureWelink: noop,
+      onToggleDisabled: noop,
+      onDelete: noop,
+      ...extra,
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  const find = (id) => container.querySelector(`[data-testid="jiuwenmate-profile-${id}"]`);
+  return {
+    container,
+    find,
+    async click(id) {
+      assert.ok(find(id), `Missing profile ${id}`);
+      await act(async () => { find(id).click(); await new Promise((resolve) => setTimeout(resolve, 0)); });
+    },
+    async flush() { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); }); },
+    async close() {
+      await act(async () => root.unmount());
+      dom.window.close();
+      if (previous.window === undefined) delete globalThis.window;
+      else globalThis.window = previous.window;
+      if (previous.document === undefined) delete globalThis.document;
+      else globalThis.document = previous.document;
+      if (previous.actEnvironment === undefined) delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      else globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+    },
+  };
+}
+
 test('the overview hides quick IM setup after the channel is configured', () => {
   const authorized = {
     ...colleague,
@@ -118,6 +173,79 @@ test('employee permission settings show the three individual profiles and explai
   assert.match(markup, /完全访问/);
   assert.match(markup, /15 分钟未确认会自动拒绝/);
   assert.match(fullAccess, /宿主 OS 账户可访问的所有文件和联网命令/);
+});
+
+test('the employee permissions page lists scoped permanent sharing grants and supports revoking only active grants', async () => {
+  const target = { channel: 'feishu', app_id: 'app-a', kind: 'group', id: 'destination', name: '目标群' };
+  const active = {
+    grant_id: 'grant-active', source_group_id: 'source-a', source_group_name: '来源群', target,
+    created_at: '2026-10-27T01:02:03Z', status: 'active',
+  };
+  const revoked = { ...active, grant_id: 'grant-revoked', status: 'revoked' };
+  let current = { approvals: [], grants: [active, revoked], conversation_id: 'sharing-approvals' };
+  const calls = [];
+  const profileConfigId = 'sharing-owner-config';
+  const sharingApi = {
+    async list(configId) { calls.push(['list', configId]); return current; },
+    async decide() { throw new Error('not used'); },
+    async revoke(configId, grantId) {
+      calls.push(['revoke', configId, grantId]);
+      current = { ...current, grants: current.grants.map((item) => item.grant_id === grantId ? { ...item, status: 'revoked' } : item) };
+      return current;
+    },
+  };
+  const view = await mountProfile({ sharingApi, colleague: { ...colleague, configId: profileConfigId } });
+  try {
+    assert.ok(view.find('sharing-permissions'));
+    assert.equal(calls[0][0], 'list');
+    assert.equal(calls[0][1], profileConfigId);
+    assert.equal(view.container.querySelectorAll('[data-testid="jiuwenmate-profile-sharing-grant-row"]').length, 2);
+    const activeRow = view.container.querySelector('[data-testid="jiuwenmate-profile-sharing-grant-row"][data-variant="grant-active"]');
+    const revokedRow = view.container.querySelector('[data-testid="jiuwenmate-profile-sharing-grant-row"][data-variant="grant-revoked"]');
+    assert.match(activeRow.textContent, /来源群/);
+    assert.match(activeRow.textContent, /目标群/);
+    assert.match(activeRow.textContent, /2026/);
+    assert.equal(activeRow.querySelector('[data-testid="jiuwenmate-profile-sharing-revoke"]').disabled, false);
+    assert.equal(revokedRow.querySelector('[data-testid="jiuwenmate-profile-sharing-revoke"]').disabled, true);
+    await view.click('sharing-revoke');
+    assert.deepEqual(calls.at(-1), ['revoke', profileConfigId, 'grant-active']);
+    const updatedRow = view.container.querySelector('[data-testid="jiuwenmate-profile-sharing-grant-row"][data-variant="grant-active"]');
+    assert.match(updatedRow.textContent, /已撤销/);
+    assert.equal(updatedRow.querySelector('[data-testid="jiuwenmate-profile-sharing-revoke"]').disabled, true);
+  } finally { await view.close(); }
+});
+
+test('the employee permissions page fails closed when listing or revoking a sharing grant fails', async () => {
+  const grant = {
+    grant_id: 'grant-active', source_group_id: 'source-a', source_group_name: '来源群',
+    target: { channel: 'feishu', app_id: null, kind: 'group', id: 'destination', name: '目标群' },
+    created_at: '2026-10-27T01:02:03Z', status: 'active',
+  };
+  const failedList = await mountProfile({ sharingApi: {
+    async list() { throw new Error('offline'); }, async decide() {}, async revoke() {},
+  } });
+  try {
+    assert.ok(failedList.find('sharing-load-error'));
+    assert.equal(failedList.find('sharing-grant-row'), null);
+  } finally { await failedList.close(); }
+
+  let listCalls = 0;
+  const failedRevoke = await mountProfile({ sharingApi: {
+    async list() {
+      listCalls += 1;
+      return { approvals: [], grants: [grant], conversation_id: 'sharing-approvals' };
+    },
+    async decide() { throw new Error('not used'); },
+    async revoke() { throw new Error('offline'); },
+  } });
+  try {
+    await failedRevoke.click('sharing-revoke');
+    await failedRevoke.flush();
+    assert.ok(failedRevoke.find('sharing-action-error'));
+    const row = failedRevoke.container.querySelector('[data-testid="jiuwenmate-profile-sharing-grant-row"]');
+    assert.match(row.textContent, /生效中/);
+    assert.ok(listCalls >= 2, 'A failed revoke is reconciled by refreshing the persisted state');
+  } finally { await failedRevoke.close(); }
 });
 
 test('the employee mail page shows the connected mailbox address', async () => {
