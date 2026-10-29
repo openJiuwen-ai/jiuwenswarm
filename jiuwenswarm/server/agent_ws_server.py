@@ -485,6 +485,12 @@ _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = (
     WeakValueDictionary()
 )
 
+
+def get_session_switch_locks() -> WeakValueDictionary[str, asyncio.Lock]:
+    """公开读取连接级会话切换锁表（handlers 用，避免 G.CLS.11）."""
+    return _session_switch_locks
+
+
 # Sessions that have successfully exited plan mode via exit_plan_mode tool.
 # Set by _check_post_process_plan_exit, consumed by _ensure_code_mode_state
 # to prevent TUI-race re-entrance to plan mode.
@@ -495,6 +501,11 @@ _plan_exited_sessions = _SERVER_PLAN_CONTROLLER.exited_sessions
 # 才需要去同步 plan 状态。跨重启的情况另有一道判据（会话 metadata 里上一轮的
 # canonical mode），见 ``_session_may_hold_plan_state``。
 _plan_active_sessions = _SERVER_PLAN_CONTROLLER.active_sessions
+
+
+def get_plan_active_sessions():
+    """公开读取本进程 plan 活跃会话集合（handlers 用，避免 G.CLS.11）."""
+    return _plan_active_sessions
 
 
 def _renew_server_plan_controller() -> PlanModeController:
@@ -614,7 +625,7 @@ class _SessionMessageResumeState:
 
 
 @dataclass(slots=True)
-class _TurnOutcomeTracker:
+class TurnOutcomeTracker:
     """Classify Runtime events only when they contain a terminal signal."""
 
     saw_chat_final: bool = False
@@ -665,7 +676,11 @@ class _TurnOutcomeTracker:
         return str(payload.get("error") or payload.get("message") or "")
 
 
-class _StreamKeepalive:
+# Compat alias for in-module call sites.
+_TurnOutcomeTracker = TurnOutcomeTracker
+
+
+class StreamKeepalive:
     """Own the transport keepalive task for one streaming request."""
 
     def __init__(
@@ -755,6 +770,10 @@ class _StreamKeepalive:
                 "request_id=%s",
                 self._request.request_id,
             )
+
+
+# Compat alias for in-module call sites.
+_StreamKeepalive = StreamKeepalive
 
 
 def _request_query_text(request: AgentRequest) -> str:
@@ -1443,6 +1462,16 @@ class AgentWebSocketServer:
 
     def _set_ws_acp_client_capabilities(self, ws: Any, capabilities: dict[str, Any] | None) -> None:
         key = self._ws_capabilities_key(ws)
+        if isinstance(capabilities, dict):
+            self._acp_client_capabilities_by_ws[key] = dict(capabilities)
+        else:
+            self._acp_client_capabilities_by_ws.pop(key, None)
+
+    def set_acp_client_capabilities(
+        self, connection_id: str | int, capabilities: Any
+    ) -> None:
+        """按连接编号记下 ACP 客户端能力（ServerContext 公开入口）."""
+        key = int(connection_id)
         if isinstance(capabilities, dict):
             self._acp_client_capabilities_by_ws[key] = dict(capabilities)
         else:
@@ -3468,6 +3497,9 @@ class AgentWebSocketServer:
             # 那道判据继续被识别，不依赖这个集合。
             _plan_active_sessions.discard(session_id)
 
+    # Public alias for ServerContext (G.CLS.11).
+    cleanup_client_disconnect_session_runtime = _cleanup_client_disconnect_session_runtime
+
     async def _trigger_before_chat_request_hook(self, request: AgentRequest) -> None:
         if not self._should_trigger_before_chat_request_hook(request):
             return
@@ -4774,6 +4806,9 @@ class AgentWebSocketServer:
         resume_state.waiting_user = True
         return True
 
+    # Public alias for ServerContext (G.CLS.11).
+    persist_repeated_session_question = _persist_repeated_session_question
+
     async def _open_session_message_resume(
         self,
         request: AgentRequest,
@@ -4812,6 +4847,9 @@ class AgentWebSocketServer:
             interrupt_request_id=interrupt_request_id,
             interrupt_source=interrupt_source,
         )
+
+    # Public alias for ServerContext (G.CLS.11).
+    open_session_message_resume = _open_session_message_resume
 
     async def _finalize_session_message_resume(
         self,
@@ -4875,6 +4913,9 @@ class AgentWebSocketServer:
                     resume_state.target_session_id,
                     request_id=f"session-message-{resume_state.message_id}",
                 )
+
+    # Public alias for ServerContext (G.CLS.11).
+    finalize_session_message_resume = _finalize_session_message_resume
 
     async def _complete_waiting_session_message_after_external_turn(
         self,
@@ -5036,6 +5077,9 @@ class AgentWebSocketServer:
             )
         async with send_lock:
             return await send_wire_payload(ws, wire)
+
+    # Public alias for ServerContext (G.CLS.11).
+    send_runtime_event = _send_runtime_event
 
     async def _handle_session_list(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """处理 session.list 请求：返回历史会话基础信息列表。

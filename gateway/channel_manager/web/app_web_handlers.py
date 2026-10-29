@@ -5004,13 +5004,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     def _get_cron():
         return _resolve(cron_controller)
 
-    _DEFAULT_CRON_PROJECT_IDS = {"default", "default_code"}
+    _default_cron_project_ids = {"default", "default_code"}
 
     def _cron_requests_real_project(params) -> bool:
         """选了具体项目才需要问 Agent。空编号和默认项目不用问。"""
         raw = params if isinstance(params, dict) else {}
         project_id = str(raw.get("project_id") or "").strip()
-        if project_id and project_id not in _DEFAULT_CRON_PROJECT_IDS:
+        if project_id and project_id not in _default_cron_project_ids:
             return True
         project_dir = raw.get("project_dir")
         return isinstance(project_dir, str) and bool(project_dir.strip())
@@ -5619,15 +5619,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             resolved_client = _resolve(agent_client)
             # 仅企业版允许 Gateway 本地 config/models；个人版始终 E2A。
-            if (
-                local_handler is not None
-                and is_enterprise()
-                and (
-                    resolved_client is None
-                    or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
-                    or is_legacy_shared_directory_client(resolved_client)
-                )
-            ):
+            use_local_handler = (
+                resolved_client is None
+                or type(resolved_client).__name__ == "RuntimeRoutedAgentClient"
+                or is_legacy_shared_directory_client(resolved_client)
+            )
+            if local_handler is not None and is_enterprise() and use_local_handler:
                 await local_handler(ws, req_id, params, session_id)
                 return
             # 登录会话 id 随请求转发（硬规则：客户端传来的键先删，只信连接属性）：

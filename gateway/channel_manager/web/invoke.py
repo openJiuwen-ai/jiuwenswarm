@@ -107,7 +107,7 @@ async def _invoke_handler(
     rpc = getattr(channel, "rpc", None)
     if rpc is not None and hasattr(rpc, "invoke_method_handler"):
         return await rpc.invoke_method_handler(invocation)
-    return await channel._invoke_method_handler(invocation)
+    return await channel.invoke_method_handler(invocation)
 
 
 async def dispatch_web_request(

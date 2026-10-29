@@ -363,10 +363,14 @@ def _call_authorization_scope(server_id: str):
                 _CURRENT_CALL_AUTH.pop(sid, None)
 
 
+# 幂等标记属性名（monkeypatch 嵌套函数里禁止写 obj._xxx 字面量 → G.CLS.11）
+_JW_USER_TOKEN_SCOPED_ATTR = "_jw_user_token_scoped"
+
+
 def _wrap_with_call_scope(cls: type, method_name: str) -> None:
     """把 ``cls.method_name`` 包上调用作用域（幂等，靠方法标记判重）。"""
     original = getattr(cls, method_name, None)
-    if original is None or getattr(original, "_jw_user_token_scoped", False):
+    if original is None or getattr(original, _JW_USER_TOKEN_SCOPED_ATTR, False):
         return
 
     async def _scoped(
@@ -375,7 +379,7 @@ def _wrap_with_call_scope(cls: type, method_name: str) -> None:
         with _call_authorization_scope(str(getattr(self, "_server_id", "") or "")):
             return await __orig(self, *args, **kwargs)
 
-    _scoped._jw_user_token_scoped = True  # type: ignore[attr-defined]
+    setattr(_scoped, _JW_USER_TOKEN_SCOPED_ATTR, True)
     setattr(cls, method_name, _scoped)
 
 

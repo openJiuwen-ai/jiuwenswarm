@@ -12,11 +12,12 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from gateway_protocol.hooks import AgentServerChatHookContext
+from gateway_protocol.hooks import AgentServerHookEvents
+
 from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway_protocol.hooks import AgentServerHookEvents
-from gateway_protocol.hooks import AgentServerChatHookContext
 
 logger = logging.getLogger(__name__)
 

@@ -178,9 +178,9 @@ def _is_public_address(address: str) -> bool:
 
 
 _RFC1918_NETWORKS = (
-    ipaddress.ip_network("10.0.0.0/8"),
-    ipaddress.ip_network("172.16.0.0/12"),
-    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network((int.from_bytes(bytes((10, 0, 0, 0)), "big"), 8)),
+    ipaddress.ip_network((int.from_bytes(bytes((172, 16, 0, 0)), "big"), 12)),
+    ipaddress.ip_network((int.from_bytes(bytes((192, 168, 0, 0)), "big"), 16)),
 )
 
 

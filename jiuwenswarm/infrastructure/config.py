@@ -2,9 +2,10 @@
 """jiuwenswarm 基础设施配置（优先读环境变量 / 仓库根 ``.env`` 已由进程加载）。"""
 
 from __future__ import annotations
-from jiuwenswarm.enterprise import is_enterprise
 
 import os
+
+from jiuwenswarm.enterprise import is_enterprise
 
 
 def _env_bool(name: str, default: bool = True) -> bool:

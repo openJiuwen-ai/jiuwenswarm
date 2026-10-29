@@ -433,7 +433,8 @@ class CronSchedulerService:
         except Exception:  # noqa: BLE001
             return False
 
-    def _should_park_manual_approval(self, state: CronRunState | None) -> bool:
+    @staticmethod
+    def _should_park_manual_approval(state: CronRunState | None) -> bool:
         """企业版里、人手点的「立即执行」遇到提问先停住。
 
         到点自己跑、以及个人版，对面没有人点，仍然马上失败，不往 Redis 写纸条。
@@ -1245,7 +1246,6 @@ class CronSchedulerService:
             return False
         if not project_id or project_id in {"default", "default_code"}:
             return True
-        from jiuwenswarm.common.request_identity import apply_routing_metadata
         from gateway.routing.e2a_proxy import fetch_agent_unary
         revision = self._project_admission_revisions.get(project_id, 0)
         _t0 = time.monotonic()
@@ -3238,8 +3238,8 @@ class CronSchedulerService:
         self._mirror_cron_live(state, payload_extra)
         await self._message_handler.publish_robot_messages(msg)
 
+    @staticmethod
     def _publish_cron_execution_live(
-        self,
         state: CronRunState,
         event_name: str,
         payload: dict | None,

@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from jiuwenswarm.common.request_identity import apply_routing_metadata
 from openjiuwen_protocol.message import ReqMethod
+
 from gateway.routing.agent_client import DuplicateRequestIdError
 from gateway.routing.e2a_proxy import fetch_agent_unary
+from jiuwenswarm.common.request_identity import apply_routing_metadata
 
 
 def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_session_deleted=None):
@@ -30,7 +31,12 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron, on_sessio
 
     def scope_key(user_id, ws=None):
         routing = getattr(ws, "_web_routing", None) or {}
-        return (str(user_id or ""), str(routing.get("group_id") or ""), str(routing.get("bot_id") or ""), str(routing.get("gateway_id") or ""))
+        return (
+            str(user_id or ""),
+            str(routing.get("group_id") or ""),
+            str(routing.get("bot_id") or ""),
+            str(routing.get("gateway_id") or ""),
+        )
 
     async def watch(user_id, scope):
         revisions = {}

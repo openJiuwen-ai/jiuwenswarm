@@ -1325,6 +1325,7 @@ def _ensure_worker_started() -> None:
                     if sid is None:
                         item.set()
                         continue
+
                     def write() -> None:
                         from jiuwenswarm.server.runtime.session import lifecycle as lc
                         with lc.resource_lock("session", sid):

@@ -347,17 +347,16 @@ class CronController:
         传空字符串才只要默认项目。筛完后再问项目准入：项目已被隐藏或暂时不能执行的任务不出现在列表里。
         同一个项目、同一个用户只问一次。
         """
-        jobs = [
-            job
-            for job in await self._store.list_jobs()
+        jobs = []
+        for job in await self._store.list_jobs():
             if self._matches_list_filter(
                 job,
                 project_id=project_id,
                 user_id=user_id,
                 group_id=group_id,
                 bot_id=bot_id,
-            )
-        ]
+            ):
+                jobs.append(job)
         # project_execution_allowed 是一次跨进程询问。同项目同用户共享一次判定，
         # 去重后并发查询，避免一次列表变成逐任务串行往返。
         keys = list(dict.fromkeys(

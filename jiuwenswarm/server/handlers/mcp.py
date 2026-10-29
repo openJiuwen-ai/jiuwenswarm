@@ -42,6 +42,7 @@ _MCP_KEY_SENSITIVE_SUBSTRINGS = frozenset({
     "token", "authorization", "secret",
 })
 
+
 def _mask_sensitive_fields(payload: Any) -> Any:
     if isinstance(payload, dict):
         masked: dict[str, Any] = {}
@@ -58,6 +59,7 @@ def _mask_sensitive_fields(payload: Any) -> Any:
     if isinstance(payload, list):
         return [_mask_sensitive_fields(item) for item in payload]
     return payload
+
 
 async def _pre_check_mcp_server(server_payload: dict[str, Any]) -> tuple[bool, str]:
     """Try a temporary connection to verify the MCP server is reachable.
@@ -132,6 +134,7 @@ async def _pre_check_mcp_server(server_payload: dict[str, Any]) -> tuple[bool, s
                 "[mcp] pre-check disconnect for %s failed: %r", name, exc,
             )
 
+
 async def _pre_check_mcp_http_auth(
     server_payload: dict[str, Any]
 ) -> tuple[bool, str]:
@@ -156,6 +159,7 @@ async def _pre_check_mcp_http_auth(
         return True, f"{name} ({transport}) pre-check passed: {reason}"
     return False, f"{name} ({transport}) pre-check failed: {reason}"
 
+
 async def _fetch_mcp_tools_from_config(entry: dict[str, Any]) -> list[dict[str, Any]]:
     """Create a temporary MCP connection from config entry and list tools.
 
@@ -165,6 +169,7 @@ async def _fetch_mcp_tools_from_config(entry: dict[str, Any]) -> list[dict[str, 
     coercion, disconnect cleanup all live in one place)."""
     from jiuwenswarm.common.mcp_config import fetch_mcp_tools_via_temp_connection
     return await fetch_mcp_tools_via_temp_connection(entry)
+
 
 def _normalize_mcp_payload(
         params: dict[str, Any], current: dict[str, Any] | None = None
@@ -214,8 +219,10 @@ def _normalize_mcp_payload(
             payload["timeout_s"] = int(timeout_s)
     return payload
 
+
 def _normalize_mcp_add_payload(params: dict[str, Any]) -> dict[str, Any]:
     return _normalize_mcp_payload(params)
+
 
 def _normalize_mcp_update_payload(params: dict[str, Any]) -> dict[str, Any]:
     name = str(params.get("name", "")).strip()
@@ -225,6 +232,7 @@ def _normalize_mcp_update_payload(params: dict[str, Any]) -> dict[str, Any]:
     if current is None:
         raise KeyError(f"MCP server '{name}' not found")
     return _normalize_mcp_payload(params, current=current)
+
 
 async def _persist_and_probe_mcp(
     services,
@@ -332,6 +340,7 @@ async def _persist_and_probe_mcp(
         ok=True,
         payload=resp_payload,
     )
+
 
 async def handle_command_mcp(ctx: RequestContext) -> None:
     request = ctx.request

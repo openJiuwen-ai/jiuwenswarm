@@ -309,10 +309,9 @@ async def _stop_background_chat(task: asyncio.Task[None]) -> None:
         if not abandoned:
             raise
     finally:
-        if current is None:
-            return
-        for _ in range(parked):
-            current.cancel()
+        if current is not None:
+            for _ in range(parked):
+                current.cancel()
 
 
 async def _runtime_chat(app_services: AppServices, request: Request, req_method: ReqMethod):

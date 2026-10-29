@@ -36,6 +36,7 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
 
 logger = logging.getLogger(__name__)
 
+
 def _require_sandbox_supported() -> None:
     """Reject ``/sandbox`` commands on non-Linux hosts.
 
@@ -54,6 +55,7 @@ def _require_sandbox_supported() -> None:
             "jiuwenbox depends on Linux-only kernel features (bwrap / Landlock / "
             "namespaces) and cannot run on Windows or macOS."
         )
+
 
 def _file_entry_matches_path(entry: Any, path: str) -> bool:
     """判断 ``sandbox.files.{allow,deny}`` 中的一项是否指向给定 ``path``.
@@ -83,6 +85,7 @@ def _file_entry_matches_path(entry: Any, path: str) -> bool:
         _canonicalize_sandbox_files_path(entry_path)
         == _canonicalize_sandbox_files_path(path)
     )
+
 
 def _canonicalize_sandbox_files_path(path: str) -> str:
     """把 TUI 传来的 ``path`` 展开成 absolute resolved 形式 (绝对、去 ``..``、
@@ -129,6 +132,7 @@ _SANDBOX_FILES_PARAMS = frozenset(
     }
 )
 
+
 def _reject_extra_sandbox_files_params(params: dict[str, Any]) -> None:
     extra = set(params.keys()) - _SANDBOX_FILES_PARAMS
     if extra:
@@ -136,6 +140,7 @@ def _reject_extra_sandbox_files_params(params: dict[str, Any]) -> None:
             f"unexpected parameter(s): {', '.join(sorted(extra))}; "
             "/sandbox files allow|deny|remove accepts a single path only"
         )
+
 
 async def handle_command_sandbox(ctx: RequestContext) -> None:
     """处理 ``/sandbox`` 命令.
@@ -233,6 +238,7 @@ async def handle_command_sandbox(ctx: RequestContext) -> None:
             payload={"error": str(exc), "code": "SANDBOX_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def _handle_sandbox_enable(services, channel_id: str) -> dict[str, Any]:
     # 1. 解析 sandbox endpoint: 优先 config.yaml::sandbox.url/type, 缺省走本地 jiuwenbox.
@@ -353,6 +359,7 @@ async def _handle_sandbox_enable(services, channel_id: str) -> dict[str, Any]:
         "agent_recreated": True
     }
 
+
 async def _handle_sandbox_disable(services, channel_id: str) -> dict[str, Any]:
     runtime = update_sandbox_runtime({"enabled": False})
     await services.agent_manager.recreate_agent(channel_id, immediate=True)
@@ -385,6 +392,7 @@ async def _handle_sandbox_disable(services, channel_id: str) -> dict[str, Any]:
         payload["jiuwenbox"] = {"host": host, "port": port, "ready": False}
     return payload
 
+
 async def _handle_sandbox_exclude_add(
     services, channel_id: str, params: dict[str, Any]
 ) -> dict[str, Any]:
@@ -402,6 +410,7 @@ async def _handle_sandbox_exclude_add(
     runtime = update_sandbox_runtime({"excluded_commands": patterns})
     await _apply_sandbox_runtime_patch(services, channel_id, runtime, files_changed=False)
     return {"runtime": runtime}
+
 
 async def _handle_sandbox_exclude_remove(
     services, channel_id: str, params: dict[str, Any]
@@ -421,6 +430,7 @@ async def _handle_sandbox_exclude_remove(
     await _apply_sandbox_runtime_patch(services, channel_id, runtime, files_changed=False)
     return {"runtime": runtime}
 
+
 def _dry_run_files_policy(
     services,
     channel_id: str,
@@ -438,6 +448,7 @@ def _dry_run_files_policy(
         )
     except FileNotFoundError as exc:
         raise ValueError(str(exc)) from exc
+
 
 async def _handle_sandbox_files_set(
     services, channel_id: str, params: dict[str, Any], *, bucket: str
@@ -516,6 +527,7 @@ async def _handle_sandbox_files_set(
     await _apply_sandbox_runtime_patch(services, channel_id, runtime, files_changed=True)
     return {"runtime": runtime}
 
+
 async def _handle_sandbox_files_remove(
     services, channel_id: str, params: dict[str, Any]
 ) -> dict[str, Any]:
@@ -580,6 +592,7 @@ async def _handle_sandbox_files_remove(
     await _apply_sandbox_runtime_patch(services, channel_id, runtime, files_changed=True)
     return {"runtime": runtime}
 
+
 def _resolve_active_project_dir(
     services, channel_id: str, params: dict[str, Any] | None = None
 ) -> str | None:
@@ -628,6 +641,7 @@ def _resolve_active_project_dir(
                 return first
     return None
 
+
 def _resolve_active_is_code_agent(services, channel_id: str) -> bool:
     """Look up whether ``channel_id``'s adapter is the code-agent flavor.
 
@@ -656,6 +670,7 @@ def _resolve_active_is_code_agent(services, channel_id: str) -> bool:
         return False
     return bool(getattr(adapter, "_is_code_agent", False))
 
+
 def _effective_files_from_adapter(adapter: Any) -> dict[str, list[dict[str, str]]] | None:
     """Read effective sandbox file mounts from the adapter's active sysop card."""
     card = getattr(adapter, "_sys_operation_card", None)
@@ -670,6 +685,7 @@ def _effective_files_from_adapter(adapter: Any) -> dict[str, list[dict[str, str]
     if not isinstance(policy, dict):
         return None
     return effective_files_from_policy(policy)
+
 
 def _attach_effective_sandbox_files(
     services,
@@ -736,6 +752,7 @@ def _attach_effective_sandbox_files(
     except Exception as exc:  # noqa: BLE001
         logger.warning("[command.sandbox] attach effective_files failed: %s", exc)
 
+
 def _read_landlock_compatibility(policy_path: Path | None) -> str:
     if policy_path is None or not policy_path.is_file():
         return "best_effort"
@@ -752,6 +769,7 @@ def _read_landlock_compatibility(policy_path: Path | None) -> str:
     except Exception as exc:
         logger.debug("[command.sandbox] read landlock compatibility failed: %s", exc)
     return "best_effort"
+
 
 async def _attach_landlock_status(services, payload: dict[str, Any]) -> None:
     """Attach jiuwenbox Landlock capability summary to sandbox responses."""
@@ -778,6 +796,7 @@ async def _attach_landlock_status(services, payload: dict[str, Any]) -> None:
         }
     except Exception as exc:
         logger.warning("[command.sandbox] attach landlock status failed: %s", exc)
+
 
 async def _apply_sandbox_runtime_patch(
     services, channel_id: str, runtime: dict[str, Any], *, files_changed: bool

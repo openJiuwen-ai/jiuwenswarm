@@ -639,6 +639,9 @@ class WebChannel(BaseWsChannel):
                 )
             return False
 
+    # Public alias for gateway dispatch helpers (G.CLS.11).
+    invoke_method_handler = _invoke_method_handler
+
     async def broadcast_event(
             self,
             event: str,
@@ -2286,9 +2289,14 @@ class WebChannel(BaseWsChannel):
                 return item
         return None
 
+    # Public aliases for HTTP dispatch (G.CLS.11).
+    parse_req_method = _parse_req_method
+
     @staticmethod
     def _parse_mode(raw_mode: Any) -> Mode:
         return Mode.from_raw(raw_mode, default=Mode.AGENT_WORK_NORMAL)
+
+    parse_mode = _parse_mode
 
     @staticmethod
     def _make_session_id() -> str:

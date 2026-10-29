@@ -66,13 +66,14 @@ def normalize_packages(raw: Any) -> list[dict[str, Any]]:
         if kind is None:
             raise ValueError("kind must be agent_template or agent_group")
         package_id = str(item.get("id") or "").strip()
-        if (
-            not package_id
-            or package_id in {".", ".."}
-            or "/" in package_id
-            or "\\" in package_id
-            or len(package_id) > 128
-        ):
+        has_separator = "/" in package_id or "\\" in package_id
+        id_ok = (
+            bool(package_id)
+            and package_id not in {".", ".."}
+            and not has_separator
+            and len(package_id) <= 128
+        )
+        if not id_ok:
             raise ValueError("package id is invalid")
         key = (kind, package_id)
         if key in seen:
@@ -152,7 +153,8 @@ def decode_package_allowlist_header(value: str | None) -> list[dict[str, Any]]:
             raise ValueError("package allowlist exceeds 16384 bytes")
         decoded = json.loads(raw.decode("utf-8"))
         return normalize_packages(decoded)
-    except (ValueError, UnicodeError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError):
+        # UnicodeError is a ValueError subclass; do not catch both (G.ERR.09).
         logger.warning("[package_allowlist] allowlist header rejected, treating as empty")
         return []
 

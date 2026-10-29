@@ -40,14 +40,14 @@ async def handle_http_chat(ctx: RequestContext) -> None:
     active = True
 
     async def push(message: dict) -> bool:
-        if (
-            not active
-            or not request.is_stream
-            or message.get("session_id") != request.session_id
-            or message.get("channel_id") != request.channel_id
-            or message.get("request_id") != request.request_id
-            or message.get("payload", {}).get("event_type") != "chat.file"
-        ):
+        same_request = (
+            message.get("session_id") == request.session_id
+            and message.get("channel_id") == request.channel_id
+            and message.get("request_id") == request.request_id
+        )
+        is_file_event = message.get("payload", {}).get("event_type") == "chat.file"
+        stream_ready = active and request.is_stream
+        if not stream_ready or not same_request or not is_file_event:
             return False
         return await ctx.sink.send_chunk(
             AgentResponseChunk(

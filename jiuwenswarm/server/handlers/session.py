@@ -64,14 +64,14 @@ def _active_plan_sessions():
     """
     import jiuwenswarm.server.agent_ws_server as ws_server
 
-    return ws_server._plan_active_sessions
+    return ws_server.get_plan_active_sessions()
 
 
 def _session_switch_locks():
     """同一条连接上的切换要排队。锁表仍放在服务器模块里，测试也盯着那里。"""
     import jiuwenswarm.server.agent_ws_server as ws_server
 
-    return ws_server._session_switch_locks
+    return ws_server.get_session_switch_locks()
 
 
 async def _send_error(ctx: RequestContext, error: str, code: str | None = None) -> None:
@@ -236,6 +236,7 @@ def _try_read_live_plan_mode(agent_manager: Any, session_id: str) -> str | None:
                 return mode.strip()
     return None
 
+
 async def handle_session_plan_status(ctx: RequestContext) -> None:
     """``session.plan_status``：只读查询当前会话是否处于计划模式。
 
@@ -295,6 +296,7 @@ async def handle_session_plan_status(ctx: RequestContext) -> None:
     if getattr(resp, "agent_ref", None) is None:
         resp.agent_ref = request.agent_ref
     await ctx.sink.send_response(resp)
+
 
 async def handle_session_delete(ctx: RequestContext) -> None:
     """删除会话。和网页通道里的删除走同一套归档服务，避免掉进聊天。"""
@@ -496,6 +498,7 @@ async def handle_session_list(ctx: RequestContext) -> None:
     )
     await ctx.sink.send_response(resp)
 
+
 async def handle_session_rename(ctx: RequestContext) -> None:
     """处理 session.rename：与 CLI Gateway 本地回退共用 apply_session_rename。"""
     request = ctx.request
@@ -525,6 +528,7 @@ async def handle_session_rename(ctx: RequestContext) -> None:
             metadata=request.metadata,
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_session_rebind_project(ctx: RequestContext) -> None:
     """处理 session.rebind_project：TUI /workspace set 切换工作目录时重绑当前会话。
@@ -634,6 +638,7 @@ async def handle_session_rebind_project(ctx: RequestContext) -> None:
                     )
     await ctx.sink.send_response(resp)
 
+
 async def handle_session_input_intent(ctx: RequestContext) -> None:
     """Publish a user input intent without naming optional consumers."""
     request = ctx.request
@@ -695,6 +700,7 @@ async def handle_session_input_intent(ctx: RequestContext) -> None:
 
     await ctx.sink.send_response(resp)
 
+
 async def handle_session_message_continue_queued(ctx: RequestContext) -> None:
     request = ctx.request
     services = ctx.services
@@ -721,6 +727,7 @@ async def handle_session_message_continue_queued(ctx: RequestContext) -> None:
         metadata=request.metadata,
     )
     await ctx.sink.send_response(response)
+
 
 async def handle_session_switch(ctx: RequestContext) -> None:
     """Translate ``session.switch`` between WebSocket wire and Runtime."""
@@ -812,6 +819,7 @@ async def handle_session_switch(ctx: RequestContext) -> None:
                         abort_exc,
                     )
 
+
 async def resolve_rewind_agent(
     services: AgentServerServices,
     channel_id: str,
@@ -879,6 +887,7 @@ async def resolve_rewind_agent(
     if react_agent is None:
         return None
     return (deep_agent, react_agent)
+
 
 async def handle_session_rewind(ctx: RequestContext) -> None:
     """Full rewind: truncate history.json + context_engine + update checkpointer."""
@@ -1078,6 +1087,7 @@ async def handle_session_rewind(ctx: RequestContext) -> None:
 
     await ctx.sink.send_response(resp)
 
+
 async def handle_session_rewind_context(ctx: RequestContext) -> None:
     """Truncate history.json + in-memory context_engine for a session."""
     request = ctx.request
@@ -1147,6 +1157,7 @@ async def handle_session_rewind_context(ctx: RequestContext) -> None:
 
     await ctx.sink.send_response(resp)
 
+
 async def handle_history_get_page(ctx: RequestContext) -> None:
     request = ctx.request
     params = request.params if isinstance(request.params, dict) else {}
@@ -1169,7 +1180,7 @@ async def handle_history_get_page(ctx: RequestContext) -> None:
         # 非流式整页塞进单个 wire 帧（AgentResponse.payload=data），没法像流式那样
         # 按 channel_id 分片流——这里所有通道统一走 _sanitize_history_record_for_wire
         # 把每条 record 裁剪到 16KB + 64KB collapse 之内，保证 wire 帧有界。
-            # 流式路径在 handle_history_get_stream 里按 channel_id 分流（web 走 split，
+        # 流式路径在 handle_history_get_stream 里按 channel_id 分流（web 走 split，
         # 其他走 sanitize），与此处无关。
         if isinstance(data.get("messages"), list):
             data["messages"] = [
@@ -1184,6 +1195,7 @@ async def handle_history_get_page(ctx: RequestContext) -> None:
             payload=data,
         )
     await ctx.sink.send_response(resp)
+
 
 def _coerce_query_int(value: Any) -> Any:
     """HTTP 查询串里的数字是字符串。历史分页只接受真正的 int。"""
@@ -1383,6 +1395,7 @@ async def handle_history_get_stream(ctx: RequestContext) -> None:
         done_chunk.payload["session_usage"] = session_usage
     await _send_chunk(ctx, done_chunk, next_seq)
 
+
 async def handle_history_append_record(ctx: RequestContext) -> None:
     """Append a supplied history record without creating an Agent turn.
 
@@ -1476,6 +1489,7 @@ async def handle_history_append_record(ctx: RequestContext) -> None:
             payload={"error": str(exc)},
         )
     await ctx.sink.send_response(resp)
+
 
 def get_conversation_history(
     session_id: str,

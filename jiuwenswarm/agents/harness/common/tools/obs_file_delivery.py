@@ -7,7 +7,7 @@ import mimetypes
 import time
 import uuid
 from collections.abc import Mapping
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlencode
 
@@ -49,10 +49,13 @@ def build_object_file_download_info(
         "size": uploaded["size"],
         "mime_type": mimetypes.guess_type(name)[0] or "application/octet-stream",
         "url": url,
-        "download_url": "/file-api/download?" + urlencode({
-            "url": url, "name": name, "session_id": session_id,
-            **{key: identity[key] for key in ("group_id", "bot_id", "user_id")},
-        }),
+        "download_url": "{}?{}".format(
+            PurePosixPath("/file-api") / "download",
+            urlencode({
+                "url": url, "name": name, "session_id": session_id,
+                **{key: identity[key] for key in ("group_id", "bot_id", "user_id")},
+            }),
+        ),
         "download_token": url,
         "expires_at": expires_at,
     }

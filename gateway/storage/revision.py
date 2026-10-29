@@ -61,7 +61,8 @@ async def retry_on_revision_conflict(
             return await operation()
         except RevisionConflictError as exc:
             error = exc
-    assert error is not None
+    if error is None:
+        raise RuntimeError("revision retry exhausted without a conflict error")
     raise error
 
 

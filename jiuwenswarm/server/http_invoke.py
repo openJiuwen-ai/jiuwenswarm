@@ -58,8 +58,6 @@ async def invoke_unary(ctx: RequestContext, handler: Handler) -> None:
     try:
         async with _request_tenant_scope(ctx):
             await handler(ctx)
-    except asyncio.CancelledError:
-        raise
     except Exception as exc:
         logger.exception(
             "[AgentHTTPServer] request failed: request_id=%s",

@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 class GatewayConfigFacade:
     """仅覆盖 Gateway 进程内的管理面下发能力；不含 AgentServer 读库合并."""
 
-    def register_manager_routes(self, app: Any) -> None:
+    @staticmethod
+    def register_manager_routes(app: Any) -> None:
         try:
             from gateway.enterprise.config.manager_config import (
                 register_manager_config_routes,

@@ -108,8 +108,6 @@ class AgentHTTPServer:
         if task is not None:
             try:
                 await task
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception("[AgentHTTPServer] stop failed")
 
