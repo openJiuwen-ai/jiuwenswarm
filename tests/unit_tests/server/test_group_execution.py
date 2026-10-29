@@ -824,3 +824,21 @@ async def test_organization_card_stays_out_of_member_slots(service):
     public = next(item for item in page["executions"] if item["execution_id"] == execution_id)
     assert public["owner_member"] == "advisor"
     assert "owner" not in public
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["agent_template", "agent_group"])
+async def test_public_members_cannot_send_private_messages(service, kind):
+    from jiuwenswarm.agents.swarm.group_execution import GroupTaskPolicyRail
+
+    group = await make_group(service, kind=kind)
+    rail = GroupTaskPolicyRail(SimpleNamespace(session_id=group["group_id"], member_name="advisor"))
+    ctx = SimpleNamespace(inputs=SimpleNamespace(tool_name="send_message", tool_call=None), extra={})
+    await rail.before_tool_call(ctx)
+    assert ctx.extra["_skip_tool"]
+    assert "ask_user" in ctx.inputs.tool_result["error"]
+
+    rail.context.member_name = "private-worker"
+    ctx.extra.clear()
+    await rail.before_tool_call(ctx)
+    assert not ctx.extra
