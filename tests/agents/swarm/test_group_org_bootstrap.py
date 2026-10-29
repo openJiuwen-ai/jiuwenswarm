@@ -596,6 +596,7 @@ def test_identical_expert_set_rejoins_and_any_change_creates_an_organization(mon
     )
     assert set(same["members"]) == set(first["members"])
     assert same["organization_id"] == first["organization_id"]
+    assert same["owner_member"] == first["owner_member"] == "insight"
     assert changed["organization_id"] == bootstrap.new_organization_id(SESSION, "round-3")
     assert changed["organization_id"] != first["organization_id"]
     assert bootstrap.instance_team_id(SESSION, "insight") == bootstrap.instance_team_id(
@@ -1240,7 +1241,7 @@ async def test_overlapping_plan_queues_the_owner_when_it_is_recorded(monkeypatch
         return SimpleNamespace(success=True)
 
     monkeypatch.setattr(bootstrap, "run_organization_member", _run)
-    owner = SimpleNamespace(member_name="business")
+    owner = SimpleNamespace(member_name="architecture")
     bootstrap.remember_proxy_backend(SESSION, owner)
     plan = bootstrap.record_organization_plan(
         SESSION,
@@ -1249,8 +1250,8 @@ async def test_overlapping_plan_queues_the_owner_when_it_is_recorded(monkeypatch
         plan_id="plan-next",
     )
     assert plan["status"] == "pending"
-    assert plan["owner_member"] == "business"
-    waiter = bootstrap._queued_plans[(SESSION, "plan-next", "business")]
+    assert plan["owner_member"] == "architecture"
+    waiter = bootstrap._queued_plans[(SESSION, "plan-next", "architecture")]
     await asyncio.sleep(0)
     assert calls == []
 
@@ -1284,7 +1285,7 @@ async def test_overlapping_plan_queues_the_owner_when_it_is_recorded(monkeypatch
     assert queued.data["status"] == "queued"
     assert queued.data["plan_id"] == "plan-next"
     assert calls == []
-    assert bootstrap._queued_plans[(SESSION, "plan-next", "business")] is waiter
+    assert bootstrap._queued_plans[(SESSION, "plan-next", "architecture")] is waiter
 
     group.state["organization_plans"][0]["status"] = "done"
     bootstrap._plan_event(SESSION, "plan-1").set()

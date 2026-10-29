@@ -38,7 +38,7 @@ sequenceDiagram
 
     User->>Gate: 发送带 mentions 的群消息
     alt 被点名的专家团不少于两个，且没有单个专家
-        Gate->>Gate: 记下组织计划，第一个专家团是 Owner
+        Gate->>Gate: 记下组织计划，新的一批人由第一个专家团当 Owner
     else 同时点了单个专家
         Gate->>Gate: 不记计划，记下直接回复
     else 其他情况
@@ -77,7 +77,7 @@ sequenceDiagram
 2. mentions 里至少有两个专家团（`agent_group`），并且没有同时 @ 单个专家（`agent_template`）。只要点名了专家团又点了单个专家，这条消息不记组织计划，并记下直接回复标记。被点名的专家团如果还在一条没出结果的组织里，要等那条组织先把结果发到群里，再走原来的单团路径。这条直接回复不新开组织，也不复用组织实例。不在那条组织里的单个专家可以马上回复。
 3. 不看上一轮 Owner 在不在这次 mentions 里。追问和排队都记计划。
 
-这条消息里第一个被 @ 的专家团是该计划的 Owner。被点名的实例如果还在更早的 `pending` 或 `running` 计划里，新计划先排队，等那些计划结束后再启动。计划号就是这条消息的 `client_message_id`。mentions 和正文都不改写。
+新建组织时，这条消息里第一个被 @ 的专家团是 Owner。同一批专家团再次组队时，沿用这个组织原来的 Owner。被点名的实例如果还在更早的 `pending` 或 `running` 计划里，新计划先排队，等那些计划结束后再启动。计划号就是这条消息的 `client_message_id`。mentions 和正文都不改写。
 
 ### 3.3 代理怎样被唤醒
 

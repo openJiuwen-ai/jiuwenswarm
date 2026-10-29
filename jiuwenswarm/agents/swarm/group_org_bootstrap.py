@@ -347,6 +347,28 @@ def owner_team_id_from_teams(teams: list[dict] | None) -> str:
     return ""
 
 
+def _owner_for_organization(
+    names: list[str],
+    organization_id: str,
+    plans: list[dict],
+    *,
+    legacy_id: str,
+) -> str:
+    """Keep the Owner when this expert set rejoins its organization.
+
+    A new set uses the first mentioned team. A plan stored before organization
+    ids existed is treated as the legacy session organization.
+    """
+    for earlier in reversed(plans):
+        saved = str(earlier.get("organization_id") or "").strip() or legacy_id
+        if saved != organization_id:
+            continue
+        previous = str(earlier.get("owner_member") or "")
+        if previous in names:
+            return previous
+    return names[0]
+
+
 def record_organization_plan(
     session_id: str,
     *,
@@ -391,15 +413,21 @@ def record_organization_plan(
     )
     if existing is not None:
         return existing
-    # Each multi-@ message owns itself. The first mentioned expert team is
-    # that plan's Owner, including a follow-up that does not name the previous
-    # Owner. Overlapping instances wait in _blocking_earlier_plans.
-    owner = names[0]
+    # A new expert set takes the first mentioned team as Owner. Rejoining the
+    # same set keeps that organization's Owner, so a different @ order does not
+    # add a second owner. Overlapping instances wait in _blocking_earlier_plans.
+    plans = group_organization_plans(session_id)
     organization_id = resolve_organization_id(
         session_id,
         names,
-        group_organization_plans(session_id),
+        plans,
         plan_id=plan_id,
+    )
+    owner = _owner_for_organization(
+        names,
+        organization_id,
+        plans,
+        legacy_id=organization_id_for_session(session_id),
     )
     plan = {
         "plan_id": plan_id,
