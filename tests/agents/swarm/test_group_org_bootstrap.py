@@ -555,7 +555,7 @@ def test_follow_up_forms_an_organization_owned_by_its_first_team(monkeypatch):
     assert bootstrap._blocking_earlier_plans(SESSION, plan)
 
 
-def test_identical_expert_set_rejoins_and_any_change_creates_an_organization(monkeypatch):
+def test_identical_expert_set_still_gets_a_new_organization(monkeypatch):
     _MemoryGroup(
         monkeypatch,
         members=[
@@ -595,8 +595,10 @@ def test_identical_expert_set_rejoins_and_any_change_creates_an_organization(mon
         plan_id="round-3",
     )
     assert set(same["members"]) == set(first["members"])
-    assert same["organization_id"] == first["organization_id"]
-    assert same["owner_member"] == first["owner_member"] == "insight"
+    assert same["organization_id"] == bootstrap.new_organization_id(SESSION, "round-2")
+    assert same["organization_id"] != first["organization_id"]
+    assert same["owner_member"] == "business"
+    assert first["owner_member"] == "insight"
     assert changed["organization_id"] == bootstrap.new_organization_id(SESSION, "round-3")
     assert changed["organization_id"] != first["organization_id"]
     assert bootstrap.instance_team_id(SESSION, "insight") == bootstrap.instance_team_id(
@@ -604,7 +606,7 @@ def test_identical_expert_set_rejoins_and_any_change_creates_an_organization(mon
     )
 
 
-def test_legacy_plan_rejoins_the_session_organization(monkeypatch):
+def test_legacy_plan_does_not_reuse_the_session_organization(monkeypatch):
     _MemoryGroup(
         monkeypatch,
         organization_plans=[
@@ -619,10 +621,14 @@ def test_legacy_plan_rejoins_the_session_organization(monkeypatch):
     plan = bootstrap.record_organization_plan(
         SESSION,
         mentions=["insight", "business"],
-        body="回到旧组织",
+        body="新一轮",
         plan_id="round-again",
     )
-    assert plan["organization_id"] == ORG
+    assert plan["organization_id"] == bootstrap.new_organization_id(
+        SESSION, "round-again"
+    )
+    assert plan["organization_id"] != ORG
+    assert plan["owner_member"] == "insight"
 
 
 @pytest.mark.asyncio
@@ -2081,7 +2087,7 @@ async def test_card_appears_only_after_the_owner_organization_is_bound(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_unregister_drops_membership_without_dissolve(monkeypatch):
+async def test_swarm_dissolve_erases_rows_without_stopping_experts(monkeypatch):
     plan = {"plan_id": "plan-1", "status": "done"}
     group = _MemoryGroup(
         monkeypatch,
@@ -2095,16 +2101,22 @@ async def test_unregister_drops_membership_without_dissolve(monkeypatch):
 
     class _Runtime:
         async def dissolve_organization(self, **kwargs):
-            calls.append(("dissolve", kwargs))
+            calls.append(("runtime_dissolve", kwargs))
 
         async def release_membership(self, **kwargs):
             calls.append(("release", kwargs))
 
     class _Pool:
-        async def release_membership(self):
-            calls.append(("pool", None))
+        async def get_summary_team(self):
+            return None
 
-    await bootstrap.unregister_completed_organization(
+        async def dissolve_organization(self):
+            calls.append(("pool_dissolve", None))
+
+        async def release_membership(self):
+            calls.append(("pool_release", None))
+
+    await bootstrap.dissolve_completed_swarm_organization(
         org_runtime=_Runtime(),
         task_pool=_Pool(),
         session_id=SESSION,
@@ -2112,7 +2124,7 @@ async def test_unregister_drops_membership_without_dissolve(monkeypatch):
         owner_team_id="org-expert-business",
     )
 
-    assert [name for name, _ in calls] == ["release", "pool"]
+    assert [name for name, _ in calls] == ["release", "pool_dissolve"]
     assert calls[0][1]["organization_id"] == ORG
     assert calls[0][1]["owner_team_id"] == "org-expert-business"
     assert "organization_id" not in group.state
@@ -2121,7 +2133,7 @@ async def test_unregister_drops_membership_without_dissolve(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unregister_still_clears_the_group_when_live_release_fails(monkeypatch):
+async def test_swarm_dissolve_still_clears_the_group_when_live_release_fails(monkeypatch):
     group = _MemoryGroup(
         monkeypatch,
         organization_id=ORG,
@@ -2135,10 +2147,13 @@ async def test_unregister_still_clears_the_group_when_live_release_fails(monkeyp
             raise RuntimeError("owner runtime is gone")
 
     class _Pool:
-        async def release_membership(self):
-            calls.append("pool")
+        async def get_summary_team(self):
+            return None
 
-    await bootstrap.unregister_completed_organization(
+        async def dissolve_organization(self):
+            calls.append("pool_dissolve")
+
+    await bootstrap.dissolve_completed_swarm_organization(
         org_runtime=_Runtime(),
         task_pool=_Pool(),
         session_id=SESSION,
@@ -2146,7 +2161,7 @@ async def test_unregister_still_clears_the_group_when_live_release_fails(monkeyp
         owner_team_id="org-expert-business",
     )
 
-    assert calls == ["pool"]
+    assert calls == ["pool_dissolve"]
     assert "organization_id" not in group.state
     assert group.state["organization_plans"][0]["plan_id"] == "plan-1"
 
@@ -2185,12 +2200,20 @@ async def test_owner_completion_updates_the_card_without_finish(monkeypatch):
         return None
 
     class _Pool:
+        async def get_summary_team(self):
+            return None
+
+        async def dissolve_organization(self):
+            released.append("pool_dissolve")
+
         async def release_membership(self):
-            released.append("pool")
+            released.append("pool_release")
 
     class _Runtime:
         async def dissolve_organization(self, **_kwargs):
-            raise AssertionError("a finished round must not dissolve the organization")
+            raise AssertionError(
+                "swarm completion must not call runtime dissolve that stops experts"
+            )
 
         async def release_membership(self, **kwargs):
             released.append(kwargs)
@@ -2232,7 +2255,7 @@ async def test_owner_completion_updates_the_card_without_finish(monkeypatch):
     assert calls[-1]["message_id"] == "msg-1"
     assert plan["status"] == "done"
     assert released[0]["organization_id"] == ORG
-    assert released[1] == "pool"
+    assert released[1] == "pool_dissolve"
     assert "organization_id" not in group.state
     assert group.state["organization_teams"] == []
     assert group.state["organization_plans"] == [plan]
@@ -2293,8 +2316,14 @@ async def test_next_plan_joins_only_after_the_finished_round_unregisters(monkeyp
         await asyncio.sleep(0)
 
     class _Pool:
+        async def get_summary_team(self):
+            return None
+
+        async def dissolve_organization(self):
+            order.append("pool_dissolve")
+
         async def release_membership(self):
-            order.append("pool")
+            order.append("pool_release")
 
     class _Runtime:
         async def release_membership(self, **kwargs):
@@ -2341,7 +2370,8 @@ async def test_next_plan_joins_only_after_the_finished_round_unregisters(monkeyp
         team_id="org-expert-business",
     )
     await waiter
-    assert order.index("join") > order.index("release")
+    assert order.index("join") > order.index("pool_dissolve")
+    assert order.index("pool_dissolve") > order.index("release")
     assert order.index("release") > order.index("pause")
 
 
@@ -2577,12 +2607,20 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
         return None
 
     class _Pool:
+        async def get_summary_team(self):
+            return None
+
+        async def dissolve_organization(self):
+            released.append("pool_dissolve")
+
         async def release_membership(self):
-            released.append("pool")
+            released.append("pool_release")
 
     class _Runtime:
         async def dissolve_organization(self, **_kwargs):
-            raise AssertionError("a failed round must not dissolve the organization")
+            raise AssertionError(
+                "swarm failure must not call runtime dissolve that stops experts"
+            )
 
         async def release_membership(self, **_kwargs):
             released.append(plan["status"])
@@ -2613,7 +2651,8 @@ async def test_owner_failure_marks_unfinished_card_rows_failed(monkeypatch):
     assert calls[-1]["status"] == "failed"
     assert calls[-1]["fail_unfinished"] is True
     assert plan["status"] == "failed"
-    assert released == ["running", "pool"]
+    assert plan.get("error") == "organization root task failed"
+    assert released == ["running", "pool_dissolve"]
     assert "organization_id" not in group.state
     assert group.state["organization_teams"] == []
 
