@@ -939,6 +939,7 @@ def _office_claw_mcp_build_fingerprint(
 
     args = [str(value or "").strip() for value in params.get("args") or []]
     entry_scanned = False
+    saw_positional = False
     index = 0
     while index < len(args):
         raw = args[index]
@@ -966,26 +967,37 @@ def _office_claw_mcp_build_fingerprint(
                 _stat_once(resolved)
             continue
         resolved = _resolve(raw)
-        if resolved is None or not resolved.is_file():
+        resolves_to_file = resolved is not None and resolved.is_file()
+        if not saw_positional:
+            # 首个位置参数(node 入口)是唯一的 entry 候选
+            saw_positional = True
+            if resolves_to_file:
+                entry_scanned = True
+                parent_key = _normalized_path(str(resolved.parent))
+                if parent_key in expanded_dirs:
+                    _stat_once(resolved)
+                else:
+                    expanded_dirs.add(parent_key)
+                    tree = _fingerprint_bundle_tree(resolved.parent)
+                    if tree is None:
+                        return None
+                    for entry in tree:
+                        if entry["path"] in seen_paths:
+                            continue
+                        seen_paths.add(entry["path"])
+                        fingerprints.append(entry)
+            # 首个位置参数解析失败(相对路径漂移/CLI 占位符):entry 缺失,
+            # 循环结束后拒绝缓存——后续位置参数(脚本参数)不顶替 entry,
+            # 其父目录树不得进入指纹顶缺(见 !9045 CR-1)。
             continue
-        if entry_scanned:
+        if resolves_to_file:
             # 入口之后的位置参数是传给脚本的参数,单文件指纹
             _stat_once(resolved)
-            continue
-        entry_scanned = True
-        parent_key = _normalized_path(str(resolved.parent))
-        if parent_key in expanded_dirs:
-            _stat_once(resolved)
-            continue
-        expanded_dirs.add(parent_key)
-        tree = _fingerprint_bundle_tree(resolved.parent)
-        if tree is None:
-            return None
-        for entry in tree:
-            if entry["path"] in seen_paths:
-                continue
-            seen_paths.add(entry["path"])
-            fingerprints.append(entry)
+    if saw_positional and not entry_scanned:
+        # 首个位置参数未解析成文件 → 真实 bundle 目录不在指纹内。基于不完整
+        # 指纹的键会让 bundle 变化永不轮换(永久 stale 且无日志),此处直接
+        # 返回 None 拒绝缓存,不依赖 command 单文件指纹形成键。
+        return None
     return sorted(fingerprints, key=lambda entry: entry["path"])
 
 
@@ -995,8 +1007,9 @@ def _office_claw_mcp_schema_cache_key(params: Mapping[str, Any]) -> str | None:
     )
     build_files = _office_claw_mcp_build_fingerprint(params)
     if not build_files:
-        # No local bundle files (remote-style config) or an oversized bundle
-        # tree: the key could never rotate on a change, so refuse to cache.
+        # No local bundle files (remote-style config), an unresolved entry
+        # positional, or an oversized bundle tree: the key could never
+        # rotate on a change, so refuse to cache.
         return None
     payload = {
         "command": _normalized_path(str(params.get("command") or "")),

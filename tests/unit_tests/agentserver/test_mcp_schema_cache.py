@@ -428,3 +428,41 @@ async def test_require_import_aux_scripts_do_not_disable_cache(
     (dist / "server-toolsets.js").write_text("toolset v2-with-more-bytes")
     await mcp_config.list_office_claw_mcp_tools(params)
     assert calls == 3, "entry tree change must rotate the key"
+
+
+@pytest.mark.asyncio
+async def test_unresolved_entry_positional_refuses_cache(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A first positional that fails to resolve must refuse the cache (CR-1).
+
+    If the entry cannot be resolved (relative path with cwd drift, or a CLI
+    placeholder), the real bundle directory would never enter the
+    fingerprint, and a later positional that happens to resolve (a script
+    config file) must not be mistaken for the entry — its parent tree
+    would mask the missing bundle tree and the key would never rotate on a
+    real bundle rebuild. Refuse to cache instead of forming a key from an
+    incomplete fingerprint.
+    """
+    calls = 0
+
+    async def _discover(params):
+        nonlocal calls
+        calls += 1
+        return [_make_tool("office_claw_post_message")]
+
+    monkeypatch.setattr(mcp_config, "_list_office_claw_mcp_tools_uncached", _discover)
+
+    config = tmp_path / "config.json"
+    config.write_text("{}")
+    params = {
+        "command": "node",
+        "args": ["./no-such-entry.js", str(config)],
+        "cwd": str(tmp_path),
+        "env": {},
+    }
+    await mcp_config.list_office_claw_mcp_tools(params)
+    await mcp_config.list_office_claw_mcp_tools(params)
+    assert calls == 2, "unresolved entry positional must refuse the cache"
+    assert len(mcp_config._office_claw_mcp_schema_cache) == 0
