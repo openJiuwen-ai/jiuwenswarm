@@ -323,6 +323,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     # checkpoints inherit the parent's session_id (correct: parent abort → sub stops).
     _SID_KEY = "__jiuwenswarm_session_id__"
     _SHELL_SID_TOKEN_KEY = "__jiuwenswarm_shell_session_token__"
+    # Key used in ctx.extra to carry THIS invoke's abort-epoch snapshot from
+    # before_invoke to checkpoints.  A round only honours aborts that were
+    # requested after it started (epoch bumped post-snapshot); aborts targeting
+    # earlier rounds can never kill a later round, and no reset call is needed.
+    _ABORT_EPOCH_KEY = "__jiuwenswarm_abort_epoch__"
 
     def __init__(self, *, member_name: str | None = None, role: str | None = None) -> None:
         super().__init__()
@@ -332,7 +337,15 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Per-session pause/abort state.  Keyed by session_id (conversation_id).
         # Shared adapter instances serve multiple concurrent sessions; scalar state
         # would cause cross-session contamination (session A cancel kills session B).
-        self._abort_requested: dict[str, bool] = {}
+        # abort() bumps the epoch; each round snapshots it at before_invoke and a
+        # checkpoint only fires when current epoch > snapshot — so an abort can
+        # never kill a round that started after it (takeover/抢发 竞态根治点).
+        # _abort_epoch_seq is the process-wide monotonic source: cleanup_session
+        # holds the session value at the global sequence instead of popping, so
+        # a session's epoch never wraps backwards (else old rounds with higher
+        # snapshots would become permanently immune to later aborts).
+        self._abort_epoch: dict[str, int] = {}
+        self._abort_epoch_seq: int = 0
         self._pause_events: dict[str, asyncio.Event] = {}
         # Per-session conversation context
         self._conversation_ids: dict[str, str] = {}
@@ -543,12 +556,15 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
     def resume(self, session_id: str = "") -> None:
         sid = session_id or "default"
-        self._abort_requested.pop(sid, None)
+        # Do NOT touch the abort epoch here: a round paused mid-flight must still
+        # die if an abort was requested while it was paused (epoch > snapshot).
+        # Fresh rounds are immune by their own snapshot taken at before_invoke.
         self._get_pause_event(sid).set()
 
     def abort(self, session_id: str = "") -> None:
         sid = session_id or "default"
-        self._abort_requested[sid] = True
+        self._abort_epoch_seq += 1
+        self._abort_epoch[sid] = self._abort_epoch_seq
         self._get_pause_event(sid).set()
         if sid:
             try:
@@ -569,19 +585,15 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     exc_info=True,
                 )
 
-    def reset_abort(self, session_id: str = "") -> None:
-        sid = session_id or "default"
-        self._abort_requested.pop(sid, None)
-
     def reset_for_new_task(self, session_id: str = "") -> None:
-        """Unblock the pause event for the next task without touching the abort flag.
+        """Unblock the pause event for the next task without touching the abort epoch.
 
         Called on cancel so that a new task can start without being stuck at
-        the _pause_event.wait() checkpoint. The abort flag is intentionally
-        NOT cleared here — it must remain True until the next task's
-        process_message_*_impl calls reset_abort() at entry, ensuring the
-        in-flight checkpoint (before_model_call / before_tool_call) can still
-        observe the flag and raise CancelledError.
+        the _pause_event.wait() checkpoint. The abort epoch is intentionally
+        NOT reset here — in-flight rounds (snapshot < current epoch) must still
+        observe the abort at their checkpoints and raise CancelledError. Fresh
+        rounds are immune by their own snapshot taken at before_invoke, so no
+        explicit reset call is needed anywhere.
         """
         sid = session_id or "default"
         self._get_pause_event(sid).set()
@@ -596,7 +608,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         dicts on long-lived adapters serving many unique sessions.
         """
         sid = session_id or "default"
-        self._abort_requested.pop(sid, None)
+        # Hold the session's epoch at the global sequence (NOT pop): popping
+        # would let a still-winding-down round with a higher snapshot become
+        # permanently immune to later aborts (epoch wrapped backwards).
+        self._abort_epoch[sid] = self._abort_epoch_seq
         self._pause_events.pop(sid, None)
         self._conversation_ids.pop(sid, None)
         self._main_sessions.pop(sid, None)
@@ -674,6 +689,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Sub-agents inherit this from the parent's invoke since they don't
         # fire their own before_invoke (ctx.session is None → early return above).
         ctx.extra[self._SID_KEY] = sid
+        # Snapshot the abort epoch at round birth.  Checkpoints in THIS invoke
+        # compare current epoch vs this snapshot: only aborts requested after
+        # this round started can kill it.  Sub-agents inherit the snapshot via
+        # ctx.extra (same inheritance as _SID_KEY above), so a parent abort
+        # still stops in-flight sub-agents.
+        ctx.extra[self._ABORT_EPOCH_KEY] = self._abort_epoch.get(sid, 0)
         try:
             from openjiuwen.core.sys_operation.shell_process_registry import (
                 set_shell_session_id,
@@ -704,7 +725,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         declared = self._sync_image_capabilities()
         sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
-        if self._abort_requested.get(sid, False):
+        raw_epoch = ctx.extra.get(self._ABORT_EPOCH_KEY)
+        # 快照缺失（agent-core 回调边界丢 extra 的工具回调等）时无法归属世代，
+        # 不判定——该形态的在途旧轮回肠由 task.cancel + shell kill 兜底。
+        if raw_epoch is not None and self._abort_epoch.get(sid, 0) > raw_epoch:
             raise asyncio.CancelledError("Agent abort requested")
 
         if ctx.context is not None:
@@ -726,7 +750,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         self._sync_image_capabilities()
         sid = self._resolve_sid(ctx, ctx.session)
         await self._get_pause_event(sid).wait()
-        if self._abort_requested.get(sid, False):
+        raw_epoch = ctx.extra.get(self._ABORT_EPOCH_KEY)
+        # 同 before_model_call：快照缺失不判定（见上）。
+        if raw_epoch is not None and self._abort_epoch.get(sid, 0) > raw_epoch:
             raise asyncio.CancelledError("Agent abort requested")
 
         session = ctx.session
