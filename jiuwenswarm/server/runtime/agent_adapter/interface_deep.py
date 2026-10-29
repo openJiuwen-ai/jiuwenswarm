@@ -15806,7 +15806,8 @@ class JiuWenSwarmDeepAdapter:
                     channel_id=request.channel_id,
                     ok=True,
                     payload={"event_type": "chat.interrupt_result", "intent": intent,
-                             "success": True, "managed_task_settled": detached},
+                             "success": True, "managed_task_settled": detached,
+                             "managed_task_status": "unknown" if detached else "running"},
                     metadata=request.metadata,
                 )
             if detached:

@@ -188,8 +188,11 @@ async def test_restart_does_not_replay_dispatched_effect(tmp_path):
             == "queued"
         )
         assert submit(replacement, "effect")["id"] == active["id"]
-        await asyncio.sleep(0.03)
-        assert replacement.executor.calls == []
+        # The unbound invocation is already settled. Release its queued successor,
+        # but never replay the original side effect after recovery.
+        await until(lambda: reopened.read(active["id"])["status"] == "failed")
+        await until(lambda: len(replacement.executor.calls) == 1)
+        assert replacement.executor.calls[0]["id"] == waiting["id"]
     finally:
         await replacement.close()
 

@@ -43,7 +43,10 @@ function pickerHtml(sources) {
 }
 
 function promptForSource({ BrowserWindow, parent, sources }) {
-  if (!sources.length) return Promise.resolve(null);
+  if (!sources.length) {
+    console.warn('[electron] display media denied: no screen or window sources were returned');
+    return Promise.resolve(null);
+  }
   const promptWindow = new BrowserWindow({
     parent: parent || undefined,
     modal: Boolean(parent),
@@ -71,10 +74,16 @@ function promptForSource({ BrowserWindow, parent, sources }) {
       const index = Number.parseInt(target.searchParams.get('index') || '', 10);
       finish(target.hostname === 'select' && sources[index] ? sources[index] : null);
     });
-    promptWindow.on('closed', () => finish(null));
+    promptWindow.on('closed', () => {
+      if (!settled) console.info('[electron] display media picker closed without a selection');
+      finish(null);
+    });
     promptWindow.once('ready-to-show', () => promptWindow.show());
     void promptWindow.loadURL(`data:text/html;charset=UTF-8,${encodeURIComponent(pickerHtml(sources))}`)
-      .catch(() => finish(null));
+      .catch(error => {
+        console.error('[electron] display media picker failed to load', error);
+        finish(null);
+      });
   });
 }
 
@@ -83,18 +92,32 @@ function registerDisplayMediaHandler({ session, desktopCapturer, BrowserWindow, 
   session.setDisplayMediaRequestHandler((request, callback) => {
     // One picker at a time; a second request while it is open is denied.
     if (picking || !request.videoRequested) {
+      console.warn('[electron] display media request denied', {
+        reason: picking ? 'picker_already_pending' : 'video_not_requested',
+        platform,
+      });
       callback(null);
       return;
     }
     picking = true;
+    const startedAt = Date.now();
+    console.info('[electron] display media request started', { platform });
     void (async () => {
       const sources = orderSources(await desktopCapturer.getSources({
         types: ['screen', 'window'],
         thumbnailSize: THUMBNAIL_SIZE,
       }));
+      console.info('[electron] display media sources enumerated', {
+        sourceCount: sources.length, elapsedMs: Date.now() - startedAt,
+      });
       return promptForSource({ BrowserWindow, parent: getParentWindow(), sources });
     })().then(
-      source => callback(source ? { video: source } : null),
+      source => {
+        console.info('[electron] display media picker completed', {
+          selected: Boolean(source), elapsedMs: Date.now() - startedAt,
+        });
+        callback(source ? { video: source } : null);
+      },
       error => {
         console.error('[electron] display media request failed', error);
         callback(null);

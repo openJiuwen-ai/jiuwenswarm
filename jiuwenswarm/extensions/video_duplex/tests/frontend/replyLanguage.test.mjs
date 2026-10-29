@@ -1,6 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createQwenOmniSessionUpdate, createQwenOmniToolResultEvents } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/replyLanguageProtocol.mjs';
+import { createQwenOmniSessionUpdate, createQwenOmniToolResultEvents, parseQwenOmniFunctionCall } from '../../../../channels/web/frontend/node_modules/.cache/realtime-duplex/replyLanguageProtocol.mjs';
+
+test('Qwen forwards the full queue management instruction to the text manager', () => {
+  const call = parseQwenOmniFunctionCall({
+    type: 'response.function_call_arguments.done', name: 'jiuwen_queue_manage', call_id: 'manage',
+    arguments: JSON.stringify({ instruction: '先打开飞书，再打开微信。' }),
+  });
+  assert.equal(call.task, '先打开飞书，再打开微信。');
+  assert.equal(call.name, 'jiuwen_queue_manage');
+  assert.equal(parseQwenOmniFunctionCall({
+    type: 'response.function_call_arguments.done', name: 'jiuwen_queue_manage', call_id: 'bad',
+    arguments: JSON.stringify({ instruction: ' ' }),
+  }), null);
+  const update = createQwenOmniSessionUpdate({ inputRate: 16000, outputRate: 24000 });
+  assert.match(update.session.instructions, /call jiuwen_queue_manage/);
+  assert.match(update.session.instructions, /Call the tool before acknowledging/);
+});
 
 for (const [language, expected, announcement] of [
   ['en', /Speak to the user in English/, /one or two sentences of English/],

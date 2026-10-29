@@ -15,6 +15,7 @@ import httpx
 from jiuwenswarm.common import asr_client
 from jiuwenswarm.common.asr_client import AUDIO_SUFFIXES, AsrClient, decrypt_api_key
 from jiuwenswarm.extensions.video_duplex.backend import joyai_provider
+from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure, safe_error_detail
 
 
 MAX_AUDIO_CHARS = 2_000_000
@@ -161,9 +162,28 @@ async def synthesize_speech(text: str, *, use_joyai_voice: bool) -> tuple[bytes,
             resolve_tts_endpoint(endpoint), headers=headers, json=payload
         )
     if response.status_code >= 400:
-        raise RuntimeError(f"TTS 请求失败 ({response.status_code})")
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"message": response.text[:1500]}
+        error = body.get("error", body) if isinstance(body, dict) else {}
+        if isinstance(error, dict):
+            detail = "; ".join(f"{key}={error[key]}" for key in ("code", "type", "message", "detail") if error.get(key))
+        else:
+            detail = str(error)
+        headers = getattr(response, "headers", {})
+        provider_request_id = headers.get("x-request-id") or headers.get("request-id") or (
+            body.get("request_id") if isinstance(body, dict) else ""
+        )
+        diagnostic = (
+            f"TTS 请求失败 (HTTP {response.status_code}); model={model}; voice={voice or '(未配置)'}; "
+            f"provider_request_id={provider_request_id or '(未提供)'}; {detail or '服务未提供具体原因'}"
+        )
+        if api_key:
+            diagnostic = diagnostic.replace(api_key, "******")
+        raise RuntimeError(safe_error_detail(diagnostic))
     if not response.content:
-        raise RuntimeError("TTS 没有返回音频")
+        raise RuntimeError(f"TTS 没有返回音频 (HTTP {response.status_code}); model={model}; voice={voice or '(未配置)'}")
     return response.content, "audio/mpeg", model
 
 
@@ -208,17 +228,19 @@ def create_voice_handlers(
                 text, use_joyai_voice=use_joyai_voice()
             )
         except Exception as exc:  # noqa: BLE001
+            error = duplex_failure(exc, stage="TTS 合成", request_id=req_id)
             await asyncio.to_thread(log_event, {
                 **request_log,
                 "stage": "tts_failed",
                 "latency_ms": round((time.perf_counter() - started_at) * 1_000, 1),
-                "error": str(exc).strip() or "TTS failed",
+                "error": error,
+                "error_type": type(exc).__name__,
             })
             await channel.send_response(
                 ws,
                 req_id,
                 ok=False,
-                error=str(exc).strip() or "TTS failed",
+                error=error,
                 code="TTS_ERROR",
             )
             return
@@ -313,7 +335,7 @@ def create_voice_handlers(
             })
             await channel.send_event(ws, "video.tts.cancelled", {"stream_id": stream_id})
         except Exception as exc:  # noqa: BLE001
-            error = str(exc).strip() or "TTS stream failed"
+            error = duplex_failure(exc, stage="TTS 流式合成", request_id=request_id) + f" [stream_id={stream_id}, chunks={sequence}]"
             await asyncio.to_thread(log_event, {
                 "stage": "tts_stream_failed",
                 "request_id": request_id,
@@ -323,10 +345,12 @@ def create_voice_handlers(
                 "latency_ms": round((time.perf_counter() - started_at) * 1_000, 1),
                 "first_chunk_ms": first_chunk_ms,
                 "error": error,
+                "error_type": type(exc).__name__,
             })
             await channel.send_event(ws, "video.tts.error", {
                 "stream_id": stream_id,
                 "error": error,
+                "error_type": type(exc).__name__,
             })
         finally:
             current = asyncio.current_task()
@@ -446,7 +470,7 @@ def create_voice_handlers(
                 log_event=log_asr,
             )
         except Exception as exc:  # noqa: BLE001
-            error = str(exc) or "ASR failed"
+            error = duplex_failure(exc, stage="ASR 语音识别", request_id=req_id)
             await asyncio.to_thread(log_asr, {
                 **request_log,
                 "outcome": "failed",
@@ -454,6 +478,7 @@ def create_voice_handlers(
                 "has_transcript": False,
                 "latency_ms": round((time.perf_counter() - started_at) * 1000),
                 "error": error,
+                "error_type": type(exc).__name__,
             })
             await channel.send_response(
                 ws, req_id, ok=False, error=error, code="ASR_ERROR"

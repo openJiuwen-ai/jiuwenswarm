@@ -8,10 +8,12 @@
  * frames now start at 1080p and only step down when the encoded JPEG is too big.
  */
 
-// Source: Aliyun doc "建议编码前原始图片大小不超过190KB" (input_image_buffer.append,
-// https://help.aliyun.com/zh/model-studio/client-events). 190KB raw is ~253KB in
-// base64, below the 256KB hard limit that qwenOmniProtocol.ts enforces.
-export const FRAME_MAX_JPEG_BYTES = 190 * 1024;
+// The limit applies to the base64 image field, excluding the data URL prefix.
+// Base64 uses 4 * ceil(jpegBytes / 3) bytes. Spend the full allowed image budget.
+export const FRAME_MAX_BASE64_BYTES = 256 * 1024;
+export const FRAME_MAX_JPEG_BYTES = Math.floor(FRAME_MAX_BASE64_BYTES / 4) * 3;
+const FRAME_MAX_QUALITY = 1;
+const FRAME_QUALITY_SEARCH_STEPS = 6;
 
 // Source: Aliyun doc "最高不超过 1080p" (same section): the short edge stays <= 1080.
 const FRAME_MAX_SHORT_EDGE = 1080;
@@ -85,8 +87,9 @@ export type FrameRenderer<T extends { size: number }> = (
  * Remembers the last step that fitted for each source, so a busy 4K screen does
  * not re-encode the whole ladder every capture. Each capture first tries one
  * step better than the remembered one, so the frame climbs back to full
- * resolution once the picture gets simpler. Cost: at most one extra encode per
- * capture while a source sits below the top step.
+ * resolution once the picture gets simpler. The ladder adds at most one failed
+ * probe per capture while a source stays at its remembered step. It brackets a fitting
+ * quality; bounded refinement then uses the remaining image budget.
  */
 export class FrameEncoder {
   private readonly stepBySource = new Map<string, number>();
@@ -101,14 +104,38 @@ export class FrameEncoder {
   ): Promise<EncodedFrame<T> | null> {
     const steps = frameStepsFor(sourceWidth, sourceHeight);
     const remembered = Math.min(this.stepBySource.get(sourceId) ?? 0, steps.length - 1);
+    let rejected: ResolvedStep | null = null;
     for (let index = Math.max(0, remembered - 1); index < steps.length; index += 1) {
       const step = steps[index];
       const blob = await render(step.width, step.height, step.quality);
       if (!blob) return null;
       if (blob.size <= this.maxBytes) {
         this.stepBySource.set(sourceId, index);
-        return { ...step, blob };
+        let best = { ...step, blob };
+        let low = step.quality;
+        let high = rejected?.width === step.width && rejected.height === step.height
+          ? rejected.quality : FRAME_MAX_QUALITY;
+        // A sparse picture may fit at full quality. Never pad it to reach a byte target.
+        if (high === FRAME_MAX_QUALITY) {
+          const fullQuality = await render(step.width, step.height, high);
+          if (!fullQuality) return null;
+          if (fullQuality.size <= this.maxBytes) return { ...step, quality: high, blob: fullQuality };
+        }
+        for (let attempt = 0; attempt < FRAME_QUALITY_SEARCH_STEPS; attempt += 1) {
+          if (best.blob.size >= this.maxBytes * 0.99) break;
+          const quality = (low + high) / 2;
+          const candidate = await render(step.width, step.height, quality);
+          if (!candidate) return null;
+          if (candidate.size <= this.maxBytes) {
+            best = { ...step, quality, blob: candidate };
+            low = quality;
+          } else {
+            high = quality;
+          }
+        }
+        return best;
       }
+      rejected = step;
     }
     // Even the smallest step is too big: drop the frame instead of breaking the socket.
     this.stepBySource.set(sourceId, steps.length - 1);

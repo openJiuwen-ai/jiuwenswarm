@@ -331,6 +331,16 @@
     }
   },
   "videoLive": {
+    "screenCapture": {
+      "failed": "Screen sharing failed: {{reason}} [{{errorType}}]; native error: {{nativeMessage}}; stage: {{stage}}; elapsed: {{elapsedMs}} ms; diagnostic ID: {{captureId}}",
+      "permissionOrCancel": "Sharing was not authorized: selection may have been cancelled, or browser/system screen-recording permission denied; the exception alone does not identify which",
+      "aborted": "Capture was aborted: the picker may have been cancelled, a previous request may still be pending, or system capture may have failed",
+      "unreadable": "The system could not read the selected screen; check screen-recording permission and capture/system state",
+      "invalidState": "The page state does not allow sharing; check window focus and whether the request followed a user click",
+      "security": "The current security policy blocks screen sharing",
+      "unknown": "Screen capture or frame initialization failed; check the native error and diagnostic ID in the logs"
+    },
+    "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings.",
     "modelFallback": "Video model",
     "subtitle": "Real-time multi-screen audio and video Q&A",
     "status": {

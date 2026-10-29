@@ -124,8 +124,13 @@ class AgentTaskExecutor:
         from .tasks.bridge import GatewayTaskEndpoint
 
         self.endpoint = GatewayTaskEndpoint(store)
+        self.reconciliation_outcomes = {}
+        self._readiness_check = None
 
     async def close(self):
+        if self._readiness_check is not None:
+            self._readiness_check.cancel()
+            await asyncio.gather(self._readiness_check, return_exceptions=True)
         self.endpoint.close()
 
     async def run(self, task, progress):
@@ -176,6 +181,7 @@ class AgentTaskExecutor:
                 raise ExecutionUncertain(
                     "Answer channel closed before the question was answered"
                 )
+            self.store.update(task["id"], lambda t: t.update(observed_result=result))
             if current.get("execution_bound"):
                 await self.wait_settled(task)
             # Native send_file_to_user is a server push, not part of this RPC stream.
@@ -229,8 +235,16 @@ class AgentTaskExecutor:
         except TimeoutError as exc:
             # Ask Core once before declaring the outcome unknown (#5486).
             try:
-                if await self.cancel(task, probe=True):
-                    return
+                if await self.reconciliation_ready():
+                    outcome = await self.reconcile(task)
+                    if outcome.get("status") != "failed" and (
+                        outcome.get("settled") or outcome.get("status") in {"completed", "cancelled"}
+                    ):
+                        self.store.update(task["id"], lambda t: t.update(
+                            execution_settled=True, checkpoint_open=False,
+                            execution_cancelled=outcome.get("status") == "cancelled" or t["status"] == "cancelling",
+                        ))
+                        return
             except Exception:
                 pass
             raise ExecutionUncertain(
@@ -324,11 +338,80 @@ class AgentTaskExecutor:
             execution_target=target,
         )
 
-    async def cancel(self, task, *, probe=False):
-        """Stop the exact request; with probe=True only ask whether Core still runs it."""
+    async def reconciliation_ready(self) -> bool:
+        """Read current Front readiness, not the snapshot from connection.ack."""
+        if self._readiness_check is None or self._readiness_check.done():
+            self._readiness_check = asyncio.create_task(self._check_reconciliation_readiness())
+        return await asyncio.shield(self._readiness_check)
+
+    async def _check_reconciliation_readiness(self) -> bool:
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            async with asyncio.timeout(5):
+                payload = await task_agent_query(
+                    self.client, ReqMethod.HEALTH_CHECK_GET_CONF, {}, "", "",
+                )
+            return payload.get("agent_ready") is True
+        except Exception:
+            # This is not the one task query. Retry readiness on the next sweep.
+            return False
+
+    async def reconcile(self, task):
+        """Query once; transport success is not a successful task outcome."""
+        key = task["request_id"]
+        if key not in self.reconciliation_outcomes:
+            try:
+                self.reconciliation_outcomes[key] = await self._reconcile_once(task)
+            except Exception as exc:
+                self.reconciliation_outcomes[key] = {
+                    "status": "failed", "error": "无法核对执行结果: " + str(exc)[:500],
+                }
+        return self.reconciliation_outcomes[key]
+
+    async def _reconcile_once(self, task):
+        response = await self._send_cancel_request(task, probe=True)
+        payload = response.payload or {}
+        if not response.ok or payload.get("success") is False:
+            return {"status": "failed", "error": "无法核对执行结果: " + str(
+                payload.get("code") or payload.get("error") or "Core rejected the query"
+            )[:500]}
+        status = payload.get("managed_task_status")
+        if status is None:
+            # Compatibility with Core versions that only report execution presence.
+            status = "unknown" if payload.get("managed_task_settled") else (
+                "running" if payload.get("managed_task_settled") is False else "unknown"
+            )
+        return {"status": status, "result": payload.get("managed_task_result"),
+                "error": payload.get("error", ""), "settled": bool(payload.get("managed_task_settled"))
+                or status in {"completed", "failed", "cancelled"}}
+
+    async def _send_cancel_request(self, task, *, probe):
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
+        client = (
+            self.client.get("value") if isinstance(self.client, dict) else self.client
+        )
+        request = e2a_from_agent_fields(
+            request_id=("probe-" if probe else "cancel-") + task["request_id"] + "-" + str(time.time_ns()),
+            channel_id="video_tool",
+            session_id=task["core_session_id"],
+            req_method=ReqMethod.CHAT_CANCEL,
+            user_id=task["owner"] or None,
+            params={"intent": "cancel", **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
+                    "managed_task_request": task["request_id"],
+                    **({"managed_task_probe": True} if probe else {})},
+            is_stream=False,
+            timestamp=time.time(),
+        )
+        trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id, probe=probe)
+        response = await asyncio.wait_for(client.send_request(request), 20)
+        trace_task("cancel_rpc_response", task=task_state(task), ok=response.ok, payload=receipt_state(response.payload))
+        return response
+
+    async def cancel(self, task, *, probe=False):
+        """Stop the exact request; with probe=True only ask whether Core still runs it."""
         if not probe:
             # Revoke unclaimed admission in the same transaction as bind.
             with self.store.transaction() as db:
@@ -345,24 +428,7 @@ class AgentTaskExecutor:
                     trace_task("cancel_before_execution_bound", task=task_state(current))
                     return True
 
-        client = (
-            self.client.get("value") if isinstance(self.client, dict) else self.client
-        )
-        request = e2a_from_agent_fields(
-            request_id="cancel-" + task["request_id"],
-            channel_id="video_tool",
-            session_id=task["core_session_id"],
-            req_method=ReqMethod.CHAT_CANCEL,
-            user_id=task["owner"] or None,
-            params={"intent": "cancel", **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
-                    "managed_task_request": task["request_id"],
-                    **({"managed_task_probe": True} if probe else {})},
-            is_stream=False,
-            timestamp=time.time(),
-        )
-        trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id, probe=probe)
-        response = await asyncio.wait_for(client.send_request(request), 20)
-        trace_task("cancel_rpc_response", task=task_state(task), ok=response.ok, payload=receipt_state(response.payload))
+        response = await self._send_cancel_request(task, probe=probe)
         if not response.ok or (response.payload or {}).get("success") is False:
             detail = str((response.payload or {}).get("code") or (response.payload or {}).get("error") or "")[:500]
             raise RuntimeError("Agent has not confirmed the stop request" + (": " + detail if detail else ""))

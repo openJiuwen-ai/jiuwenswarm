@@ -41,25 +41,8 @@ test('saved keys count as configured, but keys for another provider do not', () 
   assert.equal(isConfigured(draft, { qwen_omni_api_key: 0, joyai_api_key: 12 }), false);
 });
 
-test('JoyAI HTTP requires both speech services in addition to the language model', () => {
-  assert.equal(isConfigured(joyai, {}), true);
-  for (const key of [
-    'joyai_api_base', 'joyai_model', 'joyai_api_key', 'voice_asr_endpoint',
-    'voice_tts_endpoint', 'voice_api_key', 'voice_asr_model', 'voice_tts_model',
-  ]) {
-    assert.equal(isConfigured({ ...joyai, [key]: '  ' }, {}), false, key);
-  }
-  assert.equal(isConfigured({ ...joyai, joyai_api_key: '', voice_api_key: ' ' }, {
-    joyai_api_key: 8, voice_api_key: 9,
-  }), true);
-});
-
-test('JoyAI WebSocket requires voice but does not require hidden HTTP settings', () => {
-  const draft = {
-    ...joyai, voice_protocol: 'native_ws', voice_api_key: '',
-    voice_asr_model: '', voice_tts_model: '', voice_tts_voice: 'speaker',
-  };
-  assert.equal(isConfigured(draft, {}), true);
-  assert.equal(isConfigured({ ...draft, voice_tts_voice: ' ' }, {}), false);
-  assert.equal(isConfigured({ ...draft, voice_protocol: 'openai_http' }, {}), false);
+test('saved JoyAI configurations cannot enable the Qwen-only frontend', () => {
+  assert.equal(isConfigured(joyai, {}), false);
+  assert.equal(isConfigured({ ...joyai, voice_protocol: 'native_ws', voice_tts_voice: 'speaker' }, {}), false);
+  assert.equal(isConfigured({ ...qwen, ...joyai }, { joyai_api_key: 8, voice_api_key: 9 }), false);
 });

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 import uuid
 
+from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_action_helper,
     joyai_provider,
@@ -33,6 +34,21 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
 )
 _ALLOWED_IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
 _LOG_WRITE_LOCK = threading.Lock()
+
+
+def _parse_joyai_task_operation(delegation: str, call_id: str):
+    """Validate an explicit control before any operation is executed."""
+    from .qwen_omni_tools import parse_qwen_omni_tool_call
+
+    value = json.loads(delegation)
+    if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
+        raise ValueError("Invalid task operation")
+    if value.get("name") not in {
+        "jiuwen_delegate", "jiuwen_queue_manage", "jiuwen_task_query",
+        "jiuwen_task_modify", "jiuwen_task_cancel", "jiuwen_task_answer",
+    }:
+        raise ValueError("Unsupported task operation")
+    return parse_qwen_omni_tool_call({**value, "call_id": call_id})
 
 _CONVERSATION_EVENT_KINDS = {
     "user",
@@ -220,7 +236,7 @@ def register_video_live_handler(
         try:
             restored = await context_restorer.prepare(ws, str((params or {}).get("search_session_id") or "").strip())
         except Exception as exc:
-            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
+            await channel.send_response(ws, req_id, ok=False, error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id), code="CONTEXT_RESTORE_FAILED")
             return
         context_payload = {"context_restore": restored} if restored else {}
         if _video_live_mode() == "joyai":
@@ -370,7 +386,7 @@ def register_video_live_handler(
                 await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_EXPIRED")
                 return
             except Exception as exc:
-                await channel.send_response(ws, req_id, ok=False, error=str(exc), code="CONTEXT_RESTORE_FAILED")
+                await channel.send_response(ws, req_id, ok=False, error=duplex_failure(exc, stage="会话上下文恢复", request_id=req_id), code="CONTEXT_RESTORE_FAILED")
                 return
         request_log = {
             "request_id": str(req_id),
@@ -404,7 +420,16 @@ def register_video_live_handler(
                     raise
                 protocol_invalid = True
                 result = {**exc.completion, "decision": "response", "response": "", "delegation": ""}
-            if request_kind == "user" and result.get("decision") != "delegation":
+            if request_kind == "user" and result.get("decision") == "delegation":
+                delegation = str(result.get("delegation") or "").strip()
+                # Plain-text delegation remains a supported legacy format.
+                # Structured controls must pass the same parser used for execution.
+                if delegation.startswith(("{", "[", "```")):
+                    try:
+                        _parse_joyai_task_operation(delegation, str(params.get("command_id") or req_id) + ":0")
+                    except (ValueError, TypeError):
+                        protocol_invalid = True
+            if request_kind == "user" and (protocol_invalid or result.get("decision") != "delegation"):
                 try:
                     owner, scope = await search_manager.scope(ws, {"search_session_id": search_session_id})
                     snapshot = search_manager.snapshot(owner, scope)
@@ -429,19 +454,20 @@ def register_video_live_handler(
                 except Exception as exc:
                     # The original answer may promise an action that was never
                     # submitted. Withhold it if review cannot establish a result.
+                    error = duplex_failure(exc, stage="JoyAI 辅助模型复核", request_id=req_id)
                     await asyncio.to_thread(_append_joyai_log, {
                         **request_log, "stage": "failed", "error_code": "JOYAI_ACTION_HELPER_ERROR",
-                        "error_type": type(exc).__name__,
+                        "error_type": type(exc).__name__, "error": error,
                     })
                     await channel.send_response(
                         ws, req_id, ok=False,
-                        error="JoyAI action review failed; no new task was submitted. Retry or check the task list.",
+                        error=f"{error}; no new task was submitted. Retry or check the task list.",
                         code="JOYAI_ACTION_HELPER_ERROR",
                     )
                     return
             _validate_joyai_result(result)
         except Exception as exc:  # noqa: BLE001
-            error = str(exc) or "JoyAI frame request failed"
+            error = duplex_failure(exc, stage="JoyAI 模型请求", request_id=req_id)
             error_code = (
                 "JOYAI_RATE_LIMIT"
                 if isinstance(exc, joyai_provider.JoyAIRateLimitError)
@@ -454,6 +480,7 @@ def register_video_live_handler(
                     "stage": "failed",
                     "error": error,
                     "error_code": error_code,
+                    "error_type": type(exc).__name__,
                 },
             )
             await channel.send_response(
@@ -475,29 +502,11 @@ def register_video_live_handler(
             if result.get("decision") != "delegation" or not delegation.startswith("{"):
                 break
             try:
-                from .qwen_omni_tools import parse_qwen_omni_tool_call
-
-                value = json.loads(delegation)
-                if not isinstance(value, dict) or set(value) != {"name", "arguments"}:
-                    raise ValueError("Invalid task operation")
-                if value.get("name") not in {
-                    "jiuwen_delegate",
-                    "jiuwen_queue_manage",
-                    "jiuwen_task_query",
-                    "jiuwen_task_modify",
-                    "jiuwen_task_cancel",
-                    # Approval cards only; operate() refuses information forms.
-                    "jiuwen_task_answer",
-                }:
-                    raise ValueError("Unsupported task operation")
+                call = _parse_joyai_task_operation(
+                    delegation, f"{params.get('command_id') or req_id}:{operation_count}",
+                )
                 owner, scope = await search_manager.scope(
                     ws, {"search_session_id": search_session_id}
-                )
-                call = parse_qwen_omni_tool_call(
-                    {
-                        **value,
-                        "call_id": f"{params.get('command_id') or req_id}:{operation_count}",
-                    }
                 )
                 if call.name == "jiuwen_queue_manage":
                     if request_kind != "user":
@@ -542,8 +551,14 @@ def register_video_live_handler(
                 )
                 _validate_joyai_result(result)
             except Exception as exc:
+                error = duplex_failure(exc, stage="JoyAI 队列操作", request_id=req_id)
+                error += f" [completed_operations={operation_count}]; 请核对任务列表，部分操作可能已执行"
+                await asyncio.to_thread(_append_joyai_log, {
+                    **request_log, "stage": "task_operation_failed", "error": error,
+                    "error_type": type(exc).__name__, "operation_count": operation_count,
+                })
                 await channel.send_response(
-                    ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
+                    ws, req_id, ok=False, error=error, code="TASK_REQUEST_REJECTED"
                 )
                 return
         if operation_count == 3 and result.get("decision") == "delegation":
@@ -570,7 +585,7 @@ def register_video_live_handler(
                 )
             except ValueError as exc:
                 await channel.send_response(
-                    ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
+                    ws, req_id, ok=False, error=duplex_failure(exc, stage="JoyAI 任务提交", request_id=req_id), code="TASK_REQUEST_REJECTED"
                 )
                 return
             tools_used.append("jiuwen_delegate")

@@ -1,5 +1,35 @@
 type FailureScope = 'session' | 'task';
 
+/** Add protocol identifiers at the display boundary, without changing error classification. */
+export function duplexErrorDetail(value: unknown, context: Record<string, unknown> = {}): string {
+  const record = value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
+  const message = typeof value === 'string' ? value
+    : String(record.message || record.detail || record.error || '服务未提供具体原因');
+  const fields = { type: record.type || record.name, code: record.code, param: record.param,
+    event_id: record.event_id, request_id: record.request_id,
+    ...Object.fromEntries(Object.entries(context).filter(([, item]) => item !== undefined && item !== null)) };
+  const identifiers = Object.entries(fields)
+    .filter(([, item]) => (typeof item === 'string' && item !== '') || typeof item === 'number')
+    .map(([key, item]) => `${key}=${String(item).slice(0, 200)}`);
+  return `${message.slice(0, 1500)}${identifiers.length ? ` [${identifiers.join(', ')}]` : ''}`;
+}
+
+export function screenCaptureFailure(error: unknown) {
+  const native = error !== null && typeof error === 'object' ? error as { name?: unknown; message?: unknown } : null;
+  const errorType = typeof native?.name === 'string' ? native.name : 'UnknownError';
+  const nativeMessage = typeof native?.message === 'string' && native.message.trim()
+    ? native.message
+    : typeof error === 'string' && error.trim() ? error : '(no native message)';
+  const reasons: Record<string, string> = {
+    NotAllowedError: 'permissionOrCancel',
+    AbortError: 'aborted',
+    NotReadableError: 'unreadable',
+    InvalidStateError: 'invalidState',
+    SecurityError: 'security',
+  };
+  return { errorType, nativeMessage, reasonKey: reasons[errorType] || 'unknown' };
+}
+
 /** Keep the service's actual error while explaining its effect and a useful next step. */
 export function describeDuplexError(raw: string, scope: FailureScope = 'session'): string {
   const detail = raw.trim() || '服务未提供具体原因';
@@ -39,6 +69,19 @@ export function describeDuplexError(raw: string, scope: FailureScope = 'session'
   } else if (/response.*failed|响应失败|音频解码失败/i.test(detail)) {
     result = '本次模型回应未完成';
     action = '请重试本轮对话；若再次失败，检查模型服务日志';
+  }
+
+  if (!task && /\bTTS\b|语音合成|音频解码|播报响应冲突/i.test(detail)) {
+    result = '本次语音播报未完成；请查看文字回应和任务列表确认实际结果';
+    action = /\b(400|401|403)\b|voice=|音色/i.test(detail)
+      ? '请检查语音合成模型、音色及授权是否匹配；使用请求标识核对服务日志'
+      : '请检查音频设备及语音服务；使用请求或响应标识核对日志，避免重复提交任务';
+  } else if (!task && /\bASR\b|语音识别|input_audio_transcription/i.test(detail)) {
+    result = '本次语音识别未完成，不能据此确认指令已提交';
+    action = '请检查麦克风、识别服务和网络；先核对任务列表，再决定是否重说指令';
+  } else if (/工具调用|队列操作|任务提交|辅助模型复核|TASK_REQUEST_REJECTED/i.test(detail)) {
+    result = '本次操作未能确认完成，部分操作可能已经执行';
+    action = '请先核对任务列表和定时任务；使用调用或请求标识核对日志后再重试';
   }
 
   return `原因：${detail}。结果：${result}。解决方式：${action}。`;

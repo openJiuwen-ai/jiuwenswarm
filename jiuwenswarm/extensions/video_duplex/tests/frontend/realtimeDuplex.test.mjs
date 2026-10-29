@@ -819,7 +819,9 @@ test('Qwen error diagnostics preserve the original websocket event', () => {
 
   session.handleEvent(JSON.parse(rawEvent), rawEvent);
 
-  assert.equal(errors.at(-1), 'input is too long');
+  assert.match(errors.at(-1), /input is too long/);
+  assert.match(errors.at(-1), /code=context_length_exceeded/);
+  assert.match(errors.at(-1), /type=invalid_request_error/);
   assert.deepEqual(
     {
       event: diagnostics.at(-1).event,
@@ -890,7 +892,7 @@ test('rejected Qwen image frame stays diagnostic and does not report voice failu
   session.sendAudio(new Int16Array([5]), true);
   assert.equal(sent.filter((event) => event.type === 'input_image_buffer.append').length, 2);
   session.handleEvent({ type: 'error', error: { message: 'A different provider failure' } });
-  assert.deepEqual(errors, ['A different provider failure']);
+  assert.deepEqual(errors, ['A different provider failure [stage=error]']);
 });
 
 test('user speech cancels an active response and discards unclassified text', () => {
@@ -1590,7 +1592,7 @@ test('quota error survives gateway closure and a subsequent generic socket close
   socket.onmessage({ data: JSON.stringify({ type: 'error', error: { message: 'quota exhausted' } }) });
   socket.onmessage({ data: JSON.stringify({ type: 'error', error: { code: 'qwen_gateway_upstream_closed', message: 'closed' } }) });
   socket.onclose({ code: 1000, reason: '' });
-  assert.equal(errors.at(-1), 'quota exhausted');
+  assert.equal(errors.at(-1), 'quota exhausted [stage=error]');
 });
 
 test('session.closed after startup displays the provider reason and releases the session', async () => {
@@ -1608,7 +1610,7 @@ test('failed response and socket error after startup are visible', async () => {
     status: 'failed', status_details: { error: { message: 'insufficient_quota' } },
   } }) });
   socket.onclose({ code: 1000, reason: '' });
-  assert.equal(errors.at(-1), 'insufficient_quota');
+  assert.equal(errors.at(-1), 'insufficient_quota [stage=response.done]');
   assert.equal(session.socket, null);
 });
 
@@ -1621,6 +1623,28 @@ test('remote close without a reason has a fallback, while manual stop stays sile
   local.session.stop();
   local.socket.onclose({ code: 1000, reason: '' });
   assert.deepEqual(local.errors, []);
+});
+
+test('failed response diagnostics preserve code and response id without closing the session', async () => {
+  const { session, socket, errors } = await createConnectedSocketSession();
+  socket.onmessage({ data: JSON.stringify({ type: 'response.done', response: {
+    id: 'resp-failed-42', status: 'failed', status_details: {
+      error: { message: 'Invalid input', code: 'invalid_parameter', type: 'invalid_request_error' },
+    },
+  } }) });
+  assert.match(errors.at(-1), /Invalid input/);
+  assert.match(errors.at(-1), /code=invalid_parameter/);
+  assert.match(errors.at(-1), /response_id=resp-failed-42/);
+  assert.equal(session.socket, socket);
+});
+
+test('invalid realtime event reports processing stage and native exception without ending the session', async () => {
+  const { session, socket, errors } = await createConnectedSocketSession();
+  socket.onmessage({ data: 'not-json-audio-payload' });
+  assert.match(errors.at(-1), /stage=event_parse_or_handle/);
+  assert.match(errors.at(-1), /type=SyntaxError/);
+  assert.match(errors.at(-1), /event_chars=22/);
+  assert.equal(session.socket, socket);
 });
 
 function contextSocket() {
@@ -1706,6 +1730,19 @@ test('completed cancellation receipt permits Core follow-up for the user request
   });
   assert.equal(functionCalls.length, 1);
   assert.equal(functionCalls[0].name, 'jiuwen_queue_manage');
+});
+
+
+test('converted completed cancellation is announced as a pending Core followup', () => {
+  const { session, sent } = createSession();
+  session.enqueueOperationResult('cancel', {
+    state: 'followup', converted_to: 'modify', task_status: 'completed', stopped: false, successor_id: 'child',
+  });
+  assert.equal(sent.filter(event => event.item?.type === 'function_call_output').length, 1);
+  const continuation = sent.find(event => event.type === 'response.create').response.instructions;
+  assert.match(continuation, /backend already submitted the original user action to Core/);
+  assert.match(continuation, /do not issue another cancellation/);
+  assert.match(continuation, /followup means a linked revision/);
 });
 
 

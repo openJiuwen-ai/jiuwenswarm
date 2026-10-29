@@ -412,6 +412,34 @@ class _FakeHttpResponse:
         return self._payload
 
 
+@pytest.mark.asyncio
+async def test_tts_failure_retains_provider_details_and_redacts_credentials(monkeypatch) -> None:
+    response = _FakeHttpResponse(status_code=400, payload={
+        "error": {"code": "invalid_voice", "message": "voice anna unavailable for secret-key"},
+    })
+    response.headers = {"x-request-id": "provider-42"}
+    monkeypatch.setattr(video_voice.httpx, "AsyncClient", _recording_http_client([], response))
+    monkeypatch.setattr(video_voice, "tts_model_config", lambda: (
+        "https://tts.example/v1", "secret-key", "tts-model", "anna",
+    ))
+    with pytest.raises(RuntimeError) as caught:
+        await video_voice.synthesize_speech("测试", use_joyai_voice=False)
+    message = str(caught.value)
+    for detail in ("HTTP 400", "model=tts-model", "voice=anna", "invalid_voice", "provider-42"):
+        assert detail in message
+    assert "secret-key" not in message
+
+
+def test_duplex_failure_retains_empty_timeout_type_and_request_id(monkeypatch) -> None:
+    from jiuwenswarm.extensions.video_duplex.backend.error_details import duplex_failure
+
+    monkeypatch.setenv("JOYAI_API_KEY", "private-key-for-test")
+    error = duplex_failure(TimeoutError(), stage="ASR", request_id="request-42")
+    assert "TimeoutError" in error and "request-42" in error
+    redacted = duplex_failure(RuntimeError("invalid private-key-for-test"), stage="TTS", request_id="request-43")
+    assert "private-key-for-test" not in redacted
+
+
 def _recording_http_client(calls: list, response: _FakeHttpResponse):
     class RecordingHttpClient:
         def __init__(self, **kwargs):
@@ -1079,7 +1107,14 @@ def test_joyai_incomplete_or_misplaced_actions_are_rejected(raw):
         joyai_provider.parse_action(raw)
 
 
-async def test_joyai_alarm_tool_json_in_speech_is_repaired_and_submitted_once(monkeypatch):
+@pytest.mark.parametrize("delegation", [
+    None,
+    '{"name":"jiuwen_delegate","arguments":',
+    '{"name":"jiuwen_delegate","arguments":{"task":"设置闹钟","query":"设置闹钟"}}',
+    '{"name":"jiuwen_delegate","arguments":{}}',
+    '```json\n{"name":"jiuwen_delegate","arguments":{"task":"设置闹钟"}}\n```',
+])
+async def test_joyai_alarm_tool_json_in_speech_is_repaired_and_submitted_once(monkeypatch, delegation):
     from unittest.mock import AsyncMock
 
     instruction = '设置一个名为“今天12点闹钟”的闹钟，时间设定为今天12:00。'
@@ -1087,6 +1122,8 @@ async def test_joyai_alarm_tool_json_in_speech_is_repaired_and_submitted_once(mo
         '</response> 请执行：' + instruction
         + '{"name":"jiuwen_delegate","arguments":{"task":"设置今天12点的闹钟","title":"设置12点闹钟"}}'
     )
+    if delegation is not None:
+        misplaced = '</response> 我来设置。 </delegation> ' + delegation
     operation = {"name": "jiuwen_delegate", "arguments": {"task": instruction, "title": "设置12点闹钟"}}
     completion = AsyncMock(return_value={"raw_content": misplaced})
     reviewer = AsyncMock(return_value=json.dumps({
@@ -1117,11 +1154,16 @@ async def test_joyai_alarm_tool_json_in_speech_is_repaired_and_submitted_once(mo
     context = reviewer.await_args.args[0]
     assert context["user_request"] == instruction
     assert context["joyai_output"] == misplaced
+    assert context["protocol_invalid"] is True
+    if delegation is not None:
+        assert context["joyai_delegation"] == delegation
 
 
 @pytest.mark.parametrize("initial", [
     "</response> 请执行：设置闹钟。 </delegation>",
     '</response> 请执行。 {"name":"jiuwen_delegate","arguments":{"task":"设置闹钟"}}',
+    '</response> 我来设置。 </delegation> {"name":"jiuwen_delegate","arguments":',
+    '</response> 我来设置。 </delegation> {"name":"jiuwen_delegate","arguments":{}}',
 ])
 async def test_joyai_action_repair_is_bounded_and_cannot_report_fake_success(monkeypatch, initial):
     from unittest.mock import AsyncMock
@@ -2754,7 +2796,8 @@ async def test_transcribe_handler_logs_empty_and_failed_results(monkeypatch) -> 
     assert asr_logs[0]["outcome"] == "empty"
     assert asr_logs[0]["transcript"] == ""
     assert asr_logs[1]["outcome"] == "failed"
-    assert asr_logs[1]["error"] == "upstream disconnected"
+    assert "ASR 语音识别失败：RuntimeError: upstream disconnected" in asr_logs[1]["error"]
+    assert "request_id=failed-request" in asr_logs[1]["error"]
     assert channel.responses[-1][1]["code"] == "ASR_ERROR"
 
 

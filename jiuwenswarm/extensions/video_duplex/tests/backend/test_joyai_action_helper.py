@@ -9,7 +9,7 @@ import pytest
 from jiuwenswarm.extensions.video_duplex.backend import joyai_action_helper as helper
 
 
-def test_model_selection_keeps_connection_and_rejects_ambiguous_names():
+def test_model_selection_keeps_connection_and_rejects_ambiguous_names(monkeypatch):
     first = {"model_id": "model-a", "model_client_config": {"model_name": "same", "api_key": "key-a"}}
     second = {"model_id": "model-b", "alias": "reviewer", "model_client_config": {"model_name": "same", "api_key": "key-b"}}
     assert helper.select_model([first, second], "") is first
@@ -19,6 +19,10 @@ def test_model_selection_keeps_connection_and_rejects_ambiguous_names():
         helper.select_model([first, second], "same")
     with pytest.raises(ValueError):
         helper.select_model([first], "missing")
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.video_duplex.backend.joyai_provider.model_config",
+        lambda: ("", "", ""),
+    )
     with pytest.raises(ValueError):
         helper.select_model([], "")
 
@@ -88,6 +92,7 @@ async def test_model_transport_uses_selected_connection_and_text_only(monkeypatc
 
     entries = [{"model_id": "reviewer", "model_client_config": {
         "model_name": "text-model", "client_provider": "OpenAI", "api_base": "https://example.test/v1", "api_key": "review-key",
+        "timeout": 120,
     }}]
     monkeypatch.setenv("JOYAI_ACTION_HELPER_MODEL", "reviewer")
     monkeypatch.setattr(config, "get_default_models", lambda: entries)
@@ -104,7 +109,7 @@ async def test_model_transport_uses_selected_connection_and_text_only(monkeypatc
     await helper.request_review({"user_request": "你好", "joyai_response": "你好"})
     connection = build_calls[0]["model_client_config"]
     assert connection.api_key == "review-key" and connection.max_retries == 0
-    assert connection.timeout == 8
+    assert connection.timeout == 120
     messages = invoke.await_args.args[0]
     assert all(isinstance(message["content"], str) for message in messages)
     assert "image_url" not in json.dumps(messages)

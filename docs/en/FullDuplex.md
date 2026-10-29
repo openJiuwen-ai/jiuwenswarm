@@ -1,5 +1,7 @@
 # Full-duplex conversation continuity
 
+The frontend currently exposes only Qwen Omni Realtime. JoyAI configuration and startup are hidden. Users with saved JoyAI settings must configure Qwen in Settings; the backend integration and saved settings are retained.
+
 Enable Full-duplex in the experimental settings and start it from a saved Work or Code chat, or a Design project.
 The blue controller stays available when you switch chats or open Settings. Voice and
 Core Agent results remain attached to the chat where you started the session. Starting
@@ -59,6 +61,14 @@ Text updates share one stream and finalize once; interruption, failure and stopp
 media also close any visible partial text.
 When item types are missing, text and audio retain the response-completion buffering fallback.
 
+For an unknown task, read current Core readiness through the health-check endpoint instead of using the connection-time snapshot.
+Wait while the connection or Runtime is not ready or the health check fails, then query the execution once.
+Use an explicit completed, failed, or cancelled outcome. Missing records, missing results, or a failed query
+are marked failed without replaying the task. Executions still running wait for settlement notifications;
+they are not queried repeatedly. A successful RPC does not mean that the task succeeded.
+Late settlement still releases the subsequent queue. Complete results are retained; partial output from
+a cancelled execution is not treated as a successful result.
+
 Qwen may close a connection with `response_idle_timeout` after 300 seconds without a
 generated response. Full-duplex automatically renews that connection, restores context,
 and retains sharing and mute settings. Renewal does not generate a keepalive answer or
@@ -75,6 +85,12 @@ If saving voice history fails, a restart or typed turn reports the error and sto
 sending the new request. Failed events stay in memory in their original order and use
 the same event IDs on retry. Retry after storage recovers; pending writes do not survive
 a page reload. Distinct turns with identical text remain separate in restored history.
+
+Shared frames use JPEG at up to 1080p, prioritizing resolution. After coarse quality selection,
+the encoder performs up to six refinement attempts within a 256 KiB base64 image budget
+(192 KiB JPEG). It stops near 99% of the budget or at maximum quality. Simple scenes may
+remain much smaller even at quality 1.0; no padding is added. Complex frames reduce resolution
+only when needed and are dropped if they still exceed the limit.
 
 Qwen and JoyAI send existing-task queries, reorder, cancellation and modification to the same
 dedicated text model through `jiuwen_queue_manage`. The manager queries actual tasks in the
@@ -110,16 +126,16 @@ Authorization failures and errors after inference begins are not replayed.
 
 JoyAI tool JSON must follow `</delegation>`. A real user turn without a delegation is
 reviewed once by an auxiliary text model before speech. This includes unsupported action
-promises, tool JSON in spoken text and empty delegations. Using the original request,
+promises, tool JSON in spoken text, empty delegations, malformed JSON and invalid tool arguments. Using the original request,
 restored context and current task state, the reviewer keeps the answer, asks a clarification
-or proposes a new `jiuwen_delegate`. Passive image polling and existing delegations skip
+or proposes a new `jiuwen_delegate`. Passive image polling and valid delegations skip
 review. Task management and approvals must not become new tasks through this helper.
 The reviewer receives no audio or images and executes no tools.
 
 By default, it reuses the first usable configured text model. Set `JOYAI_ACTION_HELPER_MODEL`
 in `.env` to an existing model's stable ID, alias or unique model name to select another
-connection, then restart. Credentials are reused from that connection. Review has an
-8-second timeout and no automatic retry. Timeout or validation failure returns
+connection, then restart. Credentials are reused from that connection. Review uses the selected model's
+transport timeout without a separate 8-second deadline or automatic retry. Timeout or validation failure returns
 `JOYAI_ACTION_HELPER_ERROR`, withholds the original action promise and does not reduce
 JoyAI's image transmission rate.
 
@@ -131,7 +147,7 @@ Core receipt supplies the actual outcome of creating an alarm or other requested
 
 ```mermaid
 flowchart LR
-  Output[JoyAI output for a user turn] --> Call{Existing delegation}
+  Output[JoyAI output for a user turn] --> Call{Valid existing delegation}
   Call -->|Yes| Validate[Existing validation and task submission]
   Call -->|No| Helper[One auxiliary text review]
   Helper -->|Propose delegation| Validate
