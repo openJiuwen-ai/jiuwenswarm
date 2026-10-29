@@ -3053,6 +3053,9 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     # 源头脱敏：覆盖 jiuwenswarm 命名空间之外的第三方 logger（openjiuwen/openai/
     # httpx 等），在 LogRecord 创建时统一脱敏，保证任何来源的 api_key 都不明文落盘。
     install_source_record_masking()
+    from jiuwenswarm.common.background_logging import wrap_log_handlers
+
+    wrap_log_handlers(root)
     return root
 
 

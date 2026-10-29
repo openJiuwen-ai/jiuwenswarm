@@ -766,8 +766,8 @@ async def test_front_stop_leaves_spawned_worker_running() -> None:
         assert second.runtime_loaded is True
         assert await second_ready.wait_agent_ready(2) is True
         await second.stop(terminate_worker=True)
-        assert endpoint_is_listening(path)
-        assert owned.returncode is None
+        assert not endpoint_is_listening(path)
+        assert await owned.wait(timeout=2) == 0
     finally:
         if second is not None and not second._stopping:
             await second.stop()
@@ -861,8 +861,8 @@ async def test_shutdown_does_not_wait_out_a_stuck_runtime_load() -> None:
     assert await asyncio.to_thread(entered.wait, 1.0)
     started = time.monotonic()
     try:
-        runtime = await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
-        assert runtime is None
+        with pytest.raises(WorkerForceExit, match="runtime load did not drain"):
+            await _runtime_for_shutdown(task, {"runtime": None}, timeout=0.2)
         assert time.monotonic() - started < 1.0
         assert task.cancelling()
     finally:

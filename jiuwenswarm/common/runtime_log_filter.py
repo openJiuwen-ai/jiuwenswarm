@@ -121,4 +121,9 @@ def install_runtime_log_filter() -> None:
         logging.getLogger(name).addFilter(_FILTER)
 
 
-atexit.register(_FILTER.flush)
+def flush_runtime_log_filter() -> None:
+    """Flush repeat counters before the Worker stops its background sink."""
+    _FILTER.flush()
+
+
+atexit.register(flush_runtime_log_filter)

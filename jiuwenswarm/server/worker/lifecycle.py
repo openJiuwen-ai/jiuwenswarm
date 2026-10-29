@@ -201,6 +201,10 @@ def _preload_runtime_backend() -> None:
 
     migrate_legacy_model_selections()
     _configure_openjiuwen_logging()
+    from jiuwenswarm.common.background_logging import install_core_logging_queue, wrap_log_handlers
+
+    install_core_logging_queue()
+    wrap_log_handlers()
     _apply_runtime_entry_patches()
     import openjiuwen.core.runner  # noqa: F401
     import jiuwenswarm.extensions.manager  # noqa: F401

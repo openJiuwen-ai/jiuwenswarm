@@ -140,9 +140,15 @@ async def test_fast_path_direct_send_serializes_with_loop_send() -> None:
         parent.close()
 
 
-def test_loop_beat_and_reply_field_semantics() -> None:
+def test_loop_beat_and_reply_field_semantics(monkeypatch) -> None:
+    from types import SimpleNamespace
+    from jiuwenswarm.server.worker import diagnostics
+
+    # Windows monotonic resolution can undershoot a 50 ms wall-clock sleep.
+    clock = [0.0]
+    monkeypatch.setattr(diagnostics, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     beat = LoopBeat()
-    time.sleep(0.05)
+    clock[0] = .25
     assert beat.age >= 0.05, "a blocked loop must age the beat"
     beat.beat()
     assert beat.age < 0.05
@@ -153,10 +159,16 @@ def test_loop_beat_and_reply_field_semantics() -> None:
 
 
 @pytest.mark.asyncio
-async def test_dispatcher_pong_carries_beat_age() -> None:
+async def test_dispatcher_pong_carries_beat_age(monkeypatch) -> None:
     bridge = WorkerGatewayBridge(ConnHolder())
+    from types import SimpleNamespace
+    from jiuwenswarm.server.worker import diagnostics
+
+    # Windows monotonic resolution can undershoot a 50 ms wall-clock sleep.
+    clock = [0.0]
+    monkeypatch.setattr(diagnostics, "time", SimpleNamespace(monotonic=lambda: clock[0]))
     beat = LoopBeat()
-    time.sleep(0.05)
+    clock[0] = .25
     dispatcher = WorkerDispatcher(bridge, beat=beat)
     conn = _DispatchConn()
     assert await dispatcher.handle({"kind": KIND_HEARTBEAT}, conn)
