@@ -1,0 +1,286 @@
+"""Session RSI selection replaces the default using real plugin bindings."""
+
+import json
+
+import pytest
+
+from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harness_plugin
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.server.runtime import extension_package_manager as catalog
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from tests.unit_tests.rsi.test_plugin_roundtrip import _agent, _make_plugin_package
+
+
+@pytest.fixture
+def harness_selection(tmp_path, rsi_catalog_workspace, monkeypatch):
+    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path / "user")
+    packages = {}
+    for version in ("aabbcc", "ddeeff", "112233"):
+        package = tmp_path / version
+        package.mkdir()
+        (package / "manifest.json").write_text(json.dumps({
+            "package_type": "plugin", "id": "native-baseline", "name": "Baseline",
+            "prompt_sections": [
+                {"name": "kernel_optimization_remedy_derivation", "content": {"en": version}},
+                {"name": f"only_{version}", "content": {"en": version}},
+            ],
+        }), encoding="utf-8")
+        name = f"rsi-harness-{version}"
+        register_harness_plugin(package, name)
+        packages[name] = package
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _agent()
+    yield adapter, packages
+    snapshot = adapter._rsi_selected_package_snapshot
+    if snapshot is not None:
+        snapshot.cleanup()
+
+
+def _content(adapter):
+    return adapter._instance.system_prompt_builder.get_section(
+        "kernel_optimization_remedy_derivation",
+    ).content["en"]
+
+
+async def _default(adapter, packages, name="rsi-harness-aabbcc"):
+    await adapter.apply_rsi_harness_install_local(
+        "activate", config_path=str(packages[name]), installation_id=name,
+    )
+
+
+async def _select(adapter, names):
+    await adapter._unload_plugins_for_request({"plugin_names": names})
+    await adapter._load_plugins_for_request({"plugin_names": names})
+
+
+@pytest.mark.asyncio
+async def test_selected_rsi_replaces_default_and_clearing_restores_it(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    assert _content(adapter) == "ddeeff"
+    assert adapter._instance.system_prompt_builder.get_section("only_aabbcc") is None
+    await _select(adapter, ["rsi-harness-112233"])
+    assert _content(adapter) == "112233"
+    assert adapter._instance.system_prompt_builder.get_section("only_ddeeff") is None
+    await _select(adapter, [])
+    assert _content(adapter) == "aabbcc"
+    assert adapter._instance.system_prompt_builder.get_section("only_112233") is None
+
+
+@pytest.mark.asyncio
+async def test_same_selected_version_is_idempotent_and_counts_as_current_equipment(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    original = adapter._rsi_harness_load_record
+    await _select(adapter, ["rsi-harness-aabbcc"])
+    await _select(adapter, ["rsi-harness-aabbcc"])
+    assert adapter._rsi_harness_load_record is original
+    assert adapter._equipment_would_change({
+        "agent_template_name": "", "plugin_names": ["rsi-harness-aabbcc"],
+    }) == (False, "")
+
+
+@pytest.mark.asyncio
+async def test_global_change_preserves_selection_and_clear_uses_latest_default(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    await _default(adapter, packages, "rsi-harness-112233")
+    assert _content(adapter) == "ddeeff"
+    await _select(adapter, [])
+    assert _content(adapter) == "112233"
+
+
+@pytest.mark.asyncio
+async def test_failed_selection_restores_previous_harness(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    broken = catalog.resolve_plugin_dir("rsi-harness-112233") / "manifest.json"
+    payload = json.loads(broken.read_text(encoding="utf-8"))
+    payload["prompt_sections"].append({"name": "invalid", "file": "missing.md"})
+    broken.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(Exception, match="missing.md"):
+        await _select(adapter, ["rsi-harness-112233"])
+    assert _content(adapter) == "ddeeff"
+    await _select(adapter, [])
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_multiple_rsi_selections_rejected_without_changing_harness(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    original = adapter._rsi_harness_load_record
+    with pytest.raises(ValueError, match="只能选择一个"):
+        await _select(adapter, ["rsi-harness-ddeeff", "rsi-harness-112233"])
+    assert adapter._rsi_harness_load_record is original
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_selection_without_global_default_can_be_cleared(harness_selection):
+    adapter, _ = harness_selection
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    await _select(adapter, [])
+    assert adapter._instance.system_prompt_builder.get_section("kernel_optimization_remedy_derivation") is None
+
+
+@pytest.mark.asyncio
+async def test_uninstall_selected_rsi_restores_default(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    await adapter.unload_equipment_if_loaded("plugin_packages", "rsi-harness-ddeeff")
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_omitted_selection_is_preserved_and_saved_for_session_restore(harness_selection):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    request = AgentRequest(request_id="selection", channel_id="web", session_id="rsi-selection", params={
+        "plugin_names": ["rsi-harness-ddeeff"],
+    })
+    assert await adapter._ensure_chat_extensions(request) is None
+    request.params = {"query": "next turn"}
+    assert await adapter._ensure_chat_extensions(request) is None
+    assert _content(adapter) == "ddeeff"
+    assert get_session_equipment("rsi-selection")["plugin_names"] == ["rsi-harness-ddeeff"]
+    request.params = {"plugin_names": []}
+    assert await adapter._ensure_chat_extensions(request) is None
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_failed_first_selection_keeps_default_and_returns_chat_error(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    broken = catalog.resolve_plugin_dir("rsi-harness-ddeeff") / "manifest.json"
+    payload = json.loads(broken.read_text(encoding="utf-8"))
+    payload["prompt_sections"].append({"name": "invalid", "file": "missing.md"})
+    broken.write_text(json.dumps(payload), encoding="utf-8")
+    response = await adapter._ensure_chat_extensions(AgentRequest(
+        request_id="broken-selection", channel_id="web", session_id="rsi-broken-selection",
+        params={"plugin_names": ["rsi-harness-ddeeff"]},
+    ))
+    assert response.ok is False
+    assert response.payload["event_type"] == "chat.error"
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_selected_package_version_change_reloads_resources(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    manifest = catalog.resolve_plugin_dir("rsi-harness-ddeeff") / "manifest.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["version"] = "2"
+    payload["prompt_sections"][0]["content"]["en"] = "edited"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    assert _content(adapter) == "edited"
+
+
+@pytest.mark.asyncio
+async def test_first_selection_of_edited_active_catalog_copy_loads_edited_version(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    manifest = catalog.resolve_plugin_dir("rsi-harness-aabbcc") / "manifest.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["version"] = "2"
+    payload["prompt_sections"][0]["content"]["en"] = "edited"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    await _select(adapter, ["rsi-harness-aabbcc"])
+    assert _content(adapter) == "edited"
+    await _select(adapter, [])
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_failed_in_place_edit_preserves_selected_resources(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    manifest = catalog.resolve_plugin_dir("rsi-harness-ddeeff") / "manifest.json"
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["version"] = "broken"
+    payload["prompt_sections"].append({"name": "invalid", "file": "missing.md"})
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(Exception, match="missing.md"):
+        await _select(adapter, ["rsi-harness-ddeeff"])
+    assert _content(adapter) == "ddeeff"
+    assert adapter._rsi_harness_load_record is not None
+    await _select(adapter, [])
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_removes_selected_package_snapshot(harness_selection):
+    from pathlib import Path
+
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    snapshot = Path(adapter._rsi_harness_config_path)
+    assert snapshot.is_dir()
+    await adapter.cleanup()
+    assert not snapshot.exists()
+
+
+@pytest.mark.asyncio
+async def test_global_fanout_failure_restores_default_without_replacing_selection(harness_selection):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    await _select(adapter, ["rsi-harness-ddeeff"])
+    child = JiuWenSwarmDeepAdapter()
+    child._instance = _agent()
+    child._is_session_scoped_adapter = True
+    await _default(child, packages)
+    # A native resource conflict makes the second target fail after the first
+    # has accepted a new default; rollback must restore defaults, not selections.
+    from openjiuwen.core.single_agent.prompts.builder import PromptSection
+
+    child._instance.system_prompt_builder.add_section(PromptSection(name="only_112233", content={"en": "host"}))
+    adapter._session_adapters = {"child": child}
+    with pytest.raises(Exception, match="only_112233"):
+        await adapter.apply_rsi_harness_install(
+            "activate", config_path=str(packages["rsi-harness-112233"]), installation_id="rsi-harness-112233",
+        )
+    assert _content(adapter) == "ddeeff"
+    assert _content(child) == "aabbcc"
+    await _select(adapter, [])
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_selection_keeps_original_plugin_displaced_until_default_is_restored(
+    tmp_path, rsi_catalog_workspace, monkeypatch,
+):
+    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path / "user")
+    source = _make_plugin_package(tmp_path, "coding-guard")
+    register_harness_plugin(source, "rsi-harness-aabbcc")
+    register_harness_plugin(source, "rsi-harness-ddeeff")
+    catalog.import_plugin_package({"path": str(source)})
+    catalog.install_plugin_package({"id": "coding-guard"})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _agent()
+    await _select(adapter, ["coding-guard"])
+    await adapter.apply_rsi_harness_install_local(
+        "activate", config_path=str(source), installation_id="rsi-harness-aabbcc",
+    )
+    await _select(adapter, ["coding-guard", "rsi-harness-ddeeff"])
+    assert adapter._instance.ability_manager.get("security_review") is not None
+    assert "coding-guard" not in adapter._loaded_plugins
+    assert await adapter._ensure_chat_extensions(AgentRequest(
+        request_id="keep-original", channel_id="web", session_id="rsi-original-selection", params={},
+    )) is None
+    await _select(adapter, ["coding-guard"])
+    assert adapter._rsi_harness_install_id == "rsi-harness-aabbcc"
+    await adapter.apply_rsi_harness_install_local("deactivate", config_path="", installation_id="")
+    assert "coding-guard" in adapter._loaded_plugins
+    await adapter._instance.unload_extension(adapter._loaded_plugins["coding-guard"][0])
