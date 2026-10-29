@@ -198,6 +198,8 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
     monkeypatch.setenv("CLAW_SKILL_TOKEN", "unlisted-product-token")
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-forwarded")
     monkeypatch.setenv("DATABASE_URL", "must-not-be-forwarded")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+    monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
 
     async def stop():
         runner.process = None
@@ -241,6 +243,8 @@ async def test_policy_reload_retains_bootstrap_env_until_explicitly_replaced(
         assert os.environ["CUSTOM_TOOL_SETTING"] == "inherited-setting"
         assert "OPENAI_API_KEY" not in env
         assert "DATABASE_URL" not in env
+        assert env["HTTPS_PROXY"] == "http://proxy.example:8080"
+        assert env["NO_PROXY"] == "localhost,127.0.0.1"
         assert json.loads(env["JIUWENBOX_ENV_ALLOWLIST"]) == allowlist
         assert json.loads(env["JIUWENBOX_PATH_ALLOWLIST"]) == paths
         if implicit_git and platform != "win32":

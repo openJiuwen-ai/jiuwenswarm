@@ -598,6 +598,11 @@ class JiuwenBoxRunner:
                 "JIUWENSWARM_DATA_DIR", "JIUWENSWARM_HOME", "JIUWENSWARM_LOG_DIR",
                 "JIUWENSWARM_CORE_LOG_DIR", "JIUWENSWARM_LOG_DATE_ROOT",
                 "JIUWENCLAW_BASE_PYTHON",
+                # 宿主机出站代理. 沙箱子进程仍只连本机 win_proxy;
+                # box-server 用这些值作为下一跳, 没设时再看系统代理, 都没有就直连.
+                "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY",
+                "http_proxy", "https_proxy", "all_proxy", "no_proxy",
+                "CLAW_HTTP_PROXY",
             }
             if not getattr(sys, "frozen", False):
                 system_keys.update({"PYTHONPATH", "PYTHONHOME"})
