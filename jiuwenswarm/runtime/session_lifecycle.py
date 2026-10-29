@@ -187,8 +187,8 @@ class SessionRuntimeLifecyclePort(Protocol):
         *,
         reason: str,
         channel_id: str | None = None,
-    ) -> None:
-        """Pause one Team Session generation."""
+    ) -> bool:
+        """Return whether one Team Session generation was paused or drained."""
         ...
 
     async def stop_session(
@@ -198,6 +198,16 @@ class SessionRuntimeLifecyclePort(Protocol):
         reason: str,
     ) -> None:
         """Stop one Team Session generation."""
+        ...
+
+    async def publish_pause_completed(
+        self,
+        session_id: str,
+        *,
+        generation: int | None,
+        channel_id: str | None = None,
+    ) -> None:
+        """Publish pause completion through surviving Session observers."""
         ...
 
     def is_running(self, context: SessionLifecycleContext) -> bool:
