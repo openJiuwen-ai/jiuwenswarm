@@ -32,23 +32,15 @@ done
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PACKAGING_ROOT="${WORKSWARM_PACKAGING_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
-PROJECT_ROOT="${WORKSWARM_SOURCE_ROOT:-$PACKAGING_ROOT}"
-BUILD_ROOT="${WORKSWARM_BUILD_ROOT:-$PROJECT_ROOT}"
-mkdir -p "$BUILD_ROOT"
-PACKAGING_ROOT="$(cd "$PACKAGING_ROOT" && pwd)"
-PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
-BUILD_ROOT="$(cd "$BUILD_ROOT" && pwd)"
-export WORKSWARM_PACKAGING_ROOT="$PACKAGING_ROOT" WORKSWARM_SOURCE_ROOT="$PROJECT_ROOT" WORKSWARM_BUILD_ROOT="$BUILD_ROOT"
-cd "$PROJECT_ROOT"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FRONTEND_DIR="$PROJECT_ROOT/jiuwenswarm/channels/web/frontend"
 DESKTOP_DIR="$PROJECT_ROOT/jiuwenswarm/channels/desktop/electron"
-DIST_DIR="$BUILD_ROOT/dist"
+DIST_DIR="$PROJECT_ROOT/dist"
 
 # Synchronize and resolve the canonical build metadata before any dependency
 # synchronization or npm/Bun installation, matching scripts/build-macos.sh.
 # FrontendOnly also needs these values for package.json and DMG names.
-BUILD_VALUES="$(uv run --no-project --python 3.11 python "$PACKAGING_ROOT/scripts/build_config.py" --root "$PROJECT_ROOT" --sync --emit-shell)"
+BUILD_VALUES="$(uv run --no-project --python 3.11 python "$PROJECT_ROOT/scripts/build_config.py" --sync --emit-shell)"
 BUILD_DIST_DIR_NAME="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_DIST_DIR_NAME=//p')"
 BUILD_EXECUTABLE_NAME="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_EXECUTABLE_NAME=//p')"
 BUILD_VERSION="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_VERSION=//p')"
@@ -65,7 +57,7 @@ fi
 ELECTRON_APP_DIR="$DIST_DIR/$BUILD_DISPLAY_NAME-Electron"
 
 # 签名与公证参数与 build-macos.sh 保持一致，但两条打包链路仍彼此独立。
-ENTITLEMENTS="$PACKAGING_ROOT/scripts/entitlements.mac.plist"
+ENTITLEMENTS="$PROJECT_ROOT/scripts/entitlements.mac.plist"
 NOTARY_PROFILE="${NOTARY_PROFILE:-jiuwenswarm-notary}"
 DO_NOTARIZE="${NOTARIZE:-0}"
 DO_SIGN=1
@@ -105,7 +97,7 @@ fi
 # 因此不依赖用户机器的 Node.js。
 NODE_MINIMUM_VERSION=22.12.0
 NODE_DEFAULT_VERSION=v22.12.0
-source "$PACKAGING_ROOT/scripts/build-runtimes.sh"
+source "$PROJECT_ROOT/scripts/build-runtimes.sh"
 NODE_SRC="$(resolve_node_dir)"
 export PATH="$NODE_SRC/bin:$PATH"
 BUILD_ARCH="$(uname -m)"
@@ -215,7 +207,7 @@ if [ "$FRONTEND_ONLY" = false ]; then
         pushd "$PROJECT_ROOT/jiuwenswarm/channels/tui/frontend" >/dev/null
         bun install
         popd >/dev/null
-        uv run python "$PACKAGING_ROOT/scripts/build_tui.py" --target current
+        uv run python scripts/build_tui.py --target current
         # build_tui.py logs progress, not a machine-readable stdout path.
         TUI_ARCH="$BUILD_ARCH"
         if [ "$TUI_ARCH" = "x86_64" ]; then TUI_ARCH=x64; fi
@@ -234,7 +226,7 @@ fi
 if [ "$FRONTEND_ONLY" = false ]; then
     echo ""
     echo "[4/6] Running PyInstaller (backend)..."
-    uv run pyinstaller "$PACKAGING_ROOT/scripts/jiuwenswarm.spec" --noconfirm --distpath "$BUILD_ROOT/dist" --workpath "$BUILD_ROOT/build"
+    uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
 
     BACKEND_DIST="$DIST_DIR/$BUILD_DIST_DIR_NAME"
     if [ ! -f "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" ]; then
@@ -245,19 +237,19 @@ if [ "$FRONTEND_ONLY" = false ]; then
 
     # Verify the actual frozen runtime, not only the source configuration
     # (same self-check as the Python packaging build in build-macos.sh).
-    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_a2ui_bundle.py"
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
 
     # Same RSI Harness baseline self-check as build-macos.sh.
-    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_rsi_bundle.py"
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
 
-    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_computer_use_bundle.py"
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
 
     # Exercise lazy adapter exports before shipping a backend that only binds
     # its Front port but cannot initialize the actual runtime.
-    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_gateway_adapter_bundle.py"
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gateway_adapter_bundle.py"
 
     # Same GitCode CLI self-check as build-macos.sh.
-    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_gitcode_cli_bundle.py"
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
 else
     echo ""
     echo "[4/6] Skipping PyInstaller (FrontendOnly)"
@@ -281,7 +273,6 @@ mkdir -p "$APP_DIR"
 # Copy the mature Electron desktop shell (main.cjs, preload.cjs, target_mcp_wrapper.cjs)
 echo "  Copying Electron desktop shell..."
 cp "$DESKTOP_DIR/main.cjs" "$APP_DIR/"
-cp "$DESKTOP_DIR/update_shutdown.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_panels.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_downloads.cjs" "$APP_DIR/"
 cp "$DESKTOP_DIR/browser_download_bubble.cjs" "$APP_DIR/"
@@ -329,7 +320,7 @@ if [ "$FRONTEND_ONLY" = false ]; then
         copy_node_runtime "$NODE_SRC" "$ELECTRON_APP_DIR/Electron.app/Contents/Resources/node-runtime"
         echo "  Verifying frozen Playwright MCP bundle and bundled Node..."
         JIUWENSWARM_EXPECTED_NODE="$ELECTRON_APP_DIR/Electron.app/Contents/Resources/node-runtime/bin/node" \
-            "$BACKEND_DIR/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_playwright_mcp_bundle.py"
+            "$BACKEND_DIR/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_playwright_mcp_bundle.py"
     fi
 fi
 
@@ -366,7 +357,7 @@ if [ ! -d "$APP_DIR/node_modules/@playwright/mcp" ]; then
     exit 1
 fi
 
-REQUIRED_FILES=(main.cjs update_shutdown.cjs preload.cjs browser_panels.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
+REQUIRED_FILES=(main.cjs preload.cjs browser_panels.cjs share_image_export.cjs display_media_picker.cjs target_mcp_wrapper.cjs
     browser_downloads.cjs browser_download_bubble.cjs dist/bubble.html
     macos_update.cjs install_macos_update.sh package.json dist/index.html
     node_modules/@playwright/mcp/package.json node_modules/@playwright/mcp/cli.js)

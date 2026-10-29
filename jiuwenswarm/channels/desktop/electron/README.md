@@ -94,56 +94,6 @@ updates, using the supported old client and the signed release artifact.
 Private information-collection agreements and daily-activity integration are
 not included in this public packaging path.
 
-## Backend identity and upgrades
-
-The 0.2.8 backport retains IPC protocol 1 and its existing request handling.
-Modern HELLO messages add build/deployment identity without importing develop's
-event replay or readiness changes. Protocol 1 has no shutdown acknowledgement;
-retirement must observe the validated process exit. Source identity uses full
-content/dependency hashing rather than develop's filesystem identity cache.
-
-Backend builds embed `jiuwenswarm/_worker_build_identity.json`. Rebuilding the
-backend creates a new ID even at the same version; assembling an unchanged
-backend into an installer preserves that ID. `-ReuseBackend` validates source,
-lockfile and packaging inputs before accepting an existing backend.
-
-Build entry points accept `WORKSWARM_SOURCE_ROOT`, `WORKSWARM_PACKAGING_ROOT`,
-`WORKSWARM_BUILD_ROOT` and an optional `WORKSWARM_WORKER_IDENTITY` input file.
-PowerShell also exposes `-SourceRoot`, `-BuildRoot` and `-WorkerIdentityFile`.
-The defaults retain the current single-repository layout. Runtime never imports
-release scripts. Metadata is generated in build staging, outside editable source.
-An input manifest supplies provenance only: its ID becomes `input_build_id` and
-each backend or wheel build allocates a fresh `backend_build_id`. Nested TUI
-builds load scripts from the packaging root and inputs from the source root.
-
-Supervisor validates each resident Worker's code and deployment before routing
-requests. An owned incompatible Worker is stopped and observed exiting before
-replacement under the startup lock. A different installation is never retired.
-DMG startup and shutdown never retire a WHL or source-service deployment.
-Legacy Python Workers without a deployment identity are never adopted or automatically
-retired: a shared interpreter or working directory cannot prove the loaded
-package's origin. Stop them through their original source or WHL service before
-starting the new version. Legacy frozen desktop ownership still requires the
-matching OS executable, user, endpoint and process identity.
-Concurrent complete stop requires ownership validation of the current connection
-before sending shutdown. An incomplete handshake is refused; validation of an
-earlier connection cannot authorize a new peer. A child spawned by this Supervisor
-can still be cleaned up through its retained process handle without unverified IPC.
-Complete stop cancels unvalidated startup; spawn, connect and HELLO share owned-child
-cleanup on failure or cancellation. The stored PID creation time comes from that
-same ownership check, and subsequent reaping must still match it.
-Source services need no identity file; installed wheels combine artifact/content
-identity with the actual dependency environment. Worker pins its identity at
-startup, so reconnecting cannot relabel old code after an update.
-
-Stop services before changing source, wheels or dependencies. Use
-`jiuwenswarm-stop` for debug services or `jiuwenswarm-start --stop <name>` for
-instances. Desktop update helpers require resident Worker exit before replacing
-the installed archive. Each update has a unique shutdown receipt written by the
-parent after successful service shutdown and Worker persistence. Helpers require
-this success before checking residual processes. Failed, pending or missing
-receipts block replacement even if the Worker endpoint is already absent.
-
 ## Browser-agent boundary
 
 Electron enables a loopback-only CDP endpoint on a launcher-selected ephemeral

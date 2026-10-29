@@ -21,9 +21,8 @@ from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_sub
 block_cipher = None
 
 SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
-packaging_root = os.path.abspath(os.environ.get("WORKSWARM_PACKAGING_ROOT", os.path.join(SPEC_DIR, os.pardir)))
-project_root = os.path.abspath(os.environ.get("WORKSWARM_SOURCE_ROOT", packaging_root))
-build_config_module = runpy.run_path(os.path.join(packaging_root, "scripts", "build_config.py"))
+project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
+build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
 runtime_config_path = Path(project_root, "jiuwenswarm", "common", "_build_config.py")
 expected_runtime_config = build_config_module["render_runtime_python"](build_config)
@@ -109,7 +108,7 @@ def collect_tree_python_modules(source_dir, package_roots):
 # One shared build step for Windows/macOS, pywebview and Electron installers.
 # Native compiler inputs stay on the build machine; the installed app never builds.
 computer_use_source = os.path.join(project_root, "jiuwenswarm", "cua_engine", "src")
-computer_use_build = runpy.run_path(os.path.join(packaging_root, "scripts", "build_computer_use.py"))
+computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
 computer_use_data = computer_use_build["bundle_data"](Path(project_root))
 computer_use_submodules = (
     collect_tree_python_modules(computer_use_source, ("computer_use",))
@@ -160,18 +159,9 @@ datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
 datas += computer_use_data
-# The backend artifact owns its ID, independently of source/release repository
-# layout. Repackaging this backend must preserve the embedded file unchanged.
-_identity_helper = runpy.run_path(os.path.join(project_root, "jiuwenswarm", "common", "worker_build_identity.py"))
-_identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-",
-    dir=os.environ.get("WORKSWARM_BUILD_ROOT") or None)
-_identity_file = Path(_identity_directory.name, _identity_helper["IDENTITY_FILENAME"])
-_identity_input = os.environ.get("WORKSWARM_WORKER_IDENTITY")
-_identity_helper["write_build_identity"](_identity_file, Path(project_root), packaging_root=Path(packaging_root),
-    identity_input=Path(_identity_input) if _identity_input else None)
-datas.append((str(_identity_file), "jiuwenswarm"))
-_build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
-_identity_helper["write_build_metadata"](_build_metadata_file, build_config.version)
+_build_metadata_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-metadata-")
+_build_metadata_file = Path(_build_metadata_directory.name, "build-metadata.json")
+build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)
 datas.append((str(_build_metadata_file), "jiuwenswarm/resources"))
 _playwright_mcp_resource_dir = os.path.join(
     project_root,
@@ -335,8 +325,8 @@ excludes = [
 ]
 
 # 入口脚本位于 scripts 目录
-entry_script = os.path.join(packaging_root, "scripts", "jiuwenswarm_exe_entry.py")
-mcp_entry_script = os.path.join(packaging_root, "scripts", "openjiuwen_team_mcp_exe_entry.py")
+entry_script = os.path.join(project_root, "scripts", "jiuwenswarm_exe_entry.py")
+mcp_entry_script = os.path.join(project_root, "scripts", "openjiuwen_team_mcp_exe_entry.py")
 
 # 图标路径（Windows 用 .ico，macOS 用 .icns）
 icon_path = os.path.join(

@@ -56,11 +56,6 @@ from jiuwenswarm.common.utils import (
     wait_for_pid_exit,
     wait_for_tcp_port,
 )
-from jiuwenswarm.common.update_shutdown import (
-    create_shutdown_receipt,
-    complete_shutdown_receipt,
-    require_clean_shutdown,
-)
 from jiuwenswarm.instance_manager.config import (
     BASE_PORTS,
     PORT_TYPES,
@@ -765,21 +760,12 @@ def _wait_for_port_release(host: str, port: int, timeout: float = 15.0) -> bool:
     return wait_for_tcp_port(host, port, timeout=timeout, target_state="disconnected")
 
 
-def _shutdown_runtime_before_update() -> None:
-    from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
-
-    result = asyncio.run(shutdown_resident_worker(timeout=30))
-    if not isinstance(result, dict) or result.get("ok") is not True:
-        raise RuntimeError(f"Worker shutdown incomplete: {result}")
-
-
 def _launch_windows_installer_helper(
     installer_path: str,
     app_executable: str,
     parent_pid: int = 0,
     backend_port: int = BACKEND_PORT,
     frontend_port: int = FRONTEND_PORT,
-    shutdown_receipt: str = "",
 ) -> None:
     target = Path(installer_path).expanduser().resolve()
 
@@ -796,11 +782,8 @@ def _launch_windows_installer_helper(
         frontend_port,
     )
 
-    require_clean_shutdown(shutdown_receipt)
-    _shutdown_runtime_before_update()
-    if (not _wait_for_port_release(BACKEND_HOST, backend_port, timeout=15.0)
-            or not _wait_for_port_release(FRONTEND_HOST, frontend_port, timeout=15.0)):
-        raise TimeoutError("Update stopped: backend/frontend ports are still occupied")
+    _wait_for_port_release(BACKEND_HOST, backend_port, timeout=15.0)
+    _wait_for_port_release(FRONTEND_HOST, frontend_port, timeout=15.0)
     logger.info("[update-helper] ports released, proceeding with install")
 
     try:
@@ -1283,7 +1266,6 @@ class DesktopRuntime:
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
-        self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
         self._tray_menu = None
@@ -2992,7 +2974,6 @@ class DesktopRuntime:
             return False
 
         app_executable = Path(sys.executable).resolve()
-        self._update_shutdown_receipt = create_shutdown_receipt(get_user_workspace_dir() / ".updates")
 
         if os.name == "nt":
             ok = self._launch_windows_install_helper(target, app_executable)
@@ -3043,7 +3024,6 @@ class DesktopRuntime:
         q_log_file = shlex.quote(str(log_file))
         q_temp_target = shlex.quote(f"{install_target}.new")
         q_old_target = shlex.quote(f"{install_target}.old")
-        q_shutdown_receipt = shlex.quote(str(getattr(self, "_update_shutdown_receipt", "")))
 
         helper_content = f"""#!/bin/bash
 set -e
@@ -3063,9 +3043,6 @@ while kill -0 "{parent_pid}" 2>/dev/null; do
 done
 echo "[helper] parent process exited"
 
-# Confirm resident Runtime shutdown before replacing any installed archive.
-{shlex.quote(str(app_executable))} --desktop-run-worker-lifecycle --shutdown-worker --timeout 30 --shutdown-receipt {q_shutdown_receipt}
-
 # Wait for backend/frontend ports to release
 wait_port_release() {{
     local port=$1
@@ -3078,8 +3055,7 @@ wait_port_release() {{
         fi
         sleep 0.5
     done
-    echo "[helper] port $port ($name) still in use after 15s; keeping installed app"
-    return 1
+    echo "[helper] warning: port $port ($name) still in use after 15s, proceeding anyway"
 }}
 wait_port_release {backend_port} backend
 wait_port_release {frontend_port} frontend
@@ -3175,7 +3151,8 @@ echo "=== install helper finished: $(date) ==="
         )
         return True
 
-    def _launch_linux_install_helper(self, target: Path, app_executable: Path) -> bool:
+    @staticmethod
+    def _launch_linux_install_helper(target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
         updates_dir = get_user_workspace_dir() / ".updates"
         updates_dir.mkdir(parents=True, exist_ok=True)
@@ -3193,7 +3170,6 @@ echo "=== install helper finished: $(date) ==="
         q_install_dir = shlex.quote(install_dir)
         q_backup_dir = shlex.quote(backup_dir)
         q_executable = shlex.quote(f"{install_dir}/{EXECUTABLE_NAME}")
-        q_shutdown_receipt = shlex.quote(str(getattr(self, "_update_shutdown_receipt", "")))
 
         helper_content = f"""#!/bin/bash
 set -e
@@ -3203,7 +3179,6 @@ while kill -0 "$PARENT_PID" 2>/dev/null; do
 done
 
 BACKUP={q_backup_dir}
-{q_executable} --desktop-run-worker-lifecycle --shutdown-worker --timeout 30 --shutdown-receipt {q_shutdown_receipt}
 if [ -d {q_install_dir} ]; then
     mv {q_install_dir} "$BACKUP"
 fi
@@ -3244,8 +3219,6 @@ nohup {q_executable} >/dev/null 2>&1 &
                 str(self.backend_port),
                 "--frontend-port",
                 str(self.frontend_port),
-                "--shutdown-receipt",
-                str(getattr(self, "_update_shutdown_receipt", "")),
             ],
         )
         logger.info("[desktop] launching update helper: %s", helper_cmd)
@@ -3266,30 +3239,12 @@ nohup {q_executable} >/dev/null 2>&1 &
             processes = list(self.processes.values())
 
         self._abort_all_blob_saves()
-        shutdown_ok = True
-        deadline = time.monotonic() + 30.0
+        deadline = time.monotonic() + 8.0
         logger.info("[desktop] shutting down child processes")
 
         for process in processes:
             if process.poll() is None:
-                try:
-                    _terminate_process_tree(process)
-                except (OSError, RuntimeError):
-                    shutdown_ok = False
-                    logger.exception("[desktop] service tree cleanup incomplete")
-
-        if processes:
-            # Front restarts detach. The desktop application owns final exit
-            # and upgrade, so it explicitly drains the resident Worker here.
-            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
-            try:
-                result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
-                if not isinstance(result, dict) or result.get("ok") is not True:
-                    shutdown_ok = False
-                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
-            except Exception:
-                shutdown_ok = False
-                logger.exception("[desktop] resident Worker final shutdown incomplete")
+                _terminate_process_tree(process)
 
         while time.monotonic() < deadline:
             if all(process.poll() is not None for process in processes):
@@ -3298,20 +3253,10 @@ nohup {q_executable} >/dev/null 2>&1 &
 
         for process in processes:
             if process.poll() is None:
-                shutdown_ok = False
-                try:
-                    _kill_process_tree(process)
-                except (OSError, RuntimeError):
-                    logger.exception("[desktop] forced service tree cleanup incomplete")
+                _kill_process_tree(process)
 
         with self._lock:
             self.processes.clear()
-        receipt = getattr(self, "_update_shutdown_receipt", None)
-        if receipt is not None:
-            try:
-                complete_shutdown_receipt(receipt, ok=shutdown_ok)
-            except (OSError, RuntimeError):
-                logger.exception("[desktop] failed to record update shutdown receipt")
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
@@ -3723,36 +3668,9 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
         parent = psutil.Process(pid)
         # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
         children = parent.children(recursive=True)
-        # Runtime lives in a separate process session on POSIX. On Windows a
-        # recursive psutil termination must similarly preserve that subtree
-        # during Front/Gateway restart; final exit uses explicit Worker IPC.
-        retained = set()
-        by_pid = {child.pid: child for child in children}
-        for child in children:
-            try:
-                argv = child.cmdline()
-                if "-m" in argv[:-1] and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.Error as exc:
-                raise RuntimeError("Desktop process tree ownership could not be established") from exc
-        for child in children:
-            try:
-                ancestor = child.ppid()
-                while ancestor in by_pid and ancestor not in retained:
-                    ancestor = by_pid[ancestor].ppid()
-                if ancestor in retained:
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                continue
-            except psutil.Error as exc:
-                raise RuntimeError("Desktop process tree ownership could not be established") from exc
         kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
         # 先杀子孙，再杀父进程，避免子孙变成孤儿
         for child in reversed(children):
-            if child.pid in retained:
-                continue
             try:
                 kill_fn(child)
             except psutil.NoSuchProcess:
@@ -3761,10 +3679,8 @@ def _psutil_terminate(pid: int, force: bool = False) -> None:
             kill_fn(parent)
         except psutil.NoSuchProcess:
             pass
-    except psutil.NoSuchProcess:
+    except Exception:  # noqa: BLE001
         pass
-    except psutil.Error as exc:
-        raise RuntimeError("Desktop process tree termination incomplete") from exc
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
@@ -3805,7 +3721,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--installer-path", default="", help=argparse.SUPPRESS)
     parser.add_argument("--app-executable", default="", help=argparse.SUPPRESS)
     parser.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
-    parser.add_argument("--shutdown-receipt", default="", help=argparse.SUPPRESS)
     parser.add_argument(
         "--backend-port", type=int, default=BACKEND_PORT, help=argparse.SUPPRESS
     )
@@ -3850,7 +3765,6 @@ def main() -> None:
             args.parent_pid,
             backend_port=args.backend_port,
             frontend_port=args.frontend_port,
-            shutdown_receipt=args.shutdown_receipt,
         )
         return
 

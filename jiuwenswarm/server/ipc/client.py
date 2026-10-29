@@ -54,15 +54,10 @@ def endpoint_is_listening(path: str) -> bool:
 def _windows_pipe_is_listening(address: str) -> bool:
     import ctypes
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    wait = kernel32.WaitNamedPipeW
+    wait = ctypes.windll.kernel32.WaitNamedPipeW
     wait.argtypes = [ctypes.c_wchar_p, ctypes.c_uint32]
     wait.restype = ctypes.c_int
-    if wait(address, 1):
-        return True
-    # Old Workers have no lifetime lease. A busy legacy pipe still exists,
-    # although WaitNamedPipe cannot offer a free instance to this Front yet.
-    return ctypes.get_last_error() in (121, 231)
+    return bool(wait(address, 1))
 
 
 async def try_connect(path: str, *, timeout: float = 0.5) -> IpcConnection | None:

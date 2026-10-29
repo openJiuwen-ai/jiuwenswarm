@@ -766,8 +766,8 @@ async def test_front_stop_leaves_spawned_worker_running() -> None:
         assert second.runtime_loaded is True
         assert await second_ready.wait_agent_ready(2) is True
         await second.stop(terminate_worker=True)
-        assert not endpoint_is_listening(path)
-        assert await owned.wait(timeout=2) == 0
+        assert endpoint_is_listening(path)
+        assert owned.returncode is None
     finally:
         if second is not None and not second._stopping:
             await second.stop()

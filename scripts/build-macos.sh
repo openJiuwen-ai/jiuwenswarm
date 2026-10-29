@@ -21,32 +21,24 @@
 
 set -euo pipefail
 
-PACKAGING_ROOT="${WORKSWARM_PACKAGING_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-PROJECT_ROOT="${WORKSWARM_SOURCE_ROOT:-$PACKAGING_ROOT}"
-BUILD_ROOT="${WORKSWARM_BUILD_ROOT:-$PROJECT_ROOT}"
-mkdir -p "$BUILD_ROOT"
-PACKAGING_ROOT="$(cd "$PACKAGING_ROOT" && pwd)"
-PROJECT_ROOT="$(cd "$PROJECT_ROOT" && pwd)"
-BUILD_ROOT="$(cd "$BUILD_ROOT" && pwd)"
-export WORKSWARM_PACKAGING_ROOT="$PACKAGING_ROOT" WORKSWARM_SOURCE_ROOT="$PROJECT_ROOT" WORKSWARM_BUILD_ROOT="$BUILD_ROOT"
-cd "$PROJECT_ROOT"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # 在项目环境同步前用 uv 管理的 Python 更新静态消费者，避免额外手动步骤。
 BUILD_CONFIG_SHELL="$(uv run --no-project --python 3.11 python \
-  "$PACKAGING_ROOT/scripts/build_config.py" --root "$PROJECT_ROOT" --sync --emit-shell)"
+  "$PROJECT_ROOT/scripts/build_config.py" --sync --emit-shell)"
 eval "$BUILD_CONFIG_SHELL"
 
 APP_NAME="$BUILD_APP_BUNDLE_NAME"
-APP_PATH="$BUILD_ROOT/dist/$APP_NAME"
-DMG_ROOT="$BUILD_ROOT/dist/dmg-root"
-DMG_PATH="$BUILD_ROOT/dist/$BUILD_DMG_FILENAME"
+APP_PATH="$PROJECT_ROOT/dist/$APP_NAME"
+DMG_ROOT="$PROJECT_ROOT/dist/dmg-root"
+DMG_PATH="$PROJECT_ROOT/dist/$BUILD_DMG_FILENAME"
 
 # === 签名 + 公证配置 ===
 # 签名身份（codesign -s 的值）与是否签名。解析顺序：
 #   1. 环境变量 SIGN_IDENTITY（可设具体身份，或 "-" 做 ad-hoc 本地测试）
 #   2. 自动探测 keychain 里唯一的 "Developer ID Application" 身份
 #   3. 都没有 → DO_SIGN=0，跳过签名（等同原先未签名构建，产物仅本地可用，不过 Gatekeeper）
-ENTITLEMENTS="$PACKAGING_ROOT/scripts/entitlements.mac.plist"
+ENTITLEMENTS="$PROJECT_ROOT/scripts/entitlements.mac.plist"
 NOTARY_PROFILE="${NOTARY_PROFILE:-jiuwenswarm-notary}"
 # 设 NOTARIZE=1 才执行公证（提交 Apple + staple）
 DO_NOTARIZE="${NOTARIZE:-0}"
@@ -71,7 +63,7 @@ fi
 # 解析/绑定实现在 scripts/build-runtimes.sh，与 build-electron-exe.sh 单一来源；
 # 契约测试 tests/unit_tests/test_desktop_electron_contract.py 钉住两侧同步。
 # 本文件已定义 PROJECT_ROOT（source 的函数依赖它）。
-source "$PACKAGING_ROOT/scripts/build-runtimes.sh"
+source "$PROJECT_ROOT/scripts/build-runtimes.sh"
 
 printf '=== %s macOS package build ===\n' "$BUILD_DISPLAY_NAME"
 printf 'Project root: %s\n' "$PROJECT_ROOT"
@@ -121,7 +113,7 @@ if command -v bun &>/dev/null; then
   pushd "$PROJECT_ROOT/jiuwenswarm/channels/tui/frontend" >/dev/null
   bun install
   popd >/dev/null
-  TUI_BINARY="$(uv run python "$PACKAGING_ROOT/scripts/build_tui.py" --target current | tail -n1)"
+  TUI_BINARY="$(uv run python scripts/build_tui.py --target current | tail -n1)"
   if [[ -z "$TUI_BINARY" ]]; then
     printf 'Warning: TUI build produced no output, skipping TUI.\n'
     TUI_BINARY=""
@@ -138,7 +130,7 @@ else
 fi
 
 printf '\n[4/9] Build macOS app bundle with PyInstaller...\n'
-uv run pyinstaller "$PACKAGING_ROOT/scripts/jiuwenswarm.spec" --noconfirm --distpath "$BUILD_ROOT/dist" --workpath "$BUILD_ROOT/build"
+uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
 
 if [[ ! -d "$APP_PATH" ]]; then
   printf 'Error: app bundle not found: %s\n' "$APP_PATH" >&2
@@ -162,16 +154,16 @@ if [[ ! -x "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" ]]; then
 fi
 
 printf 'Verifying frozen A2UI v0.8 bundle...\n'
-"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_a2ui_bundle.py"
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
 
 printf 'Verifying frozen RSI Harness baseline bundle...\n'
-"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_rsi_bundle.py"
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
 
 printf 'Verifying frozen Computer Use runtime without build tools...\n'
-"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_computer_use_bundle.py"
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
 
 printf 'Verifying frozen GitCode CLI bundle...\n'
-"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PACKAGING_ROOT/scripts/verify_gitcode_cli_bundle.py"
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
 
 if [[ -n "$TUI_BINARY" && -f "$TUI_BINARY" ]]; then
   printf 'Copying TUI binary into app bundle...\n'
@@ -187,7 +179,7 @@ if [[ "$BUNDLE_NODE" == "1" ]]; then
   copy_node_runtime "$NODE_SRC" "$APP_PATH/Contents/Resources/node-runtime"
   printf 'Verifying frozen Playwright MCP bundle and bundled Node...\n'
   "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" \
-    "$PACKAGING_ROOT/scripts/verify_playwright_mcp_bundle.py"
+    "$PROJECT_ROOT/scripts/verify_playwright_mcp_bundle.py"
 fi
 
 # 注意：--deep 会打印 deprecation 警告，但对 PyInstaller 应用（含大量嵌套 .so/.dylib、

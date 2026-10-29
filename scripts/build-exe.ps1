@@ -3,9 +3,6 @@
 # 用法: .\scripts\build-exe.ps1  或  pwsh -File scripts\build-exe.ps1
 
 param(
-    [string]$SourceRoot = "",
-    [string]$BuildRoot = "",
-    [string]$WorkerIdentityFile = "",
     [string]$NodeDir = "",
     [string]$SigningCertificateThumbprint = "",
     [string]$SignToolPath = "",
@@ -20,10 +17,6 @@ $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 
-$PreviousBuildEnvironment = @{}
-foreach ($Key in @('WORKSWARM_SOURCE_ROOT', 'WORKSWARM_PACKAGING_ROOT', 'WORKSWARM_BUILD_ROOT', 'WORKSWARM_WORKER_IDENTITY')) {
-    $PreviousBuildEnvironment[$Key] = [Environment]::GetEnvironmentVariable($Key, 'Process')
-}
 $PreviousProcessorArchitecture = $env:PROCESSOR_ARCHITECTURE
 $env:PROCESSOR_ARCHITECTURE = "AMD64"
 
@@ -270,18 +263,7 @@ function Invoke-CodeSigning {
 }
 
 # 项目根 = 脚本所在目录的上一层，基于脚本自身位置推导，换路径不坏
-$PackagingRoot = Split-Path -Parent $PSScriptRoot
-if (-not $SourceRoot) { $SourceRoot = $env:WORKSWARM_SOURCE_ROOT }
-if (-not $SourceRoot) { $SourceRoot = $PackagingRoot }
-$ProjectRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
-if (-not $BuildRoot) { $BuildRoot = $env:WORKSWARM_BUILD_ROOT }
-if (-not $BuildRoot) { $BuildRoot = $ProjectRoot }
-$BuildRoot = [IO.Path]::GetFullPath($BuildRoot)
-New-Item -ItemType Directory -Path $BuildRoot -Force | Out-Null
-$env:WORKSWARM_SOURCE_ROOT = $ProjectRoot
-$env:WORKSWARM_PACKAGING_ROOT = $PackagingRoot
-$env:WORKSWARM_BUILD_ROOT = $BuildRoot
-if ($WorkerIdentityFile) { $env:WORKSWARM_WORKER_IDENTITY = (Resolve-Path -LiteralPath $WorkerIdentityFile).Path }
+$ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $ProjectRoot
 
 $DetectedMachine = uv run --no-project --python 3.11 python -c "import platform; print(platform.machine())"
@@ -345,7 +327,7 @@ Write-Host "Project root: $ProjectRoot`n" -ForegroundColor Gray
 
 # Synchronize tracked consumers before the project environment resolves the new metadata.
 $BuildConfigJson = uv run --no-project --python 3.11 python `
-    "$PackagingRoot\scripts\build_config.py" --root "$ProjectRoot" --sync --emit-json
+    "$ProjectRoot\scripts\build_config.py" --sync --emit-json
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $BuildConfig = $BuildConfigJson | ConvertFrom-Json
 $BuildDisplayName = [string]$BuildConfig.display_name
@@ -380,13 +362,13 @@ Pop-Location
 
 # 3. Run PyInstaller
 Write-Host "`n[3/4] Running PyInstaller..." -ForegroundColor Yellow
-uv run pyinstaller "$PackagingRoot\scripts\jiuwenswarm.spec" --noconfirm --distpath "$BuildRoot\dist" --workpath "$BuildRoot\build"
+uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # Verify the actual frozen runtime, not only the PyInstaller source configuration.
-$FrozenDir = Join-Path $BuildRoot "dist\$BuildDistDirName"
+$FrozenDir = Join-Path $ProjectRoot "dist\$BuildDistDirName"
 $FrozenExe = Join-Path $FrozenDir $BuildExecutableNameWindows
-$A2UIVerifier = Join-Path $PackagingRoot "scripts\verify_a2ui_bundle.py"
+$A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
 $VerifyProcess = Start-Process `
     -FilePath $FrozenExe `
     -ArgumentList @($A2UIVerifier) `
@@ -397,7 +379,7 @@ if ($VerifyProcess.ExitCode -ne 0) {
     throw "Frozen A2UI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
-$RsiVerifier = Join-Path $PackagingRoot "scripts\verify_rsi_bundle.py"
+$RsiVerifier = Join-Path $ProjectRoot "scripts\verify_rsi_bundle.py"
 $RsiVerifyProcess = Start-Process `
     -FilePath $FrozenExe `
     -ArgumentList @($RsiVerifier) `
@@ -408,7 +390,7 @@ if ($RsiVerifyProcess.ExitCode -ne 0) {
     throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
-$CuaVerifier = Join-Path $PackagingRoot "scripts\verify_computer_use_bundle.py"
+$CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
 $CuaVerifyProcess = Start-Process `
     -FilePath $FrozenExe `
     -ArgumentList @("`"$CuaVerifier`"") `
@@ -419,7 +401,7 @@ if ($CuaVerifyProcess.ExitCode -ne 0) {
     throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
-$GitCodeVerifier = Join-Path $PackagingRoot "scripts\verify_gitcode_cli_bundle.py"
+$GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"
 $GitCodeVerifyProcess = Start-Process `
     -FilePath $FrozenExe `
     -ArgumentList @($GitCodeVerifier) `
@@ -435,7 +417,7 @@ if (Test-Truthy $BundleNode) {
     Write-Host "`n[3.5/4] Bundling Node.js runtime..." -ForegroundColor Yellow
     Copy-NodeRuntime -SourceDir $NodeSource -DistDir $FrozenDir
 
-    $PlaywrightVerifier = Join-Path $PackagingRoot "scripts\verify_playwright_mcp_bundle.py"
+    $PlaywrightVerifier = Join-Path $ProjectRoot "scripts\verify_playwright_mcp_bundle.py"
     $PlaywrightVerifyProcess = Start-Process `
         -FilePath $FrozenExe `
         -ArgumentList @($PlaywrightVerifier) `
@@ -514,12 +496,11 @@ if ($DoSign) {
         " /tr $TimestampUrl /td SHA256 /v " + '$f'
     $InnoArguments += "/Scertumsha256=$InnoSignCommand"
 }
-$InnoArguments += "/DSourceRoot=$ProjectRoot", "/DBuildRoot=$BuildRoot"
-$InnoArguments += "$PackagingRoot\scripts\installer.iss"
+$InnoArguments += "$ProjectRoot\scripts\installer.iss"
 & $Iscc @InnoArguments
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-$InstallerPath = Join-Path $BuildRoot "dist\$BuildSetupFilename"
+$InstallerPath = Join-Path $ProjectRoot "dist\$BuildSetupFilename"
 if (-not (Test-Path -LiteralPath $InstallerPath)) {
     throw "Installer was not created at the configured path: $InstallerPath"
 }
@@ -542,9 +523,6 @@ if ($DoSign) {
     Write-Host "Signature: not applied; this installer is for local testing only" -ForegroundColor Yellow
 }
 } finally {
-    foreach ($Key in $PreviousBuildEnvironment.Keys) {
-        [Environment]::SetEnvironmentVariable($Key, $PreviousBuildEnvironment[$Key], 'Process')
-    }
     if ($null -eq $PreviousProcessorArchitecture) {
         Remove-Item Env:PROCESSOR_ARCHITECTURE -ErrorAction SilentlyContinue
     } else {

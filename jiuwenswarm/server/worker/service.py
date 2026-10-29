@@ -38,8 +38,7 @@ class WorkerForceExit(RuntimeError):
     """Dispatch ignored cancellation, so Runtime shutdown must not run."""
 
 
-async def serve_worker(socket_path: str, *, host: str, port: int,
-                       code_identity_value: str | None = None) -> None:
+async def serve_worker(socket_path: str, *, host: str, port: int) -> None:
     holder = ConnHolder()
     bridge = WorkerGatewayBridge(holder)
     signals = RuntimeSignalSink(holder)
@@ -57,10 +56,6 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
     # with CancelledError from ipc server teardown.
     fatal: WorkerForceExit | None = None
     try:
-        from jiuwenswarm.server.supervisor.identity import code_identity
-
-        worker_code_identity = (code_identity_value if code_identity_value is not None
-                                else await asyncio.to_thread(code_identity))
         while True:
             conn = await server.accept()
             _install_heartbeat_fast_path(conn, beat)
@@ -70,7 +65,6 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                 runtime_loaded=loaded["runtime"] is not None,
                 generation=generation,
                 instance=instance,
-                code_identity_value=worker_code_identity,
             )
             if runtime_task is None:
                 runtime_task = asyncio.create_task(
@@ -273,11 +267,7 @@ async def _send_hello(
     runtime_loaded: bool,
     generation: int,
     instance: str,
-    code_identity_value: str | None = None,
 ) -> None:
-    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
-    import psutil
-    identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
     await conn.send(
         {
             "kind": KIND_HELLO,
@@ -287,10 +277,6 @@ async def _send_hello(
             "stub": False,
             "runtime_loaded": runtime_loaded,
             "generation": generation,
-            "data_scope": data_scope(),
-            "deployment_scope": deployment_scope(),
-            "process_created": psutil.Process().create_time(),
-            "code_identity": identity,
         }
     )
 
