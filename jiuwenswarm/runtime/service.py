@@ -2611,6 +2611,22 @@ class AgentRuntime:
         if not isinstance(current, str) or not current.strip():
             event.payload["execution_id"] = execution_id
 
+    def _control_owner_agent(self, request: AgentRequest) -> Any:
+        """Borrow the Agent whose turn waits for this control input.
+
+        A voice task resumes on the ``video_tool`` ingress, but it runs on its
+        chat's own agent (#9603); look the waiting turn up where admission put it.
+        """
+        from jiuwenswarm.runtime.request import resolve_request_owner_channel
+
+        lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
+        if not callable(lookup):
+            return None
+        return lookup(
+            resolve_request_owner_channel(request) or "default",
+            request.session_id or "",
+        )
+
     async def _deliver_control_started(
         self,
         request: AgentRequest,
@@ -2626,10 +2642,7 @@ class AgentRuntime:
             request.session_id or "default",
             self._control_request_id(request),
         )
-        lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
-        agent = (
-            lookup(channel_id, request.session_id or "") if callable(lookup) else None
-        )
+        agent = self._control_owner_agent(request)
         if agent is None:
             raise RuntimeError(
                 f"session has no active agent: {request.session_id or 'default'}"
@@ -2693,8 +2706,7 @@ class AgentRuntime:
             request.session_id or "default",
             self._control_request_id(request),
         )
-        lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
-        agent = lookup(channel_id, request.session_id or "") if callable(lookup) else None
+        agent = self._control_owner_agent(request)
         if agent is None:
             raise RuntimeError(f"session has no active agent: {request.session_id or 'default'}")
         deliver = getattr(agent, "deliver_control_input", None)

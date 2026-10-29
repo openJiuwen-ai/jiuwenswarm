@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Iterable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -4755,3 +4755,75 @@ def test_typed_input_still_supersedes_a_waiting_card() -> None:
     )
 
     assert AgentRuntime._voice_task_card_refusal(_session_waiting_on_card(), request) == []
+
+
+async def test_voice_task_approval_resume_reaches_the_chat_agent_that_owns_it() -> None:
+    """#5885: a voice task runs on its chat's agent (#9603), so the approval it
+    raises waits there. The resume arrives on ``video_tool``; looking the agent
+    up by that ingress channel found nothing, the resumed turn produced no final
+    and the task became unknown, blocking every later voice task in the chat."""
+    seen: list[tuple[str, str]] = []
+
+    class ChatAgent(FakeAgent):
+        async def process_message_stream(self, request: AgentRequest):
+            seen.append(("stream", request.request_id))
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.ask_user_question",
+                    "request_id": "call_notepad",
+                    "source": "permission_interrupt",
+                    "questions": [],
+                },
+            )
+
+        async def deliver_control_input(self, request: AgentRequest):
+            seen.append(("control", request.request_id))
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "chat.final", "content": "notepad typed"},
+                is_complete=True,
+            )
+
+    class ChatOwnedManager(FakeAgentManager):
+        def get_agent_for_session_nowait(self, channel_id: str, session_id: str) -> object:
+            return self.agent if channel_id == "web" else None
+
+    manager = ChatOwnedManager()
+    manager.agent = ChatAgent()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=FakePlanController(),
+    )
+    runtime._trigger_before_chat_request_hook = AsyncMock()
+    session_id = "voice-task-chat"
+    params = {"mode": "agent", "work_mode": "work"}
+    with patch(
+        "jiuwenswarm.runtime.request.resolve_request_owner_channel",
+        side_effect=lambda request: "web" if request.channel_id == "video_tool" else request.channel_id,
+    ):
+        task = AgentRequest(
+            request_id="task-1", channel_id="video_tool", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND, is_stream=True,
+            params={**params, "query": "open notepad and type hello"},
+        )
+        await _collect_events(runtime.stream(task, trigger_hook=False))
+
+        resume = AgentRequest(
+            request_id="task-1", channel_id="video_tool", session_id=session_id,
+            req_method=ReqMethod.CHAT_SEND, is_stream=True,
+            params={
+                **params, "query": "", "request_id": "call_notepad",
+                "source": "permission_interrupt",
+                "answers": [{"question": "", "selected_options": ["allow_once"]}],
+            },
+        )
+        resumed = await asyncio.wait_for(
+            _collect_events(runtime.stream(resume, trigger_hook=False)), timeout=0.5,
+        )
+
+    assert [event.event_type for event in resumed] == ["chat.final"]
+    assert seen == [("stream", "task-1"), ("control", "task-1")]
