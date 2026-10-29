@@ -3118,6 +3118,7 @@ class JiuWenSwarm:
                     adapter=adapter,
                     request=request,
                 )
+                pre_finalize_content_str = content_str
                 content_str = await finalize_assistant_response_if_a2ui(
                     content_str,
                     channel=request.channel_id,
@@ -3126,6 +3127,10 @@ class JiuWenSwarm:
                     repair_call=repair_call,
                     retry_without_a2ui_call=retry_without_a2ui_call,
                 )
+                if not content_str:
+                    # 同流式路径兜底：finalize 空返回（如 repair 不可用被误判合法）
+                    # 不得把 unary 正文整体清空，回退 finalize 前的原始字符串。
+                    content_str = pre_finalize_content_str
                 if isinstance(content, str):
                     result.payload["content"] = content_str
                 from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
@@ -4244,6 +4249,17 @@ class JiuWenSwarm:
             repair_call=repair_call,
             retry_without_a2ui_call=retry_without_a2ui_call,
         )
+        if suppress_a2ui_stream and not finalized_assistant_message and assistant_message:
+            # suppress 已把原 chat.final 扣在手上（未上 wire），此处 finalized 若为空
+            # （如适配器无模型可修、repair 返回 None 被强转空串——case #26 形态），
+            # 下面的重发会被整体跳过，整块 a2ui 静默丢失、relay 落库只剩 probe 残留。
+            # 兜底回退重发被扣的原始内容：即便 JSON 破损，relay 前端 replace_final
+            # 覆写 + jsonrepair 仍有渲染机会，优于什么都不发。
+            logger.warning(
+                "A2UI finalized empty under suppression: request_id=%s falling back to raw stream content",
+                rid or "",
+            )
+            finalized_assistant_message = assistant_message
         if finalized_assistant_message and (
                 finalized_assistant_message != assistant_message or suppress_a2ui_stream
         ):
