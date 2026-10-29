@@ -674,14 +674,43 @@ def build_permission_rail(
             """
             try:
                 from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-                    persist_permissions_mutate,
+                    persist_permissions_mutate, get_permissions_session_id,
+                    setup_permissions_agent_base, reset_permissions_agent_base,
                 )
+
+                rail = rail_box.get("rail")
+                if rail is None:
+                    logger.warning("[InterruptHelpers] persist failed: permission rail missing")
+                    return False
+                sid = get_permissions_session_id() if is_enterprise() else None
+                publish_session = getattr(rail, "update_session_config", None)
+                if is_enterprise() and (not sid or not callable(publish_session)):
+                    logger.warning(
+                        "[InterruptHelpers] persist failed: missing session or scoped publisher key=%s session=%s",
+                        rail.permission_key, sid,
+                    )
+                    return False
+
+                tools_delta = {}
+                base = None
+                if is_enterprise():
+                    from agent_shield.tool_permission import get_permission_manager
+
+                    # This is a configuration write, not a tool decision. Bind
+                    # this owner's baseline; supervisor tasks may lack agent-base context.
+                    base = copy.deepcopy(dict(get_permission_manager().get_config(rail.permission_key)))
+                    before = merge_session_permissions_overlay(base, session_id=sid)
+                    before_tools = before.get("tools") or {}
+                    tools_delta = {name: value for name, value in (permissions.get("tools") or {}).items()
+                                   if before_tools.get(name) != value}
 
                 persist_target = None
                 if callable(persist_target_agent_id_provider):
                     persist_target = persist_target_agent_id_provider()
 
                 def mutate(perms: dict[str, Any]) -> None:
+                    if tools_delta:
+                        perms.setdefault("tools", {}).update(copy.deepcopy(tools_delta))
                     overrides_new = permissions.get("approval_overrides")
                     if overrides_new is not None:
                         perms["approval_overrides"] = copy.deepcopy(overrides_new)
@@ -692,19 +721,23 @@ def build_permission_rail(
                     if ext_dir_new is not None:
                         perms["external_directory"] = copy.deepcopy(ext_dir_new)
 
-                persist_permissions_mutate(
-                    mutate,
-                    persist_scope="session" if is_enterprise() else "base",
-                    persist_target_agent_id=persist_target,
-                    source="persist_allow_rule",
-                )
-                rail = rail_box.get("rail")
-                if rail is not None:
-                    rail.update_config(permissions)
+                if is_enterprise():
+                    token = setup_permissions_agent_base(base)
+                    try:
+                        effective = persist_permissions_mutate(
+                            mutate, session_id=sid, persist_scope="session", source="persist_allow_rule",
+                        )
+                    finally:
+                        reset_permissions_agent_base(token)
+                    # Explicitly publish even if the request had no cached
+                    # session entry. Never replace the tenant/Agent baseline.
+                    publish_session(sid, effective)
                 else:
-                    logger.warning(
-                        "[InterruptHelpers] persist ok but rail missing; manager not refreshed"
+                    persist_permissions_mutate(
+                        mutate, persist_scope="base", persist_target_agent_id=persist_target,
+                        source="persist_allow_rule",
                     )
+                    rail.update_config(permissions)
                 return True
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
@@ -885,6 +918,7 @@ def build_permission_rail(
                     channel_id=str(getattr(perm_ctx, "channel_id", "") or ""),
                     session_id=None,
                     permission_key=inp.permission_key,
+                    owner_scopes=permission_rail.projection_config_for(inp.ctx).get("owner_scopes", {}),
                 )
                 if level == "allow":
                     return ("approve",)
@@ -895,13 +929,8 @@ def build_permission_rail(
             if not principal_user_id or not channel_id:
                 return None
 
-            # owner_scopes 读已发布 key，不现场拉 yaml。
-            from agent_shield.tool_permission import get_permission_manager
-
-            try:
-                perm_cfg = dict(get_permission_manager().get_config(inp.permission_key))
-            except KeyError:
-                return None
+            # owner_scopes 是发布时保留的路由元数据；SDK 判定只收 key。
+            perm_cfg = permission_rail.projection_config_for(inp.ctx)
             owner_scopes = perm_cfg.get("owner_scopes") if isinstance(perm_cfg, dict) else None
             if not isinstance(owner_scopes, dict) or not owner_scopes:
                 return None
@@ -913,15 +942,20 @@ def build_permission_rail(
             if owner_level is None:
                 return None
             if owner_level == "allow":
-                # 有 ACTIVE Skill overlay 时强制走 engine，避免 owner allow 绕过 overlay 收紧。
-                if _has_active_skill_overlay(
-                    inp.ctx, getattr(permission_rail, "_skill_scope_resolver", None),
-                ):
-                    return None
-                return ("approve",)
+                # owner allow 不能绕过 NetGuard 或其他组件的 DENY。
+                return None
             return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
 
         def _get_permissions_snapshot():
+            if is_enterprise():
+                from agent_shield.tool_permission import get_permission_manager
+                from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import get_permissions_session_id
+
+                rail = rail_box.get("rail")
+                if rail is None:
+                    raise RuntimeError("Permission persistence owner is unavailable")
+                base = dict(get_permission_manager().get_config(rail.permission_key))
+                return merge_session_permissions_overlay(base, session_id=get_permissions_session_id())
             # 企业版 Agent 模板 rail：工具校验跑在 DeepAgent supervisor Task
             # （start_interaction 时 create_task），不会继承请求 Task 上的
             # PERMISSIONS_AGENT_BASE；若这里再走 get_effective_permissions_config()

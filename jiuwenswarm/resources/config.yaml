@@ -1315,6 +1315,16 @@ permissions:
   # SkillAuthorizationRail 门禁审批，ACTIVE Grant 参与权限合成。
   skill_authorization:
     enabled: false
+  # W3：网页/搜索出站防护；在权限系统开启后独立启用。
+  # 当前受保护传输固定 DNS 校验后的连接 IP，不支持代理，禁止自动直连降级。
+  net_guard:
+    enabled: false
+    defaults: allow
+    urls: {}
+    connection:
+      allow_http: false
+      allow_loopback: false
+      allow_private_network: false
   defaults:
     '*': allow
   tools:

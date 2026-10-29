@@ -228,6 +228,7 @@ def active_skill_permissions(tmp_path, monkeypatch):
         "skill_authorization": {"enabled": True},
     }
     rail = SkillAuthorizationPermissionRail(config=baseline)
+    rail.update_session_config("session-1", baseline)
     gate = SkillAuthorizationRail(permission_key=rail.permission_key, grant_store=store)
     rail.set_skill_scope_resolver(gate.resolve_scope)
     ctx = SimpleNamespace(session=SimpleNamespace(session_id="session-1"))
@@ -249,8 +250,8 @@ async def test_active_skill_overlay_survives_missing_task_context(active_skill_p
 def test_permission_composition_reads_one_snapshot(active_skill_permissions):
     rail, ctx, store, _, _ = active_skill_permissions
     with patch.object(store, "get_active", wraps=store.get_active) as read:
-        # Overlay is composed on one-off check, not on baseline refresh.
-        rail._compose_active_skill_config(ctx)
+        # Reading selects the published key; composition ran at publication.
+        rail.permission_key_for(ctx)
     read.assert_called_once_with("session-1", "main")
 
 
@@ -353,7 +354,7 @@ async def test_missing_session_or_unbound_resolver_keeps_baseline(active_skill_p
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("session_id, expected", [("session-1", None), ("session-2", ("approve",))])
+@pytest.mark.parametrize("session_id, expected", [("session-1", None), ("session-2", None)])
 @pytest.mark.parametrize("overlay_permission", ["ask", "deny"])
 async def test_owner_allow_cannot_skip_active_skill_overlay(
     active_skill_permissions, monkeypatch, tmp_path, session_id, expected, overlay_permission,
@@ -375,6 +376,7 @@ async def test_owner_allow_cannot_skip_active_skill_overlay(
     )
     rail = build_permission_rail({})
     rail.set_skill_scope_resolver(original_rail._skill_scope_resolver)
+    rail.update_session_config("session-1", config)
     skill_dir = tmp_path / "permission-probe"
     (skill_dir / "skill_permissions.json").write_text(json.dumps({
         "risk": {"level": "low"},

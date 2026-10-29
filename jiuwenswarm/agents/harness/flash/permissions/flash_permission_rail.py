@@ -9,7 +9,6 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
-from agent_shield.tool_permission import get_permission_manager
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.rails.interrupt.interrupt_base import (
     ApproveResult,
@@ -19,6 +18,7 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
 from openjiuwen.harness.rails.security.tool_security_rail import compute_batch_allow_key
 from openjiuwen.harness.security.host import ToolPermissionHost
 from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
+from openjiuwen.harness.security.permission_checks import check_tool_permission, merge_permission_results
 from openjiuwen.harness.security.patterns import (
     merge_file_guard_access_allows,
     merge_permission_allow_rule_into_permissions,
@@ -38,7 +38,6 @@ from .skill_install import FlashSkillSearchTool, save_state, state_for
 from .tool_policy_projection import is_projected, project_operations
 
 _PENDING = "__flash_permission_pending__"
-_RANK = {PermissionLevel.ALLOW: 0, PermissionLevel.ASK: 1, PermissionLevel.DENY: 2}
 logger = logging.getLogger(__name__)
 
 
@@ -91,14 +90,8 @@ class FlashPermissionRail(SkillTurboPermissionRail):
         checks = self._host.tool_permission_checks_active
         if checks is not None and not checks():
             return outer
-        skill_cfg = self._skill_overlay_config(ctx)
-        # project_operations needs a dict view; adjudication uses key unless overlay.
-        try:
-            project_cfg = skill_cfg or dict(
-                get_permission_manager().get_config(self._key)
-            )
-        except KeyError:
-            return outer
+        # Projection is descriptive metadata; the SDK only receives a key.
+        project_cfg = self.projection_config_for(ctx)
         try:
             operations = project_operations(tool_name, tool_args, project_cfg)
         except (TypeError, ValueError, KeyError):
@@ -108,20 +101,8 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 "Invalid Flash action or resources",
             )
         results = [outer]
-        manager = get_permission_manager()
         for operation in operations:
-            if skill_cfg is not None:
-                result = await manager.check_permission(
-                    operation.name,
-                    operation.args,
-                    config=skill_cfg,
-                )
-            else:
-                result = await manager.check_permission(
-                    operation.name,
-                    operation.args,
-                    self._key,
-                )
+            result = await check_tool_permission(operation.name, operation.args, self.permission_key_for(ctx))
             if _requires_explicit_approval(
                 operation, result.permission, result.matched_rule
             ):
@@ -131,23 +112,7 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                     f"{operation.name} requires explicit approval",
                 )
             results.append(result)
-        strongest = max(results, key=lambda result: _RANK[result.permission])
-        if not operations:
-            return strongest
-        return PermissionResult(
-            strongest.permission,
-            strongest.matched_rule,
-            strongest.reason,
-            sorted({path for result in results for path in result.external_paths or []})
-            or None,
-        )
-
-    def _skill_overlay_config(self, ctx) -> dict[str, Any] | None:
-        """ACTIVE Skill overlay one-off config, or None to use published key."""
-        compose = getattr(self, "_compose_active_skill_config", None)
-        if not callable(compose):
-            return None
-        return compose(ctx)
+        return merge_permission_results(results)
 
     async def before_tool_call(self, ctx):
         tool_call = getattr(getattr(ctx, "inputs", None), "tool_call", None)

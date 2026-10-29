@@ -401,7 +401,13 @@ class FileSkillGrantStore(SkillGrantStore):
                 and json.dumps(doc, ensure_ascii=False, separators=(",", ":")) != raw
             ):
                 _atomic_json(fd, "state.json", doc)
-            return result
+        if write:
+            # Publish only after the file transaction commits and its lock is
+            # released. TransactionStore listeners are intentionally local.
+            self.notify_permission_listeners(
+                sid, operation="clear_session" if doc.get("deleted") else "refresh"
+            )
+        return result
 
     create_pending_grant = _file_operation(SkillGrantStore.create_pending_grant)
     activate_pending = _file_operation(SkillGrantStore.activate_pending)
@@ -430,6 +436,21 @@ class FileSkillGrantStore(SkillGrantStore):
                 exc_info=True,
             )
             return None
+
+    def active_scopes(self, session_id: str):
+        return self.operate(session_id, lambda store, doc: store.active_scopes(session_id), write=False)
+
+    def get_active_for_permission(self, session_id: str, agent_scope_id: str):
+        """Permission routing must distinguish storage failure from an absent grant."""
+        return self.operate(
+            session_id, lambda store, doc: store.get_active(session_id, agent_scope_id), write=False,
+        )
+
+    def get_active_skill_execution_for_permission(self, session_id: str, agent_scope_id: str):
+        """A failed execution-window read cannot disable the permission rail."""
+        return self.operate(
+            session_id, lambda store, doc: store.get_active_skill_execution(session_id, agent_scope_id), write=False,
+        )
 
     def get_active_skill_execution(self, session_id: str, agent_scope_id: str):
         try:
@@ -488,6 +509,7 @@ class FileSkillGrantStore(SkillGrantStore):
 
     def clear_session(self, session_id: str) -> None:
         if not self.session_directory(session_id).is_dir():
+            self.notify_permission_listeners(session_id, operation="clear_session")
             return
 
         def retire(store, doc):
@@ -520,6 +542,7 @@ class FileSkillGrantStore(SkillGrantStore):
                 "generation.json",
                 {"generation": int(data.get("generation", 0)) + 1},
             )
+        self.notify_permission_listeners(None, operation="clear_all")
 
     def get_active_skill_state(self, session_id: str) -> dict | None:
         try:

@@ -167,7 +167,7 @@ async def test_cron_actions_native_sdk_backend_counts(
     permission_adapter, action, legacy, args, policy, record_property, monkeypatch
 ):
     from flash_sdk import sdk_tools
-    from openjiuwen.harness.security.core import PermissionEngine
+    from agent_shield.tool_permission import PermissionEngine
 
     from jiuwenswarm.agents.harness.flash.tools.cron_flash import build_cron_flash_tool
 
