@@ -43,4 +43,5 @@ call_tool/list_tools 一次及持续内部取消、worker 后续调用恢复、�
 ## 已知遗留
 
 本次只处理整体 review 的 P1；P2（HTTP 建连失败后直接等待 owner，取消可打断清理）
-未修改。模型断流与专家团长耗时未证明由本问题直接导致。
+在本次修复中未修改，后续由 B_05_remote-mcp-failed-connect-cleanup.md 修复。
+模型断流与专家团长耗时未证明由本问题直接导致。

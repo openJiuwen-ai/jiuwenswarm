@@ -159,6 +159,10 @@ async def transport(monkeypatch):
 def patched(monkeypatch):
     from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
 
+    # 全量 UT 可能已通过 adapter 安装补丁；清空 guard 再包会递归争用同一 I/O 锁。
+    if patch._PATCHED:
+        return
+
     # 仅还原此测试装配点，不把 patch 泄漏给别的 MCP 测试。
     for cls, names in (
         (StreamableHttpClient, ("connect", "disconnect", "call_tool", "list_tools")),
@@ -925,3 +929,113 @@ async def test_external_cancel_during_internal_cancel_cleanup(
         await asyncio.gather(caller, return_exceptions=True)
         await client.disconnect()
     await settled(transport)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_mode", ["none", "once", "repeated", "anyio"])
+async def test_connect_timeout_cleanup_survives_caller_cancel_and_reconnects(
+    transport, patched, cancel_mode,
+):
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
+    client = ToolMgr._create_client(McpServerConfig(
+        server_id="test", server_name="test", client_type="streamable-http",
+        server_path=config("streamable-http")["url"],
+    ))
+    transport.phase = "connect-hang"
+    transport.hold_close = True
+    scope = None
+    cancellation_seen = False
+
+    async def connect():
+        nonlocal scope, cancellation_seen
+        with anyio.CancelScope() as scope:
+            try:
+                return await client.connect(timeout=0.01)
+            except asyncio.CancelledError:
+                cancellation_seen = True
+                raise
+
+    caller = asyncio.create_task(connect())
+    try:
+        # owner 先发布建连超时，再进入清理；此时调用者正在等待 owner 退出。
+        await asyncio.wait_for(transport.closing.wait(), 1)
+        if cancel_mode == "anyio":
+            scope.cancel()
+        elif cancel_mode != "none":
+            caller.cancel()
+        await asyncio.sleep(0)
+        if cancel_mode == "repeated":
+            caller.cancel()
+            await asyncio.sleep(0)
+        transport.release_close.set()
+        if cancel_mode == "none":
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(caller, 1)
+        elif cancel_mode == "anyio":
+            await asyncio.wait_for(caller, 1)
+            assert cancellation_seen
+        else:
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(caller, 1)
+        assert transport.close_cancellations == 0
+        assert client._jws_http_owner.task.done()
+        assert client._session is None
+        assert client._client is None
+        await settled(transport)
+        transport.phase = "normal"
+        transport.hold_close = False
+        assert await client.connect()
+        assert await client.call_tool("echo", {}) == "ok"
+        assert await client.disconnect()
+        await settled(transport)
+    finally:
+        transport.release_close.set()
+        await asyncio.gather(caller, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_connect_failure_cleanup_has_deadline(transport, patched, monkeypatch):
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
+    monkeypatch.setattr(patch, "_MCP_CLEANUP_TIMEOUT_S", 0.02)
+    monkeypatch.setattr(patch, "_MCP_CANCEL_DRAIN_TIMEOUT_S", 0.02)
+    client = ToolMgr._create_client(McpServerConfig(
+        server_id="test", server_name="test", client_type="streamable-http",
+        server_path=config("streamable-http")["url"],
+    ))
+    transport.phase = "connect-hang"
+    transport.hold_close = True
+    caller = asyncio.create_task(client.connect(timeout=0.01))
+    try:
+        await asyncio.wait_for(transport.closing.wait(), 1)
+        caller.cancel()
+        # 不释放清理事件，必须由清理预算耗尽结束等待，不能无限 shield。
+        done, _ = await asyncio.wait({caller}, timeout=1)
+        assert done, "取消后的建连失败清理超过预算仍未返回"
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert client._jws_needs_reconnect
+        assert client._jws_http_owner.task.done()
+        assert transport.close_cancellations == 1  # 只有预算耗尽才取消 owner。
+        with pytest.raises(RuntimeError, match="previous owner cleanup incomplete"):
+            await client.connect()
+    finally:
+        transport.release_close.set()
+        await asyncio.gather(caller, return_exceptions=True)
+    await settled(transport)
+
+
+@pytest.mark.asyncio
+async def test_failed_connect_owner_cancel_preserves_operation_error():
+    client = SimpleNamespace(
+        connect=AsyncMock(side_effect=ValueError("connect failed")),
+        disconnect=AsyncMock(side_effect=asyncio.CancelledError()),
+    )
+    patch._install_streamable_http_owner(client)
+    caller = asyncio.create_task(client.connect())
+    with pytest.raises(ValueError, match="connect failed"):
+        await asyncio.wait_for(caller, 1)
+    assert not caller.cancelled() and caller.cancelling() == 0
+    assert client._jws_http_owner.task.done()
+    assert client._jws_needs_reconnect

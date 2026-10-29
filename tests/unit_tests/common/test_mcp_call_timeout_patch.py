@@ -29,6 +29,10 @@ def _restore_patch_bindings(monkeypatch):
     from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
     from jiuwenswarm.common import mcp_call_timeout_patch as patch
 
+    # 复用全量测试前序安装的补丁，不能仅清 guard 而保留已包装的方法。
+    if patch._PATCHED:
+        return
+
     for cls in (SseClient, StreamableHttpClient, ToolMgr):
         for name in ("connect", "_do_connect", "disconnect", "call_tool", "list_tools", "_create_client"):
             if name in cls.__dict__:

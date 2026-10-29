@@ -22,7 +22,7 @@ def _restore_after_mcp_timeout_patch() -> Iterator[None]:
     """还原 apply_mcp_call_timeout_patch 可能改动的全局绑定（anyio / 原始 invoke）。
 
     假 transport 模块下主要还原真 SDK 的 ``ability_manager.anyio``；
-    若 AM 桥接包装了 Tool 等，用 ``_jws_orig_invoke`` 还原。
+    Tool 等类的 invoke 与子类钩子恢复为进入测试时的绑定，保留原有补丁。
     """
     am_mod = None
     orig_am_anyio = None
@@ -64,20 +64,27 @@ def _restore_after_mcp_timeout_patch() -> Iterator[None]:
             pass
         return classes
 
+    # 可能已有 adapter 安装的 invoke 包装；退出时恢复进入测试时的精确绑定，
+    # 而不是无条件退回原始方法，避免让其它测试失去已安装的 AM 超时桥。
+    invoke_bindings = {
+        cls: {name: cls.__dict__[name] for name in (
+            "invoke", "_jws_orig_invoke", "__init_subclass__",
+            "_jws_am_timeout_init_subclass_hooked",
+        ) if name in cls.__dict__}
+        for cls in _tool_classes_for_invoke_restore()
+    }
     try:
         yield
     finally:
         if am_mod is not None and orig_am_anyio is not None:
             am_mod.anyio = orig_am_anyio
-        for cls in _tool_classes_for_invoke_restore():
-            # 只还原本类 stash，勿用 getattr 沿 MRO 误拿父类 orig
-            orig = cls.__dict__.get("_jws_orig_invoke")
-            if orig is not None:
-                setattr(cls, "invoke", orig)
-                try:
-                    delattr(cls, "_jws_orig_invoke")
-                except Exception:
-                    pass
+        for cls, bindings in invoke_bindings.items():
+            for name in ("invoke", "_jws_orig_invoke", "__init_subclass__",
+                         "_jws_am_timeout_init_subclass_hooked"):
+                if name in bindings:
+                    setattr(cls, name, bindings[name])
+                elif name in cls.__dict__:
+                    delattr(cls, name)
         # 单测会反复清 _PATCHED；收尾再清一次，避免泄漏到其它文件
         timeout_patch._PATCHED = False
         timeout_patch._wrapped_methods.clear()
@@ -252,6 +259,19 @@ def _install_fake_streamable_client(
 @pytest.fixture(autouse=True)
 def _autouse_restore_mcp_timeout_patch(monkeypatch):
     """本文件凡 apply / 改 ability_manager.anyio 的用例结束后还原全局副作用。"""
+    from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import StreamableHttpClient
+    from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
+
+    # 本文件有真实 SSE 和假 transport 两种装配。绑定与 guard 必须成对还原，
+    # 否则后续生命周期测试会在已有 wrapper 上再包一次，甚至叠加 HTTP owner。
+    for cls in (SseClient, StreamableHttpClient, ToolMgr):
+        for name in ("connect", "_do_connect", "disconnect", "call_tool", "list_tools", "_create_client"):
+            if name in cls.__dict__:
+                monkeypatch.setattr(cls, name, cls.__dict__[name])
+    monkeypatch.setattr(timeout_patch, "_PATCHED", timeout_patch._PATCHED)
+    for name in ("_wrapped_methods", "_wrapped_connects", "_wrapped_factories"):
+        monkeypatch.setattr(timeout_patch, name, set(getattr(timeout_patch, name)))
     monkeypatch.setattr(timeout_patch, "_patch_sdk_read_timeouts", lambda: None)
     with _restore_after_mcp_timeout_patch():
         yield

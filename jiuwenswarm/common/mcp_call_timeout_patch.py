@@ -307,9 +307,25 @@ class _StreamableHttpOwner:
             raise
         except Exception:
             if name in ("connect", "disconnect"):
+                deadline = asyncio.get_running_loop().time() + _MCP_CLEANUP_TIMEOUT_S
                 try:
-                    await task
+                    # 操作已失败，owner 正在 finally 清理；等待者取消不能再打断它。
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    current = asyncio.current_task()
+                    caller_cancelled = current is not None and current.cancelling() > 0
+                    try:
+                        await _finish_mcp_task_after_cancel(task, deadline=deadline)
+                    except asyncio.CancelledError:
+                        force_invalidate_mcp_client(self.client)
+                        logger.warning("[mcp-timeout] HTTP owner cancelled during cleanup")
+                    except Exception:
+                        force_invalidate_mcp_client(self.client)
+                        logger.warning("[mcp-timeout] HTTP owner cleanup failed", exc_info=True)
+                    if caller_cancelled:
+                        raise
                 except Exception:
+                    force_invalidate_mcp_client(self.client)
                     logger.warning("[mcp-timeout] HTTP owner cleanup failed", exc_info=True)
             raise
 
