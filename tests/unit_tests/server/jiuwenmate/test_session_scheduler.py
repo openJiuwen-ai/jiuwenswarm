@@ -495,8 +495,11 @@ async def test_direct_message_gets_search_port_without_group_trigger_preflight(h
     await host.scheduler.drain()
 
     port = host.core.contexts["请搜索产品群"].ports.group_chat
-    assert isinstance(port, HostGroupChatPort)
-    assert port._search is not None and port._cursors is not None
+    from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
+
+    assert isinstance(port, GuardedGroupChatPort)
+    assert isinstance(port._delegate, HostGroupChatPort)
+    assert port._delegate._search is not None and port._delegate._cursors is not None
     assert trigger_calls == []
 
 
@@ -554,8 +557,11 @@ async def test_group_message_keeps_current_trigger_preflight_and_search_port(hos
     await host.scheduler.drain()
 
     port = host.core.contexts["群内提问"].ports.group_chat
-    assert isinstance(port, HostGroupChatPort)
-    assert port._search is not None and port._cursors is not None
+    from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
+
+    assert isinstance(port, GuardedGroupChatPort)
+    assert isinstance(port._delegate, HostGroupChatPort)
+    assert port._delegate._search is not None and port._delegate._cursors is not None
     assert trigger_calls == ["group-trigger"]
     assert host.status(state) == ("ended", "completed")
 

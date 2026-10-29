@@ -26,6 +26,8 @@ import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-emp
 import { ActionMenu } from '../components/ActionMenu';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { ConversationComposer } from '../components/ConversationComposer';
+import { GroupSharingInbox } from '../components/GroupSharingInbox';
+import { SHARING_CONVERSATION_ID } from '../groupSharingApi';
 import {
   chatPhase,
   errorMessage,
@@ -210,7 +212,9 @@ export function ColleagueWorkspacePage({
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
   const chatAgentId = state.recordTab === 'schedules' && activePlan ? colleagueId : agentId;
-  const privateChat = usePrivateChat(chat, chatAgentId, chatConversationId, connectionEpoch);
+  const webWorkspace = agentId === colleagueId && (!workspace || workspace.channel === 'web');
+  const sharingConversation = webWorkspace && chatConversationId === SHARING_CONVERSATION_ID;
+  const privateChat = usePrivateChat(chat, sharingConversation ? '' : chatAgentId, chatConversationId, connectionEpoch);
   const messageListRef = useRef<HTMLOListElement | null>(null);
   const boardRef = useRef(board);
   const agentIdRef = useRef(agentId);
@@ -486,7 +490,7 @@ export function ColleagueWorkspacePage({
 
   const sendDraft = async () => {
     const text = draft.trim();
-    if (!text || privateChat.sending || !activeConversationId) return;
+    if (!text || privateChat.sending || !activeConversationId || sharingConversation) return;
     const conversation = await privateChat.send(text);
     if (!conversation) return;
     setDraft('');
@@ -509,6 +513,21 @@ export function ColleagueWorkspacePage({
   };
 
   const running = privateChat.requests.find((item) => chatPhase(item) === 'running') ?? null;
+
+  const sharingInbox = webWorkspace && chat.sharing ? (
+    <GroupSharingInbox
+      key={colleagueId}
+      api={chat.sharing}
+      configId={colleague.configId}
+      colleague={colleague}
+      conversationId={chatConversationId}
+      connectionEpoch={connectionEpoch}
+      onOpen={() => {
+        openConversation(colleagueId, SHARING_CONVERSATION_ID);
+        setState((current) => selectRecordTab(current, 'conversations'));
+      }}
+    />
+  ) : null;
 
   const composer = (
     <>
@@ -673,13 +692,19 @@ export function ColleagueWorkspacePage({
     </div>
   );
 
-  const connectionLabel = (connection: JiuwenMateConnection) =>
-    connection.channel === 'web'
-      ? t('jiuwenmate.workspace.webConnection')
-      : `${platformLabel(connection.channel)} · ${connection.connectionKey}`;
+  const workspaceConnections = connections.filter((connection, index, all) =>
+    all.findIndex((item) => item.agentId === connection.agentId) === index,
+  );
+  const connectionLabel = (connection: JiuwenMateConnection) => [...new Set(
+    connections
+      .filter((item) => item.agentId === connection.agentId)
+      .map((item) => item.channel === 'web'
+        ? t('jiuwenmate.workspace.webConnection')
+        : `${platformLabel(item.channel)} · ${item.connectionKey}`),
+  )].join(' + ');
 
   const renderConnectionSelect = () =>
-    connections.length > 1 ? (
+    workspaceConnections.length > 1 ? (
       <label className="jiuwenmate-workspace-connection" data-testid="jiuwenmate-workspace-connection">
         <span>{t('jiuwenmate.workspace.connection')}</span>
         <select
@@ -692,7 +717,7 @@ export function ColleagueWorkspacePage({
           }}
           data-testid="jiuwenmate-workspace-connection-select"
         >
-          {connections.map((connection) => (
+          {workspaceConnections.map((connection) => (
             <option key={connection.agentId} value={connection.agentId}>
               {connectionLabel(connection)}
             </option>
@@ -766,7 +791,7 @@ export function ColleagueWorkspacePage({
                     }
                   }}
                 />
-                <small>{record.lastMessage || record.title}</small>
+                <small>{record.id === SHARING_CONVERSATION_ID ? t('jiuwenmate.sharing.title') : record.lastMessage || record.title}</small>
               </span>
               <time>{new Date(record.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time>
             </div>
@@ -775,7 +800,7 @@ export function ColleagueWorkspacePage({
               <ColleagueAvatar colleague={ownerOf(record.agentId) ?? colleague} size="medium" />
               <span className="jiuwenmate-records__conversation-copy">
                 <strong>{ownerOf(record.agentId)?.name ?? record.agentId}</strong>
-                <small>{record.lastMessage || record.title}</small>
+                <small>{record.id === SHARING_CONVERSATION_ID ? t('jiuwenmate.sharing.title') : record.lastMessage || record.title}</small>
               </span>
               <time>{new Date(record.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time>
             </button>
@@ -898,6 +923,7 @@ export function ColleagueWorkspacePage({
           {renderConnectionSelect()}
           {renderChatPanelButtons()}
         </header>
+        {sharingInbox}
         <div className="jiuwenmate-chat-welcome__center">
           <ColleagueAvatar colleague={colleague} size="large" />
           <h2>{colleague.name}</h2>
@@ -935,26 +961,28 @@ export function ColleagueWorkspacePage({
     <section className="jiuwenmate-session-view" data-testid="jiuwenmate-session-view">
       <header className="jiuwenmate-main-header">
         <strong>
-          {colleague.name}
+          {sharingConversation ? t('jiuwenmate.sharing.title') : colleague.name}
         </strong>
         {renderConnectionSelect()}
         {renderChatPanelButtons()}
       </header>
+      {!sharingConversation ? sharingInbox : null}
       <ol
         ref={messageListRef}
         className="jiuwenmate-session-view__body jiuwenmate-chat-messages"
         data-testid="jiuwenmate-chat-messages"
-        aria-busy={privateChat.loading}
+        aria-busy={!sharingConversation && privateChat.loading}
       >
-        {privateChat.loading ? (
+        {sharingConversation ? <li data-testid="jiuwenmate-sharing-conversation">{sharingInbox}</li> : null}
+        {!sharingConversation && privateChat.loading ? (
           <li className="jiuwenmate-chat-history-loading">{t('jiuwenmate.workspace.loadingHistory')}</li>
         ) : null}
-        {privateChat.requests.map(renderRequest)}
+        {!sharingConversation ? privateChat.requests.map(renderRequest) : null}
       </ol>
-      <footer>
+      {!sharingConversation ? <footer>
         {composer}
         <small>{t('jiuwenmate.workspace.aiDisclaimer')}</small>
-      </footer>
+      </footer> : null}
     </section>
   );
 
@@ -1087,7 +1115,7 @@ export function ColleagueWorkspacePage({
         </section>
       );
     }
-    return privateChat.loading || privateChat.requests.length > 0 ? renderSession() : renderWelcome();
+    return sharingConversation || privateChat.loading || privateChat.requests.length > 0 ? renderSession() : renderWelcome();
   };
 
   return (

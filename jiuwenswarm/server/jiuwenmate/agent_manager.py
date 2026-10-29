@@ -59,6 +59,8 @@ from jiuwenswarm.server.jiuwenmate.permission_approval_repository import (
     PermissionApprovalRepository,
 )
 from jiuwenswarm.server.jiuwenmate.permission_replies import IMPermissionReplies, approval_instructions
+from jiuwenswarm.server.jiuwenmate.group_share_repository import GroupShareRepository
+from jiuwenswarm.server.jiuwenmate.group_sharing_service import APPROVAL_CONVERSATION, GroupSharingService
 from jiuwenswarm.server.jiuwenmate.ports.budget import DEFAULT_RESERVATION_TOKENS, HostBudgetPort
 from jiuwenswarm.server.jiuwenmate.ports.commit import CommitQueue, HostCommitPort
 from jiuwenswarm.server.jiuwenmate.ports.window_backend import WindowBackendStore
@@ -199,12 +201,14 @@ class AgentManager:
         cli: FeishuCliRuntime | None = None,
         agent_mail_runtime: AgentMailRuntimeService | None = None,
         permission_approvals: PermissionApprovalRepository | None = None,
+        approval_channels: frozenset[str] | None = None,
     ) -> None:
         if purge_interval <= timedelta(0) or schedule_interval <= timedelta(0):
             raise ValueError("purge_interval and schedule_interval must be positive")
         if archive_retention < timedelta(0):
             raise ValueError("archive_retention must not be negative")
         self._service = service
+        self._approval_channels = approval_channels
         self.cli_runtime = cli or getattr(service, "cli_runtime", None) or FeishuCliRuntime(sessions.db_path.parent)
         self.agent_mail_runtime = agent_mail_runtime or AgentMailRuntimeService(
             store=AgentMailRuntimeStore(sessions.db_path), runtime=load_agent_mail_runtime_provider()
@@ -227,8 +231,15 @@ class AgentManager:
         self._permission_resume_tasks: dict[str, asyncio.Task] = {}
         self.group_chats = GroupChatRepository(sessions.db_path)
         self.group_archive = ConversationArchive(sessions.db_path.parent / "group_messages", self.group_chats)
+        self.sharing_repository = GroupShareRepository(sessions.db_path)
+        self.group_sharing = GroupSharingService(
+            service=service, sessions=sessions, groups=self.group_chats, archive=self.group_archive,
+            repository=self.sharing_repository, clock=clock,
+            verify_membership=self._verify_group_membership,
+        )
         if self._delivery_service is not None:
             self._delivery_service.set_mention_roster(self._delivery_mention_roster)
+            self._delivery_service.set_sharing_guard(self.group_sharing.can_deliver)
         self.verify_group_membership = unavailable_membership
         self.refresh_group_messages = None
         self._files = files or WorkspaceOutputFiles(service.workspaces)
@@ -259,6 +270,7 @@ class AgentManager:
             cli=self.cli_runtime,
             agent_mail_runtime=self.agent_mail_runtime,
             permission_approvals=self._permission_approvals,
+            group_sharing=self.group_sharing,
         )
         self._scheduler = SessionScheduler(
             sessions,
@@ -347,10 +359,12 @@ class AgentManager:
         data_dir: Path | None = None,
         *,
         on_event: Callable[[core.AgentEvent], None] | None = None,
+        approval_channels: frozenset[str] | None = None,
     ) -> AgentManager:
         """Runtime over the same SQLite file as ``PersistentAgentService.create_default``."""
         db = (Path(data_dir) if data_dir is not None else default_data_dir()) / "agents.sqlite3"
-        return cls(service, ExecutionRepository(db), WindowBackendStore(db), BudgetRepository(db), on_event=on_event)
+        return cls(service, ExecutionRepository(db), WindowBackendStore(db), BudgetRepository(db), on_event=on_event,
+                   approval_channels=approval_channels)
 
     @property
     def scheduler(self) -> SessionScheduler:
@@ -556,6 +570,10 @@ class AgentManager:
         tool_call_id: str | None = None,
     ) -> RequestView:
         """Accept a confirmation only from the original initiator and route, then resume its Request."""
+        native = await asyncio.to_thread(self._permission_approvals.get, approval_id)
+        if (native is not None and any(call.get("approval_ref") for call in native.intercepted)
+                or await asyncio.to_thread(self.sharing_repository.for_native, approval_id) is not None):
+            raise PersistentAgentError("Cross-group sharing requires the owner's dedicated approval.", code="FORBIDDEN")
         approval = await asyncio.to_thread(
             self._permission_approvals.decide,
             approval_id,
@@ -569,6 +587,80 @@ class AgentManager:
         )
         self._schedule_permission_resume(approval)
         return await self.request_view(approval.namespace_id, approval.request_id)
+
+    def _require_sharing_owner(self, namespace_id: str, config_id: str, access: AccessSnapshot) -> None:
+        if namespace_id != "local" or access.principal_ref != "local":
+            raise PersistentAgentError("sharing approval belongs to the local owner", code="FORBIDDEN")
+        self._service.get_colleague(namespace_id, config_id)
+        resolver = getattr(self._service, "connection_of", None)
+        if resolver is not None and resolver(namespace_id, config_id) is not None:
+            raise PersistentAgentError("owner approvals require the colleague configuration", code="FORBIDDEN")
+
+    async def sharing_list(self, namespace_id: str, config_id: str, *, access: AccessSnapshot) -> dict:
+        await asyncio.to_thread(self._require_sharing_owner, namespace_id, config_id, access)
+        await asyncio.to_thread(self.sharing_repository.expire_pending, now=self._clock())
+        data = await asyncio.to_thread(
+            self.sharing_repository.list_for_owner, namespace_id, config_id, owner_principal=access.principal_ref,
+        )
+        await self.group_sharing.enrich_owner_view(data)
+        return {**data, "conversation_id": APPROVAL_CONVERSATION}
+
+    async def decide_sharing(
+        self, namespace_id: str, config_id: str, approval_id: str, *, decision: str, access: AccessSnapshot,
+    ) -> dict:
+        await asyncio.to_thread(self._require_sharing_owner, namespace_id, config_id, access)
+        row = await asyncio.to_thread(self.sharing_repository.get, approval_id)
+        if row is None or row["scope"]["config_id"] != config_id or row["scope"]["namespace_id"] != namespace_id:
+            raise PersistentAgentError("sharing approval not found", code="NOT_FOUND")
+        if not row.get("native_approval_id"):
+            raise PersistentAgentError("sharing approval is not ready yet", code="CONTINUATION_NOT_READY")
+        await asyncio.to_thread(
+            self.sharing_repository.decide, approval_id, namespace_id=namespace_id, config_id=config_id,
+            owner_principal=access.principal_ref, decision=decision, now=self._clock(),
+        )
+        await self._resume_sharing_decisions(row["native_approval_id"])
+        return await self.sharing_list(namespace_id, config_id, access=access)
+
+    async def revoke_sharing(self, namespace_id: str, config_id: str, grant_id: str, *, access: AccessSnapshot) -> dict:
+        await asyncio.to_thread(self._require_sharing_owner, namespace_id, config_id, access)
+        await asyncio.to_thread(
+            self.sharing_repository.revoke, grant_id, namespace_id=namespace_id, config_id=config_id,
+            owner_principal=access.principal_ref, now=self._clock(),
+        )
+        return await self.sharing_list(namespace_id, config_id, access=access)
+
+    async def _resume_sharing_decisions(self, native_id: str) -> None:
+        native = await asyncio.to_thread(self._permission_approvals.get, native_id)
+        if native is None or native.status != "pending":
+            return
+        sharing_rows = await asyncio.to_thread(self.sharing_repository.for_native_all, native_id)
+        if not sharing_rows or any(row["status"] == "pending" for row in sharing_rows):
+            return
+        decisions = {}
+        for call in native.intercepted:
+            reference = call.get("approval_ref")
+            if reference is None:
+                continue
+            row = await asyncio.to_thread(self.sharing_repository.get, reference)
+            if row is None or row.get("native_approval_id") != native_id:
+                return
+            batch_digest = row["scope"].get("search_digest", row["query_digest"])
+            batch_rows = [
+                candidate for candidate in sharing_rows
+                if candidate["request_id"] == row["request_id"]
+                and candidate["scope"].get("search_digest", candidate["query_digest"]) == batch_digest
+            ]
+            if not batch_rows or any(candidate["status"] == "pending" for candidate in batch_rows):
+                return
+            decisions[call["tool_call_id"]] = any(
+                candidate["status"] in {"approved_once", "approved_permanent"} for candidate in batch_rows
+            )
+        if decisions:
+            decided = await asyncio.to_thread(
+                self._permission_approvals.decide_sharing, native_id, decisions=decisions, now=self._clock(),
+            )
+            if decided.status in {"approved", "rejected", "expired"}:
+                self._schedule_permission_resume(decided)
 
     async def handle_im_permission_reply(
         self,
@@ -584,6 +676,21 @@ class AgentManager:
         is_direct_message: bool = True,
     ) -> bool:
         """Consume trusted IM control messages before admitting ordinary business Requests."""
+        pending = await asyncio.to_thread(
+            self._permission_approvals.for_route, namespace_id, agent_id,
+            principal_ref=access.principal_ref, channel=channel, target_id=target_id, app_id=app_id,
+        )
+        for approval in pending:
+            if await asyncio.to_thread(self.sharing_repository.for_native, approval.approval_id) is None:
+                continue
+            await self._send_permission_notice({
+                "channel": channel, "app_id": app_id, "chat_id": target_id,
+                "source_message_id": source_message_id, "is_direct_message": is_direct_message,
+                "idempotency_key": f"sharing-wait:{source_message_id}",
+                "text": "跨群分享需要 Agent 所有者在 JiuwenSwarm 私聊中批准，当前会话的回复不能代为授权。",
+            })
+            words = text.strip().split(maxsplit=1)
+            return bool(words and words[0].lower() in {"批准", "拒绝", "同意", "approve", "reject"})
         handler = IMPermissionReplies(
             self._permission_approvals, decide=self.decide_permission_approval,
             send=self._send_permission_notice,
@@ -664,7 +771,7 @@ class AgentManager:
                 self._delivery_service.observe(event)
             self._schedule_thinking_notice(event)
 
-    def _observe_permission_approval(self, event: core.AgentEvent) -> None:
+    def _observe_permission_approval(self, event: core.AgentEvent, *, recovered: bool = False) -> None:
         if event.event_type != core.EventType.EXECUTION_PAUSED or event.payload.reason != "awaiting_confirmation":
             return
         try:
@@ -688,7 +795,7 @@ class AgentManager:
                     decided_at=self._clock(),
                 ),
             )
-            approval = self._permission_approvals.create(state, event, now=self._clock())
+            approval = self._permission_approvals.create(state, event, now=self._clock(), recovered=recovered)
             if approval.route is None:
                 approval = self._permission_approvals.reject_unrouted(approval.approval_id)
                 self._schedule_permission_resume(approval)
@@ -702,6 +809,7 @@ class AgentManager:
             )
 
     def _schedule_permission_notice(self, approval: PermissionApproval) -> None:
+        business_sharing = self._link_sharing_approval(approval)
         if approval.route is None or approval.route.channel == "web" or self._thinking_notice_sender is None:
             return
         route = approval.route
@@ -721,13 +829,33 @@ class AgentManager:
                     approval.namespace_id, approval.request_id,
                 ).record.request_input.kind == "direct_message"} if route.channel == "dingtalk" else {}),
                 "text": (
-                    f"该员工需要确认一次工具操作（15 分钟内有效）：\n{calls}\n"
-                    + approval_instructions(approval)
+                    "跨群分享正在等待 Agent 所有者在 JiuwenSwarm 私聊中批准。"
+                    if business_sharing else
+                    f"该员工需要确认一次工具操作（15 分钟内有效）：\n{calls}\n" + approval_instructions(approval)
                 ),
             }),
             name="jiuwenmate-permission-notice",
         )
         task.add_done_callback(_log_thinking_notice)
+
+    def _link_sharing_approval(self, approval: PermissionApproval) -> bool:
+        business = False
+        for call in approval.intercepted:
+            reference = call.get("approval_ref")
+            if reference is None:
+                continue
+            business = True
+            row = self.sharing_repository.get(reference)
+            if row is None or (row["scope"]["namespace_id"], row["scope"]["agent_id"],
+                               row["scope"]["request_id"]) != (
+                approval.namespace_id, approval.agent_id, approval.request_id,
+            ):
+                continue
+            needs_link = row["native_approval_id"] is None or call["tool_call_id"] not in row["tool_call_ids"]
+            self.sharing_repository.bind_call(reference, approval.approval_id, call["tool_call_id"])
+            if needs_link:
+                self.group_sharing.notify_owner(row["scope"])
+        return business
 
     async def _send_permission_notice(self, message: dict[str, object]) -> None:
         sender = self._thinking_notice_sender
@@ -735,6 +863,12 @@ class AgentManager:
             await sender(message)
 
     def _schedule_permission_resume(self, approval: PermissionApproval) -> None:
+        # Web records the owner's decision, while the original IM runtime owns
+        # platform checks, execution and delivery. The durable decision is picked
+        # up by that runtime's recovery loop, including after restart.
+        channel = approval.route.channel if approval.route is not None else "web"
+        if self._approval_channels is not None and channel not in self._approval_channels:
+            return
         if approval.approval_id in self._permission_resume_tasks:
             return
         task = asyncio.create_task(self._resume_permission_approval(approval), name="jiuwenmate-permission-resume")
@@ -752,6 +886,18 @@ class AgentManager:
                 await self._scheduler.wake(approval.namespace_id, approval.session_id)
                 return
             if state.status == "ended":
+                if state.outcome != "paused":
+                    # The request may have failed after its decision was saved
+                    # but before consume, including across a process restart.
+                    record = state.record
+                    await core.discard_persistent_confirmation(
+                        self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
+                        agent_id=record.agent_id, session_id=record.session_id,
+                        request_id=record.request_id, spec_fingerprint=record.config_fingerprint,
+                    )
+                    await asyncio.to_thread(self._permission_approvals.consume, approval.approval_id)
+                    await self._scheduler.wake(approval.namespace_id, approval.session_id)
+                    return
                 try:
                     self._scheduler.resume(state)
                 except PersistentAgentError as exc:
@@ -765,18 +911,32 @@ class AgentManager:
 
     async def _permission_approval_loop(self) -> None:
         while True:
-            expired = await asyncio.to_thread(self._permission_approvals.expire_pending, now=self._clock())
-            for approval in expired:
-                self._schedule_permission_resume(approval)
+            try:
+                await self._recover_permission_approvals(notify=False)
+            except Exception as exc:
+                logger.warning("[JiuwenMate] permission approval repair will retry: error_type=%s", type(exc).__name__)
             await asyncio.sleep(2)
 
-    async def _recover_permission_approvals(self) -> None:
+    async def _recover_permission_approvals(self, *, notify: bool = True) -> None:
+        await asyncio.to_thread(self.sharing_repository.expire_pending, now=self._clock())
+        for event in await asyncio.to_thread(self._permission_approvals.unregistered_pauses, "local"):
+            self._observe_permission_approval(event, recovered=True)
         for approval in await asyncio.to_thread(self._permission_approvals.pending, "local"):
-            if approval.route is None:
-                approval = await asyncio.to_thread(self._permission_approvals.reject_unrouted, approval.approval_id)
-                self._schedule_permission_resume(approval)
-            else:
-                self._schedule_permission_notice(approval)
+            try:
+                if approval.route is None:
+                    approval = await asyncio.to_thread(self._permission_approvals.reject_unrouted, approval.approval_id)
+                    self._schedule_permission_resume(approval)
+                    continue
+                if notify:
+                    self._schedule_permission_notice(approval)
+                elif any(call.get("approval_ref") for call in approval.intercepted):
+                    self._link_sharing_approval(approval)
+                if any(call.get("approval_ref") for call in approval.intercepted):
+                    await self._resume_sharing_decisions(approval.approval_id)
+            except Exception as exc:
+                logger.warning("[JiuwenMate] permission approval link will retry: request=%s error_type=%s",
+                               approval.request_id, type(exc).__name__)
+        await asyncio.to_thread(self._permission_approvals.expire_pending, now=self._clock())
         for approval in await asyncio.to_thread(self._permission_approvals.ready, "local"):
             self._schedule_permission_resume(approval)
 

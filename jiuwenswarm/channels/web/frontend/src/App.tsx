@@ -487,8 +487,6 @@ function AppContent({
   const [diagnosisUiRequested, setDiagnosisUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
-  // 再次点击已激活的“实验”图标时递增，作为展开 RSI 实验栏的信号（对齐 chat 图标展开会话栏的行为）
-  const [rsiRailExpandNonce, setRsiRailExpandNonce] = useState(0);
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
   const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
   const [isJiuwenMate, setIsJiuwenMate] = useState(false);
@@ -4452,9 +4450,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           onSelectExternalCliPath={selectExternalCliPath}
           onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
           externalCliInstallStatuses={externalCliInstallStatuses}
-          externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-            (status) => status?.status === 'running',
-          )}
           onGetExternalCliInstallStatus={getExternalCliDependencyInstallStatus}
           onExternalCliInstallStatusChange={updateExternalCliInstallStatus}
           externalCliPendingChoices={externalCliPendingChoices}

@@ -868,6 +868,7 @@ export function JiuwenMateApp({
             onRunSchedule={runSchedule}
             onLoadScheduleHistory={loadScheduleHistory}
             connectionEpoch={connectionEpoch}
+            sharingApi={api.sharing}
             onLoadAgentMailStatus={api.agentMailStatus}
             onBeginAgentMailAuth={api.beginAgentMailAuth}
             onPollAgentMailAuth={api.pollAgentMailAuth}
