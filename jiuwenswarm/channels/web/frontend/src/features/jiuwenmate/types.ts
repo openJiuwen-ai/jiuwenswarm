@@ -154,6 +154,8 @@ export interface JiuwenMateDailyActivity {
 export interface JiuwenMateActivityDay {
   date: string;
   tasks: number;
+  finishedTasks?: number;
+  failures?: number;
   minutes: number;
   calls: number;
   tokens: number;
@@ -218,6 +220,7 @@ export interface JiuwenMateActivityMember {
   days: JiuwenMateActivityDay[];
   kinds: JiuwenMateActivityKindDay[];
   history: JiuwenMateActivityHistoryItem[];
+  runningTaskStartedAts?: string[];
   hours: JiuwenMateActivityHour[];
   channels: JiuwenMateActivityChannel[];
   groups: JiuwenMateActivityGroup[];

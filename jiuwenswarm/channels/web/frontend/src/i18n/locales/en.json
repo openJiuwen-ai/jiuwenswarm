@@ -613,10 +613,19 @@
       "runStatus": "Status",
       "description": "Description",
       "planned": "Planned",
+      "nextExecution": "Next run",
       "runCount": "Runs",
       "actions": "Actions",
       "taskList": "Tasks",
       "search": "Search",
+      "noMatchingSchedules": "No scheduled tasks match these filters",
+      "allStatuses": "All statuses",
+      "timeRange": "Planned time",
+      "timeRanges": {
+        "all": "All time",
+        "7d": "Last 7 days",
+        "30d": "Last 30 days"
+      },
       "boardHint": "Configure automated tasks. Jiuwen runs them on schedule.",
       "mode": { "period": "Recurring", "interval": "Interval", "once": "Once" },
       "status": { "running": "Running", "paused": "Paused", "failed": "Failed", "completed": "Completed", "queued": "Queued" },
@@ -746,7 +755,8 @@
         "total": "Total tasks / New today",
         "running": "Running / Near timeout",
         "duration": "Average handling time",
-        "failure": "Failure rate"
+        "failure": "Failure rate",
+        "nearTimeoutHint": "Running for at least twice the average handling time in this period"
       },
       "taskList": "Task list",
       "taskStatus": {

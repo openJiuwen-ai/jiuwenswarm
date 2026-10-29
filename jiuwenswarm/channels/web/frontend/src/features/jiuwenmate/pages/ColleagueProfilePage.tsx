@@ -67,6 +67,7 @@ import type {
   JiuwenMateActivityTaskKind,
   JiuwenMateColleague,
   JiuwenMateConnection,
+  JiuwenMateImPlatform,
 } from '../types';
 
 export type JiuwenMateProfileSection =
@@ -155,7 +156,7 @@ interface ColleagueProfilePageProps {
   activity?: JiuwenMateActivityMember | null;
   onOpenOffice: () => void;
   onChat: () => void;
-  onConfigureIm: (connection?: JiuwenMateConnection) => void;
+  onConfigureIm: (connection?: JiuwenMateConnection, platform?: JiuwenMateImPlatform) => void;
   onRemoveConnection?: (connection: JiuwenMateConnection) => void;
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void | Promise<void>;
@@ -518,7 +519,7 @@ export function ColleagueProfilePage({
                 colleague={colleague}
                 activity={activity}
                 today={today}
-                onConfigureIm={() => onConfigureIm()}
+                onConfigureIm={(platform) => onConfigureIm(undefined, platform)}
                 onConfigureWelink={onConfigureWelink}
                 onRevokeChannel={setRevokePlatform}
                 revoking={revoking}
@@ -689,7 +690,7 @@ function ProfileOverview({
   colleague: JiuwenMateColleague;
   activity: JiuwenMateActivityMember | null;
   today: Date;
-  onConfigureIm: () => void;
+  onConfigureIm: (platform: JiuwenMateImPlatform) => void;
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
   revoking?: boolean;
@@ -749,13 +750,21 @@ function ProfileOverview({
             <strong>{t('jiuwenmate.profile.quickIm')}</strong>
           </header>
           {!primaryChannelConfigured ? (
-            <div className="jiuwenmate-profile__im-row">
-              <img src={feishuIcon} alt="" aria-hidden />
-              <span>
-                <strong>{t('jiuwenmate.im.channels')}</strong>
-                <small>{t('jiuwenmate.im.isolationHint')}</small>
-              </span>
-              <ImBindingAction platform="feishu" configured={false} onConfigure={onConfigureIm} />
+            <div className="jiuwenmate-profile__quick-im-platforms">
+              {(['feishu', 'dingtalk'] as const).map((platform) => (
+                <div key={platform} className="jiuwenmate-profile__im-row">
+                  <img src={platform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
+                  <span>
+                    <strong>{t(`jiuwenmate.im.${platform}`)}</strong>
+                    <small>{t('jiuwenmate.im.isolationHint')}</small>
+                  </span>
+                  <ImBindingAction
+                    platform={platform}
+                    configured={false}
+                    onConfigure={() => onConfigureIm(platform)}
+                  />
+                </div>
+              ))}
             </div>
           ) : null}
           {!colleague.welinkConfigured ? (
@@ -1086,7 +1095,7 @@ function ProfileSectionDetail({
   onSaveSettings?: (edit: ColleagueSettingsEdit) => void | Promise<void>;
   onGroupReplyModeChange: (mode: 'passive' | 'adaptive') => void;
   onPermissionProfileChange: (profile: 'default' | 'automatic' | 'full_access') => void;
-  onConfigureIm: (connection?: JiuwenMateConnection) => void;
+  onConfigureIm: (connection?: JiuwenMateConnection, platform?: JiuwenMateImPlatform) => void;
   onRemoveConnection?: (connection: JiuwenMateConnection) => void;
   onConfigureWelink: () => void;
   onRevokeChannel?: (platform: 'feishu' | 'welink') => void;
@@ -1201,6 +1210,10 @@ function ProfileSectionDetail({
 
   if (section === 'channels') {
     const imConnections = colleague.connections.filter((item) => item.channel !== 'web');
+    const connectionsByPlatform: Record<JiuwenMateImPlatform, JiuwenMateConnection[]> = {
+      feishu: imConnections.filter((item) => item.channel === 'feishu'),
+      dingtalk: imConnections.filter((item) => item.channel === 'dingtalk'),
+    };
     return (
       <section className="jiuwenmate-profile__block" data-testid="jiuwenmate-profile-detail" data-variant={section}>
         <h2>{title}</h2>
@@ -1232,67 +1245,72 @@ function ProfileSectionDetail({
             ))}
           </div>
         </div>
-        {imConnections.length === 0 ? (
-          <div className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered">
-            <img src={feishuIcon} alt="" aria-hidden />
-            <span>
-              <strong>{t('jiuwenmate.im.channels')}</strong>
-              <small>{t('jiuwenmate.im.isolationHint')}</small>
-            </span>
-            <ImBindingAction platform="feishu" configured={false} onConfigure={() => onConfigureIm()} />
-          </div>
-        ) : (
-          <>
-            <ul className="jiuwenmate-profile__connections" data-testid="jiuwenmate-profile-connections">
-              {imConnections.map((connection) => (
-                <li
-                  key={`${connection.channel}:${connection.connectionKey}`}
-                  className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered"
-                  data-testid="jiuwenmate-profile-connection"
-                  data-variant={connection.connectionKey}
-                >
-                  <img src={connection.channel === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
-                  <span>
-                    <strong>{t(`jiuwenmate.im.${connection.channel}`)}</strong>
-                    <small data-testid="jiuwenmate-profile-connection-app">{connection.connectionKey}</small>
-                  </span>
-                  <div className="jiuwenmate-profile__im-actions">
-                    <em className="jiuwenmate-badge" data-tone="success">{t('jiuwenmate.profile.authorized')}</em>
-                    <button
-                      type="button"
-                      className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                      onClick={() => onConfigureIm(connection)}
-                      data-testid="jiuwenmate-profile-im-modify"
-                    >
-                      {t('common.modify')}
-                    </button>
-                    {onRemoveConnection ? (
-                      <button
-                        type="button"
-                        className="jiuwenmate-link-button"
-                        onClick={() => onRemoveConnection(connection)}
-                        data-testid="jiuwenmate-profile-im-remove"
-                      >
-                        {t('jiuwenmate.profile.removeConnection')}
-                      </button>
-                    ) : null}
-                  </div>
-                </li>
-              ))}
-            </ul>
-            <div className="jiuwenmate-profile__connections-footer">
-              <small data-testid="jiuwenmate-profile-im-isolation-hint">{t('jiuwenmate.im.isolationHint')}</small>
-              <button
-                type="button"
-                className="jiuwenmate-link-button jiuwenmate-link-button--blue"
-                onClick={() => onConfigureIm()}
-                data-testid="jiuwenmate-profile-im-add"
+        <div className="jiuwenmate-profile__im-platform-grid" data-testid="jiuwenmate-profile-im-platforms">
+          {(['feishu', 'dingtalk'] as const).map((platform) => {
+            const platformConnections = connectionsByPlatform[platform];
+            return (
+              <section
+                key={platform}
+                className="jiuwenmate-profile__im-platform"
+                data-testid="jiuwenmate-profile-im-platform"
+                data-variant={platform}
               >
-                {t('jiuwenmate.profile.addConnection')}
-              </button>
-            </div>
-          </>
-        )}
+                <header>
+                  <span className="jiuwenmate-profile__im-platform-title">
+                    <img src={platform === 'dingtalk' ? dingtalkIcon : feishuIcon} alt="" aria-hidden />
+                    <strong>{t(`jiuwenmate.im.${platform}`)}</strong>
+                  </span>
+                  <button
+                    type="button"
+                    className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                    onClick={() => onConfigureIm(undefined, platform)}
+                    data-testid={platformConnections.length ? 'jiuwenmate-profile-im-add' : 'jiuwenmate-profile-im-authorize'}
+                  >
+                    {t(platformConnections.length ? 'jiuwenmate.profile.addConnection' : 'jiuwenmate.profile.authorize')}
+                  </button>
+                </header>
+                {platformConnections.length > 0 ? (
+                  <ul className="jiuwenmate-profile__connections" data-testid="jiuwenmate-profile-connections">
+                    {platformConnections.map((connection) => (
+                      <li
+                        key={connection.agentId}
+                        className="jiuwenmate-profile__im-platform-connection"
+                        data-testid="jiuwenmate-profile-connection"
+                        data-variant={connection.connectionKey}
+                      >
+                        <small data-testid="jiuwenmate-profile-connection-app">{connection.connectionKey}</small>
+                        <div className="jiuwenmate-profile__im-actions">
+                          <em className="jiuwenmate-badge" data-tone="success">{t('jiuwenmate.profile.authorized')}</em>
+                          <button
+                            type="button"
+                            className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                            onClick={() => onConfigureIm(connection)}
+                            data-testid="jiuwenmate-profile-im-modify"
+                          >
+                            {t('common.modify')}
+                          </button>
+                          {onRemoveConnection ? (
+                            <button
+                              type="button"
+                              className="jiuwenmate-link-button"
+                              onClick={() => onRemoveConnection(connection)}
+                              data-testid="jiuwenmate-profile-im-remove"
+                            >
+                              {t('jiuwenmate.profile.removeConnection')}
+                            </button>
+                          ) : null}
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </section>
+            );
+          })}
+        </div>
+        <small className="jiuwenmate-profile__connections-hint" data-testid="jiuwenmate-profile-im-isolation-hint">
+          {t('jiuwenmate.im.isolationHint')}
+        </small>
         <div className="jiuwenmate-profile__im-row jiuwenmate-profile__im-row--bordered">
           <img className="jiuwenmate-welink-logo" src={welinkIcon} alt="" aria-hidden />
           <span>

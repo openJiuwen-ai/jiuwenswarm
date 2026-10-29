@@ -775,7 +775,15 @@ function toActivityDay(value: unknown): JiuwenMateActivityDay | null {
   const row = record(value);
   const date = text(row.date);
   if (!date) return null;
-  return { date, tasks: count(row.tasks), minutes: count(row.minutes), calls: count(row.calls), tokens: count(row.tokens) };
+  return {
+    date,
+    tasks: count(row.tasks),
+    ...(row.finished_tasks !== undefined ? { finishedTasks: count(row.finished_tasks) } : {}),
+    ...(row.failures !== undefined ? { failures: count(row.failures) } : {}),
+    minutes: count(row.minutes),
+    calls: count(row.calls),
+    tokens: count(row.tokens),
+  };
 }
 
 function toActivityHour(value: unknown): JiuwenMateActivityHour | null {
@@ -839,6 +847,9 @@ function toActivityMember(value: unknown): JiuwenMateActivityMember | null {
       const entry = toActivityHistory(item);
       return entry ? [entry] : [];
     }),
+    ...(Array.isArray(row.running_task_started_ats)
+      ? { runningTaskStartedAts: row.running_task_started_ats.map(text).filter(Boolean) }
+      : {}),
     hours: (Array.isArray(row.hours) ? row.hours : []).flatMap((item) => {
       const hour = toActivityHour(item);
       return hour ? [hour] : [];
@@ -870,6 +881,7 @@ export function toSchedule(value: unknown): JiuwenMateSchedule {
   return {
     id: text(plan.plan_id),
     agentId: text(plan.agent_id),
+    createdAt: text(plan.created_at),
     name: text(plan.name),
     prompt: text(plan.prompt),
     cronExpr: text(plan.cron_expr),

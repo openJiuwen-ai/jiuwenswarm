@@ -489,7 +489,20 @@ function AppContent({
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
   const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
-  const [isJiuwenMate, setIsJiuwenMate] = useState(false);
+  const [isJiuwenMate, setIsJiuwenMate] = useState(() => {
+    try {
+      return window.localStorage.getItem('jiuwenswarm:jiuwenmate-mode') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('jiuwenswarm:jiuwenmate-mode', String(isJiuwenMate));
+    } catch {
+      // Keep the mode switch usable when browser storage is unavailable.
+    }
+  }, [isJiuwenMate]);
   const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,

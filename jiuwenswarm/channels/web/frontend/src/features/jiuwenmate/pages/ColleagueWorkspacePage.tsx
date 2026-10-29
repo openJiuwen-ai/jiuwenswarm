@@ -3,7 +3,7 @@ import {
   CalendarDays,
   ClipboardList,
   ChevronDown,
-  CirclePlus,
+  ChevronRight,
   Folder,
   FileText,
   PanelLeftOpen,
@@ -11,6 +11,7 @@ import {
   PinOff,
   PencilLine,
   Plus,
+  SquarePlus,
   Trash2,
   X,
 } from 'lucide-react';
@@ -19,9 +20,6 @@ import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../../../components/MarkdownRenderer';
 import { FilePreview } from '../../../components/ArtifactsPanel/FilePreview';
 import documentIcon from '../../../assets/jiuwenmate/icons/document.svg';
-import featureChannel from '../../../assets/jiuwenmate/illustrations/feature-channel.png';
-import featureChat from '../../../assets/jiuwenmate/illustrations/feature-chat.png';
-import featureSchedule from '../../../assets/jiuwenmate/illustrations/feature-schedule.png';
 import scheduleEmpty from '../../../assets/jiuwenmate/illustrations/schedule-empty.png';
 import { ActionMenu } from '../components/ActionMenu';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
@@ -41,10 +39,9 @@ import {
   type JiuwenMateSchedule,
   type JiuwenMateSharedFile,
 } from '../jiuwenmateApi';
-import { ScheduleBoard } from '../schedules/ScheduleBoard';
 import { ScheduleDialog } from '../schedules/ScheduleDialog';
 import { scheduleSummary } from '../schedules/state';
-import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
+import type { ScheduleDraft } from '../schedules/types';
 import type {
   JiuwenMateChannel,
   JiuwenMateChannelMessage,
@@ -70,7 +67,7 @@ function channelGroups(channels: readonly JiuwenMateChannel[]): { platform: stri
   return ordered.map((platform) => ({ platform, items: buckets.get(platform) ?? [] }));
 }
 import { useConversations } from '../useConversations';
-import { newId, usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
+import { usePrivateChat, type JiuwenMateChatApi } from '../usePrivateChat';
 import {
   channelRecordView,
   closeChannelTrace,
@@ -105,14 +102,11 @@ interface ColleagueWorkspacePageProps {
   /** Changes each time the connection to the server is restored. */
   connectionEpoch: number;
   onSelectColleague: (id: string) => void;
-  onCreateSchedule: (id: string) => void;
+  onCreateSchedule: (draft: ScheduleDraft) => void | Promise<void>;
   schedules?: readonly JiuwenMateSchedule[];
   savingSchedule?: boolean;
-  onSaveSchedule?: (agentId: string, draft: ScheduleDraft) => void | Promise<void>;
   onUpdateSchedule?: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
-  onSetScheduleEnabled?: (planId: string, enabled: boolean) => void | Promise<void>;
   onDeleteSchedule?: (planId: string) => void | Promise<void>;
-  onLoadScheduleHistory?: (planId: string) => Promise<{ plan: JiuwenMateSchedule; runs: ScheduleRun[] }>;
   channelApi?: JiuwenMateChannelApi;
   modelCatalog?: JiuwenMateModelCatalog;
   onRenameColleague: (agentId: string, name: string) => Promise<void>;
@@ -123,12 +117,9 @@ interface ColleagueWorkspacePageProps {
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
 type RightPanel = 'management' | 'artifacts' | null;
 
-const PROMPT_ICONS = [ClipboardList, CalendarDays, FileText];
-const FEATURES = [
-  { key: 'chat', image: featureChat },
-  { key: 'channel', image: featureChannel },
-  { key: 'schedule', image: featureSchedule },
-] as const;
+function welcomeConversationId(agentId: string): string {
+  return `welcome-${encodeURIComponent(agentId)}`;
+}
 
 export interface JiuwenMateChannelApi {
   listChannels(agentId: string): Promise<readonly JiuwenMateChannel[]>;
@@ -153,11 +144,8 @@ export function ColleagueWorkspacePage({
   onCreateSchedule,
   schedules = [],
   savingSchedule = false,
-  onSaveSchedule,
   onUpdateSchedule,
-  onSetScheduleEnabled,
   onDeleteSchedule,
-  onLoadScheduleHistory,
   channelApi,
   modelCatalog = EMPTY_MODEL_CATALOG,
   onRenameColleague,
@@ -181,16 +169,14 @@ export function ColleagueWorkspacePage({
   const workspace = connections.find((item) => item.agentId === workspaceAgentId) ?? connections[0] ?? null;
   const [state, setState] = useState(() => initialState(colleague, intent));
   const channelId = state.managementChannelId ?? state.selectedChannelId;
-  const [board, setBoard] = useState(false);
   const [rightPanel, setRightPanel] = useState<RightPanel>(null);
   const [managementTab, setManagementTab] = useState<Exclude<JiuwenMateRecordTab, 'conversations'>>('channels');
   const [managementSearch, setManagementSearch] = useState('');
   const [selectedArtifact, setSelectedArtifact] = useState<JiuwenMateSharedFile | null>(null);
   const [scheduleId, setScheduleId] = useState<string | null>(null);
   const [scheduleEditor, setScheduleEditor] = useState<JiuwenMateSchedule | undefined>(undefined);
+  const [scheduleDialogOpen, setScheduleDialogOpen] = useState(false);
   const [draft, setDraft] = useState('');
-  // A conversation id not used yet; it becomes a listed conversation when its first message is sent.
-  const [freshId, setFreshId] = useState(newId);
   const [picked, setPicked] = useState<{ agentId: string; conversationId: string } | null>(null);
   const [allRecords, setAllRecords] = useState<Array<JiuwenMateConversation & { agentId: string }>>([]);
   const [allRecordsError, setAllRecordsError] = useState<string | null>(null);
@@ -200,39 +186,66 @@ export function ColleagueWorkspacePage({
   const cancelRename = useRef(false);
   const agentId = workspace?.agentId ?? colleagueId;
   const conversationList = useConversations(chat, agentId, connectionEpoch);
-  const records = mergeWorkspaceConversations(
+  const mergedRecords = mergeWorkspaceConversations(
     allRecords,
     agentId,
     conversationList.conversations,
     conversationList.loaded && !conversationList.error,
   );
+  const records: Array<JiuwenMateConversation & { agentId: string; isWelcome: boolean }> = [
+    ...mergedRecords.map((record) => ({ ...record, isWelcome: false })),
+    ...colleagues
+      .filter((item) => !mergedRecords.some((record) => record.agentId === item.id))
+      .map((item) => ({
+        agentId: item.id,
+        id: welcomeConversationId(item.id),
+        title: t('jiuwenmate.workspace.newSession'),
+        updatedAt: item.joinedAt || '1970-01-01T00:00:00.000Z',
+        lastMessage: '',
+        pinned: false,
+        isWelcome: true,
+      })),
+  ].sort(
+    (left, right) =>
+      Number(Boolean(right.pinned)) - Number(Boolean(left.pinned)) || right.updatedAt.localeCompare(left.updatedAt),
+  );
   const activeConversationId =
-    picked?.agentId === agentId ? picked.conversationId : conversationList.loaded ? (records.find((item) => item.agentId === agentId)?.id ?? freshId) : '';
+    picked?.agentId === agentId
+      ? picked.conversationId
+      : conversationList.loaded
+        ? (records.find((item) => item.agentId === agentId)?.id ?? welcomeConversationId(agentId))
+        : '';
   const colleaguePlans = schedules.filter((plan) => plan.agentId === colleagueId);
   const activePlan = colleaguePlans.find((plan) => plan.id === scheduleId) ?? colleaguePlans[0] ?? null;
+  const openCreateSchedule = () => {
+    setScheduleEditor(undefined);
+    setScheduleDialogOpen(true);
+  };
+  const openEditSchedule = (plan: JiuwenMateSchedule) => {
+    setScheduleEditor(plan);
+    setScheduleDialogOpen(true);
+  };
   const chatConversationId = state.recordTab === 'schedules' && activePlan ? activePlan.conversationId : activeConversationId;
   const chatAgentId = state.recordTab === 'schedules' && activePlan ? colleagueId : agentId;
   const webWorkspace = agentId === colleagueId && (!workspace || workspace.channel === 'web');
   const sharingConversation = webWorkspace && chatConversationId === SHARING_CONVERSATION_ID;
   const privateChat = usePrivateChat(chat, sharingConversation ? '' : chatAgentId, chatConversationId, connectionEpoch);
   const messageListRef = useRef<HTMLOListElement | null>(null);
-  const boardRef = useRef(board);
   const agentIdRef = useRef(agentId);
   const conversationIdRef = useRef(chatConversationId);
   const colleaguesRef = useRef(colleagues);
   const onSelectColleagueRef = useRef(onSelectColleague);
   const reloadChatRef = useRef(privateChat.reload);
   const reloadListRef = useRef(conversationList.reload);
-  const scheduleEditorRef = useRef(scheduleEditor);
+  const scheduleDialogOpenRef = useRef(scheduleDialogOpen);
   const refreshTalkRef = useRef<() => void>(() => undefined);
-  boardRef.current = board;
   agentIdRef.current = agentId;
   conversationIdRef.current = chatConversationId;
   colleaguesRef.current = colleagues;
   onSelectColleagueRef.current = onSelectColleague;
   reloadChatRef.current = privateChat.reload;
   reloadListRef.current = conversationList.reload;
-  scheduleEditorRef.current = scheduleEditor;
+  scheduleDialogOpenRef.current = scheduleDialogOpen;
   const [channels, setChannels] = useState<readonly JiuwenMateChannel[]>([]);
   const [channelMessages, setChannelMessages] = useState<readonly JiuwenMateChannelMessage[]>([]);
   const [traceRows, setTraceRows] = useState<readonly JiuwenMateTraceRow[]>([]);
@@ -303,20 +316,19 @@ export function ColleagueWorkspacePage({
           // Conversations listed for every colleague are Web conversations. An IM workspace the user
           // chose stays chosen, so later messages still go to its agent; the result is only offered.
           const imChosen = !people.some((item) => item.id === agentIdRef.current);
-          if (!scheduleEditorRef.current && (!same || boardRef.current)) {
+          if (!scheduleDialogOpenRef.current && !same) {
             if (imChosen) {
               setWebResult({ agentId: newest.agentId, conversationId: newest.id });
-              if (!boardRef.current) void reloadChatRef.current();
+              void reloadChatRef.current();
             } else {
               if (newest.agentId !== agentIdRef.current) onSelectColleagueRef.current(newest.agentId);
               setWorkspaceAgentId(newest.agentId);
-              setBoard(false);
               setState((current) => selectRecordTab(current, 'conversations'));
               setPicked({ agentId: newest.agentId, conversationId: newest.id });
             }
           }
           if (same) void reloadChatRef.current();
-        } else if (!boardRef.current) {
+        } else {
           void reloadChatRef.current();
         }
       }
@@ -344,9 +356,9 @@ export function ColleagueWorkspacePage({
 
   useEffect(() => {
     const list = messageListRef.current;
-    if (!list || board) return;
+    if (!list) return;
     list.scrollTop = list.scrollHeight;
-  }, [board, chatConversationId, privateChat.requests.length]);
+  }, [chatConversationId, privateChat.requests.length]);
 
   useEffect(() => {
     if (!channelApi || !agentId) return undefined;
@@ -424,17 +436,8 @@ export function ColleagueWorkspacePage({
     if (owner && owner.id !== colleague.id) onSelectColleague(owner.id);
     setWorkspaceAgentId(conversationAgentId);
     setWebResult(null);
-    setBoard(false);
     setState((current) => clearManagementChannel(current));
     setPicked({ agentId: conversationAgentId, conversationId });
-  };
-
-  const createSession = () => {
-    const id = newId();
-    setFreshId(id);
-    openConversation(agentId, id);
-    setDraft('');
-    setState((current) => selectRecordTab(current, 'conversations'));
   };
 
   const renameEmployee = (sessionAgentId: string, name: string) => {
@@ -461,7 +464,6 @@ export function ColleagueWorkspacePage({
       }
     }
     setAllRecords((items) => items.filter((item) => item.agentId !== current.agentId || item.id !== id));
-    setFreshId(newId());
     if (picked?.agentId === current.agentId && picked.conversationId === id) setPicked(null);
   };
 
@@ -713,7 +715,6 @@ export function ColleagueWorkspacePage({
             setWorkspaceAgentId(event.target.value);
             setWebResult(null);
             setPicked(null);
-            setBoard(false);
           }}
           data-testid="jiuwenmate-workspace-connection-select"
         >
@@ -763,8 +764,9 @@ export function ColleagueWorkspacePage({
         <div
           key={`${record.agentId}:${record.id}`}
           className="jiuwenmate-records__item jiuwenmate-records__item--conversation"
-          aria-current={!board && record.agentId === agentId && record.id === activeConversationId ? 'true' : undefined}
+          aria-current={record.agentId === agentId && record.id === activeConversationId ? 'true' : undefined}
           data-testid="jiuwenmate-conversation-record"
+          data-variant={record.id}
         >
           {renamingId === `${record.agentId}:${record.id}` ? (
             <div className="jiuwenmate-records__conversation">
@@ -805,19 +807,21 @@ export function ColleagueWorkspacePage({
               <time>{new Date(record.updatedAt).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}</time>
             </button>
           )}
-          <ActionMenu
-            label={t('jiuwenmate.workspace.more')}
-            items={[
-              { key: 'rename', label: t('jiuwenmate.workspace.rename'), icon: PencilLine, onSelect: () => setRenamingId(`${record.agentId}:${record.id}`) },
-              {
-                key: 'pin',
-                label: t(record.pinned ? 'jiuwenmate.workspace.unpinConversation' : 'jiuwenmate.workspace.pinConversation'),
-                icon: record.pinned ? PinOff : Pin,
-                onSelect: () => void toggleConversationPin(record),
-              },
-              { key: 'delete', label: t('jiuwenmate.workspace.deleteConversation'), icon: Trash2, onSelect: () => void deleteSession(record.agentId, record.id) },
-            ]}
-          />
+          {!record.isWelcome ? (
+            <ActionMenu
+              label={t('jiuwenmate.workspace.more')}
+              items={[
+                { key: 'rename', label: t('jiuwenmate.workspace.rename'), icon: PencilLine, onSelect: () => setRenamingId(`${record.agentId}:${record.id}`) },
+                {
+                  key: 'pin',
+                  label: t(record.pinned ? 'jiuwenmate.workspace.unpinConversation' : 'jiuwenmate.workspace.pinConversation'),
+                  icon: record.pinned ? PinOff : Pin,
+                  onSelect: () => void toggleConversationPin(record),
+                },
+                { key: 'delete', label: t('jiuwenmate.workspace.deleteConversation'), icon: Trash2, onSelect: () => void deleteSession(record.agentId, record.id) },
+              ]}
+            />
+          ) : null}
         </div>
       );
       return (
@@ -832,9 +836,6 @@ export function ColleagueWorkspacePage({
           ) : null}
           <header>
             <strong>{t('jiuwenmate.workspace.tabs.conversations')}</strong>
-            <button type="button" className="jiuwenmate-icon-button" aria-label={t('jiuwenmate.workspace.newSession')} onClick={createSession}>
-              <CirclePlus aria-hidden />
-            </button>
           </header>
           {records.length === 0 ? (
             <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSessions')}</p>
@@ -886,7 +887,7 @@ export function ColleagueWorkspacePage({
             type="button"
             className="jiuwenmate-icon-button"
             aria-label={t('jiuwenmate.schedule.createTitle')}
-            onClick={() => onCreateSchedule(colleague.id)}
+            onClick={openCreateSchedule}
           >
             <Plus aria-hidden />
           </button>
@@ -900,7 +901,7 @@ export function ColleagueWorkspacePage({
               <ActionMenu
                 label={t('jiuwenmate.workspace.more')}
                 items={[
-                  { key: 'edit', label: t('jiuwenmate.schedule.editTask'), icon: PencilLine, onSelect: () => setScheduleEditor(plan) },
+                  { key: 'edit', label: t('jiuwenmate.schedule.editTask'), icon: PencilLine, onSelect: () => openEditSchedule(plan) },
                   { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDeleteSchedule?.(plan.id) },
                 ]}
               />
@@ -919,40 +920,30 @@ export function ColleagueWorkspacePage({
     return (
       <section className="jiuwenmate-chat-welcome" data-testid="jiuwenmate-chat-welcome">
         <header className="jiuwenmate-main-header jiuwenmate-chat-welcome__header">
-          <strong>{colleague.name}</strong>
+          <strong>{t('jiuwenmate.workspace.newSession')}</strong>
           {renderConnectionSelect()}
           {renderChatPanelButtons()}
         </header>
-        {sharingInbox}
-        <div className="jiuwenmate-chat-welcome__center">
-          <ColleagueAvatar colleague={colleague} size="large" />
-          <h2>{colleague.name}</h2>
-          <p>{colleague.description}</p>
-        </div>
-        {composer}
-        <div className="jiuwenmate-chat-welcome__suggestions">
-          {prompts.map((prompt, index) => {
-            const Icon = PROMPT_ICONS[index % PROMPT_ICONS.length];
-            return (
+        <div className="jiuwenmate-chat-welcome__content">
+          {sharingInbox}
+          <div className="jiuwenmate-chat-welcome__center">
+            <ColleagueAvatar colleague={colleague} size="large" />
+            <h2>{colleague.name}</h2>
+            <p>{colleague.description}</p>
+          </div>
+          <div className="jiuwenmate-chat-welcome__suggestions">
+            {prompts.map((prompt, index) => (
               <button type="button" key={`${prompt}-${index}`} onClick={() => setDraft(prompt)}>
-                <Icon aria-hidden />
-                {prompt}
+                <span>{prompt}</span>
+                <ChevronRight aria-hidden />
               </button>
-            );
-          })}
-        </div>
-        <div className="jiuwenmate-chat-welcome__features">
-          <h3>{t('jiuwenmate.workspace.featuresTitle')}</h3>
-          <div>
-            {FEATURES.map((feature) => (
-              <article key={feature.key}>
-                <img src={feature.image} alt="" aria-hidden />
-                <strong>{t(`jiuwenmate.workspace.features.${feature.key}.title`)}</strong>
-                <p>{t(`jiuwenmate.workspace.features.${feature.key}.description`)}</p>
-              </article>
             ))}
           </div>
         </div>
+        <footer>
+          {composer}
+          <small>{t('jiuwenmate.workspace.aiDisclaimer')}</small>
+        </footer>
       </section>
     );
   };
@@ -1093,7 +1084,7 @@ export function ColleagueWorkspacePage({
           <section className="jiuwenmate-main-empty" data-testid="jiuwenmate-schedule-main-empty">
             <img src={scheduleEmpty} alt="" aria-hidden />
             <p>{t('jiuwenmate.workspace.noSchedules')}</p>
-            <button type="button" className="jiuwenmate-outline-button jiuwenmate-outline-button--small" onClick={() => onCreateSchedule(colleague.id)}>
+            <button type="button" className="jiuwenmate-outline-button jiuwenmate-outline-button--small" onClick={openCreateSchedule}>
               {t('jiuwenmate.schedule.createTitle')}
             </button>
           </section>
@@ -1120,7 +1111,7 @@ export function ColleagueWorkspacePage({
 
   return (
     <div
-      className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}${!board && rightPanel ? ' jiuwenmate-workspace--panel-open' : ''}`}
+      className={`jiuwenmate-workspace${state.recordsCollapsed ? ' jiuwenmate-workspace--collapsed' : ''}${rightPanel ? ' jiuwenmate-workspace--panel-open' : ''}`}
       data-testid="jiuwenmate-colleague-workspace"
     >
       {!state.recordsCollapsed ? (
@@ -1128,12 +1119,15 @@ export function ColleagueWorkspacePage({
           <header>
             <h2>{t('jiuwenmate.nav.messages')}</h2>
           </header>
-          <div className="jiuwenmate-chat-sidebar-actions">
-            <button type="button" aria-pressed={board} onClick={() => setBoard(true)}>
-              <CalendarDays aria-hidden />
-              <span>{t('jiuwenmate.workspace.tabs.schedules')}</span>
-            </button>
-          </div>
+          <button
+            type="button"
+            className="jiuwenmate-records__create-group"
+            aria-disabled="true"
+            data-testid="jiuwenmate-create-group-button"
+          >
+            <SquarePlus aria-hidden />
+            <span>{t('groupChat.create')}</span>
+          </button>
           {renderRecordList()}
         </aside>
       ) : null}
@@ -1148,31 +1142,22 @@ export function ColleagueWorkspacePage({
             <PanelLeftOpen aria-hidden />
           </button>
         ) : null}
-        {board && onSaveSchedule && onUpdateSchedule && onSetScheduleEnabled && onDeleteSchedule && onLoadScheduleHistory ? (
-          <ScheduleBoard
-            schedules={schedules}
-            colleagues={colleagues}
-            saving={savingSchedule}
-            onCreate={onSaveSchedule}
-            onUpdate={onUpdateSchedule}
-            onSetEnabled={onSetScheduleEnabled}
-            onDelete={onDeleteSchedule}
-            onLoadHistory={onLoadScheduleHistory}
-          />
-        ) : renderMain()}
+        {renderMain()}
       </main>
-      {scheduleEditor && onUpdateSchedule ? (
+      {scheduleDialogOpen ? (
         <ScheduleDialog
-          key={scheduleEditor.id}
+          key={scheduleEditor?.id ?? 'new-schedule'}
           open
           plan={scheduleEditor}
           executorId={colleague.id}
           saving={savingSchedule}
-          onClose={() => setScheduleEditor(undefined)}
-          onSubmit={(_executor, draft) => onUpdateSchedule(scheduleEditor.id, draft)}
+          onClose={() => setScheduleDialogOpen(false)}
+          onSubmit={(_executor, draft) =>
+            scheduleEditor ? onUpdateSchedule?.(scheduleEditor.id, draft) : onCreateSchedule(draft)
+          }
         />
       ) : null}
-      {!board && rightPanel ? (
+      {rightPanel ? (
         <aside className="jiuwenmate-side-panel" data-testid={`jiuwenmate-${rightPanel}-panel`}>
           {rightPanel === 'artifacts' && visibleArtifact ? (
             <header className="jiuwenmate-side-panel__preview-header">
@@ -1218,14 +1203,37 @@ export function ColleagueWorkspacePage({
                   </>
                 ) : (
                   <>
-                    <button type="button" className="jiuwenmate-side-panel__add" onClick={() => onCreateSchedule(colleague.id)}><Plus aria-hidden />{t('jiuwenmate.schedule.createTitle')}</button>
                     <input className="jiuwenmate-side-panel__search" value={managementSearch} onChange={(event) => setManagementSearch(event.target.value)} placeholder={t('jiuwenmate.workspace.searchKeyword')} aria-label={t('jiuwenmate.workspace.searchKeyword')} />
+                    <div className="jiuwenmate-side-panel__schedule-heading">
+                      <strong>{t('jiuwenmate.workspace.tabs.schedules')}</strong>
+                      <button
+                        type="button"
+                        className="jiuwenmate-icon-button"
+                        aria-label={t('jiuwenmate.schedule.createTitle')}
+                        onClick={openCreateSchedule}
+                      >
+                        <Plus aria-hidden />
+                      </button>
+                    </div>
                     {colleaguePlans.length === 0 ? <p className="jiuwenmate-records__empty">{t('jiuwenmate.workspace.noSchedules')}</p> : null}
                     {colleaguePlans.filter((plan) => plan.name.toLocaleLowerCase().includes(managementSearch.trim().toLocaleLowerCase())).map((plan) => (
-                      <button key={plan.id} type="button" className="jiuwenmate-side-panel__item" aria-current={plan.id === activePlan?.id && state.recordTab === 'schedules' ? 'true' : undefined} onClick={() => { setScheduleId(plan.id); setState((current) => selectRecordTab(current, 'schedules')); }}>
-                        <CalendarDays aria-hidden />
-                        <span>{plan.name}</span>
-                      </button>
+                      <div
+                        key={plan.id}
+                        className="jiuwenmate-side-panel__schedule-item"
+                        aria-current={plan.id === activePlan?.id ? 'true' : undefined}
+                      >
+                        <button type="button" className="jiuwenmate-side-panel__item" onClick={() => setScheduleId(plan.id)}>
+                          <CalendarDays aria-hidden />
+                          <span>{plan.name}</span>
+                        </button>
+                        <ActionMenu
+                          label={t('jiuwenmate.workspace.more')}
+                          items={[
+                            { key: 'edit', label: t('jiuwenmate.schedule.editTask'), icon: PencilLine, onSelect: () => openEditSchedule(plan) },
+                            { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDeleteSchedule?.(plan.id) },
+                          ]}
+                        />
+                      </div>
                     ))}
                   </>
                 )}
