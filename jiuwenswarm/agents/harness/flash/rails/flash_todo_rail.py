@@ -244,8 +244,9 @@ class FlashTodoRail(DeepAgentRail):
         self._inject_todo_section()
         can_nudge = self._can_nudge(ctx)
         await self._close_gate.arm(ctx.session, can_nudge=can_nudge)
-        # 待办 hold 会吞掉整段正文。没有它时，只挂住仍可能是拒答的短前缀。
-        if not can_nudge:
+        # 待办 hold 会吞掉整段正文。它没挂上时（不能催办，或催办已经用过），
+        # 只挂住仍可能是拒答的短前缀，避免原文和停止提示拼在一起。
+        if not can_nudge or self._close_gate.used:
             await self._refusal_scrub.arm(ctx.session)
 
     async def after_model_call(self, ctx) -> None:

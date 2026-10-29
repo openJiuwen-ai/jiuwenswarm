@@ -164,10 +164,31 @@ async def test_text_ending_with_open_todo_is_nudged_once() -> None:
     again = await _final_turn(rail, session, "模型仍不改状态，这次放行。")
     assert again.inputs.response.tool_calls == []
     assert again.inputs.response.content == "模型仍不改状态，这次放行。"
-    assert session.events == []
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]
 
 
 _CANNED_REFUSAL = "作为一个人工智能语言模型，我还没学习如何回答这个问题，您可以向我问一些其它的问题，我会尽力帮您解决的。"
+
+
+@pytest.mark.asyncio
+async def test_refusal_after_nudge_is_still_held() -> None:
+    rail, engine = _rail({"deliver": TodoStatus.IN_PROGRESS})
+    rail.engines["modify"] = _FakeModify(engine)
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "modify"))
+    await _final_turn(rail, session, "以下是完成情况概要：PPT 已生成。")
+    assert rail._close_gate.used is True
+
+    session.events.clear()
+    ctx = await _final_turn(rail, session, _CANNED_REFUSAL, usage_metadata=_refusal_usage())
+
+    assert ctx.inputs.response.content == MODEL_REFUSAL_BODY
+    assert ctx.finished == {"output": MODEL_REFUSAL_BODY, "result_type": "answer"}
+    assert session.events[0] == "refusal_scrub_hold"
+    assert "refusal_scrub_drop" in session.events
+    assert "llm_output" in session.events
+    assert engine.statuses["deliver"] == TodoStatus.CANCELLED
 
 
 def _canned_response(**kwargs) -> AssistantMessage:
