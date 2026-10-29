@@ -4,9 +4,9 @@
 from __future__ import annotations
 
 import copy
-import re
 from collections import defaultdict
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -109,7 +109,10 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._maybe_apply_pending_reload = lambda: _async_none()  # type: ignore[method-assign]
     adapter._bind_runtime_cron_context = lambda **_kwargs: None  # type: ignore[method-assign]
     adapter._reset_stream_runtime_context = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
-    adapter._run_cleanup_steps = lambda _steps: None  # type: ignore[method-assign]
+    permission_release = Mock()
+    adapter._run_cleanup_steps = lambda steps: [  # type: ignore[method-assign]
+        callback() for name, callback in steps if name == "permission_session_keys"
+    ]
     adapter._register_session_agent_task = lambda _session_id: None  # type: ignore[method-assign]
     adapter._unregister_session_agent_task = lambda _session_id: None  # type: ignore[method-assign]
     adapter._runtime_cron_tool_context = SimpleNamespace(
@@ -118,7 +121,7 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
     adapter._config_base_cache = {}
     adapter._refresh_standard_agent_permissions_body = lambda _request: None  # type: ignore[method-assign]
     adapter._bind_agent_permissions_base = lambda: None  # type: ignore[method-assign]
-    adapter._update_permission_rail = lambda *_args, **_kwargs: None  # type: ignore[method-assign]
+    adapter._update_permission_rail = lambda *_args, **_kwargs: permission_release  # type: ignore[method-assign]
     adapter._is_subagent_approval_answer = lambda *_args: False  # type: ignore[method-assign]
     adapter._refresh_stale_mcp_tool_lists = lambda: _async_none()  # type: ignore[method-assign]
     adapter._inject_extension_config_into_inputs = lambda *_args: None  # type: ignore[method-assign]
@@ -180,6 +183,7 @@ async def test_process_stream_does_not_persist_ambiguous_model_identity(monkeypa
 
     assert captured_metadata is not None
     assert _SKILL_TURBO_MODEL_IDENTITY_KEY not in captured_metadata
+    permission_release.assert_called_once()
 
 @pytest.mark.asyncio
 async def test_mark_resume_in_flight_persists_across_sessions():

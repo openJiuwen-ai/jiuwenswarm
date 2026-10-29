@@ -6627,6 +6627,7 @@ class JiuWenSwarmDeepAdapter:
             return skill_rail.resolve_scope(ctx)
 
         setter(resolve_scope)
+        skill_rail.set_permission_key_resolver(permission_rail.permission_baseline_key_for)
 
     def _skill_rail_session_id(self) -> str | None:
         """Session id bound into skill rails for session-scoped adapters.
@@ -8578,7 +8579,8 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None,
         *,
         session_id: str | None = None,
-    ) -> None:
+        acquire_session: bool = False,
+    ) -> Callable[[], None] | None:
         """原地更新已有 PermissionRail 配置，或在首次启用时新建。
 
         企业版优先使用 Agent template_ref.permissions 模板 body（与模型槽位同级）。
@@ -8589,12 +8591,12 @@ class JiuWenSwarmDeepAdapter:
         )
 
         permission_config = self._resolve_permission_config_for_agent(
-            session_id=session_id
+            session_id=""
         )
         wanted_key = resolve_permission_key(**self._permission_key_dims())
         if self._permission_rail is not None:
             current_key = getattr(self._permission_rail, "permission_key", None)
-            if current_key != wanted_key:
+            if getattr(self._permission_rail, "routing_key", current_key) != wanted_key:
                 # Adapter identity is fixed for the rail lifetime; never silently
                 # drop the old rail (would leak the old manager key without uninit).
                 logger.error(
@@ -8603,16 +8605,14 @@ class JiuWenSwarmDeepAdapter:
                     current_key,
                     wanted_key,
                 )
-                return
+                raise ValueError("Permission rail routing identity changed")
             self._sync_permission_workspace(self._permission_rail)
             self._permission_rail.update_config(permission_config)
             logger.info(
                 "[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated key=%s",
                 wanted_key,
             )
-            return
-
-        if permission_config.get("enabled", False):
+        elif permission_config.get("enabled", False):
             self._permission_rail = self._build_permission_rail_for_agent(
                 config=config_base or {},
                 llm=self._model,
@@ -8624,6 +8624,7 @@ class JiuWenSwarmDeepAdapter:
                 else "gpt-4",
             )
             if self._permission_rail is not None:
+                self._permission_rail.update_config(permission_config)
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] _permission_rail newly created key=%s",
                     getattr(self._permission_rail, "permission_key", wanted_key),
@@ -8643,6 +8644,15 @@ class JiuWenSwarmDeepAdapter:
                     self._bind_skill_permission_scope_resolver(
                         self._permission_rail, self._skill_authorization_rail
                     )
+            else:
+                raise RuntimeError("Permission rail could not be constructed")
+
+        if self._permission_rail is not None and session_id and permission_config.get("enabled", False):
+            effective = self._resolve_permission_config_for_agent(session_id=session_id)
+            if acquire_session:
+                return self._permission_rail.acquire_session_config(session_id, effective)
+            self._permission_rail.update_session_config(session_id, effective)
+        return None
 
     def _resolve_permission_config_for_agent(
         self,
@@ -15712,6 +15722,7 @@ class JiuWenSwarmDeepAdapter:
         token_perm = None
         token_perm_sid = None
         token_perm_agent = None
+        permission_session_release = None
         request_env_tokens = None
         session_active = False
         session_task_registered = False
@@ -15733,18 +15744,12 @@ class JiuWenSwarmDeepAdapter:
             if not is_enterprise():
                 self._refresh_standard_agent_permissions_body(request)
             token_perm_agent = self._bind_agent_permissions_base()
-            try:
-                self._update_permission_rail(
-                    self._config_base_cache, session_id=session_id
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] permission rail agent-level bind failed: %s",
-                    exc,
-                )
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
             await self._maybe_apply_pending_reload()
+            permission_session_release = self._update_permission_rail(
+                self._config_base_cache, session_id=session_id, acquire_session=True
+            )
             request_env_tokens = self._bind_request_env_overlay()
             self._mark_session_active(session_id)
             session_active = True
@@ -15780,6 +15785,10 @@ class JiuWenSwarmDeepAdapter:
                 cleanup_steps.append(
                     lambda: self._reset_request_env_bindings(*request_env_tokens)
                 )
+            if permission_session_release is not None:
+                cleanup_steps.append(permission_session_release)
+            if token_perm_agent is not None:
+                cleanup_steps.append(lambda: reset_permissions_agent_base(token_perm_agent))
             if token_perm_sid is not None:
                 cleanup_steps.append(
                     lambda: reset_permissions_session_scope(token_perm_sid)
@@ -16061,6 +16070,8 @@ class JiuWenSwarmDeepAdapter:
                         lambda: self._reset_request_env_bindings(*request_env_tokens),
                     )
                 )
+            if permission_session_release is not None:
+                cleanup_steps.append(("permission_session_keys", permission_session_release))
             if token_perm_sid is not None:
                 cleanup_steps.append(
                     (
@@ -16929,6 +16940,7 @@ class JiuWenSwarmDeepAdapter:
         token_perm = None
         token_perm_sid = None
         token_perm_agent = None
+        permission_session_release = None
         request_env_tokens = None
         session_active = False
         session_task_registered = False
@@ -16954,16 +16966,10 @@ class JiuWenSwarmDeepAdapter:
             if not is_enterprise():
                 self._refresh_standard_agent_permissions_body(request)
             token_perm_agent = self._bind_agent_permissions_base()
-            try:
-                self._update_permission_rail(
-                    self._config_base_cache, session_id=session_id
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] permission rail agent-level bind failed: %s",
-                    exc,
-                )
             await self._maybe_apply_pending_reload()
+            permission_session_release = self._update_permission_rail(
+                self._config_base_cache, session_id=session_id, acquire_session=True
+            )
             # 按请求选择模型（企业配置已在 create_instance 合并）
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(resolved_model)
@@ -18189,6 +18195,8 @@ class JiuWenSwarmDeepAdapter:
                         lambda: self._reset_request_env_bindings(*request_env_tokens),
                     )
                 )
+            if permission_session_release is not None:
+                cleanup_steps.append(("permission_session_keys", permission_session_release))
             if token_perm_sid is not None:
                 cleanup_steps.append(
                     (

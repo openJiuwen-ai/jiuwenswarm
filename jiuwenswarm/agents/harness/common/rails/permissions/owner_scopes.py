@@ -100,10 +100,11 @@ async def check_avatar_permission(
     session_id: str | None,
     *,
     permission_key: str | None = None,
+    owner_scopes: dict | None = None,
 ) -> str:
     """单工具 owner_scopes 权限检查。返回 "allow" 或 "deny"（ASK 自动降级为 DENY）。
 
-    读已发布 ``permission_key`` 上的配置与全局策略，不现场拉 yaml / 不造临时 config。
+    使用发布时保留的 owner 路由元数据，向引擎只传 ``permission_key`` 做完整判定。
 
     Args:
         tool_name: 工具名称
@@ -116,7 +117,7 @@ async def check_avatar_permission(
         "allow" 或 "deny"
     """
     del channel_id, session_id  # channel comes from ContextVar; session unused
-    from agent_shield.tool_permission import get_permission_manager
+    from openjiuwen.harness.security.permission_checks import check_tool_permission
     from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
     from openjiuwen.harness.security.permission_key import DEFAULT_KEY
 
@@ -130,24 +131,21 @@ async def check_avatar_permission(
         if isinstance(permission_key, str) and permission_key.strip()
         else DEFAULT_KEY
     )
-    manager = get_permission_manager()
     try:
-        perm_cfg = dict(manager.get_config(key))
-    except KeyError:
+        result = await check_tool_permission(tool_name, tool_args, key)
+    except Exception:
         logger.warning(
             "[check_avatar_permission] unregistered_key key=%s fail_closed=deny",
             key,
         )
         return "deny"
-    owner_scopes = perm_cfg.get("owner_scopes")
     logger.info(
         "[check_avatar_permission] tool=%s channel=%s user=%s key=%s owner_scopes_type=%s owner_scopes_keys=%s",
         tool_name, perm_ctx.channel_id, perm_ctx.principal_user_id, key,
         type(owner_scopes).__name__, list(owner_scopes.keys()) if isinstance(owner_scopes, dict) else None
     )
     if not isinstance(owner_scopes, dict) or not owner_scopes:
-        logger.info("[check_avatar_permission] owner_scopes is empty or not dict")
-        return "allow"
+        return "allow" if result.permission == OJPermissionLevel.ALLOW else "deny"
 
     cid, uid = perm_ctx.channel_id.strip(), perm_ctx.principal_user_id.strip()
     scope_cfg = (owner_scopes.get(cid) or {}).get(uid)
@@ -158,16 +156,7 @@ async def check_avatar_permission(
     level = _resolve_owner_scope_level(scope_cfg, tool_name, tool_args)
     logger.info("[check_avatar_permission] resolved level=%s", level)
 
-    try:
-        global_level, _rule = await manager.evaluate_global_policy_directly(
-            tool_name,
-            tool_args,
-            key,
-        )
-        global_level_value = global_level.value if global_level is not None else None
-    except Exception as exc:
-        logger.warning("[check_avatar_permission] evaluate_global_policy_directly failed: %s", exc)
-        global_level_value = None
+    global_level_value = result.permission.value
 
     if level is None:
         if global_level_value == OJPermissionLevel.ALLOW.value:
