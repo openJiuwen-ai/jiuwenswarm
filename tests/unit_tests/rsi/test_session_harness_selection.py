@@ -1,12 +1,17 @@
 """Session RSI selection replaces the default using real plugin bindings."""
 
+import asyncio
+import errno
 import json
+import shutil
+from pathlib import Path
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harness_plugin
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from tests.unit_tests.rsi.test_plugin_roundtrip import _agent, _make_plugin_package
 
@@ -169,6 +174,101 @@ async def test_failed_first_selection_keeps_default_and_returns_chat_error(harne
     ))
     assert response.ok is False
     assert response.payload["event_type"] == "chat.error"
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation,error", [
+    ("TemporaryDirectory", PermissionError("temporary directory is not writable")),
+    ("TemporaryDirectory", OSError(errno.ENOSPC, "no space left")),
+    ("copytree", FileNotFoundError("plugin directory disappeared")),
+    ("copytree", shutil.Error("package copy failed")),
+])
+async def test_snapshot_io_failure_returns_chat_error_without_unloading_default(
+    harness_selection, monkeypatch, operation, error,
+):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    original = adapter._rsi_harness_load_record
+
+    def fail_io(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(interface_deep, operation, fail_io)
+    response = await adapter._ensure_chat_extensions(AgentRequest(
+        request_id="snapshot-failure", channel_id="web", session_id="snapshot-failure",
+        params={"plugin_names": ["rsi-harness-ddeeff"]},
+    ))
+    assert response.ok is False
+    assert response.payload == {"event_type": "chat.error", "error": str(error)}
+    assert adapter._rsi_harness_load_record is original
+    assert _content(adapter) == "aabbcc"
+    assert adapter._rsi_selected_plugin is None
+
+
+@pytest.mark.asyncio
+async def test_snapshot_manifest_read_failure_returns_chat_error(harness_selection, monkeypatch):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    original = adapter._rsi_harness_load_record
+    read_text = Path.read_text
+
+    def read_manifest(path, *args, **kwargs):
+        if path.name == "manifest.json" and any(part.startswith("rsi_session_") for part in path.parts):
+            raise PermissionError("snapshot manifest is not readable")
+        return read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", read_manifest)
+    response = await adapter._ensure_chat_extensions(AgentRequest(
+        request_id="manifest-failure", channel_id="web", session_id="manifest-failure",
+        params={"plugin_names": ["rsi-harness-ddeeff"]},
+    ))
+    assert response.ok is False
+    assert response.payload == {"event_type": "chat.error", "error": "snapshot manifest is not readable"}
+    assert adapter._rsi_harness_load_record is original
+    assert _content(adapter) == "aabbcc"
+
+
+@pytest.mark.asyncio
+async def test_failed_replacement_and_rollback_return_chat_error(harness_selection, monkeypatch):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+
+    async def fail_load(path):
+        raise RuntimeError("package unavailable")
+
+    monkeypatch.setattr(adapter._instance, "load_plugin", fail_load)
+    response = await adapter._ensure_chat_extensions(AgentRequest(
+        request_id="rollback-failure", channel_id="web", session_id="rollback-failure",
+        params={"plugin_names": ["rsi-harness-ddeeff"]},
+    ))
+    assert response.ok is False
+    assert response.payload["event_type"] == "chat.error"
+    assert "旧版本恢复失败" in response.payload["error"]
+    assert adapter._rsi_harness_load_record is None
+    assert adapter._rsi_selected_plugin is None
+    assert get_session_equipment("rollback-failure") == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [asyncio.CancelledError(), TypeError("unexpected implementation error")])
+async def test_snapshot_cancellation_and_unexpected_errors_propagate(harness_selection, monkeypatch, error):
+    adapter, packages = harness_selection
+    await _default(adapter, packages)
+    original = adapter._rsi_harness_load_record
+
+    def fail_copy(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(interface_deep, "copytree", fail_copy)
+    with pytest.raises(type(error)):
+        await adapter._ensure_chat_extensions(AgentRequest(
+            request_id="cancelled-selection", channel_id="web", session_id="cancelled-selection",
+            params={"plugin_names": ["rsi-harness-ddeeff"]},
+        ))
+    assert adapter._rsi_harness_load_record is original
     assert _content(adapter) == "aabbcc"
 
 
