@@ -160,6 +160,12 @@ test('the employee mail page gives a short connection note', () => {
   assert.match(markup, /<button[^>]*disabled=""[^>]*data-testid="jiuwenmate-profile-mail-start"/);
 });
 
+test('DingTalk CLI is automatic and has no per-employee authorization page', () => {
+  const markup = renderProfile({ initialSection: 'overview' });
+  assert.doesNotMatch(markup, /钉钉工作台 CLI/);
+  assert.doesNotMatch(markup, /钉钉设备授权/);
+});
+
 test('employee permission settings show the three individual profiles and explain full access', () => {
   const markup = renderProfile({ initialSection: 'permissions' });
   const fullAccess = renderProfile({

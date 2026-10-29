@@ -274,6 +274,17 @@ def test_event_accepts_a_mentioned_group_message_and_preserves_group_identity():
     assert DingTalkInboundEvent.from_payload(payload) == event
 
 
+def test_group_bot_stream_callback_is_authoritative_when_at_metadata_is_inconsistent():
+    callback = _callback(
+        conversationType="2", isInAtList=False, chatbotUserId="bot-test",
+        atUsers=[{"dingtalkId": "another-user"}],
+    )
+
+    event = DingTalkInboundEvent.from_callback(callback, app_id="trusted-app", agent_id="agent-dingtalk")
+
+    assert event.receiver_bot_mentioned is True
+
+
 def test_group_broadcast_is_not_treated_as_an_explicit_bot_mention():
     callback = _callback(
         conversationType="2", isInAtList=True, chatbotUserId="bot-test",
@@ -393,6 +404,67 @@ async def test_unsupported_file_never_requests_a_token_or_sends():
     channel._access_token = None
     assert (await _send(channel, file_key="file-test"))["outcome"] == "failed"
     channel._http.post.assert_not_awaited()
+
+
+@pytest.mark.parametrize("file_name", ["slides.pptx", "notes.txt", "report.docx"])
+@pytest.mark.asyncio
+async def test_group_file_result_uploads_the_original_file_to_the_group_space(tmp_path, file_name):
+    channel = _channel()
+    source = tmp_path / file_name
+    source.write_bytes(b"file contents")
+    channel._file_service = SimpleNamespace(
+        upload_group_file=AsyncMock(return_value={"dentryId": "dentry-test"}),
+    )
+
+    result = await channel.send_persistent_result(
+        chat_id="conversation-test",
+        text=None,
+        source_message_id="message-test",
+        idempotency_key="delivery-test",
+        file_path=str(source),
+        is_direct_message=False,
+        sender_staff_id="staff-test",
+        share_mode="upload",
+    )
+
+    assert result == {
+        "outcome": "delivered", "external_message_id": "dentry-test", "file_key": "dentry-test",
+    }
+    channel._file_service.upload_group_file.assert_awaited_once_with(
+        conversation_id="conversation-test",
+        sender_staff_id="staff-test",
+        file_path=source,
+        access_token="fake-token",
+    )
+
+
+@pytest.mark.asyncio
+async def test_attachment_mode_keeps_the_file_in_the_group_chat(tmp_path):
+    channel = _channel()
+    source = tmp_path / "slides.pptx"
+    source.write_bytes(b"pptx bytes")
+    channel._file_service = SimpleNamespace(upload_media=AsyncMock(return_value="media-test"))
+    channel._http.post.return_value = httpx.Response(200, json={"processQueryKey": "message-test"})
+
+    result = await channel.send_persistent_result(
+        chat_id="conversation-test",
+        text=None,
+        source_message_id="source-test",
+        idempotency_key="delivery-test",
+        file_path=str(source),
+        file_name="slides.pptx",
+        share_mode="attachment",
+        is_direct_message=False,
+    )
+
+    assert result == {
+        "outcome": "delivered", "external_message_id": "message-test", "file_key": "media-test",
+    }
+    channel._file_service.upload_media.assert_awaited_once_with(str(source), "file")
+    request = channel._http.post.await_args
+    assert request.args[0] == "https://api.example.invalid/v1.0/robot/groupMessages/send"
+    assert request.kwargs["json"]["msgKey"] == "sampleFile"
+    assert '"fileType": "pptx"' in request.kwargs["json"]["msgParam"]
 
 
 @pytest.mark.asyncio

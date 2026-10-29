@@ -5,6 +5,7 @@
 import json
 import os
 import tempfile
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -67,6 +68,97 @@ def _make_file_message(file_paths: list[str]) -> Message:
         ok=True,
         req_method="chat_send",
     )
+
+
+@pytest.mark.asyncio
+async def test_group_space_upload_runs_precheck_signed_put_and_commit(tmp_path):
+    source = tmp_path / "slides.pptx"
+    content = b"pptx bytes"
+    source.write_bytes(content)
+    http = AsyncMock(spec=httpx.AsyncClient)
+    http.post.side_effect = [
+        httpx.Response(200, json={"result": {"unionid": "union-test"}}),
+        httpx.Response(200, json={"space": {"spaceId": "space-test"}}),
+        httpx.Response(200, json={
+            "uploadKey": "upload-test",
+            "headerSignatureInfo": {
+                "resourceUrls": ["https://oss.aliyuncs.com/signed-upload"],
+                "headers": {"x-oss-signature": "signed"},
+            },
+        }),
+        httpx.Response(200, json={"dentry": {"id": "dentry-test", "uuid": "uuid-test"}}),
+    ]
+    signed_upload = AsyncMock()
+    service = DingTalkFileService(
+        client_id="robot-test",
+        get_token_func=AsyncMock(return_value="token-test"),
+        http_client=http,
+        api_base="https://api.dingtalk.com",
+        oapi_base="https://oapi.dingtalk.com",
+        signed_upload=signed_upload,
+    )
+
+    result = await service.upload_group_file(
+        conversation_id="conversation-test",
+        sender_staff_id="staff-test",
+        file_path=Path(source),
+    )
+
+    assert result == {"dentryId": "dentry-test", "dentryUuid": "uuid-test"}
+    upload_call = http.post.await_args_list[2]
+    upload_body = upload_call.kwargs["json"]
+    assert upload_body["option"]["preCheckParam"] == {
+        "md5": "57711f9ddb417149cf1c69fd210fbd71",
+        "size": len(content),
+        "parentId": "0",
+        "name": "slides.pptx",
+    }
+    signed_upload.assert_awaited_once_with(
+        "https://oss.aliyuncs.com/signed-upload",
+        {"x-oss-signature": "signed"},
+        content,
+    )
+
+
+@pytest.mark.asyncio
+async def test_group_space_upload_uses_the_group_root_dentry_protocol(tmp_path):
+    source = tmp_path / "deck.pptx"
+    content = b"pptx bytes"
+    source.write_bytes(content)
+    http = AsyncMock(spec=httpx.AsyncClient)
+    http.post.side_effect = [
+        httpx.Response(200, json={"result": {"unionid": "union-test"}}),
+        httpx.Response(200, json={"space": {"spaceId": "space-test", "rootDentryUuid": "root-test"}}),
+        httpx.Response(200, json={
+            "uploadKey": "upload-test",
+            "headerSignatureInfo": {
+                "resourceUrls": ["https://oss.aliyuncs.com/signed-upload"],
+                "headers": {"x-oss-signature": "signed"},
+            },
+        }),
+        httpx.Response(200, json={"dentry": {"id": "dentry-test", "uuid": "uuid-test"}}),
+    ]
+    service = DingTalkFileService(
+        client_id="robot-test",
+        get_token_func=AsyncMock(return_value="token-test"),
+        http_client=http,
+        api_base="https://api.dingtalk.com",
+        oapi_base="https://oapi.dingtalk.com",
+        signed_upload=AsyncMock(),
+    )
+
+    result = await service.upload_group_file(
+        conversation_id="conversation-test", sender_staff_id="staff-test", file_path=source,
+    )
+
+    upload_call = http.post.await_args_list[2]
+    assert upload_call.args[0] == "https://api.dingtalk.com/v2.0/storage/spaces/files/root-test/uploadInfos/query"
+    assert upload_call.kwargs["json"]["option"]["preCheckParam"] == {
+        "size": len(content), "name": "deck.pptx",
+    }
+    commit_call = http.post.await_args_list[3]
+    assert commit_call.args[0] == "https://api.dingtalk.com/v2.0/storage/spaces/files/root-test/commit"
+    assert result["dentryId"] == "dentry-test"
 
 
 # ---------------------------------------------------------------------------

@@ -41,7 +41,12 @@ import { ActivityHeatmap, HeatmapLegend } from '../components/ActivityHeatmap';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import { GroupSharingPermissions } from '../components/GroupSharingPermissions';
 import type { GroupSharingApi } from '../groupSharingApi';
-import type { ColleagueResourceOption, JiuwenMateModelCatalog, JiuwenMateSchedule, JiuwenMateWireSettings } from '../jiuwenmateApi';
+import type {
+  ColleagueResourceOption,
+  JiuwenMateModelCatalog,
+  JiuwenMateSchedule,
+  JiuwenMateWireSettings,
+} from '../jiuwenmateApi';
 import type { ScheduleDraft, ScheduleRun } from '../schedules/types';
 import { ScheduleSection } from '../schedules/ScheduleSection';
 import { JIUWENMATE_WORK_DOMAINS } from '../mockData';

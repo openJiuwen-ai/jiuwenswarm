@@ -5,10 +5,10 @@
 - 计划范围：结合 agent-core 的 Persistent Agent 能力，在 JiuwenSwarm 独立开发新版 AI 同事。Swarm 负责同事管理、渠道接入、执行调度、会话与事件存储、结果投递和续做安排；agent-core 在指定 Session 内执行任务、管理模型上下文、产生过程事件与候选结果。
 - 范围之外：知识版本撤权与来源失效、主动学习和扩展执行模式；个人版单 Agent、集群模式及个人飞书入口的既有行为不在本计划内修改。员工确认恢复及权限模式由 JM-26 与 agent-core PA-09 协同负责；员工对已发布个人上下文页面的选择见 JM-22。
 - 所属模块：jiuwenswarm 仓 `jiuwenswarm/server/jiuwenmate/`，以及新版接入所需的 `gateway/`、`server/agent_ws_server.py` 与前端 `channels/web/frontend/src/features/jiuwenmate/`。agent-core 仓 `openjiuwen/harness/persistent_agent/` 的工作以 PA 编号登记在对端计划，本计划只引用。
-- 交付分类：本期 20 项（JM-01～JM-14、JM-16、JM-18、JM-19、JM-22～JM-24）；扩展 3 项（JM-21、JM-25、JM-26）。已移出的 SW-15、SW-17、SW-20 不复用，见附录 B。
-- 本轮安排：本期 20 项均为纳入；JM-21 跨群子范围已实现，JM-25 Agent Mail 隔离接入未排期；JM-26 员工权限模式、审批恢复与前端已实现并通过自动化验证，不计入本期节点；真实飞书部署验收待完成。
+- 交付分类：本期 20 项（JM-01～JM-14、JM-16、JM-18、JM-19、JM-22～JM-24）；扩展 4 项（JM-21、JM-25～JM-27）。已移出的 SW-15、SW-17、SW-20 不复用，见附录 B。
+- 本轮安排：本期 20 项均为纳入；JM-21 跨群子范围已实现，JM-25 Agent Mail 隔离接入未排期；JM-26 员工权限模式、审批恢复与前端已实现并通过自动化验证；JM-27 调整为复用钉钉应用凭证、默认提供 DWS `api` 子命令，不增加员工 OAuth 登录页；不计入本期节点。
 - 维护人：常钰聪。
-- 更新日期：2026-10-26。
+- 更新日期：2026-10-27。
 - 设计依据：
   - 本仓：[JiuwenMate 设计概览](jiuwenmate-overview.md)、[JiuwenMate 服务端架构设计](jiuwenmate-architecture.md)。
   - 对端：agent-core 仓 `jiuwenmate` 分支 `openjiuwen/harness/persistent_agent/docs/designs/` 下的 [Persistent Agent 开发计划](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-development-plan.md) 与 [Persistent Agent 架构设计](https://gitcode.com/huenrui_/agent-core/blob/jiuwenmate/openjiuwen/harness/persistent_agent/docs/designs/persistent-agent-architecture.md)。
@@ -20,7 +20,7 @@
   - `namespace_id` 映射既有用户 / 工作空间边界，具体映射规则在 JM-10 接入时确定，不影响 JM-01～JM-04 的组件验证。
   - agent-core 依赖版本的入库固定方式，待对端发布可引用版本后确定。
 - 术语与全局约束：见下文“术语”与“全局约束”。
-- 进度摘要：本期完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23，宿主组件通过，联合验收待完成），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24）；待开始 1 项（JM-18）；扩展完成 0/3，JM-21 跨群子范围已实现；JM-25 已改为本地 CLI 运行时，真实 OAuth 与邮件读取待验收；JM-26 代码与组件验证已完成，真实飞书消息和重启场景待验收。
+- 进度摘要：本期完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23，宿主组件通过，联合验收待完成），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24）；待开始 1 项（JM-18）；扩展完成 0/4，JM-21 跨群子范围已实现；JM-25 已改为本地 CLI 运行时，真实 OAuth 与邮件读取待验收；JM-26 代码与组件验证已完成，真实飞书消息和重启场景待验收；JM-27 使用默认应用 App Token 执行应用 API 和读取群成员；组件验证通过，真实群成员读取和日历写入待验收。
 
 先读本节确认范围和完成口径，再到第 2 节了解特性与验收要求，第 3 节判断开工条件和并行机会，第 4 节确认负责人、状态和证据。迁移与接入安排见附录 A，历史变更见附录 B。
 
@@ -505,6 +505,25 @@
 - **联合交付与开放条件：** 独立扩展交付；PA-09、JM-02 与 Web / Feishu 审批路径的身份绑定、重启恢复和宿主权限边界均通过后才验收。
 - **设计索引：** [F_26 员工权限模式与审批闭环](../features/F_26_employee-permission-profiles.md)、对端 agent-core [F_24 权限与确认恢复](../../../../../../agent-core/openjiuwen/harness/persistent_agent/docs/features/F_24_permission-confirmation.md)。
 
+### JM-27 员工钉钉 DWS CLI 接入（扩展）
+
+- **目标与范围：** 所有员工共用钉钉渠道默认应用，自动获得官方 DingTalk Workspace CLI（`dws`）的 App Token API 工具；不新增员工 OAuth 登录页，不改钉钉 Stream Bot 接入。
+- **责任与契约：** DingTalk CLI Runtime 从当前渠道默认应用读取凭证，为每位员工设置独立 DWS 配置和缓存目录；默认应用有效时所有员工获得 `dingtalk_cli` 工具。应用 API 和可信当前群成员列表均使用 App Token `dws api`，不要求 DWS 用户登录。
+- **开工硬前置：** 核对 DWS 官方 `dws api` 的应用 Token 能力、凭证环境变量与受支持域名，并复用钉钉渠道已保存的应用凭证。
+- **独立验证入口：** `tests/unit_tests/server/jiuwenmate/test_dingtalk_cli_local_provider.py`、`test_dingtalk_cli_tool.py` 和钉钉渠道绑定测试。
+- **独立验证条件：** 受控 DWS CLI 和 npm 安装器替身、真实钉钉配置解析、两名员工私有 App Token 缓存目录；真实业务 API 另行验收。
+- **验收标准：**
+  1. JM-27-V-01：所有员工自动获得默认钉钉应用的 `DWS_CLIENT_ID` / `DWS_CLIENT_SECRET`；默认应用重复或不完整时不提供凭证。
+  2. JM-27-V-02：员工的 `DWS_CONFIG_DIR` 与 App Token 缓存互相隔离；应用凭证轮换、解绑和删除员工均清理旧缓存。
+  3. JM-27-V-03：不要求员工 OAuth；DWS CLI 仅由员工专属工具运行，应用 Secret 不进入 argv、日志或模型上下文。
+  4. JM-27-V-04：只走官方 DingTalk HTTPS API 域名，不能由工具输入覆盖应用身份或 Token。
+  5. JM-27-V-05：CLI / npm / 网络不可用、应用权限不足和 API 执行错误不泄露敏感信息、不阻断普通员工对话；员工管理页无 DWS 授权入口。
+  6. JM-27-V-06：群共享日程仅以可信当前群上下文为目标；先读取完整群成员分页并映射全部 unionId 后才创建一个共享事件；名单或映射不完整时不创建，参与人分批添加失败时不重建事件。
+- **来源验证点与共享场景：** 钉钉应用配置、员工 App Token 隔离与可信群成员 App Token 查询 → JM-27-V-01～06 → 主责 JM-27，不参与本期交付节点。
+- **前端独立验证：** 无 DWS 员工设置页面；核对原有飞书 CLI 页面与钉钉渠道配置页不回归。
+- **联合交付与开放条件：** 真实验收需验证当前 App Token 可读取可信群成员，并验证成员映射与日历写入；不要求员工或服务级 DWS 用户 OAuth。
+- **设计索引：** [F_27 钉钉 DWS CLI 应用身份接入](../features/F_27_employee-dingtalk-cli.md)、[S_06 钉钉 DWS CLI 应用身份规约](../specs/S_06_employee-dingtalk-cli.md)。
+
 ## 3. 特性依赖关系与并行开发
 
 完整关系图覆盖第 2 节全部特性和交付节点。每条细实线对应特性定义中的一个开工硬前置，线上注明所需的最小产物；虚线表示特性参与节点的联合验收；粗实线表示约定的交付顺序或业务开工限制。
@@ -551,6 +570,7 @@ flowchart LR
         F21["JM-21 跨群搜索与 IM 扩展"]
         F25["JM-25 Agent Mail 配置与隔离运行时"]
         F26["JM-26 员工权限模式与审批闭环"]
+        F27["JM-27 员工钉钉 DWS CLI 接入"]
     end
 
     S0{"S0 契约与宿主基线"}
@@ -595,6 +615,7 @@ flowchart LR
     F09 -->|投递链路| F19
     F11 -->|群公共记录| F21
     F14 -->|员工执行隔离边界核对| F25
+    F14 -->|员工执行上下文与工具装配| F27
 
     F01 -.-> S0
     F02 -.-> S0
@@ -693,6 +714,7 @@ flowchart LR
 | JM-24 Agent 级用户授权与个人日历查询 | 特性 / 本期 | 纳入 | Feishu Agent CLI 用户身份日历只读；群聊直接原群公开回复；按 JM-11/JM-21 既有规则归档与授权搜索 | 未评估 / 随 S2a | C / S2a | 未排期 | 进行中 | 闫祉君 | — | 已改为 JM-14 Agent CLI profile + Feishu Skill/Bash 路径；Gateway OAuth、专用日历工具及 personal-data E2A 方案已撤销。定向 CLI profile、Bash 装配和 Agent / Skill 提示测试 16 项通过；真实 Feishu 用户授权、日历 API、JM-11→JM-21 闭环与个人版回归待验证，详见 [F_24](../features/F_24_personal-data-access.md) §8 | 2026-10-22；按用户确认改为 Agent 级共享登录态 |
 | JM-25 员工 Agent Mail 配置与本地运行时 | 特性 / 扩展 | 未排期 | 每员工独立 HOME/XDG/npm cache 目录中的固定版本官方 Agent Mail CLI 授权和读写调用 | 未评估 / — | 扩展 / — | 未排期 | 进行中 | 常钰聪 | — | 本地 provider、Web RPC、授权生命周期和读写命令转发已实现；定向后端及 Web RPC 测试通过。真实 OAuth、邮箱读写及跨员工隔离待验收，详见 [F_25](../features/F_25_agent-mail.md) | 2026-10-23；改为无 Docker 的本地 CLI 运行时 |
 | JM-26 员工权限模式与审批闭环 | 特性 / 扩展 | 纳入 | 每名员工独立发布权限；Smart Approval、可信 Web / Feishu 确认、主机级文件和联网命令 | 未评估 / — | 扩展 / — | 未排期 | 待验收 | 常钰聪 | — | 员工配置、审批持久化与原 Request 恢复、权限 UI 和 core 精确调用适配已实现；JiuwenMate 服务端 270 项、core 定向 291 项、前端 49 项通过，Vite 生产构建通过。真实飞书消息、身份及重启场景待验收，见 [F_26](../features/F_26_employee-permission-profiles.md) 与 PA-09 / [F_24](../../../../../../agent-core/openjiuwen/harness/persistent_agent/docs/features/F_24_permission-confirmation.md) | 2026-10-24；代码与组件验证完成 |
+| JM-27 员工钉钉 DWS CLI 接入 | 特性 / 扩展 | 未排期 | 所有员工共用钉钉默认应用，自动提供 DWS App Token 工具；当前群创建文档和共享日程；不新增用户登录授权页，不改变钉钉 Stream Bot | 未评估 / — | 扩展 / — | 未排期 | 进行中 | 常钰聪 | — | `create_group_document` 使用可信群事件解析 unionId 并上传到群文件区；根节点 UUID 可用时请求转换为在线 DOC，否则创建 DOCX 群文件。`create_calendar_event` 支持显式员工参与者；全群邀请使用 App Token 调用 `im/innerGroups/members/query`，按 `list[].userId`、`hasMore` 和整数 `nextToken` 读取完整名单后创建共享日程。群成员查询失败时由宿主代码覆盖候选最终消息，避免模型复述历史中的授权建议。定向替身覆盖分页、上游失败和畸形名单；真实群成员读取和日历写入待验收。详见 [F_27](../features/F_27_employee-dingtalk-cli.md) | 2026-10-29；群成员查询移除 DWS 用户登录依赖 |
 | JM-21 跨群搜索与 IM 扩展 | 特性 / 扩展 | 未排期 | 跨群搜索宿主子范围已实现；钉钉单聊已实现、群聊接入本地开发与回归完成，真实钉钉群聊待联合验收；其余 IM 扩展另行设计 | 未评估 / — | 扩展 / — | 未排期 | 进行中 | 闫祉君（整项及跨群搜索）；Song Haoran（F_21_02 钉钉接入） | [钉钉接入 !76](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/76)（F_21_02，配套 [同事配置聚合 !77](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/77)） | 跨群授权、群名精确解析、稳定合并／分页、逐页重授权及 direct-message／group-message PA-23 接线 → 真实 SQLite、真实 core 与模型／成员服务替身；跨群、3 个执行链测试和真实 core 集成共 26 passed，JM-11 `test_group_chat_port.py` 回归 17 passed；JiuwenMate 全目录回归 345 passed、14 failed（5 项既有 Windows／本地 core 基线失败，9 项本地 agent-core PA-18 capacity 配置缺口），详见 [F_21](../features/F_21_cross-group-search.md) §8。2026-10-28 新增 owner 私聊审批时间线和对应智能体权限页长期授权管理，sharing/profile 前端测试各 26 passed、生产构建通过，详见 [F_21_03](../features/F_21_03_group-sharing-approval.md) §8.5。真实飞书成员核验／Gateway 联调、真实审批浏览器验收待验证；[F_21_02 钉钉接入](../features/F_21_02_dingtalk-direct-message.md) 已提交子仓，钉钉单聊与群聊定向回归完成，真实平台与原生 PA 执行待验收；其余 IM 扩展另行设计。扩展分类和纳入本期节点状态不变 | 2026-10-28；实现私聊审批时间线及权限页授权管理
 | S0 契约与宿主基线 | 节点 / 本期 | 纳入 | JM-01～JM-06 组件验证；对端 PA-04 当前契约 | 顺序 1 | A、B / — | 未排期 | 进行中 | 常钰聪 | — | JM-01～JM-06 宿主组件均已通过，见各行证据 → 节点验收待核对替身清单与 PA-04 当前契约 | 2026-10-13 |
 | S1 私聊闭环 | 节点 / 本期 | 纳入 | JM-07、JM-10、JM-12；JM-09 Web 投递；JM-14 最小只读配置 | 顺序 2 | A、B、C、D / — | 未排期 | 待开始 | 常钰聪 | — | JM-07、JM-10、JM-12 已接入，并在 core `9eb336b4` 下以模型替身跑通收消息、回复、停止与取消；JM-14 最小只读配置已在工作区实现，Web 请求可读取同事办公目录；JM-09 Web 投递未开始；浏览器验收与节点联合验收未完成 | 2026-10-15 |
@@ -702,7 +724,7 @@ flowchart LR
 | S2c 续做 | 节点 / 本期 | 纳入 | JM-13；对端 core M2c | 顺序 3 | E / — | 未排期 | 待开始 | 常钰聪 | — | 未执行；异常、重启、停止后继续及配置保持 | 2026-10-13 |
 | S3 新版交付 | 节点 / 本期 | 纳入 | JM-18；对应 core 能力已联合验收 | 顺序 4 | E / — | 未排期 | 待开始 | 常钰聪 | — | 未执行；从空数据启动、独立存储、个人版回归与飞书联调 | 2026-10-13 |
 
-本期进度只统计交付分类为“本期”、类型为“特性”的 20 行：完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24），待开始 1 项（JM-18）；扩展 JM-21、JM-25、JM-26 单独统计为 0/3。节点状态按真实联合交付边界判断；特性的宿主组件通过，不代表 S0、S1、S2a 或整项完成。
+本期进度只统计交付分类为“本期”、类型为“特性”的 20 行：完成 0/20，待验收 10 项（JM-01～JM-08、JM-12、JM-23），进行中 9 项（JM-09、JM-10、JM-11、JM-13、JM-14、JM-16、JM-19、JM-22、JM-24），待开始 1 项（JM-18）；扩展 JM-21、JM-25～JM-27 单独统计为 0/4。节点状态按真实联合交付边界判断；特性的宿主组件通过，不代表 S0、S1、S2a 或整项完成。
 
 ## 附录 A. 迁移与接入安排
 

@@ -89,9 +89,13 @@ class DingTalkInboundEvent:
         )) if isinstance(mentions, (list, tuple)) else ()
         chatbot_user_id = data.get("chatbotUserId")
         mentions_everyone = any(item.casefold() in {"all", "@_all"} for item in mention_ids)
-        bot_mentioned = not mentions_everyone and (data.get("isInAtList") is True or (
-            isinstance(chatbot_user_id, str) and chatbot_user_id in mention_ids
-        ))
+        # DingTalk's Stream bot-message callback is only delivered for an @ to that bot in a group.
+        # Trust this app-scoped callback when its mention metadata is missing or inconsistent.
+        bot_mentioned = not mentions_everyone and (
+            conversation_type == "2"
+            or data.get("isInAtList") is True
+            or (isinstance(chatbot_user_id, str) and chatbot_user_id in mention_ids)
+        )
         return cls(
             receiving_app_id=app_id, expected_agent_id=agent_id,
             message_id=_text(data.get("msgId"), "msgId"),

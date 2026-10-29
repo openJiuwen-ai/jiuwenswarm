@@ -41,6 +41,12 @@ from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
 from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_tool import (
+    DingTalkCliCommitGuard,
+    dingtalk_execution_guidance,
+    prepare_dingtalk_cli_invocation,
+)
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliRuntimeService
 from jiuwenswarm.server.jiuwenmate.permission_runtime import EMPLOYEE_PERMISSION_RAIL_FACTORY
 from jiuwenswarm.server.jiuwenmate.permission_approval_repository import PermissionApprovalRepository
 from jiuwenswarm.server.jiuwenmate.presentation_package import install_presentation_handoff
@@ -137,6 +143,7 @@ class ExecutionDriver:
         clock: Callable[[], datetime] = _utc_now,
         cli: FeishuCliRuntime | None = None,
         agent_mail_runtime: AgentMailRuntimeService | None = None,
+        dingtalk_cli_runtime: DingTalkCliRuntimeService | None = None,
         permission_approvals: PermissionApprovalRepository | None = None,
         group_sharing=None,
     ) -> None:
@@ -162,6 +169,7 @@ class ExecutionDriver:
         self._clock = clock
         self._cli = cli or FeishuCliRuntime(windows.db_path.parent)
         self._agent_mail_runtime = agent_mail_runtime
+        self._dingtalk_cli_runtime = dingtalk_cli_runtime
         self._permission_approvals = permission_approvals
         self._group_sharing = group_sharing
 
@@ -205,8 +213,9 @@ class ExecutionDriver:
                     from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
 
                     group_chat_port = GuardedGroupChatPort(group_chat_port, self._group_sharing)
+            dingtalk_commit_guard = DingTalkCliCommitGuard(self._commit_port)
             ports = core.PersistentPorts(
-                commit=self._commit_port,
+                commit=dingtalk_commit_guard,
                 budget=self._budget_port,
                 window_backend=self._windows.bind(record.namespace_id, record.agent_id, record.session_id),
                 workspace_access=workspace,
@@ -240,6 +249,7 @@ class ExecutionDriver:
             addenda = [
                 item for item in (
                     guidance,
+                    dingtalk_execution_guidance(record.route_snapshot),
                     _session_workspace_guidance(record.session_id, session_workspace, output_dir),
                     vision_guidance(),
                 ) if item
@@ -252,6 +262,14 @@ class ExecutionDriver:
                 system_prompt_addendum="\n\n".join(addenda),
             )
             spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
+            spec = await prepare_dingtalk_cli_invocation(
+                spec,
+                context,
+                self._dingtalk_cli_runtime,
+                request_input=record.request_input,
+                route_snapshot=record.route_snapshot,
+            )
+            dingtalk_commit_guard.bind_context(context)
             bind_bash_runtime(
                 context,
                 office=office,
