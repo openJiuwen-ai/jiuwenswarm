@@ -8,6 +8,8 @@ stream never ending). The delete handler now first cancels the round via the
 same chat.interrupt cancellation routing; cancel failure must never block the
 delete itself.
 """
+# Exercise the private RPC handler and observe its runtime collaborators.
+# pylint: disable=protected-access
 
 from __future__ import annotations
 
@@ -37,6 +39,11 @@ class _Manager:
     def __init__(self, agent) -> None:
         self._agent = agent
         self.lookup_calls: list[tuple[str, str]] = []
+        self.cleaned: list[tuple[str, str]] = []
+
+    async def cleanup_session_runtime(self, *, channel_id, session_id):
+        self.cleaned.append((channel_id, session_id))
+        return True
 
     def get_agent_for_session(self, channel_id, session_id):
         self.lookup_calls.append((channel_id, session_id))
@@ -139,6 +146,7 @@ async def test_delete_cancels_inflight_round_before_removing_records(wiring):
     assert evicted == [target]
     assert killed == [target]
     assert released == [target]
+    assert server._agent_manager.cleaned == [("desktop", target)]
     assert not session_dir.exists(), "session dir must be removed"
     # 3) success frame returned
     assert sent and any("succeeded" == f.get("status") for f in sent)
@@ -184,4 +192,39 @@ async def test_team_session_uses_team_teardown_not_new_cancel(wiring):
     assert spy.requests == []
     assert evicted == []
     assert tm.calls == [target]
+    assert not session_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_keeps_history_when_runtime_cleanup_fails(wiring):
+    session_dir, _ev, released, _kill, sent, _tm = wiring
+    server = _make_server(session_dir.parent, session_dir.name, _SpyAgent())
+
+    async def fail_cleanup(**_kwargs):
+        raise RuntimeError("sandbox deletion pending")
+
+    server._agent_manager.cleanup_session_runtime = fail_cleanup
+    await server._handle_session_delete(None, _request(session_dir.name), asyncio.Lock())
+    assert released == []
+    assert session_dir.exists()
+    assert not any(frame.get("status") == "succeeded" for frame in sent)
+
+
+@pytest.mark.asyncio
+async def test_delete_waits_for_apply_before_releasing_shared_runtime(wiring):
+    session_dir, _ev, released, _kill, _sent, _tm = wiring
+    server = _make_server(session_dir.parent, session_dir.name, _SpyAgent())
+    lock = server._security_config_apply_lock = asyncio.Lock()
+    await lock.acquire()
+    task = asyncio.create_task(server._handle_session_delete(
+        None, _request(session_dir.name), asyncio.Lock(),
+    ))
+    try:
+        await asyncio.sleep(0)
+        assert server._agent_manager.cleaned == []
+        assert released == []
+        assert session_dir.exists()
+    finally:
+        lock.release()
+        await asyncio.wait_for(task, 2)
     assert not session_dir.exists()

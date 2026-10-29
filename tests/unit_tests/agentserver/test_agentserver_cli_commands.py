@@ -50,6 +50,9 @@ class AgentWebSocketServerHarness(agent_ws_server_module.AgentWebSocketServer):
     async def handle_permissions_config_for_test(self, ws, request, send_lock):
         await self._handle_permissions_config(ws, request, send_lock)
 
+    async def handle_sandbox_config_for_test(self, ws, request, send_lock):
+        await self._handle_sandbox_config(ws, request, send_lock)
+
     def get_agent_manager_for_test(self):
         return self._agent_manager
 
@@ -1377,3 +1380,34 @@ async def test_guard_writes_still_wait_for_sandbox_rebuild(server, fake_ws, monk
         await asyncio.wait_for(task, 1)
     assert edited.is_set()
     assert fake_ws.sent[0]["ok"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [
+    ReqMethod.SANDBOX_ENABLED_GET, ReqMethod.SANDBOX_STARTUP_MODE_GET,
+    ReqMethod.SANDBOX_LIMITS_GET, ReqMethod.SANDBOX_FILES_GET, ReqMethod.SANDBOX_NETWORK_GET,
+])
+async def test_managed_sandbox_reads_do_not_wait_for_apply(server, fake_ws, monkeypatch, method):
+    from jiuwenswarm.common.security_config_service import SecurityConfigService
+    from jiuwenswarm.server import security_config_rpc
+
+    monkeypatch.setattr(SecurityConfigService, "is_initialized", lambda _: True)
+
+    async def read(actual, _params, **_kwargs):
+        assert actual == method
+        return {"saved_snapshot": True}
+
+    monkeypatch.setattr(security_config_rpc, "dispatch_managed_sandbox_request", read)
+    lock = server._security_config_apply_lock = asyncio.Lock()
+    await lock.acquire()
+    try:
+        request = AgentRequest(
+            request_id="sandbox-read", channel_id="tui", req_method=method, params={},
+        )
+        await asyncio.wait_for(
+            server.handle_sandbox_config_for_test(fake_ws, request, asyncio.Lock()), 1,
+        )
+        assert fake_ws.sent[0]["payload"] == {"saved_snapshot": True}
+        assert lock.locked()
+    finally:
+        lock.release()

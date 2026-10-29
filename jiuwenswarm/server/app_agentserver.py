@@ -265,7 +265,7 @@ async def _run(host: str, port: int) -> None:
 
     await resume_managed_security_on_start(
         agent_manager=server.get_agent_manager(),
-        restart_sandboxes=server._restart_configured_sandboxes,
+        restart_sandboxes=server.apply_configured_sandboxes,
     )
     full_cfg = get_config()
 
