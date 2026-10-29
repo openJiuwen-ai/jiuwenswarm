@@ -7,6 +7,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable
 
 from pydantic import BaseModel, Field
@@ -337,22 +338,117 @@ class DingTalkChannel(BaseChannel):
         self, *, chat_id: str, text: str | None, source_message_id: str | None,
         idempotency_key: str, file_path: str | None = None, file_key: str | None = None,
         mention_targets: list[dict[str, str]] | None = None, is_direct_message: bool = True,
+        sender_staff_id: str | None = None, share_mode: str | None = None,
+        file_name: str | None = None,
     ) -> dict[str, Any]:
         """Return a real robot receipt; the local key is not a platform idempotency token."""
-        if file_path or file_key or mention_targets:
+        if mention_targets:
             return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
-        if not all(isinstance(value, str) and value.strip() for value in (chat_id, text, idempotency_key)):
+        has_file = bool(file_path or file_key)
+        has_text = isinstance(text, str) and bool(text.strip())
+        if not all(isinstance(value, str) and value.strip() for value in (chat_id, idempotency_key)):
             return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+        if not has_file and not has_text:
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
+        if has_file and share_mode not in {"upload", "attachment"}:
+            return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
+        if has_file and share_mode == "upload":
+            if is_direct_message:
+                return {"outcome": "failed", "error_code": "DINGTALK_GROUP_UPLOAD_REQUIRED"}
+            if not isinstance(sender_staff_id, str) or not sender_staff_id.strip():
+                return {"outcome": "failed", "error_code": "DINGTALK_SENDER_ID_REQUIRED"}
         if self._http is None:
             return {"outcome": "pending", "error_code": "DINGTALK_CLIENT_UNAVAILABLE"}
+        if not isinstance(is_direct_message, bool):
+            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
         token, fresh, token_error = await self._persistent_access_token()
         if token_error == "DINGTALK_CREDENTIAL_REJECTED":
             return {"outcome": "failed", "error_code": token_error}
         if not token:
             return {"outcome": "pending", "error_code": token_error or "DINGTALK_TOKEN_UNAVAILABLE"}
-        if not isinstance(is_direct_message, bool):
-            return {"outcome": "failed", "error_code": "INVALID_DELIVERY_PAYLOAD"}
         conversation_type = "1" if is_direct_message else "2"
+        file_receipt_key = file_key if has_file else None
+
+        def include_file_key(result: dict[str, Any]) -> dict[str, Any]:
+            if isinstance(file_receipt_key, str) and file_receipt_key.strip():
+                result["file_key"] = file_receipt_key
+            return result
+
+        if has_file:
+            if share_mode not in {"upload", "attachment"}:
+                return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
+            media_id = file_key
+            dentry_id = None
+            if share_mode == "upload":
+                if is_direct_message:
+                    return {"outcome": "failed", "error_code": "DINGTALK_GROUP_UPLOAD_REQUIRED"}
+                if not isinstance(sender_staff_id, str) or not sender_staff_id.strip():
+                    return {"outcome": "failed", "error_code": "DINGTALK_SENDER_ID_REQUIRED"}
+                if file_key:
+                    dentry_id = file_key
+                else:
+                    if not file_path or self._file_service is None or not self.config.send_file_allowed:
+                        return {"outcome": "failed", "error_code": "DINGTALK_FILE_UPLOAD_UNAVAILABLE"}
+                    try:
+                        uploaded = await self._file_service.upload_group_file(
+                            conversation_id=chat_id,
+                            sender_staff_id=sender_staff_id,
+                            file_path=Path(file_path),
+                            access_token=token,
+                        )
+                    except Exception as exc:
+                        outcome = getattr(exc, "outcome", "failed")
+                        error_code = getattr(exc, "code", "DINGTALK_UPLOAD_FAILED")
+                        logger.warning("[DingTalk] JM-09 group file upload failed: error_type=%s", type(exc).__name__)
+                        if error_code == "DINGTALK_TOKEN_EXPIRED":
+                            if fresh:
+                                return {"outcome": "failed", "error_code": "DINGTALK_REJECTED"}
+                            self._access_token = None
+                        return {"outcome": outcome, "error_code": error_code}
+                    dentry_id = uploaded.get("dentryId") if isinstance(uploaded, dict) else None
+                    if not isinstance(dentry_id, str) or not dentry_id.strip():
+                        return {"outcome": "unknown", "error_code": "DINGTALK_UPLOAD_RECEIPT_MISSING"}
+                    file_receipt_key = dentry_id
+                if not has_text:
+                    return {"outcome": "delivered", "external_message_id": dentry_id, "file_key": dentry_id}
+            else:
+                if not media_id:
+                    if not file_path or self._file_service is None or not self.config.send_file_allowed:
+                        return {"outcome": "failed", "error_code": "DINGTALK_FILE_UPLOAD_UNAVAILABLE"}
+                    try:
+                        media_id = await self._file_service.upload_media(file_path, "file")
+                    except Exception as exc:
+                        logger.warning("[DingTalk] JM-09 attachment upload failed: error_type=%s", type(exc).__name__)
+                        return {"outcome": "failed", "error_code": "DINGTALK_ATTACHMENT_UPLOAD_FAILED"}
+                if not isinstance(media_id, str) or not media_id.strip():
+                    return {"outcome": "failed", "error_code": "DINGTALK_ATTACHMENT_UPLOAD_FAILED"}
+                file_receipt_key = media_id
+                attachment_name = file_name or os.path.basename(file_path or "file")
+                try:
+                    response = await self._http.post(
+                        self._get_send_api_url(conversation_type),
+                        json=(
+                            self._build_group_file_payload(chat_id, media_id, attachment_name)
+                            if not is_direct_message else self._build_private_file_payload(chat_id, media_id, attachment_name)
+                        ),
+                        headers={"x-acs-dingtalk-access-token": token},
+                    )
+                except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
+                    return include_file_key({"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"})
+                except Exception:
+                    return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
+                body = self._response_json(response)
+                if response.status_code >= 500 or response.status_code == 408:
+                    return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
+                if response.status_code != 200:
+                    return include_file_key({"outcome": "failed", "error_code": "DINGTALK_REJECTED"})
+                receipt = body.get("processQueryKey")
+                if not isinstance(receipt, str) or not receipt.strip():
+                    return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_MISSING"})
+                if not has_text:
+                    return include_file_key({"outcome": "delivered", "external_message_id": receipt})
+                file_key = media_id
+
         data = (
             self._build_private_message_payload(chat_id, text)
             if is_direct_message else self._build_group_message_payload(text, chat_id)
@@ -364,9 +460,9 @@ class DingTalkChannel(BaseChannel):
                 headers={"x-acs-dingtalk-access-token": token},
             )
         except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout):
-            return {"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"}
+            return include_file_key({"outcome": "pending", "error_code": "DINGTALK_NOT_CONNECTED"})
         except Exception:
-            return {"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"}
+            return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
         try:
             body = response.json()
         except ValueError:
@@ -375,19 +471,19 @@ class DingTalkChannel(BaseChannel):
             body = {}
         code = str(body.get("code") or "")
         if code == "unknown.send.result" or response.status_code >= 500 or response.status_code == 408:
-            return {"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"}
+            return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_SEND_UNKNOWN"})
         if response.status_code == 401 and not fresh:
             # A cached token can be revoked early. Nothing was sent, so the next attempt gets a new one.
             self._access_token = None
-            return {"outcome": "pending", "error_code": "DINGTALK_TOKEN_EXPIRED"}
+            return include_file_key({"outcome": "pending", "error_code": "DINGTALK_TOKEN_EXPIRED"})
         if response.status_code != 200:
             rejected = response.status_code in {401, 403, 404, 413, 422, 429} or (
                 400 <= response.status_code < 500 and bool(code)
             )
-            return {
+            return include_file_key({
                 "outcome": "failed" if rejected else "unknown",
                 "error_code": "DINGTALK_REJECTED" if rejected else "DINGTALK_SEND_UNKNOWN",
-            }
+            })
         for field, error in (
             ("invalidStaffIdList", "DINGTALK_TARGET_INVALID"),
             ("flowControlledStaffIdList", "DINGTALK_RATE_LIMITED"),
@@ -395,13 +491,46 @@ class DingTalkChannel(BaseChannel):
         ):
             targets = body.get(field, [])
             if not isinstance(targets, list):
-                return {"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_INVALID"}
+                return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_INVALID"})
             if chat_id in targets:
-                return {"outcome": "failed", "error_code": error}
+                return include_file_key({"outcome": "failed", "error_code": error})
         key = body.get("processQueryKey")
         if not isinstance(key, str) or not key.strip():
-            return {"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_MISSING"}
-        return {"outcome": "delivered", "external_message_id": key}
+            return include_file_key({"outcome": "unknown", "error_code": "DINGTALK_RECEIPT_MISSING"})
+        result = {"outcome": "delivered", "external_message_id": key}
+        return include_file_key(result)
+
+    @staticmethod
+    def _response_json(response: httpx.Response) -> dict[str, Any]:
+        try:
+            body = response.json()
+        except (ValueError, TypeError):
+            return {}
+        return body if isinstance(body, dict) else {}
+
+    def _build_group_file_payload(self, conversation_id: str, media_id: str, name: str) -> dict[str, Any]:
+        return {
+            "robotCode": self.config.robot_code or self.config.client_id,
+            "openConversationId": conversation_id,
+            "msgKey": "sampleFile",
+            "msgParam": json.dumps({
+                "mediaId": media_id,
+                "fileName": name,
+                "fileType": os.path.splitext(name)[1].lower().lstrip(".") or "stream",
+            }),
+        }
+
+    def _build_private_file_payload(self, staff_id: str, media_id: str, name: str) -> dict[str, Any]:
+        return {
+            "robotCode": self.config.robot_code or self.config.client_id,
+            "userIds": [staff_id],
+            "msgKey": "sampleFile",
+            "msgParam": json.dumps({
+                "mediaId": media_id,
+                "fileName": name,
+                "fileType": os.path.splitext(name)[1].lower().lstrip(".") or "stream",
+            }),
+        }
 
     async def _persistent_access_token(self) -> tuple[str | None, bool, str | None]:
         """Return ``(token, freshly issued, failure code)`` for a JiuwenMate send.

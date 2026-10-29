@@ -203,6 +203,15 @@ def stub_invocation_builder(monkeypatch, addenda=None):
 
     calls = []
 
+    class InvocationSpec(SimpleNamespace):
+        def model_copy(self, *, update):
+            return InvocationSpec(
+                card=self.card,
+                fingerprint=self.fingerprint,
+                system_prompt=self.system_prompt,
+                tools=update.get("tools", self.tools),
+            )
+
     def build(snapshot, request, execution, *, ports, system_prompt_addendum=None):
         calls.append(request.session_id)
         if addenda is not None:
@@ -215,10 +224,11 @@ def stub_invocation_builder(monkeypatch, addenda=None):
             extras={},
             system_prompt_addendum=system_prompt_addendum,
         )
-        return SimpleNamespace(
+        return InvocationSpec(
             card=SimpleNamespace(id=request.agent_id),
             fingerprint=lambda: request.config_fingerprint,
             system_prompt=None,
+            tools=[],
         ), context
 
     monkeypatch.setattr(execution_driver, "build_invocation", build)

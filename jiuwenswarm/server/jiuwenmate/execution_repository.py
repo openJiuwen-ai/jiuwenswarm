@@ -844,6 +844,11 @@ class ExecutionRepository(SQLiteStore):
                     "idempotency_key": row["idempotency_key"],
                     "attempt_count": row["attempt_count"] + 1,
                 }
+                if row["channel"] == "dingtalk" and record.request_input.kind == "group_message":
+                    source = record.request_input.source
+                    sender_staff_id = getattr(source, "sender_id", None)
+                    if isinstance(sender_staff_id, str) and sender_staff_id.strip():
+                        job["sender_staff_id"] = sender_staff_id
                 if share_mode in FILE_SHARE_MODES:
                     try:
                         file_path = payload["file_path"]
@@ -857,6 +862,7 @@ class ExecutionRepository(SQLiteStore):
                             "size": file_size,
                             "file_ref": file_ref,
                             "file_key": row["file_key"],
+                            "share_mode": share_mode,
                         }
                     except PersistentAgentError:
                         conn.execute(

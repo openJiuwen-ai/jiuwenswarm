@@ -149,9 +149,14 @@ class ChannelManager(ABC):
         text = payload.get("text")
         idempotency_key = payload.get("idempotency_key")
         file = payload.get("file")
-        # DingTalk sends text only; dropping a file or an @ handoff would report a delivery that did not happen.
-        if channel_id == "dingtalk" and (isinstance(file, dict) or payload.get("mention_targets")):
+        # DingTalk file uploads are group-scoped; @ handoffs are still unsupported.
+        if channel_id == "dingtalk" and payload.get("mention_targets"):
             return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
+        if channel_id == "dingtalk" and isinstance(file, dict):
+            if file.get("share_mode") not in {"upload", "attachment"}:
+                return {"outcome": "failed", "error_code": "DINGTALK_DELIVERY_UNSUPPORTED"}
+            if file.get("share_mode") == "upload" and payload.get("is_direct_message") is True:
+                return {"outcome": "failed", "error_code": "DINGTALK_GROUP_UPLOAD_REQUIRED"}
         required = (app_id, chat_id, idempotency_key)
         if not isinstance(file, dict):
             required = (*required, text)
@@ -169,6 +174,8 @@ class ChannelManager(ABC):
                 if path is None:
                     return {"outcome": "failed", "error_code": "OUTPUT_FILE_MISSING"}
                 file_args = {"file_path": str(path), "file_key": None}
+            file_args["share_mode"] = file.get("share_mode")
+            file_args["file_name"] = file.get("name")
             text = text if isinstance(text, str) and text.strip() else None
 
         if channel_id == "dingtalk":
@@ -210,6 +217,9 @@ class ChannelManager(ABC):
             }
             if channel_id == "dingtalk":
                 send_kwargs["is_direct_message"] = payload.get("is_direct_message", True)
+                sender_staff_id = payload.get("sender_staff_id")
+                if isinstance(sender_staff_id, str) and sender_staff_id.strip():
+                    send_kwargs["sender_staff_id"] = sender_staff_id
             if mention_targets:
                 send_kwargs["mention_targets"] = mention_targets
             return await matches[0].send_persistent_result(**send_kwargs)

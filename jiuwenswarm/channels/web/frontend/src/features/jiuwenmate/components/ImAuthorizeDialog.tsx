@@ -15,11 +15,12 @@ interface ImAuthorizeDialogProps {
   created?: boolean;
   /** Set when replacing the Secret of a bound app: its platform and app ID cannot change. */
   fixed?: { platform: ImPlatform; appId: string; robotCode?: string };
+  initialPlatform?: ImPlatform;
 }
 
-export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed }: ImAuthorizeDialogProps) {
+export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed, initialPlatform }: ImAuthorizeDialogProps) {
   const { t } = useTranslation();
-  const [platform, setPlatform] = useState<ImPlatform>(fixed?.platform ?? 'feishu');
+  const [platform, setPlatform] = useState<ImPlatform>(fixed?.platform ?? initialPlatform ?? 'feishu');
   const [appId, setAppId] = useState(fixed?.appId ?? '');
   const [robotCode, setRobotCode] = useState(fixed?.robotCode ?? '');
   const [secret, setSecret] = useState('');

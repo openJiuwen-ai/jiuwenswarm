@@ -162,6 +162,8 @@ def assemble_activity(
         tasks = replies = failures = calls_total = tokens_total = 0
         last_response: datetime | None = None
         day_tasks: dict[str, int] = defaultdict(int)
+        day_finished_tasks: dict[str, int] = defaultdict(int)
+        day_failures: dict[str, int] = defaultdict(int)
         day_minutes: dict[str, int] = defaultdict(int)
         day_calls: dict[str, int] = defaultdict(int)
         day_tokens: dict[str, int] = defaultdict(int)
@@ -171,6 +173,7 @@ def assemble_activity(
         request_tokens: dict[str, int] = defaultdict(int)
         day_kinds: dict[str, dict[str, int]] = defaultdict(lambda: {"conversation": 0, "channel": 0, "schedule": 0})
         history_rows: list[dict[str, object]] = []
+        running_task_started_ats: list[str] = []
         channels: dict[str, dict[str, int]] = {}
         group_rows: dict[str, dict[str, object]] = {}
 
@@ -208,13 +211,18 @@ def assemble_activity(
             channel_name = session["channel"] if session is not None else ""
             transport_channel = _transport_channel(session, group_names)
             outcome = request["outcome"]
+            if request["status"] == "dispatched" and outcome is None:
+                running_task_started_ats.append(started.isoformat())
             ended = request["status"] == "ended" and request["updated_at"]
             spent = _minutes(started, _aware(str(request["updated_at"]))) if ended else 0
             tasks += 1
+            if ended:
+                day_finished_tasks[started.date().isoformat()] += 1
             if outcome == "completed":
                 replies += 1
             elif outcome == "failed":
                 failures += 1
+                day_failures[started.date().isoformat()] += 1
             day = started.date().isoformat()
             day_tasks[day] += 1
             day_minutes[day] += spent
@@ -315,6 +323,8 @@ def assemble_activity(
             {
                 "date": day,
                 "tasks": day_tasks[day],
+                "finished_tasks": day_finished_tasks[day],
+                "failures": day_failures[day],
                 "minutes": day_minutes[day],
                 "calls": day_calls[day],
                 "tokens": day_tokens[day],
@@ -345,6 +355,7 @@ def assemble_activity(
                 "days": days,
                 "kinds": [{"date": day, **day_kinds[day]} for day in sorted(day_kinds)],
                 "history": history_rows[:_HISTORY_LIMIT],
+                "running_task_started_ats": running_task_started_ats,
                 "hours": hours,
                 "channels": [
                     {"channel": name, **bucket}
