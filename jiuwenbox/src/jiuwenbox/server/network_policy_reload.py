@@ -31,6 +31,8 @@ def read_network_candidate(reader, previous, expected_fingerprint):
         raise ValueError("invalid runtime policy YAML") from exc
     if not isinstance(data, dict):
         raise ValueError("runtime policy must be an object")
+    # load_policy -> merge_policy validates the merged SecurityPolicy. Its
+    # schema ValidationError is a ValueError and propagates to the 409 response.
     candidate = reader.load_policy()
     if hashlib.sha256(path.read_bytes()).hexdigest() != expected_fingerprint:
         raise ValueError("runtime policy changed during validation")

@@ -253,7 +253,7 @@ async def test_apply_snapshots_live_owners_before_service_retirement(runtime):
 
 
 @pytest.mark.asyncio
-async def test_apply_does_not_resurrect_owner_released_after_snapshot(runtime):
+async def test_apply_does_not_resurrect_owner_released_after_snapshot(runtime, monkeypatch):
     adapter, operation = runtime.owner("disconnecting")
     await operation.fs().read_file("/probe")
 
@@ -267,6 +267,92 @@ async def test_apply_does_not_resurrect_owner_released_after_snapshot(runtime):
     assert result["skipped"] == 1
     assert not runtime.active
     assert len(runtime.created) == 1
+    assert not runtime.server._has_pending_sandbox_rebuild()
+    hot_update = AsyncMock(return_value=True)
+    monkeypatch.setattr(sandbox_config_rpc, "try_apply_sandbox_network_policy", hot_update)
+    result = await runtime.server.apply_configured_sandboxes({"network_only": True})
+    assert result["network_status"] == "hot_applied"
+    hot_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_invalid_scope_fails_preflight_before_marking_or_changing_other_owners(runtime):
+    healthy, live = runtime.owner("healthy")
+    invalid, invalid_op = runtime.owner("invalid")
+    await live.fs().read_file("/probe")
+    await invalid_op.fs().read_file("/probe")
+    invalid._sys_operation_isolation_key = lambda _card: None
+
+    with pytest.raises(RuntimeError, match="scope validation failed.*isolation key is unavailable"):
+        await runtime.server.apply_configured_sandboxes({})
+
+    runtime.service_update.assert_not_awaited()
+    assert runtime.active == {"sandbox-1", "sandbox-2"}
+    assert not runtime.deleted
+    for adapter in (healthy, invalid):
+        extra = adapter._sys_operation_card.gateway_config.launcher_config.extra_params
+        assert "_policy_apply_pending" not in extra
+        assert "_policy_rebuild_pending" not in extra
+
+
+@pytest.mark.asyncio
+async def test_scope_recheck_error_reports_partial_failure_and_processes_other_owners(runtime):
+    invalid, invalid_op = runtime.owner("invalid")
+    _, healthy_op = runtime.owner("healthy")
+    await invalid_op.fs().read_file("/probe")
+    await healthy_op.fs().read_file("/probe")
+    original_scope = invalid.sandbox_scope_key
+    calls = 0
+
+    def resolve_scope():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise RuntimeError("scope became invalid")
+        return original_scope()
+
+    invalid.sandbox_scope_key = resolve_scope
+    with pytest.raises(RuntimeError, match="restarted=1, failed=1.*scope became invalid"):
+        await runtime.server.apply_configured_sandboxes({})
+    assert runtime.active == {"sandbox-3"}
+    assert runtime.server._has_pending_sandbox_rebuild()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("released", [False, True])
+async def test_false_rebuild_result_only_clears_pending_for_released_owner(runtime, released):
+    adapter, operation = runtime.owner("live")
+    await operation.fs().read_file("/probe")
+    original_patch = adapter.apply_sandbox_runtime_patch
+
+    async def patch(policy, **kwargs):
+        if kwargs.get("prepare_only"):
+            return await original_patch(policy, **kwargs)
+        if released:
+            await adapter._cleanup_sys_operations()
+        return False
+
+    adapter.apply_sandbox_runtime_patch = patch
+    if released:
+        result = await runtime.server.apply_configured_sandboxes({})
+        assert result["skipped"] == 1 and result["restarted"] == 0
+        assert not runtime.server._has_pending_sandbox_rebuild()
+    else:
+        with pytest.raises(RuntimeError, match="rebuild did not complete for retained owner"):
+            await runtime.server.apply_configured_sandboxes({})
+        assert runtime.server._has_pending_sandbox_rebuild()
+
+
+@pytest.mark.asyncio
+async def test_missing_launcher_reports_strict_configuration_error_without_attribute_error(runtime):
+    adapter, operation = runtime.owner("missing-launcher")
+    await operation.fs().read_file("/probe")
+    scope = adapter.sandbox_scope_key()
+    adapter.sandbox_scope_key = lambda: scope
+    adapter._sys_operation_card.gateway_config.launcher_config = None
+
+    with pytest.raises(RuntimeError, match="missing sandbox launcher_config"):
+        await runtime.server.apply_configured_sandboxes({})
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -43,6 +44,48 @@ class _BlockingCleanupChildAdapter(_IdleChildAdapter):
         self.cleanup_started.set()
         await self.cleanup_can_finish.wait()
         await super().cleanup()
+
+
+@pytest.mark.asyncio
+async def test_session_scoped_cleanup_failure_returns_false_and_can_retry() -> None:
+    cleanup = AsyncMock(side_effect=RuntimeError("ACL revoke failed"))
+    adapter = _make_adapter(
+        _is_session_scoped_adapter=True,
+        _parent_session_id="failed-session",
+        is_session_active=lambda _sid: False,
+        is_deep_agent_executing_for_session=lambda _sid: False,
+        cleanup=cleanup,
+    )
+    assert await adapter.cleanup_session_adapter("failed-session") is False
+    cleanup.side_effect = None
+    assert await adapter.cleanup_session_adapter("failed-session") is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unexpected_error", [False, True])
+async def test_idle_eviction_preserves_failed_child_and_continues_others(unexpected_error) -> None:
+    failed, healthy = _IdleChildAdapter(), _IdleChildAdapter()
+    failed.cleanup = AsyncMock(side_effect=RuntimeError("ACL revoke failed"))
+    parent = _make_adapter(
+        _is_session_scoped_adapter=False,
+        _session_adapters={"failed": failed, "healthy": healthy},
+        _session_adapter_locks={},
+        _session_adapter_last_used={"failed": 0, "healthy": 0},
+        _session_adapter_versions={},
+        _session_adapter_reload_failures={},
+    )
+    if unexpected_error:
+        original_cleanup = parent.cleanup_session_adapter
+
+        async def cleanup(session_id):
+            if session_id == "failed":
+                raise RuntimeError("unexpected cleanup error")
+            return await original_cleanup(session_id)
+
+        parent.cleanup_session_adapter = cleanup
+    await getattr(parent, "_evict_idle_session_adapters")()
+    assert healthy.cleaned
+    assert getattr(parent, "_session_adapters") == {"failed": failed}
 
 
 def test_other_active_sessions_treats_subagent_as_related() -> None:

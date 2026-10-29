@@ -5753,6 +5753,7 @@ class AgentWebSocketServer:
         adapters = []
         launchers = set()
         pending = []
+        failures = []
         for agents in list(self._agent_manager.agents.values()):
             for agent in list(agents.values()):
                 pending.append(self._resolve_adapter(agent))
@@ -5771,14 +5772,20 @@ class AgentWebSocketServer:
             # A port change can replace a registered sysop while older sessions
             # still retain its previous card. Rebind before launcher deduplication.
             refresh_binding = getattr(adapter, "refresh_sandbox_runtime_binding", None)
-            if refresh_binding is not None:
-                refresh_binding()
+            card = getattr(adapter, "_sys_operation_card", None)
+            try:
+                if refresh_binding is not None:
+                    refresh_binding()
+                scope_key = (
+                    adapter.sandbox_scope_key() if hasattr(adapter, "sandbox_scope_key") else None
+                )
+            except Exception as exc:
+                identity = getattr(card, "id", None) or f"adapter[{len(visited)}]"
+                failures.append(f"{identity}: {exc}")
+                continue
             card = getattr(adapter, "_sys_operation_card", None)
             gateway = getattr(card, "gateway_config", None)
             launcher = getattr(gateway, "launcher_config", None)
-            scope_key = (
-                adapter.sandbox_scope_key() if hasattr(adapter, "sandbox_scope_key") else None
-            )
             if launcher is not None:
                 identity = scope_key if live_scopes is not None and scope_key else id(launcher)
                 if identity in launchers:
@@ -5790,12 +5797,20 @@ class AgentWebSocketServer:
                 rebuild = bool(scope_key and (
                     scope_key in live_scopes or extra.get("_policy_rebuild_pending")
                 ))
-                if rebuild:
-                    extra["_policy_rebuild_pending"] = True
-                    launcher.extra_params = extra
-            if launcher is not None and isinstance(getattr(launcher, "extra_params", None), dict):
-                launcher.extra_params["_policy_apply_pending"] = True
             adapters.append((adapter, rebuild))
+        # An unidentified retained owner cannot safely be skipped as if retired.
+        # Validate the whole snapshot before blocking tools or changing the service.
+        if failures:
+            raise RuntimeError("Sandbox scope validation failed: " + "; ".join(failures))
+        for adapter, rebuild in adapters:
+            card = getattr(adapter, "_sys_operation_card", None)
+            launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+            if launcher is not None:
+                extra = getattr(launcher, "extra_params", None) or {}
+                extra["_policy_apply_pending"] = True
+                if rebuild and live_scopes is not None:
+                    extra["_policy_rebuild_pending"] = True
+                launcher.extra_params = extra
         # Snapshot ownership before a service restart retires caches and retargets
         # launcher URLs. Never infer liveness from an old card's sandbox_id alone.
         service_reloaded = await apply_sandbox_policy_for_restart(
@@ -5825,26 +5840,39 @@ class AgentWebSocketServer:
         failures = []
         skipped = 0
         for index, (adapter, rebuild) in enumerate(adapters):
-            # Disconnect/idle teardown also runs outside session.delete. Recheck
-            # ownership after awaits so a released snapshot target stays lazy.
-            if live_scopes is not None and hasattr(adapter, "sandbox_scope_key"):
-                rebuild = rebuild and adapter.sandbox_scope_key() is not None
-            if not rebuild:
-                skipped += 1
-                card = getattr(adapter, "_sys_operation_card", None)
-                launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
-                if launcher is not None:
-                    (launcher.extra_params or {}).pop("sandbox_id", None)
-                continue
             try:
-                if await adapter.apply_sandbox_runtime_patch(runtime, files_changed=True, strict=True):
-                    restarted += 1
+                # Recheck after awaits: a released snapshot target stays lazy,
+                # while an unidentifiable retained owner remains a strict failure.
+                if live_scopes is not None and hasattr(adapter, "sandbox_scope_key"):
+                    rebuild = rebuild and adapter.sandbox_scope_key() is not None
+                if not rebuild:
+                    skipped += 1
                     card = getattr(adapter, "_sys_operation_card", None)
                     gateway = getattr(card, "gateway_config", None)
                     launcher = getattr(gateway, "launcher_config", None)
                     if launcher is not None:
                         extra = getattr(launcher, "extra_params", None) or {}
+                        extra.pop("sandbox_id", None)
                         extra.pop("_policy_rebuild_pending", None)
+                    continue
+                applied = await adapter.apply_sandbox_runtime_patch(
+                    runtime, files_changed=True, strict=True,
+                )
+                if applied:
+                    restarted += 1
+                elif getattr(adapter, "_sys_operation_card", None) is None:
+                    skipped += 1
+                elif hasattr(adapter, "sandbox_scope_key") and adapter.sandbox_scope_key() is None:
+                    skipped += 1
+                else:
+                    raise RuntimeError("sandbox rebuild did not complete for retained owner")
+                card = getattr(adapter, "_sys_operation_card", None)
+                launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+                if launcher is not None:
+                    extra = getattr(launcher, "extra_params", None) or {}
+                    if not applied:
+                        extra.pop("sandbox_id", None)
+                    extra.pop("_policy_rebuild_pending", None)
             except Exception as exc:
                 card = getattr(adapter, "_sys_operation_card", None)
                 identity = getattr(card, "id", None) or f"adapter[{index}]"

@@ -1668,8 +1668,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 lock.locked() or self._session_adapter_lock_has_waiters(lock)
             ):
                 continue
-            if await self.cleanup_session_adapter(sid):
-                evicted += 1
+            try:
+                if await self.cleanup_session_adapter(sid):
+                    evicted += 1
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] idle session eviction failed: session_id=%s error=%s",
+                    sid, exc,
+                )
 
     async def cleanup_session_adapter(self, session_id: str | None) -> bool:
         """Release an idle session-scoped adapter without deleting session history."""
@@ -1679,7 +1685,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 return False
             if self.is_session_active(sid) or self.is_deep_agent_executing_for_session(sid):
                 return False
-            await self.cleanup()
+            try:
+                await self.cleanup()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] session adapter cleanup failed: "
+                    "session_id=%s error=%s",
+                    sid, exc,
+                )
+                return False
             return True
 
         lock = self._session_adapter_locks.get(sid)
@@ -1776,6 +1790,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 # Changing the switch cannot rebind tools holding the old
                 # SysOperation. Reuse the normal build and history warmup below
                 # for either direction, keeping the same product session.
+                # Cleanup must succeed before dropping the owner or creating a
+                # replacement; propagating a revocation failure keeps it retryable.
                 instance_source = existing
                 await existing.cleanup()
                 self._drop_session_adapter_cache_entry(sid, remove_lock=False, remove_runtime_state=False)

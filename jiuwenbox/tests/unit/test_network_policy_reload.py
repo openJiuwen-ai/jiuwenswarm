@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 import pytest_asyncio
+import yaml
 
 from jiuwenbox.models.policy import NetworkRulePolicy, SecurityPolicy
 from jiuwenbox.server.network_policy_reload import read_network_candidate
@@ -276,6 +277,47 @@ def test_real_reader_merges_network_copy_and_clears_inherited_allowances(tmp_pat
     assert candidate.windows.network.egress.allowed_domains == ["allowed.test"]
     assert candidate.windows.network.egress.default == "deny"
     assert candidate.windows.filesystem == previous.windows.filesystem
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("network", [
+    {"egress": {"allowed_ports": "443"}},
+    {"mode": "invalid-mode"},
+    {"egress": {"allowed_ips": {"cidr": "127.0.0.0/8"}}},
+    {"egress": {"allowed_ips": [123]}},
+])
+async def test_schema_invalid_yaml_is_rejected_by_real_reader_and_reload_route(
+    manager, tmp_path, monkeypatch, network,
+):
+    from jiuwenbox.server import app, policy_reader
+    from jiuwenbox.server.policy_engine import PolicyEngine
+
+    mgr, controller, _, _ = manager
+    base = tmp_path / "base.yaml"
+    base.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(policy_reader, "base_policy_path", lambda: base)
+    path = mgr.policy_reader.policy_path
+    reader = policy_reader.PolicyReader(PolicyEngine(tmp_path / "policies"), path)
+    previous = reader.load_policy()
+    mgr.policy_reader = reader
+    mgr.policy = previous
+    mgr._network_reload_policy = previous.model_copy(deep=True)
+    path.write_text(yaml.safe_dump({"windows": {"network": network}}), encoding="utf-8")
+    fingerprint = hashlib.sha256(path.read_bytes()).hexdigest()
+    with pytest.raises(ValueError):
+        read_network_candidate(reader, previous, fingerprint)
+    monkeypatch.setenv("JIUWENBOX_API_TOKEN", "test-token")
+    monkeypatch.setattr(app, "get_manager", lambda: mgr)
+    monkeypatch.setattr(app, "get_windows_proxy_controller", lambda: controller)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app.create_app()), base_url="http://localhost",
+        headers={"Authorization": "Bearer test-token"},
+    ) as client:
+        reply = await client.put("/api/v1/network/reload", json={"fingerprint": fingerprint})
+    assert reply.status_code == 409
+    assert "applied" not in reply.json()
+    assert mgr.policy == previous and mgr._network_reload_policy == previous
+    controller.replace_policy.assert_not_awaited()
 
 
 @pytest.mark.asyncio
