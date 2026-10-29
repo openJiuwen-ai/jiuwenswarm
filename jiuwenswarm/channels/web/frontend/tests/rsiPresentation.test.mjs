@@ -5,6 +5,7 @@ import {
   nodeChangeDisplayLabel,
   nodeScoreLines,
   nodeMetrics,
+  nodeHeight,
   nodeStageLabel,
   nodeStageLocalizedLabel,
   nodeStageSpec,
@@ -454,6 +455,17 @@ test('only Harness scores keep three decimal places across score displays', () =
   assert.deepEqual(nodeScoreLines(node, null, 'HARNESS'), [{ value: '0.735', label: '分数' }]);
   assert.deepEqual(nodeScoreLines(node, 'PAPER', 'ARTIFACT'), [{ value: '0.7', label: '分数' }]);
   assert.deepEqual(nodeScoreLines(node, 'PROGRAM', 'ARTIFACT'), [{ value: '73.5', label: '分数' }]);
+});
+
+test('nodeHeight uses the scenario when measuring Harness score rows', () => {
+  const node = { score: 0.7, extra: { potential_score: 0.8, best_reference_score: 0.9 } };
+  for (const kind of ['best-path', 'evaluated']) {
+    for (const expanded of [false, true]) {
+      const metrics = nodeMetrics(node, kind, expanded, 'HARNESS');
+      assert.equal(nodeHeight(node, kind, expanded, 'HARNESS'), metrics.barH + metrics.bodyH);
+      assert(nodeHeight(node, kind, expanded) > nodeHeight(node, kind, expanded, 'HARNESS'));
+    }
+  }
 });
 
 test('program candidates skipped after a sibling reached the target render as neutral skips', () => {

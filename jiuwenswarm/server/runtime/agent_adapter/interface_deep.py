@@ -2850,6 +2850,16 @@ class JiuWenSwarmDeepAdapter:
                     else item
                     for item in plugin_names
                 ]
+                if request.session_id and params["plugin_names"]:
+                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+                    saved = get_session_equipment(request.session_id, cache_bust=True).get("plugin_names", [])
+                    # A refreshed client may echo equipment saved before uninstall.
+                    # New invalid selections still reach the marketplace gate.
+                    params["plugin_names"] = [
+                        name for name in params["plugin_names"]
+                        if name not in saved or equipment.is_plugin_allowed(name)
+                    ]
         except (TypeError, ValueError) as exc:
             return self._equipment_error_response(request, str(exc))
 
@@ -2955,7 +2965,7 @@ class JiuWenSwarmDeepAdapter:
         """Include the session-selected RSI bundle in ordinary equipment state."""
         names = list(dict.fromkeys([
             *self._loaded_plugins,
-            *getattr(self, "_rsi_displaced_plugins", {}),
+            *(name for name in getattr(self, "_rsi_displaced_plugins", {}) if equipment.is_plugin_allowed(name)),
         ]))
         selected = getattr(self, "_rsi_selected_plugin", None)
         if selected is not None:
@@ -3018,6 +3028,7 @@ class JiuWenSwarmDeepAdapter:
                     if self._instance is not None:
                         await self._instance.unload_extension(entry[0])
                     self._loaded_plugins.pop(pid, None)
+                getattr(self, "_rsi_displaced_plugins", {}).pop(pid, None)
         except Exception as exc:
             raise RuntimeError(
                 f"unload equipment failed: kind={kind} id={pid}: {exc}"
@@ -9173,6 +9184,11 @@ class JiuWenSwarmDeepAdapter:
         instance = getattr(self, "_instance", None)
         if instance is None:
             return {"status": "SKIPPED", "resources": []}
+        # Other clients may uninstall a package without notifying this adapter.
+        self._rsi_displaced_plugins = {
+            name: entry for name, entry in getattr(self, "_rsi_displaced_plugins", {}).items()
+            if equipment.is_plugin_allowed(name)
+        }
         if operation == "deactivate":
             record = getattr(self, "_rsi_harness_load_record", None)
             if record is None:

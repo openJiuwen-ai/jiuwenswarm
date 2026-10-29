@@ -384,3 +384,63 @@ async def test_selection_keeps_original_plugin_displaced_until_default_is_restor
     await adapter.apply_rsi_harness_install_local("deactivate", config_path="", installation_id="")
     assert "coding-guard" in adapter._loaded_plugins
     await adapter._instance.unload_extension(adapter._loaded_plugins["coding-guard"][0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("notify_runtime", [True, False])
+@pytest.mark.parametrize("explicit_snapshot", [True, False])
+async def test_uninstalled_displaced_plugin_does_not_block_chat_or_restore(
+    tmp_path, rsi_catalog_workspace, monkeypatch, notify_runtime, explicit_snapshot,
+):
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path / "user")
+    source = _make_plugin_package(tmp_path, "coding-guard")
+    catalog.import_plugin_package({"path": str(source)})
+    catalog.install_plugin_package({"id": "coding-guard"})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _agent()
+    await _select(adapter, ["coding-guard"])
+    await adapter.apply_rsi_harness_install_local(
+        "activate", config_path=str(source), installation_id="rsi-harness-aabbcc",
+    )
+    request = AgentRequest(request_id="uninstall-displaced", channel_id="web", session_id="displaced", params={})
+    assert await adapter._ensure_chat_extensions(request) is None
+    saved = get_session_equipment("displaced")
+    assert saved["plugin_names"] == ["coding-guard"]
+    if notify_runtime:
+        child = JiuWenSwarmDeepAdapter()
+        child._is_session_scoped_adapter = True
+        child._rsi_displaced_plugins = dict(adapter._rsi_displaced_plugins)
+        adapter._session_adapters = {"child": child}
+        await adapter.unload_equipment_if_loaded("plugin_packages", "coding-guard")
+        assert "coding-guard" not in adapter._rsi_displaced_plugins
+        assert "coding-guard" not in child._rsi_displaced_plugins
+    catalog.uninstall_plugin_package({"id": "coding-guard"})
+    assert adapter._current_plugin_names() == []
+    if explicit_snapshot:
+        request.params = saved
+    assert await adapter._ensure_chat_extensions(request) is None
+    assert get_session_equipment("displaced")["plugin_names"] == []
+    await adapter.apply_rsi_harness_install_local("deactivate", config_path="", installation_id="")
+    assert adapter._loaded_plugins == {}
+    assert adapter._instance.ability_manager.get("security_review") is None
+
+
+@pytest.mark.asyncio
+async def test_external_uninstall_does_not_restore_displaced_package_without_chat(
+    tmp_path, rsi_catalog_workspace,
+):
+    source = _make_plugin_package(tmp_path, "coding-guard")
+    catalog.import_plugin_package({"path": str(source)})
+    catalog.install_plugin_package({"id": "coding-guard"})
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _agent()
+    await _select(adapter, ["coding-guard"])
+    await adapter.apply_rsi_harness_install_local(
+        "activate", config_path=str(source), installation_id="rsi-harness-aabbcc",
+    )
+    catalog.uninstall_plugin_package({"id": "coding-guard"})
+    await adapter.apply_rsi_harness_install_local("deactivate", config_path="", installation_id="")
+    assert adapter._loaded_plugins == {}
+    assert adapter._rsi_displaced_plugins == {}
