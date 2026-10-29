@@ -8,11 +8,15 @@
   - SOCKS5: 用于非 HTTP 协议 (Git SSH / DB 等).
   - 过滤逻辑: 解析目标域名/IP -> 先查 deny (命中拒绝) -> 再查 allow (非空
     且未命中拒绝则放行) -> 否则放行/拒绝 (按 default).
+  - 放行之后: 没有上游代理就直连目标. 有上游时, CONNECT 和 SOCKS5
+    再向它发 CONNECT; 明文 HTTP 正向转发则改成 absolute-form 交给上游,
+    不走 CONNECT. 沙箱进程始终只连本机端口.
 
 过滤语义与 Linux supervisor/network.py 的 egress/ingress 完全对齐:
 deny 优先于 allow; 域名解析后比对 IP CIDR; 端口单独匹配.
 
-纯标准库 asyncio 实现, 无 win32 依赖, 因此 Linux 下可完整单元测试.
+连接本身是标准库 asyncio, Linux 下可单元测试. 系统代理只在 Windows
+上读取, 读不到就直连.
 """
 
 from __future__ import annotations
@@ -25,6 +29,7 @@ import socket
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.policy import NetworkRulePolicy
 from jiuwenbox.supervisor import win_constants as const
+from jiuwenbox.supervisor.win_upstream import resolve_upstream
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -279,12 +284,108 @@ async def _relay(
                 pass
 
 
+_logged_upstreams: set[str] = set()
+
+
+def _host_has_controls(host: str) -> bool:
+    return any(ch.isspace() or ord(ch) < 0x20 or ord(ch) == 0x7F for ch in host)
+
+
+def _log_host(host: str) -> str:
+    """日志里不回放带控制字符的 host, 避免把一行日志拆成多行."""
+    if not host or _host_has_controls(host):
+        return "<rejected>"
+    return host
+
+
+def _reject_request_injection(value: str) -> None:
+    """请求行字段不能带 CR/LF、空白或其它控制字符."""
+    if not value or _host_has_controls(value):
+        raise OSError("upstream request field rejected")
+
+
+def _upstream_authority(host: str, port: int) -> str:
+    """拼上游请求的 authority. IPv6 字面量加方括号.
+
+    非法 host 抛 OSError. 调用方按连接失败处理, 不把 host 写进请求行.
+    """
+    _reject_request_injection(host)
+    if host.startswith("[") and host.endswith("]"):
+        inner = host[1:-1]
+        _reject_request_injection(inner)
+        try:
+            ipaddress.IPv6Address(inner)
+        except ValueError:
+            raise OSError("upstream target host rejected") from None
+        return f"{host}:{port}"
+    if ":" in host:
+        try:
+            ipaddress.IPv6Address(host)
+        except ValueError:
+            raise OSError("upstream target host rejected") from None
+        return f"[{host}]:{port}"
+    try:
+        ascii_host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        raise OSError("upstream target host rejected") from None
+    _reject_request_injection(ascii_host)
+    return f"{ascii_host}:{port}"
+
+
+def _note_upstream(upstream) -> None:
+    label = f"{upstream.host}:{upstream.port}"
+    if label not in _logged_upstreams:
+        _logged_upstreams.add(label)
+        logger.info("出站经上游代理 %s (无代理时仍直连)", label)
+
+
 async def _connect_target(host: str, port: int) -> tuple:
-    """连接目标, 返回 (reader, writer)."""
-    return await asyncio.wait_for(
-        asyncio.open_connection(host, port),
+    """连到目标, 返回 (reader, writer).
+
+    给 CONNECT / SOCKS5 用: 没有上游时直接 TCP, 有上游时先 CONNECT 建隧道.
+    明文 HTTP 正向转发不要走这里, 它需要把 absolute-form 直接发给上游.
+    失败仍由调用方回 502.
+    """
+    upstream = await asyncio.to_thread(resolve_upstream, host, port)
+    if upstream is None:
+        return await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=_CONNECT_TIMEOUT,
+        )
+    _note_upstream(upstream)
+    return await _connect_via_upstream(upstream, host, port)
+
+
+async def _connect_via_upstream(upstream, host: str, port: int) -> tuple:
+    """向已选中的 HTTP 代理发 CONNECT, 成功后返回隧道两端."""
+    authority = _upstream_authority(host, port)
+    reader, writer = await asyncio.wait_for(
+        asyncio.open_connection(upstream.host, upstream.port),
         timeout=_CONNECT_TIMEOUT,
     )
+    try:
+        lines = [
+            f"CONNECT {authority} HTTP/1.1",
+            f"Host: {authority}",
+        ]
+        if upstream.proxy_authorization:
+            lines.append(f"Proxy-Authorization: {upstream.proxy_authorization}")
+        writer.write(("\r\n".join(lines) + "\r\n\r\n").encode("ascii"))
+        await writer.drain()
+        status = await asyncio.wait_for(reader.readline(), timeout=_HANDSHAKE_TIMEOUT)
+        while True:
+            header = await asyncio.wait_for(reader.readline(), timeout=_HANDSHAKE_TIMEOUT)
+            if header in (b"\r\n", b"\n", b""):
+                break
+        if b" 200 " not in status:
+            raise OSError(
+                f"upstream CONNECT via {upstream.host}:{upstream.port} "
+                f"to {host}:{port} status={status!r}"
+            )
+        return reader, writer
+    except Exception:
+        writer.close()
+        raise
 
 
 async def handle_http_connect(
@@ -320,7 +421,7 @@ async def handle_http_connect(
 
         allowed, reason = egress_filter.allow(host, port)
         if not allowed:
-            logger.info("HTTP CONNECT 拒绝 %s:%d (%s)", host, port, reason)
+            logger.info("HTTP CONNECT 拒绝 %s:%d (%s)", _log_host(host), port, reason)
             client_writer.write(
                 b"HTTP/1.1 403 Forbidden\r\n"
                 b"Content-Length: 0\r\n"
@@ -340,7 +441,7 @@ async def handle_http_connect(
         try:
             target_reader, target_writer = await _connect_target(host, port)
         except OSError as exc:  # asyncio.TimeoutError 为 OSError 子类, 简化
-            logger.info("CONNECT 目标连接失败 %s:%d (%s)", host, port, exc)
+            logger.info("CONNECT 目标连接失败 %s:%d (%s)", _log_host(host), port, exc)
             client_writer.write(
                 b"HTTP/1.1 502 Bad Gateway\r\n"
                 b"Content-Length: 0\r\n"
@@ -412,7 +513,7 @@ async def handle_socks5(
 
         allowed, reason = egress_filter.allow(host, port)
         if not allowed:
-            logger.info("SOCKS5 拒绝 %s:%d (%s)", host, port, reason)
+            logger.info("SOCKS5 拒绝 %s:%d (%s)", _log_host(host), port, reason)
             client_writer.write(b"\x05\x02\x00\x01\x00\x00\x00\x00\x00\x00")
             await client_writer.drain()
             return
@@ -420,7 +521,7 @@ async def handle_socks5(
         try:
             target_reader, target_writer = await _connect_target(host, port)
         except OSError as exc:  # asyncio.TimeoutError 为 OSError 子类, 简化
-            logger.info("SOCKS5 目标连接失败 %s:%d (%s)", host, port, exc)
+            logger.info("SOCKS5 目标连接失败 %s:%d (%s)", _log_host(host), port, exc)
             client_writer.write(b"\x05\x05\x00\x01\x00\x00\x00\x00\x00\x00")
             await client_writer.drain()
             return
@@ -450,6 +551,8 @@ async def handle_http_forward(
     """处理 HTTP 正向代理请求 (非 CONNECT, 如 GET/POST http://host/path).
 
     first_line 形如 ``b'GET http://host:port/path HTTP/1.1'``.
+    没有上游时直连目标, 请求行用 origin-form. 有上游时连到上游本身,
+    请求行用 absolute-form, 并附带 Proxy-Authorization.
     """
     target_writer = None
     try:
@@ -479,7 +582,7 @@ async def handle_http_forward(
 
         allowed, reason = egress_filter.allow(host, port)
         if not allowed:
-            logger.info("HTTP FORWARD 拒绝 %s:%d (%s)", host, port, reason)
+            logger.info("HTTP FORWARD 拒绝 %s:%d (%s)", _log_host(host), port, reason)
             client_writer.write(
                 b"HTTP/1.1 403 Forbidden\r\n"
                 b"Content-Length: 0\r\n"
@@ -498,18 +601,39 @@ async def handle_http_forward(
                 break
             headers_data += header
 
-        # 重组请求行: 将绝对 URL 替换为路径形式 (去掉 scheme+host).
         path = parsed.path or "/"
         if parsed.query:
             path += "?" + parsed.query
         if parsed.fragment:
             path += "#" + parsed.fragment
-        new_request_line = f"{method} {path} HTTP/1.1\r\n".encode("latin-1")
 
+        upstream = await asyncio.to_thread(resolve_upstream, host, port)
         try:
-            target_reader, target_writer = await _connect_target(host, port)
+            if upstream is None:
+                target_reader, target_writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, port),
+                    timeout=_CONNECT_TIMEOUT,
+                )
+                new_request_line = f"{method} {path} HTTP/1.1\r\n".encode("latin-1")
+                prefix_headers = b""
+            else:
+                _note_upstream(upstream)
+                authority = _upstream_authority(host, port)
+                _reject_request_injection(path)
+                _reject_request_injection(method)
+                target_reader, target_writer = await asyncio.wait_for(
+                    asyncio.open_connection(upstream.host, upstream.port),
+                    timeout=_CONNECT_TIMEOUT,
+                )
+                absolute = f"{parsed.scheme}://{authority}{path}"
+                new_request_line = f"{method} {absolute} HTTP/1.1\r\n".encode("latin-1")
+                prefix_headers = b""
+                if upstream.proxy_authorization:
+                    prefix_headers = (
+                        f"Proxy-Authorization: {upstream.proxy_authorization}\r\n"
+                    ).encode("ascii")
         except OSError as exc:
-            logger.info("HTTP FORWARD 目标连接失败 %s:%d (%s)", host, port, exc)
+            logger.info("HTTP FORWARD 目标连接失败 %s:%d (%s)", _log_host(host), port, exc)
             client_writer.write(
                 b"HTTP/1.1 502 Bad Gateway\r\n"
                 b"Content-Length: 0\r\n"
@@ -518,8 +642,8 @@ async def handle_http_forward(
             await client_writer.drain()
             return
 
-        # 转发请求到目标.
-        target_writer.write(new_request_line + headers_data + b"\r\n")
+        # 直连时是 origin-form; 走上游时是 absolute-form.
+        target_writer.write(new_request_line + prefix_headers + headers_data + b"\r\n")
         await target_writer.drain()
         await _relay(client_reader, client_writer, target_reader, target_writer)
     except OSError as exc:
