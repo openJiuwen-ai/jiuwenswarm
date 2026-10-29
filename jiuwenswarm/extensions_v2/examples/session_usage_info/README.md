@@ -83,3 +83,25 @@ Usage returns schema_version, session_id, source, context and turn, or None if b
 Host components are validated independently; an explicit empty host snapshot does not fall back to old history.
 Breakdown is strictly bool; missing SessionContext raises RuntimeError. See [F_21](../../docs/features/F_21_session-usage-ops.md)
 and [S_11](../../docs/specs/S_11_session-usage-ops.md) for registration, contracts, failure cases and acceptance.
+
+## 字段填写速查 / Field guide
+
+```python
+turns = await ops.session.turns()                 # 不填会话、路径或初值
+compact = await ops.session.usage()               # breakdown 默认 False
+detailed = await ops.session.usage(breakdown=True) # 只保留已有 context.parts
+```
+
+用户唯一需要填写的查询参数是 bool breakdown。所有返回字段由平台提供，不需要回填到 Event；修改返回副本不会改变平台统计。重点区别：
+
+| 返回内容 | 应如何理解 |
+| --- | --- |
+| turns 的 0 / None / 异常 | 0 是存在但无有效用户输入；None 是会话未知/已删除；读取异常不伪造 0 |
+| usage 的 None | 两个有效观察均缺失；不是累计费用为 0 |
+| usage.source | host 为本次绑定快照，history 为已提交历史；不同于下层统计来源标签 |
+| context / turn | 分别为窗口占用和最近回合消耗，可来自不同请求/时点，不相加为账单 |
+| context.timestamp / turn.timestamp | 前者生产路径为 ISO 8601 UTC 字符串；后者生产路径为 Unix 秒，旧 turn 时间原样保留须先判断 |
+| occupancy_rate / percentage_of_window / percentage_of_input | 均为比例，0.2 表示 20%；不同于通知 usage_percent 的百分值 20.0 |
+| estimated / authoritative_total | 类别估算与权威总量可以同时为 True；默认零值结合来源解释 |
+
+全部字段（包含 measurement、parts 每项、通知输入与回执）的类型、缺省、合法取值、来源和具体示例见 F_21 第 3.2、4.1、4.2 节。English: callers only supply the boolean breakdown; all output fields are host-provided observations. Ratios use 0.2 for 20%, context and turn have different timestamp representations and may refer to different requests. Missing data is distinct from zero. This documentation revision does not change runtime behavior or repeat historical model acceptance.
