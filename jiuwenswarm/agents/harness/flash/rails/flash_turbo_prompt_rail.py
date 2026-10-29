@@ -65,7 +65,7 @@ class FlashTurboPromptRail(SkillTurboPromptRail):
             return f"""## 技能加速通道（skill_acceleration_exec）
 
 当前支持：{names}。以工具描述中的支持范围为准。
-- 对当前支持范围内的任务，第一个工具调用必须是 skill_acceleration_exec，包括 Word 文档和 Excel 工作簿任务。
+- 对当前支持范围内的任务，第一个工具调用必须是 skill_acceleration_exec，包括新建 PPT、Word 文档和 Excel 工作簿任务。
   用户文字指定技能和前端选择技能遵循同一规则；指定当前支持的技能包含使用它的加速流程，不代表要求普通流程。
   这条规则不依赖技能检索开关，也适用于未指定技能的任务；指定技能的准确名称和任务范围必须与工具描述匹配。
 - 无需先检索、调用 skill_tool 加载 SKILL.md、搜索资料或检查环境，流水线会完成这些工作。
@@ -86,7 +86,7 @@ class FlashTurboPromptRail(SkillTurboPromptRail):
         return f"""## Skill Acceleration Channel (skill_acceleration_exec)
 
 Currently supported: {names}. Follow the supported scope in the tool description.
-- For any currently supported task, the FIRST tool call MUST be skill_acceleration_exec, including Word documents and Excel workbooks.
+- For any currently supported task, the FIRST tool call MUST be skill_acceleration_exec, including new PPT presentations, Word documents and Excel workbooks.
   Naming a skill in text and selecting it in the frontend use the same rule: naming a supported skill includes its accelerated workflow, not a request for the standard workflow.
   This rule is independent of skill retrieval and also covers tasks without an explicit skill name; the exact selected skill name and task scope must match the tool description.
 - Do not first search skills, load SKILL.md through skill_tool, research, or check the environment; the pipeline handles these steps.

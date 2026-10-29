@@ -410,8 +410,8 @@ async def test_flash_guide_preserves_priority_and_cleans_up(monkeypatch, skill_r
 
 
 @pytest.mark.parametrize("language,scope,restriction", [
-    ("cn", "Word 文档和 Excel 工作簿", "以下排除仅适用于 PPT"),
-    ("en", "Word documents and Excel workbooks", "exclusions apply ONLY to PPT"),
+    ("cn", "新建 PPT、Word 文档和 Excel 工作簿", "以下排除仅适用于 PPT"),
+    ("en", "new PPT presentations, Word documents and Excel workbooks", "exclusions apply ONLY to PPT"),
 ])
 def test_flash_office_guide_scopes_ppt_exclusions(language, scope, restriction):
     from jiuwenswarm.agents.harness.flash.rails.flash_turbo_prompt_rail import (
