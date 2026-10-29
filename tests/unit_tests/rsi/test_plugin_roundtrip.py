@@ -167,6 +167,8 @@ async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp
 
     # An ordinary chat may already have the original plugin selected. Applying
     # its optimized version must replace that load, not collide with its tools.
+    catalog.import_plugin_package({"path": str(source)})
+    catalog.install_plugin_package({"id": "coding-guard"})
     live = object.__new__(JiuWenSwarmDeepAdapter)
     live._instance = _agent()
     original = await live._instance.load_plugin(material["package_path"])

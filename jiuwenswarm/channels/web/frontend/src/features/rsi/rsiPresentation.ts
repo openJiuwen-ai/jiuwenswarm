@@ -1021,7 +1021,12 @@ export function nodeMetrics(
 }
 
 // 节点总高度
-export function nodeHeight(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpanded: boolean): number {
-  const m = nodeMetrics(node, kind, scoreExpanded);
+export function nodeHeight(
+  node: RsiTreeNode,
+  kind: NodeRuntimeKind,
+  scoreExpanded: boolean,
+  scenario?: RsiScenario,
+): number {
+  const m = nodeMetrics(node, kind, scoreExpanded, scenario);
   return m.barH + m.bodyH;
 }
