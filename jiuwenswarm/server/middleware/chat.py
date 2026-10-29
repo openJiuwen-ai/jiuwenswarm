@@ -45,7 +45,7 @@ async def trigger_before_chat_request(request: AgentRequest) -> None:
     """让扩展插件先看一眼聊天输入。插件可以改参数，这里不回包。"""
     if not should_trigger_before_chat_request(request):
         return
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.extensions import ExtensionRegistry
 
     params = request.params if isinstance(request.params, dict) else {}
     if not isinstance(request.params, dict):
