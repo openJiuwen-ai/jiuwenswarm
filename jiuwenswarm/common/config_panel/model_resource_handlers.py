@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.config import (
     delete_model_resource,
     upsert_model_group_resource,
@@ -13,7 +14,6 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
 )
-from jiuwenswarm.common.model_selection import ModelSelection
 
 RESOURCE_OPERATIONS = {
     "models.get": "models.get",
@@ -105,7 +105,7 @@ async def model_resource_handler(
 
 async def session_selection_handler(channel, ws, req_id, params, session_id):
     from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
-    from jiuwenswarm.common.model_selection_store import set_session_model_selection
+    from gateway.common.model_selection_store import set_session_model_selection
 
     try:
         params = params or {}

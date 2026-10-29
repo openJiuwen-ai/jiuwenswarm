@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.auth.model_catalog import LoginModel
-from jiuwenswarm.gateway.cron.models import (
+from gateway.auth import model_catalog as _model_catalog
+from gateway.auth.model_catalog import LoginModel
+from gateway.cron.models import (
     CronJob,
     normalize_cron_job_mcp,
     resolve_cron_model,
@@ -33,7 +34,7 @@ def _no_free_models(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda: [],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: [],
     )
 
@@ -242,11 +243,19 @@ def test_validate_cron_model_accepts_login_free_model(
         lambda name, index=None: None,
     )
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
-    monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
-        lambda *args, **kwargs: _login_catalog(["GLM-5.2", "Kimi-K2.6"]),
-    )
+    calls: list[int] = []
+
+    def _counting_get_models(*args, **kwargs):
+        calls.append(1)
+        return _login_catalog(["GLM-5.2", "Kimi-K2.6"])
+
+    monkeypatch.setattr(_model_catalog, "get_models", _counting_get_models)
+    # CI-only 故障诊断探针：定位登录块内的失败段（本地全组合无法复现）
+    from gateway.auth.login_credentials import bare_model_name as _bmn
+
+    assert _bmn("GLM-5.2") == "GLM-5.2", "bare_model_name 变换了名字"
     assert validate_cron_model("GLM-5.2") == "GLM-5.2"
+    assert calls, "get_models 从未被调用——登录块在循环前死亡"
     assert validate_cron_model("Kimi-K2.6") == "Kimi-K2.6"
 
 
@@ -260,7 +269,7 @@ def test_validate_cron_model_accepts_login_free_model_index_suffix(
     )
     monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["GLM-5.2"]),
     )
     assert validate_cron_model("GLM-5.2#3") == "GLM-5.2"
@@ -288,7 +297,7 @@ def test_validate_cron_model_config_model_wins_over_login(
         lambda name, index=None: _user_model_entry(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["my-model"]),
     )
     assert validate_cron_model("my-model") == "my-model"
@@ -311,7 +320,7 @@ def test_resolve_cron_model_reports_source(monkeypatch: pytest.MonkeyPatch) -> N
         lambda name, index=None: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *args, **kwargs: _login_catalog(["GLM-5.2"]),
     )
     assert resolve_cron_model("GLM-5.2") == ("GLM-5.2", "login")

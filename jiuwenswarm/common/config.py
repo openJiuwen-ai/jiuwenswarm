@@ -46,15 +46,24 @@ DEFAULT_SWARMFLOW_WORKTREE_ENABLED = False
 DEFAULT_SWARMFLOW_ENABLED = False
 TEAM_DISPATCH_MODE_CONFIG_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 TEAM_TASK_VERIFICATION_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
+TEAM_MEMBER_MESSAGING_CONFIG_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
 DEFAULT_TEAM_DISPATCH_MODE = "autonomous"
 DEFAULT_TEAM_TASK_VERIFICATION_ENABLED = False
+DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED = False
 EXTERNAL_CLI_PUBLISH_URL_FRONT_KEY = "external_cli_publish_url"
 EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_agents")
+EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
+# Cap per-kind CLI path histories so the config file cannot grow unbounded.
+EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
 # whose config.yaml predates this switch.
 DEFAULT_PROGRESSIVE_TOOL_ENABLED = False
+# Opt-in gate for the tool_search retrieval layer: the layer mounts only when
+# progressive_tool_enabled (AbilityManager deferred assignment) and this switch
+# are both true.
+DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE = False
 # Check if user workspace exists and use it if configured via env
 _user_config = os.getenv("JIUWENSWARM_CONFIG_DIR")
 if _user_config:
@@ -166,7 +175,10 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
             # diagnosis, but never activate an inconsistent configuration.
             kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
-    channels = config.get("channels", {})
+    channels = config.get("channels")
+    if channels is None:
+        channels = {}
+        config["channels"] = channels
     for _ch in ("web", "feishu", "xiaoyi"):
         _ch_conf = channels.get(_ch)
         if not isinstance(_ch_conf, dict):
@@ -489,16 +501,45 @@ def get_progressive_tool_enabled(config: dict[str, Any] | None = None) -> bool:
     return bool(value)
 
 
+def get_progressive_tool_optimize(config: dict[str, Any] | None = None) -> bool:
+    """Return the top-level ``progressive_tool_optimize`` switch.
+
+    Opt-in companion to ``progressive_tool_enabled``: the ``tool_search``
+    retrieval layer requires both switches so AbilityManager's deferred
+    assignment can stay armed while the retrieval layer stays off.
+    """
+    if not isinstance(config, dict):
+        return DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE
+
+    value = config.get("progressive_tool_optimize", DEFAULT_PROGRESSIVE_TOOL_OPTIMIZE)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
+
+
 def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether the ``tool_search`` progressive disclosure is enabled.
 
-    Reuses the single top-level ``progressive_tool_enabled`` switch (the same
-    one historically documented for the deferred-tool pipeline). ``true`` means
-    our skill_index-framework ``tool_search`` is mounted and deferred tools are
-    hidden until discovered; ``false`` disables it and every tool stays direct.
+    True only when both top-level switches are true: ``progressive_tool_enabled``
+    (AbilityManager deferred assignment) and ``progressive_tool_optimize`` (the
+    retrieval layer itself). ``true`` means our skill_index-framework
+    ``tool_search`` is mounted and deferred tools are hidden until discovered;
+    ``false`` disables it and every tool stays direct.
     """
 
-    return False
+    return get_progressive_tool_enabled(config) and get_progressive_tool_optimize(config)
+
+
+def update_progressive_tool_optimize_in_config(enabled: bool) -> None:
+    """Atomically update the top-level ``progressive_tool_optimize`` switch."""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        data["progressive_tool_optimize"] = bool(enabled)
+        return data
+
+    update_config(mutator)
 
 
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
@@ -631,7 +672,8 @@ def _atomic_replace(src: Path, dst: Path, max_attempts: int = 10) -> None:
 
 
 # 进程内不可重入锁。portalocker 文件锁同样不可同进程重入，
-# 因此 update_config 的 mutator 内禁止再调用任何走 update_config 的函数
+# update_config 和 migrate_config_from_template 均会获取此锁。持锁期间
+# （包括 update_config 的 mutator）不得调用它们，或任何再次获取此锁的函数
 # （如 ensure_defaults_list_in_config / update_default_models_in_config），
 # 否则同进程二次获取锁会死锁。展示用数据请在事务外、另起独立事务读取。
 _CONFIG_WRITE_LOCK = threading.Lock()
@@ -643,12 +685,14 @@ def _config_lock_path(config_path: Path) -> Path:
 
 
 @contextmanager
-def config_write_lock(*, lock_timeout: float = 10.0):
+def config_write_lock(*, lock_timeout: float = 10.0, config_path: Path | None = None):
     """Share the Global write boundary with layered permission transactions."""
     if not _CONFIG_WRITE_LOCK.acquire(timeout=lock_timeout):
         raise TimeoutError("config write lock timed out")
     try:
-        with portalocker.Lock(str(_config_lock_path(CONFIG_YAML_PATH)), timeout=lock_timeout):
+        with portalocker.Lock(
+            str(_config_lock_path(config_path or CONFIG_YAML_PATH)), timeout=lock_timeout
+        ):
             yield
     finally:
         _CONFIG_WRITE_LOCK.release()
@@ -1109,11 +1153,19 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
 
 
 def update_trajectory_diagnosis_in_config(enabled: bool) -> None:
-    """Update the trajectory diagnosis feature switch and persist config.yaml."""
+    """Update the trajectory diagnosis feature switch and persist config.yaml.
+
+    The standalone trajectory UI switch and chat/trajectory tabs were removed;
+    the diagnosis switch drives the diagnosis entry and the data-plane
+    ``enabled`` flag so recording stays aligned with the single user-facing
+    control.
+    """
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "trajectory_ui" not in data or data["trajectory_ui"] is None:
         data["trajectory_ui"] = {}
-    data["trajectory_ui"]["diagnosis_enabled"] = bool(enabled)
+    flag = bool(enabled)
+    data["trajectory_ui"]["diagnosis_enabled"] = flag
+    data["trajectory_ui"]["enabled"] = flag
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -1123,6 +1175,15 @@ def update_team_organization_ui_in_config(enabled: bool) -> None:
     if "experimental" not in data or data["experimental"] is None:
         data["experimental"] = {}
     data["experimental"]["team_organization_ui_enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_comfyui_workflow_enabled_in_config(enabled: bool) -> None:
+    """Persist the experimental ComfyUI workflow import switch."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["comfyui_workflow_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -1595,6 +1656,92 @@ def _infer_is_default(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
+def _normalize_legacy_model_nulls(models: dict[str, Any]) -> bool:
+    """Repair empty YAML nodes without changing configured model identities."""
+    changed = False
+    for source in ("defaults", "agentos", "groups"):
+        entries = models.get(source)
+        if source in models and entries is None:
+            models[source] = []
+            changed = True
+        elif isinstance(entries, list):
+            # Empty YAML list items have no configuration or identity to retain.
+            if any(entry is None for entry in entries):
+                entries[:] = [entry for entry in entries if entry is not None]
+                changed = True
+            if source != "groups":
+                for entry in entries:
+                    if not isinstance(entry, dict):
+                        continue
+                    for key in ("model_client_config", "model_config_obj"):
+                        if key in entry and entry[key] is None:
+                            entry[key] = {}
+                            changed = True
+    return changed
+
+
+def _models_for_write(data: dict[str, Any]) -> dict[str, Any]:
+    """Recover existing model fields under the config lock, backing up invalid data."""
+    if data.get("models") is None:
+        data["models"] = {}
+    models = _require_dict(data["models"], "models")
+    if _recover_existing_model_fields(models):
+        # Preserve the exact original, including comments and invalid values.
+        # A failed backup must abort the write rather than lose user data.
+        import shutil
+
+        backup = CONFIG_YAML_PATH.with_name(f"{CONFIG_YAML_PATH.name}.models-{uuid.uuid4().hex}.bak")
+        shutil.copy2(CONFIG_YAML_PATH, backup)
+        logger.warning("Recovered invalid model fields; original configuration saved to %s", backup)
+    _normalize_legacy_model_nulls(models)
+    return models
+
+
+def _recover_model_fields(entry: dict[str, Any]) -> bool:
+    """Make old model objects editable; return whether non-null data was repaired."""
+    recovered = False
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        value = entry.get(key)
+        if key in entry and not isinstance(value, dict):
+            entry[key] = {}
+            recovered = recovered or value is not None
+    client = entry.get("model_client_config")
+    if isinstance(client, dict):
+        for key in ("model_name", "api_base", "api_key", "client_provider"):
+            value = client.get(key)
+            if value is not None and not isinstance(value, str):
+                client[key] = ""
+                recovered = True
+        headers = client.get("custom_headers")
+        if headers is not None and not isinstance(headers, (str, dict)):
+            client["custom_headers"] = {}
+            recovered = True
+    detail = entry.get("model_detail")
+    if isinstance(detail, dict):
+        for key in ("fallback_tag", "model_description"):
+            value = detail.get(key)
+            if value is not None and not isinstance(value, str):
+                detail[key] = ""
+                recovered = True
+    return recovered
+
+
+def _recover_existing_model_fields(models: dict[str, Any]) -> bool:
+    """Recover persisted model entries only, never an incoming model submission."""
+    recovered = False
+    for source in ("defaults", "agentos", "groups"):
+        entries = models.get(source)
+        if not isinstance(entries, list):
+            continue
+        if any(entry is not None and not isinstance(entry, dict) for entry in entries):
+            entries[:] = [entry for entry in entries if entry is None or isinstance(entry, dict)]
+            recovered = True
+        for entry in entries:
+            if source != "groups" and isinstance(entry, dict):
+                recovered = _recover_model_fields(entry) or recovered
+    return recovered
+
+
 def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """解密模型条目中的 api_key 字段，返回深拷贝不改变原始数据。同时推断 is_default。"""
     import copy
@@ -1611,11 +1758,11 @@ def _decrypt_model_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]
             exc_info=True,
         )
 
-    for entry in result:
+    for index, entry in enumerate(result):
         if not isinstance(entry, dict):
             continue
-        # YAML 里 `model_config_obj:` 后只跟注释时解析为 null（键存在，
-        # dict.get 的默认值不生效），统一回填为空 dict，下游 .get 不再崩。
+        if _recover_model_fields(entry):
+            logger.warning("Ignoring invalid field types in model entry %d; edit the model in Settings", index)
         if entry.get("model_config_obj") is None:
             entry["model_config_obj"] = {}
         mcc = entry.get("model_client_config")
@@ -1655,7 +1802,7 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     """
     if config is None:
         config = get_config()
-    models = config.get("models", {})
+    models = _require_dict(config.get("models") or {}, "models")
     agentos_raw = models.get("agentos")
     agentos_list = agentos_raw if isinstance(agentos_raw, list) else []
     entries: list[dict[str, Any]] = []
@@ -1667,6 +1814,7 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
             # model_name 为空 = 该条未配置，跳过不入缓存
             continue
         agentos_entry = deepcopy(agentos_block)
+        _recover_model_fields(agentos_entry)
         agentos_entry["is_default"] = False
         # _source 注入到 model_config_obj 内部，仅供前端 is_agentos 置灰只读展示
         # （不再参与 context_window 出口判断——所有条目一视同仁）。context_window
@@ -1675,9 +1823,12 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
         # 加为 ModelRequestConfig 正式字段（core_has_context_window_field 自动适配）：
         # core 未加字段时 pop 防发厂商，加字段后停止 pop，context_window 留在
         # ModelRequestConfig 供 core 读取。
-        agentos_mco = agentos_entry.setdefault("model_config_obj", {})
-        if isinstance(agentos_mco, dict):
-            agentos_mco["_source"] = "agentos"
+        agentos_mco = agentos_entry.get("model_config_obj")
+        if agentos_mco is None:
+            agentos_mco = {}
+        agentos_mco = _require_dict(agentos_mco, "models.agentos.model_config_obj")
+        agentos_mco["_source"] = "agentos"
+        agentos_entry["model_config_obj"] = agentos_mco
         entries.append(agentos_entry)
     return entries
 
@@ -1720,10 +1871,9 @@ def migrate_model_business_ids() -> bool:
 
     def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
         nonlocal changed
-        models = data.setdefault("models", {})
-        if not isinstance(models, dict):
-            raise ValueError("models must be an object")
-        changed = _ensure_model_business_ids(models)
+        before = deepcopy(data.setdefault("models", {}))
+        models = _models_for_write(data)
+        changed = _ensure_model_business_ids(models) or before != models
         from jiuwenswarm.common.model_config_validation import raise_if_invalid
         raise_if_invalid(models)
         return data if changed else None
@@ -1735,13 +1885,15 @@ def migrate_model_business_ids() -> bool:
 def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return an ID-indexed, decrypted snapshot without mutating persisted config."""
     config = deepcopy(config if config is not None else get_config())
-    models = config.get("models") or {}
+    models = _require_dict(config.get("models") or {}, "models")
     defaults = _decrypt_model_entries(models.get("defaults") or [])
     agentos = get_agentos_models(config)
-    groups = deepcopy(models.get("groups") or [])
+    groups = [deepcopy(group) for group in models.get("groups") or [] if isinstance(group, dict)]
     by_id: dict[str, dict[str, Any]] = {}
     for source, entries in (("defaults", defaults), ("agentos", agentos)):
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
             entry["model_detail"] = {
                 **(entry.get("model_detail") or {}),
                 "fallback_tag": (entry.get("model_client_config") or {}).get("model_name"),
@@ -1755,6 +1907,7 @@ def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
 def save_models_candidate(models: dict[str, Any]) -> dict[str, Any]:
     """Validate and atomically replace only the models section."""
     candidate = deepcopy(models)
+    _normalize_legacy_model_nulls(candidate)
     _ensure_model_business_ids(candidate)
     from jiuwenswarm.common.model_config_validation import raise_if_invalid
     raise_if_invalid(candidate)
@@ -1774,7 +1927,14 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
     normalized and return as-is.  Otherwise promote flat fields into the nested
     structure the rest of the system expects.
     """
-    saved = deepcopy(entry)
+    saved = deepcopy(_require_dict(entry, "model"))
+    for key in ("model_client_config", "model_config_obj", "model_detail"):
+        if saved.get(key) is not None:
+            _require_dict(saved[key], f"model.{key}")
+    for key in ("model_name", "api_base", "api_key", "client_provider", "model_provider"):
+        value = saved.get(key)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"model.{key} must be a string")
     if isinstance(saved.get("model_client_config"), dict):
         return saved
     mcc: dict[str, Any] = {}
@@ -1846,7 +2006,7 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
 
     def _mutate(data):
         nonlocal saved
-        candidate = data.setdefault("models", {})
+        candidate = _models_for_write(data)
         _require_editable_model(candidate, saved["model_id"])
         defaults = candidate.setdefault("defaults", [])
         for index, current in enumerate(defaults):
@@ -1906,14 +2066,22 @@ def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
 
     saved = deepcopy(group)
     saved.setdefault("model_group_id", _new_business_id("mgp"))
-    # Legacy routing settings are inactive in model-pool mode.
-    saved.pop("routing", None)
+    # Keep per-group timeouts; legacy routing strategies remain inactive in model-pool mode.
+    routing = saved.pop("routing", None)
+    if isinstance(routing, dict):
+        timeouts = {
+            key: routing[key]
+            for key in ("timeout_seconds", "stream_first_chunk_timeout", "stream_idle_timeout")
+            if key in routing
+        }
+        if timeouts:
+            saved["routing"] = timeouts
     for route in saved.get("routes") or []:
         if isinstance(route, dict):
             route.setdefault("route_id", _new_business_id("rte"))
 
     def _mutate(data):
-        candidate = data.setdefault("models", {})
+        candidate = _models_for_write(data)
         groups = candidate.setdefault("groups", [])
         for index, current in enumerate(groups):
             if current.get("model_group_id") == saved["model_group_id"]:
@@ -1940,7 +2108,7 @@ def delete_model_resource(resource_type: str, resource_id: str, *, cron_referenc
 
     def _mutate(data):
         nonlocal deleted
-        candidate = data.setdefault("models", {})
+        candidate = _models_for_write(data)
         if resource_type == "model":
             _require_editable_model(candidate, resource_id)
         entries = candidate.get(key) or []
@@ -1986,7 +2154,7 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     """
     if config is None:
         config = get_config()
-    models = config.get("models", {})
+    models = _require_dict(config.get("models") or {}, "models")
 
     # 新格式：已有 defaults 列表
     if "defaults" in models and isinstance(models["defaults"], list) and models["defaults"]:
@@ -2076,15 +2244,14 @@ def update_default_models_in_config(
     models_list: list[dict[str, Any]], *, cron_references_checked: bool = False,
 ) -> None:
     def _mutate(data):
-        if "models" not in data:
-            data["models"] = {}
+        models = _models_for_write(data)
         for entry in models_list:
             if isinstance(entry, dict) and isinstance(entry.get("alias"), str):
                 entry["alias"] = DoubleQuotedScalarString(entry["alias"])
-        data["models"]["defaults"] = models_list
-        if "default" in data["models"]:
-            del data["models"]["default"]
-        _validate_model_candidate(data["models"])
+        models["defaults"] = models_list
+        if "default" in models:
+            del models["default"]
+        _validate_model_candidate(models)
         return data
     update_config(_mutate)
 
@@ -2455,7 +2622,7 @@ def _normalize_builtin_models(value: Any, field_name: str) -> list[dict[str, Any
 
     The catalog lists the models a CLI offers on its own login (a
     subscription), which the team leader may pick per member through
-    ``spawn_external_cli(builtin_model=...)`` / ``set_member_model``. It is
+    ``spawn_teammate(external_cli={"builtin_model": ...})`` / ``set_member_model``. It is
     carried through verbatim to ``ExternalCliAgentSpec.builtin_models``, so
     dropping unknown keys here would silently disable the capability.
 
@@ -2547,10 +2714,12 @@ def _normalize_external_cli_agents(value: Any, field_name: str) -> list[dict[str
         if isinstance(item, dict):
             cli_path = str(item.get("cli_path") or "").strip()
             legacy_codex_bin = str(item.get("codex_bin") or "").strip()
+            from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
             if cli_path:
-                normalized_item["cli_path"] = cli_path
+                normalized_item["cli_path"] = resolve_preserved_cli_path(cli_path)
             elif cli_agent == "codex" and legacy_codex_bin:
-                normalized_item["cli_path"] = legacy_codex_bin
+                normalized_item["cli_path"] = resolve_preserved_cli_path(legacy_codex_bin)
             builtin_models = _normalize_builtin_models(
                 item.get("builtin_models"),
                 f"{field_name}[{index}].builtin_models",
@@ -2568,6 +2737,61 @@ def _build_front_agent_registry(front_payload: dict[str, Any]) -> dict[str, Any]
         resolved_key = _require_non_empty_string(agent_key, f"agents.{agent_key}")
         registry[resolved_key] = _transform_front_team_agent_spec(resolved_key, agent_raw)
     return registry
+
+
+def prune_external_cli_path_histories_in_config(cli_agent: str, remove_paths: list[str]) -> list[str]:
+    """Drop confirmed-missing paths from one kind's persisted history.
+
+    The prune is computed against the on-disk history right before writing,
+    so entries appended by a concurrent save (e.g. a just-replaced cli_path)
+    can never be rolled back by a stale frontend snapshot: only the
+    intersection of the stored history and ``remove_paths`` is removed.
+
+    Args:
+        cli_agent: History kind ("claude" / "codex" / custom agent name).
+        remove_paths: Paths confirmed missing by ``external_cli.validate_paths``.
+
+    Returns:
+        The surviving history for the kind after the prune.
+    """
+    name = str(cli_agent).strip()
+    remove_set = {
+        value
+        for value in (str(path or "").strip() for path in (remove_paths or []))
+        if value
+    }
+    surviving: list[str] = []
+    if not name or not remove_set:
+        return surviving
+
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    path_so_far: list[str] = []
+    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    key = EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]
+    histories = current.get(key)
+    if not isinstance(histories, dict) or not isinstance(histories.get(name), list):
+        return surviving
+    seen: set[str] = set()
+    for path in histories[name]:
+        value = str(path or "").strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        if value not in remove_set:
+            surviving.append(value)
+    if surviving == [str(path or "").strip() for path in histories[name] if str(path or "").strip()]:
+        return surviving  # Nothing to drop: leave the file untouched.
+    if surviving:
+        histories[name] = surviving
+    else:
+        histories.pop(name, None)
+    if not histories:
+        current.pop(key, None)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    return surviving
 
 
 def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
@@ -2629,6 +2853,15 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
             agents = transformed_team.get("external_cli_agents")
             if isinstance(agents, list):
                 _carry_over_builtin_models(agents, existing_team.get("external_cli_agents"))
+    # The team-editor payload carries no path histories. The key lives under
+    # modes.team, so a plain replace would silently drop history appended by
+    # config.set between two team saves — carry the current value over.
+    default_team = team_mapping.get("jiuwen_team")
+    if isinstance(default_team, dict) and "external_cli_path_histories" not in default_team:
+        if isinstance(existing_teams, dict) and isinstance(existing_teams.get("jiuwen_team"), dict):
+            histories = existing_teams["jiuwen_team"].get("external_cli_path_histories")
+            if histories:
+                default_team["external_cli_path_histories"] = histories
     data["modes"]["team"] = team_mapping
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
@@ -2674,6 +2907,11 @@ def update_team_scheduled_dispatch_in_config(enabled: bool) -> None:
 def update_team_task_verification_in_config(enabled: bool) -> None:
     """Update ``modes.team.jiuwen_team.enable_task_verification`` in config.yaml."""
     _set_config_path(TEAM_TASK_VERIFICATION_CONFIG_PATH, bool(enabled))
+
+
+def update_team_member_messaging_in_config(enabled: bool) -> None:
+    """Update ``modes.team.jiuwen_team.enable_member_messaging`` in config.yaml."""
+    _set_config_path(TEAM_MEMBER_MESSAGING_CONFIG_PATH, bool(enabled))
 
 
 def _carry_over_builtin_models(agents: list[dict[str, Any]], existing: Any) -> None:
@@ -2743,6 +2981,42 @@ def update_external_cli_agents_in_config(agents: list[str | dict[str, Any]], pub
     else:
         current.pop(EXTERNAL_TRANSPORT_CONFIG_PATH[-1], None)
 
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]) -> None:
+    """Persist per-kind external CLI path histories for the default team.
+
+    Args:
+        histories: ``cli_agent`` to its history paths; kinds with an empty
+            list are dropped, and an empty mapping removes the whole key.
+    """
+    normalized: dict[str, list[str]] = {}
+    for cli_agent, paths in histories.items():
+        name = str(cli_agent).strip()
+        if not name or not isinstance(paths, list):
+            continue
+        deduped: list[str] = []
+        for path in paths:
+            value = str(path or "").strip()
+            if value and value not in deduped:
+                deduped.append(value)
+        if deduped:
+            # The caller appends the most recent path at the end, so keep the
+            # tail window: dropping from the front would evict the path that
+            # was replaced last, the one the dropdown most needs to keep.
+            normalized[name] = deduped[-EXTERNAL_CLI_PATH_HISTORY_LIMIT:]
+
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    path_so_far: list[str] = []
+    for segment in EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    if normalized:
+        current[EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]] = normalized
+    else:
+        current.pop(EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1], None)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -3358,42 +3632,43 @@ def migrate_config_from_template(
         return False
 
     template_data = load_yaml_round_trip(template_path)
-    user_data = load_yaml_round_trip(user_config_path)
-
     if not isinstance(template_data, dict):
         return False
 
-    if user_data is None:
-        user_data = {}
+    with config_write_lock(config_path=user_config_path):
+        if not user_config_path.exists():
+            return False
+        user_data = load_yaml_round_trip(user_config_path)
+        if user_data is None:
+            user_data = {}
 
-    # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
-    # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
-    _migrate_legacy_agent_submode_memory(user_data)
-    _migrate_legacy_kv_cache_affinity_config(user_data)
+        # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
+        # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
+        _migrate_legacy_agent_submode_memory(user_data)
+        _migrate_legacy_kv_cache_affinity_config(user_data)
 
-    # Deep merge: template provides defaults, user values preserved.
-    # user_data is updated in place, which keeps comments and formatting.
-    changes = _deep_merge(template_data, user_data, prune=prune)
+        # Deep merge: template provides defaults, user values preserved.
+        # user_data is updated in place, which keeps comments and formatting.
+        changes = _deep_merge(template_data, user_data, prune=prune)
 
-    # Guard against an empty result overwriting a valid user config
-    if not user_data:
+        # Guard against an empty result overwriting a valid user config
+        if not user_data:
+            return False
+
+        # This diagnostic label does not control whether template migration runs.
+        from jiuwenswarm.common.version import get_runtime_version_label
+
+        version_label = get_runtime_version_label()
+        if user_data.get("config_version") != version_label:
+            user_data["config_version"] = version_label
+            changes += 1
+
+        # Only write if there are actual changes
+        if changes:
+            dump_yaml_round_trip(user_config_path, user_data)
+            return True
+
         return False
-
-    # 写回程序版本号，与合并内容原子落盘；版本号变化计入变更数，
-    # 使旧 config（无版本号或版本号旧）必走写盘分支把版本号写回，
-    # 已写回的最新 config 下次启动被 ensure_config_migrated_from_template 短路。
-    from jiuwenswarm.common._build_config import VERSION
-
-    if user_data.get("config_version") != VERSION:
-        user_data["config_version"] = VERSION
-        changes += 1
-
-    # Only write if there are actual changes
-    if changes:
-        dump_yaml_round_trip(user_config_path, user_data)
-        return True
-
-    return False
 
 
 # ---------- 模型配置管理 ----------

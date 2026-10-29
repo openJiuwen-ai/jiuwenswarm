@@ -9,7 +9,7 @@ import { registerPreviewableArtifact } from '../../components/ArtifactsPanel/art
 import { getFileIdentityKey } from '../../utils/fileDownloadDedup';
 import { openArtifactPanel } from '../teamPanelState';
 import { openSingleAgentPanel } from '../singleAgentPanelState';
-import { selectSessionAssets, useSessionAssetsStore, type SessionAsset } from './sessionAssets';
+import { displayFileName, selectSessionAssets, useSessionAssetsStore, type SessionAsset } from './sessionAssets';
 
 const IMAGE_MIME_BY_EXT: Record<string, string> = {
   apng: 'image/apng',
@@ -141,7 +141,7 @@ export function SessionAssetList({ hideTitle = false }: { hideTitle?: boolean })
                 />
               ) : (
                 <span className="min-w-0 flex-1 truncate" data-testid="session-asset-name" title={asset.path}>
-                  @{asset.name}
+                  {displayFileName(asset)}
                 </span>
               )}
               <button

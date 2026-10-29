@@ -46,14 +46,11 @@ class AssetsManagement:
             available = False
         try:
             from jiuwenswarm.common.utils import get_agent_workspace_dir
-            from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
             from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import (
                 start_hub_catalog_preload,
             )
-    
-            await start_hub_catalog_preload(
-                SkillManager(workspace_dir=str(get_agent_workspace_dir()))
-            )
+            from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+            await start_hub_catalog_preload(SkillManager(workspace_dir=str(get_agent_workspace_dir())))
         except Exception:
             logger.warning(
                 "[HubCatalog] preload unavailable; requests may load on demand"

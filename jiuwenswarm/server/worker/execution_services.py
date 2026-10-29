@@ -134,7 +134,7 @@ class ProductionHostServices:
     ) -> str:
         if not self.capabilities.diagnostics:
             return str(exc)
-        from jiuwenswarm.common.ws_diagnostics import (
+        from gateway.common.ws_diagnostics import (
             describe_ws_exception,
             describe_ws_peer,
             format_ws_diagnostics,

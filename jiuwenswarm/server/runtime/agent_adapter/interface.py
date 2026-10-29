@@ -10,6 +10,10 @@
 
 from __future__ import annotations
 
+import json
+from concurrent.futures import Future
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
+
 import asyncio
 from contextlib import aclosing
 from copy import deepcopy
@@ -22,7 +26,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.session_message import (
+from gateway.common.session_message import (
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
     with_cross_session_history_metadata,
@@ -83,7 +87,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     normalize_option_value,
     resolve_permission_action,
 )
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_team_mode as is_team_runtime_mode,
@@ -152,6 +156,113 @@ def _cross_session_marker_from_params(params: Any) -> Any:
         return None
     return params.get(SESSION_MESSAGE_INTERNAL_KEY)
 
+
+from jiuwenswarm.server.runtime.agent_adapter.request_completion import (
+    _session_message_owns_completion, _await_history_receipt,
+    _announce_durable_completion, _complete_history_request,
+)
+
+def _person_drove_turn(request: AgentRequest, *, is_team_mode: bool) -> bool:
+    """The person asked for this turn: a message they sent, or their answer to the agent's question.
+
+    Background recommendation, team members, Heartbeat, cron and another Session's Agent start
+    turns the person did not ask for (topic spec D4).
+    """
+    if is_team_mode or _session_message_owns_completion(request):
+        return False
+    if is_interrupt_resume_payload(request.params):
+        return True
+    return is_external_user_authored_dispatch(
+        request.params, channel_id=request.channel_id, request_method=request.req_method, metadata=request.metadata,
+    )
+
+
+def _starter_interaction_context(params: Any, query: Any) -> str:
+    lineage = (_history_user_extra(params) or {}).get("topic_starter")
+    if not lineage:
+        return ""
+    from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+        find_exact_terminal_card,
+    )
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
+        TopicStarterStore,
+    )
+    database = get_agent_workspace_dir() / "recommendation.db"
+    if not database.exists():
+        return ""
+    card = find_exact_terminal_card(
+        TopicStarterStore(database),
+        **{key: value for key, value in lineage.items() if key != "exposure_id"},
+    )
+    if card is None or card.get("prompt") != query:
+        return ""
+    evidence = card.get("evidence_bundle") or {}
+    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
+        recommendation_sources,
+    )
+    sources = recommendation_sources(TopicStarterStore(database), card.get("source_locators") or [])
+    return (
+        "Answer the clicked question using the stored topic context below. The user's "
+        "own messages supply facts about the user and continuing constraints for this "
+        "question. Earlier assistant replies, in this or another conversation, only show "
+        "what was already discussed: a claim taken from them needs support like any other, "
+        "and they are not documentation to quote. "
+        "No modification forbids writes, not inspection or read-only checks. "
+        "Explanation only asks for proposed steps rather than execution. It permits "
+        "reading relevant files; running a disposable sample requires the user's explicit "
+        "request for execution or operational verification. Keep conditions attached to their own action, preserve "
+        "restrictions on changes, purchases and access, and follow the reply "
+        "preferences the sources state, such as length.\n"
+        "The clicked question is the answer scope; stored context must not add a request "
+        "or premise. When the question takes an effect, cause or pattern for granted, that is the first "
+        "claim to support: say whether it holds, holds only under stated conditions, or "
+        "is not supported, and answer from there instead of explaining an effect you have "
+        "not established. Every claim the answer "
+        "relies on for it (what a command or query does, a quantity, a cause, or which "
+        "of two cases is larger, longer or earlier) needs support you name in the "
+        "reply: when the user explicitly requested execution or operational verification, "
+        "a result you observed by running a disposable sample; or a short calculation "
+        "from an established formula; or a page fetched "
+        "during this reply that states that claim for the same case; quotation marks are "
+        "only for words that page contains. A page about a neighbouring "
+        "quantity, period or condition, a search snippet, or a page you could not "
+        "fetch does not support it. Leave out a claim without such support or state "
+        "it as unverified together with what would settle it. Distinguish established "
+        "mechanisms from hypotheses and context-dependent exceptions.\n"
+        "Separate source facts, observed tool results and proposed steps. A source_url "
+        "beginning with project:// or profile:// names the stored record shown in "
+        "source_context, not a file to look for. If a document "
+        "or file is missing, state what is unknown; do not search outside the project "
+        "or infer its runtime, required versions, dependencies or data structure from "
+        "the topic alone. Explain what information would resolve the missing fact. "
+        "Do not fill unknown requirements with example version numbers or unrelated "
+        "toolchains; use the project's documented requirement or leave it unknown. "
+        "For an explanation-only request, give concise steps with their prerequisites "
+        "and the result each should produce, marking every step you did not run as "
+        "not executed.\n"
+        "When the user explicitly asks for execution or operational verification, run "
+        "the needed commands, queries or code on a newly allocated disposable sample "
+        "with known contents, preserving the user's files, and mark any step you could "
+        "not run as not executed. Explanation, comparison and proposed-method questions "
+        "do not themselves ask you to run a sample or create files. An explicit "
+        "restriction not to run commands also applies to disposable samples. "
+        "Never present output you did not observe. Check the actual result "
+        "against those contents, not just the exit status. Test the claimed property: "
+        "read-only access requires a rejected write through the same connection; "
+        "unchanged contents require a full before/after comparison. Neither a file "
+        "listing nor successful reads prove permissions, locks or backup completeness. "
+        "Inspect a database's actual schema before referring to tables or columns. "
+        "Describe only the exact tested procedure as verified, identify the sample, "
+        "and keep all unexecuted commands and the user's own files explicitly unverified.\n"
+        + json.dumps({
+            "category": card.get("category"),
+            "source_url": evidence.get("source_url"),
+            "published_at": evidence.get("published_at"),
+            "source_context": evidence.get("exact_spans") or evidence.get("content_boundary"),
+            "user_source_constraints": sources,
+            "publication_date_provenance": evidence.get("publication_date_provenance"),
+        }, ensure_ascii=False)
+    )
 
 class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
@@ -519,6 +630,9 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
     Image attachments and uploaded files are scoped to the *current turn* only
     so they are visible in the UI history but do not leak into later prompt
     contexts.  Skills, on the other hand, are persisted without a scope.
+
+    Input and assistance origins describe how the person composed the message,
+    so a turn another Session's Agent or a Heartbeat started carries none.
     """
     if not isinstance(params, dict):
         return None
@@ -526,6 +640,98 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
     extra = with_cross_session_history_metadata(
         None, _cross_session_marker_from_params(params)
     ) or {}
+    automation = params.get("automation")
+    typed_by_person = "message_origin" not in extra and not (
+        isinstance(automation, dict) and automation.get("kind") == "heartbeat"
+    )
+    input_origin = str(params.get("input_origin") or "").strip()
+    if input_origin not in {
+        "manual_free_text",
+        "starter_click",
+        "default_reply",
+        "tab_suggestion",
+        "prompt_suggestion",
+        "pasted_or_unknown",
+    }:
+        input_origin = "pasted_or_unknown"
+    assistance_origin = str(params.get("assistance_origin") or "").strip()
+    if assistance_origin not in {
+        "none",
+        "starter_click",
+        "default_reply",
+        "tab_suggestion",
+        "prompt_suggestion",
+        "unknown",
+    }:
+        assistance_origin = "unknown"
+    if typed_by_person:
+        extra["input_origin"] = input_origin
+        extra["assistance_origin"] = assistance_origin
+    topic_starter = params.get("topic_starter")
+    _field_items = (
+        "manifest_id",
+        "generation_batch_id",
+        "exposure_id",
+        "card_revision_id",
+        "context_scope",
+    )
+    _condition = (
+        typed_by_person
+        and input_origin == "starter_click"
+        and assistance_origin == "starter_click"
+        and isinstance(topic_starter, dict)
+        and set(topic_starter)
+        == {
+            "manifest_id",
+            "generation_batch_id",
+            "exposure_id",
+            "card_revision_id",
+            "context_scope",
+            "project_id",
+        }
+        and all(
+            isinstance(topic_starter.get(field), str)
+            and bool(str(topic_starter[field]).strip())
+            for field in _field_items
+        )
+        and (
+            topic_starter.get("project_id") is None
+            or (
+                isinstance(topic_starter.get("project_id"), str)
+                and bool(str(topic_starter["project_id"]).strip())
+            )
+        )
+    )
+    if (
+        _condition
+    ):
+        from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
+            scope_for_project,
+        )
+
+        scope = str(topic_starter["context_scope"])
+        project_id = topic_starter.get("project_id")
+        scope_matches = (scope == "global_new_chat" and project_id is None) or (
+            isinstance(project_id, str) and scope == scope_for_project(project_id)
+        )
+        if scope_matches:
+            extra["topic_starter"] = dict(topic_starter)
+    prompt_suggestion = params.get("prompt_suggestion")
+    # The in-conversation suggestion the person accepted, sent as it was or edited.
+    _condition2 = (
+        typed_by_person
+        and input_origin == "prompt_suggestion"
+        and assistance_origin == "prompt_suggestion"
+        and isinstance(prompt_suggestion, dict)
+        and set(prompt_suggestion) == {"suggestion_id", "edited"}
+        and isinstance(prompt_suggestion["suggestion_id"], str)
+        and bool(prompt_suggestion["suggestion_id"].strip())
+        and isinstance(prompt_suggestion["edited"], bool)
+    )
+    if (
+        _condition2
+    ):
+        extra["prompt_suggestion"] = dict(prompt_suggestion)
     raw_media_items = params.get("media_items")
     if isinstance(raw_media_items, list):
         media_items: list[dict[str, Any]] = []
@@ -1462,6 +1668,12 @@ class JiuWenSwarm:
         memory_mode = get_memory_mode(config_base)
         context = RequestContext.from_request(request, config_base, strip_debug=strip_debug_directive)
         params, query, metadata = context.params, context.query, context.metadata
+        starter_context = _starter_interaction_context(params, query)
+        if starter_context:
+            previous_context = metadata.get("interaction_context")
+            metadata["interaction_context"] = (
+                f"{previous_context}\n\n{starter_context}" if previous_context else starter_context
+            )
         request_channel, channel, language = context.request_channel, context.channel, context.language
         trusted_dirs, skills = context.trusted_dirs, context.skills
         project_dir, cwd = context.project_dir, context.cwd
@@ -2397,7 +2609,36 @@ class JiuWenSwarm:
         session_id = self._session_manager.get_session_id(request.session_id)
         if isinstance(request.params, dict):
             restore_chat_send_equipment_params(session_id, request.params)
+        from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion
+        prompt_suggestion.forks.request_started(
+            session_id,
+            person_turn=_person_drove_turn(
+                request,
+                is_team_mode=(
+                    request.params.get("team", False)
+                    or is_team_runtime_mode(request.params.get("mode", ""))
+                ),
+            ),
+        )
         query = request.params.get("query", "")
+        feedback_scheduled = _session_message_owns_completion(request)
+        completion_receipt: Future[None] | None = None
+        waiting_for_user = False
+
+        def _schedule_feedback_once(terminal_status: str) -> None:
+            nonlocal feedback_scheduled, completion_receipt
+            if feedback_scheduled:
+                return
+            completion_receipt = _complete_history_request(
+                session_id,
+                request.request_id,
+                terminal_status=terminal_status,
+            )
+            feedback_scheduled = True
+            prompt_suggestion.forks.turn_ended(
+                session_id, request.request_id, status=terminal_status,
+                waiting_for_user=waiting_for_user, completion=completion_receipt,
+            )
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
@@ -2423,7 +2664,11 @@ class JiuWenSwarm:
     
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
         except _TeamPlanApprovalPayloadError as exc:
+            _schedule_feedback_once("error")
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -2431,13 +2676,16 @@ class JiuWenSwarm:
                 payload={"error": str(exc)},
                 metadata=request.metadata,
             )
-    
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
+
         # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
         # connectors before the agent runs. Always pass a list (never None):
         # empty clears selection when neither side contributes names.
         params = request.params if isinstance(request.params, dict) else {}
         try:
-            runtime_binding = self._resolve_runtime_binding_for_request(
+            runtime_binding = await self._resolve_runtime_binding_for_request(
                 adapter,
                 request,
                 session_id,
@@ -2464,26 +2712,45 @@ class JiuWenSwarm:
         if callable(moa_access):
             reconcile_kwargs.update(moa_access(request))
         reconcile_kwargs["execution_request"] = request
-        await self.reconcile_session_mcp(
-            request.session_id,
-            compute_chat_send_mcp_needed(params),
-            **reconcile_kwargs,
-        )
-    
-        # cloud memory: before chat hook
+        try:
+            await self.reconcile_session_mcp(
+                request.session_id,
+                compute_chat_send_mcp_needed(params),
+                **reconcile_kwargs,
+            )
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
+
+        # The composition boundary owns concrete extension hooks.
         if memory_mode == "cloud":
             inputs["memory_block"] = await self._get_hook_services().before_memory(request)
-    
+
         async def run_agent_task():
             return await adapter.process_message_impl(request, inputs)
-    
-        if schedule_session:
-            result = await self._session_manager.submit_and_wait(
-                session_id, run_agent_task
-            )
-        else:
-            result = await run_agent_task()
-    
+
+        try:
+            if schedule_session:
+                result = await self._session_manager.submit_and_wait(
+                    session_id, run_agent_task
+                )
+            else:
+                result = await run_agent_task()
+        except asyncio.CancelledError:
+            _schedule_feedback_once("cancelled")
+            raise
+        except Exception:
+            _schedule_feedback_once("error")
+            raise
+
+        waiting_for_user = (
+            result.payload.get("event_type") in USER_INTERACTION_EVENTS
+            or any(chunk.get("event_type") in USER_INTERACTION_EVENTS
+                   for chunk in result.payload.get("approval_chunks", []) if isinstance(chunk, dict))
+        )
         if result.ok and result.payload.get("content"):
             content = result.payload["content"]
             content_str = content if isinstance(content, str) else str(content)
@@ -2492,14 +2759,21 @@ class JiuWenSwarm:
                 adapter=adapter,
                 request=request,
             )
-            content_str = await finalize_assistant_response_if_a2ui(
-                content_str,
-                channel=request.channel_id,
-                user_query=user_turn.text,
-                request_id=request.request_id or "",
-                repair_call=repair_call,
-                retry_without_a2ui_call=retry_without_a2ui_call,
-            )
+            try:
+                content_str = await finalize_assistant_response_if_a2ui(
+                    content_str,
+                    channel=request.channel_id,
+                    user_query=user_turn.text,
+                    request_id=request.request_id or "",
+                    repair_call=repair_call,
+                    retry_without_a2ui_call=retry_without_a2ui_call,
+                )
+            except asyncio.CancelledError:
+                _schedule_feedback_once("cancelled")
+                raise
+            except Exception:
+                _schedule_feedback_once("error")
+                raise
             if isinstance(content, str):
                 result.payload["content"] = content_str
             result.payload = _with_web_agent_template_payload(
@@ -2529,6 +2803,8 @@ class JiuWenSwarm:
                 ),
                 mode=request.params.get("mode", "unknown"),
             )
+            _schedule_feedback_once("success")
+
             # cloud memory: after chat hook
             if memory_mode == "cloud":
                 await self._get_hook_services().after_memory(request, content_str)
@@ -2539,7 +2815,11 @@ class JiuWenSwarm:
             config = get_config()
             if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                 _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
-    
+
+        if not feedback_scheduled:
+            _schedule_feedback_once("success" if result.ok else "error")
+        if completion_receipt is not None:
+            await _await_history_receipt(completion_receipt)
         return result
 
     async def deliver_session_input(
@@ -2612,6 +2892,10 @@ class JiuWenSwarm:
             decorate_heartbeat=_with_heartbeat_history_metadata,
             decorate_cross_session=_with_cross_session_history_metadata,
             resolve_final_timestamp=_resolve_final_record_timestamp,
+            person_drove_turn=_person_drove_turn,
+            complete_history_request=_complete_history_request,
+            session_message_owns_completion=_session_message_owns_completion,
+            await_history_receipt=_await_history_receipt,
         ))
         owners = getattr(self, "_control_input_executions", None)
         if owners is None:
@@ -2669,6 +2953,10 @@ class JiuWenSwarm:
             is_memory_enabled=is_memory_enabled,
             TeamA2UIBlockBuffer=TeamA2UIBlockBuffer,
             TeamPlanApprovalPayloadError=_TeamPlanApprovalPayloadError,
+            person_drove_turn=_person_drove_turn,
+            complete_history_request=_complete_history_request,
+            session_message_owns_completion=_session_message_owns_completion,
+            await_history_receipt=_await_history_receipt,
         )
         service = StreamExecutionService(self, ports)
         async with aclosing(service.run(request)) as stream:
@@ -3152,7 +3440,7 @@ class JiuWenSwarm:
         logger.info("[JiuWenSwarm] cleanup: 完成")
 
     @staticmethod
-    def _resolve_runtime_binding_for_request(
+    async def _resolve_runtime_binding_for_request(
         adapter: AgentAdapter,
         request: AgentRequest,
         session_id: str,
@@ -3165,6 +3453,8 @@ class JiuWenSwarm:
             return None
         params = request.params if isinstance(request.params, dict) else {}
         runtime_binding = resolver(session_id, params)
+        if inspect.isawaitable(runtime_binding):
+            runtime_binding = await runtime_binding
         request.trusted_runtime_binding = runtime_binding
         return runtime_binding
 

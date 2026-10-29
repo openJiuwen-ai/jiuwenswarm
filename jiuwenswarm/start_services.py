@@ -38,6 +38,7 @@ from jiuwenswarm.instance_manager import (
     InstanceConfig,
     InstanceLock,
     InstanceStatus,
+    InstancesYamlError,
     calculate_instance_ports,
     create_bootstrap_env,
     find_available_ports,
@@ -382,6 +383,22 @@ def _sync_default_env_ports(ports: dict[str, int]) -> int | None:
     return None
 
 
+def _stop_instance_worker(config: InstanceConfig) -> bool:
+    """Stop detached Runtime in the same source/wheel and instance data scope."""
+    env = os.environ.copy()
+    env["JIUWENSWARM_DATA_DIR"] = str(config.workspace)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PACKAGE_DIR.parent), env.get("PYTHONPATH")]))
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "jiuwenswarm.server.supervisor.shutdown", "--shutdown-worker", "--timeout", "10"],
+            env=env, cwd=str(PACKAGE_DIR.parent), timeout=15,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        logging.error("[start_services] Worker shutdown incomplete: %s", exc)
+        return False
+
+
 def do_stop_instance(cmd: InstanceCommand) -> int:
     """Execute stop operation for an instance.
 
@@ -402,6 +419,8 @@ def do_stop_instance(cmd: InstanceCommand) -> int:
     else:
         success = stop_instance_process(cmd.config, timeout=10.0)
 
+    if success:
+        success = _stop_instance_worker(cmd.config)
     if success:
         logging.info(f"[start_services] Instance '{cmd.name}' stopped.")
         return 0
@@ -920,7 +939,7 @@ def _action_stop(name: str) -> int:
         return 1
     if not running:
         logging.info(f"[start_services] Cleaning up stopped instance '{name}'.")
-        return 0 if stop_instance_process(cmd.config, timeout=10.0) else 1
+        return 0 if stop_instance_process(cmd.config, timeout=10.0) and _stop_instance_worker(cmd.config) else 1
 
     # Execute stop
     return do_stop_instance(cmd)
@@ -949,7 +968,7 @@ def _action_restart(name: str, mode: str = "all") -> int:
     if cmd.check_running():
         stop_result = do_stop_instance(cmd)
     else:
-        stop_result = 0 if stop_instance_process(cmd.config, timeout=10.0) else 1
+        stop_result = 0 if stop_instance_process(cmd.config, timeout=10.0) and _stop_instance_worker(cmd.config) else 1
     if stop_result != 0:
         logging.info("[start_services] Restart aborted: stop failed.")
         return stop_result
@@ -1115,17 +1134,22 @@ def _validate_args(args: argparse.Namespace) -> int | None:
 def _dispatch_action(args: argparse.Namespace) -> int:
     """Dispatch action based on parsed arguments.
 
-    Args:
-        args: Parsed arguments
-
-    Returns:
-        Exit code
+    A damaged ``instances.yaml`` is a normal configuration error for the
+    instance commands; the loader already produces a user-facing message with
+    fix suggestions, so print that instead of leaking a traceback.
     """
-    # Validate arguments
     error_code = _validate_args(args)
     if error_code is not None:
         return error_code
+    try:
+        return _dispatch_command(args)
+    except InstancesYamlError as exc:
+        logging.info(str(exc))
+        return 1
 
+
+def _dispatch_command(args: argparse.Namespace) -> int:
+    """Run the validated action against the parsed arguments."""
     # --list: list all instances
     if args.list:
         return _action_list()

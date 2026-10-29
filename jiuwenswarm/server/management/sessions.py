@@ -186,6 +186,11 @@ class SessionsManagement:
                         metadata=request.metadata,
                     )
                 else:
+                    previous_project_id = str(
+                        (get_session_metadata(
+                            sid, cache_bust=True, enable_writeback=False,
+                        ) or {}).get("project_id") or ""
+                    )
                     updated = rebind_session_project(
                         session_id=sid,
                         project_id=project.project_id,
@@ -201,6 +206,25 @@ class SessionsManagement:
                             metadata=request.metadata,
                         )
                     else:
+                        from jiuwenswarm.server.runtime.recommendation_host import (
+                            active_recommendation_host,
+                        )
+
+                        try:
+                            host = active_recommendation_host()
+                            if (
+                                host is not None
+                                and previous_project_id
+                                and previous_project_id != project.project_id
+                            ):
+                                await host.session_left_project(previous_project_id, sid)
+                        except Exception:  # noqa: BLE001 - rebind already persisted
+                            logger.warning(
+                                "[AgentWebSocketServer] session rebind recommendation "
+                                "hook failed: session_id=%s",
+                                sid,
+                                exc_info=True,
+                            )
                         resp = AgentResponse(
                             request_id=request.request_id,
                             channel_id=request.channel_id,
@@ -376,8 +400,8 @@ class SessionsManagement:
                 payload["deleted_files"] = restore_result.get("deleted_files", [])
                 payload["restore_errors"] = restore_result.get("errors", [])
             if compact and direction == "from":
-                import uuid as _uuid
                 import time as _time
+                import uuid as _uuid
 
                 request_id = str(_uuid.uuid4())
                 now = _time.time()

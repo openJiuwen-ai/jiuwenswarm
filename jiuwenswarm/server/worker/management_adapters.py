@@ -11,7 +11,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 
 _PROVIDERS = {
     "voice": (
-        "jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter",
+        "jiuwenswarm.server.runtime.video_task.server_adapter",
         "VoiceTaskServerAdapter",
         frozenset(
             {

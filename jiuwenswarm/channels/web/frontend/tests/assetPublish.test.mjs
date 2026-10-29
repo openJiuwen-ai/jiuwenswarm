@@ -4,6 +4,8 @@ import {
   canShowAssetPublish,
   publishOutcome,
   localRecordState,
+  isSubmissionLocked,
+  canStartNewVersion,
   validateMetadata,
   createCommitAttempt,
 } from '../node_modules/.cache/asset-publish/assetPublishState.js';
@@ -162,6 +164,20 @@ test('exhausted refresh stops loading and exposes an error notice', (context) =>
       assert.equal(pending.refreshing, true);
     },
   );
+});
+
+test('only in-flight operations lock the form; an unverified outcome can start again', () => {
+  for (const execution_status of ['queued', 'uploading']) {
+    const record = { execution_status };
+    assert.equal(isSubmissionLocked(record), true);
+    assert.equal(canStartNewVersion(record), false);
+  }
+  // #4749: 'unknown' is terminal, not an operation still owned by the backend.
+  for (const execution_status of ['completed', 'failed', 'unknown']) {
+    const record = { execution_status };
+    assert.equal(isSubmissionLocked(record), false);
+    assert.equal(canStartNewVersion(record), true);
+  }
 });
 
 test('records expose only locally confirmed states', () => {

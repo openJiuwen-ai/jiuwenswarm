@@ -5,6 +5,7 @@ import {
   getProjectMenuItems,
   getSessionMenuItems,
 } from '../node_modules/.cache/sidebar-model/multi-session/sidebar/sidebarMenuSchema.js';
+import { getViewedSessionId } from '../node_modules/.cache/sidebar-model/multi-session/sidebar/sidebarModel.js';
 
 const t = (key) => key;
 const findItem = (items, key) => items.find((item) => item.key === key);
@@ -55,4 +56,11 @@ test('cron session menu omits archive but keeps delete', () => {
 test('project-scoped session uses conversation pin labels', () => {
   const items = getSessionMenuItems(true, t, { scope: 'project' });
   assert.equal(findItem(items, 'pin').label, 'multiSession.project.unpinConversation');
+});
+
+test('the open design canvas decides the viewed session, not the chat session', () => {
+  assert.equal(getViewedSessionId(true, 'chat-1', 'design-1'), 'design-1');
+  assert.equal(getViewedSessionId(true, 'chat-1', undefined), null);
+  assert.equal(getViewedSessionId(false, 'chat-1', undefined), 'chat-1');
+  assert.equal(getViewedSessionId(false, null, undefined), null);
 });

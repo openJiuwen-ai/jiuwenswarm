@@ -25,8 +25,8 @@ def test_shared_helpers_and_services_import_without_delivery_adapters(tmp_path):
 import importlib.abc, sys
 sys.path.insert(0, {str(root)!r})
 blocked = ('websockets', 'jiuwenswarm.common.e2a.wire_codec',
-    'jiuwenswarm.server.ws_send', 'jiuwenswarm.common.ws_diagnostics',
-    'jiuwenswarm.extensions.hook_event', 'jiuwenswarm.extensions.hooks_context')
+    'jiuwenswarm.server.ws_send', 'gateway.common.ws_diagnostics',
+    'jiuwenswarm.common.hook_event', 'jiuwenswarm.common.hooks_context')
 class RejectAdapters(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
         if any(fullname == name or fullname.startswith(name + '.') for name in blocked):
@@ -144,8 +144,8 @@ async def test_injected_before_chat_hook_and_disabled_capability():
 async def test_default_hook_preserves_mutable_request_context(monkeypatch, params):
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
-    from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from jiuwenswarm.common.hook_event import AgentServerHookEvents
+    from gateway.extensions.registry import ExtensionRegistry
 
     request = AgentRequest(
         request_id="hook",

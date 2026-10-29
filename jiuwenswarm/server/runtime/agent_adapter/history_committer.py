@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
+
 import asyncio
 import copy
 import time
@@ -100,7 +102,16 @@ class HistoryCommitter:
                 record = self._assistant_record("chat.final", pending.content, extra, pending.started_at)
                 await self._commit_record(record, lambda: setattr(self, "_team_member_history", snapshot))
                 history = self._team_member_history
-        if not (event.startswith("chat.") or event == "context.usage"):
+        if event in USER_INTERACTION_EVENTS:
+            snapshot = copy.deepcopy(self._team_member_history)
+            pending = snapshot.take_pending_reasoning(key)
+            if pending is not None:
+                started_at, extra = pending
+                record = self._assistant_record("chat.reasoning", "", self._decorate_record("chat.reasoning", extra))
+                record["timestamp"] = (started_at or time.time() * 1000) / 1000
+                await self._commit_record(record, lambda: setattr(self, "_team_member_history", snapshot))
+                history = self._team_member_history
+        if not (event.startswith("chat.") or event == "context.usage" or event in USER_INTERACTION_EVENTS):
             return True
         snapshot = copy.deepcopy(history)
         started_at, order = snapshot.text_segment_start(key)
@@ -336,7 +347,7 @@ class HistoryCommitter:
                     extra["output_order"] = self.pending_final_order
                 await self._persist_final(content, extra, payload)
             return
-        boundary = event_type in ("chat.tool_call", "chat.ask_user_question", "chat.error", "chat.done")
+        boundary = event_type in ("chat.tool_call", "chat.error", "chat.done") or event_type in USER_INTERACTION_EVENTS
         if boundary:
             await self.persist_pending_final_text()
             await self.persist_pending_reasoning()

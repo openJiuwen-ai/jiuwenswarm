@@ -145,7 +145,7 @@ async def test_default_task_ports_avoid_imports_for_ordinary_requests(monkeypatc
     original = builtins.__import__
 
     def guarded(name, *args, **kwargs):
-        if name.startswith("jiuwenswarm.extensions"):
+        if name.startswith("gateway.extensions"):
             pytest.fail("ordinary task ports must not import extension implementations")
         return original(name, *args, **kwargs)
 
@@ -159,7 +159,7 @@ async def test_default_task_ports_avoid_imports_for_ordinary_requests(monkeypatc
 
 @pytest.mark.parametrize("ending", ["normal", "error", "cancel"])
 async def test_managed_default_binding_preserves_delegate_cleanup(monkeypatch, ending):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    from jiuwenswarm.server.runtime.video_task import execution
 
     calls = []
     request = AgentRequest(request_id="managed", channel_id="video_tool")
@@ -346,6 +346,14 @@ async def test_interrupt_cancels_round_before_port_closes_output_and_keeps_cutov
 def test_execution_core_cannot_import_concrete_swarm_extensions_or_gateway():
     root = Path(__file__).resolve().parents[3]
     package = root / "jiuwenswarm/server/runtime/agent_adapter"
+    # Upstream moved these shared value contracts into gateway.common. They
+    # carry no Gateway application, transport, configuration or extension owner.
+    shared_contracts = {
+        "gateway.common.mode_matrix", "gateway.common.model_selection",
+        "gateway.common.model_vendor_registry", "gateway.common.session_message",
+        "gateway.common.work_mode", "gateway.common.attachment_safety",
+        "gateway.common.cron_team_completion",
+    }
     failures = []
     for path in package.glob("*.py"):
         if path.name == "adapter_hooks.py":
@@ -353,6 +361,6 @@ def test_execution_core_cannot_import_concrete_swarm_extensions_or_gateway():
         for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
             names = ([node.module] if isinstance(node, ast.ImportFrom) else
                      [alias.name for alias in node.names] if isinstance(node, ast.Import) else [])
-            if any(name and name.startswith(("jiuwenswarm.extensions", "jiuwenswarm.gateway")) for name in names):
+            if any(name and name.startswith("gateway") and name not in shared_contracts for name in names):
                 failures.append(f"{path.name}:{node.lineno}")
     assert failures == []

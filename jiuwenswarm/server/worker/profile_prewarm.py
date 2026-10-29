@@ -125,7 +125,7 @@ class ProfilePrewarmer:
                 "foreground_paused": self.foreground_paused, **self._metrics}
 
     def note_use(self, *, mode: str, channel_id: str, config: dict) -> bool:
-        from jiuwenswarm.common.mode_matrix import is_code_profile_mode, is_team_mode
+        from gateway.common.mode_matrix import is_code_profile_mode, is_team_mode
 
         profile = "code" if is_code_profile_mode(mode) else "agent"
         hit = (not self._closed and self._state == "ready" and profile == self._mode

@@ -10,12 +10,13 @@ driver owns SDK output lifetime and each request owns projector/committer state.
 from __future__ import annotations
 
 import logging
+import asyncio
 import time
 from dataclasses import dataclass
 from contextlib import aclosing
 from typing import Any, AsyncIterator, Callable
 
-from jiuwenswarm.common.mode_matrix import is_team_mode as is_team_runtime_mode
+from gateway.common.mode_matrix import is_team_mode as is_team_runtime_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
@@ -58,6 +59,10 @@ class StreamExecutionPorts:
     is_memory_enabled: Callable[..., Any]
     TeamA2UIBlockBuffer: Callable[..., Any]
     TeamPlanApprovalPayloadError: Callable[..., Any]
+    person_drove_turn: Callable
+    complete_history_request: Callable
+    session_message_owns_completion: Callable
+    await_history_receipt: Callable
 
 
 class StreamExecutionService:
@@ -210,133 +215,147 @@ class StreamExecutionService:
             else False
         )
         is_team_mode = team_flag or is_team_runtime_mode(mode)
-        # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
-        # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
-        # command.goal set history is written only after a successful set inside
-        # the DeepAdapter stream path (same success gate as unary process_message).
-        params_for_history = request.params if isinstance(request.params, dict) else {}
-        history_channel_metadata = (
-            dict(request.metadata) if isinstance(request.metadata, dict) else None
-        )
-        if history_channel_metadata is not None:
-            history_channel_metadata.pop(
-                TEAM_EXECUTION_CONTEXT_METADATA_KEY,
-                None,
-            )
-        if (
-            request.req_method != ReqMethod.COMMAND_GOAL
-            and ports.should_record_user_history(params_for_history)
-        ):
-            await ports.run_history_io(
-                ports.append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=ports.history_user_content(params_for_history, query),
-                timestamp=time.time(),
-                extra=ports.history_user_extra(params_for_history),
-                channel_metadata=history_channel_metadata,
-                mode=params_for_history.get("mode", "unknown"),
-            )
-        logger.info(
-            "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
-            request.request_id,
-            request.channel_id,
-            session_id,
-            facade._sdk_name,
-        )
-
-        rid = request.request_id
-        cid = request.channel_id
-
+        from jiuwenswarm.server.runtime.agent_adapter.request_completion import RequestCompletion
+        completion = RequestCompletion(request, session_id, is_team_mode=is_team_mode, ports=ports)
         try:
-            inputs, memory_mode, user_turn = facade._build_inputs(request)
-        except ports.TeamPlanApprovalPayloadError as exc:
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload={"event_type": "chat.error", "error": str(exc)},
-                is_complete=False,
+            # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
+            # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
+            # command.goal set history is written only after a successful set inside
+            # the DeepAdapter stream path (same success gate as unary process_message).
+            params_for_history = request.params if isinstance(request.params, dict) else {}
+            history_channel_metadata = (
+                dict(request.metadata) if isinstance(request.metadata, dict) else None
             )
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload=None,
-                is_complete=True,
-            )
-            return
-
-        # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
-        # connectors before the agent runs. Always pass a list (never None):
-        # empty clears selection when neither side contributes names.
-        params = request.params if isinstance(request.params, dict) else {}
-        try:
-            runtime_binding = facade._resolve_runtime_binding_for_request(adapter, request, session_id)
-        except (OSError, TypeError, ValueError) as exc:
-            yield AgentResponseChunk(
-                request_id=rid, channel_id=cid,
-                payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
-            )
-            return
-        reconcile_kwargs = {
-            "model_name": params.get("model_name"),
-            "history_before_request_id": request.request_id,
-            "execution_request": request,
-        }
-        if runtime_binding is not None:
-            reconcile_kwargs["runtime_binding"] = runtime_binding
-        if params.get("model_selection") is not None:
-            reconcile_kwargs["model_selection"] = params["model_selection"]
-        if "moa_enabled" in params:
-            reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
-        moa_access = getattr(adapter, "moa_access_kwargs", None)
-        if callable(moa_access):
-            reconcile_kwargs.update(moa_access(request))
-        await facade.reconcile_session_mcp(
-            request.session_id,
-            ports.compute_chat_send_mcp_needed(params),
-            **reconcile_kwargs,
-        )
-        # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
-        # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
-        await ports.persist_ask_user_answer_history(request, session_id, params)
-
-        # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
-        # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此
-        # leader 收到的信封与单 agent 逐字段一致。
-        if is_team_mode:
-            inputs[TEAM_USER_TURN_KEY] = user_turn
+            if history_channel_metadata is not None:
+                history_channel_metadata.pop(
+                    TEAM_EXECUTION_CONTEXT_METADATA_KEY,
+                    None,
+                )
+            if (
+                request.req_method != ReqMethod.COMMAND_GOAL
+                and ports.should_record_user_history(params_for_history)
+            ):
+                await ports.run_history_io(
+                    ports.append_history_record,
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="user",
+                    content=ports.history_user_content(params_for_history, query),
+                    timestamp=time.time(),
+                    extra=ports.history_user_extra(params_for_history),
+                    channel_metadata=history_channel_metadata,
+                    mode=params_for_history.get("mode", "unknown"),
+                )
             logger.info(
-                "[JiuWenSwarm] Team模式 user turn: text=%s",
-                str(user_turn.text)[:100],
+                "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
+                request.request_id,
+                request.channel_id,
+                session_id,
+                facade._sdk_name,
             )
 
-        # cloud memory: before chat hook
-        if memory_mode == "cloud":
-            inputs["memory_block"] = await facade._get_hook_services().before_memory(
-                request
+            rid = request.request_id
+            cid = request.channel_id
+
+            try:
+                inputs, memory_mode, user_turn = facade._build_inputs(request)
+            except ports.TeamPlanApprovalPayloadError as exc:
+                completion.status = "error"
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload={"event_type": "chat.error", "error": str(exc)},
+                    is_complete=False,
+                )
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload=None,
+                    is_complete=True,
+                )
+                return
+
+            # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
+            # connectors before the agent runs. Always pass a list (never None):
+            # empty clears selection when neither side contributes names.
+            params = request.params if isinstance(request.params, dict) else {}
+            try:
+                runtime_binding = await facade._resolve_runtime_binding_for_request(adapter, request, session_id)
+            except (OSError, TypeError, ValueError) as exc:
+                completion.status = "error"
+                yield AgentResponseChunk(
+                    request_id=rid, channel_id=cid,
+                    payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+                )
+                return
+            reconcile_kwargs = {
+                "model_name": params.get("model_name"),
+                "history_before_request_id": request.request_id,
+                "execution_request": request,
+            }
+            if runtime_binding is not None:
+                reconcile_kwargs["runtime_binding"] = runtime_binding
+            if params.get("model_selection") is not None:
+                reconcile_kwargs["model_selection"] = params["model_selection"]
+            if "moa_enabled" in params:
+                reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
+            moa_access = getattr(adapter, "moa_access_kwargs", None)
+            if callable(moa_access):
+                reconcile_kwargs.update(moa_access(request))
+            await facade.reconcile_session_mcp(
+                request.session_id,
+                ports.compute_chat_send_mcp_needed(params),
+                **reconcile_kwargs,
+            )
+            # Team 的交互回答走普通流式路径，不经过 deliver_control_input。
+            # 与单 Agent 使用同一落盘格式，按原问题的 params.request_id 配对。
+            await ports.persist_ask_user_answer_history(request, session_id, params)
+
+            # Team 模式：把整个 turn 交给 team_helpers。它先用 turn.text（用户原
+            # 文）解析 /debug、$member 与 slash，再用同一个 render() 投递，因此
+            # leader 收到的信封与单 agent 逐字段一致。
+            if is_team_mode:
+                inputs[TEAM_USER_TURN_KEY] = user_turn
+                logger.info(
+                    "[JiuWenSwarm] Team模式 user turn: text=%s",
+                    str(user_turn.text)[:100],
+                )
+
+            # cloud memory: before chat hook
+            if memory_mode == "cloud":
+                inputs["memory_block"] = await facade._get_hook_services().before_memory(
+                    request
+                )
+
+            from jiuwenswarm.server.runtime.agent_adapter.stream_projection import (
+                StreamResponsePipeline,
             )
 
-        from jiuwenswarm.server.runtime.agent_adapter.stream_projection import (
-            StreamResponsePipeline,
-        )
-
-        pipeline = StreamResponsePipeline(
-            request=request,
-            adapter=adapter,
-            session_id=session_id,
-            inputs=inputs,
-            memory_mode=memory_mode,
-            user_turn=user_turn,
-            is_team_mode=is_team_mode,
-            ports=ports,
-            hooks=facade._get_hook_services(),
-            queue_capacity=facade.STREAM_QUEUE_MAXSIZE,
-            retry_call=facade._make_retry_without_a2ui_call(
-                adapter=adapter, request=request
-            ),
-        )
-        async with aclosing(pipeline.run()) as stream:
-            async for chunk in stream:
-                yield chunk
+            pipeline = StreamResponsePipeline(
+                request=request,
+                adapter=adapter,
+                session_id=session_id,
+                inputs=inputs,
+                memory_mode=memory_mode,
+                user_turn=user_turn,
+                is_team_mode=is_team_mode,
+                ports=ports,
+                completion=completion,
+                hooks=facade._get_hook_services(),
+                queue_capacity=facade.STREAM_QUEUE_MAXSIZE,
+                retry_call=facade._make_retry_without_a2ui_call(
+                    adapter=adapter, request=request
+                ),
+            )
+            async with aclosing(pipeline.run()) as stream:
+                async for chunk in stream:
+                    yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            completion.complete("cancelled")
+            raise
+        except Exception:
+            completion.complete("error")
+            raise
+        finally:
+            completion.complete()

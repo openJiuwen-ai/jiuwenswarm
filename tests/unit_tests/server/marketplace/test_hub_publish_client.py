@@ -144,9 +144,63 @@ async def test_known_rejections_are_not_retried_or_leaked(draft, status, code):
     assert exc.value.http_status == status
     assert not exc.value.outcome_unknown
     assert exc.value.code == code
+    # A recognized code uses curated local text; the Hub message is never retained.
+    assert exc.value.message == ""
     assert "secret-user-token" not in str(exc.value)
     if status == 429:
         assert exc.value.retry_after == 30
+
+
+@pytest.mark.asyncio
+async def test_unrecognized_rejection_keeps_hub_guidance(draft):
+    """#4753: the Hub names its own conflict, so keep that short guidance for the UI."""
+
+    async def handler(request):
+        return httpx.Response(
+            409,
+            json={
+                "detail": {
+                    "code": 409,
+                    "error": "visibility_immutable",
+                    "message": "发布新版本时不能修改 Skill 可见性，请沿用现有设置",
+                }
+            },
+        )
+
+    client = HubPublishClient(
+        base_url="https://hub.example.test", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(PublishUploadError) as exc:
+        await client.publish(draft, auth=PublishAuth("secret-user-token"))
+    assert exc.value.code == "hub_request_failed"
+    assert exc.value.http_status == 409
+    assert not exc.value.outcome_unknown
+    assert exc.value.message == "发布新版本时不能修改 Skill 可见性，请沿用现有设置"
+
+
+@pytest.mark.asyncio
+async def test_hub_guidance_is_single_line_and_bounded(draft):
+    """Untrusted Hub text is flattened and capped before it reaches storage."""
+
+    async def handler(request):
+        return httpx.Response(
+            400,
+            json={
+                "detail": {
+                    "error": "some_new_rule",
+                    "message": "first line\nsecond\tline " + "x" * 400,
+                }
+            },
+        )
+
+    client = HubPublishClient(
+        base_url="https://hub.example.test", transport=httpx.MockTransport(handler)
+    )
+    with pytest.raises(PublishUploadError) as exc:
+        await client.publish(draft, auth=PublishAuth("secret-user-token"))
+    assert len(exc.value.message) == 300
+    assert "\n" not in exc.value.message and "\t" not in exc.value.message
+    assert exc.value.message.startswith("first line second line x")
 
 
 @pytest.mark.asyncio

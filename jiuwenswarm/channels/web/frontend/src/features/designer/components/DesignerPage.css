@@ -1,5 +1,7 @@
 .designer-page {
   position: relative;
+  /* Keep the toolbar and canvas layers below the shell's floating session sidebar (z-index 30). */
+  isolation: isolate;
   display: flex;
   flex: 1 1 0%;
   gap: 0 !important;
@@ -219,7 +221,9 @@
 }
 
 .designer-page__toolbar-icon-btn svg {
-  stroke: #000;
+  display: block;
+  width: 18px;
+  height: 18px;
 }
 
 .designer-page__toolbar-icon-btn:disabled,
@@ -312,11 +316,11 @@
 .designer-run-control {
   position: absolute;
   top: 12px;
-  right: 12px;
+  left: 12px;
   z-index: 30;
   display: flex;
   flex-direction: column;
-  align-items: flex-end;
+  align-items: flex-start;
   gap: 4px;
   pointer-events: auto;
 }
@@ -558,8 +562,8 @@
 }
 
 .designer-page__canvas .react-flow__minimap.designer-canvas__minimap {
+  margin-top: 12px;
   margin-right: 12px;
-  margin-bottom: 60px;
   border: 1px solid var(--color-border-default);
 }
 
@@ -567,15 +571,10 @@
   display: flex;
   flex-direction: row;
   margin-right: 12px;
-  margin-bottom: 56px;
   box-shadow: none;
   border: 1px solid var(--color-border-default);
   border-radius: 8px;
   overflow: hidden;
-}
-
-.designer-page__canvas .react-flow__controls.designer-canvas__controls--below-minimap {
-  margin-bottom: 20px;
 }
 
 .designer-page__canvas .react-flow__controls.designer-canvas__controls .react-flow__controls-button {
@@ -1047,27 +1046,20 @@
   min-width: 0;
 }
 
-.designer-chat-panel__model {
+/* Canvas model switcher (#5394): this used to be a static label, so the
+   composer must now host the real picker without squeezing the send button. */
+.designer-chat-panel__composer-actions .chat-model-selector {
   display: inline-flex;
   min-width: 0;
   max-width: calc(100% - 40px);
-  align-items: center;
-  gap: 6px;
-  color: var(--color-text-primary);
-  font-size: 12px;
-  line-height: 1;
-  pointer-events: none;
-  user-select: none;
 }
 
-.designer-chat-panel__model-icon {
-  display: inline-flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
+.designer-chat-panel__composer-actions .chat-mode-select__trigger {
+  min-width: 0;
+  max-width: 100%;
 }
 
-.designer-chat-panel__model-label {
+.designer-chat-panel__composer-actions .chat-mode-select__label {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1258,6 +1250,12 @@
   height: 26px;
 }
 
+.designer-chat-panel__stop-icon {
+  display: block;
+  width: 12px;
+  height: 12px;
+}
+
 .designer-chat-panel__send:hover:not(:disabled) {
   filter: brightness(1.12);
 }
@@ -1265,6 +1263,21 @@
 .designer-chat-panel__send:disabled {
   cursor: not-allowed;
   background-color: #D9D9D9;
+}
+
+/*
+ * Running state: the message is sent but the round has not reported processing
+ * yet (the stop button replaces this once it does), so the button must not
+ * look like the idle send plane (#5410). It stays disabled, but the spinner
+ * and the darker glyph make "working" unambiguous.
+ */
+.designer-chat-panel__send[data-variant='running']:disabled {
+  color: var(--color-text-primary);
+}
+
+.designer-chat-panel__send-spinner {
+  display: block;
+  flex-shrink: 0;
 }
 
 .designer-node {
@@ -1466,6 +1479,20 @@
   pointer-events: none;
   cursor: pointer;
   transition: color 120ms ease, opacity 120ms ease;
+}
+
+/*
+ * Anchor ports: sides that can receive a wire but have no add-node template
+ * (e.g. an image node is preceded by text/table, which are not add-menu
+ * entries). They have no plus icon, so they must stay hittable on their own or
+ * the node could never be wired from that side.
+ */
+.designer-node__card .react-flow__handle.designer-node__port--anchor {
+  pointer-events: auto;
+}
+
+.designer-node:hover .designer-node__card .react-flow__handle.designer-node__port--anchor {
+  background: var(--color-text-secondary, #8a8f98);
 }
 
 .designer-node__port-icon {
@@ -2145,18 +2172,6 @@
   cursor: not-allowed;
 }
 
-.designer-node-toolbar__compare {
-  align-self: center;
-  min-width: 72px;
-  padding: 6px 14px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 999px;
-  background: var(--color-surface-card);
-  color: var(--color-text-primary);
-  font-size: 13px;
-  cursor: pointer;
-}
-
 .designer-node-toolbar__panel {
   width: 100%;
   display: flex;
@@ -2434,7 +2449,7 @@
 
 .designer-media-settings__popover {
   position: absolute;
-  top: calc(100% + 6px);
+  bottom: calc(100% + 6px);
   left: 0;
   right: 0;
   z-index: 10;
@@ -2520,7 +2535,7 @@
 }
 
 .designer-media-settings__choice.is-selected {
-  background: var(--color-text-primary);
+  background: var(--color-chat-accent);
   color: var(--color-text-inverse);
 }
 
@@ -2528,10 +2543,101 @@
   cursor: default;
 }
 
+.designer-media-settings__duration-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
 .designer-media-settings__slider {
+  flex: 1 1 auto;
   width: 100%;
+  min-width: 0;
+  height: 20px;
   margin: 0;
-  accent-color: var(--color-text-primary);
+  background: transparent;
+  cursor: pointer;
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+.designer-media-settings__slider::-webkit-slider-runnable-track {
+  height: 4px;
+  border: none;
+  border-radius: 2px;
+  background-image: linear-gradient(
+    to right,
+    var(--color-chat-accent) var(--designer-slider-pct, 0%),
+    var(--color-tag-neutral-surface) var(--designer-slider-pct, 0%)
+  );
+}
+
+.designer-media-settings__slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5px;
+  border: 1px solid var(--color-border-input-strong);
+  border-radius: 50%;
+  background: var(--color-control-thumb);
+  box-shadow: var(--effect-shadow-sm);
+  cursor: pointer;
+}
+
+.designer-media-settings__slider::-moz-range-track {
+  height: 4px;
+  border: none;
+  border-radius: 2px;
+  background-image: linear-gradient(
+    to right,
+    var(--color-chat-accent) var(--designer-slider-pct, 0%),
+    var(--color-tag-neutral-surface) var(--designer-slider-pct, 0%)
+  );
+}
+
+.designer-media-settings__slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--color-border-input-strong);
+  border-radius: 50%;
+  background: var(--color-control-thumb);
+  box-shadow: var(--effect-shadow-sm);
+  cursor: pointer;
+}
+
+.designer-media-settings__duration-value {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.designer-media-settings__duration-input {
+  width: calc(2ch + 12px);
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-elevated);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 1.4;
+  text-align: center;
+  box-sizing: border-box;
+}
+
+.designer-media-settings__duration-input:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.designer-media-settings__duration-unit {
+  flex-shrink: 0;
 }
 
 .designer-node-toolbar__params-hint {
@@ -3284,123 +3390,6 @@ textarea.designer-node-toolbar__param-input {
   line-height: 1.55;
   white-space: pre-wrap;
   text-align: left;
-}
-
-.designer-revision-chooser {
-  position: fixed;
-  inset: 0;
-  z-index: 42;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-}
-
-.designer-revision-chooser__backdrop {
-  position: absolute;
-  inset: 0;
-  border: 0;
-  background: rgb(15 23 42 / 72%);
-  cursor: pointer;
-}
-
-.designer-revision-chooser__panel {
-  position: relative;
-  display: flex;
-  width: min(1100px, 100%);
-  max-height: calc(100vh - 48px);
-  flex-direction: column;
-  overflow: hidden;
-  border-radius: 16px;
-  background: var(--color-surface-card, #fff);
-  box-shadow: 0 24px 72px rgb(15 23 42 / 28%);
-}
-
-.designer-revision-chooser__header,
-.designer-revision-chooser__actions {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 20px;
-}
-
-.designer-revision-chooser__header {
-  border-bottom: 1px solid var(--color-border-default, #e5e7eb);
-}
-
-.designer-revision-chooser__header h2,
-.designer-revision-chooser__column h3 {
-  margin: 0;
-  font-size: 16px;
-  font-weight: 650;
-}
-
-.designer-revision-chooser__header p {
-  margin: 6px 0 0;
-  font-size: 13px;
-  color: var(--color-text-muted, #6b7280);
-}
-
-.designer-revision-chooser__compare {
-  display: grid;
-  min-height: 0;
-  flex: 1;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-  padding: 16px 20px;
-  overflow: auto;
-}
-
-.designer-revision-chooser__column {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.designer-revision-chooser__stack {
-  display: flex;
-  min-height: 0;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.designer-revision-chooser__item {
-  margin: 0;
-}
-
-.designer-revision-chooser__item figcaption {
-  margin-bottom: 6px;
-  font-size: 12px;
-  color: var(--color-text-muted, #6b7280);
-}
-
-.designer-revision-chooser__item img,
-.designer-revision-chooser__item video {
-  display: block;
-  max-width: 100%;
-  max-height: 280px;
-  object-fit: contain;
-}
-
-.designer-revision-chooser__text {
-  box-sizing: border-box;
-  width: 100%;
-  max-height: 280px;
-  margin: 0;
-  overflow: auto;
-  padding: 8px 10px;
-  border: 1px solid var(--color-border-default, #e5e7eb);
-  border-radius: 8px;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-
-.designer-revision-chooser__actions {
-  justify-content: flex-end;
-  border-top: 1px solid var(--color-border-default, #e5e7eb);
 }
 
 /* Read-only workflow: edit affordances stay visible and show a forbidden cursor. */

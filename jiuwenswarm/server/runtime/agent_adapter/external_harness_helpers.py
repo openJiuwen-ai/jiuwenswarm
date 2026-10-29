@@ -12,7 +12,7 @@ from typing import Any
 from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.stream.base import OutputSchema
-from openjiuwen.harness.resources import RuntimeSpec, load_agent_template_package
+from openjiuwen.harness.resources import RuntimeSpec, read_agent_template_card
 from openjiuwen.harness_protocol import (
     HarnessCapability,
     HarnessCheckpoint,
@@ -42,6 +42,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     update_session_metadata,
 )
+from jiuwenswarm.server.runtime.session.history_io import run_stream_parser
 
 logger = logging.getLogger(__name__)
 _BINDING_LOCK = threading.RLock()
@@ -165,16 +166,21 @@ def _requested_template_name(params: dict[str, Any] | None) -> str | None:
     return value.strip() or None
 
 
-def _load_requested_runtime(
+async def _load_requested_runtime(
     agent_template_name: str,
 ) -> tuple[str, Path, RuntimeSpec | None]:
+    """Locate the expert and read its runtime from openjiuwen's manifest card.
+
+    Only ``manifest.json`` is read here; the package is parsed in full once,
+    inside ``create_harness``.
+    """
     runtime_name = equipment.resolve_equipment_runtime_id(
         "agent_templates",
         agent_template_name,
     )
     package_path = equipment.resolve_agent_template_dir(runtime_name)
-    manifest = load_agent_template_package(package_path / "manifest.json")
-    return runtime_name, package_path, equipment.agent_template_runtime(manifest)
+    card = await read_agent_template_card(package_path / "manifest.json")
+    return runtime_name, package_path, equipment.agent_template_runtime(card)
 
 
 def _binding_conflict_error(
@@ -190,12 +196,15 @@ def _binding_conflict_error(
     )
 
 
-def resolve_external_harness_binding(
+async def resolve_external_harness_binding(
     session_id: str,
     params: dict[str, Any] | None,
 ) -> dict[str, Any]:
     """Resolve and enforce one session's immutable External Harness binding."""
     requested_name = _requested_template_name(params)
+    # Read the card before taking the (thread) lock: the lock guards only the
+    # session metadata check below and must not be held across an await.
+    requested = await _load_requested_runtime(requested_name) if requested_name else None
 
     with _BINDING_LOCK:
         metadata = get_session_metadata(session_id, cache_bust=True)
@@ -203,10 +212,10 @@ def resolve_external_harness_binding(
         if isinstance(stored, dict) and stored.get("kind") == _EXTERNAL_HARNESS_KIND:
             bound_name = str(stored.get("agent_template_name") or "")
             bound_provider = str(stored.get("provider_name") or "")
-            if not requested_name:
+            if requested is None:
                 raise _binding_conflict_error(bound_name, bound_provider)
 
-            runtime_name, package_path, runtime = _load_requested_runtime(requested_name)
+            runtime_name, package_path, runtime = requested
             if (
                 runtime is None
                 or runtime_name != bound_name
@@ -221,10 +230,10 @@ def resolve_external_harness_binding(
                 "package_path": package_path,
             }
 
-        if not requested_name:
+        if requested is None:
             return {"kind": "deep_agent"}
 
-        runtime_name, package_path, runtime = _load_requested_runtime(requested_name)
+        runtime_name, package_path, runtime = requested
         if runtime is None:
             return {"kind": "deep_agent"}
 
@@ -274,7 +283,7 @@ def persist_external_harness_binding(
         )
 
 
-def load_persisted_external_harness_binding(
+async def load_persisted_external_harness_binding(
     session_id: str,
 ) -> dict[str, Any] | None:
     """Return the stored External binding, including runtime and package path."""
@@ -285,7 +294,7 @@ def load_persisted_external_harness_binding(
     template_name = str(stored.get("agent_template_name") or "").strip()
     if not template_name:
         return None
-    return resolve_external_harness_binding(
+    return await resolve_external_harness_binding(
         session_id,
         {"agent_template_name": template_name},
     )
@@ -338,6 +347,19 @@ def _merge_host_external_cli_config(
     if provider_name == "codex":
         merged.setdefault("bypass_approvals_and_sandbox", True)
         merged.setdefault("system_prompt_mode", "replace")
+        turn_idle_timeout_s = 300.0
+        raw_idle = entry.get("codex_turn_idle_timeout_s")
+        if raw_idle is not None:
+            try:
+                parsed_idle = float(raw_idle)
+                if parsed_idle > 0:
+                    turn_idle_timeout_s = parsed_idle
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid codex_turn_idle_timeout_s=%r in external_cli_agents; using 300s",
+                    raw_idle,
+                )
+        merged.setdefault("turn_idle_timeout_s", turn_idle_timeout_s)
     elif provider_name == "claudecode":
         from openjiuwen.harness_providers.claudecode.config import (
             DEFAULT_CLAUDE_MAX_BUFFER_SIZE,
@@ -349,6 +371,11 @@ def _merge_host_external_cli_config(
     cli_path = str(entry.get("cli_path") or "").strip()
     if cli_path:
         merged.setdefault("cli_path", cli_path)
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    for field in ("cli_path", "codex_bin") if provider_name == "codex" else ("cli_path",):
+        if merged.get(field):
+            merged[field] = resolve_preserved_cli_path(merged[field])
     return merged
 
 
@@ -735,18 +762,21 @@ def _project_external_user_input(chunk: OutputSchema) -> dict[str, Any] | None:
     }
 
 
-def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> dict[str, Any] | None:
+async def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> dict[str, Any] | None:
     projected = _project_external_user_input(chunk)
     if projected is not None:
         return projected
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
     )
+    from jiuwenswarm.server.runtime.agent_adapter.subagent_projection import project_stream_event
 
-    return JiuWenSwarmDeepAdapter.parse_stream_chunk(
+    parsed = await run_stream_parser(
+        JiuWenSwarmDeepAdapter.decode_stream_chunk,
         chunk,
         has_streamed_content=has_streamed_answer,
     )
+    return await project_stream_event(parsed)
 
 
 async def process_external_harness_stream(
@@ -877,7 +907,7 @@ async def process_external_harness_stream(
                     )
                 return
 
-            parsed = _parse_external_chunk(
+            parsed = await _parse_external_chunk(
                 chunk,
                 has_streamed_answer=has_streamed_answer,
             )

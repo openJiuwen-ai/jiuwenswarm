@@ -14,9 +14,9 @@ class RequestHooks(Protocol):
 
 class ExtensionRequestHooks:
     async def before_chat(self, request: Any) -> None:
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
+        from gateway.extensions.registry import ExtensionRegistry
 
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):

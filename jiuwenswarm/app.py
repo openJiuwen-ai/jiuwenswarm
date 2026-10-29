@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Orchestrate AgentServer + Gateway in two processes (split layout, one command).
 
-Runs ``jiuwenswarm.server.app_agentserver`` then ``jiuwenswarm.gateway.app_gateway`` with the same
+Runs ``jiuwenswarm.server.app_agentserver`` then ``gateway.app_gateway`` with the same
 environment as a normal CLI launch. Web RPC handlers live in ``app_web_handlers``.
 
 Supports ``--dotenv <path>`` for multi-instance isolation.
@@ -90,7 +90,7 @@ def main() -> None:
         gateway_cmd = [python, "--desktop-run-gateway"]
     else:
         agent_cmd = [python, "-m", "jiuwenswarm.server.app_agentserver"]
-        gateway_cmd = [python, "-m", "jiuwenswarm.gateway.app_gateway"]
+        gateway_cmd = [python, "-m", "gateway.app_gateway"]
 
     # Pass --dotenv to subprocesses for multi-instance isolation
     if dotenv_path is not None:

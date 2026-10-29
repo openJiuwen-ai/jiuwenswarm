@@ -141,11 +141,18 @@ class SubagentProjectionService:
         )
         payload = {
             "event_type": "chat.subtask_update", **projection, "task_id": subagent_id,
-            "description": description, "legacy_status": legacy_status,
+            "description": description, "content": description, "legacy_status": legacy_status,
             "index": index, "total": total, "is_parallel": is_parallel,
         }
         if message:
             payload["message"] = message
+        parent_session_id = str(projection.get("parent_session_id") or "")
+        if parent_session_id:
+            from jiuwenswarm.server.runtime.session.session_token_usage import get_session_token_usage
+
+            usage = get_session_token_usage(parent_session_id)
+            if usage.get("revision", 0) > 0:
+                payload["session_usage"] = usage
         return payload
 
     @staticmethod

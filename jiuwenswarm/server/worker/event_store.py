@@ -19,9 +19,23 @@ from typing import Any
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
+from gateway.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.server.ipc.protocol import request_scope
+
+
+_SESSION_INSPECTION_METHODS = frozenset({
+    ReqMethod.HISTORY_GET,
+    ReqMethod.TEAM_LIST,
+    ReqMethod.ORG_SNAPSHOT,
+    ReqMethod.TEAM_SNAPSHOT,
+    ReqMethod.TEAM_MEMBERS_GET,
+    ReqMethod.TEAM_HISTORY_GET,
+    ReqMethod.SESSION_ASSETS_LIST,
+    ReqMethod.SESSION_PLAN_STATUS,
+    ReqMethod.COMMAND_WORKFLOWS,
+    ReqMethod.A4P_AUTHORIZATION_PENDING,
+})
 
 
 @dataclass
@@ -44,6 +58,18 @@ class DispatchRecord:
             self.request.req_method == ReqMethod.CHAT_SEND
             and self.request.params.get(TEAM_ATTACH_ONLY_PARAM) is True
         )
+
+    @property
+    def has_pending_execution(self) -> bool:
+        """Retain queued work without treating inspection RPC delivery as execution."""
+        if not self.active or self.is_passive_subscription:
+            return False
+        if self.request.req_method in _SESSION_INSPECTION_METHODS:
+            return False
+        if self.request.req_method == ReqMethod.COMMAND_GOAL:
+            action = str(self.request.params.get("action") or "get").strip().lower()
+            return action != "get"
+        return True
 
 
 class WorkerEventStore:
@@ -216,12 +242,8 @@ class WorkerEventStore:
             # work. A busy snapshot here can strand the first UI input in its
             # task queue before chat.send is ever submitted.
             "is_processing": any(
-                record.is_processing or (
-                    record.active and record.request.req_method in {
-                        ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER,
-                        ReqMethod.CHAT_SWARMFLOW_REPLY,
-                    }
-                ) for record in records if not record.is_passive_subscription
+                record.has_pending_execution or record.is_processing
+                for record in records if not record.is_passive_subscription
             ),
             "dispatches": [{
                 "dispatch_id": record.dispatch_id,

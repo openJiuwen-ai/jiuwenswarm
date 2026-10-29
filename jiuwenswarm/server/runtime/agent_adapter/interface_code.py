@@ -50,9 +50,6 @@ from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
 from openjiuwen.harness.tools import (
-    AudioTranscriptionTool,
-    ImageOCRTool,
-    VisualQuestionAnsweringTool,
     WebFetchWebpageTool,
     WebPaidSearchTool,
     is_paid_search_enabled,
@@ -117,7 +114,7 @@ from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
 )
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
-from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
+from jiuwenswarm.agents.harness.common.tools.multimodal_config import MULTIMODAL_TOOL_NAMES
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.tool_ownership import (
     mark_stateless,
@@ -134,7 +131,7 @@ from jiuwenswarm.common.task_loop_config import (
 from jiuwenswarm.common.runtime_workspace import (
     resolve_runtime_workspace_paths, resolve_bound_runtime_workspace_paths,
 )
-from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
+from gateway.common.mode_matrix import supports_single_agent_permission_profile
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PermissionRailGroup,
 )
@@ -433,26 +430,12 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "web_free_search": "_build_web_free_search_tool",
     "web_fetch_webpage": "_build_web_fetch_webpage_tool",
     "web_paid_search": "_build_paid_search_tool",
-    "visual_question_answering": "_build_visual_question_answering_tool",
-    "image_ocr": "_build_image_ocr_tool",
-    "video_understanding": "_build_video_understanding_tool",
-    "audio_transcription": "_build_audio_transcription_tool",
     "user_todos": "_build_user_todos_tool",
     "skill_toolkit": "_build_skill_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
-    "tool_retrieval": "_build_tool_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
     "request_a4p_intent_authorization": "_build_a4p_tools",
 }
-
-_CODE_MULTIMODAL_TOOL_NAMES = frozenset(
-    {
-        "visual_question_answering",
-        "image_ocr",
-        "video_understanding",
-        "audio_transcription",
-    }
-)
 
 
 def _resolve_coding_memory_dir(
@@ -1169,7 +1152,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._code_spec_rails = list(self._instance.configured_rails())
         # Reloads never sync a caller-supplied Spec's tools, so the multimodal
         # config refresh must not track and rewrite them either.
-        self._set_code_multimodal_runtime_state(
+        self._set_multimodal_runtime_state(
             self._code_build_context.artifacts.tools
             if not self._custom_code_spec_active
             and isinstance(self._code_build_context, code_agent_spec.CodeBuildContext)
@@ -1183,6 +1166,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # tools from the product config.
         if spec is None:
             self._sync_symphony_tools_for_runtime(config_base)
+
+        # Mirror the deep adapter's progressive-disclosure takeover: the spec's
+        # ProgressiveToolSpec armed AbilityManager's deferred assignment and
+        # queued openjiuwen's bundled ProgressiveToolRail; swap it for our
+        # ToolRetrievalPromptRail before ensure_initialized consumes the
+        # pending queue. Both calls no-op unless the top-level switches pass
+        # (progressive_tool_enabled AND progressive_tool_optimize), the same
+        # gate as agent mode.
+        self._drop_pending_progressive_tool_rail()
+        self._register_tool_retrieval_prompt_rail()
 
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，
         # 主事件循环在初始化的十几秒里保持响应，esc 的 cancel 不再堵队列、后端能尽快停。
@@ -1412,35 +1405,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 exc,
             )
 
-    def _configured_code_tool_names(self) -> list[str]:
-        """Return the configured Code tool names from the active snapshot."""
-        config_base = getattr(self, "_config_base_cache", None)
-        if not isinstance(config_base, dict) or not config_base:
-            config_base = self._active_code_config()
-        return list(config_base.get("modes", {}).get("code", {}).get("tools") or [])
-
-    def _set_code_multimodal_runtime_state(self, tools: list[Any]) -> None:
-        """Track Spec-owned multimodal instances for scoped config reloads."""
-        tools_by_name: dict[str, Any] = {}
-        for tool in tools:
-            card = getattr(tool, "card", None)
-            if card is None or card.name not in _CODE_MULTIMODAL_TOOL_NAMES:
-                continue
-            tools_by_name[card.name] = tool
-        self._vision_tools = [
-            tools_by_name[name]
-            for name in ("visual_question_answering", "image_ocr")
-            if name in tools_by_name
-        ]
-        self._vision_tools_registered = bool(self._vision_tools)
-        self._audio_tools = (
-            [tools_by_name["audio_transcription"]]
-            if "audio_transcription" in tools_by_name
-            else []
-        )
-        self._audio_tools_registered = bool(self._audio_tools)
-        self._video_tool_registered = "video_understanding" in tools_by_name
-
     def _align_code_multimodal_tool_records(self) -> None:
         """Mirror multimodal-only reload results into the Spec-owned tool records.
 
@@ -1448,110 +1412,84 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         ``deep_config.tools``, and its rollback re-registers the previous build
         context's tools, so both records must follow the live registrations.
         """
-        live_tools = [*self._vision_tools, *self._audio_tools]
-        if self._video_tool_registered:
-            live_tools.append(video_understanding)
-        active_tools: dict[str, Any] = {}
-        for tool in live_tools:
-            card = getattr(tool, "card", None)
-            if card is not None:
-                active_tools[card.name] = tool
-        configured_active = [
-            active_tools[name]
-            for name in self._configured_code_tool_names()
-            if name in active_tools
-        ]
+        active_tools = self._get_multimodal_tools()
         context = self._code_build_context
         if isinstance(context, code_agent_spec.CodeBuildContext):
             retained_tools = []
             for tool in context.artifacts.tools:
                 card_name = getattr(getattr(tool, "card", None), "name", None)
-                if card_name not in _CODE_MULTIMODAL_TOOL_NAMES:
+                if card_name not in MULTIMODAL_TOOL_NAMES:
                     retained_tools.append(tool)
-            context.artifacts.tools = retained_tools + configured_active
+            context.artifacts.tools = retained_tools + active_tools
         deep_config = getattr(self._instance, "deep_config", None)
         if deep_config is not None:
             deep_config.tools = [
                 card
                 for card in getattr(deep_config, "tools", None) or []
-                if getattr(card, "name", None) not in _CODE_MULTIMODAL_TOOL_NAMES
-            ] + [tool.card for tool in configured_active]
+                if getattr(card, "name", None) not in MULTIMODAL_TOOL_NAMES
+            ] + [tool.card for tool in active_tools]
 
     def _sync_multimodal_tools_for_runtime(self) -> None:
-        """Sync only the multimodal tools explicitly configured for Code mode."""
+        """Use Work capability rules while preserving caller-supplied Specs."""
         if self._custom_code_spec_active:
             return
-
-        configured = set(self._configured_code_tool_names())
-        agent_id = self._tool_owner_id()
-
-        desired_vision_names = {
-            name
-            for name in ("visual_question_answering", "image_ocr")
-            if name in configured and self._vision_model_config is not None
-        }
-        current_vision_names = {tool.card.name for tool in self._vision_tools}
-        if (
-            self._vision_tools_registered
-            and current_vision_names != desired_vision_names
-        ):
-            self._remove_registered_tools(self._vision_tools)
-            self._prune_tool_cards(current_vision_names)
-            self._vision_tools = []
-            self._vision_tools_registered = False
-
-        def _create_vision_tools() -> list[Any]:
-            created: list[Any] = []
-            for name in ("visual_question_answering", "image_ocr"):
-                if name not in desired_vision_names:
-                    continue
-                tool = self._get_tool_build_func(name, agent_id)
-                if tool is not None:
-                    created.append(tool)
-            return created
-
-        self._vision_tools, self._vision_tools_registered = self._sync_tool_group(
-            current_tools=self._vision_tools,
-            registered=self._vision_tools_registered,
-            enabled=bool(desired_vision_names),
-            create_fn=_create_vision_tools,
-            warn_label="Code vision tools",
-        )
-
-        desired_audio_names = (
-            {"audio_transcription"}
-            if "audio_transcription" in configured
-            and self._audio_model_config is not None
-            else set()
-        )
-        current_audio_names = {tool.card.name for tool in self._audio_tools}
-        if self._audio_tools_registered and current_audio_names != desired_audio_names:
-            self._remove_registered_tools(self._audio_tools)
-            self._prune_tool_cards(current_audio_names)
-            self._audio_tools = []
-            self._audio_tools_registered = False
-        self._audio_tools, self._audio_tools_registered = self._sync_tool_group(
-            current_tools=self._audio_tools,
-            registered=self._audio_tools_registered,
-            enabled=bool(desired_audio_names),
-            create_fn=lambda: [
-                tool
-                for tool in [self._get_tool_build_func("audio_transcription", agent_id)]
-                if tool is not None
-            ],
-            warn_label="Code audio transcription tool",
-        )
-
-        _, self._video_tool_registered = self._sync_tool_group(
-            current_tools=mark_stateless([video_understanding]),
-            registered=self._video_tool_registered,
-            enabled=(
-                "video_understanding" in configured and bool(self._video_model_config)
-            ),
-            create_fn=lambda: mark_stateless([video_understanding]),
-            warn_label="Code video understanding tool",
-        )
+        super()._sync_multimodal_tools_for_runtime()
         self._align_code_multimodal_tool_records()
+
+    def _reconcile_tool_retrieval_rails_after_spec_reload(
+        self,
+        config_base: dict[str, Any] | None = None,
+    ) -> None:
+        """Take back tool disclosure after a spec-rebuild reload.
+
+        ``apply_deep_agent_parts`` re-queues the spec-armed bundled
+        ProgressiveToolRail (``progressive_tool_enabled`` stays True to keep
+        the deferred whitelist armed), and a bundled copy registered by an
+        earlier reload is treated as an external rail that never retires.
+        For sessions still running our profile (frozen on ∧ switch on) strip
+        every bundled copy (pending and registered) so ``ensure_initialized``
+        only keeps our ToolRetrievalPromptRail. The gate matches the
+        runtime syncs (``_tool_retrieval_tools_enabled_for_runtime``): a
+        session frozen off keeps its bundled rail — its handover is the
+        session rebuild at the next acquire, never mid-reload surgery that
+        would mount ours just to unmount it a step later.
+
+        Ours is queued before the strip: when the build fails the bundled
+        rail stays as the disclosure owner instead of leaving the session
+        with neither system.
+        """
+
+        if not self._tool_retrieval_tools_enabled_for_runtime(
+            config_base or self._config_base_cache
+        ):
+            return
+        instance = getattr(self, "_instance", None)
+        if instance is None:
+            return
+        try:
+            from openjiuwen.harness.rails.progressive_tool_rail import (
+                ProgressiveToolRail,
+            )
+            from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import (
+                ToolRetrievalPromptRail,
+            )
+
+            if not instance.find_rails_by_type((ToolRetrievalPromptRail,)):
+                if self._register_tool_retrieval_prompt_rail() is None:
+                    return
+            removed = instance.strip_rails_by_type((ProgressiveToolRail,))
+            if removed:
+                logger.info(
+                    "[JiuwenSwarmCodeAdapter] stripped %d bundled "
+                    "ProgressiveToolRail(s) on spec reload",
+                    removed,
+                )
+        except Exception:
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] tool retrieval rail reconcile on "
+                "spec reload failed",
+                exc_info=True,
+            )
 
     async def _reload_agent_config(
         self,
@@ -1727,7 +1665,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     omitted_fields,
                 )
 
+            # apply_deep_agent_parts 把 spec 武装的 bundled ProgressiveToolRail
+            # 重新排进 pending；优化开关开启时在 ensure_initialized 消费队列前
+            # 统一摘除（含此前 reload 已注册的副本），并确保我们的
+            # ToolRetrievalPromptRail 在位。
+            self._reconcile_tool_retrieval_rails_after_spec_reload(config_base)
             await self._instance.ensure_initialized()
+            await self._sync_tool_retrieval_prompt_rail_for_runtime(config_base)
         except Exception:
             self._config_cache = previous_config_cache
             self._config_base_cache = previous_config_base_cache
@@ -1804,7 +1748,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._commit_reload_fingerprints(reload_fingerprints)
         self._code_agent_spec = new_spec
         self._code_build_context = new_context
-        self._set_code_multimodal_runtime_state(new_context.artifacts.tools)
+        self._set_multimodal_runtime_state(new_context.artifacts.tools)
         self._code_spec_rails = [
             rail
             for rail in self._instance.configured_rails()
@@ -1831,6 +1775,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._sync_symphony_tools_for_runtime(config_base)
             self._sync_skill_retrieval_tools_for_runtime(config_base)
             await self._sync_skill_retrieval_prompt_rail_for_runtime(config_base)
+            self._sync_tool_retrieval_tools_for_runtime(config_base)
 
         new_spec_tool_cards = [
             tool.card
@@ -2647,7 +2592,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                 )
-                from jiuwenswarm.agents.harness.common.browser_config import (
+                from jiuwenswarm.common.browser_config import (
                     apply_browser_decision_config,
                 )
 
@@ -2994,7 +2939,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         return self.build_code_tool_cards(agent_id)
 
     def build_code_tool_cards(self, agent_id: str) -> list[Any]:
-        """Get tool cards for code mode — from config.yaml::modes.code.tools.
+        """Build configured Code tools and model-enabled multimodal capabilities.
 
         ``modes.code.tools`` is an open extension point, so ownership is read
         off each card rather than guessed from the build func: a card that does
@@ -3007,7 +2952,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             agent_id: Owner id this adapter registers its own instances under.
 
         Returns:
-            The cards of every successfully registered configured tool.
+            The cards of successfully registered ordinary and multimodal tools.
         """
         tool_cards = []
 
@@ -3016,6 +2961,8 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         configured_tools = mode_config.get("tools") or []
 
         for tool_name in configured_tools:
+            if tool_name in MULTIMODAL_TOOL_NAMES:
+                continue
             result = self._get_tool_build_func(tool_name, agent_id)
             if result is None:
                 logger.warning(
@@ -3035,10 +2982,20 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 tool_name,
             )
 
+        multimodal_tools = self._register_multimodal_tools(agent_id)
+        self._set_multimodal_runtime_state(multimodal_tools)
+        tool_cards.extend(tool.card for tool in multimodal_tools)
+
         return tool_cards
 
     def _get_tool_build_func(self, tool_name: str, agent_id: str) -> Any | None:
         """根据 tool 名字调用对应构建方法."""
+        if tool_name in MULTIMODAL_TOOL_NAMES:
+            for group in self._build_multimodal_tool_groups(agent_id).values():
+                for tool in group:
+                    if tool.card.name == tool_name:
+                        return tool
+            return None
         method_name = _TOOL_BUILD_NAMES.get(tool_name)
         if method_name is None:
             logger.warning(
@@ -3074,43 +3031,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._paid_search_tool = tool
         self._paid_search_registered = True
         return tool
-
-    def _build_visual_question_answering_tool(self, agent_id: str) -> Any | None:
-        """Build visual question answering when the vision model is ready."""
-        if self._vision_model_config is None:
-            return None
-        return VisualQuestionAnsweringTool(
-            language=self._resolve_runtime_language(),
-            vision_model_config=self._vision_model_config,
-            agent_id=agent_id,
-        )
-
-    def _build_image_ocr_tool(self, agent_id: str) -> Any | None:
-        """Build image OCR when the vision model is ready."""
-        if self._vision_model_config is None:
-            return None
-        return ImageOCRTool(
-            language=self._resolve_runtime_language(),
-            vision_model_config=self._vision_model_config,
-            agent_id=agent_id,
-        )
-
-    def _build_video_understanding_tool(self, agent_id: str) -> Any | None:
-        """Expose the shared video-understanding tool when configured."""
-        del agent_id
-        if not self._video_model_config:
-            return None
-        return mark_stateless([video_understanding])[0]
-
-    def _build_audio_transcription_tool(self, agent_id: str) -> Any | None:
-        """Build only transcription from the wider audio tool family."""
-        if self._audio_model_config is None:
-            return None
-        return AudioTranscriptionTool(
-            language=self._resolve_runtime_language(),
-            audio_model_config=self._audio_model_config,
-            agent_id=agent_id,
-        )
 
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid search while respecting ``modes.code.tools``."""
@@ -3222,38 +3142,42 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[JiuwenSwarmCodeAdapter] skill_retrieval build failed: %s", exc)
             return None
 
-    def _resolve_tool_retrieval_session_enabled(
+    def _materialize_tool_retrieval_spec_tools(
         self,
+        agent_id: str,
+        tools: list[Any],
         config_base: dict[str, Any] | None = None,
-    ) -> bool:
-        """Respect code-mode configured tools during tool retrieval sync."""
-        config = (
-            config_base
-            if isinstance(config_base, dict)
-            else self._active_code_config()
-        )
-        if not super()._resolve_tool_retrieval_session_enabled(config):
-            return False
-        configured_tools = config.get("modes", {}).get("code", {}).get("tools") or []
-        return "tool_retrieval" in configured_tools
+    ) -> None:
+        """Register tool_search for the code spec bundle, gate-driven.
 
-    def _build_tool_retrieval_toolkit(self, agent_id: str) -> list[Any] | None:
-        """构建 ToolRetrievalToolkit 工具（不注册到 Runner，由 _get_tool_cards 统一注册）."""
-        if not self._tool_retrieval_tools_enabled_for_runtime():
-            logger.info("[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit skipped: disabled")
-            return None
+        NOT list-driven (unlike ``_get_tool_build_func`` dispatch): the
+        retrieval layer follows the same top-level switches as agent mode —
+        mirror of the deep adapter's ``_get_tool_cards`` tail. Called by
+        ``harness/code/spec.py::_build_code_tool_bundle`` (the code-mode card
+        path; this adapter's create_instance never calls ``_get_tool_cards``).
+        Extends ``tools`` in place so the cards ride the standard spec like
+        every configured tool.
+        """
+        if not self._tool_retrieval_tools_enabled_for_runtime(config_base):
+            return
         try:
-            tools = self._create_tool_retrieval_tools()
-            self._tool_retrieval_tools = tools
-            self._tool_retrieval_tools_registered = bool(tools)
+            cards = [
+                tool.card for tool in tools if getattr(tool, "card", None) is not None
+            ]
+            self._tool_retrieval_tools = self._create_tool_retrieval_tools(cards)
+            for tool in self._tool_retrieval_tools:
+                register_tool(tool, agent_id)
+            tools.extend(self._tool_retrieval_tools)
+            self._tool_retrieval_tools_registered = bool(self._tool_retrieval_tools)
             logger.info(
-                "[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit built: tools=%s",
-                [tool.card.name for tool in tools],
+                "[JiuwenSwarmCodeAdapter] ToolRetrievalToolkit registered: tools=%s",
+                [tool.card.name for tool in self._tool_retrieval_tools],
             )
-            return tools
-        except Exception as exc:
-            logger.warning("[JiuwenSwarmCodeAdapter] tool_retrieval build failed: %s", exc)
-            return None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuwenSwarmCodeAdapter] tool_retrieval registration failed: %s",
+                exc,
+            )
 
     def _build_acp_chat_tool(self, agent_id: str) -> Any | None:
         """Register acp_chat when at least one external ACP profile is configured."""

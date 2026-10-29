@@ -8,10 +8,10 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils import (
+from gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils import (
     push as push_module,
 )
-from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push import (
+from gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push import (
     PUSH_TEXT_MAX_CHARS,
     PUSH_TEXT_TRUNCATED_SUFFIX,
     PushConfig,

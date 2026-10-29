@@ -8,6 +8,8 @@ from importlib import import_module
 from typing import Any
 
 PROVIDER_TYPES = {
+    "trajectory": ("jiuwenswarm.server.management.trajectory", "TrajectoryManagement"),
+    "recommendations": ("jiuwenswarm.server.management.recommendations", "RecommendationsManagement"),
     "sessions": ("jiuwenswarm.server.management.sessions", "SessionsManagement"),
     "teams": ("jiuwenswarm.server.management.teams", "TeamsManagement"),
     "rsi": ("jiuwenswarm.server.management.rsi", "RsiManagement"),

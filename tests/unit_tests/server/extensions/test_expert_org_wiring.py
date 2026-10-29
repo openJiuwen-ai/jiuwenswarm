@@ -142,7 +142,7 @@ async def test_launcher_shares_db_from_owner(monkeypatch: pytest.MonkeyPatch) ->
         lambda _name: package_dir,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle",
+        "openjiuwen.agent_teams.experts.load_agent_group_package_bundle",
         lambda _path: SimpleNamespace(
             instruction="group instruction",
             capabilities=("frontend",),

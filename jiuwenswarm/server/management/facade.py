@@ -953,3 +953,113 @@ class ManagementFacade:
         return await self.management.provider("schedule")._handle_schedule_request(
             ws, request, send_lock, action
         )
+
+    async def _await_host_oauth_auth(
+        self, name: str, *, max_attempts: int = 200, delay: float = 1.0
+    ) -> dict[str, Any]:
+        return await self.management.provider("mcp")._await_host_oauth_auth(name, max_attempts=max_attempts, delay=delay)
+
+    @staticmethod
+    def _command_mcp_internal_state(request: AgentRequest) -> AgentResponse:
+        from jiuwenswarm.server.management.mcp import McpManagement
+
+        return McpManagement._command_mcp_internal_state(request)
+
+    async def _command_mcp_oauth_callback(self, ws: Any, request: AgentRequest) -> AgentResponse:
+        return await self.management.provider("mcp")._command_mcp_oauth_callback(ws, request)
+
+    async def _handle_mcp_oauth_start(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        return await self.management.provider("mcp")._handle_mcp_oauth_start(ws, request, send_lock)
+
+    async def _cancel_organization(self, request: AgentRequest) -> AgentResponse:
+        return await self.management.provider("teams")._cancel_organization(request)
+
+    def _expert_request_snapshot(self, session_id: str) -> list[dict[str, str]]:
+        return self.management.provider("teams")._expert_request_snapshot(session_id)
+
+    @staticmethod
+    def _is_targeted_expert_cancel_request(request: AgentRequest) -> bool:
+        from jiuwenswarm.server.management.teams import TeamsManagement
+
+        return TeamsManagement._is_targeted_expert_cancel_request(request)
+
+    @staticmethod
+    def _is_targeted_expert_request(request: AgentRequest) -> bool:
+        from jiuwenswarm.server.management.teams import TeamsManagement
+
+        return TeamsManagement._is_targeted_expert_request(request)
+
+    async def _load_persisted_organization(
+        self, session_id: str, team_id: str = ""
+    ) -> tuple[Any, Any] | None:
+        return await self.management.provider("teams")._load_persisted_organization(session_id, team_id)
+
+    @staticmethod
+    def _organization_request_snapshot(session_id: str) -> list[dict[str, str]]:
+        from jiuwenswarm.server.management.teams import TeamsManagement
+
+        return TeamsManagement._organization_request_snapshot(session_id)
+
+    async def _stop_expert_streams(self) -> None:
+        return await self.management.provider("teams")._stop_expert_streams()
+
+    @staticmethod
+    async def _stop_organization_team(session_id: str, team_id: str) -> None:
+        from jiuwenswarm.server.management.teams import TeamsManagement
+
+        return await TeamsManagement._stop_organization_team(session_id, team_id)
+
+    @staticmethod
+    def _team_target_and_owner(request: AgentRequest) -> tuple[str, str] | None:
+        from jiuwenswarm.server.management.teams import TeamsManagement
+
+        return TeamsManagement._team_target_and_owner(request)
+
+    def _get_trajectory_host(self) -> Any:
+        return self.management.provider("trajectory")._get_trajectory_host()
+
+    async def _handle_trajectory_request(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        return await self.management.provider("trajectory")._handle_trajectory_request(ws, request, send_lock)
+
+    async def _handle_recommendation(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        return await self.management.provider("recommendations")._handle_recommendation(ws, request, send_lock)
+
+    async def _push_recommendation_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        return await self.management.provider("recommendations")._push_recommendation_event(event_type, payload)
+
+    def _recommendation_active_request_ids(self) -> frozenset[str]:
+        return self.management.provider("recommendations")._recommendation_active_request_ids()
+
+    def _recommendation_host_instance(self) -> Any:
+        return self.management.provider("recommendations")._recommendation_host_instance()
+
+    async def _start_recommendation_host(self) -> None:
+        return await self.management.provider("recommendations")._start_recommendation_host()
+
+    async def _stop_recommendation_host(self) -> None:
+        return await self.management.provider("recommendations")._stop_recommendation_host()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

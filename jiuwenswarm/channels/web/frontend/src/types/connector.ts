@@ -42,7 +42,6 @@ export interface ConnectorSummary {
   runtimePackageName: string;
   hubAssetId?: string;
   displayName: string;
-  searchNames?: string[];
   // mcp.list 现在直接下发简介（backend-requests.md 需求14已解决），恒为 string，不再是可选缺省。
   description: string;
   category: string;
@@ -66,7 +65,7 @@ export interface ConnectorInstallResponse {
 
 export interface ConnectorUninstallResponse {
   type: 'uninstalled';
-  item: { id: string; name: string; removed: boolean };
+  item: { id: string; name: string; removed: boolean; already_removed?: boolean };
   applied: boolean;
   error?: string;
 }
@@ -103,6 +102,8 @@ export type ConnectorConnectResponseType =
   | 'connected'
   | 'credentials_required'
   | 'auth_required'
+  // mcp.install 内联的 connect 步骤失败（下载成功但连不上）。mcp.connect 本身失败走 ok:false。
+  | 'connect_failed'
   // mcp.cancel_connect 收尾 hold-open 的 connect/wait_auth 时返回（用户中途放弃连接/授权）。
   | 'cancelled';
 
@@ -118,13 +119,18 @@ export interface ConnectorConnectResponse {
   name?: string;
   applied?: boolean;
   error?: string;
+  // connect_failed 分支专属字段：结构化错误码 + 缺失依赖/安装命令，
+  // 与 mcp.connect 失败时 WebError.code/payload 下发的字段同义。
+  code?: string;
+  runtime?: string;
+  installCmd?: string;
   item?: Record<string, unknown>;
   installedSkills?: string[];
   serverIdScope?: string;
   // credentials_required 分支专属字段
   credentialsRequired?: boolean;
   requiredTokens?: string[];
-  credentialKind?: 'token';
+  credentialKind?: 'token' | 'oauth';
   title?: string;
   description?: string;
   docUrl?: string | null;
@@ -138,7 +144,10 @@ export interface ConnectorConnectResponse {
   // auth_required 分支专属字段
   stepIndex?: number;
   stepsTotal?: number;
+  authPending?: boolean;
+  hostOAuth?: boolean;
   authUrl?: string | null;
   authDomain?: string;
   command?: string;
+  flow?: string;
 }

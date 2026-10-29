@@ -6,14 +6,16 @@ from typing import Any
 
 import pytest
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import AgentManager
-from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
+from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from gateway.extensions.agentos.agentos_router.registry_client import (
     InstanceRecord,
     instance_service_id,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from jiuwenswarm.extensions.agentos.agentos_router.stale_cleanup import cleanup_stale_sandboxes
+from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from gateway.extensions.agentos.agentos_router.stale_cleanup import (
+    cleanup_stale_sandboxes,
+)
 from tests.unit_tests.extensions.test_agentos_router import (
     FakeRegistryClient,
     FakeYuanRongClient,

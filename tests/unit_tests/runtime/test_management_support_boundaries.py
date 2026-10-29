@@ -18,7 +18,7 @@ import sys
 
 blocked = (
     "openjiuwen", "jiuwenswarm.server.runtime.gateway_adapter",
-    "jiuwenswarm.channels", "jiuwenswarm.gateway",
+    "jiuwenswarm.channels", "gateway",
 )
 class Guard(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):

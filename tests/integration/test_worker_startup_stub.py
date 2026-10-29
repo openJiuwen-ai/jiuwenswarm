@@ -182,7 +182,7 @@ class WorkerChain:
         self.log = (self.directory / f'process-{self.attempt}.log').open('wb')
         commands = [
             ['-m', 'jiuwenswarm.server.app_agentserver', '--port', str(front)],
-            ['-m', 'jiuwenswarm.gateway.app_gateway', '--host', '127.0.0.1', '--port', str(gateway),
+            ['-m', 'gateway.app_gateway', '--host', '127.0.0.1', '--port', str(gateway),
              '--agent-server-url', f'ws://127.0.0.1:{front}', '--web-path', '/ws'],
         ]
         for args in commands:

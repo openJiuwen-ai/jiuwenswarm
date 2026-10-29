@@ -22,7 +22,7 @@ from openjiuwen.agent_teams.skill.file_lock import cross_process_file_lock
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
-from jiuwenswarm.common.protocol_ids import validate_session_id
+from gateway.common.protocol_ids import validate_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.group_metadata import (
     GROUP_METHODS, GroupError, read_group as read_group_metadata,

@@ -16,7 +16,7 @@ import threading
 import pytest
 
 from jiuwenswarm.common.model_errors import MODEL_GROUP_INVALID, ModelSelectionError
-from jiuwenswarm.common.model_selection import ModelSelection
+from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common import external_providers, model_selection_store as store
 from jiuwenswarm.server.runtime.session import lifecycle
 from jiuwenswarm.server.runtime.session import session_metadata

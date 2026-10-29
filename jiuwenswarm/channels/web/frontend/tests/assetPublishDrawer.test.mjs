@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -13,6 +12,7 @@ Object.assign(globalThis, {
   CustomEvent: dom.window.CustomEvent,
   IS_REACT_ACT_ENVIRONMENT: true,
 });
+const { createRoot } = await import('react-dom/client');
 await i18next
   .use(initReactI18next)
   .init({ lng: 'en', showSupportNotice: false, resources: { en: { translation: {} } } });
@@ -314,6 +314,41 @@ test('Hub request rejection identifies Hub and gives actionable guidance', async
   assert.doesNotMatch(message, /hub_request_failed/i);
   await act(async () => find('asset-publish-close').click());
 });
+test('record errors show the Hub guidance instead of the generic fallback', async () => {
+  const record = {
+    operation_id: 'hub-guidance',
+    execution_status: 'failed',
+    result: null,
+    error: {
+      code: 'hub_request_failed',
+      message: '发布新版本时不能修改 Skill 可见性，请沿用现有设置',
+    },
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'hub-guidance' }));
+  await tick();
+  const message = document.querySelector('.asset-publish-result-error').textContent;
+  assert.equal(message, '发布新版本时不能修改 Skill 可见性，请沿用现有设置');
+  assert.doesNotMatch(message, /Retry or sign in again/);
+  await act(async () => find('asset-publish-close').click());
+});
+test('curated local text keeps priority for known codes', async () => {
+  const record = {
+    operation_id: 'version-clash',
+    execution_status: 'failed',
+    result: null,
+    error: { code: 'VERSION_CONFLICT', message: 'hub-only wording' },
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'version-clash' }));
+  await tick();
+  const message = document.querySelector('.asset-publish-result-error').textContent;
+  assert.match(message, /This version exists/);
+  assert.doesNotMatch(message, /hub-only wording/);
+  await act(async () => find('asset-publish-close').click());
+});
 test('polling completion updates the matching history row', async () => {
   const queued = { operation_id: 'polled', draft_id: 'draft', execution_status: 'queued', result: null, error: null };
   assetPublishApi.describe = async () => ({ ...description, records: [queued] });
@@ -374,7 +409,106 @@ test('unconfirmed submissions keep their local variant and waiting icon', async 
   const status = find('asset-publish-record-status');
   assert.equal(status.textContent, 'Submission result unconfirmed');
   assert.equal(status.dataset.variant, 'unconfirmed');
+  // #4749: an unverified outcome must not lock the asset; the drawer keeps an exit.
+  const entry = find('asset-publish-new-version');
+  assert.ok(entry);
+  assert.equal(entry.disabled, false);
+  assert.equal(find('asset-publish-record').disabled, false);
+  await act(async () => entry.click());
+  await tick();
+  assert.equal(find('asset-publish-result'), null);
+  assert.ok(find('asset-publish-form'));
   await act(async () => find('asset-publish-close').click());
+});
+test('undefined placeholders show a localized package error without asking for a new login', async () => {
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => {
+    throw Object.assign(new Error('privatevalue'), { code: 'UNDEFINED_PLACEHOLDER' });
+  };
+  let commitCalls = 0;
+  assetPublishApi.commit = async () => { commitCalls++; };
+  for (const language of ['zh', 'en']) {
+    await act(async () => i18next.changeLanguage(language));
+    await act(async () => openAssetPublish({ kind: 'mcp', local_id: 'canva' }));
+    await tick();
+    await act(async () =>
+      find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+    );
+    await tick();
+    const message = find('asset-publish-error').textContent;
+    assert.match(message, language === 'zh' ? /未声明的参数/ : /undeclared parameter/);
+    assert.doesNotMatch(message, /privatevalue|请求未完成|The request did not complete/);
+    assert.equal(find('asset-publish-commit').disabled, true);
+    assert.equal(commitCalls, 0);
+    await act(async () => find('asset-publish-close').click());
+  }
+  await act(async () => i18next.changeLanguage('en'));
+});
+
+test('persisted Hub MCP rejection shows a package error in both languages without resubmitting', async () => {
+  const record = {
+    operation_id: 'canva-failed',
+    execution_status: 'failed',
+    result: null,
+    error: { code: 'invalid_agent_mcp', http_status: 400, message: 'privatevalue' },
+    version: '1.0.0',
+  };
+  assetPublishApi.describe = async () => ({ ...description, records: [record] });
+  assetPublishApi.records = async () => ({ records: [record] });
+  let calls = 0;
+  assetPublishApi.commit = async () => { calls++; };
+  assetPublishApi.prepare = async () => { calls++; };
+  for (const language of ['zh', 'en']) {
+    await act(async () => i18next.changeLanguage(language));
+    await act(async () => openAssetPublish({ kind: 'mcp', local_id: 'canva' }));
+    await tick();
+    const content = find('asset-publish-result').textContent;
+    assert.match(content, /invalid_agent_mcp/);
+    assert.match(content, language === 'zh' ? /包校验/ : /package validation/);
+    assert.doesNotMatch(content, /privatevalue|请求未完成|The request did not complete/);
+    assert.equal(calls, 0);
+    await act(async () => find('asset-publish-close').click());
+  }
+  await act(async () => i18next.changeLanguage('en'));
+});
+
+test('logged-out publishing loads local names for all five kinds and preserves edits after login', async () => {
+  for (const kind of ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp']) {
+    sessionStorage.removeItem('marketplace_oauth_access_token');
+    let resolveDescription;
+    assetPublishApi.describe = () => new Promise((resolve) => {
+      resolveDescription = resolve;
+    });
+    await act(async () => openAssetPublish({ kind, local_id: '1022' }));
+    await tick();
+    try {
+      assert.equal(find('asset-publish-display-name').closest('fieldset').disabled, true);
+      assert.equal(typeof resolveDescription, 'function');
+      await act(async () => resolveDescription({
+        ...description,
+        defaults: { ...defaults, display_name: '中文资产', description: '本地介绍' },
+      }));
+      assert.equal(find('asset-publish-display-name').value, '中文资产');
+      assert.equal(find('asset-publish-description').value, '本地介绍');
+      assert.equal(find('asset-publish-prepare').disabled, true);
+      const input = find('asset-publish-display-name');
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype, 'value').set.call(input, '用户修改名称');
+        input.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+        input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+        input.dispatchEvent(new dom.window.FocusEvent('focusout', { bubbles: true }));
+      });
+      assetPublishApi.describe = async () => description;
+      await act(async () => {
+        sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+        window.dispatchEvent(new dom.window.Event('storage'));
+      });
+      await tick();
+      assert.equal(find('asset-publish-display-name').value, '用户修改名称');
+    } finally {
+      await act(async () => find('asset-publish-close').click());
+    }
+  }
 });
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
   assetPublishApi.describe = async () => description;

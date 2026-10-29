@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.common.schema.agent import AgentRequest
+
 from typing import Protocol
 from jiuwenswarm.server.worker.execution_requests import ExecutionRequests
 
@@ -147,6 +149,10 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         self._rsi_handlers = None
         # Trajectory diagnosis host (lazy, see _get_diagnosis_host)
         self._diagnosis_host: Any = None
+        # Trajectory read host (lazy, see _get_trajectory_host)
+        self._trajectory_host: Any = None
+        # Topic recommendation host (lazy, see _recommendation_host_instance)
+        self._recommendation_host: Any = None
         # Optional production Provider injection point.  The concrete class is
         # supplied by the composition root once it is available.
         self._rsi_harness_provider: Any = None
@@ -174,6 +180,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         # for interrupt/connection cleanup only; it never decides interaction
         # output ownership.
         self._session_stream_tasks: dict[str, dict[asyncio.Task, asyncio.Event]] = {}
+        self._expert_stream_requests: dict[asyncio.Task, AgentRequest] = {}
         # Scheduler service instance (for scheduled auto_harness tasks)
         self._scheduler_service: Any = None
         self._scheduler_agent: Any = None
@@ -407,8 +414,8 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
             from jiuwenswarm.symphony.config import (
-                load_symphony_config,
                 evolution_flow_enabled,
+                load_symphony_config,
             )
 
             config = await asyncio.to_thread(load_symphony_config)
@@ -487,7 +494,6 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         from jiuwenswarm.server.runtime.session.session_archive import (
             SessionArchiveService,
         )
-
         self._archive_service = SessionArchiveService(self._execution_runtime())
         preparation.register("archive", self._archive_service.start_recovery)
 
@@ -499,6 +505,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         else:
             self._server = None
         self._runtime_services_started = True
+        await self._start_recommendation_host()
         self._runtime_push_handler = self.send_push
         self._previous_runtime_push_handler = install_runtime_push_handler(
             self._runtime_push_handler
@@ -932,6 +939,7 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        await self._stop_recommendation_host()
         await self._close_background_tasks()
         preparation = getattr(self, "_preparation_registry", None)
         if preparation is not None:
@@ -968,7 +976,6 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import (
             close_hub_catalog_cache,
         )
-    
         await close_hub_catalog_cache()
         archive_service = getattr(self, "_archive_service", None)
         if archive_service is not None:
@@ -981,6 +988,15 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
                 task.cancel()
         if tokenizer_tasks:
             await asyncio.gather(*tokenizer_tasks, return_exceptions=True)
+        from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+            forks,
+        )
+
+        # Shutdown must keep going: a failing fork teardown may not strand the services below.
+        try:
+            await forks.shutdown()
+        except Exception:  # noqa: BLE001
+            logger.warning("[AgentWebSocketServer] forks.shutdown() failed", exc_info=True)
         session_message_service = getattr(self, "_session_message_service", None)
         if session_message_service is not None:
             await session_message_service.stop()
@@ -1126,8 +1142,8 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
         reuse_dependencies: bool = False,
     ) -> AgentRuntime:
         """Build every AgentServer Runtime through one product composition root."""
-        from jiuwenswarm.runtime.team_controller import process_team_controller
         from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
+        from jiuwenswarm.runtime.team_controller import process_team_controller
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )

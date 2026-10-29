@@ -16,8 +16,9 @@ assert.doesNotMatch(callback, /setMultiModelCollaborationEnabled\(/);
 
 const dependencyNames = [
   'request', 'setA2UIFeatureEnabled', 'normalizeA2UIEnabled', 'setRSIFeatureEnabled',
-  'normalizeRSIEnabled', 'setTrajectoryUiEnabled', 'normalizeTrajectoryUiEnabled',
-  'setTeamOrganizationUiEnabled', 'setTeamScheduledDispatchEnabled', 'setServerConfig', 'setConfigError',
+  'normalizeRSIEnabled',
+  'normalizeTrajectoryDiagnosisEnabled', 'setTrajectoryDiagnosisEnabled',
+  'setTeamOrganizationUiEnabled', 'setComfyuiWorkflowEnabled', 'setTeamScheduledDispatchEnabled', 'setServerConfig', 'setConfigError',
   'modelSetupGuideEvaluatedRef', 'shouldPreviewModelSetupGuide', 'isSetupGuideEnabled',
   'setActiveNav', 'setModelSetupGuideStep', 'setAvailableModels', 'setAvailableModelGroups',
   'parseModelGroups', 't',

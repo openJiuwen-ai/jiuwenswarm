@@ -11,6 +11,7 @@ from contextlib import aclosing
 from dataclasses import replace
 from typing import Any, AsyncIterator
 
+from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.schema.message import EventType
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
@@ -37,8 +38,10 @@ class StreamResponsePipeline:
         hooks,
         queue_capacity,
         retry_call,
+        completion,
     ) -> None:
         self.request = request
+        self.completion = completion
         self.adapter = adapter
         self.session_id = session_id
         self.rid = request.request_id
@@ -207,6 +210,7 @@ class StreamResponsePipeline:
         try:
             async with aclosing(self._consume()) as stream:
                 async for chunk in stream:
+                    self.completion.observe(chunk)
                     yield chunk
         finally:
             try:
@@ -537,17 +541,12 @@ class StreamResponsePipeline:
                 self.history_committer.note_durable_reasoning_delta(data.payload)
                 self.history_committer.pending_reasoning_chunks.append(payload_content)
                 should_record = False
-            elif et in (
-                "chat.tool_call",
-                # 中断边界（ask_user / 权限确认）结束本轮输出且不会再有
-                # 收尾 chat.final；不冲刷的话中断前流出的正文整段
-                # 不落盘，刷新后这段回答凭空消失（#3785）。
-                "chat.ask_user_question",
-                "harness.activate_interaction",
-            ):
+            elif et == "chat.tool_call" or et in USER_INTERACTION_EVENTS:
                 if self.is_proactive_request and et == "chat.tool_call":
                     self.saw_proactive_tool_call_since_final = True
                 await self.history_committer.persist_pending_final_text()
+                if et in USER_INTERACTION_EVENTS:
+                    await self.history_committer.persist_pending_reasoning()
             elif et == "chat.final":
                 if isinstance(data.payload, dict):
                     ensure_final_mode_inplace(data.payload)
@@ -837,15 +836,12 @@ class StreamResponsePipeline:
             self.history_committer.note_durable_reasoning_delta(data)
             self.history_committer.pending_reasoning_chunks.append(payload_content)
             should_record = False
-        elif et in (
-            "chat.tool_call",
-            # 同上：中断边界结束本轮输出，冲刷 pending 正文（#3785）。
-            "chat.ask_user_question",
-            "harness.activate_interaction",
-        ):
+        elif et == "chat.tool_call" or et in USER_INTERACTION_EVENTS:
             if self.is_proactive_request and et == "chat.tool_call":
                 self.saw_proactive_tool_call_since_final = True
             await self.history_committer.persist_pending_final_text()
+            if et in USER_INTERACTION_EVENTS:
+                await self.history_committer.persist_pending_reasoning()
         elif et == "chat.final":
             if self.projector.suppress_a2ui_stream or a2ui_split is not None:
                 first_a2ui_suppression = not self.projector.suppress_a2ui_stream
@@ -1034,6 +1030,7 @@ class StreamResponsePipeline:
             )
             self.projector.final_answer_content = finalized_assistant_message
             self.projector.final_answer_chunks = []
+            self.completion.complete()
             final_chunk = self.ports.make_a2ui_final_chunk(
                 request_id=self.rid,
                 channel_id=self.cid,
@@ -1048,6 +1045,8 @@ class StreamResponsePipeline:
             if enriched_payload is not final_chunk.payload:
                 final_chunk = replace(final_chunk, payload=enriched_payload)
             yield final_chunk
+
+        self.completion.complete()
 
         # cloud memory: after chat hook
         if self.memory_mode == "cloud":
@@ -1069,6 +1068,7 @@ class StreamResponsePipeline:
                 self.adapter, self.request, self.session_id, is_stream=True
             )
 
+        await self.completion.wait()
         yield AgentResponseChunk(
             request_id=self.rid,
             channel_id=self.cid,

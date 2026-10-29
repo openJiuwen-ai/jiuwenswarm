@@ -176,9 +176,10 @@ class AgentsManagement:
         except Exception:
             logger.exception("[agents.create] LLM generation failed")
             return None
-        import re as _re
-        import json as _json
 
+        # 解析 JSON 响应
+        import json as _json
+        import re as _re
         try:
             data = _json.loads(text.strip())
         except _json.JSONDecodeError:

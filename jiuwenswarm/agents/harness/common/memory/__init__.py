@@ -28,6 +28,14 @@ from .external_memory_config import (
     is_external_memory_allowed,
 )
 from .external_memory_builder import build_external_memory_rail
+from .jiuwen_rail_builder import (
+    build_jiuwen_memory_rail,
+    get_builtin_memory_provider,
+    get_jiuwen_builtin_config,
+    get_jiuwen_builtin_mode,
+    is_jiuwen_builtin_memory,
+    jiuwen_builtin_config_fingerprint,
+)
 from .internal import (
     estimate_tokens,
     ensure_dir,
@@ -72,6 +80,12 @@ __all__ = [
     "is_external_memory_enabled",
     "build_openjiuwen_provider_config",
     "build_external_memory_rail",
+    "build_jiuwen_memory_rail",
+    "get_builtin_memory_provider",
+    "get_jiuwen_builtin_config",
+    "get_jiuwen_builtin_mode",
+    "is_jiuwen_builtin_memory",
+    "jiuwen_builtin_config_fingerprint",
     "get_memory_engine",
     "is_builtin_memory_allowed",
     "is_external_memory_allowed",

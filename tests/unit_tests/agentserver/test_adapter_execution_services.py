@@ -577,7 +577,7 @@ async def test_injected_memory_hooks_own_before_execution_and_completed_turn(
     monkeypatch, deny
 ):
     from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+    from gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.runtime.agent_adapter import interface as module
 
     calls, writes = [], []

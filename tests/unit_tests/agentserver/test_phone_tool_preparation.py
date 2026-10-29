@@ -125,6 +125,7 @@ async def test_phone_capability_gates_tool_registration(
     monkeypatch.setattr(interface_deep, "SkillToolkit", lambda **kwargs: SimpleNamespace(get_tools=lambda: []))
     monkeypatch.setattr(interface_deep, "SymphonyToolkit", lambda: SimpleNamespace(get_tools=lambda _: []))
     adapter = SimpleNamespace(
+        _instance=object(),
         _vision_model_config=None,
         _video_model_config=False,
         _image_gen_model_config=False,
@@ -136,6 +137,8 @@ async def test_phone_capability_gates_tool_registration(
         _register_shared_tool=captured_tools.append,
         _register_agent_owned_tool=lambda tool, owner: None,
         _iter_runtime_audio_tools=lambda owner: [],
+        _register_multimodal_tools=lambda owner: [],
+        _set_multimodal_runtime_state=lambda tools: None,
         _skill_retrieval_tools_enabled_for_runtime=lambda _: False,
         _tool_retrieval_tools_enabled_for_runtime=lambda _: False,
     )

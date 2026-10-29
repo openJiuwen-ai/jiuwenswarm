@@ -62,10 +62,14 @@ class ManagementRequests:
         if self._host._skilldev_service is not None:
             return self._host._skilldev_service
 
-        from jiuwenswarm.server.runtime.skill.skilldev import (SkillDevDeps, SkillDevService,
-                                                              StateStore, WorkspaceProvider)
-        from jiuwenswarm.common.utils import get_workspace_dir
         from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import get_mcp_tools
+        from jiuwenswarm.common.utils import get_workspace_dir
+        from jiuwenswarm.server.runtime.skill.skilldev import (
+            SkillDevDeps,
+            SkillDevService,
+            StateStore,
+            WorkspaceProvider,
+        )
 
         skilldev_base = get_workspace_dir() / "skilldev"
         state_store = StateStore(skilldev_base)
@@ -613,7 +617,11 @@ class ManagementRequests:
                 await package_manager.install_agent_group_with_hub(params)
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
-                package_manager.uninstall_agent_group(params)
+                from jiuwenswarm.server.runtime.organization_packages import (
+                    uninstall_organization_agent_group,
+                )
+
+                await uninstall_organization_agent_group(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
                 cards = await package_manager.list_agent_templates_with_hub(params)
@@ -725,8 +733,12 @@ class ManagementRequests:
                 getattr(package_manager, _PACKAGE_ROUTES[method])(params)
                 payload = {}
         except Exception as exc:
-            from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
-            from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import invalidate_hub_catalog
+            from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import (
+                invalidate_hub_catalog,
+            )
+            from jiuwenswarm.server.runtime.marketplace.hub_client import (
+                HubNotFoundError,
+            )
             error_payload = {"error": "安装超时，请稍后重试" if isinstance(exc, asyncio.TimeoutError) else str(exc)}
             if isinstance(exc, HubNotFoundError):
                 kind = "agent_template" if method.value.startswith("agent_templates.") else "plugin"

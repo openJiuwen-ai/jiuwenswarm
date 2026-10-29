@@ -1,7 +1,7 @@
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-    _resolve_model_config_obj_for_validate,
+from jiuwenswarm.common.config_panel.models_handlers import (
+    resolve_model_config_obj_for_validate as _resolve_model_config_obj_for_validate,
 )
 
 

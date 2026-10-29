@@ -16,16 +16,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthResult
-from jiuwenswarm.gateway.channel_manager.web.web_channel_app import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.extensions.auth.credential_authenticator import AuthResult
+from gateway.channel_manager.web.web_channel_app import (
     _reject_disallowed_origin,
     _serve_channel_websocket,
     build_web_channel_app,
     normalize_web_ws_path,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from jiuwenswarm.gateway.channel_manager.web.ws_connection_adapter import StarletteWsAdapter
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.channel_manager.web.ws_connection_adapter import StarletteWsAdapter
 
 
 def _make_channel(**kwargs: Any) -> WebChannel:
@@ -85,7 +85,7 @@ def test_build_app_exposes_ws_routes_only() -> None:
 def test_build_app_mounts_application_plugin_websocket_routes() -> None:
     from types import SimpleNamespace
 
-    from jiuwenswarm.extensions.sdk import WebSocketRouteContribution
+    from gateway.extensions.sdk import WebSocketRouteContribution
 
     async def endpoint(websocket) -> None:  # noqa: ANN001
         await websocket.close()

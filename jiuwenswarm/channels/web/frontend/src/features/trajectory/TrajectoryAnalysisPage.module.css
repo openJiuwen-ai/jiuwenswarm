@@ -60,6 +60,7 @@
   align-items: center;
   gap: 1rem;
   border-bottom: 1px solid var(--color-border-default);
+  margin-top: 0.5rem;
   padding: 0 1rem 0 2.25rem;
 }
 

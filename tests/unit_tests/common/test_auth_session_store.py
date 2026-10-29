@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from jiuwenswarm.common.auth import session_store as store_mod
-from jiuwenswarm.common.auth.account_kit import Credential, LoginOutcome
-from jiuwenswarm.common.auth.session_store import AuthSessionStore
+from gateway.auth import session_store as store_mod
+from gateway.auth.account_kit import Credential, LoginOutcome
+from gateway.auth.session_store import AuthSessionStore
 
 
 @pytest.fixture(autouse=True)

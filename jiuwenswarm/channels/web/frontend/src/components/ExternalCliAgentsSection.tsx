@@ -128,59 +128,41 @@ export function externalCliAgentDisplayName(cliAgent: ExternalCliAgentKind): str
 
 const EXTERNAL_CLI_AUTO_DETECT_DELAY_MS = 400;
 
-/** Max addresses kept per agent in the path dropdown history. */
-const PATH_HISTORY_LIMIT = 10;
-const PATH_HISTORY_STORAGE_KEY = 'external_cli_path_history';
-
-type PathHistoryMap = Partial<Record<ExternalCliAgentKind, string[]>>;
-
-/**
- * Previously used CLI paths per agent, kept so the path dropdown can offer
- * several addresses to switch between (the config itself stores only one
- * active `cli_path` per agent). Persisted in localStorage: this is pure UI
- * convenience state, safe to lose.
- */
-function loadPathHistories(): PathHistoryMap {
-  try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(PATH_HISTORY_STORAGE_KEY) ?? '{}');
-    if (typeof parsed !== 'object' || parsed === null) return {};
-    const histories: PathHistoryMap = {};
-    for (const [cliAgent, paths] of Object.entries(parsed)) {
-      if (!Array.isArray(paths)) continue;
-      const valid = paths.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-      if (valid.length > 0) histories[cliAgent] = valid;
-    }
-    return histories;
-  } catch {
-    return {};
-  }
-}
-
-function storePathHistories(histories: PathHistoryMap): void {
-  try {
-    window.localStorage.setItem(PATH_HISTORY_STORAGE_KEY, JSON.stringify(histories));
-  } catch {
-    // Storage unavailable (private mode, quota): the dropdown just loses history.
-  }
-}
-
 export const EXTERNAL_CLI_AGENT_CONFIG_KEYS = new Set([
   'external_cli_agent_claude_enabled',
   'external_cli_agent_claude_use_builtin',
   'external_cli_agent_claude_cli_path',
+  'external_cli_agent_claude_path_histories',
   'external_cli_agent_codex_enabled',
   'external_cli_agent_codex_use_builtin',
   'external_cli_agent_codex_cli_path',
+  'external_cli_agent_codex_path_histories',
 ]);
 
 export const CODEX_EXTERNAL_CLI_AGENT_CONFIG_KEYS = new Set([
   'external_cli_agent_codex_enabled',
   'external_cli_agent_codex_use_builtin',
   'external_cli_agent_codex_cli_path',
+  'external_cli_agent_codex_path_histories',
 ]);
 
-export function externalCliKey(cliAgent: ExternalCliAgentKind, suffix: 'enabled' | 'use_builtin' | 'cli_path'): string {
+export function externalCliKey(
+  cliAgent: ExternalCliAgentKind,
+  suffix: 'enabled' | 'use_builtin' | 'cli_path' | 'path_histories',
+): string {
   return `external_cli_agent_${cliAgent}_${suffix}`;
+}
+
+/** Parses the JSON-string CLI path history carried in a settings config value. */
+export function parseExternalCliPathHistories(value: string | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  } catch {
+    return [];
+  }
 }
 
 export function applyExternalCliAgentAtomicUpdates(
@@ -321,6 +303,11 @@ type ExternalCliAgentsSectionProps = {
   ) => Promise<ExternalCliDetectResult>;
   /** Persists one agent's choice immediately (install / path selection / manual path save). */
   onCommitAgent?: (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => Promise<void>;
+  /**
+   * Drops stale addresses from the agent's persisted path history after a
+   * successful detection; `detectedPath` counts as known-good.
+   */
+  onCleanupPathHistories?: (cliAgent: ExternalCliAgentKind, detectedPath: string) => Promise<void>;
   onSelectFile?: (cliAgent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   /** Latest detect results, owned by the App layer so they survive unmount. */
   initialResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
@@ -344,6 +331,7 @@ export function ExternalCliAgentsSection({
   onChange,
   onDetect,
   onCommitAgent,
+  onCleanupPathHistories,
   onSelectFile,
   initialResults,
   onResultsChange,
@@ -381,8 +369,30 @@ export function ExternalCliAgentsSection({
   // Path each agent's pending auto-detect was scheduled for; cleared when the
   // timer is cancelled before firing, so the next pass schedules it again.
   const scheduledDetectPathsRef = useRef<Partial<Record<ExternalCliAgentKind, string>>>({});
-  // Most-recently-used path per agent, feeding the path dropdown options.
-  const [pathHistories, setPathHistories] = useState<PathHistoryMap>(() => loadPathHistories());
+  // One-shot exemption per agent: after a card-level commit the backend may
+  // persist a resolved variant of the requested path (e.g. a Windows .cmd
+  // shim resolves to the .exe). The config refetch then echoes that stored
+  // value back into draftValues, which must not be treated as a user edit —
+  // the just-probed result is already fresh for that path.
+  const commitEchoAgentsRef = useRef<Set<ExternalCliAgentKind>>(new Set());
+  // PATH discovery is independent of the executable currently selected.
+  const [pathCandidates, setPathCandidates] = useState<Record<string, string>>({});
+  const visibleAgentsSignature = JSON.stringify(visibleAgentKinds);
+  useEffect(() => {
+    if (!onDetect) return;
+    let cancelled = false;
+    const agents = JSON.parse(visibleAgentsSignature) as string[];
+    for (const agent of agents) {
+      if (!EXTERNAL_CLI_AGENT_KINDS.includes(agent)) continue;
+      void onDetect(agent, '', false).then((result) => {
+        if (cancelled) return;
+        setPathCandidates((prev) => ({ ...prev, [agent]: result.path || '' }));
+      }).catch(() => {
+        // Keep the last known PATH candidate when discovery is unavailable.
+      });
+    }
+    return () => { cancelled = true; };
+  }, [onDetect, visibleAgentsSignature]);
 
   // Inline success toast (top-center), mirroring the models settings'
   // connection-test toast; auto-dismisses after 3 seconds.
@@ -450,46 +460,18 @@ export function ExternalCliAgentsSection({
     setResults({ ...initialResults });
   }, [initialResults]);
 
-  /**
-   * Record a built-in CLI's managed path into the MRU history. Built-in mode
-   * persists an empty cli_path, so the MRU effect never sees the actual path
-   * and the dropdown would lose it once the user switches to a custom path.
-   * Detection returns the managed path; keeping it in history lets the
-   * dropdown offer it for one-click switching back later.
-   */
-  const rememberBuiltinPath = useCallback(
-    (cliAgent: ExternalCliAgentKind, path: string) => {
-      setPathHistories((prev) => {
-        const list = prev[cliAgent] ?? [];
-        if (list[0] === path) return prev;
-        const next = {
-          ...prev,
-          [cliAgent]: [path, ...list.filter((item) => item !== path)].slice(0, PATH_HISTORY_LIMIT),
-        };
-        storePathHistories(next);
-        return next;
-      });
-    },
-    [],
-  );
-
-  // Drops one entry from the agent's MRU history (dropdown remove button).
-  // The active cli_path is never removed here: it is the persisted config,
-  // not a history entry.
-  const removePathHistory = useCallback((cliAgent: ExternalCliAgentKind, path: string) => {
-    setPathHistories((prev) => {
-      const list = prev[cliAgent] ?? [];
-      if (!list.includes(path)) return prev;
-      const next = { ...prev, [cliAgent]: list.filter((item) => item !== path) };
-      storePathHistories(next);
-      return next;
-    });
-  }, []);
-
   // Returns the detection result when it settles for the current request, so
   // manual callers can toast the outcome; undefined on races or failures.
+  // Automatic probes (debounce, post-install, toggle) must not prune the
+  // path history: cleanup only runs when the caller marks the detect as an
+  // explicit user action (manual button, card save).
   const detect = useCallback(
-    async (cliAgent: ExternalCliAgentKind, cliPath?: string, useBuiltin?: boolean): Promise<ExternalCliDetectResult | undefined> => {
+    async (
+      cliAgent: ExternalCliAgentKind,
+      cliPath?: string,
+      useBuiltin?: boolean,
+      options?: { cleanupHistory?: boolean },
+    ): Promise<ExternalCliDetectResult | undefined> => {
       if (!onDetect) return undefined;
       const requestId = (detectRequestIdsRef.current[cliAgent] ?? 0) + 1;
       detectRequestIdsRef.current[cliAgent] = requestId;
@@ -498,8 +480,12 @@ export function ExternalCliAgentsSection({
         const result = await onDetect(cliAgent, cliPath, useBuiltin);
         if (detectRequestIdsRef.current[cliAgent] !== requestId) return undefined;
         updateResults(cliAgent, result);
-        if (useBuiltin && result.path) rememberBuiltinPath(cliAgent, result.path);
         setAgentError(cliAgent, '');
+        if ((result.status === 'ok' || result.status === 'warning') && options?.cleanupHistory) {
+          // Fire-and-forget: a failed cleanup keeps the history as-is and the
+          // next explicit action retries it.
+          void onCleanupPathHistories?.(cliAgent, result.path || '').catch(() => {});
+        }
         return result;
       } catch (error) {
         if (detectRequestIdsRef.current[cliAgent] !== requestId) return undefined;
@@ -512,7 +498,7 @@ export function ExternalCliAgentsSection({
         }
       }
     },
-    [onDetect, rememberBuiltinPath, setAgentError, updateResults],
+    [onDetect, onCleanupPathHistories, setAgentError, updateResults],
   );
 
   // Manual "Detect" click: toasts the outcome like the models settings'
@@ -520,7 +506,9 @@ export function ExternalCliAgentsSection({
   // silent.
   const detectAndNotify = useCallback(
     async (cliAgent: ExternalCliAgentKind, cliPath?: string, useBuiltin?: boolean) => {
-      const result = await detect(cliAgent, cliPath, useBuiltin);
+      // Manual button click: an explicit user action, so stale history
+      // entries may be pruned once the probe settles.
+      const result = await detect(cliAgent, cliPath, useBuiltin, { cleanupHistory: true });
       if (result?.status === 'ok' || result?.status === 'warning') {
         showHint(t('config.externalCli.detectSucceeded'));
       }
@@ -576,9 +564,16 @@ export function ExternalCliAgentsSection({
     (cliAgent: ExternalCliAgentKind, cliPathKey: string, value: string) => {
       observedCliPathsRef.current[cliAgent] = value;
       clearDetectResult(cliAgent);
+      // Keep the card in its "detecting" state: the App-layer auto detect is
+      // debounced (EXTERNAL_CLI_AUTO_DETECT_DELAY_MS), so the cleared result
+      // would otherwise render as a brief "not installed" flash before the
+      // new probe starts.
+      if (onDetect) {
+        setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
+      }
       onChange(cliPathKey, value);
     },
-    [clearDetectResult, onChange],
+    [clearDetectResult, onChange, onDetect],
   );
 
   const selectFile = useCallback(
@@ -623,9 +618,28 @@ export function ExternalCliAgentsSection({
     [onCommitAgent, setAgentError],
   );
 
-  // One-click install/repair: commits the built-in choice with force so the
-  // backend re-runs its dependency repair even when nothing else changed
-  // (e.g. the managed CLI binary was deleted manually).
+  // Preserve explicit choices and prefer PATH when no executable was selected.
+  const resolveEnabledChoice = useCallback(
+    async (
+      cliAgent: ExternalCliAgentKind,
+      useBuiltin: boolean,
+      cliPath: string,
+    ): Promise<ExternalCliAgentChoice> => {
+      if (useBuiltin || cliPath.trim()) {
+        return { enabled: true, useBuiltin, cliPath: useBuiltin ? '' : cliPath.trim() };
+      }
+      const probe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
+        ? await onDetect?.(cliAgent, '', false)
+        : undefined;
+      if (probe?.path && isInstalledStatus(probe)) {
+        return { enabled: true, useBuiltin: false, cliPath: probe.path };
+      }
+      return { enabled: true, useBuiltin: true, cliPath: '' };
+    },
+    [onDetect],
+  );
+
+  // Force dependency repair even when the executable choice is unchanged.
   // Installs started by the user in this session. The initial status poll can
   // return a historical 'succeeded' for a past install, which must not toast.
   const userInitiatedInstallRef = useRef<Set<ExternalCliAgentKind>>(new Set());
@@ -635,8 +649,43 @@ export function ExternalCliAgentsSection({
   const postInstallDetectRanRef = useRef<Partial<Record<ExternalCliAgentKind, boolean>>>({});
   const installNow = useCallback(
     async (cliAgent: ExternalCliAgentKind) => {
+      const enabledKey = externalCliKey(cliAgent, 'enabled');
+      const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
+      const cliPathKey = externalCliKey(cliAgent, 'cli_path');
+      // Snapshot the pre-install drafts: the optimistic rewrite below must
+      // not survive a failed commit, or the card keeps showing an unpersisted
+      // "enabled + built-in" state and the user's external path stays gone.
+      const prevEnabled = draftValues[enabledKey];
+      const prevUseBuiltin = draftValues[useBuiltinKey];
+      const prevCliPath = draftValues[cliPathKey];
+      let committed = false;
       try {
-        await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '', force: true });
+        // Resolve the install choice first: preserve the user's explicit
+        // selection, prefer PATH, and fall back to the built-in CLI.
+        const choice = await resolveEnabledChoice(
+          cliAgent,
+          draftValues[useBuiltinKey] === 'true',
+          draftValues[cliPathKey] || '',
+        );
+        const nextCliPath = choice.useBuiltin ? '' : choice.cliPath;
+        // Reflect the resolved intent in draftValues immediately so the card
+        // switches to the chosen mode right away. Without this, deferred
+        // agents (install still running) keep showing the old external-CLI
+        // state until the replay save settles after install success.
+        // Exempt the path rewrite from the detect-result wipe so the card
+        // does not flash "not installed" before the install status lands.
+        // Only when the previous path is non-empty: an empty-to-nonempty
+        // transition never reaches the wipe (treated as a reload, not a
+        // user edit), so the one-shot marker would never be consumed and
+        // would wrongly skip a later real path change.
+        if (prevCliPath && prevCliPath !== nextCliPath) {
+          commitEchoAgentsRef.current.add(cliAgent);
+        }
+        onChange(enabledKey, 'true');
+        onChange(useBuiltinKey, choice.useBuiltin ? 'true' : 'false');
+        onChange(cliPathKey, nextCliPath);
+        await commit(cliAgent, { ...choice, force: true });
+        committed = true;
         userInitiatedInstallRef.current.add(cliAgent);
         postInstallDetectRanRef.current[cliAgent] = false;
         // The commit only queues the install. When it finishes instantly (deps
@@ -648,21 +697,40 @@ export function ExternalCliAgentsSection({
           onInstallStatusChange(cliAgent, status);
         }
       } catch (error) {
+        // A failed commit leaves the optimistic rewrite in place: restore the
+        // pre-install drafts so the card reflects the persisted state again,
+        // and drop the echo exemption (nothing was committed). Failures after
+        // the commit itself (e.g. the status probe) must keep the new drafts,
+        // since the choice is already persisted at that point.
+        if (!committed) {
+          onChange(enabledKey, prevEnabled ?? '');
+          onChange(useBuiltinKey, prevUseBuiltin ?? '');
+          onChange(cliPathKey, prevCliPath ?? '');
+          commitEchoAgentsRef.current.delete(cliAgent);
+        }
         setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
       }
     },
-    [commit, onInstallStatusChange, onInstallStatusGet, setAgentError],
+    [commit, draftValues, onChange, onInstallStatusChange, onInstallStatusGet, resolveEnabledChoice, setAgentError],
   );
 
   /**
-   * Validates a requested CLI path with a throwaway detect call (the result is
-   * NOT written into the card state, so the card never flips while editing),
-   * then commits the path. Returns true when the commit succeeded.
+   * Validates a requested CLI path with a detect probe, then commits the
+   * path. Two failure modes are handled distinctly:
+   *  - probe returned a result but status is not ok/warning (e.g. path
+   *    missing): restore the previous result so the badge keeps its last
+   *    known state, and surface the probe's failure message.
+   *  - probe is undefined (detect() threw — network/timeout — and already
+   *    wrote an 'unavailable' result in its catch, or was superseded by a
+   *    newer probe): do NOT overwrite that result; add a generic failure
+   *    message so the user gets feedback instead of a silent no-op.
    */
   const validateAndCommitPath = useCallback(
     async (cliAgent: ExternalCliAgentKind, requestedPath: string): Promise<boolean> => {
       if (onDetect) {
         try {
+          // Snapshot the previous result before detect() overwrites it.
+          const previousResult = resultsRef.current[cliAgent];
           // Use `detect` (not raw `onDetect`) so the card's result object is
           // refreshed alongside the validation probe — otherwise enabling
           // after a page reload leaves the card showing "not installed" until
@@ -670,7 +738,24 @@ export function ExternalCliAgentsSection({
           const probe = await detect(cliAgent, requestedPath, false);
           if (!probe || (probe.status !== 'ok' && probe.status !== 'warning')) {
             if (probe) {
+              // Got a result but validation failed: restore the previous
+              // result so the badge doesn't flip to "not installed".
+              if (previousResult) {
+                updateResults(cliAgent, previousResult);
+              } else {
+                clearDetectResult(cliAgent);
+              }
               setAgentError(cliAgent, detectFailureMessage(probe, requestedPath, cliAgent, t));
+            } else {
+              // probe === undefined: detect() threw (it already wrote an
+              // 'unavailable' result in its catch) or was superseded by a
+              // newer probe. Don't overwrite the result — let detect's
+              // unavailable status show. Add a generic failure message so
+              // the user gets feedback instead of a silent no-op.
+              setAgentError(cliAgent, t('config.externalCli.unavailableCli', {
+                agent: externalCliAgentDisplayName(cliAgent),
+                reason: '',
+              }));
             }
             return false;
           }
@@ -679,16 +764,47 @@ export function ExternalCliAgentsSection({
           return false;
         }
       }
+      // Hold the "detecting" badge through the commit window: the probe has
+      // resolved (detect reset the flag), so a result wipe between the commit
+      // and the debounced auto-detect would render a brief "not installed"
+      // flash before the next probe starts. Only hold when detection is
+      // available at all — without onDetect nothing ever resets the flag
+      // (detect early-returns), leaving the card stuck on "detecting".
+      if (onDetect) {
+        setDetecting((prev) => ({ ...prev, [cliAgent]: true }));
+      }
       try {
         await commit(cliAgent, { enabled: true, useBuiltin: false, cliPath: requestedPath });
       } catch (error) {
+        setDetecting((prev) => ({ ...prev, [cliAgent]: false }));
         setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
         return false;
       }
+      // Record the observed path so the draft-sync effect does not treat the
+      // commit as an external edit: clearing here would wipe the just-probed
+      // result and flash "not installed" until the debounced auto-detect
+      // re-runs the same path. The one-shot echo exemption additionally
+      // covers the config refetch delivering the backend's resolved variant
+      // of this path (e.g. a .cmd shim stored as the .exe), which otherwise
+      // flashes "not installed" a second time after the save settles. The
+      // backend persists .strip()ed paths, so record the trimmed form —
+      // otherwise the trim echo alone would burn the exemption.
+      const persistedPath = requestedPath.trim();
+      observedCliPathsRef.current[cliAgent] = persistedPath;
+      commitEchoAgentsRef.current.add(cliAgent);
+      // The draft update re-arms the debounced auto-detect for the same path;
+      // mark it as already scheduled so the refresh probe below stays the only
+      // follow-up detection (no duplicate backend round-trip).
+      scheduledDetectPathsRef.current[cliAgent] = persistedPath;
+      // Refresh the result with one more probe so the badge lands on a fresh
+      // "installed" state even if the just-probed result gets wiped meanwhile;
+      // `detect` releases the held flag when it settles. The save is an
+      // explicit user action, so it also prunes stale history entries.
+      void detect(cliAgent, requestedPath, false, { cleanupHistory: true });
       showHint(t('config.externalCli.savedHint'));
       return true;
     },
-    [commit, detect, onDetect, setAgentError, showHint, t],
+    [clearDetectResult, commit, detect, onDetect, resultsRef, setAgentError, setDetecting, showHint, t, updateResults],
   );
 
   /**
@@ -696,9 +812,8 @@ export function ExternalCliAgentsSection({
    * the agent: no validation, no wipe, no uninstall. Enabling restores the
    * agent's previous choice: built-in CLI delegates to the install flow; a
    * custom path is re-probed first (validateAndCommitPath) so a broken path
-   * never gets persisted. With no path configured (e.g. right after a reload
-   * of a disabled agent) the built-in CLI is used as fallback so the switch
-   * can always re-enable the agent.
+   * never gets persisted. With no path configured, probe PATH before falling
+   * back to the built-in CLI.
    */
   const toggleAgentEnabled = useCallback(
     async (
@@ -716,7 +831,8 @@ export function ExternalCliAgentsSection({
           return;
         }
         if (useBuiltin || !requestedPath.trim()) {
-          await commit(cliAgent, { enabled: true, useBuiltin: true, cliPath: '' });
+          const choice = await resolveEnabledChoice(cliAgent, useBuiltin, requestedPath);
+          await commit(cliAgent, choice);
           showHint(t('config.externalCli.savedHint'));
           // Refresh the detect result synchronously so the card never flashes
           // "not installed" after enabling (e.g. right after a page reload,
@@ -731,7 +847,7 @@ export function ExternalCliAgentsSection({
         setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [commit, detect, setAgentError, showHint, t, validateAndCommitPath],
+    [commit, detect, resolveEnabledChoice, setAgentError, showHint, t, validateAndCommitPath],
   );
 
   const startEdit = useCallback(
@@ -809,33 +925,28 @@ export function ExternalCliAgentsSection({
       // changed — transitioning from empty (draft values still loading on
       // remount) to a real path is a reload, not a user edit, and clearing
       // would wipe the App-layer detect results and flash "not installed".
-      if (previous) {
-        clearDetectResult(cliAgent);
-      }
+      if (!previous) continue;
+      // An in-flight probe is refreshing the result for the committed path;
+      // wiping it here would only flash "not installed" mid-probe. The
+      // post-commit config echo usually lands inside this window, whenever
+      // the config refetch is slower than the refresh probe.
+      if (detecting[cliAgent]) continue;
+      // A path change right after a card-level commit is the persisted echo
+      // of that commit (the backend may store a resolved variant of the
+      // requested path, delivered via the config refetch). The probe result
+      // is already fresh for that path, so keep it instead of flashing
+      // "not installed" until the debounced auto-detect re-probes.
+      if (commitEchoAgentsRef.current.delete(cliAgent)) continue;
+      // Same exemption, but stateless so it survives a remount: the config
+      // refetch triggered by an earlier save can land after the user left
+      // and reopened this settings tab, when the per-instance exemption no
+      // longer exists. When the detect result already describes exactly the
+      // incoming path (the probe resolved it the same way the backend
+      // persisted it), the result is fresh and must not be wiped.
+      if (resultsRef.current[cliAgent]?.path === cliPath) continue;
+      clearDetectResult(cliAgent);
     }
-  }, [cliPathsSignature, clearDetectResult]);
-
-  // Move each agent's effective path to the front of its MRU history so the
-  // dropdown keeps previously used addresses selectable ("add another
-  // address" = enter a new path, the old one stays in the list). Covers every
-  // source: dropdown switch, edit form save, and the native file picker.
-  useEffect(() => {
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
-    setPathHistories((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const [cliAgent, cliPath] of currentPaths) {
-        if (!cliPath) continue;
-        const list = prev[cliAgent] ?? [];
-        if (list[0] === cliPath) continue;
-        next[cliAgent] = [cliPath, ...list.filter((item) => item !== cliPath)].slice(0, PATH_HISTORY_LIMIT);
-        changed = true;
-      }
-      if (!changed) return prev;
-      storePathHistories(next);
-      return next;
-    });
-  }, [cliPathsSignature]);
+  }, [cliPathsSignature, clearDetectResult, detecting]);
 
   useEffect(() => {
     if (!onDetect) return undefined;
@@ -966,15 +1077,15 @@ export function ExternalCliAgentsSection({
         // typed an explicit path over it).
         const detectedPath = result?.path || '';
         const copyablePath = displayResult?.path && !cliPath ? displayResult.path : '';
-        // Dropdown choices: active path first, then the PATH-detected one, then
-        // the agent's MRU history. Trigger, edit field and panel are capped at
+        // Dropdown choices: active path first, then the persisted path
+        // history, then the PATH-detected one, then the path from the latest
+        // detection result. Trigger, edit field and panel are capped at
         // max-w-[55rem] (880px); longer paths truncate with a tooltip.
-        // History entries carry a remove button; the active path and the
-        // detected PATH lookup are not history and cannot be dropped here.
+        const historyPaths = parseExternalCliPathHistories(draftValues[externalCliKey(cliAgent, 'path_histories')]);
         const pathOptions: SelectOption[] = [];
         {
           const seen = new Set<string>();
-          const pushPathOption = (path: string, removable: boolean) => {
+          const pushPathOption = (path: string) => {
             if (!path || seen.has(path)) return;
             seen.add(path);
             pathOptions.push({
@@ -984,27 +1095,11 @@ export function ExternalCliAgentsSection({
                   {path}
                 </span>
               ),
-              trailing: removable ? (
-                <span
-                  role="button"
-                  aria-label={t('config.externalCli.removePath')}
-                  title={t('config.externalCli.removePath')}
-                  data-testid="ui-select-option-remove"
-                  className="ml-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-text-muted opacity-40 hover:bg-secondary/40 hover:opacity-100"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    removePathHistory(cliAgent, path);
-                  }}
-                >
-                  <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                    <path strokeLinecap="round" d="M4 4l8 8M12 4l-8 8" />
-                  </svg>
-                </span>
-              ) : undefined,
             });
           };
-          for (const path of [cliPath, detectedPath]) pushPathOption(path, false);
-          for (const path of pathHistories[cliAgent] ?? []) pushPathOption(path, true);
+          for (const path of [cliPath, ...historyPaths, pathCandidates[cliAgent] || '', detectedPath]) {
+            pushPathOption(path);
+          }
         }
         const detectingNow = detecting[cliAgent];
         // Keep the last detection result mounted while re-detecting: hiding
@@ -1075,6 +1170,18 @@ export function ExternalCliAgentsSection({
           >
             <Loader2 className="settings-spinner h-3.5 w-3.5" />
             {t('config.externalCli.detecting')}
+          </span>
+        ) : agentInstalling ? (
+          // One-click install is running: the progress panel below grows the
+          // card (scrollbar appears), so reflect it here too instead of the
+          // stale pre-install badge.
+          <span
+            className="inline-flex items-center gap-1 text-xs text-text-muted"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <Loader2 className="settings-spinner h-3.5 w-3.5" />
+            {t('config.externalCli.installPhase.running')}
           </span>
         ) : !enabled ? (
           <span

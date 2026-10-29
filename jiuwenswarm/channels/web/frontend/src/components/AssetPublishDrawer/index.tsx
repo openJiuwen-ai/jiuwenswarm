@@ -11,7 +11,7 @@ import {
 } from '../../utils/gitcodeOAuth';
 import { PUBLISH_RESTORE_KEY, useAssetPublish } from '../../hooks/useAssetPublish';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import { publishOutcome, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
+import { canStartNewVersion, localRecordState, validateMetadata, publishTimestamp } from '../../features/assetPublishState';
 import { publishIssueKey } from '../../features/assetPublishErrors';
 import type { AssetPublishOpenRequest, AssetReference, PublishMetadata } from '../../types/assetPublish';
 import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
@@ -97,6 +97,11 @@ const messages = {
     unconfirmed: '提交结果未确认',
     observed: '这里只显示本地可确定的提交状态；远端发布状态请以 Hub 为准。',
     requestFailed: '请求未完成，请重试或重新登录。',
+    undefinedPlaceholder: '连接器配置包含未声明的参数。请检查凭证占位符：宿主 OAuth 仅自动提供 OAUTH_ACCESS_TOKEN，其他参数需声明凭证字段。此问题与 Hub 登录无关。',
+    invalidAgentMcp: 'Hub 拒绝了连接器包校验（invalid_agent_mcp）。请检查清单及凭证声明；OAuth 认证头应由宿主提供，而非作为手填 Token 字段发布。请更新宿主后重新检查发布内容，不要反复重新登录。',
+    invalidPackage: '发布内容不合法，请检查清单文件或版本号后重试。',
+    publishUnavailable: '发布服务暂时不可用，请稍后重试。',
+    uploadOutcomeUnknown: '提交结果未确认。请到 Hub 的“我的上传”确认该版本是否存在，再决定是否重新提交。',
     invalidPluginStructure: '资源包结构不符合 Hub 要求，请检查清单文件和目录结构。',
     pluginNotFound: 'Hub 中找不到要更新的资源，请检查“更新目标 Hub ID”后重试。',
     sessionExchangeFailed: 'Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。',
@@ -184,6 +189,12 @@ const messages = {
     unconfirmed: 'Submission result unconfirmed',
     observed: 'Only locally confirmed submission states are shown here; check the Hub for remote publication status.',
     requestFailed: 'The request did not complete. Retry or sign in again.',
+    undefinedPlaceholder: 'The connector configuration contains an undeclared parameter. Host OAuth supplies only OAUTH_ACCESS_TOKEN; other parameters need credential schema fields. This is not a Hub sign-in error.',
+    invalidAgentMcp: 'Hub rejected connector package validation (invalid_agent_mcp). Check the manifest and credentials declaration. The host must supply OAuth authorization headers, not publish them as manual token fields. Update the host and check the package again instead of repeatedly signing in.',
+    invalidPackage: 'The package is not publishable. Check its manifest or version and retry.',
+    publishUnavailable: 'The publishing service is unavailable right now. Retry later.',
+    uploadOutcomeUnknown:
+      'The submission result is unconfirmed. Check "My uploads" on the Hub before submitting again.',
     invalidPluginStructure: 'The package structure does not meet Hub requirements. Check its manifest and folders.',
     pluginNotFound: 'The Hub resource to update was not found. Check the target Hub ID and retry.',
     sessionExchangeFailed:
@@ -286,6 +297,11 @@ function AssetPublishDrawer({
     };
     if (code && known[code]) return known[code][zh ? 0 : 1] + (issue?.path ? ` (${issue.path})` : '');
     const safeKey = publishIssueKey(code || value);
+    // Connector validation errors can contain credential details in the Hub message.
+    if (safeKey === 'undefinedPlaceholder' || safeKey === 'invalidAgentMcp') return text(safeKey);
+    // Prefer the Hub's own guidance when it is short enough; it is more specific than any code table.
+    const reported = typeof issue?.message === 'string' ? issue.message.trim() : '';
+    if (reported) return reported;
     return safeKey === 'requestFailed' ? text('requestFailed') : text(safeKey);
   };
   const panel = useRef<HTMLElement | null>(null);
@@ -377,7 +393,6 @@ function AssetPublishDrawer({
     description: 'descriptionHelp',
     tags: 'tagsHelp',
   };
-  const outcome = state.record ? publishOutcome(state.record) : null;
   const recordState = state.record ? localRecordState(state.record) : null;
   const ResultIcon =
     recordState === 'failed'
@@ -634,7 +649,7 @@ function AssetPublishDrawer({
         >
           <fieldset
             className="asset-publish-form-fields"
-            disabled={state.busy || (state.loggedIn && !state.description)}
+            disabled={state.busy || !state.description}
           >
             <section
               className="asset-publish-form-section"
@@ -771,7 +786,7 @@ function AssetPublishDrawer({
           )}
         </section>
       )}
-      {state.record && outcome && (
+      {state.record && recordState && (
         <section
           aria-live="polite"
           className="asset-publish-result-card"
@@ -807,7 +822,7 @@ function AssetPublishDrawer({
           )}
           <footer className="asset-publish-result-footer" data-testid="asset-publish-result-footer">
             <p data-testid="asset-publish-observed-note">{text('observed')}</p>
-            {!['queued', 'uploading', 'unknown'].includes(outcome) && (
+            {canStartNewVersion(state.record) && (
               <button
                 type="button"
                 data-testid="asset-publish-new-version"

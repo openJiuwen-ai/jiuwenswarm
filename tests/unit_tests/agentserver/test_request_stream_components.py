@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.runtime.session.model import TEAM_EXECUTION_CONTEXT_METADATA_KEY
 from jiuwenswarm.server.runtime.agent_adapter.history_committer import HistoryCommitter
 from jiuwenswarm.server.runtime.agent_adapter.request_context import RequestContext

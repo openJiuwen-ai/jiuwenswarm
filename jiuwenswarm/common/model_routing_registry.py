@@ -14,7 +14,7 @@ from jiuwenswarm.common.model_errors import (
     MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
 )
-from jiuwenswarm.common.model_selection import (
+from gateway.common.model_selection import (
     ModelSelection,
     ResolvedModel,
     ResolvedModelGroup,

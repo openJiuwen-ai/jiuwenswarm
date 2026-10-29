@@ -59,7 +59,7 @@ blocked = (
     "jiuwenswarm.server.runtime.gateway_adapter.config_adapter",
     "jiuwenswarm.server.runtime.gateway_adapter.project_adapter",
     "jiuwenswarm.server.runtime.gateway_adapter.memory_adapter",
-    "jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter",
+    "jiuwenswarm.server.runtime.video_task.server_adapter",
 )
 class Guard(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):

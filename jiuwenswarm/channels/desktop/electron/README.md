@@ -94,6 +94,50 @@ updates, using the supported old client and the signed release artifact.
 Private information-collection agreements and daily-activity integration are
 not included in this public packaging path.
 
+## Backend identity and upgrades
+
+Backend builds embed `jiuwenswarm/_worker_build_identity.json`. Rebuilding the
+backend creates a new ID even at the same version; assembling an unchanged
+backend into an installer preserves that ID. `-ReuseBackend` validates source,
+lockfile and packaging inputs before accepting an existing backend.
+
+Build entry points accept `WORKSWARM_SOURCE_ROOT`, `WORKSWARM_PACKAGING_ROOT`,
+`WORKSWARM_BUILD_ROOT` and an optional `WORKSWARM_WORKER_IDENTITY` input file.
+PowerShell also exposes `-SourceRoot`, `-BuildRoot` and `-WorkerIdentityFile`.
+The defaults retain the current single-repository layout. Runtime never imports
+release scripts. Metadata is generated in build staging, outside editable source.
+An input manifest supplies provenance only: its ID becomes `input_build_id` and
+each backend or wheel build allocates a fresh `backend_build_id`. Nested TUI
+builds load scripts from the packaging root and inputs from the source root.
+
+Supervisor validates each resident Worker's code and deployment before routing
+requests. An owned incompatible Worker is stopped and observed exiting before
+replacement under the startup lock. A different installation is never retired.
+DMG startup and shutdown never retire a WHL or source-service deployment.
+Legacy Python Workers without a deployment identity are never adopted or automatically
+retired: a shared interpreter or working directory cannot prove the loaded
+package's origin. Stop them through their original source or WHL service before
+starting the new version. Legacy frozen desktop ownership still requires the
+matching OS executable, user, endpoint and process identity.
+Concurrent complete stop requires ownership validation of the current connection
+before sending shutdown. An incomplete handshake is refused; validation of an
+earlier connection cannot authorize a new peer. A child spawned by this Supervisor
+can still be cleaned up through its retained process handle without unverified IPC.
+Complete stop cancels unvalidated startup; spawn, connect and HELLO share owned-child
+cleanup on failure or cancellation. The stored PID creation time comes from that
+same ownership check, and subsequent reaping must still match it.
+Source services need no identity file; installed wheels combine artifact/content
+identity with the actual dependency environment. Worker pins its identity at
+startup, so reconnecting cannot relabel old code after an update.
+
+Stop services before changing source, wheels or dependencies. Use
+`jiuwenswarm-stop` for debug services or `jiuwenswarm-start --stop <name>` for
+instances. Desktop update helpers require resident Worker exit before replacing
+the installed archive. Each update has a unique shutdown receipt written by the
+parent after successful service shutdown and Worker persistence. Helpers require
+this success before checking residual processes. Failed, pending or missing
+receipts block replacement even if the Worker endpoint is already absent.
+
 ## Browser-agent boundary
 
 Electron enables a loopback-only CDP endpoint on a launcher-selected ephemeral
@@ -108,6 +152,18 @@ TargetID. Every conversation/member pair gets an independent page and MCP
 registration, including single-agent conversations. The browser pane has member
 tabs; switching or hiding a tab does not stop background automation. Popups are
 still redirected into their owning page; this is not a full Chrome tab manager.
+
+Browser settings' `browser.headless` also controls embedded page presentation.
+Headed mode keeps the normal browser tab and automatic single-agent expansion;
+headless mode hides the browser tab and all native views, while MCP operations
+continue on the same pages. Switching display modes does not itself close or
+navigate those views, change their TargetIDs, or clear their login state. Electron
+implements this as background WebContentsViews, not a separate headless Chrome
+process. The default is headless, including while the saved setting is loading.
+After a successful settings save the presentation updates without restarting
+Electron. Failed saves leave the effective mode unchanged. HTML/Markdown file
+links use the normal artifact preview in headless mode rather than navigating a
+background task's page.
 
 All browser panels use `persist:jiuwenswarm-browser`, separate from the trusted
 UI's session. Cookies and origin-scoped local storage are shared across members

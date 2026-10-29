@@ -80,6 +80,58 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
 
+### 后端构建身份与服务生命周期
+
+每次重新构建后端都会生成独立的 `backend_build_id`，以
+`jiuwenswarm/_worker_build_identity.json` 注入冻结产物或 WHL；文件仅写入构建目录。
+原样复用后端、重新组装 Electron 或安装器时保留原身份。`-ReuseBackend` 会验证源码、
+依赖锁及出包脚本摘要，输入不匹配时拒绝复用。
+
+当前脚本仍在同仓。PowerShell 入口支持 `-SourceRoot`、`-BuildRoot` 和
+`-WorkerIdentityFile`；跨平台接口为 `WORKSWARM_SOURCE_ROOT`、
+`WORKSWARM_PACKAGING_ROOT`、`WORKSWARM_BUILD_ROOT`、`WORKSWARM_WORKER_IDENTITY`。
+默认沿用当前目录布局，显式输入允许源码与出包脚本位于不同目录。
+身份输入可由 `jiuwenswarm/common/worker_build_identity.py --source-root <源码目录>
+--packaging-root <脚本仓目录> --output <构建目录中的文件>` 创建。输入文件只提供构建来源，
+其 ID 记录为 `input_build_id`；每次重新构建冻结后端或 WHL 都另生成新的 `backend_build_id`。
+只有原样复用已有后端时才保留其内嵌身份。TUI 嵌套构建从出包目录读取脚本，
+从指定源码目录读取入口及写入产物，默认仍使用同仓布局。
+
+Worker 在启动时核验并固定身份，Supervisor 每次连接都核对代码与部署归属。
+只有同一部署的旧 Worker 可以在启动锁内收尾退出、确认进程结束后被替换；其他安装、
+无法确认归属的进程和未知协议会被拒绝。DMG 只处理自身部署的残留，不清理 WHL 或源码服务。
+旧 Python Worker 的 HELLO 若缺少部署身份，同一解释器或工作目录不足以确认其包来源，
+启动及重连均拒绝接纳，完整停止也拒绝自动终止；请先使用它原来的源码或 WHL 服务入口停止，再启动新版。
+旧冻结桌面 Worker 仍须通过实际可执行文件、用户、端点和进程身份校验。
+完整停止与启动并发时，只有当前连接通过 HELLO 归属验证后才可发送退出指令；
+验证未完成则拒绝终止并清理连接，不复用上一连接的验证结果。Supervisor 自己创建的子进程
+仍可通过持有的进程句柄收尾，不向未验证的对端发送退出指令。
+完整停止会取消尚未验证的启动任务；创建、连接和 HELLO 任一阶段失败或取消，都回收本次创建的子进程。
+保存的 PID 创建时间来自同一次归属验证，不再用后续 PID 查询替换，强制回收仍检查该已验证身份。
+源码服务不要求身份文件，按源码内容与实际依赖环境
+计算指纹；WHL 服务将包身份与实际依赖环境一起校验，旧 WHL 缺少文件时采用内容指纹。
+损坏的身份文件不会静默回退。
+
+普通 Front 重启可复用兼容的 Worker。完整停止服务使用 `jiuwenswarm-stop` 或
+`jiuwenswarm-start --stop <实例名>`。部署升级应先停止服务，再更新源码、WHL 或依赖。
+桌面更新为本次退出创建独立的结果文件；父进程完成服务退出及 Worker 持久化后才记录成功。
+更新助手必须先验证该结果，再调用生命周期接口确认 Worker 退出。失败、未完成或结果缺失
+都会阻止覆盖安装，即使此时 Worker 端点已经消失也不能继续。
+
+### Windows 升级时保全用户安装的 CLI 和 SDK
+
+两套 Windows 安装器在清理安装目录或调用旧管理员版卸载器前，使用内嵌的 `preserve-windows-cli.ps1` 保全旧 `runtime/node-runtime` 和 `resources/backend/runtime/node-runtime`。整个 Node 前缀连同依赖、入口和未知文件进行离线复制与 SHA256 校验；源文件变化、运行中的 CLI、链接目录或复制失败会停止后续清理。恢复副本位于用户数据目录的 `runtime/npm/preserved`，运行副本位于 `runtime/npm/installed`，二者均不随应用卸载删除，也不会自动清除。完整复制会增加磁盘占用，空间不足会报错并保留原文件。
+
+安装后初始化独立的 `runtime/npm/global` 前缀，冻结进程中的 npm/npx 使用该前缀及固定的 Node。该前缀在保全副本之前查找命令，避免安装新版后仍运行旧版；浏览器工具继续优先使用随应用交付的 Node，现有外部自定义 npm prefix 保持不变。源内容变化会创建新的运行副本，并在已有迁移路径前加入新入口；旧运行副本保留作为独立安装及自更新包的后备。用户 PATH 的其他项目及顺序保持不变，缺失的旧 `cli_path` 和 Codex manifest 的 `codex_bin` 在使用时映射到运行副本。固定 Node 不随应用升级自动替换，需单独维护；安装器不会联网重装包或执行包脚本。
+
+“使用内置 CLI”安装的 SDK 属于另一条链路：安装器同时保全两种旧布局的 `runtime/external-cli/<name>/site-packages`，完整复制包、dist-info、原生 CLI 和安装元数据。恢复副本位于用户数据目录的 `runtime/external-cli-preserved`，工作目录固定为 `runtime/external-cli/<name>/site-packages`；已有用户目录安装保持不变。冻结应用只有在平台、版本清单和必需文件均匹配时才加载 SDK；不兼容或不完整的包保留供恢复，设置页仍需更新安装。SDK 通过 Python 路径加载，无需加入 PATH。迁移的 npm 本地 `.bin` 入口使用自身前缀的 Node，避免误用新版应用的 Node ABI。
+
+MCP 的独立 `command`、路径参数和 `cwd` 也在使用时解析已迁移的绝对路径，原配置保持不变；已有外部文件路径继续生效，任意 shell 脚本或混合命令字符串不会自动改写。早期管理员版卸载会重置三方 agent 配置，升级时额外使用当前 Windows 用户的 DPAPI 临时加密保全；新后端仅在文件校验及重置内容匹配时恢复 `external_cli_agents` / `external_transport`，成功后消费快照。并发修改或异常内容会报错并保留加密快照。普通卸载仍按原行为重置配置。
+
+Windows SDK migration: both old layouts' complete optional SDK trees are copied offline into the stable user-data `runtime/external-cli/<name>/site-packages` location, with independent recovery snapshots in `runtime/external-cli-preserved`. Existing user-data installations are retained. Only runtimes matching the new platform, package pins and required files are exposed to Python imports; incompatible or incomplete runtimes require an explicit update. SDKs need no PATH entries. Migrated npm local `.bin` shims retain their own Node interpreter. MCP commands, standalone path arguments and working directories resolve missing preserved paths without editing stored configuration; arbitrary shell strings are not rewritten. For legacy administrator upgrades only, a temporary user-bound DPAPI snapshot protects settings reset by the old uninstaller. The new backend restores only the two external-agent configuration fields after verifying the snapshot hash and exact reset operation; concurrent changes stop recovery and retain the encrypted snapshot. Normal uninstall behavior is unchanged.
+
+Windows upgrade preservation: both installers copy and hash complete old Node prefixes before cleanup or legacy-admin uninstall. Recovery copies (`runtime/npm/preserved`) are separate from working copies (`runtime/npm/installed`); neither is removed with the application. Busy CLIs, source changes, links or copy failures stop cleanup. Changed sources get separate working generations; earlier working copies remain command fallbacks. Copies consume additional disk space and are retained for manual recovery. Frozen npm/npx installs use the independent `runtime/npm/global` prefix and its pinned Node, maintained separately from application upgrades. Managed global commands precede preserved copies; application browser tools retain bundled Node priority. Existing external custom prefixes and unrelated PATH entries are preserved. Missing configured CLI paths, including native Codex manifest `codex_bin`, resolve to the preserved working copy. No network reinstall or package lifecycle scripts run during migration.
+
 ## 4. Electron 运行时（main.cjs）
 
 ### 启动流程（顺序有意为之，有源码断言测试保护）
@@ -126,7 +178,7 @@ JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 ```
 
 Python 侧配合（均已实现并有测试）：
-- `jiuwenswarm/dotenv_early.py`：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定
+- `gateway/dotenv_early.py`（gateway 子进程）与 `jiuwenswarm/dotenv_early.py`（AgentServer 等母仓进程）：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定。两份加载器独立演进；缺实例 `.env` 时仍只由母仓那份创建
 - `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`：检测到 `PLAYWRIGHT_MCP_TARGET_ID` 时走 Electron 分支，不还原 headless 参数、不改写 JSON argv
 
 ### 服务管理
@@ -252,7 +304,7 @@ build_config.py --sync（同步 _build_config.py 防漂移）
 ### 时间花在哪（关键认知，防止误判优化方向）
 
 - **PyInstaller bootloader + 解释器仅 ~26ms**——PyInstaller 本身不是瓶颈
-- 冻结 web 服务启动 ~750ms ≈ 模块导入 + main()。**历史包袱已清除**：`jiuwenswarm/gateway/__init__.py` 曾在包初始化时急切导入整个 gateway 运行时（1674 个模块 / ~1.4s），而 web 静态服务只需要 `gateway.routing.agent_http_bridge` 里一个纯 stdlib 的函数，却被迫付全款。已改为 **PEP 562 惰性导出**（`from jiuwenswarm.gateway import ChannelManager` 等用法完全兼容），效果：app_web 导入 1476ms→45ms、冻结 web 启动 1693ms→750ms。**不变量（有测试保护）：不要往 `gateway/__init__.py` 加回急切导入**；该修复惠及 Electron/Python 桌面/Web 部署全部形态
+- 冻结 web 服务启动 ~750ms ≈ 模块导入 + main()。**历史包袱已清除**：`gateway/__init__.py` 曾在包初始化时急切导入整个 gateway 运行时（1674 个模块 / ~1.4s），而 web 静态服务只需要 `gateway.routing.agent_http_bridge` 里一个纯 stdlib 的函数，却被迫付全款。已改为 **PEP 562 惰性导出**（`from jiuwenswarm.gateway import ChannelManager` 等用法完全兼容），效果：app_web 导入 1476ms→45ms、冻结 web 启动 1693ms→750ms。**不变量（有测试保护）：不要往 `gateway/__init__.py` 加回急切导入**；该修复惠及 Electron/Python 桌面/Web 部署全部形态
 - 静态资源本身不构成瓶颈：index.html 首字节 4ms、3.65MB 主 bundle 传输 17ms（回环）。优化"加载 dist"没有意义，见 §4 缓存策略（管的是二次启动的往返次数）
 - agent/gateway 各自完整导入运行时（暖机各 ~2-3s，冷启 ×2-3）——这部分不可消除，它们真需要全部模块
 - 冷暖差 ≈ 杀软扫描新文件的代价；根治手段是代码签名（未做，发布流程事项）
@@ -330,10 +382,11 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 | `scripts/build_config.py` | 版本/产物名单一来源（`--emit-json` / `--emit-shell`） |
 | `scripts/jiuwenswarm_exe_entry.py` | 冻结 exe 分发入口（两套打包共用） |
 | `jiuwenswarm/channels/desktop/desktop_app.py` | Python 桌面运行时（pywebview，对齐参照物） |
-| `jiuwenswarm/gateway/__init__.py` | PEP 562 惰性导出（启动性能关键不变量，见 §7；勿加回急切导入，有测试保护） |
+| `gateway/__init__.py` | PEP 562 惰性导出（启动性能关键不变量，见 §7；勿加回急切导入，有测试保护） |
 | `tests/unit_tests/gateway/test_gateway_lazy_exports.py` | gateway 惰性导出 + app_web 轻导入不变量 |
 | `tests/unit_tests/channels/web/test_web_static_cache_headers.py` | 静态资源 Cache-Control 头行为 |
-| `jiuwenswarm/dotenv_early.py` | env 保留键（Electron browser 键集） |
+| `gateway/dotenv_early.py` | gateway 子进程的 env 保留键（Electron browser 键集）；只加载已有 `.env` |
+| `jiuwenswarm/dotenv_early.py` | 母仓进程的 env 保留键；缺实例 `.env` 时仍由它创建 |
 | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | `_sync_browser_runtime_environment` electron 分支 |
 | `src/components/DesktopBrowserPane/` | 前端浏览器面板 |
 | `src/features/browserAgentActivity.ts` | "浏览器 Agent 已调用"信号 hook |

@@ -4,6 +4,10 @@
 
 from __future__ import annotations
 
+import os
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.server.ws_send import send_wire_payload
+
 import logging
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
@@ -86,6 +90,7 @@ class McpManagement:
         Returns ``(ok, message)``.
         """
         import logging as _logging
+
         from openjiuwen.core.foundation.tool import McpServerConfig
         from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
 
@@ -93,9 +98,14 @@ class McpManagement:
         transport = server_payload.get("transport", "")
         payload: dict[str, Any] = {"server_name": name, "client_type": transport}
         if transport == "stdio":
-            command = server_payload.get("command", "")
+            from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+            command = resolve_preserved_cli_path(server_payload.get("command", ""))
             if not command:
-                return (True, "skipped: no command")
+                return True, "skipped: no command"
+            from jiuwenswarm.common.mcp_config import resolve_node_package_runner
+            command, _ = resolve_node_package_runner(command, [])
+            # stdio 预检查改为纯静态校验,静态校验零 spawn、零 anyio。
             if not shutil.which(command):
                 return (
                     False,
@@ -106,15 +116,14 @@ class McpManagement:
                 for arg in raw_args:
                     if not isinstance(arg, str):
                         continue
-                    looks_like_path = arg.startswith(
-                        ("/", "./", "../", "~")
-                    ) or arg.endswith((".js", ".mjs", ".cjs", ".json", ".py", ".sh"))
-                    if looks_like_path and (not Path(arg).expanduser().exists()):
-                        return (
-                            False,
-                            f"{name} (stdio) pre-check failed: file not found: {arg}",
-                        )
-            return (True, f"{name} (stdio) pre-check passed (static)")
+                    arg = resolve_preserved_cli_path(arg)
+                    looks_like_path = (
+                        arg.startswith(("/", "./", "../", "~"))
+                        or arg.endswith((".js", ".mjs", ".cjs", ".json", ".py", ".sh"))
+                    )
+                    if looks_like_path and not Path(arg).expanduser().exists():
+                        return False, f"{name} (stdio) pre-check failed: file not found: {arg}"
+            return True, f"{name} (stdio) pre-check passed (static)"
         else:
             url = server_payload.get("url", "")
             if not url:
@@ -128,7 +137,8 @@ class McpManagement:
             if params:
                 payload["params"] = params
         cfg = McpServerConfig(**payload)
-        client = ToolMgr._create_client(cfg)
+        # ToolMgr ships in openjiuwen and offers no public constructor for a client.
+        client = ToolMgr._create_client(cfg)  # pylint: disable=protected-access
         _logging.disable(_logging.CRITICAL)
         try:
             connected = await asyncio.wait_for(client.connect(), timeout=15.0)
@@ -384,10 +394,14 @@ class McpManagement:
         try:
             params = request.params or {}
             action = str(params.get("action", "list")).strip().lower()
-            if action == "list":
-                items = [
-                    host._mask_sensitive_fields(item) for item in get_mcp_servers()
-                ]
+
+            if action == "oauth_callback":
+                # 换码含外部 HTTP 往返（IdP 最长 20s），必须经异步孪生走
+                # to_thread，不得在事件循环上同步执行（否则冻结本进程
+                # 全部通道的流式帧与心跳）
+                resp = await host._command_mcp_oauth_callback(ws, request)
+            elif action == "list":
+                items = [host._mask_sensitive_fields(item) for item in get_mcp_servers()]
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
@@ -934,7 +948,7 @@ class McpManagement:
             applied = True
             error_message = ""
             agent_manager = getattr(host, "_agent_manager", None)
-            if agent_manager is not None and name:
+            if item.get("removed", True) and agent_manager is not None and name:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(agent_manager.apply_mcp_change(name, "remove")),
@@ -1224,6 +1238,7 @@ class McpManagement:
         the frontend shows a "connecting…" spinner while waiting.
         """
         host = self.host
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import is_host_oauth_mcp
         from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
 
         try:
@@ -1232,7 +1247,10 @@ class McpManagement:
             if not name:
                 raise ValueError("mcp name is required")
             step_index = int(params.get("step_index", 0) or 0)
-            result = await host._await_cli_auth(name, step_index)
+            if is_host_oauth_mcp(name):
+                result = await host._await_host_oauth_auth(name)
+            else:
+                result = await host._await_cli_auth(name, step_index)
             if result.get("type") == "auth_failed":
                 resp = AgentResponse(
                     request_id=request.request_id,
@@ -1768,3 +1786,295 @@ class McpManagement:
         wire = host.services.encode_response(resp, response_id=request.request_id)
         async with send_lock:
             await host.services.send(ws, wire)
+
+    async def _await_host_oauth_auth(
+        self, name: str, *, max_attempts: int = 200, delay: float = 1.0
+    ) -> dict[str, Any]:
+        """Poll locally stored OAuth credentials until the loopback callback lands."""
+        host = self.host
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import load_oauth_credentials
+        from jiuwenswarm.server.runtime.mcp.registry import (
+            complete_host_oauth_auth,
+            was_connect_cancelled,
+        )
+
+        for _attempt in range(max_attempts):
+            if was_connect_cancelled(name):
+                logger.info("[mcp] host OAuth '%s' cancelled by user", name)
+                return {"type": "cancelled", "name": name}
+            credentials = await asyncio.to_thread(load_oauth_credentials, name)
+            if credentials is not None:
+                item = await asyncio.to_thread(complete_host_oauth_auth, name)
+                probe_ok, _reason = await host._agent_manager.probe_mcp_live_connection(name)
+                if not probe_ok:
+                    try:
+                        from jiuwenswarm.server.runtime.mcp.registry import (
+                            rollback_failed_connect,
+                        )
+                        rollback_failed_connect(name)
+                    except Exception as rollback_exc:  # noqa: BLE001
+                        logger.warning(
+                            "[mcp] rollback failed host-OAuth probe '%s': %s",
+                            name, rollback_exc,
+                        )
+                    return {
+                        "type": "auth_failed",
+                        "name": name,
+                        "error": f"MCP '{name}' rejected the authorization token",
+                    }
+                try:
+                    from jiuwenswarm.server.runtime.mcp.state_store import (
+                        set_mcp_state,
+                    )
+                    set_mcp_state(name, state="connected")
+                except Exception as flip_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp] flip host-OAuth '%s' connected failed: %s", name, flip_exc
+                    )
+                try:
+                    host._agent_manager.sync_mcp_credentials()
+                except Exception as sync_exc:  # noqa: BLE001
+                    logger.warning("[mcp] sync credentials after host OAuth failed: %s", sync_exc)
+                return {
+                    "type": "connected",
+                    "name": name,
+                    "applied": True,
+                    "item": host._mask_sensitive_fields(item),
+                }
+            await asyncio.sleep(delay)
+        return {
+            "type": "auth_failed",
+            "name": name,
+            "error": "Authorization timed out. Retry connect.",
+        }
+
+    @staticmethod
+    def _command_mcp_internal_state(request: AgentRequest) -> AgentResponse:
+        """Gateway 内部状态访问：command.mcp 的受限 action 族。
+
+        为 gateway 侧远端 provider（拆仓后 ``server_store_bridge`` 的替代）
+        暴露 MCP 连接状态/注册表/凭据三个域的原子读写。与 UI 导向的
+        list/show/add/enable/update 不同，这些响应**不脱敏**（config 视图
+        构建与凭据解析需要原始数据），因此整族 action 仅对 gateway 的
+        内部通道放行，其余通道一律拒绝。
+        """
+        if str(getattr(request, "channel_id", "") or "") != "gateway":
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": "internal MCP state actions are gateway-only",
+                    "code": "PERMISSION",
+                },
+            )
+        params = request.params if isinstance(request.params, dict) else {}
+        action = str(params.get("action", "") or "").strip().lower()
+        name = str(params.get("name", "") or "").strip()
+
+        def _ok(payload: dict[str, Any]) -> AgentResponse:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=payload,
+            )
+
+        try:
+            if action == "state_config_view":
+                # config.py 视图循环的服务端整段执行：一次往返替代逐记录
+                # is_stale/record_to_entry 的 N 次调用。
+                from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
+                from jiuwenswarm.server.runtime.mcp import state_store
+
+                entries = []
+                for rec in state_store.list_connected_mcps():
+                    rec_name = str(rec.get("name", "") or "")
+                    if not rec_name or mcp_registry.is_stale_marketplace_record(rec_name, rec):
+                        continue
+                    entry = state_store.record_to_mcp_entry(rec_name, rec)
+                    if entry is not None:
+                        entries.append(entry)
+                return _ok({"type": "state_config_view", "entries": entries})
+
+            from jiuwenswarm.server.runtime.mcp import state_store
+
+            if action == "state_list":
+                view = str(params.get("view", "connected") or "connected").strip()
+                view_map = {
+                    "connected": state_store.list_connected_mcps,
+                    "truly_connected": state_store.list_truly_connected_mcps,
+                    "connecting": state_store.list_connecting_mcps,
+                    "tui_enabled": state_store.list_tui_enabled_mcps,
+                    "registered": state_store.list_registered_mcps,
+                }
+                items = view_map.get(view, state_store.list_connected_mcps)()
+                return _ok({"type": "state_list", "view": view, "items": items})
+            if action == "state_get_record":
+                return _ok({"record": state_store.get_mcp_record(name)})
+            if action == "state_upsert":
+                record = state_store.upsert_mcp_record(
+                    name,
+                    params.get("entry") or {},
+                    state=str(params.get("state", "connected") or "connected"),
+                    integration_type=params.get("integration_type"),
+                    skills=params.get("skills"),
+                    enabled=params.get("enabled"),
+                )
+                return _ok({"record": record})
+            if action == "state_set_enabled":
+                state_store.set_mcp_enabled(name, enabled=bool(params.get("enabled")))
+                return _ok({})
+            if action == "state_remove":
+                return _ok({"record": state_store.remove_mcp_record(name)})
+            if action == "oauth_callback":
+                # 已移交异步方法 _command_mcp_oauth_callback（外部 HTTP 往返）
+                raise AssertionError("unreachable: oauth_callback dispatches to the async handler")
+            if action == "credential_get_all":
+                from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
+
+                return _ok({"tokens": CredentialStore().get_all(name)})
+            if action == "credential_resolve":
+                from jiuwenswarm.server.runtime.mcp.credential import (
+                    CredentialStore,
+                    resolve_placeholders,
+                )
+
+                resolved = resolve_placeholders(
+                    params.get("entry") or {}, CredentialStore(), name or None
+                )
+                return _ok({"entry": resolved})
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] command.mcp internal state failed: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": f"unknown internal action: {action}", "code": "MCP_BAD_REQUEST"},
+        )
+
+    async def _command_mcp_oauth_callback(self, ws: Any, request: AgentRequest) -> AgentResponse:
+        """``oauth_callback`` 的异步形态：换码经 to_thread 执行（见分发处注释）。
+
+        门控为**连接级身份**（P1 修正）：``X-Jiuwen-Gateway-Internal`` 握手
+        头部须携带与 ``JIUWENSWARM_GATEWAY_INTERNAL_TOKEN`` 一致的共享密
+        钥——头部在 WS 握手时绑定到连接，浏览器/任意客户端无法经请求
+        载荷伪造（channel_id 是载荷字段，不能作权限判据）。密钥未配置
+        时 fail-closed（内部 action 一律拒绝并给出运维指引）。
+        """
+        host = self.host
+        expected = os.getenv("JIUWENSWARM_GATEWAY_INTERNAL_TOKEN", "").strip()
+        headers = getattr(ws, "request_headers", None) or {}
+        provided = ""
+        try:
+            provided = str(headers.get("X-Jiuwen-Gateway-Internal", "") or "").strip()
+        except Exception:
+            provided = ""
+        if not expected or not provided or provided != expected:
+            logger.warning(
+                "[AgentWebSocketServer] oauth_callback rejected: gateway internal token mismatch"
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "error": "gateway internal actions require a connection-level token "
+                    "(set JIUWENSWARM_GATEWAY_INTERNAL_TOKEN on both Gateway and AgentServer)",
+                    "code": "PERMISSION",
+                },
+            )
+        params = request.params if isinstance(request.params, dict) else {}
+        try:
+            from jiuwenswarm.server.runtime.mcp import registry as mcp_registry
+
+            completed = await mcp_registry.complete_oauth_callback_async(
+                params.get("query") or {}
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={"completed": bool(completed)},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] command.mcp oauth callback failed: %s", exc)
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "MCP_INTERNAL"},
+            )
+
+    async def _handle_mcp_oauth_start(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Handle ``mcp.oauth.start`` for host-managed remote MCP OAuth.
+
+        The frontend invokes this after ``mcp.connect`` returned the OAuth
+        sentinel. The response carries the provider authorization URL; the
+        same frontend then calls ``mcp.wait_auth``, which completes when the
+        local HTTP callback exchanges the code and the live MCP probe passes.
+        """
+        host = self.host
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import (
+            McpOAuthError,
+            start_oauth_flow,
+        )
+        name = ""
+        try:
+            params = request.params or {}
+            name = str(params.get("name", "")).strip()
+            if not name:
+                raise ValueError("mcp name is required")
+            callback_url = str(params.get("callback_url", "")).strip()
+            if not callback_url:
+                raise ValueError("callback_url is required")
+            item = await asyncio.to_thread(start_oauth_flow, name, callback_url)
+            payload = {"type": "auth_required", "name": name, **host._mask_sensitive_fields(item)}
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload=payload,
+            )
+        except McpOAuthError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={
+                    "type": "connect_failed",
+                    "name": name,
+                    "error": str(exc),
+                    "code": "MCP_AUTH_FAILED",
+                },
+            )
+        except ValueError as exc:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "bad_request", "error": str(exc), "code": "MCP_BAD_REQUEST"},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[AgentWebSocketServer] mcp.oauth.start failed: %s", exc)
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
+            )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+
+
+

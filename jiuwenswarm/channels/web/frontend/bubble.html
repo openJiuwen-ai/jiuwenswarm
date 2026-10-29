@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="default" data-color-mode="light">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WorkSwarm Downloads</title>
+    <style>
+      /* 气泡宿主页：透明背景，由 DownloadPanel 自绘圆角与阴影。 */
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        overflow: hidden;
+        /* 与主应用 index.css 的基准一致（气泡入口不加载 index.css）：缺失时
+           文本继承 UA 默认字体——中文在 Windows 上落到宋体系，与主应用内
+           同一面板的字形、换行宽度、两行截断位置不一致。 */
+        font: 400 var(--font-size-base)/1.55 var(--font-body);
+        color: var(--color-text-primary);
+      }
+      /* Chromium 对表单控件使用 UA 默认字体而非继承；主应用由 index.css 的
+         同名规则兜底，这里保持一致（文件名按钮依赖它继承雅黑）。 */
+      button,
+      input,
+      textarea,
+      select {
+        font: inherit;
+        color: inherit;
+      }
+      #root {
+        width: 100vw;
+        height: 100vh;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script>
+      (function () {
+        if (!Object.hasOwn) {
+          Object.hasOwn = function (obj, prop) {
+            if (obj == null) {
+              throw new TypeError('Cannot convert undefined or null to object');
+            }
+            return Object.prototype.hasOwnProperty.call(Object(obj), prop);
+          };
+        }
+        if (typeof structuredClone !== 'function') {
+          window.structuredClone = function (value) {
+            return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+          };
+        }
+        if (!Array.prototype.at) {
+          Array.prototype.at = function (index) {
+            var len = this.length >>> 0;
+            if (index == null) index = 0;
+            if (index < 0) index += len;
+            if (index < 0 || index >= len) return undefined;
+            return this[index];
+          };
+        }
+      })();
+    </script>
+    <script type="module" src="/src/bubble/main.tsx"></script>
+  </body>
+</html>

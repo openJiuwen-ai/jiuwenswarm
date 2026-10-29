@@ -27,7 +27,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
+from gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.common.schema.agent import AgentRequest
 
 logger = logging.getLogger(__name__)
@@ -193,7 +193,7 @@ def _push_run_update(
 ) -> None:
     """Push designer.run.updated while a leader-triggered run executes.
 
-    The ``designer_run_graph`` tool call awaits the whole trigger, so the
+    The ``swarmflow`` tool call awaits the whole trigger, so the
     canvas needs the run event stream (not just the final reply) to show
     live progress — same payloads as the canvas run button path.
     """

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from jiuwenswarm.extensions.agentos.agentos_router.logutil import (
+from gateway.extensions.agentos.agentos_router.logutil import (
     agentos_extra,
     format_agentos,
     log_agentos,
@@ -69,7 +69,7 @@ def test_agentos_extra_skips_empty() -> None:
 
 
 def test_log_agentos_sets_record_extra() -> None:
-    logger = logging.getLogger("jiuwenswarm.extensions.agentos.test_logutil")
+    logger = logging.getLogger("gateway.extensions.agentos.test_logutil")
     captured: list[logging.LogRecord] = []
 
     class _Capture(logging.Handler):

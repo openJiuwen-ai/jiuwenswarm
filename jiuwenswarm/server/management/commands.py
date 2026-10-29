@@ -14,7 +14,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 from jiuwenswarm.server.runtime.session.session_history import append_history_record
 import asyncio
-from jiuwenswarm.common.mode_matrix import deprecate_mode
+from gateway.common.mode_matrix import deprecate_mode
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
 )
@@ -24,7 +24,7 @@ from jiuwenswarm.common.config import get_default_models
 from jiuwenswarm.common.config import get_mcp_servers
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.utils import mask_sensitive
 import os
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (

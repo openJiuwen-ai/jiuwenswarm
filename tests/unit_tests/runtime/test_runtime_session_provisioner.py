@@ -164,6 +164,77 @@ async def test_agent_delete_orders_release_before_dispose_and_runner(env):
 
 
 @pytest.mark.asyncio
+async def test_delete_retry_prepares_replacement_lifecycle(env):
+    (env.root / "replaced").mkdir()
+    provisioner = env.runtime._session_provisioner
+    old = provisioner._delete_lifecycle
+    old.begin_session_delete = AsyncMock()
+    old.commit_session_delete = AsyncMock()
+    await provisioner.prepare_session_delete("replaced")
+    # Reattaching the same instance must preserve its preparation.
+    provisioner.set_delete_lifecycle(old)
+    await provisioner.prepare_session_delete("replaced")
+    old.begin_session_delete.assert_awaited_once()
+
+    replacement = Lifecycle([])
+    replacement.begin_session_delete = AsyncMock()
+    replacement.commit_session_delete = AsyncMock()
+    provisioner.set_delete_lifecycle(replacement)
+    await provisioner.prepare_session_delete("replaced")
+    result = await env.runtime.delete_session(channel_id="web", session_id="replaced")
+    assert result.ok
+    replacement.begin_session_delete.assert_awaited_once_with("replaced")
+    replacement.commit_session_delete.assert_awaited_once_with("replaced")
+    old.commit_session_delete.assert_not_awaited()
+    assert not provisioner._prepared_session_deletes
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [False, True])
+async def test_team_delete_finalizes_participant_that_prepared_it(env, monkeypatch, fail):
+    sid = "replace-team-member"
+    (env.root / sid).mkdir()
+    env.metadata.update(mode="team.work.normal", team_name="replace-team")
+    provisioner = env.runtime._session_provisioner
+    original = provisioner._delete_lifecycle
+    original.begin_session_delete = AsyncMock()
+    original.abort_session_delete = AsyncMock()
+    original.commit_session_delete = AsyncMock()
+    replacement = Lifecycle([])
+    replacement.abort_session_delete = AsyncMock()
+    replacement.commit_session_delete = AsyncMock()
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(
+            get=lambda name: SimpleNamespace(session_ids=(sid,)),
+            delete=lambda name: None,
+            unbind_session=lambda **kwargs: None,
+        ),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.get_team_entity_store",
+        lambda: SimpleNamespace(exists=lambda name: True, delete_team_directory=lambda name: None),
+    )
+
+    async def replace_during_quiesce(*args, **kwargs):
+        provisioner.set_delete_lifecycle(replacement)
+        if fail:
+            raise RuntimeError("quiesce failed")
+
+    provisioner._team_execution_controller.quiesce_for_delete = replace_during_quiesce
+    result = await env.runtime.delete_team(team_name="replace-team", channel_id="web")
+    assert result.ok is not fail
+    original.begin_session_delete.assert_awaited_once_with(sid)
+    if fail:
+        original.abort_session_delete.assert_awaited_once_with(sid, channel_id="web")
+    else:
+        original.commit_session_delete.assert_awaited_once_with(sid)
+    replacement.abort_session_delete.assert_not_awaited()
+    replacement.commit_session_delete.assert_not_awaited()
+    assert not provisioner._prepared_session_deletes
+
+
+@pytest.mark.asyncio
 async def test_partial_before_is_entered_and_release_is_independent(env):
     (env.root / "s2").mkdir()
     env.participant.before_error = True

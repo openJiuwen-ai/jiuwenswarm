@@ -90,6 +90,9 @@ class WorkerRuntime:
         )
         if not all(flushed):
             raise RuntimeError("Worker shutdown persistence barrier did not complete")
+        from jiuwenswarm.server.runtime.agent_adapter.request_completion import drain_completion_announcements
+
+        await drain_completion_announcements()
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
             get_kv_cache_application_owner,
         )

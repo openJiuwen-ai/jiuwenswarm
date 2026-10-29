@@ -169,22 +169,25 @@ class RsiManagement:
         the existing baseline fallback; ``harness_id`` remains a legacy registry
         selector. Arbitrary browser-supplied paths are not resolved here.
         """
+        from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
         from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
             RsiHarnessActivationStore,
             resolve_native_harness_baseline,
         )
-        from jiuwenswarm.agents.harness.common.rsi.context import get_rsi_workspace_root
         from jiuwenswarm.common.utils import (
             get_user_workspace_dir as current_workspace_dir,
         )
-    
-        requested_id = str((params or {}).get("package_id") or "").strip()
+        requested_id = str(
+            (params or {}).get("package_id") or ""
+        ).strip()
         if requested_id:
             from jiuwenswarm.agents.harness.common.rsi.errors import RsiInvalidHarness
             from jiuwenswarm.server.runtime import (
                 extension_package_manager as equipment,
             )
-    
+
+            # Resolve the existing package selector through the same registry
+            # as chat.send. Never silently replace an explicit selection by H0.
             try:
                 if not equipment.is_plugin_allowed(requested_id):
                     raise ValueError(f"Plugin is not installed: {requested_id}")

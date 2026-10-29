@@ -10,6 +10,7 @@ export * from './todo';
 export * from './websocket';
 export * from './subagent';
 export * from './contextUsage';
+export * from './sessionTokenUsage';
 export * from '../features/workspace/projectTypes';
 
 // 会话类型
@@ -45,6 +46,7 @@ export interface Session {
   updated_at: string;
   is_active?: boolean;
   is_processing?: boolean;
+  organization_owner_stopped?: boolean;
   queued_session_messages?: Array<{
     message_id: string;
     target_session_id: string;
@@ -115,6 +117,24 @@ export type ModelReasoningCatalog = {
   protocol_defaults: Required<ModelReasoningProtocols>;
   model_fallbacks: ModelReasoningRule[];
 };
+
+export interface ChatInputProvenance {
+  input_origin: 'manual_free_text' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'pasted_or_unknown';
+  assistance_origin: 'none' | 'starter_click' | 'default_reply' | 'tab_suggestion' | 'prompt_suggestion' | 'unknown';
+  topic_starter?: {
+    manifest_id: string;
+    generation_batch_id: string;
+    exposure_id: string;
+    card_revision_id: string;
+    context_scope: string;
+    project_id: string | null;
+  };
+  // The in-conversation suggestion the user accepted, sent as it was or edited.
+  prompt_suggestion?: {
+    suggestion_id: string;
+    edited: boolean;
+  };
+}
 
 export interface ModelEntry {
   /** Backend stable model ID. Zen free models may omit this field. */
@@ -211,7 +231,7 @@ export type VendorPresetMap = Record<ModelPlan, VendorPreset[]> & {
 
 export interface VendorFetchModelsResult {
   models: string[];
-  source: 'remote' | 'preset';
+  source: 'remote' | 'preset' | 'unavailable';
   reason?: string;
 }
 

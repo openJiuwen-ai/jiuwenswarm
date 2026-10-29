@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jiuwenswarm.common.protocol_ids import validate_session_id
+from gateway.common.protocol_ids import validate_session_id
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 

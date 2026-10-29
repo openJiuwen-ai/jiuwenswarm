@@ -81,7 +81,7 @@ class ModelFactory:
         previously prepared object. Its resolved content also keys credentials
         and route overrides, so edits cannot reuse an obsolete client.
         """
-        from jiuwenswarm.common.model_selection import ModelSelection
+        from gateway.common.model_selection import ModelSelection
         from jiuwenswarm.runtime.kernel import (
             KernelIdentity,
             ResourceKey,

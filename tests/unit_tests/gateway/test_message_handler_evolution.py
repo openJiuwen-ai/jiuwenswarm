@@ -8,8 +8,8 @@ from types import SimpleNamespace
 import pytest
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.message import EventType, ReqMethod
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from openjiuwen_protocol.message import EventType, ReqMethod
+from gateway.message_handler.message_handler import MessageHandler
 
 
 _APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
@@ -264,7 +264,7 @@ def _set_evolution_auto_save(
     enabled: bool,
 ) -> None:
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         lambda _config=None: enabled,
     )
     original_init = MessageHandler.__init__
@@ -397,7 +397,7 @@ async def test_regular_stream_chunks_do_not_read_evolution_auto_save_config(
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         count_auto_save_reads,
     )
     handler = _TestMessageHandler.create()
@@ -460,7 +460,7 @@ async def test_interrupt_evolution_approval_does_not_read_auto_save_config(
         return True
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
+        "gateway.message_handler.message_handler.get_evolution_auto_save_enabled",
         count_auto_save_reads,
     )
     handler = _TestMessageHandler.create()
@@ -1273,11 +1273,11 @@ def test_error_protocols_are_mapped_to_terminal_chat_error_for_stream_and_unary(
             "is_complete": True,
         }
 
-    from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
+    from gateway.channel_manager.protocol.a2a.a2a_connect import (
         A2AChannel,
     )
-    from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.channel_manager.tui.tui_channel import TuiChannel
+    from gateway.channel_manager.web.web_connect import WebChannel
 
     web_channel = WebChannel.__new__(WebChannel)
     web_frame = web_channel._serialize_frame(stream_message)
@@ -1395,7 +1395,7 @@ async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
         }
     else:
         assert out.payload == {"error": "boom", "code": "BAD_REQUEST"}
-        from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
+        from gateway.channel_manager.tui.tui_channel import TuiChannel
 
         assert json.loads(TuiChannel._serialize_frame(object(), out)) == {
             "type": "res",
@@ -1418,7 +1418,7 @@ def test_message_handler_builds_explicit_gateway_cron_scheduler(
             captured.update(kwargs)
 
     monkeypatch.setattr(
-        "jiuwenswarm.gateway.cron.scheduler.CronSchedulerService",
+        "gateway.cron.scheduler.CronSchedulerService",
         _Scheduler,
     )
     store = object()

@@ -16,11 +16,11 @@ import socket
 
 import pytest
 
-from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
+from gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
     register_cli_handlers,
 )
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+from gateway.routing.agent_client import WebSocketAgentServerClient
 
 pytestmark = [pytest.mark.integration]
 

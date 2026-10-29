@@ -7,13 +7,14 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
+import inspect
 import time
 from typing import Any, Callable
 
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.config import get_config
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
     ExternalHarnessBindingError, load_persisted_external_harness_binding, persist_external_harness_binding,
 )
@@ -89,7 +90,8 @@ class SessionAssembler:
                 ) from self._cleanup_errors.get(sid)
             existing = self.adapters.get(sid)
             if external_harness_binding is None and existing is None:
-                external_harness_binding = self._load_binding(sid)
+                binding = self._load_binding(sid)
+                external_harness_binding = await binding if inspect.isawaitable(binding) else binding
 
             if existing is not None and external_harness_binding is not None:
                 requested_kind = external_harness_binding.get("kind")
@@ -141,7 +143,7 @@ class SessionAssembler:
                 )
 
                 metadata = get_session_metadata(sid)
-                from jiuwenswarm.common.model_selection import ModelSelection
+                from gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
 
                 # Explicit stable selections win; legacy ordinary names are also an
@@ -166,6 +168,12 @@ class SessionAssembler:
                 )
                 if busy:
                     installed_selection = getattr(existing, "_collaboration_model_selection", None)
+                    if selection is not None and not getattr(existing, "_moa_enabled", False):
+                        suffix = f":{selection.route_id}" if selection.route_id else ""
+                        reference = f"{selection.type}:{selection.id}{suffix}"
+                        cached = getattr(existing, "_stable_selection_cache", {}).get(reference)
+                        if cached is not None and cached[1] is getattr(existing, "_last_resolved_model", None):
+                            installed_selection = selection
                     explicit_switch = model_selection is not None or bool(model_name)
                     if not retain_moa_snapshot and explicit_switch and selection != installed_selection:
                         raise RuntimeError("Model selection cannot change while the session is executing")
@@ -252,6 +260,12 @@ class SessionAssembler:
                     remove_runtime_state=False,
                 )
                 existing = None
+            if (existing is not None and not is_external_harness and not busy
+                    and callable(getattr(existing, "_tool_retrieval_enable_flip_pending", None))
+                    and existing._tool_retrieval_enable_flip_pending()):
+                await existing.cleanup()
+                owner._drop_session_adapter_cache_entry(sid, remove_lock=False)
+                existing = None
             if existing is not None:
                 first_mcp_reconcile = requested_mcp_scan_names is not None and not bool(
                     getattr(
@@ -326,7 +340,9 @@ class SessionAssembler:
                 and external_harness_binding.get("kind") == "external_harness"
             ):
                 adapter._external_harness_binding = external_harness_binding  # pylint: disable=protected-access
-                self._persist_binding(sid, external_harness_binding)
+                binding_write = self._persist_binding(sid, external_harness_binding)
+                if inspect.isawaitable(binding_write):
+                    await binding_write
                 self.adapters[sid] = adapter
                 owner._session_adapter_versions[sid] = (
                     owner._session_adapter_config_version

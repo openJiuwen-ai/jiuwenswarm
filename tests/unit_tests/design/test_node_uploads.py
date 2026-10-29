@@ -111,6 +111,140 @@ def test_upload_uri_wins_over_a_stale_generated_output(tmp_path) -> None:
     assert run["node_states"]["n_character_1"]["output_ref"]["uri"] == uploaded.resolve().as_uri()
 
 
+def _replaced_upload_node(node_id: str, kind: str, uploaded, mime: str, stale) -> dict:
+    return {
+        "id": node_id,
+        "type": kind,
+        "config": {
+            "role": kind,
+            "interaction_mode": "upload",
+            "user_replaced_output": True,
+            "upload": {"filename": uploaded.name, "mime_type": mime, "uri": uploaded.resolve().as_uri()},
+        },
+        "output_ref": {"kind": kind, "uri": stale.resolve().as_uri(), "mime_type": mime},
+    }
+
+
+def test_replaced_audio_and_video_uploads_reach_the_run(tmp_path) -> None:
+    old_audio = tmp_path / "first.mp3"
+    new_audio = tmp_path / "second.mp3"
+    old_video = tmp_path / "first.mp4"
+    new_video = tmp_path / "second.mp4"
+    for path in (old_audio, new_audio, old_video, new_video):
+        path.write_bytes(b"media")
+    graph = {
+        "nodes": [
+            _replaced_upload_node("n_audio_a", "audio", new_audio, "audio/mpeg", old_audio),
+            _replaced_upload_node("n_video_a", "video", new_video, "video/mp4", old_video),
+        ]
+    }
+    run = {
+        "node_states": {
+            "n_audio_a": {
+                "status": "completed",
+                "output_ref": {"kind": "audio", "uri": old_audio.resolve().as_uri(), "mime_type": "audio/mpeg"},
+            },
+            "n_video_a": {
+                "status": "completed",
+                "output_ref": {"kind": "video", "uri": old_video.resolve().as_uri(), "mime_type": "video/mp4"},
+            },
+        }
+    }
+
+    assert apply_uploaded_outputs_to_run(run, graph) is True
+    audio_state = run["node_states"]["n_audio_a"]
+    video_state = run["node_states"]["n_video_a"]
+    assert audio_state["output_ref"] == {
+        "kind": "audio",
+        "uri": new_audio.resolve().as_uri(),
+        "mime_type": "audio/mpeg",
+    }
+    assert audio_state["output_refs"] == [audio_state["output_ref"]]
+    assert video_state["output_ref"]["kind"] == "video"
+    assert video_state["output_ref"]["uri"] == new_video.resolve().as_uri()
+    assert apply_uploaded_outputs_to_run(run, graph) is False
+
+
+def test_missing_replacement_file_leaves_the_run_alone(tmp_path) -> None:
+    old_audio = tmp_path / "first.mp3"
+    old_audio.write_bytes(b"media")
+    gone = tmp_path / "gone.mp3"
+    old_ref = {"kind": "audio", "uri": old_audio.resolve().as_uri(), "mime_type": "audio/mpeg"}
+    node = _replaced_upload_node("n_audio_a", "audio", gone, "audio/mpeg", gone)
+    run = {"node_states": {"n_audio_a": {"status": "completed", "output_ref": dict(old_ref)}}}
+
+    assert apply_uploaded_outputs_to_run(run, {"nodes": [node]}) is False
+    assert run["node_states"]["n_audio_a"]["output_ref"] == old_ref
+
+
+def test_compose_mixes_the_replaced_audio_not_the_stale_run_file(tmp_path) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.compose import _collect_role_audio_paths
+
+    old_audio = tmp_path / "first.mp3"
+    new_audio = tmp_path / "second.mp3"
+    old_audio.write_bytes(b"a" * 128)
+    new_audio.write_bytes(b"b" * 128)
+    stale_ref = {"kind": "audio", "uri": old_audio.resolve().as_uri(), "mime_type": "audio/mpeg"}
+    graph = {
+        "nodes": [
+            _replaced_upload_node("n_audio_a", "audio", new_audio, "audio/mpeg", old_audio),
+            {"id": "n_compose", "type": "video", "config": {"role": "compose"}},
+        ],
+        "edges": [{"id": "e_a", "source": "n_audio_a", "target": "n_compose", "kind": "data"}],
+    }
+    stale_run = {"node_states": {"n_audio_a": {"status": "completed", "output_ref": stale_ref}}}
+    roles = {"speech", "music", "audio"}
+
+    ctx = NodeExecutionContext(graph=graph, run_id="run_1", node_id="n_compose", run=stale_run)
+    assert _collect_role_audio_paths(ctx, roles) == [new_audio.resolve()]
+
+    never_ran = NodeExecutionContext(graph=graph, run_id="run_1", node_id="n_compose", run={"node_states": {}})
+    assert _collect_role_audio_paths(never_ran, roles) == [new_audio.resolve()]
+
+    graph["edges"] = []
+    unwired = NodeExecutionContext(graph=graph, run_id="run_1", node_id="n_compose", run=stale_run)
+    assert _collect_role_audio_paths(unwired, roles) == []
+
+
+def test_wired_upload_videos_follow_the_shots_in_wiring_order(tmp_path) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.compose import collect_clip_video_paths
+
+    shot = tmp_path / "shot1.mp4"
+    stale = tmp_path / "stale.mp4"
+    tail_b = tmp_path / "tail_b.mp4"
+    tail_a = tmp_path / "tail_a.mp4"
+    loose = tmp_path / "loose.mp4"
+    for path in (shot, stale, tail_b, tail_a, loose):
+        path.write_bytes(b"v" * 600)
+
+    def video_ref(path) -> dict:
+        return {"kind": "video", "uri": path.resolve().as_uri(), "mime_type": "video/mp4"}
+
+    graph = {
+        "nodes": [
+            {"id": "n_clip_1", "type": "video", "config": {"role": "clip", "clip_index": 1}},
+            _replaced_upload_node("n_video_a", "video", tail_a, "video/mp4", stale),
+            _replaced_upload_node("n_video_b", "video", tail_b, "video/mp4", tail_b),
+            {"id": "n_video_loose", "type": "video", "output_ref": video_ref(loose)},
+            {"id": "n_compose", "type": "video", "config": {"role": "compose", "inputs": ["n_clip_1"]}},
+        ],
+        "edges": [
+            {"id": "e_clip", "source": "n_clip_1", "target": "n_compose", "kind": "data"},
+            {"id": "e_b", "source": "n_video_b", "target": "n_compose", "kind": "data"},
+            {"id": "e_a", "source": "n_video_a", "target": "n_compose", "kind": "data"},
+        ],
+    }
+    run = {
+        "node_states": {
+            "n_clip_1": {"status": "completed", "output_ref": video_ref(shot)},
+            "n_video_a": {"status": "completed", "output_ref": video_ref(stale)},
+        }
+    }
+    ctx = NodeExecutionContext(graph=graph, run_id="run_1", node_id="n_compose", run=run)
+
+    assert collect_clip_video_paths(ctx) == [shot.resolve(), tail_b.resolve(), tail_a.resolve()]
+
+
 def test_material_upload_is_the_clip_input(tmp_path) -> None:
     clip_image = tmp_path / "clip_image.png"
     material = tmp_path / "material.png"

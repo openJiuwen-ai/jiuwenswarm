@@ -4,12 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
 import { getArchiveErrorCode } from '../../features/workspace/archivedTaskClient';
-import { useCronStore } from '../../stores';
+import { useCronStore, useWorkspaceStore } from '../../stores';
 import { projectRegistryClient } from '../../features/workspace/projectRegistryClient';
 import type { ProjectInfo } from '../../features/workspace/projectTypes';
 import type { Session } from '../../types';
 import type { CronJobDTO, CronTaskUI, CronTemplateUI } from '../../types/cron';
-import { CRON_TEMPLATES } from './constants';
+import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './constants';
 import { isTeamCronModeValue } from './cronMode';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
@@ -19,7 +19,7 @@ import CronTaskDrawer, { jobToForm, templateToForm, type CronTaskFormValue } fro
 import { resolveCronJobProjectName } from './cronProjectDisplay';
 import { useClickOutside } from './useClickOutside';
 import SimpleSelect from './SimpleSelect';
-import { hasXiaoyiPushApiId, isCronTargetOptionDisabled } from './xiaoyiCronTarget';
+import { isCronTargetOptionDisabled } from './xiaoyiCronTarget';
 import emptyIllustration from '../../assets/cron-empty.svg';
 import { PageToolbarSearch, toast } from '../ui';
 
@@ -147,12 +147,6 @@ function PaginationBar({
 // 面板上禁用停止/删除，编辑时仅 cron 表达式与时区可改，其余字段只读（沿用旧面板约束，见
 // upstream 提交 59cf6de7）。
 const PROACTIVE_AUTO_JOB_ID = 'proactive-tick-auto';
-
-// 用于展示已有任务的推送频道（含历史数据可能存在的 wecom/wechat）
-const KNOWN_TARGET_KEYS = ['web', 'tui', 'xiaoyi', 'feishu', 'dingtalk', 'whatsapp', 'wecom', 'wechat'];
-// 创建/编辑时可选的推送频道：wecom/wechat 已被 upstream 下架（见提交 e12d1952、d57567e4），
-// 不在下拉里出现，但已有数据仍按上面 KNOWN_TARGET_KEYS 正常展示
-const SELECTABLE_TARGET_KEYS = ['web', 'tui', 'xiaoyi', 'feishu', 'dingtalk', 'whatsapp'];
 
 // 执行历史目前只有"该功能即将上线"占位（等 backend-requests.md #1 的真实数据接口交付），
 // 用户要求先不在界面上露出入口（tab + 行内"运行历史"菜单项），但保留代码，等后端接口交付后
@@ -329,12 +323,12 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 在这里创建/编辑/停止/删除任务后也要通知它刷新，否则侧边栏那边的任务文件夹会显示过期数据
   const reloadCronStore = useCronStore((s) => s.reload);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
+  // 手动创建未选项目时，后端以此把任务归入 default/default_code（Issue #5713）。
+  const currentWorkMode = useWorkspaceStore((s) => s.workMode);
 
   const [jobs, setJobs] = useState<CronTaskUI[]>([]);
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [enabledChannels, setEnabledChannels] = useState<Set<string>>(new Set());
-  // 小艺推送依赖 api_id；频道已注册但未配 api_id 时仍应置灰（Issue #2497）
-  const [xiaoyiPushReady, setXiaoyiPushReady] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -597,24 +591,23 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       setEnabledChannels(new Set());
     }
 
-    try {
-      const xiaoyiPayload = await webRequest<{ config?: unknown }>('channel.xiaoyi.get_conf');
-      setXiaoyiPushReady(hasXiaoyiPushApiId(xiaoyiPayload?.config));
-    } catch {
-      // 拉不到小艺配置时保守置为不可用，避免无 api_id 仍可选
-      setXiaoyiPushReady(false);
-    }
   }, []);
 
-  const targetOptions = useMemo(
-    () =>
-      SELECTABLE_TARGET_KEYS.map((id) => ({
+  const targetOptions = useMemo(() => {
+    const options = SELECTABLE_TARGET_KEYS.map((id) => ({
         value: id,
         label: t(`cron.targets.${id}`),
-        disabled: isCronTargetOptionDisabled(id, enabledChannels, xiaoyiPushReady),
-      })),
-    [enabledChannels, t, xiaoyiPushReady],
-  );
+        disabled: isCronTargetOptionDisabled(id, enabledChannels),
+      }));
+    if (drawer?.mode === 'edit' && drawer.initial?.targets === 'xiaoyi') {
+      options.unshift({
+        value: 'xiaoyi',
+        label: t('cron.targets.xiaoyiUnsupported'),
+        disabled: true,
+      });
+    }
+    return options;
+  }, [drawer, enabledChannels, t]);
 
   useEffect(() => {
     void (async () => {
@@ -747,6 +740,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
+    // 选中真实项目时以项目自身模式为准；未选项目时用当前 UI 模式。
+    const submittingWorkMode = value.workMode
+      ?? (currentWorkMode === 'code' || currentWorkMode === 'work' ? currentWorkMode : null);
     try {
       await webRequest<{ job: CronJobDTO }>('cron.job.create', {
         name: value.name.trim(),
@@ -769,7 +765,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         ...(value.projectId ? { project_id: value.projectId } : {}),
         // 一并带上 work_mode：AgentOS 多用户下 Gateway 不再本地反查项目表，work_mode
         // 需由前端（project.list 已含 work_mode）随 project_id 下发，保证归属/展示正确。
-        ...(value.projectId && value.workMode ? { work_mode: value.workMode } : {}),
+        // 未选项目时也要带上当前模式，后端据此把空项目归到 default/default_code（#5713）。
+        ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
         ...(value.modelName ? { model_name: value.modelName } : {}),
         mode: value.mode,
         session_id: sessionId,

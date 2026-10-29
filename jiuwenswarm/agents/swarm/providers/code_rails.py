@@ -34,7 +34,7 @@ from openjiuwen.agent_teams.harness.manifest import (
 from openjiuwen.harness.prompts import resolve_language
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     is_code_profile_mode,
     is_team_mode,
     is_team_plan_mode,
@@ -315,7 +315,7 @@ def build_permission_interrupt(params: dict[str, Any], ctx: SwarmBuildContext) -
 
         # Without A4P, skip cron: the scheduler tags every cron request with
         # ``request_metadata["cron"]`` (see ``CronScheduler._stream_team_round``
-        # at jiuwenswarm/gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
+        # at gateway/cron/scheduler.py). The ``channel_id == "__cron__"``
         # fallback covers single-agent sessions where the SDK may not propagate
         # ``request_metadata`` into ``SwarmBuildContext``.
         request_meta = getattr(ctx, "request_metadata", None) or {}

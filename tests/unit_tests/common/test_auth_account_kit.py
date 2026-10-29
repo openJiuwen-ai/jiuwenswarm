@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import account_kit
-from jiuwenswarm.common.auth.account_kit import (
+from gateway.auth import account_kit
+from gateway.auth.account_kit import (
     AccountKitFlow,
     Credential,
     OAuthConfig,
@@ -29,7 +29,7 @@ def _id_token(**claims) -> str:
 
 def _remote(monkeypatch, *, effective=True, apig_base="https://apig.example.com",
             whitelist=None, blocklist=None, login=None, **apig_paths):
-    from jiuwenswarm.common.auth import remote_config
+    from gateway.auth import remote_config
 
     remote_config.set_config_for_test(remote_config.parse_config({
         "is_effective": effective,
@@ -82,7 +82,7 @@ def test_login_enabled_follows_is_effective(monkeypatch, effective):
 
 
 def test_login_disabled_when_the_config_url_is_turned_off(monkeypatch):
-    from jiuwenswarm.common.auth import remote_config
+    from gateway.auth import remote_config
 
     monkeypatch.setenv(remote_config.CONFIG_URL_ENV, "off")
     remote_config.set_config_for_test(None)

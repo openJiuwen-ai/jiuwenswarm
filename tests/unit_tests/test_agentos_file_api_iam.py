@@ -8,17 +8,20 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.channel_manager.base import RobotMessageRouter
+from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentManager,
     AgentRuntime,
 )
-from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from jiuwenswarm.gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
-from jiuwenswarm.extensions.yuanrong_frontend_client import AgentFileDownloadChunk, SandboxInfo
-from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
-from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
+from gateway.extensions.yuanrong_frontend_client import (
+    AgentFileDownloadChunk,
+    SandboxInfo,
+)
 
 
 class _FakeRegistry:

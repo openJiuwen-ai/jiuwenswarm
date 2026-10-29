@@ -13,7 +13,11 @@ import {
   selectedNodeCount,
   selectionCoversInterval,
   selectionRanges,
+  shouldShowIncludeToggle,
   toggleAgent,
+  toggleSelectAllOnLane,
+  isAgentFullySelected,
+  unionWallRange,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisSelection.mjs';
 
 const SUBJECTS = [
@@ -28,6 +32,8 @@ test('nothing is picked at first', () => {
   assert.equal(EMPTY_DIAGNOSIS_SELECTION.mode, 'none');
   assert.deepEqual(selectionRanges(EMPTY_DIAGNOSIS_SELECTION, SUBJECTS), []);
   assert.equal(hasSelection(EMPTY_DIAGNOSIS_SELECTION, SUBJECTS), false);
+  for (const subject of SUBJECTS) assert.equal(isAgentIncluded(EMPTY_DIAGNOSIS_SELECTION, subject.subjectId), false);
+  assert.equal(toggleAgent(EMPTY_DIAGNOSIS_SELECTION, 'a'), EMPTY_DIAGNOSIS_SELECTION);
 });
 
 test('a window on the axis applies to every agent', () => {
@@ -154,7 +160,7 @@ test('a pick covers the main agent interval only while that agent is included', 
   assert.equal(selectionCoversInterval(axis, 'main', { startMs: 5, endMs: 1 }, false), false);
 });
 
-test('a pick counts a node only when it contains the node whole', () => {
+test('a pick counts an OTel span only when start and end are both covered', () => {
   const lanes = [
     {
       subjectId: 'main',
@@ -172,6 +178,14 @@ test('a pick counts a node only when it contains the node whole', () => {
   assert.equal(selectedNodeCount(axis, lanes, false), 2);
   assert.equal(selectedNodeCount(toggleAgent(axis, 'a'), lanes, false), 1);
   assert.equal(selectedNodeCount(EMPTY_DIAGNOSIS_SELECTION, lanes, true), 4);
+  assert.equal(
+    selectionCoversInterval(axis, 'main', { startMs: 1_500, endMs: 2_500 }, false),
+    false,
+  );
+  assert.equal(
+    selectionCoversInterval(axis, 'main', { startMs: 1_100, endMs: 1_200 }, false),
+    true,
+  );
   const many = [{ subjectId: 'main', intervals: Array.from({ length: DIAGNOSIS_NODE_LIMIT + 1 }, () => ({
     startMs: 1_100,
     endMs: 1_200,
@@ -181,8 +195,83 @@ test('a pick counts a node only when it contains the node whole', () => {
   assert.equal(selectedNodeCount(axis, exactly, false) > DIAGNOSIS_NODE_LIMIT, false);
 });
 
+test('full-scope selected count matches the header span total from raw intervals', () => {
+  const lanes = [
+    {
+      subjectId: 'main',
+      intervals: [
+        { startMs: 1_000, endMs: 1_100 },
+        { startMs: 2_000, endMs: 2_500 },
+        { startMs: 3_000, endMs: 3_000 },
+      ],
+    },
+    { subjectId: 'a', intervals: [{ startMs: 1_500, endMs: 1_600 }] },
+    { subjectId: 'b', intervals: [] },
+  ];
+  const headerSpans = lanes.reduce((sum, lane) => sum + lane.intervals.length, 0);
+  assert.equal(headerSpans, 4);
+  assert.equal(selectedNodeCount(EMPTY_DIAGNOSIS_SELECTION, lanes, true), headerSpans);
+  assert.equal(
+    selectedNodeCount(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, window1), lanes, true),
+    headerSpans,
+  );
+});
+
 test('without a pick no scope is built unless the whole trajectory is chosen', () => {
   assert.equal(buildDiagnosisScope(EMPTY_DIAGNOSIS_SELECTION, SUBJECTS, false), null);
   const unknownOnly = selectOnLane(EMPTY_DIAGNOSIS_SELECTION, 'gone', window1);
   assert.equal(buildDiagnosisScope(unknownOnly, SUBJECTS, false), null);
+});
+
+test('unionWallRange spans every interval of one agent', () => {
+  assert.equal(unionWallRange([]), null);
+  assert.equal(unionWallRange([{ startMs: 5, endMs: 1 }]), null);
+  assert.deepEqual(
+    unionWallRange([
+      { startMs: 3_000, endMs: 3_500 },
+      { startMs: 1_000, endMs: 1_200 },
+      { startMs: 2_000, endMs: 4_000 },
+    ]),
+    { startMs: 1_000, endMs: 4_000 },
+  );
+});
+
+test('select-all puts one agent full span into lane mode', () => {
+  const full = unionWallRange([window1, window2]);
+  assert.deepEqual(full, { startMs: 1_000, endMs: 4_000 });
+  let state = selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, window1);
+  state = selectOnLane(state, 'a', full);
+  assert.equal(state.mode, 'lanes');
+  assert.deepEqual(laneRangeOf(state, 'a'), full);
+  assert.equal(laneRangeOf(state, 'main'), null);
+  assert.deepEqual(selectionRanges(state, SUBJECTS).map(item => item.subjectId), ['a']);
+  assert.equal(selectedNodeCount(state, [{
+    subjectId: 'a',
+    intervals: [window1, window2, { startMs: 1_500, endMs: 3_500 }],
+  }], false), 3);
+});
+
+test('select-all toggles the same agent full span off on a second click', () => {
+  const intervals = [window1, window2];
+  let state = toggleSelectAllOnLane(EMPTY_DIAGNOSIS_SELECTION, 'a', intervals);
+  assert.equal(isAgentFullySelected(state, 'a', intervals), true);
+  assert.deepEqual(laneRangeOf(state, 'a'), { startMs: 1_000, endMs: 4_000 });
+  state = toggleSelectAllOnLane(state, 'a', intervals);
+  assert.equal(isAgentFullySelected(state, 'a', intervals), false);
+  assert.equal(state.mode, 'none');
+  assert.equal(laneRangeOf(state, 'a'), null);
+});
+
+test('include toggle appears for axis picks and for a lane that already has a window, not for full-scope', () => {
+  assert.equal(shouldShowIncludeToggle(EMPTY_DIAGNOSIS_SELECTION, false, 'a'), false);
+  assert.equal(shouldShowIncludeToggle(selectOnAxis(EMPTY_DIAGNOSIS_SELECTION, window1), false, 'a'), true);
+  // Whole-trajectory pick keeps lane checkboxes hidden.
+  assert.equal(shouldShowIncludeToggle(EMPTY_DIAGNOSIS_SELECTION, true, 'a'), false);
+  const laneOnly = toggleSelectAllOnLane(EMPTY_DIAGNOSIS_SELECTION, 'a', [window1]);
+  assert.equal(laneOnly.mode, 'lanes');
+  // The selected lane can uncheck to clear; other lanes stay without a box.
+  assert.equal(shouldShowIncludeToggle(laneOnly, false, 'a'), true);
+  assert.equal(shouldShowIncludeToggle(laneOnly, false, 'b'), false);
+  // Without a subject id, lane mode does not show a generic toggle.
+  assert.equal(shouldShowIncludeToggle(laneOnly, false), false);
 });

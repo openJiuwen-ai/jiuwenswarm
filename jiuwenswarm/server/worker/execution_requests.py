@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
+from jiuwenswarm.server.ws_send import send_wire_payload
+
 _DIAGNOSIS_METHOD_NAMES = frozenset({
     "diagnosis.run", "diagnosis.list", "diagnosis.get", "diagnosis.cancel",
     "diagnosis.delete", "diagnosis.ttse.trigger",
@@ -37,7 +40,7 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 from jiuwenswarm.common.log_preview import preview_text
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     deprecate_mode,
     is_plan_mode,
     is_single_agent_mode,
@@ -49,7 +52,7 @@ from jiuwenswarm.common.schema.agent import (
     AgentResponseChunk,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.session_message import (
+from gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_INTERNAL_KEY,
     SESSION_MESSAGE_ORIGIN,
@@ -102,6 +105,22 @@ from jiuwenswarm.server.worker.execution_support import (
 logger = logging.getLogger("jiuwenswarm.server.agent_ws_server")
 
 _session_switch_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+
+
+_TRAJECTORY_REQ_METHODS = frozenset(
+    {
+        ReqMethod.TRAJECTORY_SUBJECTS_LIST,
+        ReqMethod.TRAJECTORY_STREAM_FRAMES_GET,
+        ReqMethod.TRAJECTORY_SEQUENCES_GET,
+        ReqMethod.TRAJECTORY_CHECKPOINTS_GET,
+        ReqMethod.TRAJECTORY_USAGE_GET,
+        ReqMethod.TRAJECTORY_SUBJECT_GET,
+        ReqMethod.TRAJECTORY_RAW_GET,
+        ReqMethod.TRAJECTORY_ARCHIVE_OPEN,
+        ReqMethod.TRAJECTORY_BLOB_READ,
+        ReqMethod.TRAJECTORY_BLOB_CLOSE,
+    },
+)
 
 
 class ExecutionRequests:
@@ -294,7 +313,7 @@ class ExecutionRequests:
                     from jiuwenswarm.server.worker.preparation import (
                         CapabilityUnavailableError,
                     )
-    
+
                     try:
                         if registry is not None:
                             await registry.ensure("sandbox")
@@ -372,21 +391,19 @@ class ExecutionRequests:
                 LifecycleError,
                 guard,
             )
-    
             guarded_params = request.params if isinstance(request.params, dict) else {}
             guarded_method = request.req_method.value if request.req_method else ""
             unguarded_methods = {
-                "session.list",
-                "project.list",
-                "project.info",
-                "project.get_sessions",
-                "project.get_cron_sessions",
-                "project.pinned_sessions",
-                "chat.cancel",
-                "session.stop",
-                "voice.task.checkpoint.ack",
+                "session.list", "project.list", "project.info", "project.get_sessions",
+                "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
+                "session.stop", "voice.task.checkpoint.ack", "recommendation.job",
             }
-            if guarded_method not in unguarded_methods:
+            # 仅广场/目录只读 RPC 跳过会话存活校验（#5886）。不要复用
+            # _is_stateless_method_request：其前缀含 skills.toggle / rebuild 等写操作。
+            if (
+                guarded_method not in unguarded_methods
+                and not self._skips_session_lifecycle_guard(request)
+            ):
                 try:
                     guard(
                         str(
@@ -453,6 +470,37 @@ class ExecutionRequests:
                 return
             if request.req_method == ReqMethod.SESSION_INPUT_INTENT:
                 await self._handle_session_input_intent(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.RECOMMENDATION:
+                await self._handle_recommendation(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.PROMPT_SUGGESTION_CANCEL:
+                from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
+                    forks,
+                )
+
+                session_id = str(request.session_id or "").strip()
+                try:
+                    cancelled = forks.cancel_suggestion(session_id) if session_id else False
+                except Exception:  # noqa: BLE001 - a failed cancel still owns the client an answer
+                    logger.warning(
+                        "[AgentWebSocketServer] cancel suggestion failed: session_id=%s",
+                        session_id,
+                        exc_info=True,
+                    )
+                    cancelled = False
+                response = AgentResponse(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    ok=bool(session_id),
+                    payload=({"cancelled": cancelled} if session_id
+                             else {"error": "session_id is required", "code": "BAD_REQUEST"}),
+                    metadata=request.metadata,
+                )
+                async with send_lock:
+                    wire_payload = encode_agent_response_for_wire(
+                        response, response_id=request.request_id
+                    )
+                    await send_wire_payload(ws, wire_payload)
                 return
             if request.req_method == ReqMethod.SESSION_MESSAGE_CONTINUE_QUEUED:
                 await self._handle_session_message_continue_queued(
@@ -595,6 +643,9 @@ class ExecutionRequests:
             if request.req_method == ReqMethod.MCP_WAIT_AUTH:
                 await self._handle_mcp_wait_auth(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.MCP_OAUTH_START:
+                await self._handle_mcp_oauth_start(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.MCP_CANCEL_CONNECT:
                 await self._handle_mcp_cancel_connect(ws, request, send_lock)
                 return
@@ -670,6 +721,9 @@ class ExecutionRequests:
             # Trajectory diagnosis: run, query and TTSE writes proxied by the Gateway.
             if request.req_method is not None and request.req_method.value in _DIAGNOSIS_METHOD_NAMES:
                 await self._handle_diagnosis_request(ws, request, send_lock)
+                return
+            if request.req_method in _TRAJECTORY_REQ_METHODS:
+                await self._handle_trajectory_request(ws, request, send_lock)
                 return
             # RSI 优化平台：16 个 rsi.* web method 统一分发（B2）
             if isinstance(
@@ -754,9 +808,9 @@ class ExecutionRequests:
                 await self._handle_agents_tools_list(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.CHAT_CANCEL:
-                if isinstance(request.params, dict) and request.params.get(
-                    "target_team_id"
-                ):
+                params = request.params if isinstance(request.params, dict) else {}
+                owner_stop = params.get("organization_owner_stop") is True or params.get("organization_stop") is True
+                if owner_stop or self._is_targeted_expert_cancel_request(request):
                     await self._handle_cancel(ws, request, send_lock)
                     return
                 if isinstance(request.params, dict) and request.params.get(
@@ -1110,15 +1164,38 @@ class ExecutionRequests:
         allow_create: bool = False,
         send_response: bool = True,
     ) -> AgentResponse:
-        """Cancel through the transport-independent Runtime operation."""
+        """Cancel through the transport-independent Runtime operation.
+
+        定向判定统一走 ``_is_targeted_expert_cancel_request``（owner 未知时也判为定向）。
+        这里若沿用严格版 ``_is_targeted_expert_request`` 重判，owner 未知的取消会在本函数里
+        翻成 False、掉进会话级取消，把 owner 团队正在跑的 turn 一起取消——与
+        ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
+        """
         params = request.params if isinstance(request.params, dict) else {}
-        if params.get("target_team_id"):
+        if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
+            resp = await self._cancel_organization(request)
+        elif self._is_targeted_expert_cancel_request(request):
             resp = await self._cancel_targeted_expert(request)
         else:
-            resp = await self._execution_runtime().cancel_request(
-                request,
-                allow_create=allow_create,
-            )
+            from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped, set_owner_stopped
+
+            resume_owner = params.get("intent") in {"resume", "supplement"} and owner_is_stopped(request.session_id)
+            if resume_owner:
+                from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                owner_id = str((get_session_metadata(request.session_id) or {}).get("team_name") or "")
+                store = owner_inbox()
+                if await asyncio.to_thread(store.enabled_at, request.session_id, owner_id) is None:
+                    await asyncio.to_thread(store.enable, request.session_id, owner_id, 0.0)
+                set_owner_stopped(request.session_id, False)
+            try:
+                resp = await self._execution_runtime().cancel_request(request, allow_create=allow_create)
+            except (Exception, asyncio.CancelledError):
+                if resume_owner:
+                    set_owner_stopped(request.session_id, True)
+                raise
+            if resume_owner and (not resp.ok or (resp.payload or {}).get("success") is False):
+                set_owner_stopped(request.session_id, True)
 
         if send_response:
             wire = self.services.encode_response(
@@ -2194,16 +2271,19 @@ class ExecutionRequests:
     ) -> None:
         """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
         session_id = self._organization_stream_key(request)
-        resume_state = await self._open_session_message_resume(request)
+        targeted_expert = self._is_targeted_expert_chat(request)
+        resume_state = None if targeted_expert else await self._open_session_message_resume(request)
         resume_outcome = "unknown"
         resume_error = "resumed turn ended before its outcome was confirmed"
         current_task = asyncio.current_task()
         stream_stop_event = asyncio.Event()
         uses_session_runtime = AgentRuntime.uses_session_runtime(request)
-        if current_task is not None and not uses_session_runtime:
-            self._session_stream_tasks.setdefault(session_id, {})[current_task] = (
-                stream_stop_event
-            )
+        if current_task is not None and (targeted_expert or not uses_session_runtime):
+            self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
+            if targeted_expert:
+                if not hasattr(self, "_expert_stream_requests"):
+                    self._expert_stream_requests = {}
+                self._expert_stream_requests[current_task] = request
 
         chunk_count = 0
         outcome_tracker = _TurnOutcomeTracker()
@@ -2225,7 +2305,16 @@ class ExecutionRequests:
             )
 
         try:
-            if self._is_targeted_expert_chat(request):
+            if targeted_expert:
+                from jiuwenswarm.server.runtime.organization_execution import (
+                    OrganizationTurn,
+                    register_turn,
+                )
+
+                register_turn(OrganizationTurn(
+                    str(request.session_id or ""), str(request.params["target_team_id"]),
+                    request.request_id, "org_expert_direct",
+                ))
                 runtime_stream = self._targeted_expert_runtime_stream(request)
             else:
                 runtime_stream = self._execution_runtime().stream(
@@ -2305,10 +2394,17 @@ class ExecutionRequests:
                     finally:
                         # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
                         entries = self._session_stream_tasks.get(session_id)
+                        getattr(self, "_expert_stream_requests", {}).pop(current_task, None)
                         if entries is not None and current_task is not None:
                             entries.pop(current_task, None)
                             if not entries:
                                 self._session_stream_tasks.pop(session_id, None)
+                        if targeted_expert:
+                            from jiuwenswarm.server.runtime.organization_execution import (
+                                unregister_turn,
+                            )
+
+                            unregister_turn()
             finally:
                 try:
                     await self._finalize_session_message_resume(
@@ -2653,6 +2749,16 @@ class ExecutionRequests:
 
         existing_team_name = str(metadata.get("team_name") or "").strip()
         if existing_team_name:
+            has_input = any(params.get(key) for key in ("content", "query", "media_items", "files", "attachments"))
+            if has_input and not params.get("attach_only") and not self._is_targeted_expert_chat(request):
+                if metadata.get("organization_owner_stopped") is True:
+                    from jiuwenswarm.server.runtime.organization_execution import set_owner_stopped
+                    from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
+
+                    store = owner_inbox()
+                    if await asyncio.to_thread(store.enabled_at, session_id, existing_team_name) is None:
+                        await asyncio.to_thread(store.enable, session_id, existing_team_name, 0.0)
+                    set_owner_stopped(session_id, False)
             params.setdefault("team_name", existing_team_name)
             template_id = str(metadata.get("team_template_id") or "").strip()
             if template_id:
@@ -2675,30 +2781,27 @@ class ExecutionRequests:
         """Build a failure through the injected host delivery contract."""
         return self.services.error_payload(request, error, code)
 
-    @staticmethod
-    def _organization_stream_key(request: AgentRequest) -> str:
+    @classmethod
+    def _organization_stream_key(cls, request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
-        session_id = request.session_id or "default"
+        # session_id 的取法三处原本不一致（`request.session_id or "default"` 与
+        # `str(request.session_id or "").strip()` 与 `request.session_id or params.get(...)`）：
+        # 取消请求只把 session_id 放在 params 里时，注册侧算出的 key 是 `<sid>::organization::<team>`，
+        # 取消侧算出的却是 `default::organization::<team>`，查表落空——专家流没被取消，
+        # 响应还可能报成功。这里统一成「请求字段优先、params 兜底」。
+        session_id = request.session_id or params.get("session_id") or "default"
         team_id = str(params.get("target_team_id") or "").strip()
-        return f"{session_id}::organization::{team_id}" if team_id else session_id
+        return (
+            f"{session_id}::organization::{team_id}"
+            if cls._is_targeted_expert_request(request) else session_id
+        )
 
-    @staticmethod
-    def _is_targeted_expert_chat(request: AgentRequest) -> bool:
+    @classmethod
+    def _is_targeted_expert_chat(cls, request: AgentRequest) -> bool:
         """Return whether chat.send explicitly targets a non-owner Team."""
         if request.req_method != ReqMethod.CHAT_SEND:
             return False
-        params = request.params if isinstance(request.params, dict) else {}
-        if not is_team_mode(params.get("mode")):
-            return False
-        team_id = str(params.get("target_team_id") or "").strip()
-        if not team_id:
-            return False
-
-        session_id = str(request.session_id or params.get("session_id") or "").strip()
-        owner_team_id = str(
-            (get_session_metadata(session_id) or {}).get("team_name") or ""
-        ).strip()
-        return team_id != owner_team_id
+        return cls._is_targeted_expert_request(request)
 
     async def _reload_after_config_save(
         self,
@@ -2809,11 +2912,11 @@ class ExecutionRequests:
         async def abort_prepared(
             primary_error: BaseException | None,
         ) -> None:
-            if (
-                runtime is None
-                or prepared is None
-                or prepared.state is not SessionProvisionState.PREPARED
-            ):
+            if runtime is None:
+                return
+            if prepared is None:
+                return
+            if prepared.state is not SessionProvisionState.PREPARED:
                 return
             try:
                 await runtime.abort_session_provision(prepared)
@@ -3222,7 +3325,6 @@ class ExecutionRequests:
         from jiuwenswarm.server.runtime.session.session_archive import (
             SessionArchiveService,
         )
-
         method = request.req_method.value if request.req_method else ""
         methods = {
             "session.archive",
@@ -3263,18 +3365,9 @@ class ExecutionRequests:
                 from jiuwenswarm.server.runtime.session.project_store import (
                     list_projects,
                 )
-
-                payload = {
-                    "projects": [
-                        dict(
-                            project_id=p.project_id,
-                            operation=lc.state("project", p.project_id).get(
-                                "operation"
-                            ),
-                        )
-                        for p in list_projects(include_hidden=True, cache_bust=True)
-                    ]
-                }
+                payload = {"projects": [dict(project_id=p.project_id,
+                            operation=lc.state("project", p.project_id).get("operation"))
+                            for p in list_projects(include_hidden=True, cache_bust=True)]}
                 known = {item["project_id"] for item in payload["projects"]}
                 directory = lc.get_agent_root_dir() / "lifecycle" / "resources"
                 for path in directory.glob("project_*.json"):
@@ -3298,7 +3391,6 @@ class ExecutionRequests:
                     from jiuwenswarm.server.runtime.session.project_store import (
                         get_project_by_id,
                     )
-
                     return lc.state("project", project_id), get_project_by_id(
                         project_id, cache_bust=True
                     )
@@ -3311,22 +3403,27 @@ class ExecutionRequests:
                 payload["hidden"] = bool(project is not None and project.hidden)
                 payload["operation"] = value.get("operation")
                 if params.get("running_sessions"):
-                    # project.remove 的移除前预检专用;cron 准入的常规查询不
-                    # 带该参数,不付全量会话扫描的成本。判定与 project.remove
-                    # 的 busy 扫描(_project_busy_sessions)完全一致。
+                    # Compatibility shim for Gateways that still run the old
+                    # project.remove precheck. New Gateways never send this
+                    # parameter, so it is not part of the new removal path.
                     if project is None or project.hidden:
                         payload["has_running_sessions"] = False
                     else:
-                        from jiuwenswarm.runtime.project_activity import (
-                            project_busy_sessions as _project_busy_sessions,
+                        from jiuwenswarm.server.runtime.gateway_adapter.project_adapter import (
+                            _project_conversation_state,
                         )
 
-                        payload["has_running_sessions"] = bool(
-                            await asyncio.to_thread(
-                                _project_busy_sessions,
-                                project_id,
-                                self._execution_runtime(),
+                        def _has_running_sessions() -> bool:
+                            return bool(
+                                _project_conversation_state(
+                                    project_id,
+                                    self._execution_runtime(),
+                                    ignore_heartbeats=True,
+                                )[1]
                             )
+
+                        payload["has_running_sessions"] = await asyncio.to_thread(
+                            _has_running_sessions
                         )
             elif method.startswith("session."):
                 ids = lc.parse_ids(params, delete=method == "session.delete")
@@ -3358,11 +3455,18 @@ class ExecutionRequests:
                         {
                             "session_id": ids[0],
                             "project_id": results[0].get("project_id", ""),
+                            # Deletion is accepted before its background
+                            # cleanup; keep the same completion contract as the
+                            # batch form so callers can tell the two apart.
+                            **{
+                                key: results[0][key]
+                                for key in ("accepted", "finalizing", "stop_pending")
+                                if key in results[0]
+                            },
                         }
                         if ok
                         else {
-                            key: value
-                            for key, value in results[0].items()
+                            key: value for key, value in results[0].items()
                             if key not in {"session_id", "ok"}
                         }
                     )
@@ -3585,3 +3689,32 @@ class ExecutionRequests:
                             "[AgentServer] session.switch abort failed: %s",
                             abort_exc,
                         )
+
+    @classmethod
+    def _skips_session_lifecycle_guard(cls, request: AgentRequest) -> bool:
+        """Return True when the RPC must not be blocked by a deleted session.
+
+        Narrower than ``_is_stateless_method_request``: that predicate only
+        means "skip adapter rebuild", and includes write methods under
+        ``skills.*`` / ``plugins.*``. This one is the session-lifecycle
+        bypass for plaza/catalog reads only.
+        """
+        if request.req_method is None:
+            return False
+        method = request.req_method.value
+        if method in cls._SESSION_LIFECYCLE_GUARD_SKIP_METHODS:
+            return True
+        return method.startswith(cls._SESSION_LIFECYCLE_GUARD_SKIP_PREFIXES)
+
+    _SESSION_LIFECYCLE_GUARD_SKIP_METHODS = frozenset({
+        "skills.list",
+        "plugins.list",
+    })
+
+    _SESSION_LIFECYCLE_GUARD_SKIP_PREFIXES = (
+        "skills.swarmskillshub.",
+        "skills.online_search.",
+    )
+
+
+

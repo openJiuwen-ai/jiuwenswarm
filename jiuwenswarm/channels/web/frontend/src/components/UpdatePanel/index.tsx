@@ -8,6 +8,7 @@ interface UpdatePanelProps {
 
 interface UpdateStatusPayload {
   current_version?: unknown;
+  current_build_date?: unknown;
   latest_version?: unknown;
   state?: unknown;
   has_update?: unknown;
@@ -217,10 +218,19 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   const hasUpdate = normalizeBoolean(status?.has_update);
   const installMode = normalizeString(status?.install_mode) || 'desktop';
   const isPipMode = installMode === 'pip';
-  const currentVersion = normalizeString(status?.current_version) || '-';
-  const latestVersion = normalizeString(status?.latest_version) || '-';
+  const currentVersionValue = normalizeString(status?.current_version);
+  const latestVersionValue = normalizeString(status?.latest_version);
+  const publishedAtValue = normalizeString(status?.published_at);
+  const currentBuildDate = normalizeString(status?.current_build_date);
+  const currentVersion = currentVersionValue || '-';
+  const latestVersion = latestVersionValue || '-';
+  // A completed check reports the latest release even when the install is
+  // already up to date, so the "latest release" info is shown whenever the
+  // backend provides it instead of only when an update is pending.
+  const hasLatestRelease = latestVersionValue.length > 0;
+  const hasPublishedAt = publishedAtValue.length > 0;
   const releaseNotes = normalizeString(status?.release_notes);
-  const publishedAt = formatPublishedAt(normalizeString(status?.published_at), i18n.language);
+  const publishedAt = formatPublishedAt(publishedAtValue, i18n.language);
   const downloadedBytes = normalizeNumber(status?.downloaded_bytes);
   const totalBytes = normalizeNumber(status?.total_bytes);
   const currentActivity = normalizeString(status?.current_activity);
@@ -284,11 +294,19 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4" data-testid="update-panel-info-grid">
           <div className="rounded-xl border border-border bg-panel-strong/70 px-4 py-3" data-testid="update-panel-info-card" data-variant="current_version">
             <div className="text-xs uppercase tracking-wide text-text-muted" data-testid="update-panel-info-card-label" data-variant="current_version">{t('updatePanel.currentVersion')}</div>
-            <div className="mt-2 font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="current_version">{currentVersion}</div>
+            <div className="mt-2 flex flex-wrap items-baseline gap-x-2 gap-y-1" data-testid="update-panel-current-build">
+              <span className="min-w-0 break-all font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="current_version">{currentVersion}</span>
+              {currentBuildDate && (
+                <span className="inline-flex items-baseline gap-2 whitespace-nowrap text-xs text-text-muted" data-testid="update-panel-build-date">
+                  <span aria-hidden="true">·</span>
+                  <span>{t('updatePanel.builtOn')} <time dateTime={currentBuildDate}>{currentBuildDate}</time></span>
+                </span>
+              )}
+            </div>
           </div>
           <div className="rounded-xl border border-border bg-panel-strong/70 px-4 py-3" data-testid="update-panel-info-card" data-variant="latest_version">
             <div className="text-xs uppercase tracking-wide text-text-muted" data-testid="update-panel-info-card-label" data-variant="latest_version">{t('updatePanel.latestVersion')}</div>
-            <div className="mt-2 font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="latest_version">{hasUpdate ? latestVersion : '-'}</div>
+            <div className="mt-2 font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="latest_version">{hasLatestRelease ? latestVersion : '-'}</div>
             {hasUpdate && normalizeString(status?.matched_asset) && (
               <div className="mt-1 text-xs font-mono text-text-muted" data-testid="update-panel-info-card-asset" data-variant="latest_version">{normalizeString(status?.matched_asset)}</div>
             )}
@@ -299,7 +317,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
           </div>
           <div className="rounded-xl border border-border bg-panel-strong/70 px-4 py-3" data-testid="update-panel-info-card" data-variant="published_at">
             <div className="text-xs uppercase tracking-wide text-text-muted" data-testid="update-panel-info-card-label" data-variant="published_at">{t('updatePanel.publishedAt')}</div>
-            <div className="mt-2 font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="published_at">{hasUpdate ? publishedAt : '-'}</div>
+            <div className="mt-2 font-semibold text-text" data-testid="update-panel-info-card-value" data-variant="published_at">{hasPublishedAt ? publishedAt : '-'}</div>
           </div>
         </div>
 
@@ -339,7 +357,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
         <div className="flex-1 flex flex-col min-h-0 rounded-xl border border-border bg-panel-strong/60 p-4" data-testid="update-panel-release-notes">
           <div className="text-xs uppercase tracking-wide text-text-muted" data-testid="update-panel-release-notes-label">{t('updatePanel.releaseNotes')}</div>
           <pre className="mt-3 flex-1 min-h-0 overflow-auto whitespace-pre-wrap break-words font-sans text-sm text-text" data-testid="update-panel-release-notes-content">
-            {loading ? t('common.loading') : hasUpdate ? (releaseNotes || t('updatePanel.noReleaseNotes')) : '-'}
+            {loading ? t('common.loading') : hasLatestRelease ? (releaseNotes || t('updatePanel.noReleaseNotes')) : '-'}
           </pre>
         </div>
 

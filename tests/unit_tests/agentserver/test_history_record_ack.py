@@ -235,7 +235,10 @@ async def test_actual_control_final_disk_error_is_not_acknowledged_and_cleanup_r
     adapter.cleanup.assert_not_awaited()
     fail = False
     await facade.cleanup()
-    assert [item["event_type"] for item in rows(target)] == ["chat.ask_user_answer", "chat.final"]
+    assert [item["event_type"] for item in rows(target)] == [
+        "chat.ask_user_answer", "chat.final", "chat.request_completed",
+    ]
+    assert rows(target)[-1]["status"] == "error"
     assert len(metadata) == 2 and not facade._control_input_executions
     adapter.cleanup.assert_awaited_once()
 

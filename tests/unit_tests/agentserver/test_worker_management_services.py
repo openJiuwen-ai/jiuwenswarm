@@ -16,6 +16,32 @@ from jiuwenswarm.server.management.facade import ManagementFacade
 from jiuwenswarm.server.management.registry import ManagementServices
 
 
+async def test_recommendation_host_retains_execution_owner_and_closes_once(monkeypatch):
+    from unittest.mock import AsyncMock, Mock
+    from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
+    from jiuwenswarm.server.runtime import recommendation_host
+
+    runtime = SimpleNamespace(
+        bind_active_requests=Mock(), bind_push=Mock(), start=AsyncMock(), shutdown=AsyncMock(),
+    )
+    factory = Mock(return_value=runtime)
+    monkeypatch.setattr(recommendation_host, "RecommendationHost", factory)
+    owner = WorkerExecutionHost.__new__(WorkerExecutionHost)
+    owner._recommendation_host = None
+    assert owner._recommendation_host_instance() is runtime
+    assert owner._recommendation_host_instance() is runtime
+    factory.assert_called_once_with()
+    runtime.bind_active_requests.assert_called_once_with(owner._recommendation_active_request_ids)
+    runtime.bind_push.assert_called_once_with(owner._push_recommendation_event)
+    await owner._start_recommendation_host()
+    assert recommendation_host.active_recommendation_host() is runtime
+    await owner._stop_recommendation_host()
+    await owner._stop_recommendation_host()
+    assert owner._recommendation_host is None
+    assert recommendation_host.active_recommendation_host() is None
+    runtime.shutdown.assert_awaited_once()
+
+
 def test_complete_ui_read_lists_do_not_load_transport_server_or_team_sdk(tmp_path):
     code = r"""
 import asyncio

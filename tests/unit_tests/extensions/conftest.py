@@ -39,6 +39,6 @@ def _agentos_workspace_root(
     constant in ``config`` (used by ``load_router_config``) is left untouched so
     config-loading tests keep asserting the real default.
     """
-    import jiuwenswarm.extensions.agentos.agentos_router.router_client as router_mod
+    import gateway.extensions.agentos.agentos_router.router_client as router_mod
 
     monkeypatch.setattr(router_mod, "DEFAULT_AGENT_WORKSPACE_ROOT", agentos_workspace_root)

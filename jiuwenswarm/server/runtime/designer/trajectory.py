@@ -9,7 +9,8 @@ Two append-only JSONL files live under ``<data dir>/.trace/designer/``:
 * ``<key>.design.jsonl`` — Designer-only records: run metadata, director and
   collaboration events, feedback and per-agent run summaries.
 
-Nothing is written unless ``trajectory_ui.enabled`` is on.
+Nothing is written unless the trajectory data plane is on
+(``trajectory_ui.diagnosis_enabled`` / synced ``enabled``).
 """
 
 from __future__ import annotations

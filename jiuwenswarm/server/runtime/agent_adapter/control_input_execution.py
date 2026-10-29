@@ -22,6 +22,10 @@ class ControlInputPorts:
     decorate_heartbeat: Callable
     decorate_cross_session: Callable
     resolve_final_timestamp: Callable
+    person_drove_turn: Callable
+    complete_history_request: Callable
+    session_message_owns_completion: Callable
+    await_history_receipt: Callable
 
 
 class ControlInputExecutionService:
@@ -42,6 +46,7 @@ class ControlInputExecutionService:
         self._exhausted = False
         self._close_lock = asyncio.Lock()
         self.closed = False
+        self.completion = None
 
     async def run(self):
         self._runner = asyncio.current_task()
@@ -79,6 +84,8 @@ class ControlInputExecutionService:
                 resolve_final_timestamp=ports.resolve_final_timestamp,
                 inherit_request_source=False,
             )
+            from jiuwenswarm.server.runtime.agent_adapter.request_completion import RequestCompletion
+            self.completion = RequestCompletion(request, self.session_id, is_team_mode=False, ports=ports)
             self._stream = adapter.process_message_stream_impl(request, inputs)
             async for chunk in self._stream:
                 payload = getattr(chunk, "payload", None)
@@ -86,8 +93,17 @@ class ControlInputExecutionService:
                     await self.history.commit_assistant_event(payload)
                 # A failed final/tool/question write propagates before this
                 # boundary can be acknowledged to the caller.
+                self.completion.observe(chunk)
                 yield chunk
             self._exhausted = True
+        except (asyncio.CancelledError, GeneratorExit):
+            if self.completion is not None:
+                self.completion.status = "cancelled"
+            raise
+        except Exception:
+            if self.completion is not None:
+                self.completion.status = "error"
+            raise
         finally:
             try:
                 await self.aclose()
@@ -115,4 +131,7 @@ class ControlInputExecutionService:
             if self._exhausted or self.history.saw_goal_stream_output:
                 await self.history.persist_pending_final_text()
             await self.history.persist_pending_reasoning()
+        if self.completion is not None:
+            self.completion.complete(self.completion.status)
+            await self.completion.wait()
         self.closed = True

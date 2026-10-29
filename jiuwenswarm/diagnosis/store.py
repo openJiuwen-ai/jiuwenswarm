@@ -21,7 +21,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.diagnosis.models import (
     DiagnosisRecord,
     DiagnosisStatus,

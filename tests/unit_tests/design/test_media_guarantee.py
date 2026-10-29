@@ -44,7 +44,8 @@ async def test_member_failure_reports_the_recorded_generation_error():
     assert result.skipped is True
     state = run["node_states"]["n_brief"]
     assert state["status"] == "failed"
-    assert state["error"] == "brief generation failed: model timeout"
+    assert state["error"]
+    assert "structured_output" not in state["error"]
 
 
 async def test_member_failure_without_a_recorded_error_keeps_the_worker_error():

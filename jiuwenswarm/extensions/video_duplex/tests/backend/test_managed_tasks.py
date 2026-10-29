@@ -10,8 +10,8 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.checkpoint import TaskCheckpoint
-from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
-from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import task_checkpoint
+from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
+from jiuwenswarm.server.runtime.video_task.rail import task_checkpoint
 
 
 class TaskAdapter(SimpleNamespace):
@@ -305,7 +305,7 @@ async def test_real_core_model_call_observes_change_through_host_binding(
         ReActAgentConfig,
     )
     from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-    from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import VoiceAgentTaskRail
+    from jiuwenswarm.server.runtime.video_task.rail import VoiceAgentTaskRail
 
     service, executor = tasks
     task = submit(service, "core-call")
@@ -384,7 +384,7 @@ async def test_real_core_model_call_observes_change_through_host_binding(
 
 
 async def test_cancelled_invocation_before_first_model_is_observed(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-during-setup")
@@ -411,7 +411,7 @@ async def test_cancelled_invocation_before_first_model_is_observed(tasks, monkey
 async def test_closed_output_waits_for_captured_native_execution(
     tasks, monkeypatch, swallowed_cancel
 ):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
     from openjiuwen.core.runner.callback.errors import AbortError
 
     service, executor = tasks

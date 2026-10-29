@@ -7,9 +7,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import session_owners
-from jiuwenswarm.common.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.gateway.message_handler.message_handler import (
+from gateway.auth import session_owners
+from openjiuwen_protocol.e2a.constants import E2A_LOGIN_REQUIRED_HINT_PARAM_KEY, E2A_MODEL_AUTH_PARAM_KEY
+from gateway.message_handler.message_handler import (
     _LOGIN_HINT_NO_OWNER,
     _LOGIN_HINT_OWNER_LOGGED_OUT,
     MessageHandler,
@@ -20,7 +20,7 @@ REF = "a" * 32
 
 @pytest.fixture(autouse=True)
 def _owners_in_tmp(monkeypatch, tmp_path):
-    monkeypatch.setattr("jiuwenswarm.common.auth.session_store.auth_dir", lambda: tmp_path)
+    monkeypatch.setattr("gateway.auth.session_store.auth_dir", lambda: tmp_path)
     session_owners.reset_for_test()
     yield
     session_owners.reset_for_test()
@@ -28,7 +28,11 @@ def _owners_in_tmp(monkeypatch, tmp_path):
 
 def _run(env, *, session_model: str = "GLM-5.2") -> dict:
     handler = SimpleNamespace(agent_client=None)
-    handler._effective_session_model = lambda sid, params: params.get("model_name") or session_model
+
+    async def _effective_session_model(sid, params, user_id=None):
+        return params.get("model_name") or session_model
+
+    handler._effective_session_model = _effective_session_model
     asyncio.run(MessageHandler._apply_session_login_owner(handler, env))
     return env.params
 
@@ -70,18 +74,18 @@ def test_feishu_reply_uses_the_session_owners_credentials(monkeypatch):
 
 
 def test_owner_auth_uses_the_existing_refresh_path(monkeypatch):
-    from jiuwenswarm.common.auth.model_catalog import LoginModel
+    from gateway.auth.model_catalog import LoginModel
 
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        "gateway.auth.model_catalog.get_models",
         lambda session_id=None, allow_refresh=True: [LoginModel("GLM-5.2", "GLM-5.2")],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.apig.resolve_apig_config",
+        "gateway.auth.apig.resolve_apig_config",
         lambda allow_refresh=True: SimpleNamespace(invoke_base_url="https://apig/v1"),
     )
     fresh = {"credential_ref": REF, "api_key": "id-new"}
-    monkeypatch.setattr("jiuwenswarm.common.auth.passthrough.refreshed_credential_for_ref", lambda ref: fresh)
+    monkeypatch.setattr("gateway.auth.passthrough.refreshed_credential_for_ref", lambda ref: fresh)
 
     owner = session_owners.SessionOwner(REF, "GLM-5.2")
     assert session_owners.login_auth_for_owner(owner) == {
@@ -111,3 +115,16 @@ def test_agent_server_uses_the_gateway_hint_for_login_required():
 
     assert _message({E2A_LOGIN_REQUIRED_HINT_PARAM_KEY: _LOGIN_HINT_NO_OWNER}) == _LOGIN_HINT_NO_OWNER
     assert _message({}) == "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+
+
+def test_login_hint_skipped_when_model_unknown():
+    """模型读取失败（None 未知）时不下登录结论，放行报文。"""
+    env = _env("tui", {"q": "hi"})
+    handler = SimpleNamespace(agent_client=None)
+
+    async def _unknown(sid, params, user_id=None):
+        return None
+
+    handler._effective_session_model = _unknown
+    asyncio.run(MessageHandler._apply_session_login_owner(handler, env))
+    assert E2A_LOGIN_REQUIRED_HINT_PARAM_KEY not in env.params

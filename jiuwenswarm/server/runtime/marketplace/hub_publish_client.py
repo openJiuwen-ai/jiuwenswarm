@@ -117,6 +117,16 @@ class PublishRequest:
                 raise ValueError("Invalid or oversized metadata")
 
 
+_MAX_ERROR_MESSAGE = 300
+
+
+def _safe_error_message(value: object) -> str:
+    """Keep one short line of Hub-provided guidance; never retain a raw body."""
+    if not isinstance(value, str):
+        return ""
+    return " ".join(value.split())[:_MAX_ERROR_MESSAGE]
+
+
 class PublishUploadError(RuntimeError):
     """Safe local error; raw response bodies and credentials are never retained."""
 
@@ -127,12 +137,14 @@ class PublishUploadError(RuntimeError):
         http_status: int | None = None,
         outcome_unknown: bool = False,
         retry_after: int | None = None,
+        message: str = "",
     ) -> None:
         super().__init__(code)
         self.code = code
         self.http_status = http_status
         self.outcome_unknown = outcome_unknown
         self.retry_after = retry_after
+        self.message = message
 
 
 class HubPublishClient:
@@ -317,11 +329,17 @@ class HubPublishClient:
         status = response.status_code
         if status != 200:
             code = "hub_request_failed"
+            message = ""
             try:
                 detail = json.loads(raw).get("detail", {})
                 candidate = detail.get("error")
                 if isinstance(candidate, str) and candidate in _KNOWN_ERRORS:
                     code = candidate
+                else:
+                    # Only an unrecognized rejection name needs the Hub's own guidance:
+                    # known codes already have curated local text, and their message may
+                    # carry user-specific data that must not be retained.
+                    message = _safe_error_message(detail.get("message"))
             except (ValueError, AttributeError, TypeError, RecursionError):
                 pass
             retry = response.headers.get("Retry-After", "")
@@ -335,6 +353,7 @@ class HubPublishClient:
                 http_status=status,
                 outcome_unknown=status == 408 or not 400 <= status < 500,
                 retry_after=retry_after,
+                message=message,
             ) from None
         try:
             payload = json.loads(raw)

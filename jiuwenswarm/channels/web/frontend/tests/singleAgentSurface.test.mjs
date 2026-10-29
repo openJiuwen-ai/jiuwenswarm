@@ -620,16 +620,25 @@ test('diagnosis view works without the trajectory view and the two switches stay
   container.remove();
 });
 
-test('diagnosis availability and its settings switch do not depend on the trajectory UI switch', () => {
+test('diagnosis is the sole experimental switch and the chat trajectory tab is gone', () => {
   const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
   const settingsSource = readFileSync(
     new URL('../src/features/settings/modules/experimental/ExperimentalSettings.tsx', import.meta.url),
+    'utf8',
+  );
+  const definitionSource = readFileSync(
+    new URL('../src/features/settings/modules/experimental/definition.ts', import.meta.url),
     'utf8',
   );
   const entry = appSource.match(/const diagnosisEntryAvailable = ([\s\S]*?);\r?\n/);
   assert.ok(entry);
   assert.doesNotMatch(entry[1], /trajectoryUiEnabled/);
   assert.match(entry[1], /trajectoryDiagnosisEnabled/);
+  assert.match(appSource, /trajectoryEnabled=\{false\}/);
+  assert.match(appSource, /requestedChatSurfaceView === 'trajectory'/);
+  assert.doesNotMatch(appSource, /useTrajectoryUiEnabled|setTrajectoryUiEnabled/);
+  assert.doesNotMatch(settingsSource, /export function TrajectoryUiSetting|setTrajectoryUiEnabled/);
+  assert.doesNotMatch(definitionSource, /TrajectoryUiSetting|trajectory-ui-enabled/);
   const diagnosisSetting = settingsSource.match(
     /export function TrajectoryDiagnosisSetting[\s\S]*?\r?\n\}\r?\n/,
   );
@@ -699,6 +708,20 @@ test('the analysis page draws single-Agent sessions as lanes on the shared axis'
   assert.match(panelSource, /const selecting = sharedTimeAxis && selection !== undefined/);
   assert.match(panelSource, /spanSelectsRange: selecting/);
   assert.match(panelSource, /agentSelection: \{/);
+  // Include checkbox only while a shared brush / full-scope pick is active.
+  assert.match(panelSource, /shouldShowIncludeToggle\(selection\.state, fullScopeSelection, subjectId\)/);
+  // Full-trajectory pick keeps lane "select all" inactive; a click narrows to that lane.
+  assert.match(panelSource, /if \(fullScopeSelection\) return false;/);
+  assert.match(
+    panelSource,
+    /toggleSelectAllOnLane\(EMPTY_DIAGNOSIS_SELECTION, subjectId, intervals\)/,
+  );
+  const workspaceSource = readFileSync(
+    new URL('../src/features/trajectory/TeamTrajectoryWorkspace.tsx', import.meta.url),
+    'utf8',
+  );
+  assert.match(workspaceSource, /showIncludeToggle === true && onToggleIncluded !== undefined/);
+  assert.match(workspaceSource, /trajectory\.diagnosis\.includeAgentHint/);
 });
 
 test('diagnosis sub-page folds finished stages and offers record management', () => {

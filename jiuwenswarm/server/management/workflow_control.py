@@ -60,9 +60,11 @@ class WorkflowControlManagement:
         channel_id = request.channel_id or "web"
         params = request.params if isinstance(request.params, dict) else {}
         run_id = params.get("run_id") or params.get("workflow_run_id")
-        from jiuwenswarm.agents.harness.team import get_team_manager
+
         from openjiuwen.agent_teams.runtime.pool import RuntimeState
         from openjiuwen.core.runner import Runner
+
+        from jiuwenswarm.agents.harness.team import get_team_manager
 
         tm = get_team_manager(channel_id)
         active_teams = await Runner.list_active_teams()

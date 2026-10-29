@@ -8,6 +8,7 @@ import asyncio
 import logging
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
@@ -23,6 +24,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     DesignerGraphNode,
     node_pipeline,
     node_clip_index,
+    video_concat_source_ids,
 )
 from jiuwenswarm.server.runtime.designer.handlers import common as handler_io
 from jiuwenswarm.server.runtime.designer.handlers.common import role_output_text
@@ -33,6 +35,8 @@ logger = logging.getLogger(__name__)
 _VIDEO_SUFFIXES = {".mp4", ".webm", ".mov", ".m4v"}
 _STREAM_SIZE = re.compile(r"Stream #0:\d+.*.*?Video:.*?(\d{2,5})x(\d{2,5})")
 _MEDIA_DURATION = re.compile(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)")
+_VIDEO_STREAM = re.compile(r"Video:\s*(\w+).*?(\d{2,5}x\d{2,5}).*?(\d+(?:\.\d+)?) fps")
+_AUDIO_STREAM = re.compile(r"Audio:\s*(\w+)")
 _CREATE_NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 
@@ -204,9 +208,10 @@ def _concat_filter(ffmpeg: str, paths: list[Path], dest: Path) -> None:
                 )
     joined_v = "".join(f"[v{index}]" for index in range(len(paths)))
     if any_audio:
-        joined_a = "".join(f"[a{index}]" for index in range(len(paths)))
+        # concat wants each segment's streams together: [v0][a0][v1][a1]...
+        joined_va = "".join(f"[v{index}][a{index}]" for index in range(len(paths)))
         filters.append(
-            f"{joined_v}{joined_a}concat=n={len(paths)}:v=1:a=1[v][a]"
+            f"{joined_va}concat=n={len(paths)}:v=1:a=1[v][a]"
         )
         map_args = ["-map", "[v]", "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
     else:
@@ -244,10 +249,29 @@ def concatenate_clip_videos(paths: list[Path], dest: Path) -> Path:
         return dest.resolve()
 
     ffmpeg = _find_ffmpeg()
-    if _try_concat_copy(ffmpeg, paths, dest):
+    # Stream copy of mismatched inputs (e.g. a user upload after the shots) can exit 0 with a broken film.
+    signatures = {_stream_signature(ffmpeg, path) for path in paths}
+    copy_safe = None in signatures or len(signatures) == 1
+    if copy_safe and _try_concat_copy(ffmpeg, paths, dest):
         return dest.resolve()
     _concat_filter(ffmpeg, paths, dest)
     return dest.resolve()
+
+
+def _stream_signature(ffmpeg: str, path: Path) -> tuple[str, str, str, str] | None:
+    """Video codec / size / fps and audio codec, as printed by ``ffmpeg -i``; None when unreadable."""
+    probed = _run_ffmpeg(ffmpeg, ["-i", str(path.resolve())])
+    text = f"{probed.stderr or ''}\n{probed.stdout or ''}"
+    video = _VIDEO_STREAM.search(text)
+    audio = _AUDIO_STREAM.search(text)
+    if video is None:
+        return None
+    return (
+        video.group(1),
+        video.group(2),
+        video.group(3),
+        audio.group(1) if audio else "",
+    )
 
 
 def _video_path_from_ref(ref: object, *, ffmpeg: str | None = None) -> Path | None:
@@ -417,12 +441,37 @@ def collect_clip_video_paths(ctx: NodeExecutionContext) -> list[Path]:
             "以下视频片段尚未生成，无法成片（全部镜头必须进入成片）："
             + "、".join(missing)
         )
-    return paths
+    return [*paths, *_connected_extra_video_paths(ctx, paths)]
+
+
+def _connected_extra_video_paths(ctx: NodeExecutionContext, taken: list[Path]) -> list[Path]:
+    """Non-clip videos wired into this node (e.g. user uploads), appended after the shots in wiring order."""
+    by_id = {
+        str(node.get("id") or ""): node
+        for node in (ctx.graph.get("nodes") or [])
+        if isinstance(node, dict)
+    }
+    seen = {str(path.resolve()) for path in taken}
+    extras: list[Path] = []
+    for source_id in video_concat_source_ids(ctx.graph, str(ctx.node_id or "")):
+        node = by_id.get(source_id) or {}
+        if node_pipeline(node) == NODE_ROLE_CLIP or source_id.startswith("n_clip"):
+            continue
+        found = handler_io.node_output_video_paths(ctx, source_id)
+        if not found:
+            logger.warning("compose skipped wired video %s: no video file", source_id)
+            continue
+        for path in found:
+            key = str(path.resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            extras.append(path)
+    return extras
 
 
 def _collect_role_audio_paths(ctx: NodeExecutionContext, roles: set[str]) -> list[Path]:
     """Collect real audio files directly connected to this compose node."""
-    states = (ctx.run or {}).get("node_states") or {}
     connected = {
         str(edge.get("source") or "")
         for edge in (ctx.graph.get("edges") or [])
@@ -442,16 +491,8 @@ def _collect_role_audio_paths(ctx: NodeExecutionContext, roles: set[str]) -> lis
         role = node_pipeline(node) or str(node.get("type") or "")
         if nid not in connected or role not in roles:
             continue
-        state = states.get(nid) if isinstance(states.get(nid), dict) else {}
-        refs: list[dict] = []
-        if isinstance(state.get("output_ref"), dict):
-            refs.append(state["output_ref"])
-        for r in state.get("output_refs") or []:
-            if isinstance(r, dict):
-                refs.append(r)
-        for ref in refs:
-            path = _audio_path_from_ref(ref)
-            if path is not None:
+        for path in handler_io.node_output_audio_paths(ctx, nid):
+            if path.stat().st_size > 64:
                 found.append(path)
                 break
     return found
@@ -781,13 +822,15 @@ class ComposeNodeHandler:
             len(paths),
             ctx.run_id,
         )
+        # A fresh name per execution: reusing one path lets the canvas keep showing the cached old film.
+        stem = f"designer_compose_{ctx.run_id}_{secrets.token_hex(4)}"
         dest = handler_io.canvas_output_dir(
             ctx.graph if isinstance(ctx.graph, dict) else None
-        ) / f"designer_compose_{ctx.run_id}.mp4"
+        ) / f"{stem}.mp4"
         merged = concatenate_clip_videos(paths, dest)
         scored = mix_compose_soundtrack(
             merged,
-            dest.parent / f"designer_compose_{ctx.run_id}_bgm.mp4",
+            dest.parent / f"{stem}_bgm.mp4",
             ctx=ctx,
             brief=role_output_text(ctx, NODE_ROLE_BRIEF) or "",
         )

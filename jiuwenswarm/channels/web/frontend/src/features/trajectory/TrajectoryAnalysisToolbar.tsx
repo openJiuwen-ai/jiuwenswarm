@@ -1,7 +1,7 @@
 /** Controls on the trajectory tab of the analysis page. */
 
 import { memo, useEffect, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown, Download, FileUp } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TrajectoryArchiveActions, TrajectoryLaneScale } from './TrajectoryPanel';
 import { IconQuestionOutline14, IconSearchOutline16 } from './primitives/icons/index.tsx';
@@ -67,8 +67,15 @@ export const TrajectoryAnalysisToolbar = memo(function TrajectoryAnalysisToolbar
     };
   }, [foldsOpen, scaleOpen]);
 
+  const replayLabel = archiveActions?.replayLabel ?? null;
+
   return (
     <div className={css.root} data-testid="trajectory-analysis-toolbar">
+      {replayLabel === null || replayLabel === '' ? null : (
+        <span className={css.replay} data-testid="trajectory-archive-replay-label" title={replayLabel}>
+          {replayLabel}
+        </span>
+      )}
       <div className={css.menu} ref={scaleRef}>
         <button
           type="button"
@@ -154,21 +161,25 @@ export const TrajectoryAnalysisToolbar = memo(function TrajectoryAnalysisToolbar
       </div>
       <button
         type="button"
-        className={css.menuButton}
+        className={css.icon}
         disabled={archiveActions === null || archiveActions.importing}
+        aria-label={archiveActions?.importLabel ?? t('trajectory.analysis.toolbar.import')}
+        title={archiveActions?.importLabel ?? t('trajectory.analysis.toolbar.import')}
         onClick={() => archiveActions?.requestImport()}
         data-testid="trajectory-archive-import"
       >
-        {archiveActions?.importLabel ?? t('trajectory.analysis.toolbar.import')}
+        <FileUp size={16} strokeWidth={1.75} aria-hidden />
       </button>
       <button
         type="button"
-        className={css.menuButton}
+        className={css.icon}
         disabled={archiveActions === null || archiveActions.exportDisabled}
+        aria-label={archiveActions?.exportLabel ?? t('trajectory.analysis.toolbar.export')}
+        title={archiveActions?.exportLabel ?? t('trajectory.analysis.toolbar.export')}
         onClick={() => archiveActions?.requestExport()}
         data-testid="trajectory-archive-export"
       >
-        {archiveActions?.exportLabel ?? t('trajectory.analysis.toolbar.export')}
+        <Download size={16} strokeWidth={1.75} aria-hidden />
       </button>
       {archiveActions?.replayActive === true ? (
         <button

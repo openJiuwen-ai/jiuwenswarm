@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -13,6 +13,14 @@ from jiuwenswarm.agents.harness.team.expert_org.launcher import (
     JiuwenExpertTeamLauncher,
     _align_spec_storage,
 )
+
+
+@pytest.fixture(autouse=True)
+def isolate_organization_identity_store(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_organization_identity_store.team_home",
+        lambda name: tmp_path / name,
+    )
 
 
 @pytest.mark.asyncio
@@ -41,6 +49,47 @@ async def test_only_summary_errors_notify_organization_runtime(monkeypatch, sour
 
 
 @pytest.mark.asyncio
+async def test_relay_subagent_usage_snapshot_read_is_offloaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep, team_helpers
+    from jiuwenswarm.server.runtime.session import session_token_usage
+
+    loop_thread = threading.get_ident()
+    read_threads: list[int] = []
+
+    def _read_usage(session_id: str) -> dict[str, Any]:
+        read_threads.append(threading.get_ident())
+        return {"revision": 1, "session_id": session_id}
+
+    monkeypatch.setattr(team_helpers, "_is_leader_output", lambda _chunk: True)
+    monkeypatch.setattr(team_helpers, "_is_teammate_output", lambda _chunk: False)
+    monkeypatch.setattr(session_token_usage, "get_session_token_usage", _read_usage)
+    monkeypatch.setattr(interface_deep, "append_history_record", lambda **_kwargs: None)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+
+    await launcher._relay_expert_chunk(
+        SimpleNamespace(
+            type="subagent_updated",
+            role="leader",
+            payload={
+                "subagent_updated": {
+                    "parent_session_id": "parent-session",
+                    "subagent_id": "child-session",
+                    "status": "running",
+                }
+            },
+        ),
+        team_id="team-1",
+        session_id="parent-session",
+        channel_id="web",
+        round_id="round-1",
+    )
+
+    assert read_threads and all(thread_id != loop_thread for thread_id in read_threads)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("source", [
     "org_expert_background", "org_summary_background", "org_root_background", "org_root_delivery",
 ])
@@ -50,8 +99,8 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     import json
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
@@ -231,7 +280,7 @@ def agent_group_loader(monkeypatch: pytest.MonkeyPatch, tmp_path):
         _resolve,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.swarm.agent_group.load_agent_group_package_bundle",
+        "openjiuwen.agent_teams.experts.load_agent_group_package_bundle",
         _load,
     )
     return calls
@@ -262,6 +311,27 @@ def test_align_spec_storage_uses_donor_connection_string(monkeypatch: pytest.Mon
 
 
 @pytest.mark.asyncio
+async def test_expert_spec_snapshots_group_name_without_changing_team_alias(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.agents.swarm import assembly
+    from jiuwenswarm.server.runtime import extension_package_manager as catalog
+
+    identity = {"id": "asset", "name": "expert-group", "display_name": "专家团"}
+    monkeypatch.setattr(TeamManager, "load_default_team_spec", lambda _: _FakeSpec("owner"))
+    monkeypatch.setattr(catalog, "resolve_agent_group_display_identity", lambda _: identity)
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", lambda *args, **kwargs: None)
+    spec = await JiuwenExpertTeamLauncher()._build_enriched_spec(
+        team_id="expert", session_id="session", agent_group_name="expert-group",
+        agent_group_package=SimpleNamespace(capabilities=("analysis",)),
+        display_name="Team alias",
+    )
+    assert spec.metadata["team_group_identity"] == identity
+    assert spec.metadata["agent_group_name"] == "expert-group"
+    assert spec.metadata["display_name"] == "Team alias"
+    assert spec.metadata["capabilities"] == ["analysis"]
+
+
+@pytest.mark.asyncio
 async def test_launch_creates_resolvable_team(
     monkeypatch: pytest.MonkeyPatch, agent_group_loader
 ) -> None:
@@ -284,6 +354,11 @@ async def test_launch_creates_resolvable_team(
     assert launched.team_id.startswith("org-expert-")
     assert len(launched.team_id.removeprefix("org-expert-")) == 12
     assert launched.agent_group_name == "sample-expert-group"
+    from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+
+    assert load_organization_team_identity(launched.team_id) == {
+        "agent_group_name": "sample-expert-group", "display_name": "Sample",
+    }
     assert launched.leader_id == f"leader-{launched.team_id}"
     assert launched.capabilities == ("frontend",)
     assert launched.to_dict()["team_id"] == launched.team_id
@@ -294,7 +369,39 @@ async def test_launch_creates_resolvable_team(
     pooled = await runtime.pool.get(launched.team_id)
     assert pooled is not None
     assert pooled.agent.team_backend.team_name == launched.team_id
-    assert agent_group_loader == {"resolve": 1, "load": 1}
+    assert agent_group_loader == {"resolve": 2, "load": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [PermissionError("read only"), OSError("disk full"), ValueError("invalid identity"), RuntimeError("unexpected sidecar failure")])
+async def test_identity_write_failure_does_not_rollback_activated_team(monkeypatch, error):
+    from jiuwenswarm.agents.harness.team.expert_org import launcher as launcher_module
+
+    warnings = Mock(wraps=launcher_module.logger.warning)
+    monkeypatch.setattr(launcher_module.logger, "warning", warnings)
+    runtime = _FakeRuntime(_FakeDb())
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
+
+    async def build(**kwargs):
+        return _FakeSpec(kwargs["team_id"])
+
+    def fail(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(launcher, "_build_enriched_spec", build)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.expert_org.launcher.save_organization_team_identity", fail
+    )
+    launched = await launcher.launch(
+        organization_id="org", agent_group_name="sample-expert-group", session_id="session"
+    )
+    assert await runtime.pool.get(launched.team_id) is not None
+    assert runtime.pause_calls == [(launched.team_id, "session")]
+    assert runtime.stop_calls == []
+    assert any(
+        "identity persistence failed" in call.args[0] and launched.team_id in call.args[1:]
+        for call in warnings.call_args_list
+    )
 
 
 @pytest.mark.asyncio
@@ -671,8 +778,8 @@ async def test_org_turn_closes_only_owner_processing(
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
     from jiuwenswarm.server.runtime.session import session_metadata
 
@@ -729,16 +836,18 @@ async def test_org_turn_closes_only_owner_processing(
 
     pushes = [call.args[0] for call in transport.send_push.call_args_list]
     event_types = [push["payload"]["event_type"] for push in pushes]
-    assert event_types == ["chat.final", "org.turn_completed"] + (
-        ["chat.processing_status"] if ends_owner_processing else []
-    )
+    assert event_types == ["chat.processing_status", "chat.final", "org.turn_completed", "chat.processing_status"]
+    assert pushes[0]["payload"]["is_processing"] is True
+    assert pushes[-1]["payload"]["is_processing"] is False
+    assert pushes[0]["payload"]["request_id"] == pushes[-1]["payload"]["request_id"]
+    assert pushes[-1]["payload"]["source"] == source
     if ends_owner_processing:
         wire = build_server_push_wire(pushes[-1])
         chunk = parse_agent_server_wire_chunk(wire)
         message = MessageHandler._chunk_to_message(chunk, "sess-1")
         browser_event = WebChannel._build_event_payload(message, "chat.processing_status")
         assert browser_event["is_processing"] is False
-        assert browser_event["is_complete"] is True
+        assert browser_event.get("is_complete", False) is False
         assert browser_event["team_id"] == team_id
 
 
@@ -750,8 +859,8 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
     from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
-    from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+    from gateway.channel_manager.web.web_connect import WebChannel
+    from gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     class Agent:
@@ -791,9 +900,10 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     assert ok is (ending != "error")
     pushes = [call.args[0] for call in transport.send_push.call_args_list]
     assert [push["payload"]["event_type"] for push in pushes] == [
-        "chat.final", "chat.reasoning", "chat.error" if ending == "error" else "org.turn_completed",
+        "chat.processing_status", "chat.final", "chat.reasoning",
+        "chat.error" if ending == "error" else "org.turn_completed", "chat.processing_status",
     ]
-    terminal = pushes[-1]
+    terminal = pushes[-2]
     assert terminal["is_complete"] is False  # Do not close the shared Owner subscription.
     chunk = parse_agent_server_wire_chunk(build_server_push_wire(terminal))
     message = MessageHandler._chunk_to_message(chunk, "session")
@@ -804,7 +914,41 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     if ending != "error":
         channel = object.__new__(WebChannel)
         channel._session_busy = {"session": True}
+        channel._expert_processing_requests = {}
         channel._track_session_busy(message)
         assert channel.is_session_busy("session") is True
     runtime.finalize.assert_awaited_once()
     runtime.activate.return_value.session.post_run.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failed", [False, True])
+@pytest.mark.parametrize("source", ["org_expert_direct", "org_expert_background"])
+async def test_cleanup_push_failure_preserves_turn_result_and_unregisters(monkeypatch, failed, source):
+    from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+    from jiuwenswarm.server.runtime.organization_execution import active_turns
+
+    async def stream(inputs, session):
+        if failed:
+            raise RuntimeError("model failed")
+        if False:
+            yield None
+    agent = SimpleNamespace(spec=SimpleNamespace(metadata={"expert_team": True, "channel_id": "web"}), stream=stream)
+    entry = SimpleNamespace(agent=agent, current_session_id="session", state=RuntimeState.PAUSED)
+    runtime = SimpleNamespace(pool=SimpleNamespace(get=AsyncMock(return_value=entry)), finalize=AsyncMock(),
+                              activate=AsyncMock(return_value=SimpleNamespace(agent=agent,
+                                  action=SimpleNamespace(kind=RunActionKind.RESUME_FROM_PAUSE),
+                                  session=SimpleNamespace(post_run=AsyncMock()))))
+    async def send(push):
+        if push["payload"].get("is_processing") is False:
+            raise OSError("connection closed during cleanup")
+        return True
+    transport = SimpleNamespace(send_push=AsyncMock(side_effect=send))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime, push_transport=transport)
+    monkeypatch.setattr(launcher, "_flush_expert_history", AsyncMock())
+    monkeypatch.setattr(launcher, "_persist_expert_history", AsyncMock())
+    assert await launcher.run_organization_turn("expert", "session", {}, source=source) is not failed
+    assert active_turns("session") == []
+    ids = [call.args[0]["request_id"] for call in transport.send_push.call_args_list]
+    assert len(ids) == len(set(ids))

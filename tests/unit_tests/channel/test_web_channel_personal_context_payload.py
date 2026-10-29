@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.schema.message import Message
-from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+from openjiuwen_protocol.message import Message
+from gateway.channel_manager.web.web_connect import WebChannel
 
 
 @pytest.mark.parametrize(

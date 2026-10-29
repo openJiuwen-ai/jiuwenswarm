@@ -12,7 +12,11 @@ const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { createShareImageExporter } = require('./share_image_export.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
+const { createBrowserDownloadService } = require('./browser_downloads.cjs');
+const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
+const { createShutdownReceipt, completeShutdownReceipt, recordShutdownOutcome } = require('./update_shutdown.cjs');
 let macUpdateInProgress = false;
+let updateShutdownReceipt = null;
 
 const BACKEND_HOST = '127.0.0.1';
 const FRONTEND_HOST = '127.0.0.1';
@@ -193,13 +197,23 @@ const sessionLastUrls = new Map();
 const BROWSER_SESSION_URLS_FILENAME = 'browser-session-urls.json';
 const SESSION_URLS_SAVE_DEBOUNCE_MS = 2_000;
 let sessionUrlsSaveTimer = null;
+// 下载历史持久化（对齐 Chrome 的下载记录跨重启保留），存储于 userData。
+const BROWSER_DOWNLOADS_FILENAME = 'browser-downloads.json';
+const DOWNLOADS_SAVE_DEBOUNCE_MS = 2_000;
+let downloadsSaveTimer = null;
+let pendingDownloadsPayload = null;
 let activePaneSessionId = '';
+// Stay hidden until the renderer has loaded the saved browser.headless setting.
+let browserHeadless = true;
 let lastBrowserBounds = null;
 let browserTargetResolver = null;
 let currentFrontendUrl = '';
+// 下载气泡（Chrome 式）：原生子视图悬浮在浏览器内容之上，懒创建、跨面板复用。
+let downloadBubble = null;
 let shuttingDown = false;
 let shutdownComplete = false;
 let shutdownPromise = null;
+let finalShutdownPromise = null;
 let requestedExitCode = 0;
 const serviceProcesses = new Map();
 // Resolved session port group (null before startWebService / FrontendOnly mode).
@@ -265,7 +279,7 @@ function serviceCommand(name, extraArgs = []) {
   }
   const moduleNames = {
     agent: 'jiuwenswarm.server.app_agentserver',
-    gateway: 'jiuwenswarm.gateway.app_gateway',
+    gateway: 'gateway.app_gateway',
     web: 'jiuwenswarm.channels.web.app_web',
     lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
   };
@@ -385,7 +399,8 @@ function spawnService(name, ports, extraArgs = []) {
       // Keep the process-group identity until Electron exits. A uv wrapper can
       // exit before its Python descendants, and deleting this entry would make
       // the final cleanup lose ownership of that group.
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }
   });
   child.once('error', error => {
@@ -506,8 +521,14 @@ function watchBackendPair(agentProcess, gatewayProcess) {
       agentExited,
       gatewayExited,
     });
-    if (agentExited && gatewayProcess.exitCode === null) void terminateService(gatewayProcess);
-    if (gatewayExited && agentProcess.exitCode === null) void terminateService(agentProcess);
+    if (agentExited && gatewayProcess.exitCode === null) {
+      void terminateService(gatewayProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
+    if (gatewayExited && agentProcess.exitCode === null) {
+      void terminateService(agentProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
   }, 250);
 }
 
@@ -742,7 +763,10 @@ async function startBackendServices({ ports, webProcess, webReady }) {
     ]);
   } catch (error) {
     for (const child of [webProcess, agentProcess, gatewayProcess]) {
-      if (child) void terminateService(child);
+      if (child) {
+        void terminateService(child).catch(error =>
+          console.error('[electron] background service cleanup incomplete', error));
+      }
     }
     throw error;
   }
@@ -761,9 +785,25 @@ function signalServiceTree(child, signal) {
   try {
     if (process.platform === 'win32') {
       if (serviceProcesses.get('agent') === child) {
-        const { command, args } = serviceCommand('lifecycle', ['--detach-front', String(child.pid)]);
+        const timeout = signal === 'SIGKILL' ? SERVICE_KILL_TIMEOUT_MS : SERVICE_SHUTDOWN_TIMEOUT_MS;
+        const { command, args } = serviceCommand('lifecycle', [
+          '--detach-front', String(child.pid), '--timeout', String(timeout / 1000),
+          ...(signal === 'SIGKILL' ? ['--force'] : []),
+        ]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
-        helper.on('error', error => console.error('[electron] Front detach helper failed', error));
+        child.frontDetachPromise = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            helper.kill();
+            reject(new Error('Front detach helper exceeded deadline'));
+          }, timeout);
+          helper.once('error', error => { clearTimeout(timer); reject(error); });
+          helper.once('exit', code => {
+            clearTimeout(timer);
+            if (code === 0) resolve();
+            else reject(new Error(`Front detach incomplete (exit=${code})`));
+          });
+        });
+        void child.frontDetachPromise.catch(error => console.error('[electron] Front detach helper failed', error));
         helper.unref();
         return true;
       }
@@ -814,14 +854,28 @@ function waitForServiceTreeExit(child, timeoutMs) {
 }
 
 async function terminateService(child) {
-  if (!child?.pid || !serviceTreeRunning(child)) return;
-  signalServiceTree(child, 'SIGTERM');
-  if (await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS)) return;
+  if (!child?.pid) return;
+  if (!serviceTreeRunning(child)) {
+    await child.frontDetachPromise;
+    return;
+  }
+  const signaled = signalServiceTree(child, 'SIGTERM');
+  try {
+    if (!signaled) throw new Error('Failed to start service shutdown');
+    const stopped = await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS);
+    await child.frontDetachPromise;
+    if (stopped) return;
+  } catch (error) {
+    console.warn('[electron] graceful Front detach incomplete', error);
+    if (!serviceTreeRunning(child)) throw error;
+  }
 
   console.warn(`[electron] service tree ${child.pid} did not stop after SIGTERM; forcing shutdown`);
-  signalServiceTree(child, 'SIGKILL');
-  if (!(await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS))) {
-    console.error(`[electron] service tree ${child.pid} is still running after SIGKILL`);
+  if (!signalServiceTree(child, 'SIGKILL')) throw new Error('Failed to start forced service shutdown');
+  const stopped = await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS);
+  await child.frontDetachPromise;
+  if (!stopped) {
+    throw new Error(`Service tree ${child.pid} is still running after SIGKILL`);
   }
 }
 
@@ -833,22 +887,38 @@ function stopServices() {
     console.log(`[electron] stopping ${name} service tree`, { pid: child.pid });
   }
   const deadline = Date.now() + RUNTIME_SHUTDOWN_TIMEOUT_MS;
-  shutdownPromise = Promise.allSettled(services.map(([, child]) => terminateService(child))).then(async results => {
+  shutdownPromise = Promise.allSettled(services.map(async ([, child]) => {
+    await terminateService(child);
+    if (serviceTreeRunning(child)) throw new Error(`Service tree ${child.pid} is still running`);
+  })).then(async results => {
+    let failure = null;
     for (const result of results) {
-      if (result.status === 'rejected') console.error('[electron] service shutdown failed', result.reason);
+      if (result.status === 'rejected') {
+        console.error('[electron] service shutdown failed', result.reason);
+        failure ||= result.reason;
+      }
     }
     if (services.some(([name]) => name === 'agent')) {
       const remaining = Math.max(1, deadline - Date.now());
       const { command, args } = serviceCommand('lifecycle', ['--shutdown-worker', '--timeout', String(remaining / 1000)]);
       const agent = services.find(([name]) => name === 'agent')[1];
-      await new Promise(resolve => {
-        const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent.spawnEnvironment || process.env });
-        const timer = setTimeout(() => { console.error('[electron] Worker shutdown helper exceeded deadline'); helper.kill(); resolve(); }, remaining + 500);
-        helper.once('error', error => { clearTimeout(timer); console.error('[electron] Worker shutdown failed', error); resolve(); });
-        helper.once('exit', code => { clearTimeout(timer); if (code !== 0) console.error('[electron] Worker shutdown incomplete', { code }); resolve(); });
-      });
+      try {
+        await new Promise((resolve, reject) => {
+          const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent.spawnEnvironment || process.env });
+          const timer = setTimeout(() => { helper.kill(); reject(new Error('Worker shutdown helper exceeded deadline')); }, remaining + 500);
+          helper.once('error', error => { clearTimeout(timer); reject(error); });
+          helper.once('exit', code => {
+            clearTimeout(timer);
+            if (code !== 0) reject(new Error(`Worker shutdown incomplete (exit=${code})`));
+            else resolve();
+          });
+        });
+      } catch (error) {
+        failure ||= error;
+      }
     }
     serviceProcesses.clear();
+    if (failure) throw failure;
   });
   return shutdownPromise;
 }
@@ -1129,13 +1199,35 @@ function emitLayoutInvalidated() {
   }
 }
 
+// 地址栏输入分流：看起来像主机名才导航，否则交给必应搜索。
+// 只看有没有空格不够：纯中文裸词（如"清华大学"）会被 WHATWG URL 解析成
+// xn-- punycode 假域名（https://xn--xkry9kk1bz66a/），DNS 必然失败。
+function looksLikeBrowserHost(raw) {
+  // 显式 http(s) 优先于空白判定：含字面空格的 URL（如复制自邮件正文的
+  // https://example.com/foo bar）应交给 URL 解析器编码成 %20 正常导航，
+  // 而不是拿去检索——旧实现的豁免语义（/\s/ && !/^https?:\/\//）必须保留。
+  if (/^https?:\/\//i.test(raw)) return true;
+  if (/\s/.test(raw)) return false;
+  if (/^about:/i.test(raw)) return true;
+  // IPv4：每段需 ≤255（WHATWG 会拒绝 999.1.1.1 这类地址，Chrome 对其走搜索）。
+  if (/^\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?(?:[/?#].*)?$/.test(raw)) {
+    return raw.split(/[/:?#]/)[0].split('.').every(octet => Number(octet) <= 255);
+  }
+  if (/^localhost(?::\d+)?(?:[/?#].*)?$/i.test(raw)) return true;
+  // 主机名需含点号 + TLD（标签允许中文域名字符，允许末尾 FQDN 点）；
+  // "清华大学"这类裸词走搜索。
+  return /^(?:[a-z\d\u00a1-\uffff](?:[a-z\d\u00a1-\uffff-]*[a-z\d\u00a1-\uffff])?\.)+[a-z\u00a1-\uffff]{2,}\.?(?::\d+)?(?:[/?#].*)?$/i.test(raw);
+}
+
 function normalizeBrowserTarget(rawValue) {
   const raw = String(rawValue || '').trim();
   if (!raw) return 'about:blank';
-  if (/\s/.test(raw) && !/^https?:\/\//i.test(raw)) {
+  if (!looksLikeBrowserHost(raw)) {
     return `https://cn.bing.com/search?q=${encodeURIComponent(raw)}`;
   }
-  const candidate = /^[a-z][a-z\d+.-]*:/i.test(raw) ? raw : `https://${raw}`;
+  // 仅认 http(s)/about 为显式协议；example.com:8080、localhost:3000 里的冒号
+  // 是端口分隔符，之前会被误判成协议导致解析抛错。
+  const candidate = /^(?:https?|about):/i.test(raw) ? raw : `https://${raw}`;
   const parsed = new URL(candidate);
   if (!['https:', 'http:', 'about:'].includes(parsed.protocol)) {
     throw new Error(`Unsupported browser URL protocol: ${parsed.protocol}`);
@@ -1216,6 +1308,51 @@ function scheduleSessionUrlsSave() {
   }, SESSION_URLS_SAVE_DEBOUNCE_MS);
 }
 
+// 下载历史：读写 userData/browser-downloads.json。服务每次变更传入最新快照，
+// 这里只负责防抖落盘与退出冲刷；记录的校验与状态迁移在 browser_downloads.cjs。
+function browserDownloadsStorePath() {
+  return path.join(app.getPath('userData'), BROWSER_DOWNLOADS_FILENAME);
+}
+
+function loadStoredDownloads() {
+  try {
+    const parsed = JSON.parse(fsSync.readFileSync(browserDownloadsStorePath(), 'utf8'));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    // 首次启动或文件损坏：从空历史开始，不影响任何启动路径。
+    return [];
+  }
+}
+
+function persistDownloadsRecords(records) {
+  pendingDownloadsPayload = records;
+  scheduleDownloadsSave();
+}
+
+function saveStoredDownloads() {
+  if (downloadsSaveTimer) {
+    clearTimeout(downloadsSaveTimer);
+    downloadsSaveTimer = null;
+  }
+  if (!pendingDownloadsPayload) return;
+  const payload = pendingDownloadsPayload;
+  pendingDownloadsPayload = null;
+  try {
+    fsSync.mkdirSync(app.getPath('userData'), { recursive: true });
+    fsSync.writeFileSync(browserDownloadsStorePath(), JSON.stringify(payload, null, 2), 'utf8');
+  } catch (error) {
+    console.warn('[electron] failed to persist browser download records', error);
+  }
+}
+
+function scheduleDownloadsSave() {
+  if (downloadsSaveTimer) return;
+  downloadsSaveTimer = setTimeout(() => {
+    downloadsSaveTimer = null;
+    saveStoredDownloads();
+  }, DOWNLOADS_SAVE_DEBOUNCE_MS);
+}
+
 function evictIdleBrowserViews(preserveSessionId) {
   // 上限保护：桌面长会话里视图不能无限累积；优先回收最久未用且未显示的。
   // 被回收视图的最后页面 URL 已由 recordLastUrl 记入 sessionLastUrls，
@@ -1265,6 +1402,8 @@ async function ensureBrowserView(sessionId, lease = null) {
     },
   });
   mainWindow.contentView.addChildView(view);
+  // 浏览器视图追加在 contentView 顶层，若下载气泡正显示会被盖住，重新置顶。
+  downloadBubble?.raise();
   const entry = {
     ...identity, view, targetId: '', crashCount: 0, lastActive: Date.now(), visible: false,
     creating: true, leases: new Map(), ready: null,
@@ -1282,7 +1421,7 @@ async function ensureBrowserView(sessionId, lease = null) {
   view.setBounds({ x: 0, y: 0, ...entry.viewportSize });
   view.setVisible(false);
   applyBrowserBounds(entry, lastBrowserBounds?.width > 0 && lastBrowserBounds?.height > 0
-    ? lastBrowserBounds : { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height });
+    ? lastBrowserBounds : { x: 0, y: 0, width: contentBounds.width, height: contentBounds.height }, 'create-init');
   if (lease) entry.leases.set(lease.leaseId, lease.ownerPid);
   browserViews.set(key, entry);
   entry.ready = initializeBrowserView(entry).catch(error => {
@@ -1306,6 +1445,10 @@ async function initializeBrowserView(entry) {
   for (const eventName of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) {
     view.webContents.on(eventName, () => emitBrowserState(entry));
   }
+  // 点击浏览器页面（气泡外区域）时收起下载气泡，对齐 Chrome 气泡的外点关闭。
+  view.webContents.on('input-event', (_event, input) => {
+    if (input.type === 'mouseDown' && downloadBubble?.isVisible()) downloadBubble.hide();
+  });
   // 记录最后浏览的页面：视图被 LRU 回收后重建时据此还原，而不是回到默认页。
   // 仅记录 http(s)；about:blank#jiuwen-session 标记页与空白态不入册。
   const recordLastUrl = () => {
@@ -1367,9 +1510,12 @@ async function initializeBrowserView(entry) {
   return entry;
 }
 
-function applyBrowserBounds(entry, bounds) {
+function applyBrowserBounds(entry, bounds, source = 'unknown') {
   if (!entry?.view || !mainWindow || mainWindow.isDestroyed()) return { x: 0, y: 0, width: 0, height: 0 };
-  if (!(Number(bounds?.width) > 0 && Number(bounds?.height) > 0)) return entry.view.getBounds();
+  if (!(Number(bounds?.width) > 0 && Number(bounds?.height) > 0)) {
+    console.log('[browser-bounds]', 'skip-invalid', { panelId: entry.panelId, source, requested: bounds });
+    return entry.view.getBounds();
+  }
   const contentBounds = mainWindow.getContentBounds();
   // Renderer rectangles are expressed in CSS pixels. Electron View bounds
   // use device-independent pixels, which only match CSS pixels at 100% zoom.
@@ -1380,7 +1526,11 @@ function applyBrowserBounds(entry, bounds) {
   const y = Math.max(0, Math.min(scaledY, contentBounds.height));
   const width = Math.max(0, Math.min(Math.round((Number(bounds?.width) || 0) * zoomFactor), contentBounds.width - x));
   const height = Math.max(0, Math.min(Math.round((Number(bounds?.height) || 0) * zoomFactor), contentBounds.height - y));
-  if (width === 0 || height === 0) return entry.view.getBounds();
+  if (width === 0 || height === 0) {
+    console.log('[browser-bounds]', 'skip-clamped-zero', { panelId: entry.panelId, source, requested: bounds, clamped: { x, y, width, height } });
+    return entry.view.getBounds();
+  }
+  console.log('[browser-bounds]', 'apply', { panelId: entry.panelId, source, requested: bounds, applied: { x, y, width, height }, zoomFactor });
   entry.view.setBounds({ x, y, width, height });
   // Native hidden views can have a zero layout viewport on Windows. Keep the
   // renderer's desktop viewport in sync with the pane even when not displayed.
@@ -1402,9 +1552,19 @@ function hideBrowserView(entry) {
   entry.view.setVisible(false);
 }
 
+function setBrowserHeadless(headless) {
+  if (typeof headless !== 'boolean') throw new TypeError('headless must be boolean');
+  browserHeadless = headless;
+  if (headless) {
+    activePaneSessionId = '';
+    for (const entry of browserViews.values()) hideBrowserView(entry);
+  }
+  return browserHeadless;
+}
+
 function setBrowserPaneVisible(sessionId, visible, focus = true) {
   const key = normalizeBrowserSessionId(sessionId);
-  if (!visible) {
+  if (!visible || browserHeadless) {
     const entry = browserViews.get(key);
     if (entry) {
       hideBrowserView(entry);
@@ -1422,10 +1582,10 @@ function setBrowserPaneVisible(sessionId, visible, focus = true) {
   // 视图可能尚未创建（首次切到 browser 页签）：创建完成后兜底应用边界与可见性。
   void ensureBrowserView(key)
     .then(entry => {
-      if (!entry || activePaneSessionId !== key) return;
+      if (!entry || browserHeadless || activePaneSessionId !== key) return;
       entry.visible = true;
       entry.view.setVisible(true);
-      if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds);
+      if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds, 'activate-cache');
       // focus=false 用于模态弹窗关闭后的恢复显示：不抢主窗口焦点。
       if (entry.visible && focus) entry.view.webContents.focus();
       emitBrowserState(entry);
@@ -1645,7 +1805,7 @@ async function showStartupFailure(error) {
     requestShutdown(1);
     return;
   }
-  void stopServices();
+  void stopServices().catch(error => console.error('[electron] startup cleanup incomplete', error));
   let status;
   try {
     const records = await loadStartupFailures();
@@ -1685,7 +1845,11 @@ async function showStartupFailure(error) {
 }
 
 function trustedSender(event) {
-  return Boolean(mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents);
+  if (!(mainWindow && !mainWindow.isDestroyed())) return false;
+  if (event.sender === mainWindow.webContents) return true;
+  // 下载气泡是主窗口 contentView 上的原生子视图，复用同一套 browser IPC。
+  const bubbleWebContents = downloadBubble?.getWebContents();
+  return Boolean(bubbleWebContents && event.sender === bubbleWebContents);
 }
 
 function registerHandler(channel, handler) {
@@ -2232,7 +2396,8 @@ function runStartupDoctor() {
     };
     const timer = setTimeout(() => {
       console.warn('[electron] startup doctor timed out');
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }, STARTUP_DOCTOR_TIMEOUT_MS);
     child.once('exit', finish);
     child.once('error', error => {
@@ -2705,12 +2870,14 @@ function registerIpcHandlers() {
       try {
         const { launchMacUpdate } = require('./macos_update.cjs');
         const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
-        await launchMacUpdate({
+        const update = await launchMacUpdate({
           installerPath: target, executable: process.execPath, parentPid: process.pid,
+          backendExecutable: serviceCommand('lifecycle').command,
           childPids: [...serviceProcesses.values()].map(child => child.pid).filter(Number.isInteger),
           ports: Object.values(sessionPorts), updatesDir: path.join(dataRoot, '.updates'),
           logDir: path.join(dataRoot, 'logs'), arch: process.arch,
         });
+        updateShutdownReceipt = update.shutdownReceipt;
         void requestShutdown(0);
         return true;
       } catch (error) {
@@ -2720,6 +2887,9 @@ function registerIpcHandlers() {
       }
     }
     if (canUseBackendUpdateHelper()) {
+      const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
+      const receipt = await createShutdownReceipt(path.join(dataRoot, '.updates'));
+      updateShutdownReceipt = receipt;
       // Windows packaged builds delegate to the bundled backend's update
       // helper (workswarm.exe --desktop-install-update): it waits for this
       // process to exit and for the backend/frontend ports to release before
@@ -2732,6 +2902,7 @@ function registerIpcHandlers() {
         '--parent-pid', String(process.pid),
         '--backend-port', String(sessionPorts.gatewayApi),
         '--frontend-port', String(sessionPorts.frontend),
+        '--shutdown-receipt', receipt,
       ], {
         cwd: serviceWorkingDirectory(),
         env: { ...process.env },
@@ -2741,13 +2912,11 @@ function registerIpcHandlers() {
         shell: false,
       });
       helper.once('error', error => {
+        if (updateShutdownReceipt === receipt) updateShutdownReceipt = null;
         console.error('[electron] failed to launch backend update helper', error);
-        // Helper could not be spawned: fall back to opening the installer
-        // directly (dev-equivalent behavior) instead of leaving the app
-        // running with no update at all.
-        void shell.openPath(target).then(errorMessage => {
-          if (!errorMessage) setTimeout(() => requestShutdown(0), 250);
-        });
+        void dialog.showMessageBox({ type: 'error', message: 'Failed to launch update installer. Please try again.' })
+          .catch(error => console.error('[electron] failed to display update error', error));
+        void completeShutdownReceipt(receipt, false).catch(error => console.error('[electron] update receipt failed', error));
       });
       helper.once('spawn', () => {
         setTimeout(() => requestShutdown(0), 250);
@@ -2804,10 +2973,74 @@ function registerIpcHandlers() {
   registerHandler('browser:set-visible', (visible, sessionId, focus) => {
     return setBrowserPaneVisible(sessionId, Boolean(visible), focus !== false);
   });
+  registerHandler('browser:set-headless', setBrowserHeadless);
   registerHandler('browser:set-bounds', (bounds, sessionId) => {
     lastBrowserBounds = bounds;
     const entry = browserViews.get(normalizeBrowserSessionId(sessionId));
     return applyBrowserBounds(entry, bounds);
+  });
+  // Shared-browser-partition download tracking: will-download is bound to the
+  // session (not a single view), so all browser panels share one history —
+  // the data source of the Chrome-style download bubble.
+  const browserDownloadService = createBrowserDownloadService({
+    openPath: target => shell.openPath(target),
+    getDownloadsPath: () => app.getPath('downloads'),
+    // 系统文件类型图标（与资源管理器一致）：按扩展名解析后转 data URL 下发。
+    getFileIcon: async filePath => {
+      const icon = await app.getFileIcon(filePath, { size: 'large' });
+      return icon.toDataURL();
+    },
+    showInFolder: filePath => shell.showItemInFolder(filePath),
+    // 已完成下载的文件存在性检查（Chrome 式"已删除"标记）；文件被移动/删除后
+    // 列表实时打标，打开与定位动作直接拒绝。
+    pathExists: filePath => fsSync.existsSync(filePath),
+    // 下载历史跨重启保留：启动时恢复，变更后防抖落盘，退出前冲刷。
+    storage: { load: loadStoredDownloads, save: persistDownloadsRecords },
+  });
+  // Only the download bubble consumes the list (DownloadPanel subscribes via
+  // onDownloadsChanged); the main window renderer has no subscriber, so it is
+  // not pushed — the payload carries icon data URLs and streams at notify
+  // cadence during active downloads.
+  const pushDownloads = downloads => {
+    const webContents = downloadBubble?.getWebContents();
+    if (webContents && !webContents.isDestroyed()) {
+      webContents.send('browser:downloads-changed', downloads);
+    }
+  };
+  browserDownloadService.attach(session.fromPartition(SHARED_BROWSER_PARTITION), pushDownloads);
+  registerHandler('browser:list-downloads', () => browserDownloadService.list({ freshPresence: true }));
+  registerHandler('browser:download-action', (downloadId, requestedAction) =>
+    browserDownloadService.action(downloadId, requestedAction));
+  registerHandler('browser:open-download', downloadId => browserDownloadService.openDownload(downloadId));
+  registerHandler('browser:show-download-in-folder', downloadId => browserDownloadService.revealInFolder(downloadId));
+  registerHandler('browser:remove-download', downloadId => browserDownloadService.remove(downloadId));
+  registerHandler('browser:open-downloads-folder', () => browserDownloadService.openFolder());
+  // Chrome 式下载气泡：原生子视图悬浮在浏览器内容之上，浏览器页面无需隐藏。
+  downloadBubble = createDownloadBubbleController({
+    WebContentsView,
+    preloadPath: path.join(__dirname, 'preload.cjs'),
+    getWindow: () => mainWindow,
+    getFrontendOrigin: () => currentFrontendUrl,
+    getDesktopLockToken: () => (VITE_DEV_MODE ? '' : desktopLockToken),
+    getZoomFactor: () => mainWindow?.webContents.getZoomFactor() ?? 1,
+    getContentBounds: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow.getContentBounds() : { x: 0, y: 0, width: 0, height: 0 }),
+    onVisibilityChanged: visible => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('browser:download-bubble-changed', visible);
+      }
+    },
+  });
+  registerHandler('browser:show-download-bubble', anchorRect => {
+    downloadBubble.show(anchorRect);
+    // The bubble view is reused across toggles (navigated only once), so its
+    // panel does not remount on reopen. Push a fresh list so records changed
+    // while hidden — e.g. a completed file deleted in Explorer showing Chrome's
+    // "已删除" marker — appear immediately on reopen.
+    pushDownloads(browserDownloadService.list({ freshPresence: true }));
+  });
+  registerHandler('browser:hide-download-bubble', () => {
+    downloadBubble.hide();
+    return true;
   });
 }
 
@@ -2850,6 +3083,8 @@ async function createMainWindow() {
     setTimeout(emitLayoutInvalidated, 0);
   });
   mainWindow.on('closed', () => {
+    // 主窗口关闭即应用退出(单窗口):显式回收下载气泡视图,避免依赖退出兜底。
+    downloadBubble?.destroy();
     mainWindow = null;
   });
   mainWindow.webContents.on('before-input-event', (event, input) => {
@@ -3008,13 +3243,20 @@ app.on('before-quit', event => {
   quitRequested = true;
   if (shutdownComplete) return;
   event.preventDefault();
+  if (finalShutdownPromise) return;
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
-  void Promise.all([abortAllBlobSaves(), stopServices()]).finally(() => {
-    shutdownComplete = true;
-    destroyTray();
-    app.exit(requestedExitCode);
-  });
+  // 冲刷下载历史，保证重启后下载记录完整。
+  saveStoredDownloads();
+  finalShutdownPromise = recordShutdownOutcome(updateShutdownReceipt, () => Promise.all([abortAllBlobSaves(), stopServices()]))
+    .catch(error => {
+      requestedExitCode = Math.max(1, requestedExitCode);
+      console.error('[electron] final shutdown incomplete; update is blocked', error);
+    }).finally(() => {
+      shutdownComplete = true;
+      destroyTray();
+      app.exit(requestedExitCode);
+    });
 });
 app.on('activate', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;

@@ -43,7 +43,7 @@ class ExtensionAdapterHookServices:
         await sync_conversation_context(harness, session_id)
 
     async def install_task_rail(self, harness: Any, rail: Any, *, reload: bool = False) -> Any:
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.rail import install_task_rail
+        from jiuwenswarm.server.runtime.video_task.rail import install_task_rail
 
         return await install_task_rail(harness, rail, reload=reload)
 
@@ -54,7 +54,7 @@ class ExtensionAdapterHookServices:
         if request.channel_id != "video_tool":
             yield
             return
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_execution
+        from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 
         async with bind_task_execution(request, adapter, inputs):
             yield
@@ -62,21 +62,21 @@ class ExtensionAdapterHookServices:
     async def bind_task_output(self, rail: Any, request: Any, stream: Any) -> None:
         if rail is None:
             return
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import bind_task_output
+        from jiuwenswarm.server.runtime.video_task.execution import bind_task_output
 
         return await bind_task_output(rail, request, stream)
 
     async def close_task_output(self, rail: Any, request: Any) -> None:
         if rail is None:
             return
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.execution import close_task_output
+        from jiuwenswarm.server.runtime.video_task.execution import close_task_output
 
         return await close_task_output(rail, request)
 
     @staticmethod
     def _context(request: Any, *, assistant_message: str | None = None):
         from jiuwenswarm.common.utils import get_agent_home_dir
-        from jiuwenswarm.extensions.hooks_context import MemoryHookContext
+        from jiuwenswarm.common.hooks_context import MemoryHookContext
 
         fields = dict(
             session_id=request.session_id or "default",
@@ -91,8 +91,8 @@ class ExtensionAdapterHookServices:
         return MemoryHookContext(**fields)
 
     async def before_memory(self, request: Any) -> str:
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from gateway.extensions.registry import ExtensionRegistry
 
         context = self._context(request)
         await ExtensionRegistry.get_instance().trigger(
@@ -101,8 +101,8 @@ class ExtensionAdapterHookServices:
         return "\n\n".join(block for block in context.memory_blocks if block)
 
     async def after_memory(self, request: Any, assistant_message: str) -> None:
-        from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
-        from jiuwenswarm.extensions.registry import ExtensionRegistry
+        from jiuwenswarm.common.hook_event import AgentServerHookEvents
+        from gateway.extensions.registry import ExtensionRegistry
 
         await ExtensionRegistry.get_instance().trigger(
             AgentServerHookEvents.MEMORY_AFTER_CHAT,

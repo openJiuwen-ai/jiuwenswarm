@@ -1,5 +1,26 @@
 import type { CronTemplateUI } from '../../types/cron';
 
+// 用于展示已有任务的推送频道（含历史数据可能存在的 tui/wecom/wechat）
+export const KNOWN_TARGET_KEYS: readonly string[] = [
+  'web',
+  'tui',
+  'xiaoyi',
+  'feishu',
+  'dingtalk',
+  'whatsapp',
+  'wecom',
+  'wechat',
+];
+
+// 创建/编辑时可选的推送频道：tui/wecom/wechat 已下架（wecom/wechat 见 e12d1952、d57567e4；tui 见 #5747），
+// 不在下拉里出现，但已有数据仍按上面 KNOWN_TARGET_KEYS 正常展示
+export const SELECTABLE_TARGET_KEYS: readonly string[] = [
+  'web',
+  'feishu',
+  'dingtalk',
+  'whatsapp',
+];
+
 // 沿用旧 CronPanel/index.tsx 的时区选项列表
 export const TIMEZONE_OPTIONS = [
   'Asia/Shanghai',

@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
+import runpy
 import shlex
 import sys
 from dataclasses import asdict, dataclass
@@ -22,6 +24,13 @@ import tomllib
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_CONFIG_PATH = Path("jiuwenswarm/common/_build_config.py")
+
+
+def write_build_metadata(path: Path, version: str) -> None:
+    """Compatibility entrypoint for the selected source's metadata contract."""
+    source_root = Path(os.environ.get("WORKSWARM_SOURCE_ROOT") or PROJECT_ROOT)
+    helper = runpy.run_path(str(source_root / "jiuwenswarm" / "common" / "worker_build_identity.py"))
+    helper["write_build_metadata"](path, version)
 
 
 def _emit(message: str, stream: TextIO) -> None:

@@ -84,7 +84,6 @@ export function mergeAgentDetailWithCatalog(
     runtimePackageName: catalogItem.runtimePackageName,
     ...(catalogItem.hubAssetId ? { hubAssetId: catalogItem.hubAssetId } : {}),
     displayName: catalogItem.displayName,
-    description: catalogItem.description,
     category: catalogItem.category,
     source: catalogItem.source,
     installed: catalogItem.installed,
@@ -107,7 +106,6 @@ export function mergeAgentGroupDetailWithCatalog(
     id: catalogItem.id,
     name: catalogItem.name,
     displayName: catalogItem.displayName,
-    description: catalogItem.description,
     category: catalogItem.category,
     source: catalogItem.source,
     installed: catalogItem.installed,
@@ -142,7 +140,7 @@ export function buildCatalogViewModel(
     if (!query) {
       return true;
     }
-    if (options.scope === 'mine') return matchesAssetName(query, item.searchNames ?? [item.displayName]);
+    if (options.scope === 'mine') return matchesAssetName(query, [item.displayName]);
     return `${item.displayName} ${item.description} ${item.category}`.toLocaleLowerCase().includes(query);
   });
   return {
@@ -168,7 +166,7 @@ export function buildGroupCatalogViewModel(
       && item.installed !== (options.installation === 'installed')) return false;
     if (options.scope === 'catalog' && !matchesGroupCategory(options.category, item.category)) return false;
     if (!query) return true;
-    if (options.scope === 'mine') return matchesAssetName(query, item.searchNames ?? [item.displayName]);
+    if (options.scope === 'mine') return matchesAssetName(query, [item.displayName]);
     const tags = item.tags.map(tag => tag.label).join(' ');
     return `${item.name} ${item.displayName} ${item.description} ${item.category} ${tags}`
       .toLocaleLowerCase()

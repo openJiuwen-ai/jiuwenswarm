@@ -176,6 +176,11 @@ def _source_paths(package: Path) -> list[Path]:
                     paths.append(Path(entry.path))
 
     scan(package)
+    # Runtime extension infrastructure moved to the sibling Gateway package.
+    # Its imported Python must participate in reattachment identity as well.
+    gateway = package.parent / "gateway"
+    if package.name == "jiuwenswarm" and gateway.is_dir():
+        scan(gateway)
     return sorted(paths)
 
 
@@ -380,7 +385,8 @@ def _compute(package: Path, cache_path: Path | None) -> str:
             for name in tracked:
                 if name in current:
                     continue
-                if (name.startswith(package.name + "/") and name.endswith(".py")) or name in dependencies:
+                source_prefixes = (package.name + "/", "gateway/") if package.name == "jiuwenswarm" else (package.name + "/",)
+                if (name.startswith(source_prefixes) and name.endswith(".py")) or name in dependencies:
                     dirty.append(name)
         identity = _fingerprint(canonical, files, dependencies, version)
         payload = {"schema": _SCHEMA, "checkout": canonical, "version": version,

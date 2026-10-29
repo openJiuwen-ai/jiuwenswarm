@@ -21,6 +21,8 @@ export function SettingsPage({
   request,
   onHasChangesChange,
   onDetectExternalCli,
+  onValidateExternalCliPaths,
+  onPruneExternalCliPathHistories,
   onSelectExternalCliPath,
   onTrackExternalCliDependencyInstalls,
   externalCliInstallStatuses,
@@ -30,6 +32,9 @@ export function SettingsPage({
   onExternalCliPendingChoicesChange,
   externalCliDetectResults,
   onExternalCliDetectResultsChange,
+  recommendationFocus,
+  onCorrectRecommendation,
+  onRecommendationEnabledChange,
   initialModuleId,
   sidebar,
 }: {
@@ -39,6 +44,8 @@ export function SettingsPage({
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
+  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
+  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
@@ -62,6 +69,9 @@ export function SettingsPage({
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
+  recommendationFocus?: number | null;
+  onCorrectRecommendation?: (text: string) => void;
+  onRecommendationEnabledChange?: (enabled: boolean) => void;
   initialModuleId?: SettingsModuleTarget;
   sidebar?: SettingsSidebarControls;
 }) {
@@ -72,6 +82,8 @@ export function SettingsPage({
       request={request}
       onHasChangesChange={onHasChangesChange}
       onDetectExternalCli={onDetectExternalCli}
+      onValidateExternalCliPaths={onValidateExternalCliPaths}
+      onPruneExternalCliPathHistories={onPruneExternalCliPathHistories}
       onSelectExternalCliPath={onSelectExternalCliPath}
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}
       externalCliInstallStatuses={externalCliInstallStatuses}
@@ -81,6 +93,9 @@ export function SettingsPage({
       onExternalCliPendingChoicesChange={onExternalCliPendingChoicesChange}
       externalCliDetectResults={externalCliDetectResults}
       onExternalCliDetectResultsChange={onExternalCliDetectResultsChange}
+      recommendationFocus={recommendationFocus}
+      onCorrectRecommendation={onCorrectRecommendation}
+      onRecommendationEnabledChange={onRecommendationEnabledChange}
     >
       <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} sidebar={sidebar} />
     </SettingsServicesProvider>

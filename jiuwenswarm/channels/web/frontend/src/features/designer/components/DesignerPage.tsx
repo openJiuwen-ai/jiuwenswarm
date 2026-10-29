@@ -1,21 +1,25 @@
-import { LayoutPanelTop, Loader2, MapPinned, PanelLeft, Route, RouteOff } from 'lucide-react';
+import { Loader2, PanelLeft } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import chatOrbIcon from '../../../assets/designer/xiaoyi-app-icon.png';
-import {
-  collectDesignerMaterials,
-  collectPendingRevisions,
-} from '../designerMaterials';
+import { collectDesignerMaterials } from '../designerMaterials';
 import { useDesignerChatStore } from '../designerChatStore';
 import { seedDesignerChatHistory } from '../designerEntry';
 import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { isDesignerModerationError } from '../designerRunView';
+import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerAssetUrl';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import {
+  ArrangeNodesIcon,
+  HideEdgesIcon,
+  MinimapIcon,
+  ShowEdgesIcon,
+} from '../designerIcons';
+import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import { DesignerMaterialViewer } from '../DesignerMaterialViewer';
-import { DesignerRevisionChooser } from '../DesignerRevisionChooser';
 import { DesignerDeleteNodeDialog } from './controls/DesignerDeleteNodeDialog';
 import { DesignerZoomMenu } from './DesignerZoomMenu';
 import { DesignerAssetsSidebar } from './DesignerAssetsSidebar';
@@ -93,14 +97,11 @@ export function DesignerPage({
   const run = useDesignerRunStore((state) => state.run);
   const runError = useDesignerRunStore((state) => state.runError);
   const runWarning = useDesignerRunStore((state) => state.runWarning);
-  const chooseOutput = useDesignerRunStore((state) => state.chooseOutput);
   const selectedMaterialId = useDesignerUiStore((state) => state.selectedMaterialId);
   const viewerOpen = useDesignerUiStore((state) => state.viewerOpen);
-  const chooserNodeId = useDesignerUiStore((state) => state.chooserNodeId);
   const editRequestKey = useDesignerUiStore((state) => state.editRequestKey);
   const setSelectedMaterialId = useDesignerUiStore((state) => state.setSelectedMaterialId);
   const closeViewer = useDesignerUiStore((state) => state.closeViewer);
-  const closeRevision = useDesignerUiStore((state) => state.closeRevision);
   const resetUi = useDesignerUiStore((state) => state.reset);
   const chatSidebarOpen = useDesignerUiStore((state) => state.chatSidebarOpen);
   const assetsSidebarOpen = useDesignerUiStore((state) => state.assetsSidebarOpen);
@@ -198,26 +199,6 @@ export function DesignerPage({
     () => collectDesignerMaterials(domainGraph, run),
     [domainGraph, run],
   );
-  const pendingRevisions = useMemo(
-    () => collectPendingRevisions(domainGraph, run),
-    [domainGraph, run],
-  );
-  const autoPromotedRef = useRef(new Set<string>());
-  useEffect(() => {
-    const runId = run?.run_id;
-    if (!runId || run?.status === 'running') return;
-    for (const item of pendingRevisions) {
-      const key = `${runId}:${item.nodeId}`;
-      if (item.requiresSelection || autoPromotedRef.current.has(key)) continue;
-      // Brief/storyboard versions remain pending until the user chooses one.
-      autoPromotedRef.current.add(key);
-      void chooseOutput(item.nodeId, 'new').then(() => {
-        if (chooserNodeId === item.nodeId) closeRevision();
-      });
-    }
-  }, [chooseOutput, chooserNodeId, closeRevision, pendingRevisions, run?.run_id, run?.status]);
-  const activeRevision =
-    pendingRevisions.find((item) => item.nodeId === chooserNodeId) ?? pendingRevisions[0];
 
   const graphReady = Boolean(domainGraph) && (!graphId || domainGraph?.graph_id === graphId);
   const showCanvas = graphReady;
@@ -239,8 +220,14 @@ export function DesignerPage({
     showCanvas && !bootstrapInProgress && !isDesignerPreviewGraph(domainGraph);
   const editingLocked = useDesignerGraphEditingLocked();
 
+  // The canvas has three independent players (node cards, the material viewer
+  // which autoplays, the revision chooser). Keep exactly one of them audible so
+  // opening the viewer never overlaps a running node preview (#5411).
+  const pageRef = useRef<HTMLDivElement>(null);
+  useEffect(() => bindDesignerExclusivePlayback(pageRef.current), []);
+
   return (
-    <div className="designer-page app-section" data-testid="designer-page">
+    <div className="designer-page app-section" data-testid="designer-page" ref={pageRef}>
       <div className="designer-page__main">
         <header className="designer-page__toolbar" data-testid="designer-page-toolbar">
           {onToggleSidebarCollapse ? (
@@ -280,7 +267,7 @@ export function DesignerPage({
               disabled={!canvasInteractive}
               onClick={toggleEdges}
             >
-              {edgesVisible ? <Route size={18} aria-hidden /> : <RouteOff size={18} aria-hidden />}
+              {edgesVisible ? <ShowEdgesIcon aria-hidden /> : <HideEdgesIcon aria-hidden />}
             </button>
             <button
               type="button"
@@ -291,7 +278,7 @@ export function DesignerPage({
               disabled={!canvasInteractive || editingLocked || !domainGraph?.nodes.length}
               onClick={requestAutoLayout}
             >
-              <LayoutPanelTop size={18} aria-hidden />
+              <ArrangeNodesIcon aria-hidden />
             </button>
             <button
               type="button"
@@ -303,7 +290,7 @@ export function DesignerPage({
               disabled={!canvasInteractive}
               onClick={toggleMinimap}
             >
-              <MapPinned size={18} aria-hidden />
+              <MinimapIcon aria-hidden />
             </button>
             <button
               type="button"
@@ -325,7 +312,11 @@ export function DesignerPage({
             data-testid="designer-run-error-toast"
           >
             <div className="designer-error-toast" role="alert" data-testid="designer-error" title={runError}>
-              {isDesignerModerationError(runError) ? t('designer.run.moderationBlocked') : runError}
+              {runError === DESIGNER_UPLOAD_TOO_LARGE
+                ? t('designer.dock.uploadTooLarge')
+                : isDesignerModerationError(runError)
+                  ? t('designer.run.moderationBlocked')
+                  : runError}
             </div>
           </div>
         ) : null}
@@ -364,16 +355,6 @@ export function DesignerPage({
           startEditKey={editRequestKey}
           onSelect={setSelectedMaterialId}
           onClose={closeViewer}
-        />
-      ) : null}
-      {activeRevision && chooserNodeId ? (
-        <DesignerRevisionChooser
-          revision={activeRevision}
-          busy={Boolean(run?.status === 'running')}
-          onChoose={(choice) => {
-            void chooseOutput(activeRevision.nodeId, choice).then(() => closeRevision());
-          }}
-          onClose={closeRevision}
         />
       ) : null}
       {pendingDeleteNodeIds.length > 0 ? (

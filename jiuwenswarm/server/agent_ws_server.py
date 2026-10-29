@@ -28,20 +28,20 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import encode_json_parse_error_wire
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.security.ws_origin import (
+from gateway.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
     get_header_value,
     is_allowed_browser_origin,
     is_origin_check_enabled,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
-from jiuwenswarm.common.ws_diagnostics import (
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
 )
-from jiuwenswarm.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
+from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.runtime.plan import PlanModeController
 from jiuwenswarm.server.worker.execution_host import WorkerExecutionHost
 from jiuwenswarm.server.worker.execution_services import ProductionHostServices, TransportClosed
@@ -85,7 +85,11 @@ def _parse_single_byte_range(
     range_header: str, file_size: int
 ) -> tuple[int, int] | None:
     """Parse a single HTTP byte range for file-download bridge handlers."""
-    if file_size <= 0 or not range_header.startswith("bytes=") or "," in range_header:
+    if file_size <= 0:
+        return None
+    if not range_header.startswith("bytes="):
+        return None
+    if "," in range_header:
         return None
     start_text, end_text = (
         range_header[6:].split("-", 1) if "-" in range_header[6:] else ("", "")
@@ -298,6 +302,7 @@ class AgentWebSocketServer(WorkerExecutionHost):
             await self._stop_scheduler()
         except Exception:
             logger.exception("[AgentWebSocketServer] scheduler stop failed")
+        await self._stop_expert_streams()
         self._session_stream_tasks.clear()
 
     async def _process_request(self, *args: Any) -> Any:
@@ -405,6 +410,7 @@ class AgentWebSocketServer(WorkerExecutionHost):
             if connection_tasks:
                 await asyncio.gather(*connection_tasks, return_exceptions=True)
             if owns_current_connection:
+                await self._stop_expert_streams()
                 self._session_stream_tasks.clear()
 
     async def _handle_message(
@@ -524,19 +530,19 @@ _COMPAT_EXPORTS = {
     "get_config_file": ("jiuwenswarm.common.utils", "get_config_file"),
     "mask_sensitive": ("jiuwenswarm.common.utils", "mask_sensitive"),
     "SESSION_MESSAGE_INTERNAL_KEY": (
-        "jiuwenswarm.common.session_message",
+        "gateway.common.session_message",
         "SESSION_MESSAGE_INTERNAL_KEY",
     ),
     "SESSION_MESSAGE_ORIGIN": (
-        "jiuwenswarm.common.session_message",
+        "gateway.common.session_message",
         "SESSION_MESSAGE_ORIGIN",
     ),
     "SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY": (
-        "jiuwenswarm.common.session_message",
+        "gateway.common.session_message",
         "SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY",
     ),
     "SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY": (
-        "jiuwenswarm.common.session_message",
+        "gateway.common.session_message",
         "SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY",
     ),
     "load_todo_snapshot_for_frontend": (
@@ -593,20 +599,20 @@ _COMPAT_EXPORTS = {
     "AgentResponseChunk": ("jiuwenswarm.common.schema.agent", "AgentResponseChunk"),
     "get_runtime_version": ("jiuwenswarm.common.version", "get_runtime_version"),
     "describe_ws_exception": (
-        "jiuwenswarm.common.ws_diagnostics",
+        "gateway.common.ws_diagnostics",
         "describe_ws_exception",
     ),
-    "describe_ws_peer": ("jiuwenswarm.common.ws_diagnostics", "describe_ws_peer"),
+    "describe_ws_peer": ("gateway.common.ws_diagnostics", "describe_ws_peer"),
     "format_ws_diagnostics": (
-        "jiuwenswarm.common.ws_diagnostics",
+        "gateway.common.ws_diagnostics",
         "format_ws_diagnostics",
     ),
     "AGENT_WS_MAX_MESSAGE_BYTES": (
-        "jiuwenswarm.common.ws_limits",
+        "gateway.common.ws_limits",
         "AGENT_WS_MAX_MESSAGE_BYTES",
     ),
     "AgentServerHookEvents": (
-        "jiuwenswarm.extensions.hook_event",
+        "jiuwenswarm.common.hook_event",
         "AgentServerHookEvents",
     ),
     "get_rail_manager": (
@@ -618,7 +624,7 @@ _COMPAT_EXPORTS = {
         "persist_cli_trusted_directory",
     ),
     "AgentServerChatHookContext": (
-        "jiuwenswarm.extensions.hooks_context",
+        "jiuwenswarm.common.hooks_context",
         "AgentServerChatHookContext",
     ),
     "AgentManager": ("jiuwenswarm.server.runtime.agent_manager", "AgentManager"),
@@ -765,10 +771,10 @@ _COMPAT_EXPORTS = {
         "validate_sandbox_files_runtime",
     ),
     "is_team_params": ("jiuwenswarm.server.utils.utils", "is_team_params"),
-    "deprecate_mode": ("jiuwenswarm.common.mode_matrix", "deprecate_mode"),
-    "is_plan_mode": ("jiuwenswarm.common.mode_matrix", "is_plan_mode"),
-    "is_single_agent_mode": ("jiuwenswarm.common.mode_matrix", "is_single_agent_mode"),
-    "is_team_mode": ("jiuwenswarm.common.mode_matrix", "is_team_mode"),
+    "deprecate_mode": ("gateway.common.mode_matrix", "deprecate_mode"),
+    "is_plan_mode": ("gateway.common.mode_matrix", "is_plan_mode"),
+    "is_single_agent_mode": ("gateway.common.mode_matrix", "is_single_agent_mode"),
+    "is_team_mode": ("gateway.common.mode_matrix", "is_team_mode"),
     "get_permissions_config_req_methods": (
         "jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc",
         "get_permissions_config_req_methods",
@@ -839,20 +845,20 @@ _COMPAT_EXPORTS = {
     ),
     "load_hooks_config": ("jiuwenswarm.common.hooks_config", "load_hooks_config"),
     "extract_handshake_request": (
-        "jiuwenswarm.common.security.ws_origin",
+        "gateway.common.security.ws_origin",
         "extract_handshake_request",
     ),
     "forbidden_origin_response": (
-        "jiuwenswarm.common.security.ws_origin",
+        "gateway.common.security.ws_origin",
         "forbidden_origin_response",
     ),
-    "get_header_value": ("jiuwenswarm.common.security.ws_origin", "get_header_value"),
+    "get_header_value": ("gateway.common.security.ws_origin", "get_header_value"),
     "is_origin_check_enabled": (
-        "jiuwenswarm.common.security.ws_origin",
+        "gateway.common.security.ws_origin",
         "is_origin_check_enabled",
     ),
     "is_allowed_browser_origin": (
-        "jiuwenswarm.common.security.ws_origin",
+        "gateway.common.security.ws_origin",
         "is_allowed_browser_origin",
     ),
     "PLAN_MODE_EXITED_EVENT_TYPE": (
@@ -913,7 +919,7 @@ _COMPAT_EXPORTS = {
     ),
     "PlanModeController": ("jiuwenswarm.runtime.plan", "PlanModeController"),
     "VoiceTaskServerAdapter": (
-        "jiuwenswarm.extensions.video_duplex.backend.tasks.server_adapter",
+        "jiuwenswarm.server.runtime.video_task.server_adapter",
         "VoiceTaskServerAdapter",
     ),
     "AdapterRegistry": (

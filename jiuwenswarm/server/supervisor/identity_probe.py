@@ -12,9 +12,9 @@ import sys
 
 
 async def probe_identity(*, timeout: float = 30.0) -> tuple[str, dict | None]:
-    from jiuwenswarm.server.supervisor.identity import code_identity
+    from jiuwenswarm.server.supervisor.identity import code_identity, _identity_path
 
-    if getattr(sys, "frozen", False):
+    if getattr(sys, "frozen", False) or _identity_path().is_file():
         return code_identity(), None
     process = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "jiuwenswarm.server.supervisor.identity_probe",
@@ -39,12 +39,12 @@ async def probe_identity(*, timeout: float = 30.0) -> tuple[str, dict | None]:
 
 
 def main() -> None:
-    from jiuwenswarm.server.supervisor.identity import code_identity
+    from jiuwenswarm.server.supervisor.identity import code_identity, _identity_path
     from jiuwenswarm.server.supervisor.identity_cache import launch_source_observation
 
     fingerprint = code_identity()
     print(json.dumps({"package": os.path.normcase(str(Path(__file__).resolve().parents[2])),
-                      "code_identity": fingerprint, "source_observation": launch_source_observation()}))
+                      "code_identity": fingerprint, "source_observation": None if _identity_path().is_file() else launch_source_observation()}))
 
 
 if __name__ == "__main__":

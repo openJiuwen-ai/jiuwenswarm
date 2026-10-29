@@ -13,7 +13,7 @@ from typing import Any
 
 
 EXTERNAL_CLI_AGENT_KINDS = ("claude", "codex")
-EXTERNAL_CLI_AGENT_KEY_SUFFIXES = ("enabled", "use_builtin", "cli_path")
+EXTERNAL_CLI_AGENT_KEY_SUFFIXES = ("enabled", "use_builtin", "cli_path", "path_histories")
 EXTERNAL_CLI_CUSTOM_AGENTS_KEY = "external_cli_custom_agents"
 
 
@@ -61,6 +61,9 @@ def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[st
     agents: Any = raw
     for segment in ("modes", "team", "jiuwen_team", "external_cli_agents"):
         agents = agents.get(segment) if isinstance(agents, dict) else None
+    histories: Any = raw
+    for segment in ("modes", "team", "jiuwen_team", "external_cli_path_histories"):
+        histories = histories.get(segment) if isinstance(histories, dict) else None
     configured: dict[str, dict[str, str]] = {}
     if isinstance(agents, list):
         for item in agents:
@@ -80,7 +83,16 @@ def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[st
         cli_path = entry.get("cli_path", "") if entry is not None else ""
         # The uploaded executable is the custom agent's built-in CLI choice.
         builtin = entry is not None and cli_path in {"", _uploaded_cli_path(cli_agent)}
+        history = histories.get(cli_agent) if isinstance(histories, dict) else None
+        # Keep the first occurrence so a hand-edited config cannot show
+        # duplicate dropdown options.
+        history_paths: list[str] = []
+        if isinstance(history, list):
+            for path in history:
+                if isinstance(path, str) and path.strip() and path not in history_paths:
+                    history_paths.append(path)
         flat[external_cli_agent_key(cli_agent, "enabled")] = "true" if entry is not None else "false"
         flat[external_cli_agent_key(cli_agent, "use_builtin")] = "true" if builtin else "false"
         flat[external_cli_agent_key(cli_agent, "cli_path")] = "" if builtin else cli_path
+        flat[external_cli_agent_key(cli_agent, "path_histories")] = json.dumps(history_paths, ensure_ascii=False)
     return flat

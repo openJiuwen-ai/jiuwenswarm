@@ -2,6 +2,7 @@ import { useWorkspaceStore } from '../../stores';
 import { useChatStore } from '../../stores/chatStore';
 import { resolveChatModelSelection, useSessionStore } from '../../stores/sessionStore';
 import { webClient } from '../../services/webClient';
+import { buildConversationModelPayload } from '../../multi-session/state/conversationModelSelection';
 import { useDesignerStore } from './designerStore';
 import { useDesignerChatStore, type DesignerChatMessage } from './designerChatStore';
 import { designerWorkspaceClient } from './designerGraphClient';
@@ -10,18 +11,49 @@ import {
   mediaItemsToBootstrapReferences,
   type DesignerBootstrapReference,
 } from './designerReferences';
-import type { MediaItem, Message } from '../../types';
+import type { MediaItem, Message, ModelSelection } from '../../types';
 
 export const DESIGNER_TEAM_MODE = 'team.design' as const;
 
-function selectedModelName(): string | undefined {
+interface DesignerModelChoice {
+  name: string | undefined;
+  selection: ModelSelection | null;
+}
+
+/**
+ * Resolve the chat model picked for ``sessionId``; without one, the shared
+ * composer draft (the design landing) is the source of truth.
+ */
+function resolveDesignerModelChoice(sessionId?: string): DesignerModelChoice {
   const activeSessionId = useChatStore.getState().activeSessionId;
   const sessionState = useSessionStore.getState();
-  return resolveChatModelSelection(
+  const sourceId = sessionId ?? activeSessionId ?? '';
+  const runtime = sessionState.runtimes[sourceId];
+  const selected = resolveChatModelSelection(
     sessionState.chatAvailableModels,
-    sessionState.runtimes[activeSessionId ?? '']?.selectedModelName ?? null,
+    runtime?.selectedModelName ?? null,
     sessionState.defaultModelName,
-  )?.model_name;
+  );
+  return {
+    name: selected?.model_name,
+    selection: runtime?.selectedModelSelection ?? null,
+  };
+}
+
+/**
+ * Carry the landing composer's model choice onto the session it just created.
+ * Team rounds resolve their model from the session runtime, so without this the
+ * canvas silently falls back to the configured default even though the graph
+ * metadata already carries the chosen model.
+ */
+function inheritDesignerModelChoice(sessionId: string, choice: DesignerModelChoice): void {
+  const sessionState = useSessionStore.getState();
+  sessionState.ensureRuntime(sessionId);
+  if (choice.selection) {
+    sessionState.setSelectedModelSelection(sessionId, choice.selection);
+  } else if (choice.name) {
+    sessionState.setSelectedModelName(sessionId, choice.name);
+  }
 }
 
 /**
@@ -31,6 +63,11 @@ function selectedModelName(): string | undefined {
  */
 export function bindDesignerChatSession(sessionId: string): void {
   useChatStore.getState().ensureRuntime(sessionId);
+  // A design session is only ever used from the canvas, so its session-scoped
+  // model state (`runtimes[sessionId]`) is created here. Without it every model
+  // read falls back to the default and every switch is silently dropped, which
+  // is what made the canvas model label inert (#5394).
+  useSessionStore.getState().ensureRuntime(sessionId);
   if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
     useSessionStore.getState().setMode(sessionId, 'team');
   }
@@ -64,6 +101,7 @@ export async function sendDesignerLeaderMessage(params: {
   const { sessionId, prompt } = params;
   const chat = useChatStore.getState();
   bindDesignerChatSession(sessionId);
+  const modelChoice = resolveDesignerModelChoice(sessionId);
   chat.addMessage(sessionId, {
     id: `designer-user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     role: 'user',
@@ -78,6 +116,11 @@ export async function sendDesignerLeaderMessage(params: {
       session_id: sessionId,
       query: prompt,
       mode: DESIGNER_TEAM_MODE,
+      ...buildConversationModelPayload({
+        mode: DESIGNER_TEAM_MODE,
+        selectedModelName: modelChoice.name ?? null,
+        selectedModelSelection: modelChoice.selection,
+      }),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -128,16 +171,18 @@ export async function submitDesignComposer(params: {
   if (modelProblem) {
     throw new Error(modelProblem);
   }
+  const modelChoice = resolveDesignerModelChoice();
   const projectId = resolveDesignComposerProjectId();
   const created = await designerWorkspaceClient.createSession({ projectId });
   const sessionId = String(created.session?.session_id || '');
   if (!sessionId) throw new Error('missing session');
+  inheritDesignerModelChoice(sessionId, modelChoice);
   const leaderPrompt = prompt || '根据参考素材创作';
   const workspace = await designerWorkspaceClient.composeSession({
     projectId,
     sessionId,
     prompt: leaderPrompt,
-    modelName: selectedModelName(),
+    modelName: modelChoice.name,
     references: checked.refs,
   });
   useDesignerStore.getState().applyGraph(workspace.graph);
@@ -172,7 +217,7 @@ export async function composeDesignerSession(params: {
       projectId: params.projectId,
       sessionId: params.sessionId,
       prompt: leaderPrompt,
-      modelName: selectedModelName(),
+      modelName: resolveDesignerModelChoice(params.sessionId).name,
       references,
     });
     useDesignerStore.getState().applyGraph(workspace.graph);

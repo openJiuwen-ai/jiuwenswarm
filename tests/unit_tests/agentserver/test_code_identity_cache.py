@@ -72,6 +72,24 @@ def test_dirty_source_add_delete_restore_and_lockfiles(checkout):
     assert cache.source_fingerprint(package) != original
 
 
+def test_gateway_runtime_changes_invalidate_identity_and_parent_observation(checkout):
+    package, versions = checkout
+    gateway = package.parent / "gateway"
+    gateway.mkdir()
+    runtime = gateway / "registry.py"
+    write_source(runtime, "value = 1\n", versions)
+    first = cache.source_fingerprint(package)
+    observation = cache.launch_source_observation()
+    assert cache.verify_launch_source(package, observation) == first
+    write_source(runtime, "value = 2\n", versions)
+    assert cache.verify_launch_source(package, observation) is None
+    assert cache.source_fingerprint(package) != first
+    write_source(runtime, "value = 1\n", versions)
+    assert cache.source_fingerprint(package) == first
+    runtime.unlink()
+    assert cache.source_fingerprint(package) != first
+
+
 def test_source_walk_prunes_only_frontend_node_dependencies_before_entering(checkout, monkeypatch):
     package, _versions = checkout
     excluded = package / "channels" / "web" / "frontend" / "node_modules"
@@ -394,16 +412,15 @@ def test_controlled_frozen_build_identity_is_path_independent(tmp_path, monkeypa
     assert identity.code_identity() != first
 
 
-def test_legacy_frozen_build_preserves_executable_validation(tmp_path, monkeypatch):
+def test_frozen_build_without_controlled_identity_is_rejected(tmp_path, monkeypatch):
     executable = tmp_path / "legacy.exe"
     executable.write_bytes(b"first")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(executable))
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.delenv("JIUWENSWARM_BUILD_ID", raising=False)
-    first = identity.code_identity()
-    executable.write_bytes(b"replacement-package")
-    assert identity.code_identity() != first
+    with pytest.raises(RuntimeError, match="Invalid Worker build identity"):
+        identity.code_identity()
 
 
 @pytest.mark.parametrize("value", [b'\xef\xbb\xbf[core]\n autocrlf = true\n',

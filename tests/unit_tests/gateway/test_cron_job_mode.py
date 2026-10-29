@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.mode_matrix import (
+from gateway.cron.controller import CronController
+from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     NEW_AGENT_CODE_NORMAL,
@@ -13,7 +14,7 @@ from jiuwenswarm.common.mode_matrix import (
     NEW_TEAM_CODE_PLAN,
     deprecate_mode,
 )
-from jiuwenswarm.gateway.cron.models import (
+from gateway.cron.models import (
     CRON_DEFAULT_TIMEOUT_SECONDS,
     CRON_JOB_DEFAULT_MODE,
     CRON_JOB_MODES,
@@ -131,6 +132,14 @@ def test_cron_job_metadata_matches_modes_and_default() -> None:
     assert meta["default_team_timeout_seconds"] == CRON_TEAM_DEFAULT_TIMEOUT_SECONDS
     assert meta["max_timeout_seconds"] == CRON_MAX_TIMEOUT_SECONDS
     assert meta["modes"] == sorted(meta["modes"])
+
+
+def test_cron_controller_rejects_xiaoyi_target() -> None:
+    controller = object.__new__(CronController)
+    controller._target_channel = None
+
+    with pytest.raises(ValueError, match="does not support scheduled tasks: xiaoyi"):
+        controller._normalize_targets("xiaoyi")
 
 
 def test_resolve_cron_job_timeout_seconds_defaults_by_mode() -> None:
@@ -288,7 +297,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-from jiuwenswarm.gateway.cron.store import CronJobStore
+from gateway.cron.store import CronJobStore
 
 
 def _write_cron_jobs(path: Path, jobs: list[dict]) -> None:
@@ -455,7 +464,7 @@ class TestCronJobLazyMigration:
         )
 
         with patch(
-            "jiuwenswarm.gateway.runtime.cron.cron_job_mutations.logger.warning"
+            "gateway.runtime.cron.cron_job_mutations.logger.warning"
         ) as warning_mock:
             jobs = await CronJobStore(path=store_path).list_jobs()
 

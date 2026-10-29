@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.server.runtime.session.session_history import list_session_subagent_ids
+
 import logging
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.agent import AgentResponse
@@ -29,7 +31,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
 )
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 from jiuwenswarm.server.runtime.session.session_history import history_exists
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
@@ -490,22 +492,53 @@ class HistoryManagement:
                     len(todos),
                 )
             next_seq += 1
+
+        session_usage = None
+        if not subagent_id and isinstance(session_id, str) and session_id.strip():
+            from jiuwenswarm.server.control.history_service import load_history_session_usage
+
+            session_usage = await asyncio.to_thread(
+                load_history_session_usage, session_id.strip()
+            )
+
+        done_payload: dict[str, Any] = {
+            "event_type": "history.message",
+            "status": "done",
+            "session_id": str(session_id or ""),
+            "subagent_id": str(response_subagent_id or subagent_id or ""),
+            "total_pages": total_pages,
+            "page_idx": page,
+            "cursor": request_cursor if cursor_protocol else None,
+            "next_cursor": next_cursor,
+            "has_more": has_more,
+            "snapshot_id": snapshot_id,
+            "snapshot_end": snapshot_end,
+        }
+        usage_revision = session_usage.get("revision") if isinstance(session_usage, dict) else None
+        if isinstance(usage_revision, int) and not isinstance(usage_revision, bool) and usage_revision > 0:
+            done_payload["session_usage"] = session_usage
+        # Parent history cold-start: advertise on-disk subagent buckets so the
+        # frontend can fetch per-subagent transcripts even when parent history
+        # never persisted chat.subtask_update roster frames (GitCode #4887).
+        # Keep the if-condition to <=3 boolean expressions (G.CTL.03).
+        parent_session_id = session_id.strip() if isinstance(session_id, str) else ""
+        is_parent_history_request = not response_subagent_id and not subagent_id
+        if is_initial_history_batch and is_parent_history_request and parent_session_id:
+            try:
+                discovered_ids = list_session_subagent_ids(parent_session_id)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[history.get] list_session_subagent_ids failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
+                discovered_ids = []
+            if discovered_ids:
+                done_payload["subagent_ids"] = discovered_ids
         done_chunk = AgentResponseChunk(
             request_id=request.request_id,
             channel_id=request.channel_id,
-            payload={
-                "event_type": "history.message",
-                "status": "done",
-                "session_id": str(session_id or ""),
-                "subagent_id": str(response_subagent_id or subagent_id or ""),
-                "total_pages": total_pages,
-                "page_idx": page,
-                "cursor": request_cursor if cursor_protocol else None,
-                "next_cursor": next_cursor,
-                "has_more": has_more,
-                "snapshot_id": snapshot_id,
-                "snapshot_end": snapshot_end,
-            },
+            payload=done_payload,
             is_complete=True,
         )
         wire_done = host.services.encode_chunk(

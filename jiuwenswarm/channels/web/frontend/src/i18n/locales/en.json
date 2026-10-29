@@ -101,6 +101,9 @@
       "bootstrapError": "Failed to build the workflow. Please try again later.",
       "notImplemented": "Not implemented",
       "send": "Send",
+      "running": "The design leader is working…",
+      "stop": "Stop",
+      "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
@@ -145,7 +148,7 @@
       "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
-      "duration": "Duration",
+      "duration": "Video duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -163,6 +166,7 @@
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
       "durationValue": "{{seconds}}s",
+      "durationUnit": "s",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -208,6 +212,7 @@
       "assetsHint": "Toggle the current-canvas asset list.",
       "upload": "Upload",
       "uploadHint": "Upload an image, video, or audio file as a new canvas node.",
+      "uploadTooLarge": "File too large: images, videos, and audio can be up to 32 MB.",
       "comfyuiHint": "Import a ComfyUI workflow (.json). Only vLLM-Omni Generate Image / Generate Video nodes are added.",
       "group": {
         "image": "Image",
@@ -231,6 +236,7 @@
       "preview": "Preview",
       "previewOrEdit": "Preview or edit",
       "download": "Download",
+      "downloadFailed": "Could not download “{{name}}”. Check your connection and save location, then try again.",
       "delete": "Delete",
       "replace": "Upload & Replace",
       "replaceHint": "Upload a new file to replace this node's content.",
@@ -244,16 +250,6 @@
     },
     "edge": {
       "delete": "Delete connection"
-    },
-    "revision": {
-      "title": "Choose which version to keep",
-      "hint": "{{label}} was regenerated. The original is still here — pick which one to keep.",
-      "original": "Original",
-      "incoming": "New version",
-      "keepOriginal": "Keep original",
-      "keepIncoming": "Use new version",
-      "pending": "Needs choice",
-      "compare": "Compare versions"
     },
     "materials": {
       "title": "Outputs",
@@ -429,6 +425,7 @@
       "browser": "Browser",
       "channels": "Channels",
       "personalContext": "Knowledge",
+      "recommendation": "Recommendations",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
@@ -517,6 +514,15 @@
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
+      "jevTab": "Decision models",
+      "jevTabHelp": "Optional. Enhances decision-making for browser subagents and multi-model collaboration in single-agent conversations.",
+      "jevModels": "Jev models",
+      "jevDeleteFailed": "Failed to clear the Jev configuration. Please try again.",
+      "jevEmpty": "No Jev model configured",
+      "jevEmptyDescription": "Add one Jev model to share between browser decisions and multi-model collaboration.",
+      "jevDisplayNamePlaceholder": "Enter a model display name",
+      "jevApiBasePlaceholder": "e.g. https://jev.example.com/v1",
+      "jevModelHint": "Enter a Jev model name supported by the provider, such as typesafe/jev-1.13 or jev-1.13.0.",
       "modelGroups": "Model groups",
       "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
@@ -579,8 +585,8 @@
       "deleteConfirm": "Delete “{{alias}}” ({{model}})?",
       "deleteConfirmTitle": "Delete model",
       "loadFailed": "Failed to load the model list. Please try again.",
-      "customName": "Custom name",
-      "customNamePlaceholder": "Enter a unique custom name",
+      "customName": "Model display name",
+      "customNamePlaceholder": "Enter a unique model display name",
       "protocol": "Protocol",
       "vendor": "Model provider",
       "model": "Model",
@@ -605,6 +611,7 @@
       "noPresetModelsNoEndpoint": "This provider does not expose a model-list endpoint",
       "fetchModelsLoading": "Fetching...",
       "fetchModelsRemote": "Fetched {{count}} models from the provider",
+      "fetchGenerationModelsRemote": "Fetched {{count}} generation models; listing does not confirm account access",
       "fetchModelsFailed": "Failed to fetch the model list",
       "fetchModelsFailedUsingPreset": "Failed to fetch the model list: {{error}}. Showing provider presets",
       "fetchModelsInvalidResponse": "The provider model-list response is invalid",
@@ -687,8 +694,9 @@
         "reasoningUnsupported": "The reasoning option “{{value}}” is unsupported. Select another option or use the default",
         "reasoningUnavailable": "Reasoning options have not loaded. Retry before saving",
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
-        "aliasConflict": "Custom name must be globally unique and cannot match another model ID",
-        "modelNameConflict": "Model ID cannot match another configuration's custom name"
+        "aliasRequired": "Model display name is required",
+        "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
+        "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
       "test": "Test"
@@ -713,13 +721,51 @@
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
       "regionalBaseHint": "Keys are region-bound: use https://api.minimax.io/v1 for a global key and https://api.minimaxi.com/v1 for a China key. If the address and the key's region differ, the other region is tried automatically.",
-      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Models must be activated in the Ark console first, otherwise calls fail with ModelNotOpen.",
+      "regionalBaseHintModelark": "Keys and model activation are region-bound: use https://ark.ap-southeast.bytepluses.com/api/v3 for BytePlus ModelArk (international) and https://ark.cn-beijing.volces.com/api/v3 for Volcengine (China). Discovery and generation use the configured region without switching. Activate models in the matching console.",
+      "arkGenerationBaseInvalid": "Use an official regional Volcengine Ark or BytePlus /api/v3 address. Coding Plan addresses do not support image or video generation.",
       "regionalBaseHintDashscope": "Generation uses the native DashScope /api/v1 API, not the chat compatible-mode URL. Keys are region-bound: use https://dashscope.aliyuncs.com/api/v1 for a China key and https://dashscope-intl.aliyuncs.com/api/v1 for an international key. If the address and the key's region differ, the other region is tried automatically.",
       "selfHostedBaseHintVllmOmni": "Enter the address of your self-hosted vLLM-Omni server (for example http://127.0.0.1:8091/v1). Leave the API key empty if the server has no auth; leave the model empty to use the model the server has loaded.",
       "servedModel": "Model loaded by the server",
       "deleteModelTitle": "Delete model configuration",
       "deleteModelConfirm": "This deletes the saved model configuration for {{name}} and turns the capability off if it is currently enabled.",
       "team": "Agent team"
+    },
+    "recommendation": {
+      "title": "Personalized recommendations",
+      "description": "Suggests topics and next prompts from your conversations.",
+      "model": "Topic recommendation model",
+      "modelDescription": "Recommendations are prepared again after a switch.",
+      "followMainModel": "Follow the chat model",
+      "modelIncompatible": "incompatible API",
+      "modelLoginRequired": "sign-in required",
+      "modelFree": "free model",
+      "unusableModelOption": "{{name}} ({{reason}})",
+      "modelUnusable": "The topic model cannot be used: choose another model, or complete its API address and key in Settings → Models.",
+      "data": "Recommendation data",
+      "dataDescription": "Your profile and recommendation records stay on this machine.",
+      "view": "View",
+      "hide": "Hide",
+      "enableTitle": "Turn on personalized recommendations",
+      "enableMessage": "Once on, related conversations are sent to the model provider to prepare topic recommendations and next-step suggestions; web searches use only public topic terms. Calls are billed to your own API account, and recommendation data stays on this machine.",
+      "includeHistory": "Also read existing chat history",
+      "enable": "Turn on",
+      "deleteTitle": "Delete recommendation data",
+      "deleteMessage": "Deletes the profile, summaries, card pools and related recommendation records, and turns recommendations off. Your chats are kept; turning recommendations back on does not rebuild the old profile by default. Personal backups and data held by the provider are outside this local deletion.",
+      "blockedDirections": "Directions no longer recommended",
+      "blockedSince": "Not recommended since {{date}}",
+      "restore": "Restore",
+      "profileEmpty": "No recommendation profile with verifiable sources yet.",
+      "correctionLabel": "Correct the profile in your own words",
+      "correctionPlaceholder": "Say which preferences to correct, pause or keep",
+      "correct": "Correct in a new chat",
+      "correctionNote": "After you send and finish that chat, the next recommendation reads your correction; the profile is not updated while recommendations are off.",
+      "unreachable": "Cannot read the recommendation settings. Check the app connection.",
+      "invalidKey": "The model provider rejected the API key. Replace the key, then prepare topics again.",
+      "accessDenied": "The model provider denied access. Check the account's permissions, then prepare topics again.",
+      "accountOverdue": "The model provider account is overdue. Top it up in the provider console, then prepare topics again.",
+      "modelUnavailable": "The topic recommendation model is unavailable. Check the model name and access.",
+      "lastFailure": "The latest topic preparation did not finish.",
+      "retry": "Prepare topics again"
     },
     "browser": {
       "runtime": "Browser runtime",
@@ -740,6 +786,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "Custom",
       "jevConfig": "Jev Model Configuration",
+      "jevKeyMissing": "Jev API key is not configured. Add a Jev model under Models > Decision models first.",
+      "clearSharedJevConfirm": "Clear the current Jev model's API key and display name? Connection settings will be retained. Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
       "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
@@ -750,7 +798,7 @@
       "externalCliAgentsDescription": "For Team mode only.",
       "a2ui": "A2UI generation",
       "rsi": "RSI · Recursive self-improvement",
-      "trajectoryUi": "Trajectory UI",
+      "trajectoryUi": "Trajectory diagnosis",
       "kvCacheAffinity": "Compute affinity",
       "teamOrganization": "Team Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
@@ -759,7 +807,9 @@
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
-      "multiModelCollaboration": "Multi-model collaboration"
+      "multiModelCollaboration": "Multi-model collaboration",
+      "toolOptimize": "Tool retrieval optimization",
+      "designMode": "Design Mode"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -817,7 +867,7 @@
       },
       "decision_mode": {
         "title": "Browser decisions",
-        "description": "Choose who decides each browser step. Jev modes need the Jev API key below."
+        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Decision models."
       },
       "decision_provider": {
         "title": "Jev provider",
@@ -874,6 +924,14 @@
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
         "description": "Dynamically select the agent's skill discovery strategy based on the number of installed Skills."
+      },
+      "topic_recommendation_enabled": {
+        "title": "Topic recommendations",
+        "description": "Prepare home-screen topic cards from conversation interests. Unset follows the code default."
+      },
+      "prompt_suggestion_enabled": {
+        "title": "Prompt suggestions",
+        "description": "Show tappable next-input chips after a reply. Unset follows the code default."
       },
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
@@ -932,17 +990,21 @@
         "title": "Enable RSI",
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
-      "trajectory_ui_enabled": {
-        "title": "Enable trajectory UI",
-        "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
-      },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
-        "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically, with no need to enable the trajectory UI; only data recorded after it is turned on can be diagnosed."
+        "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
       },
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization",
         "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI workflow integration",
+        "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
+      },
+      "progressive_tool_optimize": {
+        "title": "Enable tool retrieval optimization",
+        "description": "When enabled, the model discovers tools on demand via the tool_search catalogue."
       },
       "team_scheduled_dispatch_enabled": {
         "title": "Enable scheduled dispatch",
@@ -951,6 +1013,10 @@
       "team_task_verification_enabled": {
         "title": "Enable reviewers",
         "description": "Completed tasks are reviewed by verifiers. Tasks that fail review are returned for rework."
+      },
+      "team_member_messaging_enabled": {
+        "title": "Enable member-to-member messaging",
+        "description": "Members can message each other directly (point-to-point, multicast, broadcast) instead of routing through the Leader. Task assignment and handoffs stay with the Leader and the scheduler."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -1002,7 +1068,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
-        "description": "Use JEV to verify execution progress. When off, use the selected model group’s default model."
+        "description": "Use Jev configured under Models > Decision models to decide whether to consult reference models. When off, use the selected model group’s default model to verify execution progress."
       },
       "moa_verifier_interval": {
         "title": "Verification interval (rounds)",
@@ -1054,18 +1120,23 @@
       "diagnose": "Diagnose trajectory",
       "selection": {
         "fullScope": "Entire trajectory",
-        "notePlaceholder": "Enter user feedback (optional)",
+        "selectAll": "Select all",
+        "clearSelectAll": "Clear selection",
+        "selectAllAgent": "Select all of {{name}}'s trajectory",
+        "clearSelectAllAgent": "Clear all of {{name}}'s trajectory",
+        "notePlaceholder": "Describe issues in the selected range (optional). e.g. answer missed the point; tool failure not retried; expected file missing",
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
-        "summary": "{{count}} agent(s) selected, {{nodes}} node(s)",
-        "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
-        "lastTurn": "The selection includes the main agent's last turn. Artifact evaluation and process-anomaly diagnosis will be attempted.",
-        "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
+        "summary": "{{count}} Agent(s) selected · {{spans}} OTel span(s)",
+        "emptyNodes": "The selection has no complete OTel span to diagnose. Spans that are not fully covered (start and end) were left out.",
+        "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
+        "nodeLimit": "The selection contains {{count}} OTel spans, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
-        "noData": "There is no trajectory to diagnose yet"
+        "noData": "There is no trajectory to diagnose yet",
+        "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
-      "summary": "{{traces}} traces · {{spans}} OTel spans",
+      "summary": "{{agents}} Agents · {{spans}} OTel spans",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1093,11 +1164,12 @@
     },
     "diagnosis": {
       "entry": "Trajectory analysis",
-      "noteLabel": "Note (optional)",
+      "noteLabel": "User feedback: describe issues in the selected range (optional)",
       "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
       "cancel": "Cancel diagnosis",
-      "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
-      "includeAgent": "Diagnose {{name}}",
+      "selectionHint": "Drag a range on the time axis, or use Select all for one agent's whole lane. When selected, uncheck the box to clear that agent's pick.",
+      "includeAgent": "Selected: {{name}}",
+      "includeAgentHint": "Uncheck to clear {{name}}'s current selection",
       "timeAxis": "Time axis",
       "records": "Diagnosis records",
       "noRecords": "No diagnosis yet",
@@ -1115,6 +1187,7 @@
         "interrupted": "Interrupted"
       },
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
+      "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
         "pending": "Waiting",
         "running": "Running",
@@ -1138,8 +1211,10 @@
       "suggestions": "Diagnosis suggestions",
       "noSuggestions": "This diagnosis has no actionable suggestions",
       "details": "Diagnosis details",
+      "resultTabs": "Diagnosis details and suggestions",
+      "suggestionsReady": "Suggestions ready",
       "dismiss": "Dismiss",
-      "note": "Diagnosis note",
+      "note": "User feedback",
       "object": "Diagnosis target",
       "objectAgents": "Agents",
       "objectFull": "Entire trajectory",
@@ -1161,6 +1236,7 @@
         "cancelDelete": "Cancel",
         "deleteRunning": "A diagnosis in progress cannot be deleted"
       },
+      "rewardResult": "Artifact evaluation",
       "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
       "rewardTotal": "Total {{score}}",
       "artifactFix": "Artifact fix",
@@ -1176,22 +1252,42 @@
         "weak": "Not met"
       },
       "signalSource": {
-        "keyword_tool": "Tool output hit",
-        "keyword_user": "User message hit",
-        "reward": "Reward score"
+        "keyword_tool": "Tool output",
+        "keyword_user": "User message",
+        "reward": "Reward",
+        "user": "User note"
+      },
+      "signalSourceLabel": "Source: {{source}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}: {{dimension}}",
+      "findingDimension": "Dimension",
+      "findingProblem": "Problem",
+      "findingReason": "Cause",
+      "attributionKind": {
+        "artifact": "Artifact",
+        "skill": "Skill",
+        "experience": "Experience"
       },
       "signalScore": "Score {{score}}",
       "signalSurfacedAt": "Surfaced at {{nodes}}",
       "causeAt": "At {{nodes}}",
       "evidence": "Based on",
-      "findingsIssuesOnly": "{{issues}} issues",
-      "findingsIssuesAndExperience": "{{issues}} issues, plus {{experience}} experience verdict(s)",
-      "findingsExperienceOnly": "{{experience}} experience verdict(s)",
+      "dimension": "Dimension",
       "requestCount": "{{count}} model requests",
-      "objectSteps": "Steps",
-      "objectStepsCount": "{{count}} trajectory steps",
+      "objectSteps": "Scope",
+      "objectStepsCount": "{{count}} OTel spans",
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
+      "objectSummary": "Trajectory summary",
+      "sectionExpand": "Expand",
+      "sectionCollapse": "Collapse",
+      "findingCauses": "{{count}} artifact finding(s)",
+      "findingSkill": "{{count}} skill finding(s)",
+      "findingExperience": "{{count}} experience finding(s)",
+      "findingJoin": ", ",
+      "findingWithEvolution": "{{causes}}, plus {{evolution}}",
+      "findingLegacyCauses": "{{count}} legacy finding(s)",
+      "relatedSignals": "Related signals",
       "suggestionsUnfinished": "The diagnosis did not finish, so there are no suggestions",
       "process": "Diagnosis process",
       "processSteps": "{{count}} steps",
@@ -1203,10 +1299,15 @@
         "partial": "Task partly completed"
       },
       "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
       "ttseReady": "Experience available",
       "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "skillSelectAll": "Select all",
+      "skillSelectOne": "Select {{name}}",
+      "skillFillSelected": "Fill selected ({{count}})",
+      "artifactFillPrefix": "Optimize according to the following suggestions:",
       "ttseResult": {
-        "triggered": "Triggered; TTSE is generating and saving the experience in the background",
+        "triggered": "Triggered",
         "failed": "Trigger failed"
       },
       "blocked": "Unavailable: {{reason}}",
@@ -1226,7 +1327,8 @@
     },
     "composer": {
       "collapse": "Collapse composer",
-      "expand": "Expand composer"
+      "expand": "Expand composer",
+      "unavailable": "The composer is unavailable during diagnosis"
     },
     "layout": {
       "hideSessions": "Collapse sessions",
@@ -1579,7 +1681,42 @@
     },
     "welcomeSuggestions": {
       "journey": "Let's begin a brand-new journey!",
-      "skills": "Can you tell me what skills you have?"
+      "skills": "Can you tell me what skills you have?",
+      "explore": "What would be useful to explore today?",
+      "nextStep": "Help me turn an idea into a practical next step."
+    },
+    "topicStarter": {
+      "heading": "What would you like to explore today?",
+      "recommendations": "Start with one of these",
+      "notInterested": "Skip for now",
+      "cardRemoved": "Skipped for now",
+      "pauseInterest": "Show this less for a week",
+      "interestPaused": "Okay, showing this less",
+      "undoDismissal": "Undo",
+      "dateAndVersion": "See this day",
+      "openDateAndVersion": "Open the background for this day",
+      "weiboHotList": "Weibo hot searches",
+      "baiduHotList": "Baidu hot searches",
+      "hotListRank": "No. {{rank}}",
+      "hotListListedAt": "Listed {{time}}",
+      "viewHotListEntry": "See this trending item: {{source}}",
+      "hotListEntry": "Trending",
+      "openNewsSearch": "Open related news",
+      "searchRelatedNews": "See related news",
+      "statusPreparing": "Getting a few topics ready. You can start chatting now.",
+      "statusPreparingWithCards": "Finding topics that fit you better. These are still good to tap.",
+      "statusUpdateIncomplete": "New topics are not ready yet. These still work.",
+      "statusNeedsSettings": "Want topics that fit you better? You can turn that on in Settings.",
+      "statusNoCards": "Nothing to show right now. You can just start typing.",
+      "providerRefusal": "Personalized topics are unavailable right now. Details are in Settings.",
+      "openSettings": "Check settings",
+      "retryPreparation": "Try again"
+    },
+    "promptSuggestionBox": {
+      "label": "Next: ",
+      "sendHint": "Click to send this suggestion",
+      "dismiss": "Dismiss suggestion “{{text}}”",
+      "placeholder": "{{label}}{{text}} (Tab to fill)"
     },
     "newSession": "New Session",
     "sessionCreated": "Session created",
@@ -1651,12 +1788,20 @@
       "tools": "Tools & Connectors",
       "skills": "Skills",
       "notReported": "Not reported",
+      "cumulativeTitle": "Cumulative tokens",
+      "mainAgentTokens": "Main Agent",
+      "otherAgentTokens": "Subagents / team members",
+      "inputTokens": "Input",
+      "outputTokens": "Output",
+      "partialReported": "Some calls did not report usage",
       "close": "Close context details",
       "noBreakdown": "No category details returned by the backend"
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
     "teamSelect": {
+      "unavailable": "Unavailable",
+      "unavailableHint": "This Expert Team is unavailable. Reinstall its package to continue; history is preserved.",
       "tooltip": "Switch the Team being viewed",
       "loadingLabel": "Loading teams…",
       "fallbackLabel": "Select Team"
@@ -1687,7 +1832,11 @@
     "agentGroupRemove": "Remove Expert Team",
     "agentGroupSkillsLocked": "An Expert Team is selected; additional Expert Team skills are unavailable",
     "teamSkillsGroupLocked": "Team skills are selected; an Expert Team cannot be selected",
+    "agentGroupRuntimeDisabled": "This Expert Team includes external experts. {{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then select the Expert Team again.",
+    "agentGroupRuntimeDisabledTitle": "Enable external agents first",
+    "agentGroupRuntimeDisabledConfirm": "Got it",
     "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
+    "agentGroupNoDescription": "No description available for this expert team",
     "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
     "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
     "externalAgentRequiresNewSession": "External experts require a new conversation. Start a new session to use one.",
@@ -1846,7 +1995,9 @@
     "approvalInputPlaceholder": "Add revision notes then click Next; leave empty and click Skip"
   },
   "persistSession": {
-    "textRequired": "Enter a task after /persist"
+    "textRequired": "Enter a task after /persist",
+    "toolbarTag": "Persist Session",
+    "closeTag": "Hide persist session tag"
   },
   "crossSession": {
     "messageBadge": "From session: {{title}}"
@@ -2013,6 +2164,9 @@
       "slack": "Enable the Slack channel. Disabling preserves existing settings.",
       "whatsapp": "Enable the WhatsApp channel. Disabling preserves existing settings."
     },
+    "availability": {
+      "xiaoyi": "Xiaoyi does not currently support scheduled tasks or file delivery."
+    },
     "configurationGuide": "Configuration guide",
     "addConfiguration": "Add configuration",
     "enable": "Enable",
@@ -2162,7 +2316,7 @@
       "apiBaseUrlInvalid": "API Base URL must start with http:// or https://",
       "modelNameRequired": "Model name is required. Select a model before saving",
       "modelNameTooLong": "Model name is too long. Use 100 characters or fewer",
-      "aliasTooLong": "Alias is too long. Use 100 characters or fewer",
+      "aliasTooLong": "Model display name is too long. Use 100 characters or fewer",
       "apiBaseTooLong": "API Base URL is too long. Use 512 characters or fewer"
     },
     "booleanLabels": {
@@ -2214,18 +2368,17 @@
       "builtinPathPlaceholder": "Built-in CLI (managed)",
       "installNow": "Install",
       "notInstalledHint": "No SDK detected yet. Click",
-      "removePath": "Remove this path from history",
       "savedHint": "Saved",
       "detectSucceeded": "Detection passed",
       "editPath": "Edit",
       "openFile": "Open file",
       "compatibilityWarning": "The detected version may be incompatible. You can change the executable path, upgrade the version, or click \"Install\" to use the built-in CLI.",
       "compatibilityWarningWithVersion": "The detected version may be incompatible. You can change the executable path, upgrade to {{version}} or later, or click \"Install\" to use the built-in CLI.",
-      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or click \"Install\" to use the built-in CLI.",
-      "missingPath": "Path does not exist: {{path}}. Check the path, or click \"Install\" to use the built-in CLI.",
-      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or click \"Install\" to use the built-in CLI.",
-      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or click \"Install\" to use the built-in CLI.",
-      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or click \"Install\" to use the built-in CLI.",
+      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or cancel and click \"Install\" to use the built-in CLI.",
+      "missingPath": "Path does not exist: {{path}}. Check the path, or cancel and click \"Install\" to use the built-in CLI.",
+      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or cancel and click \"Install\" to use the built-in CLI.",
       "autoSaved": "{{agents}} dependencies finished installing. Your configuration has been saved automatically.",
       "installDialogTitle": "Install optional components",
       "installDialogDescription": "Closing this dialog does not interrupt installation. Your configuration will be saved automatically when installation finishes.",
@@ -2494,6 +2647,7 @@
       "web": "Web (web)",
       "tui": "Terminal (tui)",
       "xiaoyi": "Xiaoyi (xiaoyi)",
+      "xiaoyiUnsupported": "Xiaoyi (unsupported)",
       "feishu": "Lark (feishu)",
       "dingtalk": "DingTalk (dingtalk)",
       "whatsapp": "WhatsApp (whatsapp)",
@@ -2556,7 +2710,31 @@
       "reload": "Reload",
       "stop": "Stop",
       "addressPlaceholder": "Enter URL or search",
-      "unavailable": "Built-in browser unavailable"
+      "unavailable": "Built-in browser unavailable",
+      "downloadContent": "Downloads"
+    },
+    "downloads": {
+      "recentTitle": "Recent downloads",
+      "empty": "No downloads yet",
+      "downloading": "Downloading",
+      "paused": "Paused",
+      "cancelled": "Cancelled",
+      "failed": "Failed",
+      "justNow": "Just now",
+      "minutesAgo_one": "{{count}} minute ago",
+      "minutesAgo_other": "{{count}} minutes ago",
+      "hoursAgo_one": "{{count}} hour ago",
+      "hoursAgo_other": "{{count}} hours ago",
+      "daysAgo_one": "{{count}} day ago",
+      "daysAgo_other": "{{count}} days ago",
+      "close": "Close downloads",
+      "openFile": "Open",
+      "showInFolder": "Show in folder",
+      "fileDeleted": "Deleted",
+      "removeRecord": "Remove from list",
+      "pauseDownload": "Pause download",
+      "resumeDownload": "Resume download",
+      "cancelDownload": "Cancel download"
     }
   },
   "logsPanel": {
@@ -3634,10 +3812,12 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
+      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
       "uploadMissingPersona": "The Expert package is missing the persona directory, or it contains no .md files.",
+      "uploadSkillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths.",
       "newVersion": "This Expert has a new version available",
       "teamUnavailable": "Expert Team management is not available yet",
       "featureUnavailable": "This feature is outside this milestone",
@@ -3894,6 +4074,12 @@
     "forkFromMessage": "Create a conversation branch from this message",
     "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
+    "saveSkill": "Save",
+    "saveSkillSaving": "Saving...",
+    "saveSkillSaved": "Saved",
+    "saveSkillSuccess": "Saved successfully",
+    "saveSkillNoSession": "No active conversation. The Skill cannot be saved.",
+    "saveSkillOverwriteConfirm": "{{message}}\nOverwrite the existing Skill?",
     "fileTypeDocument": "Document",
     "fileTypeSpreadsheet": "Spreadsheet",
     "fileTypePresentation": "Presentation",
@@ -3909,6 +4095,7 @@
     "messageQueue": "Message Queue",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
+    "turnStarting": "Starting…",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",
@@ -3964,6 +4151,7 @@
       }
     },
     "toolResult": {
+      "answersInSummary": "See the answers in the clarification card. Sensitive input is hidden.",
       "success": "done",
       "failed": "failed",
       "timeout": "Execution timed out",
@@ -4048,7 +4236,7 @@
           "manual": "Manual approval",
           "system": "System permission check"
         },
-        "risk": "Risk",
+        "risk": "Tool capability risk",
         "riskValues": {
           "critical": "Critical",
           "high": "High",
@@ -4056,7 +4244,7 @@
           "low": "Low",
           "unknown": "Unknown"
         },
-        "reason": "Reason",
+        "reason": "Approval rationale",
         "reasonValues": {
           "approved": "Permission review allowed this operation.",
           "denied": "Permission review denied this operation.",
@@ -4173,6 +4361,7 @@
     "pauseFailed": "Pause failed",
     "cancelFailed": "Cancel failed",
     "supplementFailed": "Supplement failed",
+    "supplementAttachmentsUnsupported": "Messages with attachments cannot be sent immediately. Click \"Edit\" to remove the attachments, then send again.",
     "resumeFailed": "Resume failed",
     "submitAnswerFailed": "Failed to submit answer",
     "unknownError": "Unknown error",
@@ -4210,6 +4399,7 @@
     "pipRestart": "Restart now",
     "restoreDefaults": "Restore Default Source",
     "currentVersion": "Current version",
+    "builtOn": "Built on",
     "latestVersion": "Latest version",
     "state": "Update state",
     "publishedAt": "Published at",
@@ -4405,7 +4595,9 @@
         "archiveFailed": "The archive operation failed. Please try again later.",
         "projectNameConflict": "Another project already uses this name, so the project cannot be restored. Rename that project first.",
         "cronStopFailed": "Its cron jobs could not all be stopped, so the project stays visible and was not removed. Please try again.",
-        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again."
+        "removeSessionBusy": "Some conversations in this project are still running, so it cannot be removed. Stop them first, then try again.",
+        "archiveSessionFinalizing": "This conversation is still finishing up. Try archiving again shortly.",
+        "removeSessionFinalizing": "This conversation is still finishing up. Try removing the project again shortly."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"
@@ -4739,7 +4931,8 @@
       "invalidType": "Only .zip / .tar files are supported",
       "importSuccess": "Plugin imported successfully",
       "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",
-      "missingReadme": "The plugin package is missing README.md."
+      "missingReadme": "The plugin package is missing README.md.",
+      "skillPathNotRelative": "Skill paths in the package must be relative to the package root (e.g. ./skills/xxx), not absolute host paths."
     },
     "common": {
       "back": "Back",
@@ -5188,12 +5381,6 @@
     "budgetPlaceholder": "Enter number",
     "budgetActualHint": "Configured limit: {{count}} tokens",
     "workflowList": "Workflow List",
-    "worktreeToggleLabel": "Worktree isolation",
-    "worktreeGuideTitle": "Choose a project directory for worktree isolation",
-    "worktreeGuideDescription": "Worktree isolation is on: code-editing tasks in the workflow can run in an independent worktree of the project, leaving the main repository untouched. Worktrees are created from the project directory — pick one via the highlighted project selector; if isolation is not needed, you can turn the switch off in the SwarmFlow settings.",
-    "worktreeGuideHint": "Click the project selector to choose a directory",
-    "worktreeGuideAcknowledge": "Got it",
-    "worktreeGuideSkip": "Skip",
     "verifyReviewing": "Reviewing…",
     "verifyReviewingShort": "Reviewing",
     "verifyPass": "✓ Pass",

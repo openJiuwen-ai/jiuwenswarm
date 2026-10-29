@@ -89,6 +89,9 @@ class DesignEventBridge:
         ))
         state["status"] = "completed"
         state["completed_at"] = _now_ms()
+        # A successful rerun invalidates a previous failure's reason — error
+        # is write-only on the failed paths otherwise and would stick forever.
+        state.pop("error", None)
         self._produced[node_id] = dict(produced)
         text = str(produced.get("text") or "")
         ref = produced.get("output_ref")
@@ -138,6 +141,9 @@ class DesignEventBridge:
             state = states.setdefault(node_id, _pending_state())
             state["status"] = "running"
             state["started_at"] = _now_ms()
+            # Restart clears the previous failure's reason so it does not
+            # display alongside the new run in progress.
+            state.pop("error", None)
             # Parallel waves keep every started node visible (the old
             # executor published the full ready-set; overwriting to the last
             # starter hides the wave).
@@ -156,6 +162,9 @@ class DesignEventBridge:
             state = states.setdefault(node_id, _pending_state())
             state["status"] = "completed"
             state["completed_at"] = _now_ms()
+            # The engine-side completion path clears stale error too (same
+            # contract as on_node_result: success invalidates old failures).
+            state.pop("error", None)
             self._detach_current(node_id)
             self._persist_run()
             self._push(node_id)
