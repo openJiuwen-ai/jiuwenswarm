@@ -147,7 +147,12 @@ async def test_network_default_only_changes_sync_restart_and_report_supported_de
         lambda _config: None,
     )
     live = load_yaml_round_trip(service.config_path)
-    live["sandbox"]["enabled"] = True
+    identity = {
+        "type": "jiuwenbox", "url": "http://127.0.0.1:8321", "startup_mode": "internal",
+        "policy_file": "sandbox-policy.yaml", "limits": deepcopy(live["sandbox"]["limits"]),
+        "idle_ttl_seconds": 900, "custom": {"keep": ["nested", "values"]},
+    }
+    live["sandbox"].update(identity, enabled=True)
     live["permissions"]["file_guard"] = {
         "enabled": True, "defaults": {"read": "allow", "write": "allow", "exec": "allow"}, "paths": [],
     }
@@ -180,6 +185,8 @@ async def test_network_default_only_changes_sync_restart_and_report_supported_de
         saved = load_yaml_round_trip(service.config_path)["sandbox"]
         assert saved["network_default"] == default
         assert saved["urls"] == {"allowed.example.com": "allow"}
+        assert saved["enabled"] is True
+        assert {key: saved[key] for key in identity} == identity
     assert restarts == ["deny", "allow"]
 
 

@@ -396,14 +396,32 @@ def test_publish_requires_composition_capable_core(service, monkeypatch):
     assert service.config_path.read_bytes() == before
 
 
-def test_publish_and_record_apply_preserve_unmanaged_config(service):
+@pytest.mark.parametrize("canonical_path", [False, True])
+def test_publish_and_record_apply_preserve_unmanaged_config(service, monkeypatch, canonical_path):
+    from jiuwenswarm.common import config as config_module
+
+    if canonical_path:
+        monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path)
+    else:
+        monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", service.config_path.with_name("other.yaml"))
+    live = load_yaml_round_trip(service.config_path)
+    sandbox = {
+        "enabled": False, "type": "jiuwenbox", "url": "http://127.0.0.1:8321",
+        "startup_mode": "internal", "policy_file": "sandbox-policy.yaml",
+        "limits": {"max_file_mb": 100, "exec_timeout_seconds": 600},
+        "idle_ttl_seconds": 900, "custom": {"keep": ["nested", "values"]},
+    }
+    live["sandbox"] = deepcopy(sandbox)
+    dump_yaml_round_trip(service.config_path, live)
     service.initialize_from_live()
     revision = service.update_settings({"fail_closed": {"enabled": True}})["revision"]
     result = service.publish_candidate(expected_revision=revision)
     live = load_yaml_round_trip(service.config_path)
     assert result["apply"]["revision"] == revision
     assert live["model"] == "untouched"
-    assert live["sandbox"] == {"enabled": False, "type": "jiuwenbox"}
+    assert live["sandbox"] == sandbox
+    assert result["config"]["sandbox"] == sandbox
+    assert result["previous"]["sandbox"] == sandbox
     assert live["security"]["fail_closed"] == {"enabled": True}
     assert live["permissions"]["composition"]["revision"] == revision
     failed = service.record_apply(revision, {"rail": "applied", "host_exit": "failed", "sandbox": "not_required"})
