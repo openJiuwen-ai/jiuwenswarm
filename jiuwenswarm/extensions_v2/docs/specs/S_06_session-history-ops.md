@@ -4,9 +4,9 @@
 | --- | --- |
 | 编号 | S_06 / session-history-ops |
 | 最近修订日期 | 2026-10-29 |
-| 关联特性与字段填写手册 | [F_16](../features/F_16_session-history-ops.md) |
+| 关联特性与字段填写手册 | [F_16 追加](../features/F_16_session-history-ops.md) / [F_23 查询](../features/F_23_session-messages-ops.md) |
 
-本规约维护稳定边界和不变量。[F_16 第 3 节](../features/F_16_session-history-ops.md#3-事件契约)逐字段说明事件输入、message/origin 嵌套字段和输出；[第 4 节](../features/F_16_session-history-ops.md#4-方法契约)说明所有 Ops 参数、默认值、填写示例和迁移。实际类型唯一实现于 event_types/session_history.py，不另维护一份完整 Schema。
+本规约维护稳定边界和不变量。[F_16 第 3 节](../features/F_16_session-history-ops.md#3-事件契约)逐字段说明事件输入、message/origin 嵌套字段和输出；[第 4 节](../features/F_16_session-history-ops.md#4-方法契约)说明 append 参数、默认值、填写示例和迁移。[F_23 第 4 节](../features/F_23_session-messages-ops.md#4-方法契约)独立说明 messages 的全部参数、记录字段、固定快照和错误；两份 feature 共用本规约，不复制另一套不变量。实际类型唯一实现于 event_types/session_history.py，不另维护一份完整 Schema。
 
 ## 1. 公开接口
 
@@ -16,7 +16,7 @@
 
 `ops.session.append(note)` 接受新格式 `{id, message}` 或兼容旧格式 `{id, role, content}`；同一原请求必须连参数格式一起保持重试。新 message 只允许 user/assistant/system 文本消息，不能制造工具调用/结果或媒体。平台固定会话和包身份、来源和行 uuid；追加 transcript_only，不启动 Agent。旧事件字段 content/source/role/message_id 已被结构化输入替代，旧回执 message 的产品记录应改读 history_record。
 
-`ops.session.messages(limit=50, cursor=None)` 直接读主历史固定快照，limit 为 1～100 的非 bool 整数；cursor 为不透明非空字符串或 None。返回 messages/next_cursor/has_more/snapshot_id，记录按新到旧，移除内部 _session_append。新记录可含 uuid/transcript_message/native_message，旧记录不保证有这些可选字段。
+`ops.session.messages(limit=50, cursor=None)` 直接读主历史固定快照，limit 为 1～100 的非 bool 整数；cursor 为不透明非空字符串或 None。返回 messages/next_cursor/has_more/snapshot_id，记录按新到旧，移除内部 _session_append。新记录可含 uuid/transcript_message/native_message，旧记录不保证有这些可选字段。独立只读用户包和平台调用链见 F_23，无需先追加或注册追加 Handler。
 
 ## 2. 平台覆盖
 
@@ -44,4 +44,4 @@ event_types 只定义/校验/注册，history_events 触发，history_message �
 
 新公开事件/回执在未合入 PR 内迁移，旧 append 方法字符串参数保留；旧历史格式不强制迁移。旧 JSON 写入模式保留既有写行为，但 cursor 查询报 HISTORY_FORMAT_UNSUPPORTED。历史查询空结果不等于错误，保存文件成功不保证所有派生元数据原子提交或 fsync 断电耐久。
 
-完整 USER 包、两条运行链、字段表、Claude 对照、实际验证与未验证范围统一见 F_16 与示例 README。本次不引入 agentId/Team 范围，不恢复 server.request.handle，不新增消息查询事件。
+追加事件/方法的字段、运行链、迁移见 F_16；只读 messages 的字段、分页和独立用户包见 F_23。联合示例仍见 session_history_audit README，历史验证分清两份文档各自覆盖范围。本次不引入 agentId/Team 范围，不恢复 server.request.handle，不新增消息查询事件。
