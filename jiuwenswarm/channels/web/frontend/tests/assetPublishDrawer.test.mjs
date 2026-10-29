@@ -194,6 +194,31 @@ test('all four kinds open the shared review, retain moderation result, and never
     ['skill', 'agent_template', 'agent_group', 'plugin', 'mcp'],
   );
 });
+test('review lists show file paths and notes verbatim', async () => {
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => ({
+    ...draft,
+    files: ['SKILL.md', 'templates/a.md'],
+    excluded: ['.env'],
+    normalizations: ['manifest.display_name: generated zh/en'],
+    dependencies: [{ kind: 'skill', path: 'skills/demo', embedded: true }],
+  });
+  await act(async () => openAssetPublish({ kind: 'skill', local_id: 'verbatim' }));
+  await tick();
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  const items = [...document.querySelectorAll('[data-testid="asset-publish-review-item"]')].map((node) => node.textContent);
+  assert.ok(items.includes('SKILL.md'));
+  assert.ok(items.includes('.env'));
+  assert.ok(items.some((value) => value.startsWith('manifest.display_name')));
+  // Dependencies are objects; they must be summarized, not turned into a failure message.
+  assert.ok(items.some((value) => value.startsWith('kind: skill') && value.includes('skills/demo')));
+  assert.ok(!items.some((value) => /请求未完成|The request did not complete/.test(value)));
+  await act(async () => find('asset-publish-close').click());
+});
+
 test('account change discards an in-flight prepare result', async () => {
   let resolve;
   assetPublishApi.prepare = () => new Promise((r) => (resolve = r));
