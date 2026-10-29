@@ -795,7 +795,7 @@ react:
       reasoning_preview_max_chars: 512     # 摘要里 reasoning 预览的最大字符数
       bailout_threshold: 3                 # reasoning 规则压缩次数达此值后中止
       tool_args_bailout_threshold: 2       # 工具入参规则压缩次数达此值后终止
-      # Exempt async poll as a break wall: direct image_get_run and invoke_tool->image_get_run.
+      # 豁免异步轮询作为断墙：image_get_run 直调与 invoke_tool 包装调用（按名豁免，脱离本段循环网，靠会话超时等兜底）
       ignored_tool_calls:
         - tool_name: image_get_run
           argument_equals: {}
