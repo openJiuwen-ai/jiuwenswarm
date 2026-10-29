@@ -16,27 +16,6 @@ def _deployment_path() -> str:
     return os.path.normcase(str(path))
 
 
-def deployment_scope() -> str:
-    """A stable installation/environment owner, independent of its build ID."""
-    environment = os.path.normcase(str(Path(sys.prefix).resolve()))
-    return hashlib.sha256(f"{_deployment_path()}\0{environment}\0{data_scope()}".encode()).hexdigest()
-
-
-def _identity_path() -> Path:
-    if getattr(sys, "frozen", False):
-        package = Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "jiuwenswarm"
-    else:
-        package = Path(__file__).resolve().parents[2]
-    return package / "_worker_build_identity.json"
-
-
-def _source_identity(fingerprint: str, label: str) -> str:
-    from jiuwenswarm.server.supervisor.dependency_identity import environment_identity
-
-    environment = environment_identity()
-    return hashlib.sha256(f"source-v2\0{fingerprint}\0{environment}\0{label}".encode()).hexdigest()
-
-
 def _is_launch_parent(parent_pid: int) -> bool:
     direct = os.getppid()
     if direct == parent_pid:
@@ -59,14 +38,13 @@ def _is_launch_parent(parent_pid: int) -> bool:
 def launch_identity_payload(fingerprint: str) -> bytes:
     """Describe the parent's validated deployment on a private spawn pipe."""
     observation = None
-    if not getattr(sys, "frozen", False) and not _identity_path().is_file():
+    if not getattr(sys, "frozen", False):
         from jiuwenswarm.server.supervisor.identity_cache import launch_source_observation
 
         observation = launch_source_observation()
     return (json.dumps({"schema": 1, "parent_pid": os.getpid(),
         "package": _deployment_path(),
-        "data_scope": data_scope(), "deployment_scope": deployment_scope(),
-        "build_label": os.environ.get("JIUWENSWARM_BUILD_ID", "").strip(),
+        "data_scope": data_scope(), "build_label": os.environ.get("JIUWENSWARM_BUILD_ID", "").strip(),
         "code_identity": fingerprint, "source_observation": observation}) + "\n").encode()
 
 
@@ -106,8 +84,6 @@ def read_launch_identity() -> str:
             raise ValueError("identity pipe does not describe this child deployment")
         if payload.get("package") != _deployment_path() or payload.get("data_scope") != data_scope():
             raise ValueError("identity pipe does not describe this child deployment")
-        if payload.get("deployment_scope") != deployment_scope():
-            raise ValueError("identity pipe does not describe this child deployment")
         if payload.get("build_label") != os.environ.get("JIUWENSWARM_BUILD_ID", "").strip():
             raise ValueError("identity pipe does not describe this child deployment")
         if not _valid_fingerprint(fingerprint):
@@ -119,7 +95,8 @@ def read_launch_identity() -> str:
 
             source = verify_launch_source(Path(__file__).resolve().parents[2], observation)
             if source is not None:
-                observed_identity = _source_identity(source, payload["build_label"])
+                observed_identity = hashlib.sha256(
+                    f"source-v1\0{source}\0{payload['build_label']}".encode()).hexdigest()
         # Frozen identity is an O(1) bundled check. Unobservable source/cache
         # falls back to full validation; a private pipe cannot hide an upgrade.
         if observed_identity is None:
@@ -141,19 +118,27 @@ def data_scope() -> str:
 
 def code_identity() -> str:
     override = os.environ.get("JIUWENSWARM_BUILD_ID", "").strip()
-    bundled = _identity_path()
-    if bundled.exists() or getattr(sys, "frozen", False):
-        from jiuwenswarm.common.worker_build_identity import read_build_identity
-
-        payload = read_build_identity(bundled)
-        fingerprint = payload["fingerprint"] if payload["schema"] == 1 else payload["backend_build_id"]
-        if getattr(sys, "frozen", False):
-            return hashlib.sha256(f"frozen-v2\0{fingerprint}\0{override}".encode()).hexdigest()
-        # A wheel does not freeze its installed dependencies. The same wheel
-        # can execute different SDK code after an environment update.
-        return _source_identity(fingerprint, override)
+    if getattr(sys, "frozen", False):
+        bundled = (
+            Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "jiuwenswarm" / "_worker_build_identity.json"
+        )
+        try:
+            payload = json.loads(bundled.read_text(encoding="utf-8"))
+            fingerprint = payload["fingerprint"]
+            if payload.get("schema") != 1 or not _valid_fingerprint(fingerprint):
+                raise ValueError("invalid controlled build identity")
+        except (OSError, ValueError, KeyError, TypeError):
+            fingerprint = ""
+        if fingerprint:
+            return hashlib.sha256(f"frozen-v1\0{fingerprint}\0{override}".encode()).hexdigest()
+        # Older packages have no controlled build identity. Preserve the
+        # executable-based validation rather than trusting an environment ID.
+        executable = Path(sys.executable)
+        stat = executable.stat()
+        legacy = hashlib.sha256(f"{executable}\0{stat.st_size}\0{stat.st_mtime_ns}".encode()).hexdigest()
+        return hashlib.sha256(f"{legacy}\0{override}".encode()).hexdigest() if override else legacy
     from jiuwenswarm.server.supervisor.identity_cache import source_fingerprint
     fingerprint = source_fingerprint(Path(__file__).resolve().parents[2])
     # An explicit build label distinguishes deployments, but cannot override
     # dirty source or lockfile validation in a source checkout.
-    return _source_identity(fingerprint, override)
+    return hashlib.sha256(f"source-v1\0{fingerprint}\0{override}".encode()).hexdigest()

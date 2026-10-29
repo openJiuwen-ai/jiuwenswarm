@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from jiuwenswarm.server.ipc.protocol import KIND_REQUEST
 from jiuwenswarm.server.worker import diagnostics, service
+from jiuwenswarm.server.worker.main import main
 
 
 class SlowShellProbe:
@@ -232,16 +233,22 @@ class TrafficRuntime:
         )
 
 
-def configure(mode: str) -> None:
+def run() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell", "slow-logging", "regex-logging"], required=True
+    )
+    args, remaining = parser.parse_known_args()
+
     async def load_runtime(host, port, signals, dispatcher, loaded):
-        runtime = TrafficRuntime(mode)
+        runtime = TrafficRuntime(args.mode)
         await dispatcher.bind_runtime(runtime)
         loaded["runtime"] = runtime
         signals.agent_ready()
         return runtime
 
     service._load_runtime = load_runtime
-    if mode == "crash":
+    if args.mode == "crash":
 
         async def crashing_session(conn, dispatcher):
             diagnostics.arm_stall_dump()
@@ -256,15 +263,6 @@ def configure(mode: str) -> None:
                 diagnostics.cancel_stall_dump()
 
         service._read_session = crashing_session
-def run() -> None:
-    from jiuwenswarm.server.worker.main import main
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell", "slow-logging", "regex-logging"], required=True
-    )
-    args, remaining = parser.parse_known_args()
-    configure(args.mode)
     sys.argv = [sys.argv[0], *remaining]
     main()
 
