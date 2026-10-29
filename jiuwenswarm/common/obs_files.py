@@ -24,13 +24,13 @@ DOWNLOAD_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def download_object_key(tenant_key: str, asset_id: str, filename: str) -> str:
-    if (
-        not tenant_key
-        or not re.fullmatch(r"[0-9a-f]{32}", asset_id)
-        or not filename
-        or filename in {".", ".."}
-        or any(char in filename for char in "/\\\0")
-    ):
+    asset_id_ok = bool(re.fullmatch(r"[0-9a-f]{32}", asset_id))
+    filename_ok = (
+        bool(filename)
+        and filename not in {".", ".."}
+        and not any(char in filename for char in "/\\\0")
+    )
+    if not tenant_key or not asset_id_ok or not filename_ok:
         raise ValueError("invalid download object scope")
     scope = hashlib.sha256(tenant_key.encode()).hexdigest()
     return f"downloads/{scope}/{asset_id}/{filename}"
@@ -137,7 +137,9 @@ class AttachmentStore:
 
     def upload_file(self, path: Path, key: str, *, session_id: str = "") -> dict:
         """Upload the workspace file directly; no local delivery copy is created."""
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), 0o600
+        )
         with os.fdopen(descriptor, "rb") as source:
             info = os.fstat(source.fileno())
             if not stat.S_ISREG(info.st_mode):
@@ -146,7 +148,10 @@ class AttachmentStore:
             if size > MAX_FILE_BYTES:
                 raise ValueError("file exceeds 50 MiB")
             checksum = hashlib.sha256()
-            while chunk := source.read(1024 * 1024):
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
                 checksum.update(chunk)
             digest = f"sha256:{checksum.hexdigest()}"
             source.seek(0)
@@ -172,11 +177,10 @@ class AttachmentStore:
         """Restrict proxy URLs to this store and the selected tenant's deliveries."""
         parsed = urlsplit(url)
         prefix = f"/{self.bucket}/"
-        if (
-            f"{parsed.scheme}://{parsed.netloc}" != self.origin
-            or parsed.fragment or parsed.username is not None
-            or not parsed.path.startswith(prefix)
-        ):
+        origin_ok = f"{parsed.scheme}://{parsed.netloc}" == self.origin
+        path_ok = parsed.path.startswith(prefix)
+        identity_ok = not parsed.fragment and parsed.username is None
+        if not origin_ok or not path_ok or not identity_ok:
             raise ValueError("download must use the configured object store")
         key = unquote(parsed.path[len(prefix):])
         parts = key.split("/")
@@ -191,16 +195,16 @@ class AttachmentStore:
         path_prefix = f"/{self.bucket}/"
         if not parsed.path.startswith(path_prefix):
             raise ValueError("attachment URL must use the configured bucket")
-        key = unquote(parsed.path[len(path_prefix) :])
+        key = unquote(parsed.path[len(path_prefix):])
         suffix = key.removeprefix(prefix).split("/")
-        if (
-            not key.startswith(prefix)
-            or len(suffix) != 2
-            or not re.fullmatch(r"[0-9a-f]{32}", suffix[0])
-            or not suffix[1]
-            or suffix[1] in {".", ".."}
-            or any(char in suffix[1] for char in "\\\0")
-        ):
+        name = suffix[1] if len(suffix) == 2 else ""
+        uuid_ok = bool(re.fullmatch(r"[0-9a-f]{32}", suffix[0])) if len(suffix) == 2 else False
+        name_ok = (
+            bool(name)
+            and name not in {".", ".."}
+            and not any(char in name for char in "\\\0")
+        )
+        if not key.startswith(prefix) or not uuid_ok or not name_ok:
             raise ValueError("attachment does not belong to the current context")
         return key
 

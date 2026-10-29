@@ -18,6 +18,7 @@ from jiuwenswarm.server.handlers.mcp import _mask_sensitive_fields
 
 logger = logging.getLogger(__name__)
 
+
 async def handle_mcp_list(ctx: RequestContext) -> None:
     """Handle ``mcp.list`` RPC: list marketplace MCPs (read-only).
 
@@ -54,6 +55,7 @@ async def handle_mcp_list(ctx: RequestContext) -> None:
             payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_mcp_show(ctx: RequestContext) -> None:
     """Handle ``mcp.show`` RPC: return one MCP detail with tools."""
@@ -101,6 +103,7 @@ async def handle_mcp_show(ctx: RequestContext) -> None:
             payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_mcp_install(ctx: RequestContext) -> None:
     """Download, install, and connect a Hub MCP in one interaction."""
@@ -160,6 +163,7 @@ async def handle_mcp_install(ctx: RequestContext) -> None:
             payload={"type": "install_failed", "error": str(exc), "code": "MCP_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_mcp_uninstall(ctx: RequestContext) -> None:
     """Disconnect and remove an installed Hub MCP package."""
@@ -249,6 +253,7 @@ async def handle_mcp_uninstall(ctx: RequestContext) -> None:
         )
     await ctx.sink.send_response(resp)
 
+
 async def _run_mcp_connect_flow(
     services, name: str, *, rollback_on_probe_failure: bool = True
 ) -> dict[str, Any]:
@@ -311,6 +316,7 @@ async def _run_mcp_connect_flow(
         "applied": True,
         "item": _mask_sensitive_fields(item),
     }
+
 
 async def handle_mcp_connect(ctx: RequestContext) -> None:
     """Handle ``mcp.connect``; CLI OAuth may return ``auth_required``."""
@@ -375,6 +381,7 @@ async def handle_mcp_connect(ctx: RequestContext) -> None:
         )
     await ctx.sink.send_response(resp)
 
+
 async def handle_mcp_cancel_connect(ctx: RequestContext) -> None:
     """Handle ``mcp.cancel_connect``: abort an in-flight connect/auth flow.
 
@@ -417,6 +424,7 @@ async def handle_mcp_cancel_connect(ctx: RequestContext) -> None:
             payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_mcp_wait_auth(ctx: RequestContext) -> None:
     """Handle ``mcp.wait_auth`` RPC: hold-open poll for CLI OAuth completion.
@@ -483,6 +491,7 @@ async def handle_mcp_wait_auth(ctx: RequestContext) -> None:
             payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_mcp_disconnect(ctx: RequestContext) -> None:
     """Handle ``mcp.disconnect`` RPC: remove from config + reload."""
@@ -580,6 +589,7 @@ async def handle_mcp_disconnect(ctx: RequestContext) -> None:
         )
     await ctx.sink.send_response(resp)
 
+
 async def _finalize_cli_auth(services, name: str, item: dict[str, Any]) -> dict[str, Any]:
     """Run the post-auth side-effects for a CLI MCP connect.
 
@@ -610,6 +620,7 @@ async def _finalize_cli_auth(services, name: str, item: dict[str, Any]) -> dict[
         "applied": True,
         "item": _mask_sensitive_fields(item),
     }
+
 
 async def _await_cli_auth(
     services, name: str, step_index: int,
@@ -705,6 +716,7 @@ async def _await_cli_auth(
         logger.exception("[AgentWebSocketServer] _await_cli_auth '%s' failed: %s", name, exc)
         return {"type": "auth_failed", "name": name, "error": str(exc)}
 
+
 async def handle_mcp_register_custom(ctx: RequestContext) -> None:
     """Handle ``mcp.register_custom`` RPC: write a user-defined MCP server config.
 
@@ -773,6 +785,7 @@ async def handle_mcp_register_custom(ctx: RequestContext) -> None:
             payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_mcp_delete_custom(ctx: RequestContext) -> None:
     """Handle ``mcp.delete_custom``: terminal teardown of a custom MCP."""
@@ -854,6 +867,7 @@ async def handle_mcp_delete_custom(ctx: RequestContext) -> None:
             payload={"type": "internal_error", "error": str(exc), "code": "MCP_INTERNAL"},
         )
     await ctx.sink.send_response(resp)
+
 
 async def handle_mcp_save_credentials(ctx: RequestContext) -> None:
     """Handle ``mcp.save_credentials`` RPC: persist user-supplied tokens.

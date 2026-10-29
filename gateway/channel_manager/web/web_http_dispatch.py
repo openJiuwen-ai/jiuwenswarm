@@ -183,8 +183,8 @@ async def dispatch_http_request(
 
     from gateway.channel_manager.web.web_connect import WebChannel
 
-    parse_req = getattr(channel, "_parse_req_method", None) or WebChannel._parse_req_method
-    parse_mode = getattr(channel, "_parse_mode", None) or WebChannel._parse_mode
+    parse_req = getattr(channel, "parse_req_method", None) or WebChannel.parse_req_method
+    parse_mode = getattr(channel, "parse_mode", None) or WebChannel.parse_mode
 
     user_message = Message(
         id=req_id,

@@ -109,7 +109,6 @@ class ExtensionLoader:
 
         import shutil
         import subprocess
-        import sys
 
         uv_path = shutil.which("uv")
         use_uv = uv_path is not None

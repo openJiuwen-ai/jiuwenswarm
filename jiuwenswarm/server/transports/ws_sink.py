@@ -64,4 +64,4 @@ class WSSink:
 
         import jiuwenswarm.server.agent_ws_server as ws_server
 
-        return ws_server._StreamKeepalive(self._ws, request, self._send_lock)
+        return ws_server.StreamKeepalive(self._ws, request, self._send_lock)

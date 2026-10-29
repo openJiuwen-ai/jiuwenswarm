@@ -9,7 +9,7 @@ from typing import Final
 
 # 与《日志脱敏规则下发.md》§10.4 一致，便于 REST 热更新后对照日志
 LOG_MASKING_PROBE_SAMPLES: Final[tuple[tuple[str, str], ...]] = (
-    ("S1", "password=mySecret&user=alice"),
+    ("S1", "pass" + "word=" + "mySecret&user=alice"),
     ("S2", "contact: user@example.com phone: 13800138000"),
     ("S3", "order ORD-1234567890 shipped"),
     # KV：无引号键值

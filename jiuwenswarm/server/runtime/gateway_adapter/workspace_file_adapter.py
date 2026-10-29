@@ -153,8 +153,21 @@ class WorkspaceFileAdapter(GatewayAdapter):
                     if not isinstance(item, dict):
                         continue
                     for key in ("path", "original_path"):
-                        if item.get(key) and (root is None or not Path(item[key]).resolve().is_relative_to(root.resolve())):
-                            return build_error_response(request, "attachment outside tenant workspace", code="FORBIDDEN")
+                        raw_path = item.get(key)
+                        if not raw_path:
+                            continue
+                        outside = (
+                            root is None
+                            or not Path(raw_path).resolve().is_relative_to(
+                                root.resolve()
+                            )
+                        )
+                        if outside:
+                            return build_error_response(
+                                request,
+                                "attachment outside tenant workspace",
+                                code="FORBIDDEN",
+                            )
         if method == ReqMethod.MEDIA_PERSIST:
             return await self._handle_media_persist(request)
         if method == ReqMethod.MEDIA_DISCARD:

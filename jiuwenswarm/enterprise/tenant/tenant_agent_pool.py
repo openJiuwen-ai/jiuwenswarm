@@ -73,24 +73,34 @@ class TenantAgentPool:
         """返回已初始化的单例；若尚未创建则返回 None（不触发构造）."""
         return cls._instance
 
+    def reset_runtime_state(self) -> None:
+        """清空 LRU 与创建锁（测试 / 单例重置用公开入口）."""
+        try:
+            # 避免 asyncio.run / 残留 task 在 pytest 下触发 unclosed loop
+            self._agent_wrappers = AsyncLRUCache(
+                max_size=None,
+                ttl_seconds=None,
+            )
+        except Exception:
+            logger.debug(
+                "[TenantAgentPool] reset_runtime_state cache replace failed",
+                exc_info=True,
+            )
+        self._locks.clear()
+        self._lock_loops.clear()
+
+    async def touch_manager_if_same(
+        self, tenant_key: str, manager: AgentManager
+    ) -> bool:
+        """若池中仍是同一 Manager，则续约 LRU 访问时间."""
+        return await self._agent_wrappers.touch_if_same(tenant_key, manager)
+
     @classmethod
     def reset_instance(cls) -> None:
         """重置单例（仅用于测试）."""
         if cls._instance is not None:
             logger.info("[TenantAgentPool] Resetting singleton instance")
-            try:
-                # 避免 asyncio.run / 残留 task 在 pytest 下触发 unclosed loop
-                cls._instance._agent_wrappers = AsyncLRUCache(
-                    max_size=None,
-                    ttl_seconds=None,
-                )
-            except Exception:
-                logger.debug(
-                    "[TenantAgentPool] reset_instance cache replace failed",
-                    exc_info=True,
-                )
-            cls._instance._locks.clear()
-            cls._instance._lock_loops.clear()
+            cls._instance.reset_runtime_state()
         cls._instance = None
 
     def _get_lock(self, cache_key: Hashable) -> asyncio.Lock:

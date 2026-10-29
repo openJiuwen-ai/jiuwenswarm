@@ -59,16 +59,20 @@ def _annotate_model_error(payload: dict[str, Any], session_id: str | None) -> No
 class _QuietKeepalive:
     """HTTP 没有长连接空闲块。这些方法留着，是为了流式处理函数能照常调用。"""
 
-    def start(self) -> None:
+    @staticmethod
+    def start() -> None:
         return None
 
-    def notify_activity(self, *, terminal: bool = False) -> None:
+    @staticmethod
+    def notify_activity(*, terminal: bool = False) -> None:
         return None
 
-    def signal_stop(self) -> None:
+    @staticmethod
+    def signal_stop() -> None:
         return None
 
-    async def stop(self) -> None:
+    @staticmethod
+    async def stop() -> None:
         return None
 
 
@@ -86,7 +90,8 @@ class UnaryHTTPSink:
         self.body = chunk_to_dict(chunk, sequence=sequence)
         return True
 
-    def open_stream_keepalive(self, request: Any) -> _QuietKeepalive:
+    @staticmethod
+    def open_stream_keepalive(request: Any) -> _QuietKeepalive:
         return _QuietKeepalive()
 
 
@@ -109,7 +114,8 @@ class SSESink:
             await self.close()
         return True
 
-    def open_stream_keepalive(self, request: Any) -> _QuietKeepalive:
+    @staticmethod
+    def open_stream_keepalive(request: Any) -> _QuietKeepalive:
         return _QuietKeepalive()
 
     async def frames(self):

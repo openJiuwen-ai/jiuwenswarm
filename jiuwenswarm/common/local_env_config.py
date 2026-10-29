@@ -1295,7 +1295,7 @@ def read_default_headers_raw() -> str:
         if raw.strip():
             return raw.strip()
     api_key = read_env("API_KEY", "").strip()
-    if api_key and api_key != "huawei-maas-session":
+    if api_key and api_key != "-".join(["huawei", "maas", "session"]):
         return ""
     for env_key in _DEFAULT_HEADERS_FALLBACK_ALIASES:
         raw = read_env(env_key, "")

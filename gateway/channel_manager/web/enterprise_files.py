@@ -156,8 +156,14 @@ def register_enterprise_file_routes(app: FastAPI, channel) -> None:
                     error="upload read failed", code=code,
                     status_code=503 if code == "SERVICE_UNAVAILABLE" else None,
                 )
-            decoded = _decode_verified_chunk(result, expected_offset=offset, expected_limit=limit)
-            return decoded if decoded is not None else JSONResponse({"error": "invalid_upload_response"}, status_code=502)
+            decoded = _decode_verified_chunk(
+                result, expected_offset=offset, expected_limit=limit
+            )
+            if decoded is not None:
+                return decoded
+            return JSONResponse(
+                {"error": "invalid_upload_response"}, status_code=502
+            )
 
         return await serve_file_chunks(request, read_chunk, inline=True)
 

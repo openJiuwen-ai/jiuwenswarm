@@ -968,6 +968,7 @@ from jiuwenswarm.server.runtime.skill.source_registry import (
     SourceRegistryError,
 )
 
+
 def _state_transactional(method: Callable[..., Any]) -> Callable[..., Any]:
     """Wrap a synchronous SkillManager mutation in the workspace lock.
 
@@ -5062,7 +5063,6 @@ class SkillManager:
                 "缺少会话信息，无法校验 download_token",
             )
 
-        from jiuwenswarm.enterprise import is_enterprise
         from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
         enterprise = is_enterprise()
@@ -12387,12 +12387,13 @@ class SkillManager:
             for record in [*plugins, *local_skills]
             if isinstance(record, dict)
         ]
-        builtin_records = [
-            record
-            for record in records
-            if self._is_builtin_installation_record(record)
-            and str(record.get("name") or "").strip() not in keep
-        ]
+        builtin_records = []
+        for record in records:
+            if not self._is_builtin_installation_record(record):
+                continue
+            if str(record.get("name") or "").strip() in keep:
+                continue
+            builtin_records.append(record)
         if not builtin_records:
             return
 

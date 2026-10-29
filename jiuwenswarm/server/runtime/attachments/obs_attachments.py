@@ -27,7 +27,7 @@ from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 def _open_uploads(root: Path, uploads: Path) -> int:
     """Walk directory descriptors so a concurrent symlink swap cannot escape."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-    fd = os.open(root, flags)
+    fd = os.open(root, flags, 0o700)
     try:
         for name in uploads.relative_to(root).parts:
             try:
@@ -35,7 +35,7 @@ def _open_uploads(root: Path, uploads: Path) -> int:
             except FileExistsError:
                 pass
             parent_fd = fd
-            fd = os.open(name, flags, dir_fd=parent_fd)
+            fd = os.open(name, flags, 0o700, dir_fd=parent_fd)
             os.close(parent_fd)
         return fd
     except BaseException:

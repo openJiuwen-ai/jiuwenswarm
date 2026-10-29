@@ -208,8 +208,8 @@ class SectionDocumentRepository:
         document = await self.get()
         return dict(document.body) if document else {}
 
+    @staticmethod
     def _document(
-        self,
         body: dict[str, Any],
         existing: SectionDocument | None,
     ) -> SectionDocument:

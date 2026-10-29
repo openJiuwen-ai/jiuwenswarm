@@ -20,7 +20,8 @@ class SingleTenantStrategy:
     def __init__(self, manager: AgentManager | None = None) -> None:
         self._manager = manager or AgentManager()
 
-    def extract_tenant_key(self, request: AgentRequest | None) -> str:
+    @staticmethod
+    def extract_tenant_key(request: AgentRequest | None) -> str:
         return build_tenant_key()
 
     async def resolve_manager(

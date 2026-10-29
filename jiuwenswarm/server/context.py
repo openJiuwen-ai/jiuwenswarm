@@ -184,12 +184,7 @@ class AgentServerServices:
 
         if self._connection is None:
             return
-        key = int(connection_id)
-        stored = self._connection._acp_client_capabilities_by_ws
-        if isinstance(capabilities, dict):
-            stored[key] = dict(capabilities)
-        else:
-            stored.pop(key, None)
+        self._connection.set_acp_client_capabilities(connection_id, capabilities)
 
     @property
     def session_stream_tasks(self) -> Any:
@@ -214,7 +209,7 @@ class AgentServerServices:
                 streaming=streaming,
                 sequence=sequence,
             )
-        return await self._connection._send_runtime_event(
+        return await self._connection.send_runtime_event(
             getattr(sink, "_ws", None),
             event,
             getattr(sink, "_send_lock", None),
@@ -226,7 +221,7 @@ class AgentServerServices:
         """如果这是在回答一个挂起的问题，先记下那封排队消息。"""
         if self._connection is None:
             return None
-        return await self._connection._open_session_message_resume(request)
+        return await self._connection.open_session_message_resume(request)
 
     async def finalize_session_message_resume(
         self,
@@ -239,7 +234,7 @@ class AgentServerServices:
         """这一轮结束时，把排队消息收尾。"""
         if self._connection is None:
             return
-        await self._connection._finalize_session_message_resume(
+        await self._connection.finalize_session_message_resume(
             request,
             resume_state,
             outcome=outcome,
@@ -250,13 +245,13 @@ class AgentServerServices:
         """用户还要再答一次时，把下一题和上一题对上。"""
         if self._connection is None:
             return None
-        return await self._connection._persist_repeated_session_question(request, **kwargs)
+        return await self._connection.persist_repeated_session_question(request, **kwargs)
 
     async def cleanup_client_disconnect_session_runtime(self, request: Any) -> bool:
         """对方断开后，清掉这条连接上还占着的会话运行状态。"""
         if self._connection is None:
             return False
-        return await self._connection._cleanup_client_disconnect_session_runtime(request)
+        return await self._connection.cleanup_client_disconnect_session_runtime(request)
 
     async def send_push(self, msg: Any) -> bool:
         """往当前连接主动推一条消息。压缩上下文这类命令会在回包之外再用它。"""

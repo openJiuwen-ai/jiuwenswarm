@@ -28,7 +28,7 @@ async def handle_unary(ctx: RequestContext) -> None:
     request = ctx.request
     services = ctx.services
     import jiuwenswarm.server.agent_ws_server as _ws_server
-    _TurnOutcomeTracker = _ws_server._TurnOutcomeTracker
+    TurnOutcomeTracker = _ws_server.TurnOutcomeTracker
     runtime = services.execution_runtime()
     resume_state = await services.open_session_message_resume(request)
     resume_outcome = "unknown"
@@ -42,7 +42,7 @@ async def handle_unary(ctx: RequestContext) -> None:
             sequence=0,
         )
 
-    outcome_tracker = _TurnOutcomeTracker()
+    outcome_tracker = TurnOutcomeTracker()
     try:
         if request.req_method == ReqMethod.CHAT_ANSWER:
             events = await runtime.answer_interaction(
@@ -110,7 +110,7 @@ async def handle_stream(ctx: RequestContext) -> None:
     request = ctx.request
     services = ctx.services
     import jiuwenswarm.server.agent_ws_server as _ws_server
-    _TurnOutcomeTracker = _ws_server._TurnOutcomeTracker
+    TurnOutcomeTracker = _ws_server.TurnOutcomeTracker
     from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
         PLAN_MODE_EXITED_EVENT_TYPE,
     )
@@ -132,7 +132,7 @@ async def handle_stream(ctx: RequestContext) -> None:
         services.session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
 
     chunk_count = 0
-    outcome_tracker = _TurnOutcomeTracker()
+    outcome_tracker = TurnOutcomeTracker()
     keepalive = ctx.sink.open_stream_keepalive(request)
     runtime_stream: Any | None = None
 

@@ -26,7 +26,8 @@ class MultiTenantStrategy:
     def pool(self) -> TenantAgentPool:
         return self._pool
 
-    def extract_tenant_key(self, request: AgentRequest | None) -> str:
+    @staticmethod
+    def extract_tenant_key(request: AgentRequest | None) -> str:
         if request is None:
             return build_tenant_key()
         # 企业实现：始终按三元组分槽（不回落 is_enterprise 闸门）。
@@ -65,7 +66,7 @@ class MultiTenantStrategy:
             try:
                 yield
             finally:
-                await self._pool._agent_wrappers.touch_if_same(tenant_key, manager)
+                await self._pool.touch_manager_if_same(tenant_key, manager)
         finally:
             ctx.reset()
 

@@ -8,6 +8,7 @@ module while Runtime is still warming.
 
 from __future__ import annotations
 
+import logging
 from contextlib import contextmanager
 from typing import Any, Iterator
 
@@ -17,6 +18,8 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (
 )
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_part(value: str | None, *, default: str = "default") -> str:
@@ -71,7 +74,10 @@ def extract_tenant_key(request: Any) -> str:
         if plane is not None:
             return plane.tenant.extract_tenant_key(request)
     except Exception:
-        pass
+        logger.debug(
+            "[tenant_identity] enterprise plane extract_tenant_key failed",
+            exc_info=True,
+        )
     if not is_enterprise():
         return build_tenant_key()
     group_id, bot_id, user_id = extract_triple(request)

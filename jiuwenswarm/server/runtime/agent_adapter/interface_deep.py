@@ -2054,6 +2054,9 @@ class JiuWenSwarmDeepAdapter:
         # skill retrieval switch above.
         self._tool_retrieval_session_enabled: bool | None = None
         self._skill_manager: SkillManager | None = None
+        # Prebuilt skill sync result; filled by enterprise skill sync, not create_instance.
+        self._enabled_skills: list[str] = []
+        self._prebuilt_skills: set[str] = set()
         self._a2x_client: Any | None = None
         self._a2x_config: dict[str, Any] = {}
         self._a2x_blank_service_id: str = ""
@@ -5661,6 +5664,9 @@ class JiuWenSwarmDeepAdapter:
             if marked and not ok_registered:
                 unmark_dynamic_token_server(server_id)
 
+    # Public alias for cross-adapter registration (G.CLS.11).
+    register_mcp_server = _register_mcp_server
+
     async def _register_static_mcp_server(self, cfg: McpServerConfig, *, tag: str) -> bool:
         import uuid
         if self._instance is None:
@@ -5938,7 +5944,7 @@ class JiuWenSwarmDeepAdapter:
                 # 登记）——与 _sync_mcp_servers_for_runtime 的透传口径一致；
                 # 漏传会导致 web 会话网关永远走静态头。
                 dynamic_token_url = str(entry.get("dynamic_token_url") or "").strip() or None
-                if await adapter._register_mcp_server(
+                if await adapter.register_mcp_server(
                     cfg, tag=tag, dynamic_token_url=dynamic_token_url
                 ):
                     applied_any = True
@@ -12636,7 +12642,6 @@ class JiuWenSwarmDeepAdapter:
     async def _sync_enterprise_skill_prebuilt(self) -> None:
         """Install template prebuilt skills into the tenant SkillManager workspace."""
         from jiuwenswarm.enterprise import is_enterprise
-        from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
         from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
             SkillPrebuiltSynchronizer,
             is_skill_prebuilt_tenant,
