@@ -80,6 +80,8 @@ def _has_persistable_assistant_payload(
         return True
     if et == "chat.file" and payload.get("files"):
         return True
+    if et == "chat.reference" and payload.get("references"):
+        return True
     if et == "chat.tool_call" and (payload.get("tool_call") or payload.get("tool_calls")):
         return True
     if et == "chat.tool_result" and (payload.get("tool_result") or payload.get("tool_call_id")):
@@ -1230,17 +1232,23 @@ def append_history_record(
     extra: dict[str, Any] | None = None,
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
-) -> None:
-    """向指定 session 的当前激活历史文件异步追加一条记录."""
+    wait: bool = False,
+) -> bool:
+    """Append a history record and report whether it was accepted or persisted.
+
+    ``wait=False`` keeps the existing asynchronous contract and returns True
+    once the record is queued. ``wait=True`` flushes prior writes and persists
+    this record synchronously so callers can truthfully report a durable save.
+    """
     sid = (session_id or "").strip()
     if not is_persistable_session_id(sid):
         # 空 id 或 "default"（上游 or "default" 兜底占位符）不应落盘：
         # 这类 id 不是真实会话，落盘只会凭空 mkdir 出空的 default 目录。
         logger.debug("skip history append: non-persistable session_id=%r", sid)
-        return
+        return False
     if _is_ephemeral_heartbeat_session(sid):
         logger.debug("skip heartbeat session history: session_id=%s event_type=%s", sid, event_type)
-        return
+        return False
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
     role_norm = "assistant" if role == "assistant" else "user"
@@ -1255,7 +1263,7 @@ def append_history_record(
             sid,
             event_type or "",
         )
-        return
+        return False
 
     item: dict[str, Any] = {
         "id": f"{rid}:{role_norm}",
@@ -1292,12 +1300,17 @@ def append_history_record(
     except Exception:  # noqa: BLE001
         pass
 
-    _ensure_worker_started()
-    try:
-        _WRITE_QUEUE.put_nowait((sid, item))
-    except queue.Full:
-        # 队列满时退化为同步写，避免丢历史记录。
+    if wait:
+        _ensure_worker_started()
+        _WRITE_QUEUE.join()
         _write_item(sid, item)
+    else:
+        _ensure_worker_started()
+        try:
+            _WRITE_QUEUE.put_nowait((sid, item))
+        except queue.Full:
+            # 队列满时退化为同步写，避免丢历史记录。
+            _write_item(sid, item)
 
     # 更新会话元数据
     try:
@@ -1327,6 +1340,7 @@ def append_history_record(
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)
+    return True
 
 
 def flush_history_writes() -> None:

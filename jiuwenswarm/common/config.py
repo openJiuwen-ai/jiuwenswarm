@@ -588,6 +588,9 @@ DEFAULT_PROGRESSIVE_TOOL_ENABLED = True
 # todo 四件套置为 always-visible：多阶段任务里始终直接可见，曝光优先级最高
 # （对齐 develop 的 _DEFAULT_DIRECT_TOOL_NAMES 把 todo 工具全部纳入直接工具名单）。
 DEFAULT_PROGRESSIVE_ALWAYS_VISIBLE_TOOLS: list[str] = [
+    # Runtime reference delivery must remain visible even when the remaining
+    # tool inventory is progressively disclosed.
+    "xiaoyi_append_reference",
     "todo_create",
     "todo_list",
     "todo_get",
@@ -642,9 +645,17 @@ def get_progressive_tool_always_visible_tools(config: dict[str, Any] | None = No
     if config is None:
         config = get_config()
     value = config.get("progressive_tool_always_visible_tools") if isinstance(config, dict) else None
-    if isinstance(value, list):
-        return [str(v) for v in value if isinstance(v, str) and v.strip()]
-    return list(DEFAULT_PROGRESSIVE_ALWAYS_VISIBLE_TOOLS)
+    configured = (
+        [str(v) for v in value if isinstance(v, str) and v.strip()]
+        if isinstance(value, list)
+        else list(DEFAULT_PROGRESSIVE_ALWAYS_VISIBLE_TOOLS)
+    )
+    # Old config files predate reference delivery. The rail ignores names that
+    # are not registered on channels without reference support, so adding this
+    # runtime tool here is backward compatible.
+    if "xiaoyi_append_reference" not in configured:
+        configured.insert(0, "xiaoyi_append_reference")
+    return configured
 
 
 def get_progressive_tool_default_visible_tools(config: dict[str, Any] | None = None) -> list[str]:

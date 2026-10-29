@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from jiuwenswarm.common.schema.message import EventType, Message
+from jiuwenswarm.common.xiaoyi_reference import build_a2a_reference_items
 from jiuwenswarm.gateway.channel_manager.base import RobotMessageRouter
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
     XiaoyiChannel,
@@ -64,6 +65,45 @@ def test_processing_status_is_a_status_update() -> None:
     assert build_status_update_response("task-1", "done", "completed")["final"] is True
     assert build_status_update_response("task-1", "failed", "failed")["final"] is True
     assert build_status_update_response("task-1", "cancelled", "canceled")["final"] is True
+
+
+@pytest.mark.asyncio
+async def test_reference_response_uses_huawei_reference_data_object() -> None:
+    channel, sent = _build_channel()
+    items = build_a2a_reference_items(
+        [
+            {
+                "title": "标题",
+                "url": "https://example.com/a",
+                "source": "web_search",
+                "name": "示例站",
+            }
+        ]
+    )
+
+    await channel._send_reference_response(
+        "xiaoyi-session-1",
+        "xiaoyi-task-1",
+        "request-1",
+        items,
+        "ws_url1",
+    )
+
+    assert sent[0]["msgType"] == "agent_response"
+    assert sent[0]["sessionId"] == "xiaoyi-session-1"
+    assert sent[0]["taskId"] == "xiaoyi-task-1"
+    result = _result(sent[0])
+    assert result["taskId"] == "xiaoyi-task-1"
+    assert result["kind"] == "artifact-update"
+    assert result["append"] is False
+    assert result["lastChunk"] is True
+    assert result["final"] is False
+    assert result["artifact"]["parts"] == [
+        {
+            "kind": "data",
+            "data": {"reference": {"items": items}},
+        }
+    ]
 
 
 @pytest.mark.asyncio
