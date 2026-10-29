@@ -592,6 +592,8 @@ def test_enterprise_startup_removes_only_builtin_installations(
             source=source_type,
             origin=f"{source_type}:{name}",
         )
+    # 改 frontmatter name 模拟「目录仍在、账本已清」后的未托管本地技能；
+    # 登记身份以目录名为准，不能用 frontmatter name 覆盖目录名。
     (workspace / "skills" / "builtin-only" / "SKILL.md").write_text(
         "---\nname: manually-copied\ndescription: local\n---\n",
         encoding="utf-8",
@@ -607,7 +609,7 @@ def test_enterprise_startup_removes_only_builtin_installations(
     assert records == {"managed-skill": "prebuilt", "user-skill": "user"}
     assert {
         row["name"] for row in reloaded.get_local_skills()
-    } == {"manually-copied"}
+    } == {"builtin-only"}
     assert (workspace / "skills" / "builtin-only" / "SKILL.md").is_file()
     assert (workspace / "skills" / "managed-skill" / "SKILL.md").is_file()
     assert (workspace / "skills" / "user-skill" / "SKILL.md").is_file()
