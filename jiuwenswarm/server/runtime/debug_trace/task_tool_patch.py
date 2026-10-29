@@ -1,10 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Attach subagent stream capture without replacing SDK TaskTool semantics.
+"""Attach bounded subagent execution and optional stream capture.
 
 The SDK owns input validation, query budgets, focused browser resumes, resource
 cleanup, usage attribution, and authoritative result rendering. This patch only
-replaces its narrow subagent dispatch seam while a debug dump is active.
+wraps its narrow dispatch seam for deadlines and failure propagation, selecting
+stream capture only while a debug dump is active. All parent agent modes use
+this hook, including native team members.
 """
 
 from __future__ import annotations
@@ -12,6 +14,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+    run_subagent_with_timeout,
+)
 
 _PATCH_APPLIED = False
 _logger = logging.getLogger(__name__)
@@ -26,7 +31,7 @@ def _subagent_source_label(subagent: Any) -> str:
 
 
 def _wrap_invoke_subagent(original_dispatch: Any):
-    """Wrap the SDK dispatch hook; capture only when a debug dump is active."""
+    """Guard delegation in all modes; capture only when a debug dump is active."""
 
     async def _invoke_subagent_with_trace(
         self: Any,
@@ -48,12 +53,13 @@ def _wrap_invoke_subagent(original_dispatch: Any):
         if debug_logger is None:
             debug_logger = get_debug_trace_logger_for_session(parent_session_id)
         if debug_logger is None or not debug_logger.captures_subagent_flow():
-            return await original_dispatch(
-                self,
+            return await run_subagent_with_timeout(
                 subagent,
-                subagent_inputs,
-                parent_session_id=parent_session_id,
-                session=session,
+                session_id=str(subagent_inputs.get("conversation_id") or parent_session_id),
+                call=lambda: original_dispatch(
+                    self, subagent, subagent_inputs,
+                    parent_session_id=parent_session_id, session=session,
+                ),
             )
         return await invoke_subagent_with_trace(
             subagent,

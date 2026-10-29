@@ -14,12 +14,14 @@ class _FakeRootAgent:
     def __init__(self, *, fail: bool = False) -> None:
         self.fail = fail
         self.prepared: list[str] = []
+        self.prepare_calls: list[dict] = []
         self.cleaned: list[str] = []
 
     async def prepare_session(self, *, session_id: str, **_kwargs) -> None:
         await asyncio.sleep(0)
         if self.fail:
             raise RuntimeError("prepare failed")
+        self.prepare_calls.append(_kwargs)
         self.prepared.append(session_id)
 
     async def cleanup_session_runtime(self, session_id: str) -> bool:
@@ -73,6 +75,7 @@ async def _wait_until(predicate, *, attempts: int = 100) -> None:
 
 @pytest.fixture
 def isolated_pool(monkeypatch, tmp_path: Path):
+    monkeypatch.delenv("JIUWENSWARM_FLASH_ENABLED", raising=False)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_warm_pool.get_agent_sessions_dir",
         lambda: tmp_path,
@@ -213,6 +216,79 @@ async def test_code_prewarm_uses_same_manager_cache_identity_as_code_chat(
         }
     ]
     await pool.end_foreground()
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_flash_work_prewarm_uses_flash_adapter_and_business_mode(
+    isolated_pool,
+) -> None:
+    agent = _FakeRootAgent()
+    pool = isolated_pool(agent)
+    await pool.sync(["web"], config={"flash": {"enabled": True}})
+    await _wait_until(lambda: len(pool._slots) == 1)
+
+    flash_key = pool.make_key(
+        channel_id="web",
+        project_id="default",
+        project_dir="",
+        work_mode="work",
+        adapter_mode="flash",
+    )
+    assert flash_key in pool._slots
+    assert pool._manager.get_agent_calls == [
+        {
+            "channel_id": "web",
+            "mode": "flash",
+            "project_dir": None,
+            "sub_mode": None,
+        }
+    ]
+    assert agent.prepare_calls == [
+        {
+            "channel_id": "web",
+            "mode": "agent",
+            "adapter_mode": "flash",
+            "project_dir": None,
+        }
+    ]
+    await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_flash_reload_replaces_unclaimed_prewarm_slot_without_history_loss(
+    isolated_pool,
+) -> None:
+    agent = _FakeRootAgent()
+    pool = isolated_pool(agent)
+    await pool.sync(["web"], config={"flash": {"enabled": True}})
+    await _wait_until(lambda: len(pool._slots) == 1)
+    flash_slot_ids = {slot.session_id for slot in pool._slots.values()}
+
+    await pool.sync(["web"], config={"flash": {"enabled": False}})
+    agent_key = pool.make_key(
+        channel_id="web",
+        project_id="default",
+        project_dir="",
+        work_mode="work",
+        adapter_mode="agent",
+    )
+    await _wait_until(
+        lambda: agent_key in pool._slots
+        and not flash_slot_ids.intersection(
+            slot.session_id for slot in pool._slots.values()
+        )
+    )
+
+    assert [call["mode"] for call in pool._manager.get_agent_calls] == [
+        "flash",
+        "agent",
+    ]
+    assert [call["adapter_mode"] for call in agent.prepare_calls] == [
+        "flash",
+        "agent",
+    ]
+    assert flash_slot_ids.issubset(set(agent.cleaned))
     await pool.close()
 
 
@@ -359,7 +435,7 @@ async def test_slow_older_sync_cannot_overwrite_newer_revision(
     call_count = 0
     call_lock = threading.Lock()
 
-    def _controlled_desired_keys(channels):
+    def _controlled_desired_keys(channels, config=None):
         nonlocal call_count
         with call_lock:
             call_count += 1
@@ -367,7 +443,7 @@ async def test_slow_older_sync_cannot_overwrite_newer_revision(
         if call_number == 1:
             first_started.set()
             assert release_first.wait(timeout=5)
-        return original_desired_keys(channels)
+        return original_desired_keys(channels, config=config)
 
     monkeypatch.setattr(pool, "_desired_keys", _controlled_desired_keys)
     older = asyncio.create_task(pool.sync(["web"], config={"model": "old"}))
@@ -437,3 +513,35 @@ def test_new_boot_cleans_only_metadata_less_marked_workspace(
 
     assert not (tmp_path / stale_id).exists()
     assert (tmp_path / persisted_id / "metadata.json").is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("env_value,config_enabled,expected", [
+    ("true", False, "flash"), ("false", True, "agent"), (None, True, "flash"),
+])
+@pytest.mark.parametrize("snapshot", ["raw", "resolved"])
+async def test_prewarm_uses_same_flash_environment_as_requests(
+    isolated_pool, monkeypatch, tmp_path, env_value, config_enabled, expected, snapshot,
+):
+    from jiuwenswarm.common import config as config_module
+
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(f"flash:\n  enabled: {str(config_enabled).lower()}\n", encoding="utf-8")
+    monkeypatch.setattr(config_module, "get_config_file", lambda: config_file)
+    config_module.clear_config_cache()
+    monkeypatch.delenv("JIUWENSWARM_FLASH_ENABLED", raising=False)
+    if env_value is not None:
+        monkeypatch.setenv("JIUWENSWARM_FLASH_ENABLED", env_value)
+    agent = _FakeRootAgent()
+    pool = isolated_pool(agent)
+    try:
+        config = config_module.get_config_raw() if snapshot == "raw" else config_module.get_config()
+        await pool.sync(["web"], config=config)
+        await _wait_until(lambda: len(pool._slots) == 1)
+        assert pool._manager.get_agent_calls[0]["mode"] == expected
+        assert agent.prepare_calls[0]["adapter_mode"] == expected
+        desired = pool._desired_keys(config=config)
+        assert all(key.adapter_mode == "code" for key in desired if key.work_mode == "code")
+    finally:
+        await pool.close()
+        config_module.clear_config_cache()

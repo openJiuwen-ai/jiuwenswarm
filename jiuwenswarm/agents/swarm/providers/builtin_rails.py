@@ -1,11 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""No-factory class-rail declarations for swarm-owned team rails.
+"""Built-in rail declarations for swarm-owned team rails.
 
-These rails take no construction params (a bare ``cls()``), so they are declared
-with a class ``builder`` rather than a factory function. Only swarm-owned rail
-classes live here; the generic openjiuwen rails (``sys_operation`` /
-``task_planning`` / ``security`` / ``heartbeat`` / ...) are declared and
+Parameterless rails use a class ``builder``; parameterized rails use a factory
+function. Only swarm-owned rails live here; the generic openjiuwen rails
+(``sys_operation`` / ``task_planning`` / ``security`` / ``heartbeat`` / ...) are declared and
 registered by openjiuwen itself and referenced by their bare names from
 ``config_specs``.
 
@@ -26,6 +25,9 @@ from openjiuwen.agent_teams.harness.manifest import (
 )
 
 from jiuwenswarm.agents.harness.common.rails.avatar_rail import AvatarPromptRail
+from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import (
+    TeamMemberNotifyingLLMRetryRail,
+)
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import (
     ResponsePromptRail,
 )
@@ -36,11 +38,12 @@ from jiuwenswarm.agents.harness.common.rails.workspace_quota_rail import (
     WorkspaceQuotaRail,
 )
 
-# No-parameter swarm-owned rail type names; namespaced under "swarm.".
+# Swarm-owned rail type names; namespaced under "swarm.".
 RESPONSE_PROMPT = "swarm.response_prompt"
 STREAM_EVENT = "swarm.stream_event"
 AVATAR_PROMPT = "swarm.avatar_prompt"
 WORKSPACE_QUOTA = "swarm.workspace_quota"
+TEAM_MEMBER_LLM_RETRY = "swarm.team_member_llm_retry"
 
 
 class ResponsePromptInput(ConstructionInput):
@@ -87,9 +90,24 @@ harness_element(
     builder=WorkspaceQuotaRail,
 )
 
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=TEAM_MEMBER_LLM_RETRY,
+    description="Retries transient model-call failures for team members with user notifications.",
+)
+def _build_team_member_llm_retry_rail(
+    params: dict[str, Any],
+    context: Any,
+) -> TeamMemberNotifyingLLMRetryRail:
+    del context
+    return TeamMemberNotifyingLLMRetryRail(**params)
+
+
 __all__ = [
     "RESPONSE_PROMPT",
     "STREAM_EVENT",
     "AVATAR_PROMPT",
     "WORKSPACE_QUOTA",
+    "TEAM_MEMBER_LLM_RETRY",
 ]

@@ -44,6 +44,8 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.path_safety import (
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
     FINAL_REPORT_NODES,
+    MAX_TERMINAL_RESULT_JSON_NODES,
+    MAX_TERMINAL_RESULT_TEXT_CHARS,
     ROUTER_LIMIT_ERROR,
     RouterState,
     _format_outline_card_markdown,
@@ -52,6 +54,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
     collected_questions,
     complete_final_report_processing,
     is_outline_status_placeholder,
+    is_terminal_result_chunk,
     route_chunk,
     stage_for_resume_node,
     start_final_report_processing,
@@ -100,12 +103,15 @@ DEEPRESEARCH_RACE_DELIVERY_TIMEOUT_SECONDS = 60.0
 # 真实管道在子进程退出后毫秒级 EOF;窗口只防异常管道/测试桩永久不 EOF。
 DEEPRESEARCH_DRAIN_EOF_GRACE_SECONDS = 2.0
 DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES = 16 * 1024 * 1024
+# A UTF-8 result can require four bytes per character. This is a per-frame
+# wire bound; ordinary frames still retain their original 16 MiB limit.
+DEEPRESEARCH_STDOUT_TERMINAL_MAX_BYTES = 4 * MAX_TERMINAL_RESULT_TEXT_CHARS
 DEEPRESEARCH_STDERR_TAIL_MAX_BYTES = 20_000
 DEEPRESEARCH_ERROR_TEXT_MAX_CHARS = 2048
 DEEPRESEARCH_STDERR_OUTCOME_MAX_CHARS = 2048
 _HUAWEI_MAAS_PLACEHOLDER_API_KEY = "huawei-maas-session"
 DEEPRESEARCH_STREAM_JSON_MAX_DEPTH = 64
-DEEPRESEARCH_STREAM_JSON_MAX_NODES = 100_000
+DEEPRESEARCH_STREAM_JSON_MAX_NODES = MAX_TERMINAL_RESULT_JSON_NODES
 DEEPRESEARCH_STREAM_JSON_MAX_TEXT_CHARS = 16 * 1024 * 1024
 DEEPRESEARCH_FINAL_REPORT_PROGRESS_INTERVAL_SECONDS = 60.0
 DEEPRESEARCH_OUTLINE_CACHE_TENANTS = 256
@@ -820,6 +826,10 @@ def _redact_json_value(value: Any, secrets: tuple[str, ...]) -> Any:
     stack: list[tuple[Any, Any, int]] = [(value, root, 0)]
     nodes = 0
     text_chars = 0
+    text_limit = (
+        MAX_TERMINAL_RESULT_TEXT_CHARS if is_terminal_result_chunk(value)
+        else DEEPRESEARCH_STREAM_JSON_MAX_TEXT_CHARS
+    )
     while stack:
         source, target, depth = stack.pop()
         if depth > DEEPRESEARCH_STREAM_JSON_MAX_DEPTH:
@@ -866,7 +876,7 @@ def _redact_json_value(value: Any, secrets: tuple[str, ...]) -> Any:
                 target[key] = child
             else:
                 target.append(child)
-            if text_chars > DEEPRESEARCH_STREAM_JSON_MAX_TEXT_CHARS:
+            if text_chars > text_limit:
                 raise _StreamProtocolInvalid("JSON text limit exceeded")
     return root
 
@@ -922,6 +932,10 @@ def _validate_stream_json_shape(value: Any) -> bool:
     stack: list[tuple[Any, int]] = [(value, 0)]
     nodes = 0
     text_chars = 0
+    text_limit = (
+        MAX_TERMINAL_RESULT_TEXT_CHARS if is_terminal_result_chunk(value)
+        else DEEPRESEARCH_STREAM_JSON_MAX_TEXT_CHARS
+    )
     while stack:
         item, depth = stack.pop()
         nodes += 1
@@ -942,7 +956,7 @@ def _validate_stream_json_shape(value: Any) -> bool:
             text_chars += len(item)
         elif item is not None and not isinstance(item, (bool, int, float)):
             return False
-        if text_chars > DEEPRESEARCH_STREAM_JSON_MAX_TEXT_CHARS:
+        if text_chars > text_limit:
             return False
     return True
 
@@ -1017,6 +1031,8 @@ def _capture_completed_frame(line: bytes, captured: dict[str, Any]) -> None:
         return
     if not isinstance(chunk, dict):
         return
+    if not _validate_stream_json_shape(chunk):
+        return
     status_value = chunk.get("__deepsearch_status__") or chunk.get("status")
     if status_value != "completed":
         return
@@ -1044,28 +1060,19 @@ async def _drain_stream_while_stopping(
     read = getattr(stream, "read", None)
     if not callable(read):
         return
-    pending = bytearray()
-    while True:
+    if captured is not None:
         try:
-            chunk = await read(64 * 1024)
+            async for line in _iter_ndjson_lines(stream):
+                _capture_completed_frame(line, captured)
+            return
         except (OSError, ValueError):
-            return
-        if not chunk:
-            return
-        if captured is None:
-            continue
-        pending.extend(chunk)
-        if len(pending) > DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES:
-            # 无换行的异常输出:丢弃已有内容防止无界膨胀,继续排空。
-            pending.clear()
-            continue
-        while True:
-            newline = pending.find(b"\n")
-            if newline < 0:
-                break
-            line = bytes(pending[:newline])
-            del pending[: newline + 1]
-            _capture_completed_frame(line, captured)
+            # Keep draining malformed output so the stopping child can exit.
+            pass
+    try:
+        while await read(64 * 1024):
+            pass
+    except (OSError, ValueError):
+        return
 
 
 async def _request_graceful_stop(
@@ -1151,9 +1158,31 @@ async def _iter_ndjson_lines(
         _safe_log_correlation_id(conversation_id),
     )
 
+    def check_limit(size: int, limit: int) -> None:
+        if size > limit:
+            logger.error(
+                "[deepresearch_stream] stdout frame limit exceeded "
+                "pending_bytes=%s limit_bytes=%s request_id=%s session_id=%s "
+                "conversation_id=%s",
+                size, limit, *correlation_ids,
+            )
+            raise ValueError("deepresearch_stdout_limit_exceeded")
+
+    def validate_frame(line: bytes) -> None:
+        check_limit(len(line), DEEPRESEARCH_STDOUT_TERMINAL_MAX_BYTES)
+        if len(line) <= DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES:
+            return
+        try:
+            value = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+            value = None
+        if not is_terminal_result_chunk(value):
+            check_limit(len(line), DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES)
+
     read = getattr(stream, "read", None)
     if not callable(read):
         async for line in stream:
+            validate_frame(line)
             yield line
         return
     pending = bytearray()
@@ -1161,25 +1190,23 @@ async def _iter_ndjson_lines(
         chunk = await read(read_size)
         if not chunk:
             break
+        search_from = len(pending)
         pending.extend(chunk)
-        if len(pending) > DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES:
-            logger.error(
-                "[deepresearch_stream] stdout frame limit exceeded "
-                "pending_bytes=%s limit_bytes=%s request_id=%s session_id=%s "
-                "conversation_id=%s",
-                len(pending),
-                DEEPRESEARCH_STDOUT_PENDING_MAX_BYTES,
-                *correlation_ids,
-            )
-            raise ValueError("deepresearch_stdout_limit_exceeded")
         while True:
-            newline = pending.find(b"\n")
+            newline = pending.find(b"\n", search_from)
             if newline < 0:
                 break
-            yield bytes(pending[:newline])
+            check_limit(newline, DEEPRESEARCH_STDOUT_TERMINAL_MAX_BYTES)
+            line = bytes(pending[:newline])
             del pending[: newline + 1]
+            validate_frame(line)
+            yield line
+            search_from = 0
+        check_limit(len(pending), DEEPRESEARCH_STDOUT_TERMINAL_MAX_BYTES)
     if pending:
-        yield bytes(pending)
+        line = bytes(pending)
+        validate_frame(line)
+        yield line
 
 
 async def _await_with_periodic_progress(
@@ -2530,6 +2557,10 @@ async def _call_deepresearch_stream_impl(
 @tool(
     name="deepresearch_stream",
     description=(
+        "Low-level compatibility interface, not a substitute for loading the skill. "
+        "For requests to use the deepresearch skill, including the DeepResearch "
+        "capsule, first call skill_tool(skill_name=\"deepresearch\") and follow "
+        "the skill's deepresearch_execute entry instead of calling this tool. "
         "Run or resume DeepResearch through the isolated external skill runner. "
         "Progress is pushed to the current Gateway route; only a terminal "
         "interrupted, completed, or structured error outcome is returned. "

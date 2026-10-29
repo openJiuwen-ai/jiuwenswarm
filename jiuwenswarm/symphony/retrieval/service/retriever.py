@@ -297,7 +297,7 @@ class Retriever:
         return self._progressive_unavailable_reason(runtime_config) is None
 
     @staticmethod
-    def _build_scored_candidate_records(*, hits: Sequence[object], source: str) -> List[Dict[str, object]]:
+    def _build_graphd_candidate_records(*, hits: Sequence[object], source: str) -> List[Dict[str, object]]:
         return [
             {
                 "rank": int(getattr(hit, "rank", 0) or 0),

@@ -18,8 +18,10 @@ Covers the review findings on PR6431:
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+from opentelemetry import trace
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -29,6 +31,15 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
 )
+
+
+def _span_context(*, trace_id: int, span_id: int) -> SpanContext:
+    return SpanContext(
+        trace_id=trace_id,
+        span_id=span_id,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +72,7 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
     adapter = JiuwenSwarmFlashAdapter()
     rail_infos = [
         _info("_task_planning_rail"),          # in KEEP
+        _info("_model_routing_rail"),          # in KEEP (auto model routing)
         _info("_permission_rail"),              # in KEEP and PROTECTED
         _info("_disabled_tools_rail"),          # PROTECTED only
         _info("_skill_rail"),                   # in KEEP (skill execution)
@@ -70,7 +82,8 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         _info("_memory_rail"),                  # in KEEP（本仓决策：统一 memory 工具）
         _info("_ask_user_rail"),                # in KEEP (interactive dynamic mount)
         _info("_context_assemble_rail"),        # neither (dynamic reg target)
-        _info("_external_memory_rail"),         # neither (dynamic reg target)
+        _info("_external_memory_rail"),         # in KEEP (config-driven)
+        _info("_office_ace_user_profile_rail"),  # in KEEP (config-driven)
         _info("_symphony_orchestration_rail"),  # neither
     ]
 
@@ -79,6 +92,7 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
 
     assert kept == {
         "_task_planning_rail",
+        "_model_routing_rail",
         "_permission_rail",
         "_disabled_tools_rail",
         "_skill_rail",
@@ -86,8 +100,25 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         "_skill_active_state_rail",
         "_skill_authorization_rail",
         "_memory_rail",
+        "_external_memory_rail",
+        "_office_ace_user_profile_rail",
         "_ask_user_rail",
     }
+
+
+def test_model_routing_rail_is_in_flash_keep():
+    """Flash must retain ModelRoutingRail for auto-gear routing.
+
+    The rail is feature-gated by ``model_routing.enabled`` at build time and
+    by request-level ``enable_routing`` at invoke time, so including it in the
+    profile whitelist does not force routing for explicit model gears. Keeping
+    it is required for auto to consume the routing flag and switch models.
+    """
+    adapter = JiuwenSwarmFlashAdapter()
+    assert "_model_routing_rail" in adapter._FLASH_RAIL_KEEP
+
+    filtered = adapter._filter_rail_infos_by_keep([_info("_model_routing_rail")])
+    assert [info.attr_name for info in filtered] == ["_model_routing_rail"]
 
 
 def test_skill_execution_rails_are_in_keep():
@@ -136,11 +167,8 @@ def test_ask_user_rail_is_in_keep_to_avoid_churn():
 async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     """Dynamic rails outside the whitelist are unregistered each request.
 
-    The parent ``_update_rails_for_mode`` calls ``_update_agent_rails()`` which
-    dynamically registers ``_context_assemble_rail`` / ``_memory_rail`` /
-    ``_external_memory_rail`` — all outside the flash whitelist. Flash's
-    override must unregister any such rail that slipped through (e.g. from a
-    prior reload), and must NOT call ``_update_agent_rails``.
+    Memory rails have their own config-driven lifecycle. Other dynamic rails
+    outside the flash profile must still be removed.
     """
     adapter = JiuwenSwarmFlashAdapter()
 
@@ -152,7 +180,6 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     # memory's by _handle_memory_rail_by_config via the agent-profile gate.)
     leaked = {
         "_context_assemble_rail": SimpleNamespace(name="context_assemble"),
-        "_external_memory_rail": SimpleNamespace(name="external_memory"),
         "_skill_create_rail": SimpleNamespace(name="skill_create"),
     }
     for attr, rail in leaked.items():
@@ -168,11 +195,15 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     adapter._skill_rail = SimpleNamespace(name="keep-me-skill")
     adapter._ask_user_rail = SimpleNamespace(name="keep-me-ask-user")
     adapter._memory_rail = SimpleNamespace(name="keep-me-memory")
+    adapter._external_memory_rail = SimpleNamespace(name="keep-me-external")
+    adapter._office_ace_user_profile_rail = SimpleNamespace(name="keep-me-profile")
 
     # 统一 memory 工具的挂/卸走 agent 档闸门，这里 mock 掉以隔离 drop 逻辑本身。
     handle_memory = AsyncMock()
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(adapter, "_handle_memory_rail_by_config", handle_memory)
+        mp.setattr(adapter, "_handle_external_memory_rail_by_config", AsyncMock())
+        mp.setattr(adapter, "_handle_office_ace_user_profile_rail_by_config", AsyncMock())
         await adapter._update_rails_for_mode("flash")
 
     handle_memory.assert_awaited_once_with("agent")
@@ -186,6 +217,8 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     assert adapter._skill_rail is not None
     assert adapter._ask_user_rail is not None  # kept, not churned
     assert adapter._memory_rail is not None  # kept, not churned
+    assert adapter._external_memory_rail is not None
+    assert adapter._office_ace_user_profile_rail is not None
     assert all(getattr(adapter, a) is None for a in leaked)
 
     assert unregister.await_count == len(leaked)
@@ -207,6 +240,55 @@ async def test_update_rails_for_mode_does_not_call_update_agent_rails():
         await adapter._update_rails_for_mode("flash")
 
     assert called["n"] == 0
+
+
+def test_flash_rail_snapshot_is_stable_and_fingerprint_is_stable():
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._task_planning_rail = object()
+    adapter._memory_rail = object()
+    adapter._context_assemble_rail = object()
+
+    snapshot = adapter._rail_snapshot()
+    fingerprint = adapter._profile_fingerprint()
+
+    assert snapshot == "task_planning_rail,memory_rail"
+    assert fingerprint == adapter._profile_fingerprint()
+    assert len(fingerprint) == 12
+
+
+def test_rail_snapshot_failure_degrades_silently(monkeypatch):
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+
+    def fail_snapshot():
+        raise RuntimeError("rail snapshot unavailable")
+
+    monkeypatch.setattr(adapter, "_rail_observability_snapshot", fail_snapshot)
+    adapter._refresh_rail_observability_snapshot()
+
+
+def test_rail_snapshot_binds_attributes_to_current_trace(monkeypatch):
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._task_planning_rail = object()
+    adapter._memory_rail = object()
+    span_registry = SimpleNamespace(bind_trace_attributes=Mock())
+    monkeypatch.setattr(
+        "jiuwenswarm.telemetry.get_telemetry_runtime",
+        lambda: SimpleNamespace(
+            is_unified_active=lambda: True,
+            span_registry=span_registry,
+        ),
+    )
+    context = _span_context(trace_id=0xABC, span_id=0x123)
+    with trace.use_span(NonRecordingSpan(context), end_on_exit=False):
+        adapter._refresh_rail_observability_snapshot()
+
+    span_registry.bind_trace_attributes.assert_called_once_with(
+        0xABC,
+        {
+            "jiuwenclaw.agent.rails": "task_planning_rail,memory_rail",
+            "jiuwenclaw.agent.profile": f"flash:{adapter._profile_fingerprint()}",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -292,13 +374,13 @@ def test_resolve_mode_disabled_keeps_agent(monkeypatch):
 
 
 def test_resolve_mode_enabled_injects_agent_to_flash(monkeypatch):
-    """flash.enabled=true → agent/plan/fast requests rewritten to flash."""
+    """flash.enabled=true selects Flash while preserving agent canonical mode."""
     from jiuwenswarm.server.handlers._shared import resolve_agent_request_mode
 
     _set_flash_enabled(monkeypatch, True)
-    assert resolve_agent_request_mode("agent") == ("flash", None, "flash")
-    assert resolve_agent_request_mode("plan") == ("flash", None, "flash")
-    assert resolve_agent_request_mode("agent.fast") == ("flash", None, "flash")
+    assert resolve_agent_request_mode("agent") == ("flash", None, "agent")
+    assert resolve_agent_request_mode("plan") == ("flash", None, "agent")
+    assert resolve_agent_request_mode("agent.fast") == ("flash", None, "agent")
 
 
 def test_resolve_mode_enabled_does_not_touch_code_or_team(monkeypatch):
@@ -331,10 +413,10 @@ def test_resolve_mode_guard_covers_agent_family_not_enumerated(monkeypatch):
 
     _set_flash_enabled(monkeypatch, True)
     # agent.* family all inject
-    assert resolve_agent_request_mode("agent.team") == ("flash", None, "flash")
-    assert resolve_agent_request_mode("agent.custom") == ("flash", None, "flash")
+    assert resolve_agent_request_mode("agent.team") == ("flash", None, "agent")
+    assert resolve_agent_request_mode("agent.custom") == ("flash", None, "agent")
     # bare plan/fast inject (legacy cron job data)
-    assert resolve_agent_request_mode("fast") == ("flash", None, "flash")
+    assert resolve_agent_request_mode("fast") == ("flash", None, "agent")
 
 
 def test_resolve_mode_explicit_flash_dispatches_directly(monkeypatch):

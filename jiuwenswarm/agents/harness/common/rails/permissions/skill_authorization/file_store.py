@@ -133,6 +133,20 @@ class _TransactionStore(SkillGrantStore):
             ),
         }
 
+    def revive_scope(self, session_id: str, agent_scope_id: str) -> None:
+        """Drop the invalidation breaker for a scope; grants stay untouched.
+
+        Task-termination paths (interrupt cancel/abort) invalidate the main
+        scope so late callbacks cannot reopen the credential window. A
+        fresh explicit skill_tool call is a new user intent and drops that
+        stale breaker - aligned with ``activate_pending``'s discard when
+        the dynamic-authorization feature is on. This never resurrects
+        revoked grants or execution windows.
+        """
+        key = (str(session_id or "").strip(), str(agent_scope_id or "").strip())
+        with self._lock:
+            self._invalidated_scopes.discard(key)
+
 
 def _open_at(directory: int | Path, name: str, flags: int, mode: int = 0o600) -> int:
     if isinstance(directory, int):
@@ -525,18 +539,88 @@ class FileSkillGrantStore(SkillGrantStore):
             )
             return None
 
+    def is_scope_invalidated(self, session_id: str, agent_scope_id: str) -> bool:
+        """Read-only breaker probe for the fresh-activation pre-check.
+
+        Never writes and never raises on missing sessions: an unreadable
+        state simply reports no breaker, so the caller skips the revive
+        marker and the ordinary pop guard stays in charge (fail-safe).
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+        try:
+            if not self.session_directory(sid).is_dir():
+                return False
+            return bool(
+                self.operate(
+                    sid,
+                    lambda store, doc: (
+                        str(agent_scope_id or "").strip()
+                        in doc.get("invalidated", [])
+                    ),
+                    write=False,
+                )
+            )
+        except (
+            OSError,
+            ValueError,
+            TypeError,
+            RuntimeError,
+            portalocker.exceptions.LockException,
+        ):
+            return False
+
     def update_active_skill_state(
-        self, session_id: str, update: Callable[[dict], dict | None]
+        self,
+        session_id: str,
+        update: Callable[[dict], dict | None],
+        *,
+        revive_main: bool = False,
     ) -> dict | None:
+        """Persist the active-skill record, optionally dropping the breaker.
+
+        With ``revive_main=True`` a non-empty activation drops the stale
+        main-scope invalidation breaker INSIDE this transaction, so the
+        breaker is never absent while the activation is missing (atomic):
+        a late callback from a cancelled round cannot slip between the
+        drop and the persist. A completion-style update
+        (``active_skill=None``) never revives.
+        """
+
         def action(store, doc):
             updated = update(dict(doc.get("active_skill") or {}))
             if updated is None:
                 doc.pop("active_skill", None)
             else:
                 doc["active_skill"] = updated
+                if revive_main and updated.get("active_skill"):
+                    store.revive_scope(session_id, "main")
             return updated
 
         return self.operate(session_id, action)
+
+    def revive_scope(self, session_id: str, agent_scope_id: str) -> None:
+        """Drop a task-cycle invalidation breaker on a fresh skill_tool call.
+
+        A task cancel (interrupt/abort) writes ``main`` into the session
+        file's invalidated list so late callbacks cannot restore the
+        credential window; without a revival a fresh explicit skill_tool
+        activation in the SAME session would also be dropped by
+        ``operate`` forever. Missing sessions are skipped silently, like
+        ``update_active_skill_state`` callers do.
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return
+        try:
+            if not self.session_directory(sid).is_dir():
+                return
+        except (OSError, ValueError):
+            return
+        self.operate(
+            sid, lambda store, doc: store.revive_scope(sid, agent_scope_id)
+        )
 
 
 def configure_shared_skill_authorization(_config: dict) -> FileSkillGrantStore:

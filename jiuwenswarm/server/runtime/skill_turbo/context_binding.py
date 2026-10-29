@@ -3,14 +3,15 @@
 """skill_turbo 专用 ContextVar 的 bind/reset 函数对（单一收口）。
 
 ``stream_event_rail.before_tool_call`` 调用 ``bind_skill_turbo_context`` 统一绑定
-7 个 ContextVar（adapter / request_metadata / workspace_dir / interactive_ask /
-resume_answers / outer_todo_active / subagent_parent_session），tokens 存在 ctx 的
-task-local 属性上；``after_tool_call`` / ``after_invoke`` / ``on_model_exception``
-调用 ``reset_skill_turbo_context`` 一处循环复位——消除散落的逐个 reset 与异常
-路径漏 reset（R5/R8 根源）。
+9 个 ContextVar（adapter / request_metadata / workspace_dir / interactive_ask /
+resume_answers / outer_todo_active / outer_todo_pending /
+outer_todo_completed_before / subagent_parent_session），
+tokens 存在 ctx 的 task-local 属性上；``after_tool_call`` / ``after_invoke`` /
+``on_model_exception`` 调用 ``reset_skill_turbo_context`` 一处循环复位——消除散落
+的逐个 reset 与异常路径漏 reset（R5/R8 根源）。
 
-后续新增通道（如 outer_todo_pending）在 ``bind`` 中加一段、在 ``_reset`` 对应
-reset 函数中加一行即可，不再散绑。
+后续新增通道在 ``bind`` 中加一段、在 ``_reset`` 对应 reset 函数中加一行即可，
+不再散绑。
 """
 
 from __future__ import annotations
@@ -40,8 +41,10 @@ def bind_skill_turbo_context(
     parent_session: Any = None,
     resume_answers: Any = None,
     outer_todo_active: Any = None,
+    outer_todo_pending: Any = None,
+    outer_todo_completed_before: Any = None,
 ) -> None:
-    """before_tool_call 调用：统一绑定 7 个 skill_turbo ContextVar。
+    """before_tool_call 调用：统一绑定 9 个 skill_turbo ContextVar。
 
     各绑定保持原条件语义：值缺失（None / 非 bool）不绑、不产生 token。
     """
@@ -102,6 +105,23 @@ def bind_skill_turbo_context(
 
         tokens["outer_todo"] = set_skill_turbo_outer_todo_active(outer_todo_active)
 
+    if isinstance(outer_todo_pending, dict):
+        from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+            set_skill_turbo_outer_todo_pending,
+        )
+
+        tokens["outer_todo_pending"] = set_skill_turbo_outer_todo_pending(outer_todo_pending)
+
+    # B_04：仅 int 绑定（0=绑定项之前无已完成项也是有效信号，None=无绑定不绑）
+    if isinstance(outer_todo_completed_before, int):
+        from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+            set_skill_turbo_outer_todo_completed_before,
+        )
+
+        tokens["outer_todo_completed_before"] = (
+            set_skill_turbo_outer_todo_completed_before(outer_todo_completed_before)
+        )
+
 
 def _reset_adapter(token: Any) -> None:
     from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
@@ -151,6 +171,22 @@ def _reset_outer_todo(token: Any) -> None:
     reset_skill_turbo_outer_todo_active(token)
 
 
+def _reset_outer_todo_pending(token: Any) -> None:
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        reset_skill_turbo_outer_todo_pending,
+    )
+
+    reset_skill_turbo_outer_todo_pending(token)
+
+
+def _reset_outer_todo_completed_before(token: Any) -> None:
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        reset_skill_turbo_outer_todo_completed_before,
+    )
+
+    reset_skill_turbo_outer_todo_completed_before(token)
+
+
 def _reset_subagent_parent(token: Any) -> None:
     from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
         reset_subagent_parent_session,
@@ -166,6 +202,8 @@ _RESETTERS = {
     "interactive_ask": _reset_interactive_ask,
     "resume_answers": _reset_resume_answers,
     "outer_todo": _reset_outer_todo,
+    "outer_todo_pending": _reset_outer_todo_pending,
+    "outer_todo_completed_before": _reset_outer_todo_completed_before,
     "subagent_parent": _reset_subagent_parent,
 }
 

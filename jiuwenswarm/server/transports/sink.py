@@ -25,6 +25,13 @@ STREAM_DONE = object()
 #: 超时即判定消费者已断开、放弃投递哨兵 —— 见 :meth:`SSESink.finish`。
 FINISH_TIMEOUT = 5.0
 
+#: 团队/对话增量。连接上未读字节过多时，这些帧先让路，协议层 pong 才能写进去。
+_DELTA_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
+#: 未读发送缓冲超过该值就暂停增量帧。32KiB 大约是 websockets 默认 write_limit。
+_WS_BACKLOG_BYTES = 32 * 1024
+_WS_BACKLOG_POLL_S = 0.05
+_WS_BACKLOG_MAX_POLLS = 40
+
 
 @runtime_checkable
 class ResponseSink(Protocol):
@@ -56,6 +63,37 @@ class ResponseSink(Protocol):
         （``encode_json_parse_error_wire`` / ``build_server_push_wire`` 等）
         """
         ...
+
+
+def _chunk_event_type(chunk: AgentResponseChunk) -> str:
+    payload = chunk.payload
+    if isinstance(payload, dict):
+        return str(payload.get("event_type") or "")
+    return ""
+
+
+def _write_buffer_size(ws: Any) -> int | None:
+    """连接上还没被对端读走的字节数；探测不到时不拦截发送。"""
+    transport = getattr(ws, "transport", None)
+    getter = getattr(transport, "get_write_buffer_size", None)
+    if not callable(getter):
+        return None
+    try:
+        return int(getter())
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+async def _wait_for_delta_room(ws: Any) -> None:
+    """缓冲偏满时先停住增量帧，把写出机会留给 pong。"""
+    size = _write_buffer_size(ws)
+    if size is None or size <= _WS_BACKLOG_BYTES:
+        return
+    for _ in range(_WS_BACKLOG_MAX_POLLS):
+        await asyncio.sleep(_WS_BACKLOG_POLL_S)
+        size = _write_buffer_size(ws)
+        if size is None or size <= _WS_BACKLOG_BYTES:
+            return
 
 
 def _error_response(request_id: str, message: str, code: str, channel_id: str) -> AgentResponse:
@@ -92,6 +130,8 @@ class WSSink:
         wire = encode_agent_chunk_for_wire(
             chunk, response_id=response_id or chunk.request_id or "", sequence=sequence
         )
+        if _chunk_event_type(chunk) in _DELTA_EVENT_TYPES:
+            await _wait_for_delta_room(self._ws)
         return await self.send_wire(wire)
 
     async def send_error(

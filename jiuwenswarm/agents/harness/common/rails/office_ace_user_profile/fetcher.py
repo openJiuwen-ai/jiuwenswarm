@@ -28,6 +28,8 @@ from typing import Optional
 
 import httpx
 
+from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_cloud_deployment
+
 logger = logging.getLogger(__name__)
 
 # 设计文档约束：画像大小硬上限 256KB
@@ -123,7 +125,7 @@ class UserProfileFetcher:
             "Accept": "application/json",
         }
         # pc 端 appapi 用 X-Chat-User-Id 头传递用户身份；cloud 端 internal 用 path actor_id。
-        if not self._is_cloud():
+        if not is_cloud_deployment():
             headers["X-Chat-User-Id"] = self.config.user_id
             headers["Authorization"] = f"OfficeAceToken {self.config.api_key}"
 
@@ -204,7 +206,7 @@ class UserProfileFetcher:
 
     def _is_configured(self) -> bool:
         # cloud 端 internal 接口还需 space_id（path 参数）
-        if self._is_cloud():
+        if is_cloud_deployment():
             return bool(
                 self.config.endpoint
                 and self.config.api_key
@@ -217,14 +219,9 @@ class UserProfileFetcher:
             and self.config.user_id,
         )
 
-    @staticmethod
-    def _is_cloud() -> bool:
-        """True iff OFFICE_ACE_DEPLOYMENT=cloud。"""
-        return os.environ.get("OFFICE_ACE_DEPLOYMENT", "pc").strip().lower() == "cloud"
-
     def _build_url(self) -> str:
         base = self.config.endpoint.rstrip("/")
-        if self._is_cloud():
+        if is_cloud_deployment():
             # api-memory-access-internal.yaml：
             # GET /v1/core/internal/spaces/{space_id}/memory-user-profile/{actor_id}
             actor_id = self.config.user_id

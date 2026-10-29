@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +14,7 @@ from jiuwenswarm.server.runtime import team_binding_store as team_binding_store_
 from jiuwenswarm.server.runtime.team_binding_store import (
     TeamBindingStore,
     TeamBindingStoreError,
+    ensure_binding_for_entity,
 )
 
 
@@ -217,3 +219,58 @@ def test_team_binding_store_concurrent_create_keeps_valid_json(tmp_path) -> None
     assert {binding.team_name for binding in store.list()} == {
         f"team_{index}" for index in range(12)
     }
+
+
+def test_ensure_binding_for_entity_creates_normal_binding(tmp_path) -> None:
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    entity = SimpleNamespace(
+        team_name="healed_team",
+        template_id="healed_team",
+        created_at=123.0,
+        template_snapshot={"leader": {"member_name": "lead"}},
+    )
+
+    binding = ensure_binding_for_entity(entity, store=store)
+
+    assert binding is not None
+    assert binding.team_name == "healed_team"
+    assert binding.template_id == "healed_team"
+    assert binding.created_at == 123.0
+    assert binding.legacy is False
+    assert binding.session_ids == ()
+    # In-memory create keeps the snapshot; bindings.json intentionally omits it.
+    assert binding.template_snapshot == {"leader": {"member_name": "lead"}}
+    reloaded = store.get("healed_team")
+    assert reloaded is not None
+    assert reloaded.team_name == "healed_team"
+    assert reloaded.template_id == "healed_team"
+    assert reloaded.created_at == 123.0
+    assert reloaded.legacy is False
+    assert reloaded.session_ids == ()
+
+
+def test_ensure_binding_for_entity_is_idempotent(tmp_path) -> None:
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    entity = SimpleNamespace(
+        team_name="healed_team",
+        template_id="healed_team",
+        created_at=123.0,
+        template_snapshot={"leader": {"member_name": "lead"}},
+    )
+    first = ensure_binding_for_entity(entity, store=store)
+    store.bind_session(team_name="healed_team", session_id="sess-a")
+
+    second = ensure_binding_for_entity(entity, store=store)
+
+    assert first is not None
+    assert second is not None
+    assert second.session_ids == ("sess-a",)
+    assert second.template_id == "healed_team"
+
+
+def test_ensure_binding_for_entity_returns_none_without_identity(tmp_path) -> None:
+    store = TeamBindingStore(tmp_path / "bindings.json")
+
+    assert ensure_binding_for_entity(SimpleNamespace(team_name="", template_id="t"), store=store) is None
+    assert ensure_binding_for_entity(SimpleNamespace(team_name="t", template_id=""), store=store) is None
+    assert store.list() == []

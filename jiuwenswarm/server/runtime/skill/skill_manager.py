@@ -1041,6 +1041,39 @@ class SkillManager:
         language = str((params or {}).get("language") or "cn").strip() or "cn"
         return await asyncio.to_thread(get_skill_retrieval_tree, self, language=language)
 
+    async def handle_skills_graph_build(self, params: dict) -> dict:
+        """Start a background Skill Graph build."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        value = (params or {}).get("force", False)
+        force = (
+            value.strip().lower() in {"1", "true", "yes", "on"}
+            if isinstance(value, str)
+            else bool(value)
+        )
+        return await get_swarm_symphony_service().start_refresh_graph(force=force)
+
+    async def handle_skills_graph_status(self, params: dict) -> dict:
+        """Return Skill Graph build and freshness status."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return await get_swarm_symphony_service().graph_status()
+
+    async def handle_skills_graph_get(self, params: dict) -> dict:
+        """Return the current published Skill Graph."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return await get_swarm_symphony_service().graph()
+
+    async def handle_skills_graph_cancel(self, params: dict) -> dict:
+        """Cancel the active Skill Graph build while retaining checkpoints."""
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        del params
+        return await get_swarm_symphony_service().cancel_build()
+
     async def handle_skills_evolution_status(self, params: dict) -> dict:
         """检查某个 skill 是否存在 evolutions.json."""
         name = str(params.get("name") or "").strip()
@@ -4072,17 +4105,21 @@ class SkillManager:
                 raise RuntimeError("下载文件校验失败（SHA256 不匹配）")
             return body
 
-        artifact_bytes = _download_with_requests()
+        artifact_bytes = await asyncio.to_thread(_download_with_requests)
 
         with tempfile.TemporaryDirectory(prefix="jiuwenswarm_import_local_") as tmpdir:
             tmp_path = Path(tmpdir)
-            logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
-            self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
-            skill_dir = self._locate_skill_dir(tmp_path)
-            if skill_dir is None:
-                return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
-            logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
-            return self._import_local_from_path(skill_dir, force=force, origin=download_url)
+
+            def _extract_and_import() -> dict:
+                logger.info("[SkillManager] remote import extracting: url=%s tmpdir=%s", download_url, tmp_path)
+                self._extract_archive_bytes_to_dir(artifact_bytes, tmp_path)
+                skill_dir = self._locate_skill_dir(tmp_path)
+                if skill_dir is None:
+                    return {"success": False, "detail": "下载内容不完整，未找到 SKILL.md"}
+                logger.info("[SkillManager] remote import extracted: url=%s skill_dir=%s", download_url, skill_dir)
+                return self._import_local_from_path(skill_dir, force=force, origin=download_url)
+
+            return await asyncio.to_thread(_extract_and_import)
 
     async def handle_skills_marketplace_add(self, params: dict) -> dict:
         """添加 marketplace 源.

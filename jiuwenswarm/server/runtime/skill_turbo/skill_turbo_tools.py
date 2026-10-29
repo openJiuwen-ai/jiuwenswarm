@@ -19,6 +19,11 @@ from typing import TYPE_CHECKING, Any
 from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
+from jiuwenswarm.server.runtime.skill_turbo.task_slot_guard import (
+    claim_task_slot,
+    peek_leaked_task_slot,
+    release_task_slot,
+)
 
 if TYPE_CHECKING:
     from openjiuwen.core.session.agent import Session
@@ -212,18 +217,24 @@ def refresh_skill_acceleration_description() -> list[str]:
         )
         return sorted(_last_good_entries)
 
-# 中立收尾
-
 # 通用交付确认收尾：非 PPT 技能（docx/xlsx 等）交付节点产物 info 声明
 # send_file_status=sent 时使用（与 NEUTRAL 的区别：明确文件已发送，
 # 禁止重复调用/重复发送）。PPT 技能不走本提示（有专属骨架路径）。
-_SKILL_TURBO_STOP_HINT_CONFIRMED = (
-    "\n\n[SYSTEM] The skill_acceleration_exec task has finished, and the internal "
-    "delivery pipeline confirmed that the file(s) have been generated and sent "
-    "to the user. Summarize the result for the user now based on the artifact "
-    "summary above. Do NOT call skill_acceleration_exec, skill_tool, or "
-    "send_file_to_user again for this task."
-)
+# 按语言切换（语言源复用 request metadata；与 NEUTRAL 保持同语言）。
+_SKILL_TURBO_STOP_HINT_CONFIRMED = {
+    "cn": (
+        "\n\n[SYSTEM] skill_acceleration_exec 任务已结束，内部交付流水线已确认文件"
+        "生成并发送给用户。请基于上方产物摘要向用户总结结果。禁止对本任务再次调用 "
+        "skill_acceleration_exec、skill_tool 或 send_file_to_user。"
+    ),
+    "en": (
+        "\n\n[SYSTEM] The skill_acceleration_exec task has finished, and the internal "
+        "delivery pipeline confirmed that the file(s) have been generated and sent "
+        "to the user. Summarize the result for the user now based on the artifact "
+        "summary above. Do NOT call skill_acceleration_exec, skill_tool, or "
+        "send_file_to_user again for this task."
+    ),
+}
 
 
 # 中立收尾（按语言切换，语言源复用 request metadata；两份停止提示保持同语言）
@@ -262,6 +273,25 @@ _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = {
         "skill_acceleration_exec again. If a todo is still in_progress, call "
         "todo_modify on the next turn to mark that step completed, then send "
         "the final reply."
+    ),
+}
+
+# 续跑版：外层存在多项 todo 时，PPT 成功交付后引导模型先标记当前项完成再继续下一项，
+# 而非一刀切终止本轮。必须显式"产物已交付"（防 R7 变体），必须含"先标记完成再继续"
+# （对齐串行 todo 语义 _has_earlier_incomplete）。
+_PPT_DELIVERY_SUMMARY_CONTINUE_HINT = {
+    "cn": (
+        "\n\n[SYSTEM] PPT 任务已完成且产物已由内部流水线交付，无需重复交付。"
+        "请先将当前待办标记为完成（todo_modify），再继续执行下一待办项"
+        "（下一项：{next_summary}）。"
+        "禁止对本任务重调 skill_acceleration_exec / skill_tool / send_file_to_user。"
+    ),
+    "en": (
+        "\n\n[SYSTEM] The PPT task is complete and the artifact has been delivered "
+        "by the internal pipeline; do NOT re-deliver. First mark the current todo as "
+        "completed (todo_modify), then proceed to the next todo item "
+        "(next item: {next_summary}). "
+        "Do NOT re-invoke skill_acceleration_exec / skill_tool / send_file_to_user for this task."
     ),
 }
 
@@ -393,6 +423,61 @@ def _without_inner_task_routing(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _task_ids_from_snapshot(payload: Any) -> set[str]:
+    """从 task.update 快照提取任务集 task_id 集（槽位登记簿的观测值）。"""
+    if not isinstance(payload, dict):
+        return set()
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list):
+        return set()
+    return {
+        str(t.get("task_id")).strip()
+        for t in tasks
+        if isinstance(t, dict) and str(t.get("task_id") or "").strip()
+    }
+
+
+def _is_terminal_task_snapshot(payload: Any) -> bool:
+    """终态快照判定：tasks 非空且全部状态落在 {completed, failed}。
+
+    依据 tasks 列表逐项 status，不依赖计数字段（in_progress_tasks 等）——
+    事件构造方（executor）虽有计数，但以逐项判定为唯一口径可容忍缺计数的
+    快照来源。空列表不算终态：无内容可关账。
+    """
+    if not isinstance(payload, dict):
+        return False
+    tasks = payload.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        return False
+    statuses: set[str] = set()
+    for t in tasks:
+        if not isinstance(t, dict):
+            return False
+        statuses.add(str(t.get("status") or "").strip())
+    return bool(statuses) and statuses.issubset({"completed", "failed"})
+
+
+def _parent_session_slot_key(parent_session: Any) -> str:
+    """槽位登记簿键：外层父会话 session_id。
+
+    与外层 rail 侧（task_execution_rail._emit_task_update_event 的
+    session.get_session_id()）同一 session 对象、同一 id 口径——两侧键不对齐
+    则外层夺回时的注销永远打不中。
+    """
+    if parent_session is None:
+        return ""
+    getter = getattr(parent_session, "get_session_id", None)
+    sid = ""
+    if callable(getter):
+        try:
+            sid = str(getter() or "").strip()
+        except Exception:
+            sid = ""
+    if not sid:
+        sid = str(getattr(parent_session, "session_id", "") or "").strip()
+    return sid
+
+
 def _prepare_parent_stream_output(
     event_type: str, payload: dict[str, Any]
 ) -> tuple[str, dict[str, Any]]:
@@ -473,6 +558,74 @@ async def _push_task_event_out_of_band(
         )
 
 
+async def _settle_leaked_task_slot(
+    parent_session: Any,
+    request_id: Any,
+    channel_id: Any,
+    external_session_id: Any,
+    last_task_update: Any,
+) -> None:
+    """B_03：skip 入口终止性出口的槽位清算。
+
+    入口 gate 误判 forwarded 的竞态会让 turbo 任务集顶掉前端唯一的
+    taskProgress 槽位；若该轮终态前被打断（HITL），续跑入口判 skip，
+    终态快照被抑制——槽位永驻 in_progress。本函数在**终止性出口**
+    （成功 / 未处理 / 普通异常；AbortError 暂停除外，暂停后任务集还要续跑）
+    检查登记簿（task_slot_guard）：有未闭合占用且本入口缓存到终态快照时
+    补发关账。
+
+    只放行 task.update 全量快照（幂等、后到覆盖先到、可 OOB）；task.start /
+    task.complete 仍禁——skip 语义下放行它们会破坏 chat.* 归段（taskStack
+    嵌套 / segment 分裂，正是 skip 机制要防的）。FIFO 写失败保留登记，
+    下次终止性出口重试；写成功后 OOB 尽力直推（右侧任务列表由 OOB 驱动）。
+    """
+    if parent_session is None or not isinstance(last_task_update, dict):
+        return
+    if not _is_terminal_task_snapshot(last_task_update):
+        # 非终态快照关不了账（流中途异常等）；登记保留，待后续运行治愈。
+        return
+    slot_key = _parent_session_slot_key(parent_session)
+    if not slot_key:
+        return
+    leaked_ids = peek_leaked_task_slot(slot_key)
+    if leaked_ids is None:
+        return
+    from openjiuwen.core.session.stream.base import OutputSchema
+
+    payload = dict(last_task_update)
+    output_type, mapped = _prepare_parent_stream_output("task.update", payload)
+    try:
+        await parent_session.write_stream(
+            OutputSchema(type=output_type, index=0, payload=mapped)
+        )
+    except Exception:
+        logger.warning(
+            "[SkillTurboTool] leaked slot settle write_stream failed "
+            "session=%s leaked_ids=%s",
+            slot_key,
+            sorted(leaked_ids),
+            exc_info=True,
+        )
+        return
+    release_task_slot(slot_key)
+    logger.info(
+        "[SkillTurboTool] settled leaked task slot: session=%s "
+        "leaked_ids=%s settled_tasks=%d",
+        slot_key,
+        sorted(leaked_ids),
+        len(payload.get("tasks") or []),
+    )
+    await _push_task_event_out_of_band(
+        "task.update",
+        mapped,
+        request_id=str(request_id or ""),
+        channel_id=str(channel_id or ""),
+        session_id=_resolve_skill_turbo_resume_session_id(
+            external_session_id, parent_session
+        ),
+    )
+
+
 # ── ContextVar：在 before_tool_call 中注入，供工具函数读取 ──
 _current_skill_turbo_adapter: ContextVar[Any] = ContextVar(
     "current_skill_turbo_adapter", default=None
@@ -493,6 +646,95 @@ def get_skill_turbo_outer_todo_active() -> bool | None:
 
 def reset_skill_turbo_outer_todo_active(token: Token) -> None:
     _skill_turbo_outer_todo_active.reset(token)
+
+
+# 外层 todo 当前绑定项之后的未完成项快照（供停止提示条件化）。
+# task_execution_rail.before_tool_call 导出，context_binding 绑定到此 ContextVar，
+# _wrap_skill_turbo_result 读取后选择续跑版 / 停止版停止提示。
+# 值形态：{"count": N, "next_summary": "..."} 或 None（无后续未完成项）。
+_skill_turbo_outer_todo_pending: ContextVar[dict[str, Any] | None] = ContextVar(
+    "skill_turbo_outer_todo_pending", default=None
+)
+
+
+def set_skill_turbo_outer_todo_pending(pending: dict[str, Any] | None) -> Token:
+    return _skill_turbo_outer_todo_pending.set(pending)
+
+
+def get_skill_turbo_outer_todo_pending() -> dict[str, Any] | None:
+    return _skill_turbo_outer_todo_pending.get()
+
+
+def reset_skill_turbo_outer_todo_pending(token: Token) -> None:
+    _skill_turbo_outer_todo_pending.reset(token)
+
+
+# 外层 todo 当前绑定项之前已完成的项数（B_04 fresh 守卫放行信号）。
+# task_execution_rail.before_tool_call 计算导出，context_binding 绑定到此
+# ContextVar，_fresh_call_artifacts_guard 读取：≥1 表示本次调用是清单推进
+# 的后续交付物（首个交付物已收尾），残留产物属于上一交付物而非本任务——
+# 放行 fresh 调用，产物清理交 executor 开跑时的 _clear_stale_node_artifacts。
+# 值形态：int（0=绑定项之前无已完成项）或 None（无外层 todo 绑定）。
+_skill_turbo_outer_todo_completed_before: ContextVar[int | None] = ContextVar(
+    "skill_turbo_outer_todo_completed_before", default=None
+)
+
+
+def set_skill_turbo_outer_todo_completed_before(count: int | None) -> Token:
+    """Bind how many todo items before the bound one are already done."""
+    return _skill_turbo_outer_todo_completed_before.set(count)
+
+
+def get_skill_turbo_outer_todo_completed_before() -> int | None:
+    return _skill_turbo_outer_todo_completed_before.get()
+
+
+def reset_skill_turbo_outer_todo_completed_before(token: Token) -> None:
+    _skill_turbo_outer_todo_completed_before.reset(token)
+
+
+# ── B_05：后续交付物 fresh 放行的「绑定项切换」登记（模块级跨请求单例）──
+# completed_before 只是绑定时刻算出的静态计数（绑定项存续期内不变），只表达
+# "清单推进到了第 2+ 项"，无法区分"清单推进到新交付物的首次调用"与"同一交付物
+# 已成功后的盲目重跑"。本登记记录每个会话上次放行时绑定的外层 todo id，守卫放行
+# 前比对：绑定项相较上次**切换**才放行，相同（同项盲目重跑）落回产物检查——F_01
+# 对"同任务盲目重跑"的保护面对第 2+ 项不放松。键 = 守卫的 sid 口径（外层父会话
+# id）；值 = 上次放行时的 get_current_task_id()。仅随后续交付物放行分支写；上限
+# 淘汰同 task_slot_guard 先例（防长生命周期进程无界增长）。
+_SUBSEQUENT_DELIVERABLE_LAST_TODO_ID: dict[str, str | None] = {}
+_MAX_TRACKED_SUBSEQUENT_DELIVERABLE_SESSIONS = 4096
+
+
+def _release_subsequent_deliverable(
+    sid: str, current_todo_id: str | None,
+) -> bool:
+    """判定并登记"后续交付物 fresh 放行"：仅绑定项相较上次放行切换才放行。
+
+    - 拿不到会话键或绑定项 id（含测试桩 / 退化态）→ 退回旧语义无条件放行；
+    - 绑定项相同（同项盲目重跑）→ 返回 False，调用方落回产物检查；
+    - 绑定项不同 / 首次 → 放行并登记（返回 True）。
+    """
+    key = str(sid or "").strip()
+    if not key or not current_todo_id:
+        return True
+    if _SUBSEQUENT_DELIVERABLE_LAST_TODO_ID.get(key) == current_todo_id:
+        return False
+    if (
+        key not in _SUBSEQUENT_DELIVERABLE_LAST_TODO_ID
+        and len(_SUBSEQUENT_DELIVERABLE_LAST_TODO_ID)
+        >= _MAX_TRACKED_SUBSEQUENT_DELIVERABLE_SESSIONS
+    ):
+        _SUBSEQUENT_DELIVERABLE_LAST_TODO_ID.pop(
+            next(iter(_SUBSEQUENT_DELIVERABLE_LAST_TODO_ID))
+        )
+    _SUBSEQUENT_DELIVERABLE_LAST_TODO_ID[key] = current_todo_id
+    return True
+
+
+def reset_subsequent_deliverable_registry() -> None:
+    """清空后续交付物放行登记（测试隔离用；生产零调用）。"""
+    _SUBSEQUENT_DELIVERABLE_LAST_TODO_ID.clear()
+
 
 # ── ContextVar：SkillTurbo HITL 中断信号 ──
 # skill_turbo_tools catch AbortError 后提取 ToolInterruptException 存入此 ContextVar，
@@ -824,7 +1066,17 @@ def _wrap_skill_turbo_result(
             # 骨架不进 tool_result 正文、也不在流水线内提前 chat.delta；
             # 挂到 ContextVar，由 after_tool_call 在外层 tool_result 之后流式发出。
             set_pending_ppt_delivery_summary(ppt_summary)
-            parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT[lang])
+            # 外层存在多项 todo 时，引导模型先标记当前项完成再继续下一项，
+            # 而非一刀切终止本轮（防外层 todo 续跑阻断）。
+            pending = get_skill_turbo_outer_todo_pending()
+            if pending and pending.get("count"):
+                parts.append(
+                    _PPT_DELIVERY_SUMMARY_CONTINUE_HINT[lang].format(
+                        next_summary=pending.get("next_summary") or "见待办列表"
+                    )
+                )
+            else:
+                parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT[lang])
         else:
             clear_pending_ppt_delivery_summary()
             if _generic_delivery_confirmed(artifact_holder):
@@ -893,6 +1145,12 @@ async def _fresh_call_artifacts_guard(
       P2-2 hash 继承与后续拦截的数据源，拦截本身不消耗它）；
     - ``fresh_start=True`` → 显式全新任务：清空产物记录后放行（清库失败仅
       warning，executor 的 _clear_stale_node_artifacts 仍会在 fresh run 兜底清）。
+
+    B_04 后续交付物放行：外层 todo 清单推进到第二项及以后（早于绑定项存在
+    已完成项，``outer_todo_completed_before`` 通道 ≥1）时，残留产物属于已
+    收尾的上一交付物而非本任务——放行且**不在守卫内清库**（executor 开跑时
+    ``_clear_stale_node_artifacts`` 按同序兜底清理）；无绑定（None）或绑定项
+    之前无已完成项（0）仍拦，F_01 对"同任务盲目重跑"的保护不放松。
     """
     from openjiuwen.core.session.agent import create_agent_session
     from jiuwenswarm.server.runtime.skill_turbo.node_artifact_store import (
@@ -904,6 +1162,37 @@ async def _fresh_call_artifacts_guard(
     )
 
     sid = _resolve_skill_turbo_resume_session_id(external_session_id, parent_session)
+
+    # B_04 后续交付物放行（快路径，免开 session）：外层 todo 清单推进到
+    # 第二项及以后——早于绑定项存在已完成项时，残留产物属于已收尾的上一
+    # 交付物而非本任务，fresh 调用是清单推进的正常流程而非盲目重跑。
+    # 仅在未显式携带 fresh_start 时走本分支（fresh_start=true 的显式清库
+    # 语义优先，两者都放行但清理时机不同：本分支交 executor 开跑时清理）。
+    #
+    # B_05 收紧：completed_before 是绑定时刻算出的静态计数，绑定项存续期内
+    # 不变，无法区分"清单推进到新交付物（应放行）"与"同一交付物已成功后的
+    # 盲目重跑（应拦）"。故仅在绑定项相较上次放行**切换**时放行；同绑定项
+    # 重复 fresh 调用落回下方产物检查——命中残留产物即拦并提示 fresh_start
+    # （F_01 对"同任务盲目重跑"的保护面对第 2+ 项不放松）。
+    if not fresh_start:
+        completed_before = get_skill_turbo_outer_todo_completed_before()
+        if isinstance(completed_before, int) and completed_before > 0:
+            if _release_subsequent_deliverable(sid, get_current_task_id()):
+                logger.info(
+                    "[SkillTurboTool] fresh guard bypassed by outer todo "
+                    "progression (subsequent deliverable, bound item switched) "
+                    "sid=%s completed_before=%d",
+                    sid,
+                    completed_before,
+                )
+                return None
+            logger.info(
+                "[SkillTurboTool] fresh guard same-bound-item re-invoke "
+                "(subsequent deliverable blind rerun) sid=%s completed_before=%d; "
+                "falling through to artifact check",
+                sid,
+                completed_before,
+            )
 
     card = getattr(getattr(adapter, "_instance", None), "card", None)
     guard_session = None
@@ -1097,6 +1386,12 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
         "skipped" if has_outer_todo else "forwarded as-is",
     )
 
+    # B_03 槽位登记簿键 + skip 抑制快照缓存：转发分支放行 task.update 时按此键
+    # 登记"槽位被本任务集占用"；skip 分支被抑制的 task.update 缓存最后一条，
+    # 终止性出口（_settle_leaked_task_slot）用它关账。
+    slot_key = _parent_session_slot_key(parent_session)
+    last_suppressed_task_update: dict[str, Any] | None = None
+
     # metadata：通过 ContextVar 读取（_update_runtime_config 中设置，无并发覆盖风险）
     request_metadata = get_current_request_metadata()
     request_id = request_metadata.get("request_id", "") if isinstance(request_metadata, dict) else ""
@@ -1147,6 +1442,14 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
 
     if isinstance(request_metadata, dict):
         inputs["metadata"] = request_metadata
+        # 用户上传附件：从 metadata 提取 files 并传入 inputs["files"]，
+        # 供流水线 intent_classify 检测文档路径（has_documents 门控 P3 文档解析）。
+        # files 源于 request.params["files"]，由 _update_runtime_config 注入 metadata。
+        # 可能为 dict（平台 files.uploaded 格式）或 list（结构化附件）；
+        # intent_classify._collect_files_paths 统一展平，此处原样透传。
+        _files = request_metadata.get("files")
+        if _files is not None:
+            inputs["files"] = _files
 
     turbo_session = None
     resume_ctx = None
@@ -1156,6 +1459,7 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
             from openjiuwen.core.session.agent import create_agent_session
             from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
                 load_resume_ctx,
+                mark_resume_in_flight,
                 set_skill_turbo_id,
             )
 
@@ -1230,6 +1534,10 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
 
     hitl_interrupt = False
 
+    # 仅当本次请求实际调用了 mark_resume_in_flight 时才在 finally 清除，防重复
+    # 作答（resume_in_flight 命中提前返回）误清原始请求设置的 in-flight 标志。
+    _did_mark_in_flight = False
+
     release_checkpoint = False    # Only persist-clear the checkpoint when this invocation consumed it
     # (resume finished) or it cannot be reused (SkillTurboNotHandled).
     # Transient failures must keep the last HITL checkpoint; do not post_run
@@ -1241,6 +1549,28 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
                 apply_interactive_ask_to_inputs,
                 resolve_resume_interactive_ask,
             )
+
+            # 防重：resume_in_flight 命中 = 双击/网关重试作答，跳过本次避免
+            # 两次 resume_stream 重复生成（对齐 Path A 的 resume_in_flight 防重）。
+            if resume_ctx.get("resume_in_flight"):
+                logger.warning(
+                    "[SkillTurboTool] duplicate resume answers while in flight; ignoring"
+                )
+                # 裸 dict 返回，不经 _wrap_skill_turbo_result：本分支的
+                # SkillTurbo 是 fresh 实例（artifact_holder 为空），wrap 必然
+                # 追加 NEUTRAL 停止提示（"任务已结束…不要声称文件已发送"），
+                # 与"任务正在处理中"语义矛盾——原始请求仍在执行、稍后会交付。
+                # 且不携带 success 键：stream_event_rail._emit_tool_result 仅在
+                # _infer_tool_result_error 可判定时才写帧级 success，本 dict 形态
+                # 判 None → chat.tool_result 帧不带 success 字段 → 上层应用侧
+                # isSuccessfulPptTurboToolResult（结构匹配 success===true）不会
+                # 把占位帧误判成 PPT turbo 成功、替换最终正文（[[B_01]]）。
+                return {
+                    "result": "任务正在处理中，本次重复作答已忽略，请等待原始请求完成",
+                }
+            # mark in_flight（防重起点）：resume 处理期间第二次作答会被上方判重
+            await mark_resume_in_flight(turbo_session, resume_ctx)
+            _did_mark_in_flight = True
 
             raw_ia = None
             if isinstance(request_metadata, dict) and (
@@ -1293,6 +1623,11 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
             #   而该 segment 的 taskId 与外层 todo 不匹配，被 resolveSegmentForRow 丢弃，
             #   PPT 的思考/工具调用全部不显示。跳过后 chat.* 归到外层 todo 的 segment，正常渲染。
             if has_outer_todo and event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
+                # B_03：被抑制的 task.update 仍需缓存最后一条——本入口跑到
+                # 终止性出口时若登记簿显示槽位被本引擎任务集占用未闭合，
+                # 由 _settle_leaked_task_slot 用它补发关账。
+                if event_type == "task.update" and isinstance(chunk.payload, dict):
+                    last_suppressed_task_update = dict(chunk.payload)
                 continue
 
             payload = chunk.payload
@@ -1328,6 +1663,17 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
                             n_tasks,
                             type(parent_session).__name__,
                         )
+                        if event_type == "task.update" and slot_key:
+                            # B_03 槽位登记：转发分支放行快照 = 槽位被本任务集
+                            # 占用；终态快照（全 completed/failed）= 任务集自然
+                            # 闭合，即行注销（后续 skip 入口不误清算）。
+                            if _is_terminal_task_snapshot(chunk.payload):
+                                release_task_slot(slot_key)
+                            else:
+                                claim_task_slot(
+                                    slot_key,
+                                    _task_ids_from_snapshot(chunk.payload),
+                                )
                 except Exception:
                     logger.warning(
                         "[SkillTurboTool] write_stream failed for event_type=%s",
@@ -1351,6 +1697,17 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
                     "(task list will not reach frontend)",
                     event_type,
                 )
+
+        # B_03：终止性出口清算——skip 抑制掉的终态快照若对应未闭合的槽位
+        # 占用（首入口误判 forwarded 的竞态遗留），在此补发关账。AbortError
+        # 暂停不清算（见 except 分支）：任务集还要续跑，关账等于谎报终态。
+        await _settle_leaked_task_slot(
+            parent_session,
+            request_id,
+            channel_id,
+            external_session_id,
+            last_suppressed_task_update,
+        )
 
         # 过程输出已通过 write_stream 实时推给前端。交付失败时不得返回 success，
         # 否则外层 LLM / 前端会把「任务已完成」当成 PPT 已生成。
@@ -1392,17 +1749,48 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
     except SkillTurboNotHandled as exc:
         logger.info("[SkillTurboTool] SkillTurbo 未处理: %s", exc)
         release_checkpoint = True
+        # 终止性出口（B_03）：清算逻辑自守——无登记 / 无终态快照均静默
+        await _settle_leaked_task_slot(
+            parent_session,
+            request_id,
+            channel_id,
+            external_session_id,
+            last_suppressed_task_update,
+        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": f"SkillAccelerationExec 未处理: {exc}"},
             artifact_holder=skill_turbo_inst.artifact_holder,
         )
     except Exception as exc:
         logger.warning("[SkillTurboTool] 执行失败: %s", exc, exc_info=True)
+        # 终止性出口（B_03）：executor 异常分支已 flush task 事件（S_08 约束 6），
+        # 缓存快照可能已带 failed 终态——仍尝试关账；非终态则登记保留
+        await _settle_leaked_task_slot(
+            parent_session,
+            request_id,
+            channel_id,
+            external_session_id,
+            last_suppressed_task_update,
+        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": f"执行失败: {exc}"},
             artifact_holder=skill_turbo_inst.artifact_holder,
         )
     finally:
+        # clear in_flight：无论 resume 成功/中断/失败都必须清除，防下次作答被误判
+        # 重复（意外异常后重试作答场景）。isolated 通道强制落盘，失败 warning 可观测。
+        if turbo_session is not None and resume_ctx is not None and _did_mark_in_flight:
+            from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
+                clear_resume_in_flight,
+            )
+
+            try:
+                await clear_resume_in_flight(turbo_session)
+            except Exception:
+                logger.warning(
+                    "[SkillTurboTool] clear_resume_in_flight failed",
+                    exc_info=True,
+                )
         if turbo_session is not None and not hitl_interrupt and release_checkpoint:
             if resume_ctx is not None:
                 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (

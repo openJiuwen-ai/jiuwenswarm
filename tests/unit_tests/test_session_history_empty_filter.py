@@ -164,6 +164,71 @@ def test_append_history_persists_usage_summary(tmp_path, monkeypatch):
     assert data[0]["content"] == ""
 
 
+def test_context_usage_v1_with_structured_payload_is_persisted(tmp_path, monkeypatch):
+    """context.usage is blank-content; v1 snapshot fields must survive history restore."""
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    session_history.append_history_record(
+        session_id="s-ctx-usage",
+        request_id="r1",
+        channel_id="web",
+        role="assistant",
+        event_type="context.usage",
+        content="",
+        timestamp=1.0,
+        extra={
+            "schema_version": "context-usage.v1",
+            "phase": "post_call",
+            "context_window": {
+                "limit_tokens": 128000,
+                "input_tokens": 42000,
+                "occupancy_rate": 0.328,
+            },
+            "parts": {
+                "system_prompt": {"category": "system_prompt", "tokens": 8000},
+                "tools": {"category": "tools", "tokens": 12000},
+                "skills": {"category": "skills", "tokens": 2000},
+                "messages": {"category": "messages", "tokens": 20000},
+            },
+            "session_kv_cache_hit_rate": 0.6,
+            "rate": 32.8,
+            "context_max": 128000,
+            "tokens_used": 42000,
+        },
+    )
+
+    data = _wait_history("s-ctx-usage", min_count=1)
+    assert len(data) == 1
+    record = data[0]
+    assert record["event_type"] == "context.usage"
+    assert record["schema_version"] == "context-usage.v1"
+    assert record["context_window"]["input_tokens"] == 42000
+    assert record["parts"]["messages"]["tokens"] == 20000
+    assert record["session_kv_cache_hit_rate"] == 0.6
+    assert record["rate"] == 32.8
+
+
+def test_context_usage_without_v1_snapshot_is_rejected():
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="context.usage",
+        extra={},
+    ) is False
+    # Legacy three-field frame: useful for live alias only, not history restore.
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="context.usage",
+        extra={"rate": 42.5, "context_max": 200000, "tokens_used": 85000},
+    ) is False
+
+
+def test_context_usage_is_restorable_history_record():
+    """history.get restore whitelist must allow context.usage."""
+    from jiuwenswarm.server import wire_truncate
+
+    assert "context.usage" in wire_truncate._HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+
+
 def test_has_persistable_assistant_payload_tool_update_is_merged():
     assert session_history._has_persistable_assistant_payload(
         content_text="",

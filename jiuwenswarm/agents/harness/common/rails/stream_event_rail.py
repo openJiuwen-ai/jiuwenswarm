@@ -56,6 +56,8 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 )
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY,
+    SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY,
     is_todo_close_nudge,
 )
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
@@ -319,7 +321,7 @@ def _infer_tool_result_error(value: Any) -> bool | None:
     return None
 
 
-# skill_turbo 专用 ContextVar 的绑定/复位收口（7 个 token 单一进出）。
+# skill_turbo 专用 ContextVar 的绑定/复位收口（8 个 token 单一进出）。
 # 详细机制与条件语义见 context_binding 模块；新增通道在该模块加一行即可。
 from jiuwenswarm.server.runtime.skill_turbo.context_binding import (  # noqa: E402
     bind_skill_turbo_context,
@@ -719,6 +721,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY,
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2,
         )
+        from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER,
+        )
 
         legacy_templates = [
             f"[Tool execution interrupted] Tool {tool_name} was interrupted by user during execution, "
@@ -734,6 +739,12 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             else "",
             _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2
             if tool_name == "skill_acceleration_exec"
+            else "",
+            # HITL 暂停 tool_msg（deepresearch_execute 专用文案）。注册后
+            # 孤儿清理把"占位 + resume 完成态同 id 两条消息"收敛为"占位被
+            # 真实结果替换"，而非 duplicate 规则保留占位删掉完成态。
+            DEEPRESEARCH_INTERACTION_PLACEHOLDER
+            if tool_name == "deepresearch_execute"
             else "",
         ]
         normalized_content = self._normalize_tool_interrupt_text(content)
@@ -1167,6 +1178,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.warning("[StreamEventRail] inject call_goal prompt failed: %s", exc)
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        # Newer agent-core emits the complete context-usage.v1 snapshot itself.
+        # Skip the legacy three-field rail event only after that write succeeds.
+        # Do NOT key off ``context_usage_report``: core assigns the report before
+        # analyze/write_stream. If emit fails after that assignment, skipping here
+        # would drop both the v1 frame and the legacy fallback (zero context.usage).
+        extra = getattr(ctx, "extra", {})
+        if isinstance(extra, dict) and extra.get("_context_usage_event_emitted"):
+            return
         # [PERF] 轻量模式:context.usage 是信息性统计事件,高并发下
         # write_stream 背压会把本钩子拖到秒级(100 并发实测 ×12-26 次
         # >1s 慢回调)。改为后台发射,不阻塞回复路径;背压时晚到但不丢。
@@ -1255,8 +1274,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 }
 
         # SkillTurbo 专用 ContextVar 统一绑定（adapter / metadata / workspace /
-        # interactive_ask / outer_todo / subagent_parent / resume_answers 共 7 个，
-        # 条件语义与绑定实现见 context_binding.bind_skill_turbo_context）
+        # interactive_ask / outer_todo / outer_todo_pending /
+        # outer_todo_completed_before / subagent_parent / resume_answers
+        # 共 9 个，条件语义与绑定实现见
+        # context_binding.bind_skill_turbo_context）
         try:
             _resume_answers = None
             extra = getattr(ctx, "extra", None)
@@ -1265,8 +1286,14 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
                 _resume_answers = extra.get(RESUME_USER_INPUT_KEY)
             _outer_todo_active = None
+            _outer_todo_pending = None
+            _outer_todo_completed_before = None
             if isinstance(extra, dict):
                 _outer_todo_active = extra.get(SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY)
+                _outer_todo_pending = extra.get(SKILL_TURBO_OUTER_TODO_PENDING_EXTRA_KEY)
+                _outer_todo_completed_before = extra.get(
+                    SKILL_TURBO_OUTER_TODO_COMPLETED_BEFORE_EXTRA_KEY
+                )
             bind_skill_turbo_context(
                 ctx,
                 adapter=self._skill_turbo_adapter,
@@ -1274,6 +1301,8 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 parent_session=session,
                 resume_answers=_resume_answers,
                 outer_todo_active=_outer_todo_active,
+                outer_todo_pending=_outer_todo_pending,
+                outer_todo_completed_before=_outer_todo_completed_before,
             )
         except Exception:
             # metadata / resume_answers 绑定失败意味着 HITL 作答注入静默失效，

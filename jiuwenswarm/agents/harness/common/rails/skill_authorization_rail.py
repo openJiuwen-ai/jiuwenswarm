@@ -13,6 +13,9 @@ from openjiuwen.harness.rails.skills.skill_authorization_rail import (
 class SkillAuthorizationRail(CoreSkillAuthorizationRail):
     """Skill gate with a public scope resolver for host integration."""
 
+    # Children receive their own delegated gate bound to the parent session.
+    inherit_to_subagents = False
+
     def resolve_scope(self, ctx: AgentCallbackContext) -> tuple[str, str] | None:
         """Reuse the gate's scope resolution without changing authorization rules."""
         return self._resolve_scope(ctx)

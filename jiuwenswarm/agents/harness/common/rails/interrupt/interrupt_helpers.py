@@ -449,6 +449,7 @@ class PermissionRailBuildOptions:
     permission_config: dict[str, Any] | None = None
     resolve_workspace_dir: Any | None = None
     persist_target_agent_id_provider: Any | None = None
+    rail_factory: Callable[..., Any] | None = None
 
 
 def build_permission_rail(
@@ -847,7 +848,8 @@ def build_permission_rail(
                 exc_info=True,
             )
 
-        permission_rail = rail_cls(
+        rail_factory = opts.rail_factory or rail_cls
+        permission_rail = rail_factory(
             config=permission_config,
             tool_names=tool_names,
             llm=llm,
