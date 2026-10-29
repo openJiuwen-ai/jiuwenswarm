@@ -506,9 +506,26 @@ def test_public_agent_group_roster_records_an_organization_plan(monkeypatch):
     assert plan["owner_member"] == "business"
 
 
-def test_existing_owner_must_be_mentioned(monkeypatch):
+def test_follow_up_forms_an_organization_owned_by_its_first_team(monkeypatch):
     _MemoryGroup(
         monkeypatch,
+        members=[
+            {
+                "kind": "agent_group",
+                "id": "business-planning",
+                "member_name": "business",
+            },
+            {
+                "kind": "agent_group",
+                "id": "technology-insight",
+                "member_name": "insight",
+            },
+            {
+                "kind": "agent_group",
+                "id": "contract-review",
+                "member_name": "review",
+            },
+        ],
         organization_teams=[
             {
                 "member_name": "business",
@@ -516,16 +533,26 @@ def test_existing_owner_must_be_mentioned(monkeypatch):
                 "role": "owner",
             }
         ],
+        organization_plans=[
+            {
+                "plan_id": "round-1",
+                "members": ["business", "insight"],
+                "owner_member": "business",
+                "status": "running",
+                "created_at": 1,
+            }
+        ],
     )
-    assert (
-        bootstrap.record_organization_plan(
-            SESSION,
-            mentions=["insight", "writer"],
-            body="x",
-            plan_id="message-2",
-        )
-        is None
+    plan = bootstrap.record_organization_plan(
+        SESSION,
+        mentions=["insight", "review"],
+        body="下一轮",
+        plan_id="round-2",
     )
+    assert plan["members"] == ["insight", "review"]
+    assert plan["owner_member"] == "insight"
+    assert plan["status"] == "pending"
+    assert bootstrap._blocking_earlier_plans(SESSION, plan)
 
 
 def test_identical_expert_set_rejoins_and_any_change_creates_an_organization(monkeypatch):
