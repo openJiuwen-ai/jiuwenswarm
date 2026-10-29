@@ -48,8 +48,10 @@ import {
 import {
   buildCatalogViewModel,
   buildGroupCatalogViewModel,
+  collectTopCategories,
   findFirstPreviewableFile,
   mergeAgentDetailWithCatalog,
+  OTHER_CATEGORY,
 } from '../node_modules/.cache/agent-management/viewModel.js';
 import {
   advancePendingInstallQueue,
@@ -537,11 +539,25 @@ test('catalog view model filters mine/search and returns the full filtered list'
 
   const productCatalog = buildCatalogViewModel(catalog, {
     scope: 'catalog',
-    category: 'ProductDevelopment',
+    category: 'Engineering',
     query: '',
+    categories: new Set(['Engineering']),
   });
   assert.deepEqual(
     productCatalog.items.map((item) => item.id),
+    ['b', 'hub-c'],
+  );
+
+  // 分类页签改由已加载数据动态统计（#5902）：不在页签集合内的 category 归入"其他"。
+  assert.deepEqual(collectTopCategories(['Design', 'Engineering', 'Engineering', '']), ['Engineering', 'Design']);
+  const otherCatalog = buildCatalogViewModel(catalog, {
+    scope: 'catalog',
+    category: OTHER_CATEGORY,
+    query: '',
+    categories: new Set(['Design']),
+  });
+  assert.deepEqual(
+    otherCatalog.items.map((item) => item.id),
     ['b', 'hub-c'],
   );
 });
