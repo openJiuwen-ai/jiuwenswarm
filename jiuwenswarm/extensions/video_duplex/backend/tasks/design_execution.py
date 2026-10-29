@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import asyncio
 import json
 
-from .bridge import RemoteTaskEndpoint
+from jiuwenswarm.server.runtime.video_task.bridge import RemoteTaskEndpoint
 
 
 @dataclass
