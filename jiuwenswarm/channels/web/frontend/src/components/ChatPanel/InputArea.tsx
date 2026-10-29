@@ -3613,66 +3613,77 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   // 监听从 SkillPanel 发来的"跳转到聊天并插入技能"事件
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent).detail as {
-        skillName: string;
-        prefixText?: string;
-        suffixText?: string;
-        secondSkillName?: string;
-      };
-      const sid = useChatStore.getState().activeSessionId;
-      if (!sid || !inputRef.current) return;
-      const runtime = useSessionStore.getState().getRuntime(sid);
-      if (
-        isAgentGroupSelected(
-          runtime?.mode,
-          runtime?.agentGroupSelectionIntent,
-          runtime?.agentGroupBinding,
-          runtime?.agentGroupBindingPending,
-        )
-      ) return;
-
-      // 清空输入框并插入前缀文本（如"帮我修改这个技能"）
-      inputRef.current.textContent = detail.prefixText || '';
-      inputRef.current.focus();
-
-      // 将光标移到末尾，确保技能 chip 插入在前缀文本之后
-      const range = document.createRange();
-      range.selectNodeContents(inputRef.current);
-      range.collapse(false);
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-
-      // 先更新 store 中的 selectedSkills，再插入 chip DOM
-      useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
-      insertSkillChip(detail.skillName);
-
-      // 如果有后缀文本（如"帮我修改这个技能"），追加到 chip 之后
-      if (detail.suffixText) {
-        inputRef.current.appendChild(document.createTextNode(detail.suffixText));
-        // 光标移到末尾
-        const r = document.createRange();
-        r.selectNodeContents(inputRef.current);
-        r.collapse(false);
-        const s = window.getSelection();
-        s?.removeAllRanges();
-        s?.addRange(r);
-      }
-
-      // 如果有第二个技能（如被编辑的技能），追加 chip
-      if (detail.secondSkillName) {
-        useSessionStore.getState().addSelectedSkill(sid, detail.secondSkillName);
-        insertSkillChip(detail.secondSkillName);
-      }
-
-      // 同步纯文本到 store（chip 不进入纯文本，前缀/后缀文本会保留）
-      useChatStore.getState().setInputValue(sid, extractPlainText());
+  const handleInsertSkillFromPage = useCallback((e: Event) => {
+    const detail = (e as CustomEvent).detail as {
+      skillName: string;
+      prefixText?: string;
+      suffixText?: string;
+      secondSkillName?: string;
+      preserveDraft?: boolean;
     };
-    window.addEventListener('chat-input-insert-skill', handler);
-    return () => window.removeEventListener('chat-input-insert-skill', handler);
+    const sid = useChatStore.getState().activeSessionId;
+    if (!sid || !inputRef.current) return;
+    const runtime = useSessionStore.getState().getRuntime(sid);
+    if (
+      isAgentGroupSelected(
+        runtime?.mode,
+        runtime?.agentGroupSelectionIntent,
+        runtime?.agentGroupBinding,
+        runtime?.agentGroupBindingPending,
+      )
+    ) return;
+
+    if (detail.preserveDraft) {
+      const editor = inputRef.current;
+      const alreadyInserted = Array.from(editor.querySelectorAll<HTMLElement>('[data-skill]'))
+        .some((chip) => chip.dataset.skill === detail.skillName);
+      useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
+      // A saved selection from before navigation must not replace draft text.
+      if (!alreadyInserted) insertSkillChip(detail.skillName, readComposerText(editor).length);
+      return;
+    }
+
+    // 清空输入框并插入前缀文本（如"帮我修改这个技能"）
+    inputRef.current.textContent = detail.prefixText || '';
+    inputRef.current.focus();
+
+    // 将光标移到末尾，确保技能 chip 插入在前缀文本之后
+    const range = document.createRange();
+    range.selectNodeContents(inputRef.current);
+    range.collapse(false);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+
+    // 先更新 store 中的 selectedSkills，再插入 chip DOM
+    useSessionStore.getState().addSelectedSkill(sid, detail.skillName);
+    insertSkillChip(detail.skillName);
+
+    // 如果有后缀文本（如"帮我修改这个技能"），追加到 chip 之后
+    if (detail.suffixText) {
+      inputRef.current.appendChild(document.createTextNode(detail.suffixText));
+      // 光标移到末尾
+      const r = document.createRange();
+      r.selectNodeContents(inputRef.current);
+      r.collapse(false);
+      const s = window.getSelection();
+      s?.removeAllRanges();
+      s?.addRange(r);
+    }
+
+    // 如果有第二个技能（如被编辑的技能），追加 chip
+    if (detail.secondSkillName) {
+      useSessionStore.getState().addSelectedSkill(sid, detail.secondSkillName);
+      insertSkillChip(detail.secondSkillName);
+    }
+
+    // 同步纯文本到 store（chip 不进入纯文本，前缀/后缀文本会保留）
+    useChatStore.getState().setInputValue(sid, extractPlainText());
   }, [extractPlainText, insertSkillChip]);
+  useEffect(() => {
+    window.addEventListener('chat-input-insert-skill', handleInsertSkillFromPage);
+    return () => window.removeEventListener('chat-input-insert-skill', handleInsertSkillFromPage);
+  }, [handleInsertSkillFromPage]);
   // 外部进入新会话时可以预选技能。把 canonical session state 同步成输入框
   // 中的 chip，避免用户开始编辑后被 handleEditorInput 误判为手动移除。
   useEffect(() => {
