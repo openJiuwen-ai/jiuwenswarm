@@ -14,7 +14,7 @@ async def run_history_io(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> A
     from jiuwenswarm.server.runtime.session.session_history import append_history_record
 
     if fn is append_history_record and not args:
-        from jiuwenswarm.extensions_v2.event_types.session_history import try_append_platform_history
+        from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
         from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
 
         handled, receipt = await try_append_platform_history(kwargs)

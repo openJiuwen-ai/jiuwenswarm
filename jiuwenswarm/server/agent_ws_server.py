@@ -6260,7 +6260,7 @@ class AgentWebSocketServer:
             timestamp = _dt.datetime.now().timestamp()
 
         try:
-            from jiuwenswarm.extensions_v2.event_types.session_history import try_append_platform_history
+            from jiuwenswarm.server.runtime.session.history_events import try_append_platform_history
             from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError
 
             record_kwargs = dict(
