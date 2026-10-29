@@ -193,7 +193,6 @@ def _build_ask_user_command_payload(payload: dict[str, Any]) -> dict[str, Any]:
     # payload 只发契约字段（source + questions）：不发 expiresAt 等契约外字段，
     # 避免端侧严格 schema 校验失败；服务端待答表过期自管（_APPROVAL_EXPIRE_S）。
     invoke_payload: dict[str, Any] = {
-        "ask_user_id": uuid.uuid4().hex[:16],
         "source": str(payload.get("source") or "").strip() or "permission_interrupt",
         "questions": questions_out,
     }
