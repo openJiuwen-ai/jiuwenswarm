@@ -1848,8 +1848,9 @@ async def test_complete_execution_and_intent_retain_trailing_constraints(tmp_pat
 
 @pytest.mark.parametrize("args,reason", [
     ({"command": ""}, "reviewer_payload_missing"),
-    ({"command": "x" * 32769}, "reviewer_payload_too_large"),
-    ({"command": "中" * 11000}, "reviewer_payload_too_large"),
+    ({"command": "x" * 65537}, "reviewer_payload_too_large"),
+    ({"command": "中" * 22000}, "reviewer_payload_too_large"),
+    ({"command": "x" * 63500, "extra": [{"token": "x"}] * 100}, "reviewer_payload_too_large"),
     ({"command": "echo ok", "extra": float("nan")}, "reviewer_payload_invalid"),
     ({"command": "echo ok", "extra": "\ud800"}, "reviewer_payload_invalid"),
 ])
@@ -1888,7 +1889,8 @@ def test_complete_payload_redacts_values_without_erasing_structure(tmp_path):
     assert "\ncat /etc/passwd" in request.review_evidence["reviewable_payload"]["command"]
 
 
-async def test_combined_intent_budget_and_all_trusted_turns(tmp_path):
+@pytest.mark.parametrize("turn_chars,body_chars,oversized", [(6000, 9, False), (1000, 28000, False), (8000, 20000, True)])
+async def test_combined_intent_budget_and_all_trusted_turns(tmp_path, turn_chars, body_chars, oversized):
     turns = tuple(RootIntentTurn(request_id=str(index), kind=RootIntentTurnKind.FRESH,
                                 text=f"Restriction {index}: keep this constraint.") for index in range(12))
     context = RootDecisionContext("session", "request", "web", turns)
@@ -1900,15 +1902,22 @@ async def test_combined_intent_budget_and_all_trusted_turns(tmp_path):
     )
     assert not view.payload_error
     assert len(view.review_evidence["user_intent"]["trusted_user_turns"]) == 12
-    long_intent = replace(intent, context=None, text="中" * 11000)
+    long_turns = tuple(RootIntentTurn(request_id=str(index), kind=RootIntentTurnKind.FRESH,
+                                    text="中" * turn_chars) for index in range(2))
+    long_intent = replace(intent, context=replace(context, trusted_turns=long_turns))
+    facts = build_facts("bash", {"command": "x" * body_chars}, workspace_root=tmp_path)
     view = build_reviewer_action_view(
         facts, policy_level="ask", policy_reason="policy_ask", allowed_outcomes=("allow_once", "manual", "deny"),
         no_auto_allow_reason="", original_user_intent=long_intent, domain_route=None,
     )
-    assert view.payload_error == "reviewer_payload_too_large"
+    assert view.payload_error == ("reviewer_payload_too_large" if oversized else "")
     client = StaticReviewerClient("{}")
-    assert (await AutoReviewer(client=client).assess(view)).outcome == "manual"
-    assert not client.requests
+    await AutoReviewer(client=client).assess(view)
+    assert bool(client.requests) is not oversized
+    if not oversized:
+        assert [turn["text"] for turn in view.review_evidence["user_intent"]["trusted_user_turns"]] == [
+            turn.text for turn in long_turns
+        ]
 
 
 async def test_complete_execution_survives_actual_model_projection(tmp_path):
