@@ -164,8 +164,8 @@ def _server_package(monkeypatch, package_id, integrity="sha256:value"):
                 "applicability": {"task_description": "先检索再生成报告"},
                 "combination_structure": {
                     "nodes": {
-                        "search": {"metadata": {"capability_type": "skill"}},
-                        "writer": {"metadata": {"capability_type": "skill"}},
+                        "search": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
+                        "writer": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
                     },
                     "edges": [
                         {
@@ -299,8 +299,8 @@ def test_target_adapter_adds_installable_frontmatter(tmp_path: Path) -> None:
                 "applicability": {"task_description": "先检索再生成报告"},
                 "combination_structure": {
                     "nodes": {
-                        "search": {"metadata": {"capability_type": "skill"}},
-                        "writer": {"metadata": {"capability_type": "skill"}},
+                        "search": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
+                        "writer": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
                     },
                     "edges": [
                         {
@@ -367,7 +367,7 @@ def test_target_adapter_rejects_branch_and_loop_structures(
     package = _server_package(monkeypatch, "cap-graph")
     nodes = package["materials"]["recipe"]["combination_structure"]["nodes"]
     if any(edge["target"] == "reviewer" for edge in edges):
-        nodes["reviewer"] = {"metadata": {"capability_type": "skill"}}
+        nodes["reviewer"] = {"metadata": {"capability_type": "skill", "skill_type": "skill"}}
     package["materials"]["recipe"]["combination_structure"]["edges"] = edges
 
     with pytest.raises(SkillPackNotInstallableError):
@@ -1550,7 +1550,7 @@ def test_skill_manager_does_not_install_pack_with_missing_member(
     assert not (workspace / "skills" / "missing-member-pack").exists()
 
 
-def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
+def test_skill_manager_rejects_pack_with_disabled_member(
     tmp_path: Path,
     allow_macos_pytest_temp_sources,
 ) -> None:
@@ -1562,17 +1562,15 @@ def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
     manager = SkillManager(workspace_dir=str(workspace))
     manager.set_skill_enabled("search", False)
 
-    result = manager.install_symphony_skill_artifact(
-        artifact,
-        expected_root=root,
-        package_id="cap-disabled",
-        integrity="sha256:value",
-    )
-
-    assert result["success"] is True
-    assert result["skill"]["skill_type"] == "skillpack"
-    assert manager.get_skill_enabled("disabled-member-pack") is True
-    assert "disabled-member-pack" in manager.list_execution_disabled_skills()
+    with pytest.raises(SkillRpcError) as exc:
+        manager.install_symphony_skill_artifact(
+            artifact,
+            expected_root=root,
+            package_id="cap-disabled",
+            integrity="sha256:value",
+        )
+    assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert not (workspace / "skills" / "disabled-member-pack").exists()
 
 
 @pytest.mark.asyncio

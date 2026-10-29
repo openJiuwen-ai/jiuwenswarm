@@ -101,6 +101,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Introduces skill orchestration and dispatch system.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>SkillPack</strong></td>
+      <td width="28%"><a href="en/skillpack-productization.md">SkillPack productization</a></td>
+      <td width="50%">Distillation, confirmed reuse, compatible publishing and locked member installation.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Channels</strong></td>
       <td width="28%"><a href="en/Channels.md">Channels</a></td>
       <td width="50%">JiuwenSwarm multi-channel access and interaction.</td>

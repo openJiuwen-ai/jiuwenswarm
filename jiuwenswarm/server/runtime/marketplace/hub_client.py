@@ -262,13 +262,13 @@ class HubClient(HubAssetPort):
         return detail
 
     async def get_artifact(
-        self, asset_id: str, *, version: str | None = None
+        self, asset_id: str, *, version: str | None = None, is_cli_download: bool = False
     ) -> HubArtifact:
         wanted = str(asset_id or "").strip()
         if not wanted:
             raise ValueError("asset_id is required")
         wanted_version = str(version or "").strip()
-        params: dict[str, Any] = {"is_cli_download": False}
+        params: dict[str, Any] = {"is_cli_download": is_cli_download}
         if wanted_version:
             params["version"] = wanted_version
         payload = await self.transport.get_data(

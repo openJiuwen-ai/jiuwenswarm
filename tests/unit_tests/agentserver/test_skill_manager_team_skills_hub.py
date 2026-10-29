@@ -338,7 +338,7 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
 
     async def _fake_get_data(path, **kwargs):  # noqa: ANN001
         assert path == "/api/v1/artifacts/demo-skill"
-        assert kwargs.get("params") is None
+        assert kwargs.get("params") == {"is_cli_download": True}
         return {
             "download_url": _TEAM_SKILLS_HUB_ZIP_URL,
             "checksum_sha256": "",

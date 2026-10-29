@@ -46,6 +46,11 @@ from jiuwenswarm.symphony.service import (
 from jiuwenswarm.symphony.graph_storage import latest_incomplete_build, graph_exists
 
 
+_ALLOWED_SYMPHONY_FACADE_SYMBOLS = {
+    "openjiuwen.symphony.flow": frozenset({"FlowStore", "RecipeEvidence"}),
+}
+
+
 class _FakeGraphModel:
     def __init__(self, model="fake-model", confidences=()):
         self.model = model
@@ -208,6 +213,8 @@ def _forbidden_symphony_import(
     if not (node.module or "").startswith("openjiuwen.symphony"):
         return ""
     if node.module in allowed_modules:
+        return ""
+    if imported <= _ALLOWED_SYMPHONY_FACADE_SYMBOLS.get(node.module, frozenset()):
         return ""
     if node.module == "openjiuwen.symphony" and imported <= allowed_symbols:
         return ""
@@ -1603,6 +1610,9 @@ def test_runtime_cache_rebuilds_when_default_llm_changes(monkeypatch, tmp_path):
 
 
 def test_production_uses_only_stable_openjiuwen_symphony_imports():
+    import openjiuwen.symphony.flow as flow_facade
+
+    assert _ALLOWED_SYMPHONY_FACADE_SYMBOLS["openjiuwen.symphony.flow"] <= set(flow_facade.__all__)
     package_root = Path(__file__).parents[3] / "jiuwenswarm"
     allowed_symbols = {
         "FINGERPRINT_ARTIFACT_FILENAME",
@@ -1654,6 +1664,19 @@ def test_static_import_guard_detects_openjiuwen_symphony_alias_bypass():
     assert _forbidden_symphony_import(dotted, allowed_symbols=set())
     assert not _forbidden_symphony_import(legal, allowed_symbols=set())
     assert not _forbidden_symphony_import(stable_module, allowed_symbols=set())
+
+
+def test_flow_facade_import_guard_keeps_deep_imports_forbidden():
+    public = ast.parse("from openjiuwen.symphony.flow import FlowStore, RecipeEvidence").body[0]
+    assert not _forbidden_symphony_import(public, allowed_symbols=set())
+    for statement in (
+        "from openjiuwen.symphony.flow.store import FlowStore",
+        "from openjiuwen.symphony.flow.engine import SymphonyFlowEngine",
+        "import openjiuwen.symphony.flow.store as hidden",
+        "from openjiuwen.symphony.flow import InternalStore",
+        "from openjiuwen.symphony.flow import *",
+    ):
+        assert _forbidden_symphony_import(ast.parse(statement).body[0], allowed_symbols=set())
 
 
 @pytest.mark.asyncio

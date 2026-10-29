@@ -1,4 +1,14 @@
 {
+  "skillPackInstall": {
+    "title": "Review SkillPack installation",
+    "summary": "Review the Pack and its locked member versions. Matching local Skills will be reused; missing members will be downloaded from this Hub. Nothing is installed until you confirm.",
+    "actions": { "reuse": "Reuse local", "download": "Download", "blocked": "Blocked" },
+    "blocked": "Resolve the listed conflicts before installing. Existing Skills will not be overwritten.",
+    "cancel": "Cancel",
+    "confirm": "Confirm installation",
+    "invalidPlan": "The installation plan is incomplete. Refresh the marketplace and try again.",
+    "changed": "The installation plan changed. Select the SkillPack again to review the latest plan."
+  },
   "common": {
     "searchName": "Search names",
     "noData": "No data",

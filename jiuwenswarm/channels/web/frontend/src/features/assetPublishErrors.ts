@@ -11,6 +11,23 @@ const SAFE_FAILURE_KEYS = {
   INVALID_PACKAGE: 'invalidPackage',
   PUBLISH_UNAVAILABLE: 'publishUnavailable',
   UPLOAD_OUTCOME_UNKNOWN: 'uploadOutcomeUnknown',
+  SKILLPACK_DISABLED: 'packUnavailable',
+  SKILLPACK_MARKET_GATE_REQUIRED: 'packUnavailable',
+  SKILLPACK_CONTENT_CHANGED: 'packChanged',
+  SKILLPACK_MEMBER_LOCALLY_MODIFIED: 'packChanged',
+  SKILLPACK_MEMBER_TYPE_INVALID: 'packMemberInvalid',
+  SKILLPACK_MEMBER_HUB_CONFLICT: 'packMemberInvalid',
+  SKILLPACK_MEMBER_IDENTITY_CONFLICT: 'packMemberInvalid',
+  SKILLPACK_MEMBERS_BLOCKED: 'packMemberInvalid',
+  SKILLPACK_NAME_CONFLICT: 'packConflict',
+  SKILLPACK_MEMBER_NAME_CONFLICT: 'packConflict',
+  SKILLPACK_TARGET_CONFLICT: 'packConflict',
+  SKILLPACK_TARGET_REQUIRES_LOCAL_RECORD: 'packConflict',
+  SKILLPACK_VERSION_CONFLICT: 'packConflict',
+  SKILLPACK_TRANSPORT_CHANGED: 'packConflict',
+  SKILLPACK_REVIEW_REJECTED: 'packRejected',
+  SKILLPACK_HUB_CHECK_FAILED: 'packCheckFailed',
+  SKILLPACK_UPLOAD_UNCONFIRMED: 'packStageReconcile',
 } as const;
 
 export type PublishFailureKey = (typeof SAFE_FAILURE_KEYS)[keyof typeof SAFE_FAILURE_KEYS] | 'requestFailed';

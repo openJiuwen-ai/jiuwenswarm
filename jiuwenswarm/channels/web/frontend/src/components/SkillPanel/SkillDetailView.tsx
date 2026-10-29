@@ -116,7 +116,10 @@ function PackMembersGrid({
                 ? [`${t('skills.memberUnavailable')}${reasonKey ? ` · ${t(reasonKey)}` : ''}`]
                 : undefined
             }
-            description={member.description || t('skills.noDescription')}
+            description={[
+              member.description || t('skills.noDescription'),
+              member.version ? `${member.version} · ${member.asset_id || ''}` : '',
+            ].filter(Boolean).join('\n')}
             onClick={interactable ? () => onOpenMember?.(member.name) : undefined}
           />
         );
@@ -517,7 +520,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
         className="ml-2 flex items-center justify-center rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 whitespace-nowrap"
         style={{ width: '96px', height: '32px' }}
         data-testid="skill-panel-my-detail-publish-btn"
-        onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}
+        onClick={() => openAssetPublish({ kind: selectedSkill.skill_type === 'skillpack' ? 'skillpack' : 'skill', local_id: selectedSkill.name })}
       >
         {t('skills.actions.publish')}
       </button>

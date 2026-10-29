@@ -347,7 +347,7 @@ async def test_missing_and_invalid_members_block_all_referencing_packs(
 
 
 @pytest.mark.asyncio
-async def test_uninstalling_member_keeps_pack_and_blocks_it(
+async def test_uninstalling_referenced_member_is_blocked(
     manager: SkillManager,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -361,12 +361,16 @@ async def test_uninstalling_member_keeps_pack_and_blocks_it(
 
     result = await manager.handle_skills_uninstall({"name": "first-skill"})
 
-    assert result["success"] is True
+    assert result["success"] is False
+    assert result["code"] == "SKILL_REFERENCED_BY_PACK"
+    assert result["referencing_skillpacks"] == ["demo-pack"]
     assert (manager._skills_dir / "demo-pack").is_dir()
+    assert (manager._skills_dir / "first-skill").is_dir()
     detail = await manager.handle_skills_get({"name": "demo-pack"})
-    assert detail["blocked_members"] == [{"name": "first-skill", "reason": "missing"}]
-    assert "demo-pack" in str(log_info.call_args_list)
-    assert "missing" in str(log_info.call_args_list)
+    assert detail["blocked_members"] == []
+
+    await manager.handle_skills_uninstall({"name": "demo-pack"})
+    assert (await manager.handle_skills_uninstall({"name": "first-skill"}))["success"]
 
 
 @pytest.mark.asyncio

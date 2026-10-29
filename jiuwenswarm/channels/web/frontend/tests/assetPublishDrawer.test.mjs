@@ -510,6 +510,37 @@ test('logged-out publishing loads local names for all five kinds and preserves e
     }
   }
 });
+test('SkillPack shows one public member plan and resumes review progress in the shared drawer', async () => {
+  sessionStorage.setItem('marketplace_oauth_access_token', 'test-token');
+  const members = [
+    { name: 'notes', version: '1.0.0', action: 'reuse', review: 'approved' },
+    { name: 'risk', version: '2.0.0', action: 'publish', visibility: 'public' },
+  ];
+  assetPublishApi.describe = async () => description;
+  assetPublishApi.prepare = async () => ({ ...draft, members });
+  assetPublishApi.commit = async () => ({
+    operation_id: 'skillpack-operation', execution_status: 'uploading',
+    stage: 'waiting_member_review', members, result: null, error: null,
+  });
+  await act(async () => openAssetPublish({ kind: 'skillpack', local_id: 'release-pack' }));
+  await tick();
+  assert.equal(find('asset-publish-force'), null);
+  assert.equal(document.querySelectorAll('[name="asset-publish-visibility"]').length, 1);
+  await act(async () =>
+    find('asset-publish-form').dispatchEvent(new dom.window.Event('submit', { bubbles: true, cancelable: true })),
+  );
+  await tick();
+  assert.match(find('asset-publish-pack-consent').textContent, /publish.*members publicly/);
+  assert.match(find('asset-publish-pack-member-list').textContent, /notes.*1.0.0.*Reuse published/s);
+  assert.match(find('asset-publish-pack-member-list').textContent, /risk.*2.0.0.*Publish member first/s);
+  await act(async () => find('asset-publish-commit').click());
+  await tick();
+  assert.match(find('asset-publish-result-status').textContent, /Waiting for member reviews/);
+  assert.equal(find('asset-publish-new-version'), null);
+  assert.equal(find('asset-publish-pack-consent'), null);
+  await act(async () => find('asset-publish-close').click());
+});
+
 test('OAuth restore contains metadata and does not auto prepare or commit', async () => {
   assetPublishApi.describe = async () => description;
   let called = 0;

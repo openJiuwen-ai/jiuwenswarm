@@ -86,12 +86,16 @@ class PublishRequest:
     version_desc: str = ""
     visibility: Literal["public", "private"] = "public"
     force: bool = False
+    transport_profile: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.identity, PublishIdentity) or not isinstance(
-            self.artifact_path, Path
-        ):
+        if not isinstance(self.identity, PublishIdentity) or not isinstance(self.artifact_path, Path):
             raise ValueError("Invalid prepared artifact")
+        if self.identity.kind == "skillpack":
+            if self.transport_profile not in {"legacy_skill_v1", "native_skillpack_v1"}:
+                raise ValueError("SkillPack requires an explicit transport profile")
+        elif self.transport_profile is not None:
+            raise ValueError("Only SkillPack may select a transport profile")
         if not isinstance(self.artifact_sha256, str) or not re.fullmatch(
             r"[0-9a-f]{64}", self.artifact_sha256
         ):
@@ -363,6 +367,7 @@ class HubPublishClient:
                 payload.get("data"),
                 request.identity,
                 expected_visibility=request.visibility,
+                transport_profile=request.transport_profile,
             )
         except (ValueError, TypeError, AttributeError, RecursionError):
             raise PublishUploadError(

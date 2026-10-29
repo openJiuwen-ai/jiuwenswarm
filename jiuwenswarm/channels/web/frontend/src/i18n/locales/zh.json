@@ -1,4 +1,14 @@
 {
+  "skillPackInstall": {
+    "title": "确认 SkillPack 安装计划",
+    "summary": "查看 Pack 及其锁定的成员版本。本地一致的 Skill 将复用，缺失成员将从同一 Hub 下载。确认前不会安装。",
+    "actions": { "reuse": "复用本地", "download": "下载", "blocked": "阻断" },
+    "blocked": "请先解决上述冲突再安装，现有 Skill 不会被覆盖。",
+    "cancel": "取消",
+    "confirm": "确认安装",
+    "invalidPlan": "安装计划不完整，请刷新技能广场后重试。",
+    "changed": "安装计划已变化，请重新选择 SkillPack 查看最新计划。"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",

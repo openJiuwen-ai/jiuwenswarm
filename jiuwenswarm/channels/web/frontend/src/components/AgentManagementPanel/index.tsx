@@ -538,6 +538,7 @@ export function AgentManagementPanel({
         await client.installSkill(skill);
         await loadSkills(view === 'group-create' ? { includeTeamMarketplace: true } : {});
       } catch (error) {
+        if (error && typeof error === 'object' && 'code' in error && error.code === 'skill_install_cancelled') return;
         onError(formatActionError(error, t('agentManagement.states.actionError')));
       } finally {
         setBusySkillId(null);
