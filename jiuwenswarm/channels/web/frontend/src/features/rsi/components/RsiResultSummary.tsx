@@ -68,7 +68,11 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
   const isProgram = task.artifact_type === 'PROGRAM';
   const usageFmt = tokenUsage ? formatTokensK(tokenUsage.tokens) : null;
   const metrics: Array<{ key: string; value: string; unit?: string; label: string }> = [
-    { key: 'baseline', value: formatArtifactScore(baseline, task.artifact_type), label: t('rsi.detail.baselineScore') },
+    {
+      key: 'baseline',
+      value: formatArtifactScore(baseline, task.artifact_type, task.scenario),
+      label: t('rsi.detail.baselineScore'),
+    },
     { key: 'usage', value: usageFmt ? usageFmt.value : '--', unit: usageFmt?.unit, label: t('rsi.detail.usage') },
     { key: 'iterations', value: iterations != null ? String(iterations) : '--', label: t('rsi.detail.iterations') },
   ];
@@ -103,7 +107,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
           {/* 优化分数 + 当前最优产物（沿用 rsi-score / rsi-best 组合） */}
           <div className="rsi-result__score-best">
             <div className="rsi-score" data-testid="rsi-score">
-              {formatArtifactScore(score, task.artifact_type)}
+              {formatArtifactScore(score, task.artifact_type, task.scenario)}
               {gainFmt.kind !== 'none' && (
                 <span
                   className={
