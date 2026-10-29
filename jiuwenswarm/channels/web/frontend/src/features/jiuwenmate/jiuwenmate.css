@@ -2046,19 +2046,26 @@
   position: relative;
   display: flex;
   min-width: 0;
+  min-height: 36px;
   align-items: center;
   border-radius: 6px;
+  padding: 0 8px 0 12px;
+  cursor: default;
 }
 
-.jiuwenmate-side-panel__schedule-item:hover,
-.jiuwenmate-side-panel__schedule-item[aria-current='true'] {
+.jiuwenmate-side-panel__schedule-item:hover {
   background: var(--jm-muted-2);
 }
 
-.jiuwenmate-side-panel__schedule-item > .jiuwenmate-side-panel__item {
+.jiuwenmate-side-panel__schedule-name {
   min-width: 0;
   flex: 1;
+  overflow: hidden;
+  color: var(--jm-text);
+  font-size: 12px;
   padding-right: 38px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .jiuwenmate-side-panel__schedule-item > .jiuwenmate-menu {
@@ -2066,12 +2073,14 @@
   z-index: 2;
   right: 8px;
   opacity: 0;
+  visibility: hidden;
 }
 
 .jiuwenmate-side-panel__schedule-item:hover > .jiuwenmate-menu,
-.jiuwenmate-side-panel__schedule-item[aria-current='true'] > .jiuwenmate-menu,
+.jiuwenmate-side-panel__schedule-item:focus-within > .jiuwenmate-menu,
 .jiuwenmate-side-panel__schedule-item > .jiuwenmate-menu--open {
   opacity: 1;
+  visibility: visible;
 }
 
 .jiuwenmate-side-panel__add {
@@ -5836,4 +5845,75 @@
   font-style: normal;
   font-weight: 400;
   line-height: 16px;
+}
+
+@media (max-width: 760px) {
+  .jiuwenmate-shell {
+    grid-template-columns: 56px minmax(0, 1fr);
+  }
+
+  .jiuwenmate-rail {
+    width: 56px;
+  }
+
+  .jiuwenmate-workspace,
+  .jiuwenmate-workspace--panel-open:not(.jiuwenmate-workspace--collapsed) {
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .jiuwenmate-workspace__main {
+    grid-column: 1;
+  }
+
+  .jiuwenmate-workspace:not(.jiuwenmate-workspace--collapsed) .jiuwenmate-workspace__main {
+    display: none;
+  }
+
+  .jiuwenmate-workspace--panel-open .jiuwenmate-side-panel {
+    position: absolute;
+    z-index: 5;
+    inset: 0;
+    grid-column: 1;
+  }
+
+  .jiuwenmate-chat-welcome {
+    height: auto;
+    padding: 0 12px 12px;
+  }
+
+  .jiuwenmate-chat-welcome__content {
+    gap: 16px;
+    padding-top: 68px;
+  }
+
+  .jiuwenmate-chat-welcome__suggestions {
+    gap: 8px;
+  }
+
+  .jiuwenmate-chat-welcome__suggestions button {
+    min-height: 44px;
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+
+  .jiuwenmate-chat-welcome footer {
+    width: 100%;
+  }
+
+  .jiuwenmate-main-header {
+    padding-right: 12px;
+  }
+
+  .jiuwenmate-workspace--collapsed .jiuwenmate-main-header {
+    padding-left: 48px;
+  }
+
+  .jiuwenmate-session-view footer {
+    width: calc(100% - 24px);
+  }
+
+  .jiuwenmate-chat-messages {
+    padding: 8px 12px 24px;
+  }
 }
