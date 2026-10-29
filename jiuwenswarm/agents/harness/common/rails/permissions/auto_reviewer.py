@@ -237,6 +237,8 @@ class IsolatedModelReviewerClient:
 
     def _format_kwargs(self) -> dict[str, object]:
         """Fill the built-in Chat transport's missing format without changing its config."""
+        # Subclasses may override the transport contract; inject only into the built-in class.
+        # pylint: disable-next=huawei-unidiomatic-typecheck
         if self.output_format == "prompt" or type(self._model) is not Model:
             return {}
         config = self._model.model_client_config
@@ -247,8 +249,9 @@ class IsolatedModelReviewerClient:
             config.client_provider != ProviderType.OpenAI
             or config.api_mode not in {None, LLMApiMode.ChatCompletions}
             or config.auth_mode == LLMAuthMode.OpenAIAccountOAuth
-            or getattr(self._model.model_config, "response_format", None) is not None
         ):
+            return {}
+        if getattr(self._model.model_config, "response_format", None) is not None:
             return {}
         return {"response_format": {"type": "json_object"}}
 
@@ -387,10 +390,12 @@ def _complete_payload_evidence(facts: ToolDecisionFacts, evidence: dict[str, Any
             evidence["user_intent"] = {"trusted_user_turns": []}
             return "reviewer_payload_too_large"
         evidence.update(safe)
-    except (TypeError, ValueError, UnicodeError, OverflowError, RecursionError) as exc:
+    except (TypeError, ValueError, OverflowError, RecursionError) as exc:
         evidence["reviewable_payload"] = {}
         evidence["user_intent"] = {"trusted_user_turns": []}
-        return "reviewer_redaction_incomplete" if str(exc) == "reviewer_redaction_incomplete" else "reviewer_payload_invalid"
+        if str(exc) == "reviewer_redaction_incomplete":
+            return "reviewer_redaction_incomplete"
+        return "reviewer_payload_invalid"
     return ""
 
 
@@ -815,7 +820,7 @@ def _decode_strict_response(raw_response: Any) -> dict[str, Any] | None:
         return None
     try:
         decoded = json.loads(raw_response, parse_constant=_reject_json_constant)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
     if not isinstance(decoded, dict):
         return None

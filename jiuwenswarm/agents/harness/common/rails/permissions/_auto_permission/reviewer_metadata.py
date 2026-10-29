@@ -77,7 +77,8 @@ _DISPLAY_MESSAGES = {
     ),
     "reviewer_redaction_incomplete": (
         "秘密值遮挡后无法完整核验调用结构，未调用审查模型，已转人工审批。",
-        "Secret redaction prevents a complete review of the call structure; the reviewer model was not called. Manual review is required.",
+        "Secret redaction prevents a complete review of the call structure; "
+        "the reviewer model was not called. Manual review is required.",
     ),
     "reviewer_outcome_not_allowed": (
         "自动审批给出的结论超出宿主策略允许范围，已转人工审批。",

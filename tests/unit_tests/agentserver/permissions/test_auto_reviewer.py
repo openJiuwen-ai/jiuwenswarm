@@ -1620,6 +1620,7 @@ async def test_auto_reviewer_unexpected_exception_falls_back_to_manual(
 
 
 @pytest.mark.parametrize("provider", ["OpenAI", "DeepSeek"])
+@pytest.mark.parametrize("use_subclass", [False, True])
 @pytest.mark.parametrize("mode,configured,expected", [
     ("json_object", None, {"type": "json_object"}),
     ("prompt", None, None),
@@ -1628,8 +1629,14 @@ async def test_auto_reviewer_unexpected_exception_falls_back_to_manual(
      {"type": "json_schema", "json_schema": {"name": "existing", "schema": {"type": "object"}}}),
     ("prompt", {"type": "json_object"}, {"type": "json_object"}),
 ])
-async def test_json_mode_reaches_chat_transport_without_mutating_agent(monkeypatch, provider, mode, configured, expected):
-    original = Model(
+async def test_json_mode_reaches_chat_transport_without_mutating_agent(
+    monkeypatch, provider, use_subclass, mode, configured, expected,
+):
+    class CustomModel(Model):
+        pass
+
+    model_type = CustomModel if use_subclass else Model
+    original = model_type(
         model_client_config=ModelClientConfig(client_provider=provider, api_key="synthetic-test-key",
                                              api_base="https://models.example.invalid/v1"),
         model_config=ModelRequestConfig(model="reviewer-test", response_format=configured),
@@ -1645,7 +1652,8 @@ async def test_json_mode_reaches_chat_transport_without_mutating_agent(monkeypat
     assert await IsolatedModelReviewerClient(model=model, output_format=mode).assess(
         ReviewerActionView({}, "ask", {}),
     ) == "{}"
-    assert send.call_args.kwargs.get("response_format") == expected
+    expected_format = None if use_subclass and configured is None else expected
+    assert send.call_args.kwargs.get("response_format") == expected_format
     assert send.await_count == 1
     assert model is not original and model.model_config is not original.model_config
     assert model.model_config.model_dump() == original.model_config.model_dump() == original_config
@@ -1850,6 +1858,7 @@ async def test_complete_execution_and_intent_retain_trailing_constraints(tmp_pat
     ({"command": "x" * 32769}, "reviewer_payload_too_large"),
     ({"command": "中" * 11000}, "reviewer_payload_too_large"),
     ({"command": "echo ok", "extra": float("nan")}, "reviewer_payload_invalid"),
+    ({"command": "echo ok", "extra": "\ud800"}, "reviewer_payload_invalid"),
 ])
 async def test_incomplete_execution_never_calls_reviewer(tmp_path, args, reason):
     facts = build_facts("bash", args, workspace_root=tmp_path)
