@@ -88,7 +88,9 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                     )
                 if holder.last_readiness is not None:
                     await conn.send(holder.last_readiness)
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError) as exc:
+                logger.warning("[Worker] HELLO/readiness delivery failed; retiring session: %s: %s",
+                               type(exc).__name__, exc)
                 await _retire_session(holder, dispatcher)
                 await conn.close()
                 continue

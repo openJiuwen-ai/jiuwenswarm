@@ -100,6 +100,7 @@ async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | 
         historical = path != current_path
         owned = False
         connection = None
+        failure = None
         probe_deadline = min(deadline, time.monotonic() + .5) if historical else deadline
         try:
             async with startup_lock(path, probe_deadline):
@@ -124,8 +125,9 @@ async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | 
                     owned = True
                 result = await retire_worker(connection, hello, path, deadline=deadline, allow_legacy=True)
                 result = {**result, "pid": hello["pid"]}
-        except Exception as exc:
-            if not historical or owned:
+        except BaseException as exc:
+            if not isinstance(exc, Exception) or not historical or owned:
+                failure = exc
                 raise
             logging.getLogger(__name__).warning(
                 "Historical Worker ownership unconfirmed at %s; preserving it outside this deployment: %s: %s",
@@ -135,10 +137,10 @@ async def shutdown_resident_worker(*, timeout: float = 30.0, socket_path: str | 
             if connection is not None:
                 try:
                     await connection.close()
-                except (OSError, RuntimeError):
-                    if not historical:
+                except (OSError, RuntimeError, asyncio.CancelledError) as exc:
+                    if failure is None and (not historical or isinstance(exc, asyncio.CancelledError)):
                         raise
-                    logging.getLogger(__name__).warning("Historical Worker IPC close failed at %s", path, exc_info=True)
+                    logging.getLogger(__name__).warning("Worker IPC close failed at %s", path, exc_info=True)
     return result
 
 
