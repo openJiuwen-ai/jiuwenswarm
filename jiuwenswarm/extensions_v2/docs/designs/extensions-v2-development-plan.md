@@ -281,11 +281,11 @@
 
 ### EXTV2-16 会话历史读写与追加前扩展
 
-- **目标与范围：** 提供只读 `ops.session.messages(limit=50, cursor=None)`、写入 `ops.session.append(message)` 和追加前事件 `session.append`，实现主会话产品历史分页、用户审核 / 正文改写、默认 CORE 落盘后回执；接入原可等待主历史写入和 `history.append_record` RPC。不驱动 Agent、不注入模型上下文，不新增前端入口。
+- **目标与范围：** 提供只读 `ops.session.messages(limit=50, cursor=None)`、写入 `ops.session.append(note)` 和追加前事件 `session.append`；输入为完整消息视图及独立 door/origin/uuid，受控改写文本后由 CORE 实际落盘并返回 message/uuid/history_record。接入原可等待主历史、原生 BaseMessage 适配和 history.append_record RPC；不驱动 Agent、不同步改写活跃模型上下文，不新增前端入口。
 - **责任与契约：** [S_06](../specs/S_06_session-history-ops.md)；事件 / Handler / Ops 登记在 Extensions V2，记录构造、分页及写入服务留在 Server 历史模块。agent-core 不改造，EventBus 只在 Worker。
 - **开工硬前置：** 已有 EXTV2-01 装配、EXTV2-05 共享 Ops Builder、宿主绑定的有效 SessionContext 和原历史服务；不依赖 cwd / model / repo 能力。
 - **验收标准：** 用户包实际加载并调用两项 Ops；改写 / 显式拒绝 / 真写回执与原入口生效；稳定分页、重试去重与冲突、跨会话 / 包隔离、取消 / 失败 / generation 拒绝；已有历史回归和真实 Worker 链路。范围及证据入口见 [F_16 第 6 节](../features/F_16_session-history-ops.md#6-验收与未决问题)。
-- **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py`；用户示例 `examples/session_history_audit/`。
+- **独立验证：** `tests/unit_tests/extensions_v2/test_session_history_ops.py` 与 `test_session_history_messages.py`；用户示例 `examples/session_history_audit/`，字段含义、填写示例与迁移见 F_16。
 - **前端与联合交付：** 历史可通过既有读取入口恢复，本次不主动渲染 UI，不据此完成 M1～M3。对应 Server PR-04。
 
 ## 3. 特性依赖关系与并行开发
@@ -396,7 +396,7 @@ flowchart LR
 | EXTV2-13 会话工作区查询 | 完成 | 刘瑜 | [!71](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/71) | V2 115 项、原生用量 3 项、无项目工作区 62 项测试通过；独立进程用户包调用链验证通过，见 F_13 | 2026-10-26 |
 | EXTV2-14 会话主模型查询 | 完成 | 刘瑜 | [!79](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/79) | 扩展与用量 140 项、模型兼容 116 项测试通过；独立进程 ZIP 安装、用户 Handler 调用及卸载验证通过，见 F_14 / S_04 | 2026-10-26 |
 | EXTV2-15 会话 Git 仓库查询 | 完成 | 刘瑜 | [!81](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/81) | 扩展与原生 Adapter 161 项测试通过；独立进程示例 ZIP 安装、普通仓库和 worktree 查询、宿主日志及卸载验证通过，见 F_15 / S_05 | 2026-10-27 |
-| EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 363 项定向回归（历史 Ops 65 项）、74 项模型兼容回归通过；真实 Front/Supervisor/Worker 两包两会话、平台上下文、平台写入不被拒绝、扩展可拒绝、改写/幂等/分页、卸载及进程端口清理通过，见 F_16 / S_06 | 2026-10-28 |
+| EXTV2-16 会话历史读写与追加前扩展 | 完成 | 刘瑜 | [!83](https://gitcode.com/huenrui_/jiuwenswarm/merge_requests/83) | 388 项定向回归（历史与结构化消息 90 项）、74 项模型兼容回归通过，1 项 Windows 权限跳过；真实两包/两会话、真实工具结果改写与 ID/JSONL、结构化追加/回执、原生 BaseMessage 入口、幂等/分页、卸载及清理通过，见 F_16 / S_06；原生消息入口为定向测试证据，真实模型链验证产品工具记录路径 | 2026-10-29 |
 
 追加命令前，四项后端工作与既有 V2、Gateway E2A 回归合跑共 92 项通过，另有 AgentServer 请求分发回归 21 项通过。这是原后端范围的验证记录，不替代原 M1～M3 的产品验收。环境说明见 F_09。
 

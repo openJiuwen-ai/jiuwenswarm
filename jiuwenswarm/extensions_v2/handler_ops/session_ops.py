@@ -138,7 +138,7 @@ async def session_append(
         SessionHistoryError: Invalid input, conflict, lifecycle, dispatch or I/O.
         asyncio.CancelledError: Cancellation, after draining an accepted write.
     """
-    from jiuwenswarm.extensions_v2.event_types.session_history import dispatch_session_append
+    from jiuwenswarm.server.runtime.session.history_events import dispatch_session_append
 
     context = _require_session(ops, "session.append")
     if bus is None:

@@ -4,397 +4,293 @@
 | --- | --- |
 | 编号 | F_16 / session-history-ops |
 | 归档日期 | 2026-10-27 |
-| 后续修订 | 2026-10-28，评审修订后按事件与方法编写指南重整；验证记录见第 6 节 |
+| 后续修订 | 2026-10-29，完整消息、door/origin、行级 uuid 与字段填写说明 |
 | 关联计划 | [EXTV2-16 / Server PR-04](../designs/extensions-v2-development-plan.md#extv2-16-会话历史读写与追加前扩展) |
-| 主责契约 | [S_06 会话历史 Ops 与追加事件规约](../specs/S_06_session-history-ops.md) |
+| 主责规约 | [S_06](../specs/S_06_session-history-ops.md) |
 
 ## 1. 范围、状态与依据
 
-本特性已实现会话产品历史的查询、扩展追加和写入前正文处理，正在 [PR !83](https://gitcode.com/huenrui_/jiuwenswarm/pull/83) 评审。本文核对的实现为该 PR 的 `32f7e707efc5947cb40ee5c96ab1c1238b93dd56`，目标为 `rsi_native_agent_os`；配套 agent-core 为 `ead700d7d18a247968d64de54918cf5d201a207a`，Core 本身未修改。本次修订调整文档组织和说明，不新增接口或改变代码行为。
+本特性在 [PR !83](https://gitcode.com/huenrui_/jiuwenswarm/pull/83) 内升级事件契约，原编号不变。实现位置为 Worker；Front/Supervisor 沿用既有路由，agent-core 不修改。依赖既有 Core EventBus、Registry、Ops Builder 和 USER 故障隔离，验证使用 Core `ead700d7d18a247968d64de54918cf5d201a207a`。
 
-使用范围是 Worker 所属主会话的产品历史。Front 和 Supervisor 沿用既有接入与路由，EventBus 只由 Worker 持有。同步后台记录、Team / 子 Agent 专用历史保持原路径。本特性不发送聊天请求、不启动 Agent 回合、不把追加正文注入模型上下文，也不负责主动推送前端展示。
+覆盖主会话 `run_history_io(append_history_record, **kwargs)`、`history.append_record` RPC、扩展 append Ops。已有流式产品记录转换为公开消息视图；平台也可以在该异步入口的 content 参数传入原生 BaseMessage，此时保存原生消息快照并在写入前进入同一事件链。同步后台记录、Team/子 Agent 专用记录仍走原路径。
 
-Claude 对照沿用 PR04 的固定提交 `bf2323b3021c9d3db7a31e1e7d61068c3f704497`；其类型文件首行标记为 Claude Code **2.1.277**。这里借鉴事件介入与方法调用的职责分工，当前接口按 JiuwenSwarm 契约使用，差异见第 2 节及 [S_06 第 6 节](../specs/S_06_session-history-ops.md#6-与-claude-mods-的关系)。
+这不是 agent-core 所有存储点的全局拦截。不会额外启动 Agent、发送输入或自动渲染界面；不会把历史改写自动同步到已经使用的活跃模型上下文。恢复仍由原服务消费产品记录，不承诺新增多模态恢复协议。
+
+对照官方 `anthropics/claude-code` 固定提交 `bf2323b3021c9d3db7a31e1e7d61068c3f704497` 的 `mods/types/claude-code.d.ts`（文件头 2.1.277），不以当前最新版作兼容保证。2026-10-28 的字符串事件为旧草稿契约；本次由以下 message/door/origin/uuid 契约替代。
 
 ## 2. 能力说明与 Claude 对照
 
-`session.append` 在平台已经构造好一条主会话历史记录、尚未真正写入时触发，一次处理一条待追加记录。Handler 收到记录标识、角色、正文和接入来源，可以继续默认提交或改写正文；扩展自己发起的追加还可以在调用 next 前显式拒绝。默认 CORE 完成实际写入并返回回执，入口据此向原调用方返回。它不负责接收聊天输入或启动模型执行。
+`session.append` 是一条主会话历史记录保存前的扩展点。平台先确定会话、待存消息、行身份与来源，再触发事件。USER 可以查看完整公开消息结构、按来源筛选并改写允许的文本；默认 CORE 校验并实际提交。仅扩展自己发起的 note 可显式拒绝。一次处理一条通过原前置过滤的记录尝试，重试也进入事件链，提交层负责去重。
 
-`await ops.session.append(message)` 适合扩展在审计、说明或结果留档时调用。它接收稳定 id、user/assistant 角色和字符串正文，使用当前 Handler 已绑定的会话与包身份，触发新的 `session.append` 链，再返回已写入、重复或拒绝的状态字典。成功表示产品历史已经提交，而非仅加入写入队列。
+`await ops.session.append(note)` 为扩展追加 transcript_only 留档消息，使用绑定会话和真实包身份，另起 session.append 事件链，返回实际提交、重复或拒绝的回执。`await ops.session.messages(...)` 直接分页读取持久化产品历史，不触发查询事件。
 
-`await ops.session.messages(limit=50, cursor=None)` 适合读取当前会话已持久化的可见历史，例如追加后读回审计说明、分批展示历史。它直接调用历史查询服务，返回倒序分页对象；不触发新的查询事件。使用已有 cursor 继续固定快照，用 `cursor=None` 开始新查询才能看到后追加记录。
+| 项 | 本次实现 | 与固定 Claude 定义的关系 |
+| --- | --- | --- |
+| 事件输入 | message、door、origin、uuid | 对齐消息/进入环节/产生者/行身份的分工；不是直接复用 TypeScript 对象 |
+| 消息内容 | 原生消息公开视图，包含文本/媒体块、工具调用及关联 ID | 本地 tool 为独立 type/role，不硬套 Claude 的 user-role tool_result 块 |
+| 改写 | 只允许原位置文本块的 text；其余字段固定 | 首版比 Claude 收窄：不新增、删除、移动媒体或内容块，不改 tool_result 错误标记 |
+| 来源 | kind/name 表示产生者，entry 表示平台入口 | entry 是本地附加维度；未知名字为 None，不伪造具体模型或工具 |
+| 返回 | message、uuid、history_record，以及 status/session_id/message_id/reason | 保留本地幂等与历史查询能力；不能直接粘贴 Claude 返回对象 |
+| 方法输入 | 稳定 id + message；兼容旧 id/role/content | 稳定 id 为本地重试要求；无 agentId，不扩大到子 Agent |
+| 生效位置 | 产品历史及相应呈现字段 | 不承诺改写当前模型已使用的消息 |
 
-| 对照对象 | JiuwenSwarm 当前实现及使用影响 |
-| --- | --- |
-| Claude `session.append` 事件 | 共同点是写入前处理；本事件只暴露 message_id / role / content / source，只开放正文改写，不能直接使用 Claude 的 door / origin / agentId matcher 或内容块输入 |
-| Claude `$.session.append` | 本方法接受 id / role / 字符串 content，返回自定义提交状态；只写产品历史，不具备 Claude user note 进入模型上下文的效果 |
-| Claude `$.session.messages` / 同名 OpEvent | 本方法直接读取当前绑定主历史并返回分页对象，缺少 Claude 的查询 Hook，返回形态也不同；调用方应按本方法契约分页 |
+## 3. 事件契约
 
-完整类型与边界以 S_06 为主责；下面按开发者使用顺序解释必要字段、调用和可观察结果。
+### 3.1 触发前后与粒度
 
-## 3. session.append 事件契约
-
-### 3.1 谁触发、何时触发、返回后做什么
-
-事件按**每次通过前置过滤的待追加记录尝试**触发，不按每轮会话固定触发。一个回合可能写入多条历史；同一 id 重试也会再次进入策略链，最终由提交层判断 duplicate。被原历史规则过滤的临时记录不会触发事件。覆盖三个入口：
-
-| 入口 | 触发前已完成 | source | 返回结果的消费方 |
-| --- | --- | --- | --- |
-| 用户 Handler 调用 `ops.session.append(message)` | 校验方法参数，从 Ops 取会话和包身份，构造 transcript_only 记录，预检会话生命周期 | extension | Ops 将事件回执转换为 dict，返回当前用户 Handler |
-| `run_history_io(append_history_record, **kwargs)` 的主会话可等待写入 | 原业务已给出记录资料，平台完成记录构造、临时记录过滤并收集可信 SessionContext | history | 原业务等待真实提交后继续；不重复执行原写入 |
-| 既有 `history.append_record` RPC | 既有请求参数校验、角色/时间等规范化，再由平台收集目标会话资料 | history.append_record | RPC 保持既有响应协议，在提交与完成标记等待后返回 |
-
-同步后台写入、Team / 子 Agent 专用写入不在本次 Hook 覆盖内；V2 未装配时平台入口沿用原路径。平台接入复用既有写入边界，没有新增 Agent Rail。
-
-### 3.2 Handler 收到什么、可以改什么
-
-```python
-@dataclass(frozen=True, slots=True)
-class SessionAppendInput:
-    message_id: str
-    role: str
-    content: str
-    source: str
+```text
+主会话平台异步写入 / history.append_record RPC / 用户 append Ops
+  → 原记录构建、临时记录过滤、会话生命周期预检
+  → 平台适配：产品事件记录或 BaseMessage → SessionAppendMessage
+  → 固定 SessionContext、door、origin、行级 uuid；私有事实留在调用封装
+  → history_events.dispatch_session_append
+  → await Worker bus.trigger(Event("session.append", input), context)
+  → USER Handler：只改允许的文本或拒绝自己的 note
+  → await next_handler(Event(event.event_type, rewritten))
+  → 剩余 Handler → session_append_core
+  → 再校验固定事实、合并允许内容、实际提交并记录真实回执
+  → 沿链返回；平台入口或 append Ops 消费回执
 ```
 
-该定义用于说明已实现的类型；实际导入位置为 `jiuwenswarm.extensions_v2.event_types.session_history`。
+这里的“写入前”是本次记录提交前；并不代表模型执行前。产品历史可能含模型回复、工具结果及流式事件，同一回合可触发多次。过滤掉的临时/空记录不触发，查询历史不触发。
 
-| 字段 | 含义 | Handler 权限 |
+### 3.2 输入：每个字段表达什么、由谁填写
+
+实际导入位置：`jiuwenswarm.extensions_v2.event_types.session_history`。Handler 接收 dataclass 对象，不接收下面示意 JSON 的任意变体。
+
+```python
+SessionAppendInput(
+    message=SessionAppendMessage(
+        type="tool", role="tool", name="lookup", tool_call_id="call-42",
+        content=[{"type": "text", "text": "工具返回的待保存正文"}],
+    ),
+    door="tool-result",
+    origin=SessionAppendOrigin(kind="tool", name="lookup", entry="history"),
+    uuid="row:<平台生成的摘要>",
+)
+```
+
+| 字段 | 类型 / 是否总有 | 准确含义 | 应该填写什么、示例 | Handler 权限 |
+| --- | --- | --- | --- | --- |
+| message | SessionAppendMessage，必有 | 这一条待存消息的公开视图，不是另一会话的消息，不含全部私有元数据 | **平台填写**；用户通过 `event.event_input.message` 读取，改写时用 replace 保留其他字段 | 仅下表允许的文本可改 |
+| door | str，必有 | 这条记录经哪个业务环节进入历史 | **平台填写**；prompt / response / tool-call / tool-result / attachment / notice / note | 只读，可用于 matcher |
+| origin | SessionAppendOrigin，必有 | 谁产生记录，以及由哪个平台入口提交 | **平台填写**；例如 tool、lookup、history | 只读，可用点路径匹配 |
+| uuid | str，必有 | 此次待存行的稳定标识；新记录实际写入 JSONL 的 uuid 字段 | **平台生成**；普通平台记录为 row:摘要，扩展记录沿用其 ext:摘要身份 | 只读，不允许自填目标身份 |
+
+**三个 ID 的区别：**方法参数 id 是用户给同一留档动作的稳定重试键；返回 message_id 回显该键；事件/回执 uuid 是平台行身份。产品记录原有 id 可能是 request_id:role 的分组标识，同一请求的多条事件可复用它，因此不能当行级 uuid。新平台行独立生成 uuid；旧记录重试回执可回退到旧 id，不能据此宣称历史旧行已有唯一 uuid。
+
+#### message 的全部字段
+
+| 字段 | 类型 / 默认值 | 含义、实际取值和填写方式 | 可修改范围 |
+| --- | --- | --- | --- |
+| type | str，必有 | 消息种类：user 用户消息、assistant 助手消息、tool 工具结果、attachment 附件、system 通知。平台从原生消息或产品 event_type 适配 | 只读 |
+| content | list[dict]，必有 | 按原顺序排列的公开内容块。纯字符串规范化为 `[{'type':'text','text':'正文'}]`；媒体、工具或未知块保留其 JSON 结构 | 只改已有 text 块的 text；不改数量/顺序 |
+| role | str 或 None，构造器默认 None | 消息的原生角色，通常与 type 相同；attachment 可为 None。工具结果为 tool，不冒充 user/assistant。由平台填写 | 只读 |
+| name | str 或 None，默认 None | 可用的消息/工具名称，或通知/附件的子类型。没有可信名称则 None；如 lookup、system.notice | 只读 |
+| is_meta | bool，默认 False | 公开消息是否属于扩展等附加记录；扩展 note 由平台固定为 True。**不表示是否允许访问元数据** | 只读 |
+| tool_call_id | str 或 None，默认 None | 工具结果对应的原调用 ID；非工具消息通常为 None。来自原生 ToolMessage 或平台记录 | 只读，不能换到另一个工具调用 |
+| tool_calls | list[dict] 或 None，默认 None | 助手已声明的工具调用，含 ID、名称及参数等原始公开结构；不同原生生产者的字典字段可不同，整体保留 | 整体只读，不能改参数/ID |
+
+text 块必须是 `{'type':'text','text': str, ...原附加字段}`；用户只填写新的 text 字符串。原 text 非空时不能把整条文本改成全空白；其他键保持。原有 image/image_url、tool_use、厂商未知块等按 JSON 整体保留，不能伪造新增或改写。总 JSON UTF-8 大小不超过 max(1 MiB, 原消息 JSON 大小)，不截断。
+
+原始工具 result、时间、会话路由、父级关系、原生 metadata 和其他宿主字段留在平台记录中。改写公开工具结果会同步历史 rendered_result；**不承诺删除原始 result 中的敏感内容**。原生 BaseMessage 的 native_message 快照只合并允许的 content，metadata、工具 ID/调用保持。
+
+#### origin 的全部字段
+
+| 字段 | 类型 / 是否必有 | 含义与应该填写什么 |
 | --- | --- | --- |
-| message_id | 扩展入口为调用方稳定 id；平台入口为已构造记录的 id | 只读 |
-| role | 已构造记录的 user / assistant 角色 | 只读 |
-| content | 即将写入的字符串正文；其余结构化元数据保留在平台可信记录中 | 可在 next 前用新输入替换，仍须符合 S_06 的正文校验 |
-| source | 上表三个接入位置之一；不是包身份，也不同时表达 Claude door/origin 两个维度 | 只读 |
+| kind | str，必有 | 平台判定的产生者种类：user / model / tool / extension / platform；用户 Handler 不填写或更改 |
+| name | str 或 None，必有 | 有可信信息时的模型名、工具名或真实包 ID；未知为 None。extension 为 Core 绑定包身份，平台 RPC 为 history.append_record；不是用户可冒充的显示名称 |
+| entry | str，必有 | 实际入口：history（原平台异步历史）、history.append_record（RPC）、ops.session.append（扩展追加）。例如 door=response 不代表一定由模型产生，RPC 的 origin.kind 为 platform |
 
-目标会话、包归属、时间、原记录和幂等键来自平台可信调用封装，不从可改写输入决定。`ops.session_context` 是本次 Handler 的只读会话入口；只要平台已经提供有效 session_id，就能使用两项历史 Ops，不要求 cwd、model 或用量事件。
+door 的本地映射：用户记录→prompt；普通助手记录→response；chat.tool_call→tool-call；chat.tool_result→tool-result；chat.attachment/attachment→attachment；compact boundary、chat.notice/system.notice→notice；扩展 Ops→note。未知助手事件保留 response，事件特有元数据仍在历史记录中，不凭空增设所有 Claude door。
 
-### 3.3 返回什么、如何放行或拒绝
+### 3.3 输出：成功、重复与拒绝
 
-正常放行使用 `return await next_handler(event)`；修改正文时传入新的 Event。默认 CORE 返回 `SessionAppendResult(status, session_id, message_id, message, reason)`：
+默认 CORE 返回 `SessionAppendResult`；正常 Handler 原样返回 `await next_handler(...)` 的真实对象。不能自行构造“成功”来替代写入。
 
-| 结果 | 含义与后续动作 |
-| --- | --- |
-| status=persisted | 已完成实际历史提交，message 为实际存储记录，reason 为 None |
-| status=duplicate | 同一原请求已写入，返回原实际记录，本次不再追加一条 |
-| `SessionAppendRejection(reason)` | 仅可信 source=extension 可在 next 前返回；入口转换为 status=rejected、message=None 的回执，不写历史；reason 去空白后为 1～512 字符 |
+| 字段 | 类型 / 返回时机 | 含义与调用方怎样使用 |
+| --- | --- | --- |
+| status | str，必有 | persisted：本次完整提交；duplicate：同一原请求已经提交；rejected：扩展自己的 note 被合法拒绝。不要把 duplicate 当作新增一次 |
+| session_id | str，必有 | 平台绑定的目标主会话；只核对，不回填成另一个目标 |
+| message_id | str，必有 | Ops 调用时回显用户参数 id；平台调用时为原产品记录 id。不是通用行唯一身份 |
+| message | SessionAppendMessage 或 None | 成功/重复为**实际存下来的**公开消息（同 3.2 的全部字段）；拒绝为 None。可能与进入 Handler 时正文不同 |
+| uuid | str 或 None | 成功/重复为实际记录 uuid，旧行可回退到原 id；拒绝为 None，不能凭拒绝回执声称存在一行 |
+| history_record | dict 或 None | 成功/重复为实际产品历史记录的独立副本，可与 messages 查询比较；移除内部 _session_append。拒绝为 None |
+| reason | str 或 None | 拒绝时的非空原因；成功/重复为 None。用于给自己的调用方解释拒绝，不是异常堆栈 |
 
-事件层使用上述 Python 对象，append 方法层返回字典，两者不要混用。Handler 应保留真实下游回执，可以据此记录自己的日志；不能在 next 返回后改成拒绝以撤销已写记录，也不能构造成功回执代替实际提交。重复 next 复用本次真实回执。
+唯一合法拒绝对象是 `SessionAppendRejection(reason="说明原因")`：reason 必填 str，去首尾空白后 1～512 字符，且必须在 next 之前、针对自己的 note 返回。普通平台/RPC 历史不能被 USER 拒绝；非法拒绝/改写依 Core USER 故障隔离继续原有效输入。抛异常不等于业务拒绝。CORE 已真实提交后，回传改写或后置拒绝不能撤销已写事实。
 
-USER 抛异常、非法改写或返回无效结果时，沿用 Core 的故障隔离，可能跳过该 Handler 并继续原有效输入。平台来源的显式拒绝也属于无效结果，默认写入继续。实际 CORE 的 I/O 失败仍向调用方传播，不被当作扩展故障伪装为成功。取消发生在策略阶段可不写入；开始文件提交后先排空已接受的写入再传播取消，结果不确定时使用同一 id 重试。
-
-### 3.4 注册、筛选和最小用户示例
-
-用户包在 `register(registrar)` 中登记 USER Handler。matcher 是字段相等条件的合取，`{}` 匹配全部；可使用 source、role、message_id、content。下面仅处理扩展自身追加，不能用该规则阻断平台历史。
-
-以下为可安装包的 `extension.py`，与仓库 [审计示例](../../examples/session_history_audit/extension.py) 使用相同的公开接口：
+### 3.4 注册、筛选、改写示例
 
 ```python
 from dataclasses import replace
-import hashlib
-import logging
-
 from openjiuwen.core.events import Event
-from jiuwenswarm.extensions_v2.event_types.session_history import SessionAppendRejection
 
-logger = logging.getLogger(__name__)
-
-
-class HistoryAudit:
+class Extension:
     def register(self, registrar):
-        registrar.register_event_handler("context.usage.updated", self.on_usage, {}, "user")
-        registrar.register_event_handler("session.append", self.on_append, {"source": "extension"}, "user")
+        registrar.register_event_handler(
+            "session.append", self.scrub,
+            {"door": "tool-result", "origin.kind": "tool"}, "user",
+        )
 
-    async def on_usage(self, event, ops, next_handler):
-        message_id = "audit-" + hashlib.sha256(event.event_input.request_id.encode("utf-8")).hexdigest()
-        receipt = await ops.session.append({
-            "id": message_id, "role": "assistant", "content": "This turn was audited.",
-        })
-        page = await ops.session.messages(limit=5)
-        visible = any(row.get("extension_message_id") == message_id for row in page["messages"])
-        logger.info("audit status=%s visible=%s", receipt["status"], visible)
-        return await next_handler(event)
-
-    async def on_append(self, event, ops, next_handler):
-        if event.event_input.content.startswith("[block]"):
-            return SessionAppendRejection("The audit policy rejected this note.")
-        rewritten = replace(event.event_input, content="[audited] " + event.event_input.content)
+    async def scrub(self, event, ops, next_handler):
+        message = event.event_input.message
+        blocks = [
+            {**block, "text": block["text"].replace("13800138000", "[phone]")}
+            if block.get("type") == "text" else block
+            for block in message.content
+        ]
+        rewritten = replace(event.event_input, message=replace(message, content=blocks))
         return await next_handler(Event(event.event_type, rewritten))
 
-
 def create_extension():
-    return HistoryAudit()
+    return Extension()
 ```
 
-配套 `manifest.yaml` 放在 ZIP 根目录，包加载时由 Registry 提供 registrar 和包身份：
+matcher 为等值条件合取，空字典匹配全部；嵌套字段用 `origin.kind` / `message.role` 点路径，不写成嵌套匹配字典。这里 next 继续当前链，不再调用 append Ops，以免 APPEND_REENTRANT。用户提供 manifest.yaml 和模块，通过管理入口安装；平台负责触发和收集上下文，不要求用户手写平台 Adapter。
 
-```yaml
-schemaVersion: 1
-package:
-  id: example.session-history-audit
-  version: 1.0.0
-  displayName: Session History Audit
-extensions:
-  - id: history-audit
-    runtime: backend
-    module: extension.py
-```
+## 4. 方法契约
 
-安装、查询、重载和卸载步骤见 [示例 README](../../examples/session_history_audit/README.md)。安装后正常发送一条消息并产生有效用量，平台的已有通知触发 on_usage；它调用 append 才产生另一条 session.append 链。默认例子得到加前缀的历史记录和 `visible=True` 日志；将待追加正文改成 `[block]` 开头可验证拒绝。用户只提供包和 USER 策略，平台 Ops、事件类型与 CORE 在宿主启动时已装配。
+### 4.1 ops.session.append(note)
 
-## 4. Ops 方法契约
-
-### 4.1 await ops.session.messages(limit=50, cursor=None)
-
-| 参数 | 默认值与要求 |
-| --- | --- |
-| limit | 默认 50；1～100 的整数，bool 不合法 |
-| cursor | 默认 None；继续分页时传前一页的 next_cursor；非 None 时须为非空字符串 |
-
-返回 `dict`：messages 是按新到旧排列的可见记录列表，next_cursor 是下一页游标或 None，has_more 表示快照内是否还有记录，snapshot_id 标识固定文件快照、无历史时为 None。每条记录保留平台公开历史字段，去除内部 `_session_append` 标记；字段详见 [S_06 查询](../specs/S_06_session-history-ops.md#1-查询)。
+推荐调用：
 
 ```python
-async def read_two_pages(ops):
-    first = await ops.session.messages(limit=10)
-    second = None
-    if first["has_more"]:
-        second = await ops.session.messages(limit=10, cursor=first["next_cursor"])
-    return first, second
+receipt = await ops.session.append({
+    "id": "audit-order-42",  # 同一业务动作重试必须沿用
+    "message": {
+        "type": "assistant",
+        "content": [{"type": "text", "text": "本轮已完成审计。"}],
+    },
+})
+if receipt["status"] in ("persisted", "duplicate"):
+    stored_uuid = receipt["uuid"]
+    stored_blocks = receipt["message"]["content"]
 ```
 
-首次查询等待既有写入队列排空后固定快照；继续旧 cursor 不包含之后追加的内容。没有历史返回空页；文件替换或截断导致旧游标失效时，调用方用 cursor=None 重查。该方法在线程中读取现有历史服务，不触发 session.messages 事件，不读取正在生成但尚未提交的片段；沿用旧 JSON 自动迁移机制，显式旧 JSON 写入模式不支持游标查询。
+该方法只接受一个 note 字典，顶层必须恰好为 id/message，或兼容格式 id/role/content。不填写 session_id、路径、door、origin、uuid、时间或任意平台 extra。
 
-### 4.2 await ops.session.append(message)
+| 输入字段 | 必填 / 默认 | 应填写的内容、范围及示例 |
+| --- | --- | --- |
+| id | 必填，无自动值 | 1～128 个 ASCII 字母、数字、`.`、`_`、`:`、`-`；如 audit-order-42。同一业务动作在同一包、同一会话重试使用相同 id |
+| message | 新格式必填 | 字典，type/content 必填；允许下述 role/name/is_meta；不要传整个 Event 或 BaseMessage 对象 |
+| message.type | 必填 | user / assistant / system；留档为助手说明通常填 assistant，纯通知可填 system；不能填 tool/attachment 冒充平台产生者 |
+| message.content | 必填 | 非空文本，可填字符串或 text 块数组；推荐数组。多段按原顺序拼接为兼容显示正文，不自动增加换行；需要换行时写入 text |
+| message.role | 可省略，默认 type | 只能与 type 相同；推荐省略。不能用 type=user、role=assistant 的矛盾组合 |
+| message.name | 可省略，默认 None | 非空字符串，最多 256 字符；给自己的说明命名。不是写入目标或授权身份 |
+| message.is_meta | 可省略，平台固定 True | 即使输入 False，也按扩展附加消息存为 True；推荐不填 |
+| message.tool_call_id / tool_calls | 应省略或为 None | note 不提供真实工具结果；任何非 None 值均拒绝 |
+| 兼容格式 role | 仅旧格式必填 | user / assistant；与 message 互斥，不混用 |
+| 兼容格式 content | 仅旧格式必填 | 非空字符串，UTF-8 不超过 1 MiB；不能在旧格式塞入块数组 |
 
-message 必须恰好包含 id、role、content；不能加 session_id、路径、时间或自定义元数据。
+新格式整个消息 JSON UTF-8 不超过 1 MiB；不允许媒体、未知块、空白正文、非 JSON 数值或未知字段。平台规范化为公开消息，固定来源为 note / extension / 真实包 ID / ops.session.append，再触发新事件链。目标只来自 `ops.session_context.session_id`，不依赖 cwd/root/model/用量事件。
 
-| 字段 | 要求与用途 |
+方法返回**字典**：status/session_id/message_id/message/uuid/history_record/reason 的含义同 3.3；message 在字典内也转成字典，content 为数组。失败抛 SessionHistoryError，其 code 不含原始内容；没有 SessionContext 抛 RuntimeError。
+
+幂等范围为真实包 ID + 会话 + 参数 id；必须连同原参数格式和内容原样重试。相同原请求返回 duplicate 与先前实际消息；同一 id 改原参数报 APPEND_ID_CONFLICT。更改 Hook 后重试仍返回第一次实际写入，不用新规则重写旧行。取消/结果未知时同 id 原样重试确认。
+
+### 4.2 ops.session.messages(limit=50, cursor=None)
+
+| 参数 | 必填 / 默认 | 应填写什么 |
+| --- | --- | --- |
+| limit | 可省略，50 | 1～100 的整数，不接受 bool；如 limit=20 表示本页最多 20 条 |
+| cursor | 可省略，None | 首次/重新查询填 None；继续同一快照时原样传回上页 next_cursor，不解析、不拼接、不跨会话复用 |
+
+| 返回字段 | 类型 | 含义及怎样消费 |
+| --- | --- | --- |
+| messages | list[dict] | 按新到旧排列的主会话产品历史记录，不是 SessionAppendMessage 数组；可与 receipt.history_record 比较 |
+| next_cursor | str 或 None | 有下一页时的游标；继续查询原样传回，None 表示无下一游标 |
+| has_more | bool | 当前固定快照是否还有记录；不表示后来是否又有新增消息 |
+| snapshot_id | str 或 None | 当前文件快照标识；无历史文件为 None，空列表是正常结果 |
+
+messages 内的每条记录沿用产品历史：id 为分组身份；uuid 是新事件路径写入的行身份，旧/同步记录可缺失；role 为产品 user/assistant；content 为兼容显示字符串；request_id/channel_id 为平台请求/渠道；timestamp 为 Unix 秒数。event_type 及工具字段等按原记录保留。新事件记录含 transcript_message，其完整字段同 3.2；扩展记录还含 extension_message_id、extension_package_id、transcript_only。不要对旧记录假设这些可选字段必有。
+
+history_record 和 messages 中记录的常用字段如下。它们均由平台返回，调用者**不向 append 参数回填这些字段**；除本表确定字段外，产品原有 extra 键按 JSON 原样保留，没有统一的额外写入权限。
+
+| 记录字段 | 类型 / 是否必有 | 含义与使用方式 |
+| --- | --- | --- |
+| id | str，平台记录有 | 产品分组标识或扩展命名空间标识，保留既有语义；不当作所有行的唯一 ID |
+| uuid | str，可缺省 | 新事件写入路径的行级身份；旧或同步记录可能没有，用于与事件/回执关联 |
+| role | str，平台记录有 | 产品兼容角色 user/assistant；工具/通知的完整角色看 transcript_message.role |
+| content | str，平台记录有 | 产品兼容显示文本；不是内容块数组，不代表原始工具 result 已删除 |
+| request_id | str，平台记录有 | 产生该记录的平台请求标识，不作为新 append 的参数 id |
+| channel_id | str，平台记录有 | 记录所属接入渠道，如 web/extension；不由扩展选择目标渠道 |
+| timestamp | float，平台记录有 | Unix 时间戳，单位秒，由宿主填写；不是毫秒或本地格式字符串 |
+| event_type | str，可缺省 | 原产品事件类别，如 chat.final/chat.tool_result；不等于 EventBus 事件名 |
+| transcript_message | dict，可缺省 | 本轮事件最终保存的公开消息快照，全部字段同 3.2；旧记录可没有 |
+| native_message | dict，可缺省 | 平台输入 BaseMessage 时的原生 JSON 快照。基础字段为 role/content/name/metadata，具体原生子类可有工具调用、usage 等字段；只读保留，不作为用户请求 Schema |
+| tool_call_id / tool_calls / name / result / rendered_result | 依原记录，可缺省 | 工具关联/调用/名称/原始结果/呈现结果；结构由原生生产者决定。本事件只受控更新呈现正文，不能改关联或原始结果 |
+| extension_message_id | str，仅扩展记录有 | 用户方法参数 id，用于同一业务动作重试和留档关联 |
+| extension_package_id | str，仅扩展记录有 | Core 发布的真实调用包 ID；平台直接调用无包身份时为保留值 `<host>` |
+| transcript_only | bool，仅扩展记录保证 True | 表示扩展留档，不是新的 Agent 输入或已执行回合 |
+
+native_message.metadata 以及未知供应商/宿主字段为不透明 JSON；由所属原生模型定义，不要求用户填写或猜测。原生输入快照必须可序列化为 JSON；本能力不承诺保存任意 Python 对象。
+
+首次查询排空已接受写入后固定快照；后追加不进入旧 cursor。cursor=None 才查询包含新消息的新快照。文件替换/截断报 SNAPSHOT_CHANGED，跨会话或非法游标报 INVALID_CURSOR。无历史返回空页，不查询未提交生成片段，不触发 EventBus。
+
+### 4.3 旧 Handler / 回执迁移
+
+| 旧用法 | 本次应该改成 |
 | --- | --- |
-| id | 必填，1～128 位 ASCII 字母/数字或 `._:-`；同一业务动作重试保持相同 id |
-| role | 必填 user 或 assistant，决定产品历史显示角色 |
-| content | 必填非空字符串，UTF-8 不超过 1 MiB |
+| event.event_input.content | 遍历 event.event_input.message.content 的 text 块 |
+| replace(input, content=text) | replace(input, message=replace(input.message, content=blocks))；保持块位置 |
+| matcher source=extension | `{'door':'note', 'origin.kind':'extension'}` |
+| matcher source=history.append_record | `{'origin.entry':'history.append_record'}` |
+| 输入 message_id | 单行关联用 uuid；用户自己的 id 由调用方保留，Ops 回执 message_id 回显 |
+| receipt['message']['content'] 是字符串 | 现在为内容块数组；兼容产品正文读取 receipt['history_record']['content'] |
+| receipt['message'] 与分页行比较 | 改为 receipt['history_record'] 与分页行比较 |
 
-转换关系如下，CORE 最终调用既有历史提交服务：
-
-```text
-message + 当前 Ops 的 session_id / package_id
-  → 参数校验、生成包隔离的记录 id / 幂等键、构造 transcript_only 记录
-  → 生命周期预检、保存可信调用封装
-  → SessionAppendInput(message_id=id, role, content, source="extension")
-  → Worker 的新 session.append 事件链
-  → SessionAppendResult / SessionAppendRejection
-  → 真实回执优先、拒绝结果规范化
-  → to_dict() 深拷贝，返回给原调用方
-```
-
-返回字典固定含 status、session_id、message_id、message、reason。message_id 为调用参数 id；实际记录 id 为包隔离的 `ext:<hash>`，原 id 保存在 extension_message_id，包身份保存在 extension_package_id。persisted / duplicate 携带真实记录；rejected 的 message 为 None，reason 为拒绝原因。相同会话、包和 id 的原请求一致返回 duplicate，原请求不同报 APPEND_ID_CONFLICT；Handler 改写后的正文以首次实际提交结果为准。
-
-方法完成后可用新的 messages 查询读回记录，或由已有历史恢复入口消费。它不改变用户输入轮次、会话标题或外部投递路由，不自行渲染界面。`next_handler(event)` 继续当前链；append 触发另一条链；messages 直接读取。这三种调用各自独立，不能互相替代。
-
-### 4.3 上下文、失败与取消
-
-两项方法均要求平台给当前 Handler 绑定有效 SessionContext；append 再使用 Core 的包身份，没有用户包身份的平台 Handler 采用保留 `<host>` 作用域。用户不能仅靠手工构造同名 Event 或填写 session_id 获得可信写入封装，也无需修改 Adapter 来补资料。
-
-| 情况 | 调用方得到什么、应如何处理 |
-| --- | --- |
-| 未绑定 SessionContext | RuntimeError；选择宿主已有的会话绑定事件接入 |
-| 参数、会话、游标或生命周期不合法 | SessionHistoryError，通过 code 区分；修正输入或重新查询，错误码完整表见 S_06 |
-| 扩展自身追加被合法拒绝 | 正常返回 status=rejected，不写入；检查 reason |
-| 同 id 原请求不同、递归追加 | 分别报 APPEND_ID_CONFLICT / APPEND_REENTRANT；追加 Hook 内不要再次 append |
-| 写入失败、回滚也失败 | 分别报 HISTORY_IO_FAILED / APPEND_OUTCOME_UNKNOWN；不把结果未知解释成未写入，同 id 重试确认 |
-| 提交中取消 | 已接受的提交先排空，再抛 CancelledError；用同 id 查询/重试确认 |
-
-这些是方法向当前 Handler 抛出的行为；USER 不捕获时，外层 EventBus 仍按既有 Handler 故障隔离规则处理，并不等于该方法成功或显式拒绝。
+旧 append 参数 id/role/content 保持可用；旧事件字段和旧回执 message 的形态不保持兼容。PR 尚未合入，随 PR 内示例、测试和文档一起迁移，不声称任意旧 Handler 可原样运行。
 
 ## 5. 接入与兼容方案
 
-### 5.1 启动时：定义事件和登记能力
+event_types/session_history.py 只维护类型、Validator 和注册；server/runtime/session/history_events.py 收集调用事实并 trigger；history_message.py 负责原生/产品消息映射和受控合并；event_handlers/session_history.py 的 CORE 实际写入。私有调用封装固定原记录、原输入、目标、生命周期代次与回执，不由事件可改正文决定路由。
 
-```text
-Worker 装配 V2
-  → bootstrap 注册 session.append 类型、输入/输出校验和平台 CORE
-  → 登记已有 ops.build 的 session BUILTIN
-  → Registry 初始化 Ops，触发一次 ops.build
-  → CORE 创建空 Builder，BUILTIN 在回程登记 messages / append 等 session 方法
-  → Core 保存能力目录；用户包注册 USER Handler
+平台原生消息入口示意（**平台代码**，不由用户扩展收集上下文）：
+
+```python
+await run_history_io(
+    append_history_record,
+    session_id=session_id, request_id=request_id, channel_id=channel_id,
+    role=base_message.role, content=base_message, timestamp=timestamp,
+)
 ```
 
-Builder 保存方法定义，并不执行历史查询或写入。每次业务 Handler 执行时，Core 用能力目录和该 Handler 的 SessionContext / PackageMetadata 创建当次 Ops。BUILTIN 在这里负责能力登记；本特性没有给 session.append 另加一个专属 BUILTIN。
+该异步入口收到原生 BaseMessage 时，在过滤/提交之前适配为公开消息，同时将原生 JSON 快照留在 native_message 中。工具关联、metadata、工具参数由宿主保留，允许的 content 改写合并回待存快照，原调用者的 BaseMessage 实例不被就地修改。原有产品流式事件入口继续适配，不要求把全系统历史迁移为 BaseMessage 存储。
 
-### 5.2 运行时：示例从业务入口到真实提交
+启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 messages/append 等方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；普通读取 messages 不另起事件。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
 
-```mermaid
-sequenceDiagram
-    participant A as Worker 原生 Adapter
-    participant B as Worker EventBus
-    participant U as 用户 on_usage
-    participant O as session Ops
-    participant P as 用户 on_append
-    participant C as 平台 append CORE
-    participant H as 平台历史服务
-    A->>B: notify_context_usage → context.usage.updated + SessionContext
-    B->>U: 创建并绑定本次 Ops 后调用
-    U->>O: await append(message)
-    O->>O: 取可信会话/包、规范化、预检
-    O->>B: session.append + 同一会话上下文
-    B->>P: 匹配 source=extension
-    alt 允许追加
-        P->>C: next_handler(Event(改写正文))
-        C->>H: 校验身份，线程中排空队列/查重/提交
-        H-->>C: 实际存储记录及是否重复
-        C-->>P: SessionAppendResult
-        P-->>B: 保留真实下游回执
-        B-->>O: 返回事件输出
-        O-->>U: 转换为字典回执
-    else 显式拒绝
-        P-->>O: SessionAppendRejection(reason)
-        O-->>U: status=rejected，无写入
-    end
-    U->>O: await messages(limit=5)
-    O->>H: 直接查询新快照
-    H-->>O: 历史分页
-    O-->>U: 含实际正文的分页对象
-    U->>B: next_handler(原用量事件)
-    B->>B: 既有用量 CORE 校验并返回回执
-```
+生命周期预检在 Hook 前捕获 generation，提交锁内复验；不持文件/队列锁执行 USER。文件关闭后才成功回执，同一次调用的重复 next 复用真实结果；回执深拷贝，后置篡改不改变已经保存的事实。写入开始后取消先排空，再传播 CancelledError。写入与元数据仍非跨存储原子事务，不承诺 fsync 断电耐久。
 
-平台在真实回合产生有效用量时，既有 notify_context_usage 发布 context.usage.updated 并携带可信会话资料，示例 on_usage 才获得当次 Ops。append 从该 Ops 获取目标和包身份，发起独立追加链；on_append 只负责策略，CORE 才执行实际提交。append 返回后，messages 直接读取历史。最后 on_usage 继续原用量链，原用量 CORE 只处理用量事件，不承担历史写入。此通知是示例入口，其他宿主已绑定有效会话的事件也可调用两个 Ops。
+主要失败：INVALID_MESSAGE（输入/参数非法）、INVALID_SESSION/SESSION_NOT_FOUND（会话非法/追加目标不存在）、APPEND_ID_CONFLICT、APPEND_REENTRANT、HISTORY_IO_FAILED、APPEND_OUTCOME_UNKNOWN、INVALID_MESSAGE_LIMIT、INVALID_CURSOR、SNAPSHOT_CHANGED。USER 内未捕获的 Ops 异常仍可能被外层 Core 隔离；必须查看真实返回/自行捕获，不能把外层回合继续当作追加成功。
 
-### 5.3 平台入口与上下文归属
-
-原生可等待主历史和独立 RPC 复用同一 append CORE。平台在触发前由 history_context 收集资料：当前原生请求内优先使用实际绑定的 cwd / project_root 和应用后的模型快照；无活跃运行时则从目标会话持久元数据读取可用目录，模型保持既有保存值查询语义。缺失为 None，不借用进程默认目录或另一会话的运行时资料。
-
-请求专属 holder 在模型生产任务和历史消费任务之间共享，实际模型/目录绑定时分别更新；请求结束或取消后失效。追加 Ops 沿用原 Handler 的会话上下文，平台原生和 RPC 则自行收集。对外输入不能替换可信目标、包归属或这些宿主事实。Front / Supervisor 不执行用户 Handler，不持有另一份 EventBus。
-
-| 代码入口 | 本特性责任 |
-| --- | --- |
-| [session_ops.py](../../handler_ops/session_ops.py) | BUILTIN 登记方法、上下文检查、直接查询与事件调用转换 |
-| [event_types/session_history.py](../../event_types/session_history.py) | 事件定义/校验/注册、三个入口的可信派发与递归保护 |
-| [event_handlers/session_history.py](../../event_handlers/session_history.py) | append CORE 校验并调用提交服务，不回调 append Ops |
-| [session_history_ops.py](../../../server/runtime/session/session_history_ops.py) | 参数校验、分页投影、预检、错误转换与提交业务服务 |
-| [history_context.py](../../../server/runtime/session/history_context.py) | 收集和绑定平台事实，管理请求作用域与失效 |
-| [session_history.py](../../../server/runtime/session/session_history.py) / [history_io.py](../../../server/runtime/session/history_io.py) | 复用存储、队列、去重和取消排空；接入可等待写入 |
-| [agent_ws_server.py](../../../server/agent_ws_server.py) | 保留既有 history.append_record RPC 协议并等待提交结果 |
-
-### 5.4 提交、生效、重复调用与生命周期
-
-Hook 前捕获生命周期 generation，Hook 内不持文件或队列锁；CORE 在线程中先排空既有队列，再在文件和生命周期锁内校验代次、查重和写入。成功回执在文件关闭后产生，文件错误明确传播；派生元数据仍沿用平台尽力而为更新，不承诺与正文一起原子提交，也不承诺断电级 fsync 耐久性。
-
-不增加第二份存储、全局消息缓存或幂等索引文件。append 的去重事实与正文一起保存在历史记录中；完整记录保留时，进程重启或包重载后仍可识别重试，截断历史可能移除该依据。messages 的旧 cursor 固定快照，重新查询才读取新数据。卸载撤销该包的 USER Handler，保留平台 CORE、Ops 和已提交历史；重装不自动删除旧数据。
-
-### 5.5 关键决策、替代方案与修订
-
-- D-01：复用原历史服务，不建立扩展专用消息库，避免查询、恢复与追加各持不同事实。
-- D-02：messages 直接读取；append 走新的业务事件。没有把每个只读查询都新增为事件，当前查询也因此不支持 USER 拦截。
-- D-03：目标和身份保存在可信封装，事件只允许正文改写；避免任意改写目标或包归属。
-- D-04：CORE 先完成提交再回执；没有采用“先写入、再通知策略”的方案，因为那无法保证写入前改写或拒绝。
-- D-05：稳定 id 与原请求指纹在现有记录中去重，不用包内计数，也不增加跨文件提交窗口。
-- D-06：追加 Hook 递归调用 append 拒绝，重复 next 复用真实回执；USER 异常按 Core 故障隔离，不当作拒绝指令。
-- D-07：提交中的取消先排空再传播，避免调用方取消等待后立即销毁资源而遗失写入事实。
-- D-08：Hook 前预检并在提交锁内校验 generation，防止等待期间删除/恢复会话后写入新代次。
-- D-09：2026-10-28 评审修订将显式拒绝范围收窄到 extension，保留平台和 RPC 默认记录；同时补齐平台可信上下文、生产/消费任务交接以及固定 Claude 版本的差异说明。初版关于平台可拒绝的结论已被替代。
-
-业务服务仍由 Server 历史模块维护；CORE 是受控事件入口，不复制另一套存储实现。本次按编写指南调整契约说明顺序，保留原编号、决策和历史证据。
+卸载/重载撤销用户 Handler，不删除已提交历史或平台 CORE；共享 Ops 在有效 SessionContext 下可供其他事件 Handler 使用。无需用户调用 notify_context_usage 来创建新入口；已有示例仅选用量通知展示接入。
 
 ## 6. 验收与未决问题
 
-### 6.1 按契约验收
+本轮 定向回归 388 项通过、1 项跳过；模型兼容回归 74 项通过。命令与证据目录：`D:\work_space\.codex-temp\server-pr04-message-contract-20261029`，对应 regression.xml、model-regression.xml、各 command.json；未运行格式化或静态检查工具。
 
-下表均为已有实现的验收场景；具体已执行环境与结果见第 6.2、6.3 节。单元用例入口为 [test_session_history_ops.py](../../../../tests/unit_tests/extensions_v2/test_session_history_ops.py)。
-
-| 场景及输入/前置条件 | 操作 | 预期与证明方式 |
+| 场景 | 输入/操作 | 验证结果或证据 |
 | --- | --- | --- |
-| 无 USER 策略的可等待平台记录 | 触发原主历史写入 | 默认 CORE 提交一次；卸载后平台默认写入测试核对文件 |
-| 安装示例且有真实绑定会话 | 触发用量事件，USER 调 append 再 messages | persisted 回执、加前缀正文和新快照读回；真实 Registry 用例及 Worker 日志 |
-| extension 正文以 [block] 开头 | USER 在 next 前返回拒绝对象 | rejected 且无记录/元数据变更；显式拒绝测试 |
-| 平台/RPC 来源的拒绝或伪造成功 | 对相应入口注册不合法输出 Handler | USER 输出被隔离，实际 CORE 默认提交；平台拒绝/伪造回执及 RPC 测试 |
-| 已提交同会话/包/id 的原请求 | 同内容重试，再改原内容重试 | duplicate 后 APPEND_ID_CONFLICT；并发会话/包的身份相互隔离 |
-| 已获取旧分页，之后追加记录 | 继续旧 cursor，再以 None 新查询 | 旧快照排除后追加，新查询读到；换会话或重写文件的游标明确报错 |
-| 缺上下文、非法参数、递归 append | 分别调用方法或在 append Hook 内追加 | RuntimeError / 对应 SessionHistoryError.code，不误写入 |
-| Hook 等待期间生命周期代次变化 | 删除/恢复后继续 next | 提交阶段拒绝，不能写入新一代会话 |
-| Hook 中取消、提交中取消、I/O 与回滚失败 | 按阶段注入取消/失败 | Hook 无提交；已接受提交排空；回滚失败为结果未知，稳定 id 重试可确认 |
-| 活跃请求、独立 RPC、并发会话 | Handler 查询 cwd/root/model/repo | 当前运行时或目标保存资料来源正确，退出/取消清理，不能跨会话借用 |
+| 原历史能力 | 历史读取、幂等、重入、隔离、取消、生命周期、RPC、原生上下文 | 定向回归覆盖，见本轮 XML |
+| 新消息契约 | 结构化 note、多个文本块、成功/拒绝回执、原参数兼容 | 新增测试核对实际 JSONL、uuid、message/history_record 一致 |
+| 工具消息 | 工具结果文本改写、工具关联、原始 result/私有字段 | Registry USER → EventBus → CORE → JSONL 读回；关联/原始字段保留 |
+| 防越权改写 | 改 uuid/origin/door/role/tool ID、媒体、未知块、块数 | 非法 USER 被隔离，默认保存原有效消息 |
+| 原生 BaseMessage | ToolMessage 与多模态 UserMessage 经真实平台异步函数 | 写入前实际触发，内容允许改写，原对象及 metadata 不变 |
+| 行身份 | 同请求多条产品记录、重复追加 | 产品 id 保持，行 uuid 独立；同一幂等请求回执沿用实际行 |
 
-### 6.2 当前实现的已执行验证（2026-10-28）
+真实服务验证：真实 Front → Supervisor → 子 Worker → Qwen3.8-Flash，两包/两会话运行通过；结构化 note、真实工具结果文本改写与工具 ID、实际 JSONL uuid/消息一致、平台/RPC 改写与不可拒绝、幂等/拒绝/分页、旧四项 Ops、卸载与进程端口清理通过。无 mock 模型/Ops/Adapter，未手工构造 SessionContext。源码 SHA256 收据证明运行期间实现未变；目录 `D:\work_space\.codex-temp\server-pr04-message-contract-20261029\real-155735`，见 structured-tool-evidence.json、result.json、cleanup.json。
 
-Windows / Python 3.11.15，Core ead700d7d；复用第 6.3.1 节列出的原定向范围，并补充模型选择、登录模型、跨会话模型与重载回归。
+2026-10-28 旧契约曾通过 363 项定向回归和 74 项模型兼容测试，并完成真实两包/两会话验证；这是历史记录，不能代替本轮结构化契约验证。当前证据以本节本轮结果为准。
 
-| 范围 | 已通过结果 |
-| --- | --- |
-| 扩展、历史、原生链路定向回归 | 363 项通过，其中历史 Ops 65 项；本轮增加 17 项历史上下文/拒绝范围用例、1 项原生模型绑定用例 |
-| 模型兼容回归 | request_scoped_login_model、deep_adapter_model_resolve、deep_adapter_login_model、agent_reload_model_scope、cross_session_model_input、cron_session_model_inherit 共 74 项通过 |
-| 异步交接 | 子任务绑定的模型/目录可由父任务历史消费端读取；请求关闭和取消后失效；同会话不同请求及并发会话不共享作用域 |
-| 真实服务和模型 | Front/Supervisor/Worker、Qwen3.8-Flash、两个用户 ZIP、两个真实项目/会话通过；平台原生历史 Hook 取得正确 cwd/root/当前模型，独立 RPC 取得保存目录且不冒充运行时模型 |
-| 拒绝与既有能力 | 平台/RPC 拒绝结果及未经 CORE 的伪造成功结果被隔离后记录仍提交；扩展追加拒绝仍无写入；正文改写、重复提交、冲突、固定分页、原四项 Ops、原 CORE 实际回执通过 |
-| 卸载和资源清理 | 两包卸载成功，Worker 已退出、端口已释放，真实验收脚本退出码 0 |
-
-本轮真实验收未 mock 模型/Ops/Adapter，也未手工传入 SessionContext。首次真实验证暴露了生产与消费任务间的 ContextVar 交接，以及模型应用先于工作目录绑定的问题；修订采用请求专属共享 holder、按实际绑定阶段更新事实，并新增回归后重跑上述完整验证。
-
-证据在 `D:\work_space\.codex-temp\server-pr04-review-fix-20261028` 的 regression.xml、model-regression.xml、validation-summary.json、live-run-receipt.json；其 runDirectory 内有 result.json、append-hooks.jsonl 和 cleanup.json。收据核对四个实现文件 SHA256，真实验收期间源码未变。既有 Windows symlink 用例因当前权限跳过 1 项；Gateway/浏览器 UI、非 Windows 实机、大历史性能和远端 CI 未纳入通过结论。
-
-### 6.3 初版历史验证记录（2026-10-27）
-
-本节保留初版执行事实：当时平台来源也允许拒绝；该行为已由 2026-10-28 修订收窄。当前拒绝范围以本文第 3 节和 S_06 为准，不能将本节历史结果作为当前平台拒绝能力的证明。
-
-#### 6.3.1 单元与集成回归
-
-2026-10-27，Windows / Python 3.11.15；使用本分支源码与 agent-core `rsi_native_agent_os` 的 `ead700d7d18a247968d64de54918cf5d201a207a`。Core 未修改。
-
-定向合跑 **345 项通过、1 项跳过**；新增 `test_session_history_ops.py` 的 **48 项全部通过**。跳过项是原历史路径测试中的符号链接用例，原因是当前 Windows 未获得创建 symlink 的权限。
-
-| 验证范围 | 已通过的结果 |
-| --- | --- |
-| 生产装配和真实 Registry 用户包 | `ops.build` 提供两项 Ops；USER 在已有 `ui.ready` 等宿主绑定事件中可直接调用；无需 cwd / model / 用量事件 |
-| 追加处理链 | 用户改写、显式拒绝、默认 CORE 真正落盘后读回；重复 next、伪造成功、提交后改回拒绝不能伪造提交事实 |
-| 隔离与幂等 | 同 session + 包 + 原请求 id 去重；不同内容冲突；跨会话和跨包隔离；对外 record.id 分包命名且保留原 extension_message_id |
-| 分页 | 最新在前、稳定游标、后追加排除、跨会话游标拒绝、缺失历史与非法参数 |
-| 原平台路径 | 可等待主历史写入和 `history.append_record` RPC 的改写、拒绝与重试；同步写路径保持原行为 |
-| 失败与生命周期 | 部分写失败回滚、回滚失败结果未知、Hook 取消无写入、提交取消排空、Hook 内查询无锁等待、递归拒绝、generation 变化拒绝 |
-| 安装与兼容 | 用户包卸载后平台默认 CORE 仍工作、重载后已有 id 去重；旧格式边界；平台字符串展示时间戳与混合 JSON 键兼容 |
-| 既有行为 | V2、原历史分页 / 恢复 / 文件写入 / 空消息过滤、异步 I/O、流拆分、payload、路径安全、子 Agent 路由及原生流结束回归 |
-
-实际命令（仓库根，设置 PYTHONPATH 为本 Swarm 与对应 Core 源码目录）：
-
-```powershell
-python -m pytest -o addopts= -q tests/unit_tests/extensions_v2 `
-  tests/unit_tests/test_session_history_cursor.py tests/unit_tests/test_session_history_jsonl_read.py `
-  tests/unit_tests/test_session_history_atomic_write.py tests/unit_tests/test_session_history_paths.py `
-  tests/unit_tests/test_session_history_empty_filter.py tests/unit_tests/test_compact_history_records.py `
-  tests/unit_tests/server/test_history_service.py tests/unit_tests/server/test_history_todo_restore.py `
-  tests/unit_tests/agentserver/test_history_io_offload.py tests/unit_tests/agentserver/test_history_append_record.py `
-  tests/unit_tests/agentserver/test_history_get_stream_split.py tests/unit_tests/agentserver/test_history_tool_result_restore.py `
-  tests/unit_tests/agentserver/test_history_payload_limits.py tests/unit_tests/agentserver/test_session_history_path_safety.py `
-  tests/unit_tests/agentserver/test_subagent_history_routing.py tests/unit_tests/agentserver/test_split_history_record_for_stream.py `
-  tests/unit_tests/agentserver/test_deep_adapter_stream_end_final.py --asyncio-mode=auto -o log_cli=false
-```
-
-#### 6.3.2 真实 Front → Supervisor → Worker 验证
-
-启动隔离数据目录的真实服务，安装实际示例 `session_history_audit` 和独立验收包两个 ZIP，创建普通 Git 仓库与 linked worktree 中的两个真实项目 / 会话，通过现有 AgentServer WebSocket 发起两次 Qwen3.8-Flash 回合。未替换模型、Ops、Adapter 或手工构造 SessionContext。
-
-- 两个会话均得到实际模型回复和有效用量；USER Handler 在真实 Worker（PID 32612，Front PID 3336）执行。cwd / root / model / repo 四项旧能力同时读取并核对通过。
-- 两项新 Ops 完成改写后追加、`persisted` 实际回执、相同 id 的 `duplicate`、不同原内容的 `APPEND_ID_CONFLICT`、显式拒绝无记录、旧快照不含后追加、新快照包含后追加。
-- 两个 `session.append` USER Handler 的改写均进入实际持久化正文；现有 `history.get` 读回正文，不暴露内部去重标记。仓库内示例包的 `visible=True` 日志已核对。
-- 在发模型请求前，原有 `history.append_record` RPC 的改写、重试去重、拒绝及历史读回均通过；实际回合内也观测到 `source=history` 的可等待原生写入。三种 source 都进入 Worker Bus。
-- 两个扩展包卸载成功；Worker 已退出，监听端口 65095 已释放。
-
-本地证据目录为 `D:\work_space\.codex-temp\server-history-ops-20261027`：`regression.xml`、`validation-summary.json`；真实执行目录 `real-104004` 中有 `result.json`、`cleanup.json`、用户 Handler 回执和 WebSocket 历史记录。这些包含运行数据的文件不提交到仓库。
-
-第一次真实运行发现平台展示时间戳可为字符串，而新增校验误用了展示字段；已改为校验平台原始时间事实，补上回归用例后重新完成上述全量定向和真实服务验证。
-
-本次未覆盖 Gateway / 浏览器展示、远端 CI、非 Windows 实机、断电恢复和大历史性能压测。历史可读回不代表已主动推送 UI。
-
-### 6.4 本次文档校核与未决事项
-
-本次修订核对事件类型、matcher、默认 CORE、Ops 转换、三个实际入口和固定 Claude 类型声明，检查示例语法、文档链接、章节引用和 Git 差异。业务代码未变，第 6.2 节为评审修订实现的既有证据，不将文档校核写成新一轮业务或 UI 验收。
-
-本次文档检查已通过：22 处相对链接及锚点、3 个 Python 代码块语法、示例的两项 Handler 注册与正文改写/显式拒绝两条策略分支；manifest 与仓库可安装示例一致。已核对原真实验收收据中的四个实现文件哈希仍一致。本次未重跑业务回归；检查记录保存在 `D:\work_space\.codex-temp\server-pr04-docs-guide-20261028\documentation-verification.json`。
-
-当前契约没有待决输入/输出项。Gateway / 浏览器实际展示、非 Windows 实机、大历史性能、断电恢复和远端 CI 未纳入通过结论，后续按对应任务由 Server 与接入端维护者联合验收。当前主历史可读不代表已主动推送 UI；完整 Claude 内容块、Agent 输入和查询 Hook 适配属于另行设计范围，不承诺现有包可直接迁移。
+未验证浏览器产品 UI、非 Windows 实机、远端 CI、所有 Harness/同步后台入口、活跃模型消息同步、全量多模态恢复与大历史性能。历史查询/持久去重首版仍扫描文件。未知门类/供应商块只读保留，不以“完整消息视图”宣称所有原生私有字段向用户开放。
 
 ## 7. 参考资料
 
-- 编写依据：《openjiuwen 事件与方法特性文档编写指南》，2026-10-28；接口按本 PR 实现核对，指南中的示例不视为已实现接口。
-- [S_06 当前接口、错误与不变量](../specs/S_06_session-history-ops.md)，[现有可安装示例及部署步骤](../../examples/session_history_audit/README.md)。
-- [V2 详细架构](../designs/extensions-v2-architecture.md)、[内置事件开发模板](../designs/builtin-event-development-guide.md)：公共 EventBus / Ops Build 接入与生命周期。
-- [Claude 固定提交类型声明](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)：文件头版本，以及 SessionAppendArgs、SessionAppendInput、SessionAppendMessage、SessionAppendResult、session.messages 的 OpEvent / 返回值声明。
-- [Core EventBus 实现](https://gitcode.com/huenrui_/agent-core/blob/ead700d7d18a247968d64de54918cf5d201a207a/openjiuwen/core/events/bus.py) 与 [Ops Build CORE](https://gitcode.com/huenrui_/agent-core/blob/ead700d7d18a247968d64de54918cf5d201a207a/openjiuwen/core/events/builtins/event_types/ops_build.py)：注册、当次 Ops 绑定、USER 故障隔离和 Builder 创建。
+- [S_06 主责规约](../specs/S_06_session-history-ops.md)：不变量、兼容与错误范围。
+- [内置事件接入说明](../designs/builtin-event-development-guide.md)：公共 EventBus/Handler/Ops 机制。
+- [事件类型](../../event_types/session_history.py)、[平台触发](../../../server/runtime/session/history_events.py)、[消息映射](../../../server/runtime/session/history_message.py)、[默认 CORE](../../event_handlers/session_history.py)。
+- [Ops](../../handler_ops/session_ops.py)、[历史查询和提交服务](../../../server/runtime/session/session_history_ops.py)、[平台上下文](../../../server/runtime/session/history_context.py)。
+- [可安装示例](../../examples/session_history_audit/README.md)、[原生 BaseMessage](https://gitcode.com/huenrui_/agent-core/tree/rsi_native_agent_os/openjiuwen/core/foundation/llm/schema/message.py)。
+- [Claude 固定提交类型定义](https://github.com/anthropics/claude-code/blob/bf2323b3021c9d3db7a31e1e7d61068c3f704497/mods/types/claude-code.d.ts)：SessionAppendInput/Message/Origin/Args/Result；不宣称当前最新版互换兼容。
