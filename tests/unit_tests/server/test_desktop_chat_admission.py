@@ -21,6 +21,7 @@ def make_server():
     server = object.__new__(AgentWebSocketServer)
     server._active_desktop_chat_streams = {f"s{i}": 1 for i in range(5)}
     server._agent_manager = None
+    server._channel_conns = {}
     server._handle_stream_impl = AsyncMock()
     return server
 
@@ -69,7 +70,8 @@ async def test_ack_precedes_execution_and_slot_released_on_failure():
 
 
 @pytest.mark.asyncio
-async def test_admission_ack_precedes_before_chat_hook():
+@pytest.mark.parametrize("acknowledge", [True, False])
+async def test_admission_ack_precedes_before_chat_hook(acknowledge):
     server = make_server()
     server._active_desktop_chat_streams = {}
     ws = SimpleNamespace(send=AsyncMock())
@@ -77,7 +79,11 @@ async def test_admission_ack_precedes_before_chat_hook():
 
     async def before_chat(request):
         order.append("before_chat")
-        assert frames(ws)[0]["body"]["event_type"] == "chat.accepted"
+        assert asyncio.current_task() in getattr(server, "_session_stream_tasks", {}).get(request.session_id, {})
+        if acknowledge:
+            assert frames(ws)[0]["body"]["event_type"] == "chat.accepted"
+        else:
+            assert frames(ws) == []
 
     async def ensure_team(request):
         order.append("ensure_team")
@@ -94,7 +100,7 @@ async def test_admission_ack_precedes_before_chat_hook():
         "channel": "desktop",
         "method": "chat.send",
         "params": {"query": "hello"},
-        "metadata": {"require_admission_ack": True},
+        "metadata": {"require_admission_ack": acknowledge},
         "session_id": "ack-first",
         "is_stream": True,
     }), asyncio.Lock())
@@ -161,3 +167,16 @@ async def test_competing_sessions_only_one_claims_last_slot_and_cancel_releases(
     with pytest.raises(asyncio.CancelledError):
         await first
     assert server._desktop_chat_capacity("third")["activeSessions"] == 4
+
+
+@pytest.mark.asyncio
+async def test_cleanup_busy_is_a_retryable_admission_failure():
+    server = make_server()
+    server._deleting_sessions = {"new"}
+    ws = SimpleNamespace(send=AsyncMock())
+    await server._handle_stream(ws, make_request(), asyncio.Lock())
+    wire = frames(ws)[0]
+    assert wire["status"] == "failed"
+    assert wire["body"]["details"]["code"] == "BUSY"
+    assert wire["body"]["message"] == "会话正在清理，请稍后重试"
+    server._handle_stream_impl.assert_not_awaited()

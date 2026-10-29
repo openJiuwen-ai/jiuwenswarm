@@ -3377,7 +3377,8 @@ class JiuWenSwarm:
             try:
                 async with stall_watchdog(f"stream_cleanup request_id={rid} session_id={session_id}",
                                           first_after_seconds=3.0, max_dumps=1):
-                    await stream_task
+                    from jiuwenswarm.server.request_context import await_request_cleanup
+                    await await_request_cleanup(stream_task)
             except asyncio.CancelledError:
                 pass
             except Exception:

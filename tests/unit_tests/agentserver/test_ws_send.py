@@ -266,7 +266,7 @@ async def test_stream_host_exit_releases_output_before_next_request(monkeypatch,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("cancel_at", ["send", "read", "read_cleanup"])
+@pytest.mark.parametrize("cancel_at", ["send", "read", "read_cleanup", "double_cancel"])
 async def test_ws_facade_delegation_cancellation_releases_output(monkeypatch, cancel_at):
     from openjiuwen.harness.schema.interaction import OutputLeaseManager
     from jiuwenswarm.server.runtime.agent_adapter import interface as facade
@@ -276,6 +276,7 @@ async def test_ws_facade_delegation_cancellation_releases_output(monkeypatch, ca
     sending = asyncio.Event()
     reading = asyncio.Event()
     read_cleanup = asyncio.Event()
+    closing, release_close = asyncio.Event(), asyncio.Event()
 
     class SlowCloseEvent(asyncio.Event):
         async def wait(self):
@@ -306,12 +307,16 @@ async def test_ws_facade_delegation_cancellation_releases_output(monkeypatch, ca
                                              payload={"event_type": "chat.delta", "content": "late"})
             await asyncio.Event().wait()
         finally:
+            if cancel_at == "double_cancel":
+                closing.set()
+                await release_close.wait()
             await leases.detach(lease.token)
 
     inner = output()
     scoped = SimpleNamespace(process_message_stream_impl=lambda *_: inner)
     root = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
     root._is_session_scoped_adapter = False
+    root._session_adapters = {}
     root._get_or_create_session_adapter = AsyncMock(return_value=scoped)
     root._evict_idle_session_adapters = AsyncMock()
     monkeypatch.setattr(facade.JiuWenSwarm, "_ensure_adapter", lambda *_args, **_kwargs: root)
@@ -345,6 +350,13 @@ async def test_ws_facade_delegation_cancellation_releases_output(monkeypatch, ca
         if cancel_at == "read_cleanup":
             await asyncio.wait_for(read_cleanup.wait(), timeout=5)
         task.cancel()
+        if cancel_at == "double_cancel":
+            await asyncio.wait_for(closing.wait(), timeout=1)
+            task.cancel()
+            await asyncio.sleep(0.01)
+            assert not task.done(), "second cancel abandoned owned output cleanup"
+            assert leases.has_consumer()
+            release_close.set()
         done, _ = await asyncio.wait({task}, timeout=1)
         assert task in done, "cancel cleanup is stuck and still owns the output lease"
         with pytest.raises(asyncio.CancelledError):
@@ -353,6 +365,7 @@ async def test_ws_facade_delegation_cancellation_releases_output(monkeypatch, ca
         assert await leases.attach() is not None
         assert server._session_stream_tasks == {}
     finally:
+        release_close.set()
         if not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
