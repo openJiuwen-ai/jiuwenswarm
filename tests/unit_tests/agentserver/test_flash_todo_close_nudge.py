@@ -6,7 +6,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
+from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall, UsageMetadata
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from openjiuwen.harness.schema.task import TodoStatus
 
@@ -15,7 +15,11 @@ from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
 )
 from jiuwenswarm.agents.harness.common.rails.todo_close_gate import TodoCloseGate
 from jiuwenswarm.agents.harness.flash.rails import flash_todo_rail
-from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
+from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import (
+    MODEL_REFUSAL_BODY,
+    FlashTodoRail,
+    is_canned_model_refusal,
+)
 
 
 class _FakeSession:
@@ -72,14 +76,50 @@ def _todo_ctx(session: _FakeSession, action: str, call_id: str = "call-todo") ->
     )
 
 
-def _model_ctx(session: _FakeSession, content: str, tool_calls: list | None = None, **inputs) -> SimpleNamespace:
-    response = AssistantMessage(content=content, tool_calls=tool_calls or [])
+def _refusal_usage(**overrides) -> UsageMetadata:
+    usage = {
+        "output_tokens": 47,
+        "reasoning_tokens": 0,
+        "cache_read_tokens": None,
+        "cache_tokens": 0,
+    }
+    usage.update(overrides)
+    return UsageMetadata(**usage)
+
+
+def _model_ctx(
+    session: _FakeSession,
+    content: str,
+    tool_calls: list | None = None,
+    *,
+    reasoning_content: str = "",
+    usage_metadata: UsageMetadata | None = None,
+    **inputs,
+) -> SimpleNamespace:
+    response = AssistantMessage(
+        content=content,
+        tool_calls=tool_calls or [],
+        reasoning_content=reasoning_content,
+        usage_metadata=usage_metadata,
+    )
     inputs.setdefault("react_iteration", 1)
-    return SimpleNamespace(session=session, inputs=SimpleNamespace(response=response, **inputs), extra={})
+    ctx = SimpleNamespace(session=session, inputs=SimpleNamespace(response=response, **inputs), extra={}, finished=None)
+
+    def request_force_finish(result: dict) -> None:
+        ctx.finished = result
+
+    ctx.request_force_finish = request_force_finish
+    return ctx
 
 
-async def _final_turn(rail: FlashTodoRail, session: _FakeSession, content: str, **inputs) -> SimpleNamespace:
-    ctx = _model_ctx(session, content, **inputs)
+async def _final_turn(
+    rail: FlashTodoRail,
+    session: _FakeSession,
+    content: str,
+    tool_calls: list | None = None,
+    **inputs,
+) -> SimpleNamespace:
+    ctx = _model_ctx(session, content, tool_calls=tool_calls, **inputs)
     await rail.before_model_call(ctx)
     await rail.after_model_call(ctx)
     return ctx
@@ -106,6 +146,113 @@ async def test_text_ending_with_open_todo_is_nudged_once() -> None:
     assert again.inputs.response.tool_calls == []
     assert again.inputs.response.content == "模型仍不改状态，这次放行。"
     assert session.events == []
+
+
+_CANNED_REFUSAL = "作为一个人工智能语言模型，我还没学习如何回答这个问题，您可以向我问一些其它的问题，我会尽力帮您解决的。"
+
+
+def _canned_response(**kwargs) -> AssistantMessage:
+    defaults = {
+        "content": _CANNED_REFUSAL,
+        "reasoning_content": "",
+        "usage_metadata": _refusal_usage(),
+        "tool_calls": [],
+    }
+    defaults.update(kwargs)
+    return AssistantMessage(**defaults)
+
+
+@pytest.mark.asyncio
+async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
+    rail, _ = _rail({"collect": TodoStatus.IN_PROGRESS})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+
+    ctx = await _final_turn(rail, session, _CANNED_REFUSAL, usage_metadata=_refusal_usage())
+
+    assert ctx.inputs.response.tool_calls == []
+    assert ctx.inputs.response.content == MODEL_REFUSAL_BODY
+    assert ctx.finished == {"output": MODEL_REFUSAL_BODY, "result_type": "answer"}
+    assert session.events == [
+        "todo_close_hold",
+        "todo_close_drop",
+        "todo.updated",
+        "task.complete",
+        "llm_output",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_canned_refusal_without_open_todo_still_writes_the_body() -> None:
+    rail, _ = _rail({})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+
+    ctx = await _final_turn(
+        rail, session, f"  {_CANNED_REFUSAL}\n", usage_metadata=_refusal_usage()
+    )
+
+    assert ctx.inputs.response.content == MODEL_REFUSAL_BODY
+    assert ctx.finished["result_type"] == "answer"
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_drop", "llm_output"]
+
+
+def test_ordinary_or_quoted_text_is_not_a_canned_refusal() -> None:
+    assert is_canned_model_refusal(_canned_response()) is True
+    assert is_canned_model_refusal(_canned_response(content="口播稿已写完。")) is False
+    quoted = "报道原句是：" + _CANNED_REFUSAL + "。这里继续写完核查和口播稿。" * 3
+    assert is_canned_model_refusal(_canned_response(content=quoted)) is False
+
+
+def test_refusal_needs_empty_reasoning_and_no_cache_hit() -> None:
+    assert is_canned_model_refusal(
+        _canned_response(reasoning_content="先核查来源再写稿。")
+    ) is False
+    assert is_canned_model_refusal(
+        _canned_response(usage_metadata=_refusal_usage(reasoning_tokens=12))
+    ) is False
+    assert is_canned_model_refusal(
+        _canned_response(usage_metadata=_refusal_usage(cache_read_tokens=128))
+    ) is False
+    assert is_canned_model_refusal(
+        _canned_response(usage_metadata=_refusal_usage(cache_read_tokens=0))
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_canned_refusal_with_tool_call_is_left_alone() -> None:
+    rail, _ = _rail({"collect": TodoStatus.IN_PROGRESS})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+    await rail.after_tool_call(_todo_ctx(session, "create"))
+    call = ToolCall(id="call-search", type="function", name="web_flash", arguments="{}")
+
+    ctx = await _final_turn(
+        rail, session, _CANNED_REFUSAL, tool_calls=[call], usage_metadata=_refusal_usage()
+    )
+
+    assert ctx.finished is None
+    assert ctx.inputs.response.tool_calls[0].name == "web_flash"
+    assert "llm_output" not in session.events
+
+@pytest.mark.asyncio
+async def test_refusal_text_with_reasoning_is_not_stopped() -> None:
+    rail, _ = _rail({})
+    session = _FakeSession()
+    await rail.before_invoke(SimpleNamespace())
+
+    ctx = await _final_turn(
+        rail,
+        session,
+        _CANNED_REFUSAL,
+        reasoning_content="这段是正常推理。",
+        usage_metadata=_refusal_usage(),
+    )
+
+    assert ctx.finished is None
+    assert ctx.inputs.response.content == _CANNED_REFUSAL
+    assert "llm_output" not in session.events
 
 
 @pytest.mark.asyncio
@@ -142,7 +289,7 @@ async def test_closed_todos_release_text_without_nudge() -> None:
     ctx = await _final_turn(rail, session, "全部完成。")
 
     assert ctx.inputs.response.tool_calls == []
-    assert session.events == []
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]
 
 
 @pytest.mark.asyncio
@@ -155,7 +302,7 @@ async def test_stale_todos_without_write_this_invoke_are_ignored() -> None:
     ctx = await _final_turn(rail, session, "普通问答的回复。")
 
     assert ctx.inputs.response.tool_calls == []
-    assert session.events == []
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]
 
 
 @pytest.mark.asyncio
@@ -192,7 +339,12 @@ async def test_truncated_or_last_iteration_ending_is_not_nudged() -> None:
         assert tail.inputs.response.tool_calls == []
         assert tail.inputs.response.content == "收尾回复"
     assert rail._close_gate.used is False
-    assert session.events == []
+    assert session.events == [
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+    ]
 
 
 @pytest.mark.asyncio
@@ -212,7 +364,7 @@ async def test_nudge_needs_rounds_to_close_todo_and_rewrite_reply(max_iterations
     else:
         assert ctx.inputs.response.tool_calls == []
         assert ctx.inputs.response.content == "PPT 已生成，下载链接：/files/a.pptx"
-        assert session.events == []
+        assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]
 
 
 @pytest.mark.asyncio
@@ -306,7 +458,12 @@ async def test_unknown_iteration_limit_never_nudges(agent) -> None:
 
     assert first.inputs.response.content == "第一次收尾"
     assert second.inputs.response.tool_calls == []
-    assert session.events == []
+    assert session.events == [
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+        "refusal_scrub_hold",
+        "refusal_scrub_release",
+    ]
     assert len([r for r in handler.records if "react iteration unknown" in r.getMessage()]) == 1
 
 
@@ -320,4 +477,4 @@ async def test_call_outside_react_loop_is_not_nudged() -> None:
     ctx = await _final_turn(rail, session, "循环外的模型调用", react_iteration=0)
 
     assert ctx.inputs.response.tool_calls == []
-    assert session.events == []
+    assert session.events == ["refusal_scrub_hold", "refusal_scrub_release"]

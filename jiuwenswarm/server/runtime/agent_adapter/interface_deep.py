@@ -136,6 +136,10 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     STATUSLINE_SETUP_AGENT_TYPE,
     build_statusline_setup_agent_config,
 )
+from jiuwenswarm.server.runtime.agent_adapter.refusal_text_scrub import (
+    RefusalTextScrub,
+    is_refusal_scrub_control,
+)
 from jiuwenswarm.server.runtime.agent_adapter.todo_close_text_hold import (
     TodoCloseTextHold,
     is_todo_close_control,
@@ -21348,11 +21352,12 @@ class JiuWenSwarmDeepAdapter:
             runner_stream_started_at = time.monotonic()
             first_chunk_seen = False
             todo_close_hold = TodoCloseTextHold()
+            refusal_scrub = RefusalTextScrub()
 
-            def _take_todo_close_chunks() -> list[AgentResponseChunk]:
+            def _take_held_chunks(hold: Any) -> list[AgentResponseChunk]:
                 """下发挂起的外层正文。drop 过的块不在这里。"""
                 nonlocal emitted_terminal_chat_final, has_streamed_content
-                payloads = todo_close_hold.take()
+                payloads = hold.take()
                 if not payloads:
                     return []
                 chunks: list[AgentResponseChunk] = []
@@ -21412,9 +21417,11 @@ class JiuWenSwarmDeepAdapter:
                 # first token for this round. Hold/drop/release are internal
                 # and are written before the model streams, so they must not
                 # count as the first token.
-                if not first_chunk_seen and not is_todo_close_control(
-                    str(getattr(chunk, "type", "") or "")
-                ):
+                chunk_type_name = str(getattr(chunk, "type", "") or "")
+                internal_hold = is_todo_close_control(chunk_type_name) or is_refusal_scrub_control(
+                    chunk_type_name
+                )
+                if not first_chunk_seen and not internal_hold:
                     first_chunk_seen = True
                     server_logger.info(
                         "[AgentServer] runner streaming first chunk: session_id=%s request_id=%s"
@@ -21500,12 +21507,27 @@ class JiuWenSwarmDeepAdapter:
                 close_action = todo_close_hold.decide(
                     chunk_type, foreign=foreign_output,
                 )
-                if close_action == "skip":
+                scrub_content = ""
+                if chunk_type == "llm_output":
+                    payload = chunk.payload
+                    if isinstance(payload, dict):
+                        scrub_content = str(payload.get("content") or payload.get("output") or "")
+                    else:
+                        scrub_content = str(payload or "")
+                scrub_action = refusal_scrub.decide(
+                    chunk_type, foreign=foreign_output, content=scrub_content,
+                )
+                if close_action == "skip" or scrub_action == "skip":
                     continue
                 if close_action in ("flush_skip", "flush_pass"):
-                    for held_chunk in _take_todo_close_chunks():
+                    for held_chunk in _take_held_chunks(todo_close_hold):
                         yield held_chunk
                     if close_action == "flush_skip":
+                        continue
+                if scrub_action in ("flush_skip", "flush_pass"):
+                    for held_chunk in _take_held_chunks(refusal_scrub):
+                        yield held_chunk
+                    if scrub_action == "flush_skip":
                         continue
                 if chunk_type == "llm_usage":
                     logger.info(f"[JiuWenSwarmDeepAdapter] llm_usage chunk: {chunk}")
@@ -21590,6 +21612,9 @@ class JiuWenSwarmDeepAdapter:
                         accumulated_reasoning = ""
                     if close_action == "buffer":
                         todo_close_hold.push(delta_payload)
+                        continue
+                    if scrub_action == "buffer":
+                        refusal_scrub.push(delta_payload)
                         continue
                     has_streamed_content = True
                     boundary = self._begin_visible_chat_content(stream_is_user_originated)
@@ -21808,7 +21833,9 @@ class JiuWenSwarmDeepAdapter:
             # 轮次已正常完成/取消，flush 与合成 final 必须发出，否则前端悬挂）。
             # hitl_pending_stream 只反映"本轮出过 ask_user 卡片"，不随续跑复位。
             if not suppress_stream_after_hitl:
-                for held_chunk in _take_todo_close_chunks():
+                for held_chunk in _take_held_chunks(todo_close_hold):
+                    yield held_chunk
+                for held_chunk in _take_held_chunks(refusal_scrub):
                     yield held_chunk
             if accumulated_text and not suppress_stream_after_hitl:
                 # Same rule as _adapt_goal_intermediate_final: demote host
@@ -22693,7 +22720,7 @@ class JiuWenSwarmDeepAdapter:
                 chunk_type = chunk.type
                 payload = chunk.payload
 
-                if is_todo_close_control(chunk_type):
+                if is_todo_close_control(chunk_type) or is_refusal_scrub_control(chunk_type):
                     return None
 
                 if chunk_type == "steering_consumed":
