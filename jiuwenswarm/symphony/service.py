@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
 from concurrent.futures import Future as ConcurrentFuture
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import dataclass
 from functools import lru_cache
@@ -26,8 +28,21 @@ from openjiuwen.symphony import FINGERPRINT_ARTIFACT_FILENAME
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 from jiuwenswarm.server.runtime.skill.skillpack import (
+    load_skillpack,
     read_skillpack_section,
     scan_skillpacks,
+)
+from jiuwenswarm.server.runtime.skill.skillpack_config import skillpack_productization_enabled
+from jiuwenswarm.server.runtime.skill.skillpack_install import inventory_mutex
+from jiuwenswarm.symphony.skillpack_candidates import (
+    CandidateEvidenceScope,
+    CandidateScopeStore,
+    ScopedCandidateStore,
+    annotate_member_types,
+    candidate_members,
+    candidate_request_id,
+    member_snapshot,
+    trusted_session_user,
 )
 from jiuwenswarm.symphony.adapter import (
     candidate_ids_from_skill_ids,
@@ -117,6 +132,7 @@ def _candidate_question(
     candidate: CombinationCandidateType,
     *,
     request_id: str,
+    display_name: str | None = None,
 ) -> dict[str, Any]:
     structure = (
         "\n".join(
@@ -125,7 +141,7 @@ def _candidate_question(
         )
         or "根据任务需要组合使用"
     )
-    package_name = candidate.name or "组合技能包"
+    package_name = display_name or candidate.name or "组合技能包"
     applicability = candidate.applicability or "适合需要多个技能配合完成的类似任务。"
     question = "\n".join(
         (
@@ -235,6 +251,8 @@ class SwarmSymphonyService:
         self._notified_candidates: set[tuple[str, int]] = set()
         self._install_lock = asyncio.Lock()
         self._install_receipts: dict[str, dict[str, Any]] = {}
+        self._skillpack_candidate_lock = asyncio.Lock()
+        self._skillpack_candidate_flows: OrderedDict[tuple[str, str], Any] = OrderedDict()
         self._retired_runtime_tasks: set[asyncio.Task[None]] = set()
         self._closing = False
         self._graph_status_lock = asyncio.Lock()
@@ -836,12 +854,29 @@ class SwarmSymphonyService:
         if not config.enabled or not evolution_flow_enabled(config):
             return
         runtime = self._runtime_for(config)
+        if isinstance(execution_graph.get("graph"), dict):
+            execution_graph = annotate_member_types(execution_graph, config.paths.skills_root)
         result = await runtime.submit_evolution(
             planned_graph,
             execution_graph,
             session_id=session_id,
             capture_mode=capture_mode,
         )
+        flow = runtime.flow_engine
+        trace_id = str(execution_graph.get("trace_id") or "")
+        evidence = flow.store.find_evidence(trace_id) if flow is not None and trace_id else None
+        if evidence is not None and session_id:
+            try:
+                snapshot = member_snapshot(
+                    config.paths.skills_root,
+                    list(evidence.graph.get("nodes", {})),
+                    load_execution_disabled_skills(),
+                )
+                CandidateScopeStore(flow.store.root).record_trace(
+                    trace_id, session_id, snapshot, trusted_session_user(session_id),
+                )
+            except (OSError, ValueError):
+                logger.info("SkillPack evidence has no eligible local member snapshot")
         recovered = ()
         try:
             started_candidates = await self._start_flow(runtime)
@@ -863,6 +898,9 @@ class SwarmSymphonyService:
                 type(exc).__name__,
             )
         candidates = _unique_candidates((*recovered, *result.new_candidates))
+        if skillpack_productization_enabled():
+            # Productized candidates are offered by the explicit conversation Tool.
+            return
         for candidate in candidates:
             try:
                 await self._notify_candidate(
@@ -925,14 +963,26 @@ class SwarmSymphonyService:
         session_id: str,
         channel_id: str | None,
         force: bool = False,
+        request_id_override: str | None = None,
+        preview: dict[str, Any] | None = None,
     ) -> None:
         key = (candidate.recipe_id, candidate.version)
         lock = self._candidate_locks.setdefault(key, asyncio.Lock())
         async with lock:
             if key in self._notified_candidates and not force:
                 return
-            request_id = experience_request_id(*key)
-            payload = _candidate_question(candidate, request_id=request_id)
+            request_id = request_id_override or experience_request_id(*key)
+            payload = _candidate_question(
+                candidate, request_id=request_id,
+                display_name=str(preview.get("name") or "") if preview is not None else None,
+            )
+            if preview is not None:
+                payload["skillpack_candidate"] = preview
+                payload["questions"][0]["question"] += (
+                    "\n\n**检查结果**\n已通过本地评审，成员均为可用的普通 Skill。"
+                    "\n\n**风险与权限**\n安装只保存组合说明；使用时仍需遵守每个成员的权限和副作用确认。"
+                )
+                payload["questions"][0]["question"] += "\n\n**执行说明**\n" + str(preview.get("execution_process") or "")
             from jiuwenswarm.runtime.host_services import RuntimeHostPushTransport
             from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (
                 EvolutionPushContext,
@@ -990,6 +1040,8 @@ class SwarmSymphonyService:
     def list_experience_candidates(self) -> dict[str, Any]:
         """Return installable Recipe versions retained by the Core Flow store."""
 
+        if skillpack_productization_enabled():
+            return {"success": False, "reason": "scoped_skillpack_tool_required", "candidates": []}
         config = load_symphony_config()
         if not config.enabled or not evolution_flow_enabled(config):
             return {"success": True, "enabled": False, "candidates": []}
@@ -1001,6 +1053,151 @@ class SwarmSymphonyService:
             "candidates": [_candidate_payload(item) for item in candidates],
         }
 
+    async def _skillpack_candidate_flow(
+        self, source: Any, config: Any, scope: CandidateEvidenceScope,
+    ) -> Any:
+        """Reuse at most eight idle/active scope workers under the candidate lock."""
+        if self._closing:
+            raise RuntimeError("Symphony service is closing")
+        key = (str(source.store.root.resolve()), scope.key)
+        cached = self._skillpack_candidate_flows.get(key)
+        if cached is not None:
+            self._skillpack_candidate_flows.move_to_end(key)
+            return cached
+        if len(self._skillpack_candidate_flows) >= 8:
+            _, retired = self._skillpack_candidate_flows.popitem(last=False)
+            await retired.close()
+        store = ScopedCandidateStore(
+            source.store, scope, config.paths.skills_root,
+            disabled_for=lambda: load_execution_disabled_skills(),
+        )
+        flow = SymphonyFlowEngine(
+            store.root, store=store, config=source.config, llm_client=source.llm_client,
+            packager=source.packager, gate=source.gate, skill_adapter=source.skill_adapter,
+        )
+        self._skillpack_candidate_flows[key] = flow
+        return flow
+
+    async def prepare_skillpack_candidates(
+        self, *, session_id: str, scope: str = "current_user", source_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Serialize scope worker use with confirmation and installation."""
+        async with self._skillpack_candidate_lock:
+            return await self._prepare_skillpack_candidates(
+                session_id=session_id, scope=scope, source_refs=source_refs,
+            )
+
+    async def _prepare_skillpack_candidates(
+        self, *, session_id: str, scope: str = "current_user", source_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Review persisted evidence in a Host-authenticated user/session scope."""
+        config = load_symphony_config()
+        if not skillpack_productization_enabled():
+            return {"success": False, "reason": "skillpack_disabled"}
+        if not callable(getattr(SkillPackAdapter, "validate_members", None)):
+            return {"success": False, "reason": "core_skillpack_contract_missing"}
+        if not session_id or not config.enabled or not evolution_flow_enabled(config):
+            return {"success": False, "reason": "flow_or_session_unavailable"}
+        if scope not in {"current_user", "current_session"}:
+            return {"success": False, "reason": "invalid_scope"}
+        user_id = trusted_session_user(session_id)
+        effective_scope = scope if user_id else "current_session"
+        source = self._runtime_for(config).flow_engine
+        if source is None:
+            return {"success": False, "reason": "flow_disabled"}
+        identity = CandidateEvidenceScope.resolve(session_id, user_id, effective_scope, source_refs)
+        flow = await self._skillpack_candidate_flow(source, config, identity)
+        await flow.start()
+        scope_store = CandidateScopeStore(source.store.root)
+        previews: list[dict[str, Any]] = []
+        for candidate in flow.list_candidates()[:20]:
+            recipe = flow.get_recipe(candidate.recipe_id)
+            if recipe is None:
+                continue
+            try:
+                snapshot = member_snapshot(
+                    config.paths.skills_root, candidate_members(recipe), load_execution_disabled_skills(),
+                )
+                traces = scope_store.scoped_evidence(
+                    recipe, session_id, snapshot, user_id=user_id, scope=effective_scope, source_refs=source_refs,
+                )
+                if not traces or not flow.store.contains_evidence(traces):
+                    continue
+                prepared = await flow.review_and_prepare_install(
+                    candidate.recipe_id, recipe_version=candidate.version,
+                )
+                if prepared.verdict != VERDICT_APPROVED or not prepared.artifact_dir:
+                    continue
+                definition = load_skillpack(Path(prepared.artifact_dir))
+                package = prepared.package or {}
+                preview = _candidate_payload(candidate)
+                preview.update({
+                    "name": definition.name,
+                    "members": list(definition.members),
+                    "evidence_count": len(traces),
+                    "evidence_trace_ids": traces,
+                    "review": "approved",
+                    "root_document": (Path(prepared.artifact_dir) / "SKILL.md").read_text(encoding="utf-8"),
+                    "execution_process": read_skillpack_section(Path(prepared.artifact_dir), "Execution Process"),
+                    "risk": "成员权限与副作用确认保持不变；这里只创建本地组合说明。",
+                    "package_id": package.get("package_id"),
+                    "integrity": package.get("integrity"),
+                    "member_snapshot": snapshot,
+                })
+                previews.append(preview)
+            except (OSError, ValueError):
+                continue
+        return {"success": True, "candidates": previews, "scope": effective_scope}
+
+    async def request_skillpack_candidate(
+        self, *, recipe_id: str, recipe_version: int, session_id: str, channel_id: str | None,
+        scope: str = "current_user", source_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        async with self._skillpack_candidate_lock:
+            return await self._request_skillpack_candidate(
+                recipe_id=recipe_id, recipe_version=recipe_version, session_id=session_id,
+                channel_id=channel_id, scope=scope, source_refs=source_refs,
+            )
+
+    async def _request_skillpack_candidate(
+        self, *, recipe_id: str, recipe_version: int, session_id: str, channel_id: str | None,
+        scope: str = "current_user", source_refs: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Offer one reviewed candidate; only the Host answer may install it."""
+        user_before_review = trusted_session_user(session_id)
+        prepared = await self._prepare_skillpack_candidates(session_id=session_id, scope=scope, source_refs=source_refs)
+        if not prepared.get("success"):
+            return prepared
+        identity = CandidateEvidenceScope.resolve(session_id, user_before_review, scope, source_refs)
+        current_identity = CandidateEvidenceScope.resolve(
+            session_id, trusted_session_user(session_id), scope, source_refs,
+        )
+        if identity.key != current_identity.key:
+            return {"success": False, "reason": "evidence_scope_changed_reconfirm"}
+        preview = next((
+            item for item in prepared["candidates"]
+            if item["recipe_id"] == recipe_id and item["recipe_version"] == recipe_version
+        ), None)
+        if preview is None:
+            return {"success": False, "reason": "candidate_not_available_in_session"}
+        source = self.runtime().flow_engine
+        flow = await self._skillpack_candidate_flow(source, load_symphony_config(), identity)
+        candidate = flow.get_candidate(recipe_id, version=recipe_version)
+        if candidate is None:
+            return {"success": False, "reason": "candidate_not_available_in_session"}
+        request_id = candidate_request_id(recipe_id, recipe_version, session_id, identity.key)
+        approval = dict(preview)
+        approval["session_id"] = session_id
+        approval["evidence_scope"] = identity.to_dict()
+        approval["evidence_scope_key"] = identity.key
+        CandidateScopeStore(source.store.root).grant(request_id, approval)
+        await self._notify_candidate(
+            candidate,
+            session_id=session_id, channel_id=channel_id, force=True,
+            request_id_override=request_id, preview=preview,
+        )
+        return {"success": True, "request_id": request_id, "awaiting_user_confirmation": True}
+
     async def request_experience_candidate(
         self,
         *,
@@ -1011,6 +1208,8 @@ class SwarmSymphonyService:
     ) -> dict[str, Any]:
         """Re-send one retained candidate through the existing Host question flow."""
 
+        if skillpack_productization_enabled():
+            return {"success": False, "reason": "scoped_skillpack_tool_required"}
         config = load_symphony_config()
         if not config.enabled or not evolution_flow_enabled(config):
             return {"success": False, "reason": "flow_disabled"}
@@ -1035,6 +1234,16 @@ class SwarmSymphonyService:
         }
 
     async def install_candidate(
+        self, *, request_id: str, recipe_id: str, recipe_version: int,
+        package_id: str | None, integrity: str | None, skill_manager: Any, session_id: str = "",
+    ) -> dict[str, Any]:
+        async with self._skillpack_candidate_lock:
+            return await self._install_candidate(
+                request_id=request_id, recipe_id=recipe_id, recipe_version=recipe_version,
+                package_id=package_id, integrity=integrity, skill_manager=skill_manager, session_id=session_id,
+            )
+
+    async def _install_candidate(
         self,
         *,
         request_id: str,
@@ -1043,29 +1252,64 @@ class SwarmSymphonyService:
         package_id: str | None,
         integrity: str | None,
         skill_manager: Any,
+        session_id: str = "",
     ) -> dict[str, Any]:
         """Prepare, validate, and install one server-owned Skill artifact."""
 
-        expected_request_id = experience_request_id(recipe_id, recipe_version)
-        if request_id != expected_request_id:
+        from_tool = request_id.startswith("symphony_experience_tool_")
+        if skillpack_productization_enabled() and not from_tool:
+            return {"installed": False, "reason": "scoped_skillpack_tool_required"}
+        if not from_tool and request_id != experience_request_id(recipe_id, recipe_version):
             return {"installed": False, "reason": "invalid_request_id"}
+        if from_tool and not skillpack_productization_enabled():
+            return {"installed": False, "reason": "skillpack_disabled"}
         config = load_symphony_config()
         if not config.enabled or not evolution_flow_enabled(config):
             return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
+            flow = self.runtime().flow_engine
+            if flow is None:
+                return {"installed": False, "reason": "flow_disabled"}
+            if from_tool:
+                approval = CandidateScopeStore(flow.store.root).approval(request_id)
+                if not approval or approval.get("session_id") != session_id:
+                    return {"installed": False, "reason": "invalid_request_id"}
+                saved_scope = approval.get("evidence_scope")
+                if not isinstance(saved_scope, dict):
+                    return {"installed": False, "reason": "evidence_scope_changed_reconfirm"}
+                try:
+                    identity = CandidateEvidenceScope.resolve(
+                        session_id, trusted_session_user(session_id), saved_scope.get("scope", ""),
+                        saved_scope.get("source_refs"),
+                    )
+                except (TypeError, ValueError):
+                    return {"installed": False, "reason": "evidence_scope_changed_reconfirm"}
+                if identity.key != approval.get("evidence_scope_key"):
+                    return {"installed": False, "reason": "evidence_scope_changed_reconfirm"}
+                if request_id != candidate_request_id(recipe_id, recipe_version, session_id, identity.key):
+                    return {"installed": False, "reason": "invalid_request_id"}
+                try:
+                    snapshot = member_snapshot(
+                        config.paths.skills_root, approval["members"], load_execution_disabled_skills(),
+                    )
+                except (OSError, ValueError):
+                    return {"installed": False, "reason": "members_changed_reconfirm"}
+                if snapshot != approval.get("member_snapshot"):
+                    return {"installed": False, "reason": "members_changed_reconfirm"}
+                package_id = str(approval["package_id"])
+                integrity = str(approval["integrity"])
+                flow = await self._skillpack_candidate_flow(flow, config, identity)
+                await flow.start()
+                if not flow.store.contains_evidence(approval.get("evidence_trace_ids", [])):
+                    return {"installed": False, "reason": "evidence_changed_reconfirm"}
             previous = self._install_receipts.get(request_id)
             if previous is not None and previous.get("installed") is True:
-                flow = self.runtime().flow_engine
                 if flow is not None:
                     self._acknowledge_installed_candidate(
                         flow, recipe_id, recipe_version
                     )
                 return {**previous, "newly_installed": False, "replayed": True}
             self._install_receipts.pop(request_id, None)
-            runtime = self.runtime()
-            flow = runtime.flow_engine
-            if flow is None:
-                return {"installed": False, "reason": "flow_disabled"}
             persisted = _read_install_receipt(flow.store.root.resolve(), request_id)
             if persisted is not None and persisted.get("installed") is True:
                 self._install_receipts[request_id] = dict(persisted)
@@ -1111,39 +1355,60 @@ class SwarmSymphonyService:
                 or artifact_path.is_symlink()
             ):
                 return {"installed": False, "reason": "invalid_artifact"}
-            recover = getattr(skill_manager, "recover_symphony_skill_install", None)
-            installed = (
-                recover(
-                    artifact_dir,
-                    package_id=actual_package_id,
-                    integrity=actual_integrity,
-                )
-                if callable(recover)
-                else None
-            )
-            if installed is None:
-                try:
-                    installed = skill_manager.install_symphony_skill_artifact(
+            # Review awaits external work. Revalidate after it, under the same
+            # inventory lock as all installation writers, before any recovery
+            # or install can commit the user's previously confirmed candidate.
+            with inventory_mutex(config.paths.skills_root) if from_tool else nullcontext():
+                if from_tool:
+                    current_identity = CandidateEvidenceScope.resolve(
+                        session_id, trusted_session_user(session_id), saved_scope.get("scope", ""),
+                        saved_scope.get("source_refs"),
+                    )
+                    if identity.key != current_identity.key:
+                        return {"installed": False, "reason": "evidence_scope_changed_reconfirm"}
+                    try:
+                        snapshot = member_snapshot(
+                            config.paths.skills_root, approval["members"], load_execution_disabled_skills(),
+                        )
+                    except (OSError, ValueError):
+                        return {"installed": False, "reason": "members_changed_reconfirm"}
+                    if snapshot != approval.get("member_snapshot"):
+                        return {"installed": False, "reason": "members_changed_reconfirm"}
+                    if not flow.store.contains_evidence(approval.get("evidence_trace_ids", [])):
+                        return {"installed": False, "reason": "evidence_changed_reconfirm"}
+                recover = getattr(skill_manager, "recover_symphony_skill_install", None)
+                installed = (
+                    recover(
                         artifact_dir,
-                        expected_root=flow_root,
                         package_id=actual_package_id,
                         integrity=actual_integrity,
                     )
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "Symphony Skill install failed (%s)",
-                        type(exc).__name__,
-                    )
-                    if getattr(exc, "code", "") in {
-                        "SKILL_INVALID_METADATA",
-                        "SKILL_INVALID_PACKAGE",
-                    }:
-                        return {
-                            "installed": False,
-                            "reason": "not_installable",
-                            "details": [str(exc)],
-                        }
-                    return {"installed": False, "reason": "install_failed"}
+                    if callable(recover)
+                    else None
+                )
+                if installed is None:
+                    try:
+                        installed = skill_manager.install_symphony_skill_artifact(
+                            artifact_dir,
+                            expected_root=flow_root,
+                            package_id=actual_package_id,
+                            integrity=actual_integrity,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "Symphony Skill install failed (%s)",
+                            type(exc).__name__,
+                        )
+                        if getattr(exc, "code", "") in {
+                            "SKILL_INVALID_METADATA",
+                            "SKILL_INVALID_PACKAGE",
+                        }:
+                            return {
+                                "installed": False,
+                                "reason": "not_installable",
+                                "details": [str(exc)],
+                            }
+                        return {"installed": False, "reason": "install_failed"}
             receipt = {
                 "installed": bool(installed.get("success")),
                 "newly_installed": bool(installed.get("success")),
@@ -1184,6 +1449,10 @@ class SwarmSymphonyService:
         self._notified_candidates.clear()
         runtime_error: BaseException | None = None
         try:
+            async with self._skillpack_candidate_lock:
+                for flow in self._skillpack_candidate_flows.values():
+                    await flow.close()
+                self._skillpack_candidate_flows.clear()
             if runtime is not None:
                 await runtime.aclose()
         except BaseException as exc:

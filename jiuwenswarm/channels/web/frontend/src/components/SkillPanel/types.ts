@@ -62,6 +62,9 @@ export interface SkillPackBlockedMember {
 /** 技能包成员摘要（skills.get / skills.swarmskillshub.detail 的 skillpack.members） */
 export interface SkillPackMember {
   name: string;
+  version?: string;
+  asset_id?: string;
+  source?: string;
   display_name?: string;
   description?: string;
   path: string;

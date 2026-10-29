@@ -1,4 +1,13 @@
-export type PublishAssetKind = 'skill' | 'agent_template' | 'agent_group' | 'plugin' | 'mcp';
+export type PublishAssetKind = 'skill' | 'skillpack' | 'agent_template' | 'agent_group' | 'plugin' | 'mcp';
+export type PackPublishMember = {
+  name: string;
+  version?: string;
+  action: 'reuse' | 'publish' | 'blocked';
+  visibility?: 'public';
+  asset_id?: string;
+  review?: string;
+  error?: PublishIssue;
+};
 export type AssetReference = { kind: PublishAssetKind; local_id: string };
 export type AssetPublishOpenRequest = AssetReference & { avatar_url?: string };
 export type PublishMetadata = {
@@ -13,6 +22,8 @@ export type PublishMetadata = {
 };
 export type PublishIssue = string | { code?: string; message?: string; path?: string; [key: string]: unknown };
 export type PublishRecord = {
+  stage?: string;
+  members?: PackPublishMember[];
   operation_id: string;
   draft_id?: string;
   version?: string;
@@ -30,6 +41,8 @@ export type PublishDescription = AssetReference & {
   hub_url?: string;
 };
 export type PublishDraft = {
+  members?: PackPublishMember[];
+  hub_plugin_type?: string;
   draft_id?: string;
   expires_at?: string | number;
   package_name: string;

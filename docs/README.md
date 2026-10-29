@@ -111,6 +111,11 @@
       <td width="50%">技能编排与分发系统。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>SkillPack</strong></td>
+      <td width="28%"><a href="zh/skillpack-productization.md">SkillPack 产品化</a></td>
+      <td width="50%">从执行记录沉淀、确认复用、兼容发布和成员锁定安装。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>频道</strong></td>
       <td width="28%"><a href="zh/频道.md">频道</a></td>
       <td width="50%">JiuwenSwarm 的多渠道接入与交互。</td>

@@ -328,6 +328,8 @@ class SymphonyToolkit:
             return False
 
     def get_tools(self, config: dict[str, Any] | None = None) -> list[Tool]:
+        from jiuwenswarm.agents.harness.common.tools.skillpack_toolkit import SkillPackToolkit
+
         if not self.is_enabled(config):
             return []
 
@@ -424,7 +426,7 @@ class SymphonyToolkit:
                 self.plan,
                 uses_internal_timeout=True,
             ),
-        ]
+        ] + SkillPackToolkit(self._service).get_tools()
 
 
 def _copy_compact_fields(

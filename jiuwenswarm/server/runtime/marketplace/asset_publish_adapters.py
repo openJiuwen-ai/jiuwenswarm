@@ -232,7 +232,7 @@ def _check_config(value, key=""):
             )
 
 
-def _skill(root, identity, metadata):
+def _skill(root, identity, metadata, *, allow_pack=False):
     path = _path(root, "SKILL.md", "SKILL.md")
     try:
         raw = path.read_text(encoding="utf-8")
@@ -244,6 +244,8 @@ def _skill(root, identity, metadata):
         _fail(field="SKILL.md", message="Invalid skill frontmatter")
     if not isinstance(front, dict):
         _fail(field="SKILL.md")
+    if str(front.get("kind", "")).strip().casefold() == "skillpack" and not allow_pack:
+        _fail("SKILLPACK_REQUIRES_COORDINATOR", "kind", "Use the SkillPack publishing plan")
     _text(front.get("name"), "name")
     _text(front.get("description"), "description")
     if front.get("kind") == "team-skill" or metadata.get("skill_type") == "teamskills":
@@ -285,7 +287,7 @@ def _skill(root, identity, metadata):
             front[key] = value
             changes.append("SKILL.md." + key)
     _text(front["description"], "description")
-    tags = front.get("tags", ["teamskills"])
+    tags = front.get("tags", ["teamskills"] if front.get("kind") == "team-skill" else [])
     if isinstance(tags, str):
         tags = [tags]
     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
@@ -306,6 +308,23 @@ def _skill(root, identity, metadata):
         encoding="utf-8",
     )
     return {"normalizations": changes, "dependencies": [], "wrapper": wrapper}
+
+
+def _skillpack(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
+    """Validate a thin Pack independently of the ordinary Skill adapter."""
+    from ..skill.skillpack import load_skillpack
+    from ..skill.skillpack_lock import load_skillpack_lock, SKILLPACK_HUB_TAG
+
+    load_skillpack(root)
+    if any(path.name not in {"SKILL.md", "skillpack.lock.json"} for path in root.iterdir()):
+        _fail("PACK_MUST_BE_THIN", message="SkillPack archives contain only the root document and lock")
+    details = _skill(root, identity, metadata, allow_pack=True)
+    lock = load_skillpack_lock(root, identity.version)
+    tags = details["wrapper"]["metadata"]["tags"]
+    if SKILLPACK_HUB_TAG not in tags:
+        tags.append(SKILLPACK_HUB_TAG)
+    details["dependencies"] = lock.to_dict()["members"]
+    return details
 
 
 def _agent_group(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
@@ -399,6 +418,8 @@ def normalize_and_validate(
         _fail(field="package_name", message="Publish name must be a machine identifier")
     if identity.kind == "skill":
         return _skill(root, identity, metadata)
+    if identity.kind == "skillpack":
+        return _skillpack(root, identity, metadata)
     if identity.kind == "agent_group":
         return _agent_group(root, identity, metadata)
     if len(list(root.rglob("manifest.json"))) != 1:

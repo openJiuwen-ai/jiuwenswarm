@@ -91,6 +91,7 @@ def _request_json(request: PublishRequest) -> str:
             "version_desc": request.version_desc,
             "visibility": request.visibility,
             "force": request.force,
+            "transport_profile": request.transport_profile,
         }
     )
 
@@ -439,6 +440,19 @@ class PublishStore:
     def status(self, scope: str, operation_id: str) -> dict:
         with self._lock:
             return self._record(self._operation(scope, operation_id))
+
+    def discard_uncommitted_draft(self, scope: str, draft_id: str) -> Path | None:
+        """Release only a draft that has never become an upload operation."""
+        with self._transaction():
+            draft = self._draft(scope, draft_id)
+            operation = self._db.execute(
+                "SELECT 1 FROM publish_operations WHERE scope=? AND draft_id=?", (scope, draft_id),
+            ).fetchone()
+            if operation:
+                return None
+            artifact = _request(draft["request_json"]).artifact_path
+            self._db.execute("DELETE FROM publish_drafts WHERE scope=? AND draft_id=?", (scope, draft_id))
+            return artifact
 
     def records(self, scope: str, kind: str, local_id: str) -> list[dict]:
         with self._lock:

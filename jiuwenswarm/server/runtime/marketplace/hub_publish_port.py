@@ -20,11 +20,19 @@ def parse_publish_result(
     expected: PublishIdentity,
     *,
     expected_visibility: Literal["public", "private"] | None = None,
+    transport_profile: str | None = None,
 ) -> PublishResult:
     """Validate the returned identity without confusing storage and review status."""
     if not isinstance(data, Mapping):
         raise PublishProtocolError("Invalid publish data")
-    if expected.kind == "skill":
+    if expected.kind == "skillpack":
+        if transport_profile == "legacy_skill_v1":
+            accepted_types = frozenset({"skill"})
+        elif transport_profile == "native_skillpack_v1":
+            accepted_types = frozenset({"skillpack"})
+        else:
+            raise PublishProtocolError("SkillPack transport profile is required")
+    elif expected.kind == "skill":
         accepted_types = frozenset({"skill", "swarmskill", "teamskills"})
     else:
         accepted_types = get_hub_asset_type_contract(expected.kind).accepted_hub_types
@@ -39,7 +47,7 @@ def parse_publish_result(
             and data.get("plugin_type") in accepted_types
         )
         generic_skill_category = (
-            expected.kind == "skill" and key == "asset_type" and data[key] == "plugin"
+            expected.kind in {"skill", "skillpack"} and key == "asset_type" and data[key] == "plugin"
         )
         if generic_skill_category and concrete_skill:
             continue

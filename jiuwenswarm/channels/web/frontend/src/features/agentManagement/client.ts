@@ -1,6 +1,7 @@
 import { withCatalogCache, type CatalogCacheMetadata } from '../catalogCache';
 import { connectorApi } from '../../services/connectorApi';
 import { webRequest } from '../../services/webClient';
+import { installSkillWithPlan } from '../../components/SkillPanel/SkillPackInstallPlan';
 import { requestEquipmentList } from '../equipmentListRequest';
 import {
   AgentInstallPendingError,
@@ -271,11 +272,14 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
       try {
         const hubAssetId = option.hubAssetId?.trim();
         if (option.source === 'teamskillshub' && hubAssetId) {
-          const payload = await webRequest<{ success?: boolean; detail?: string }>(
+          const payload = await installSkillWithPlan<{ success?: boolean; detail?: string; cancelled?: boolean }>(
             'skills.teamskillshub.install',
             { asset_id: hubAssetId, force: false, display_name: option.name },
             { timeoutMs: 180000 },
           );
+          if (payload.cancelled) {
+            throw new AgentManagementError('', 'skill_install_cancelled', false);
+          }
           if (payload?.success === false) {
             throw new AgentManagementError(
               payload.detail || 'Team skill installation failed',

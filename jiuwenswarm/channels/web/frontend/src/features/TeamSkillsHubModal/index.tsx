@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { webRequest } from "../../services/webClient";
+import { installSkillWithPlan } from '../../components/SkillPanel/SkillPackInstallPlan';
 import { getSkillAvatar } from "../../utils/skillAvatar";
 
 /** 与后端 TEAM_SKILLS_HUB_BASE_URL 默认值一致（info 请求失败时的回退） */
@@ -195,11 +196,13 @@ export function TeamSkillsHubModal({
       setInstallingAssetId(item.asset_id);
       setMessage(null);
       try {
-        const data = await webRequest<{
+        const data = await installSkillWithPlan<{
           success: boolean;
+          cancelled?: boolean;
           detail?: string;
           skill?: { name: string };
         }>("skills.teamskillshub.install", withSession({ asset_id: item.asset_id, force: false }));
+        if (data.cancelled) return;
         if (!data.success) {
           throw new Error(data.detail || t("skills.teamskillshub.errors.installFailed"));
         }

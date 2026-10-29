@@ -156,12 +156,13 @@ class AssetPublishService:
             self._prepares.discard(task)
 
     async def _prepare(
-        self, scope: str, local_id: str, identity: PublishIdentity, metadata: dict
+        self, scope: str, local_id: str, identity: PublishIdentity, metadata: dict,
+        source_override: Path | None = None,
     ) -> dict:
         if self._closed:
             raise RuntimeError("publisher_closed")
         # Run only an authorized resolver, never accept a browser-provided path.
-        source = self._resolve_source(scope, identity.kind, local_id)
+        source = source_override if source_override is not None else self._resolve_source(scope, identity.kind, local_id)
         build_task = asyncio.create_task(
             asyncio.to_thread(
                 self._build,
@@ -202,6 +203,7 @@ class AssetPublishService:
                 version_desc=metadata.get("version_desc", ""),
                 visibility=metadata.get("visibility", "public"),
                 force=metadata.get("force", False),
+                transport_profile=metadata.get("transport_profile"),
             )
             expires_at = time.time() + self._draft_ttl
             draft_id = self._store.save_draft(
@@ -224,6 +226,21 @@ class AssetPublishService:
             normalizations=list(package.normalizations),
             dependencies=list(package.dependencies),
         )
+
+    async def prepare_snapshot(
+        self, scope: str, local_id: str, identity: PublishIdentity, metadata: dict, source: Path,
+    ) -> dict:
+        """Build a coordinator-owned snapshot under the same cleanup/build lock.
+
+        This is an internal API. The web boundary never accepts a source path.
+        """
+        await self.start()
+        async with self._prepare_lock:
+            self._building = True
+            try:
+                return await self._prepare(scope, local_id, identity, metadata, source)
+            finally:
+                self._building = False
 
     async def commit(
         self, scope: str, draft_id: str, request_id: str, *, auth: PublishAuth
@@ -378,6 +395,11 @@ class AssetPublishService:
 
     def records(self, scope: str, kind: str, local_id: str) -> list[dict]:
         return self._store.records(scope, kind, local_id)
+
+    def discard_uncommitted_draft(self, scope: str, draft_id: str) -> None:
+        path = self._store.discard_uncommitted_draft(scope, draft_id)
+        if path is not None:
+            self._remove_artifact(path)
 
     async def wait_idle(self) -> None:
         while self._tasks:

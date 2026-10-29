@@ -164,6 +164,24 @@ class _SwarmTeamSymphonyGraphEvolutionRail(
     """Team graph rail compatible with current OTel truncation."""
 
 
+class _EdgeEvaluationModelAdapter:
+    """Remove a sole JSON code fence; keep Core's strict verdict validation."""
+
+    def __init__(self, model: Any) -> None:
+        self._model = model
+
+    async def invoke(self, messages: Any, **kwargs: Any) -> Any:
+        response = await self._model.invoke(messages, **kwargs)
+        if getattr(response, "parser_content", None) is not None:
+            return response
+        content = response if isinstance(response, str) else getattr(response, "content", None)
+        if isinstance(content, str):
+            match = re.fullmatch(r"\s*```(?:json)?[ \t]*\r?\n(.*?)\r?\n```\s*", content, re.DOTALL)
+            if match is not None:
+                return match.group(1)
+        return response
+
+
 def _build_graph_evolution_rail(
     graph_dir: Path,
     *,
@@ -205,7 +223,7 @@ def _build_graph_evolution_rail(
         or get_trajectory_span_processor(),
         graph_snapshot_provider=runtime.capture_graph_snapshot,
         capability_snapshot_provider=PublishedCapabilitySnapshotProvider(graph_dir),
-        edge_evaluator_llm=model,
+        edge_evaluator_llm=_EdgeEvaluationModelAdapter(model) if model is not None else None,
         submit_evolution=submit_evolution,
     )
 

@@ -31,6 +31,7 @@ from jiuwenswarm.symphony.llm import (
     bind_request_llm_config,
     reset_request_llm_config,
 )
+from .skillpack_route import COMPOSE_CHOICE, PackRoute, SkillPackRouter, direct_route_mode
 
 _ConfigBaseProvider = dict[str, Any] | Callable[[], dict[str, Any] | None] | None
 _SHORTLIST_EXTRA_KEY = "symphony_candidate_skill_ids"
@@ -69,6 +70,7 @@ _GRAPH_PREPARING_CONTENT = {
 }
 
 _INVOKE_ROUTE_KEY = "_symphony_orchestration_route"
+_PACK_RESUME_GUARD_KEY = "_skillpack_direct_route_pending"
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,8 @@ class _SymphonyInvokeState:
     generation: int = 0
     valid: bool = True
     route_token: str = ""
+    pack_route_checked: bool = False
+    pack_route: PackRoute | None = None
 
 
 class SymphonyOrchestrationRail(DeepAgentRail):
@@ -111,9 +115,13 @@ class SymphonyOrchestrationRail(DeepAgentRail):
     SECTION_PRIORITY = SystemPromptPriority.SYMPHONY
     COMPOSE_TOOL_NAME = "symphony_compose_graph"
 
-    def __init__(self, *, config_base: _ConfigBaseProvider = None) -> None:
+    def __init__(
+        self, *, config_base: _ConfigBaseProvider = None,
+        skillpack_router: SkillPackRouter | None = None,
+    ) -> None:
         super().__init__()
         self._config_base = config_base
+        self._skillpack_router = skillpack_router
         self.system_prompt_builder = None
         self._paused_states: dict[_PausedInvokeKey, _SymphonyInvokeState] = {}
         self._active_states: dict[_InvokeScope, _SymphonyInvokeState] = {}
@@ -160,9 +168,14 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         route_token = self._bind_outer_route(ctx)
         if route_token is None:
             return
+        if isinstance(query, str):
+            self._save_pack_resume_guard(ctx, scope, pending=False)
         resumed = self._claim_paused_state(scope, query, id(ctx), route_token)
         if resumed is not None:
             resumed.awaiting_input = False
+            if resumed.pack_route is not None:
+                self._resume_pack_choice(resumed, query)
+                return
             resumed.pending_recompose = True
             self._remember_resume_answers(resumed, query)
             return
@@ -186,6 +199,12 @@ class SymphonyOrchestrationRail(DeepAgentRail):
                 generation=generation,
                 route_token=route_token,
             )
+            if self._has_pack_resume_guard(ctx, scope):
+                # The checkpoint can survive an adapter/process replacement,
+                # while the request's trusted token cannot. Never reconstruct
+                # that authority from an answer or reopen the composer.
+                state.pack_route_checked = True
+                state.pack_route = PackRoute(blocked=True)
             self._active_states[scope] = state
             self._active_route_states[route_token] = state
             self._outer_states[id(ctx)] = state
@@ -202,15 +221,22 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         try:
             result = getattr(getattr(ctx, "inputs", None), "result", None)
             if self._is_cancelled_or_error_result(result):
+                self._save_pack_resume_guard(ctx, scope, pending=False)
                 self._invalidate_state_scope(state)
                 return
+            if state.pack_route is not None and self._interrupt_component_ids(result):
+                state.awaiting_input = True
             if not state.awaiting_input:
+                self._save_pack_resume_guard(ctx, scope, pending=False)
                 self._remove_active_state(state)
                 return
             component_ids = self._interrupt_component_ids(result)
             if not component_ids:
+                self._save_pack_resume_guard(ctx, scope, pending=False)
                 self._invalidate_state_scope(state)
                 return
+            if state.pack_route is not None:
+                self._save_pack_resume_guard(ctx, scope, pending=True)
             self._pause_state(state, component_ids)
         finally:
             with self._paused_states_lock:
@@ -218,16 +244,22 @@ class SymphonyOrchestrationRail(DeepAgentRail):
                 self._cleanup_scope_generation_locked(scope)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        await self._prepare_pack_route(ctx)
+        if self._sync_pack_route(ctx):
+            return
         self._remove_graph_tools_after_timeout(ctx)
         self._sync_orchestration_guidance(ctx)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        if self._guard_pack_route(ctx):
+            return
         self._gate_or_rewrite_resumed_tool_call(ctx)
         self._bind_request_model(ctx)
         self._inject_shortlisted_candidates(ctx)
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         try:
+            self._remember_pack_root(ctx)
             self._remember_needs_input_or_ready_plan(ctx)
             self._terminate_structured_graph_preparing(ctx)
             self._terminate_structured_graph_build_timeout(ctx)
@@ -245,6 +277,189 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         finally:
             self._serialize_tool_call_arguments(ctx)
             self._reset_request_model(ctx)
+
+    async def _prepare_pack_route(self, ctx: AgentCallbackContext) -> None:
+        state = self._active_state_for_ctx(ctx)
+        router = self._skillpack_router
+        if state is None or state.pack_route_checked or router is None:
+            return
+        state.pack_route_checked = True
+        if state.scope.capture_mode != "agent":
+            return
+        raw_selected = self._runtime_extra(ctx).get("skills", [])
+        selected = list(dict.fromkeys(
+            value for value in raw_selected if isinstance(value, str) and value
+        )) if isinstance(raw_selected, list) else []
+        state.pack_route = await router.choose(
+            state.original_query, selected,
+            mode=direct_route_mode(self._resolve_config_base()),
+            model_reference=self._request_model_reference(ctx),
+        )
+        if state.pack_route is not None:
+            self._save_pack_resume_guard(ctx, state.scope, pending=True)
+
+    @staticmethod
+    def _pack_guard_scope(scope: _InvokeScope) -> str:
+        return json.dumps([scope.session_id, scope.capture_mode, scope.owner_id])
+
+    @classmethod
+    def _has_pack_resume_guard(cls, ctx: AgentCallbackContext, scope: _InvokeScope) -> bool:
+        read = getattr(ctx.session, "get_state", None)
+        stored = read(_PACK_RESUME_GUARD_KEY) if callable(read) else None
+        return isinstance(stored, dict) and stored.get(cls._pack_guard_scope(scope)) is True
+
+    @classmethod
+    def _save_pack_resume_guard(
+        cls, ctx: AgentCallbackContext, scope: _InvokeScope, *, pending: bool,
+    ) -> None:
+        read = getattr(ctx.session, "get_state", None)
+        write = getattr(ctx.session, "update_state", None)
+        if not callable(read) or not callable(write):
+            return
+        stored = read(_PACK_RESUME_GUARD_KEY)
+        guards = dict(stored) if isinstance(stored, dict) else {}
+        key = cls._pack_guard_scope(scope)
+        if pending:
+            guards[key] = True
+        else:
+            guards.pop(key, None)
+        # Persist only a rejection marker, never an authorization token. The
+        # outer agent saves Session state after after_invoke, including pauses.
+        write({_PACK_RESUME_GUARD_KEY: guards})
+
+    def _resume_pack_choice(self, state: _SymphonyInvokeState, query: Any) -> None:
+        route = state.pack_route
+        router = self._skillpack_router
+        if route is None or route.token is not None or route.declined or router is None:
+            return
+        # Only the exact interrupt claimed by the existing session/owner route
+        # can supply a choice. Tool arguments and model text never mint tokens.
+        payload = next(iter(query.user_inputs.values()), {})
+        answers = payload.get("answers") if isinstance(payload, Mapping) else None
+        answer = answers.get(route.question) if isinstance(answers, Mapping) else None
+        if answer == COMPOSE_CHOICE:
+            route.declined = True
+            state.pack_route = None
+            return
+        for candidate in route.candidates:
+            if answer == f"使用 {candidate['id']}":
+                try:
+                    router.confirm(route, candidate["id"], source="confirmed_query_match")
+                except Exception:
+                    route.blocked = True
+                return
+        # An unrelated or free-form response cannot accidentally confirm a Pack.
+        route.confirmation_call_id = ""
+
+    def _sync_pack_route(self, ctx: AgentCallbackContext) -> bool:
+        state = self._active_state_for_ctx(ctx)
+        route = state.pack_route if state is not None else None
+        if route is None:
+            return False
+        token = route.token
+        if token is None:
+            guidance = (
+                "A local SkillPack selection is pending. Do not execute any task actions. "
+                "Call ask_user with this exact question before continuing:\n"
+                + json.dumps(route.ask_args(), ensure_ascii=False)
+            )
+            allowed_tools = {"ask_user"}
+        else:
+            guidance = (
+                f"The user selected SkillPack {token.pack_id!r}. This request is direct_skillpack. "
+                "Do not compose or refresh a Symphony graph. First call skill_tool for the Pack root, "
+                f"then use only its declared member Skills: {list(token.allowed_member_ids)!r}. "
+                "Follow the root's Execution Process and Failure handling. Do not recompose after a "
+                "member fails or repeat side effects. Existing permission approvals still apply; "
+                "the Pack selection does not authorize network or file changes."
+            )
+            allowed_tools = None
+        if route.blocked:
+            guidance = "SkillPack state changed or validation failed. Stop this request and ask the user to select it again. Do not execute or recompose."
+            allowed_tools = set()
+        if isinstance(ctx.inputs, ModelCallInputs) and ctx.inputs.tools:
+            ctx.inputs.tools = [
+                tool for tool in ctx.inputs.tools
+                if self._model_tool_name(tool) not in _GRAPH_TOOL_NAMES
+                and (allowed_tools is None or self._model_tool_name(tool) in allowed_tools)
+            ]
+        if self.system_prompt_builder is not None:
+            language = getattr(self.system_prompt_builder, "language", "cn") or "cn"
+            self.system_prompt_builder.add_section(PromptSection(
+                name=self.SECTION_NAME, content={language: guidance}, priority=self.SECTION_PRIORITY,
+            ))
+        return True
+
+    def _guard_pack_route(self, ctx: AgentCallbackContext) -> bool:
+        if not isinstance(ctx.inputs, ToolCallInputs):
+            return False
+        state = self._active_state_for_ctx(ctx)
+        route = state.pack_route if state is not None else None
+        if route is None:
+            return False
+        name = self._tool_name(ctx.inputs)
+        reason = ""
+        if route.blocked:
+            reason = "skillpack_state_changed"
+        elif route.token is None:
+            if name == "ask_user":
+                args = route.ask_args()
+                ctx.inputs.tool_args = args
+                if ctx.inputs.tool_call is not None:
+                    ctx.inputs.tool_call.arguments = args
+                    route.confirmation_call_id = str(ctx.inputs.tool_call.id or "")
+                state.awaiting_input = True
+                return True
+            reason = "skillpack_confirmation_required"
+        elif name in _GRAPH_TOOL_NAMES:
+            reason = "skillpack_recomposition_forbidden"
+        else:
+            try:
+                current = self._skillpack_router is not None and self._skillpack_router.is_current(route)
+            except Exception:
+                current = False
+                route.blocked = True
+            if not current:
+                reason = "skillpack_state_changed"
+            elif name == "skill_tool":
+                args = self._tool_args(ctx.inputs)
+                skill_id = str(args.get("skill_name") or args.get("skillName") or "")
+                if not route.root_loaded:
+                    if skill_id != route.token.pack_id or not self._is_pack_root_file(args):
+                        reason = "skillpack_root_required"
+                elif skill_id not in route.token.allowed_member_ids:
+                    reason = "skillpack_member_not_allowed"
+                else:
+                    route.member_started = True
+            elif not route.root_loaded and name != "ask_user":
+                reason = "skillpack_root_required"
+        if reason:
+            self._skip_tool(ctx, {
+                "success": False, "reason": reason, "retryable": False,
+                "detail": "Follow the confirmed SkillPack scope; do not recompose or repeat side effects.",
+            })
+            return True
+        return False
+
+    def _remember_pack_root(self, ctx: AgentCallbackContext) -> None:
+        if not isinstance(ctx.inputs, ToolCallInputs) or self._tool_name(ctx.inputs) != "skill_tool":
+            return
+        state = self._active_state_for_ctx(ctx)
+        route = state.pack_route if state is not None else None
+        if route is None or route.token is None or ctx.exception is not None:
+            return
+        result = ctx.inputs.tool_result
+        success = result.get("success") if isinstance(result, dict) else getattr(result, "success", None)
+        if success is not True:
+            return
+        args = self._tool_args(ctx.inputs)
+        if ((args.get("skill_name") or args.get("skillName")) == route.token.pack_id
+                and self._is_pack_root_file(args)):
+            route.root_loaded = True
+
+    @staticmethod
+    def _is_pack_root_file(args: Mapping[str, Any]) -> bool:
+        return str(args.get("relative_file_path") or "SKILL.md").strip() == "SKILL.md"
 
     def _gate_or_rewrite_resumed_tool_call(self, ctx: AgentCallbackContext) -> None:
         """Do not let a resumed loop run Skills on a stale composition."""
@@ -443,7 +658,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         outer_context_id: int,
         route_token: str,
     ) -> _SymphonyInvokeState | None:
-        if not self._is_valid_interactive_answer(query):
+        from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
+
+        if not isinstance(query, InteractiveInput) or query.raw_inputs is not None:
             return None
         component_ids = self._interactive_component_ids(query)
         with self._paused_states_lock:
@@ -455,6 +672,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
                 self._invalidate_scope_locked(scope)
                 return None
             _, state = matches[0]
+            if state.pack_route is None and not self._is_valid_interactive_answer(query):
+                self._invalidate_scope_locked(scope)
+                return None
             expected_generation = self._scope_generations.get(scope)
             if not state.valid or state.generation != expected_generation:
                 self._invalidate_scope_locked(scope)
@@ -1090,7 +1310,7 @@ current round. Tell the user to build the graph manually instead.
     @staticmethod
     def _tool_result_failed(result: Any) -> bool:
         if not isinstance(result, dict):
-            return False
+            return getattr(result, "success", None) is False
         if result.get("success") is False:
             return True
         return str(result.get("status") or "").strip().lower() == "error"

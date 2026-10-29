@@ -17,6 +17,7 @@ import SourceManagerIcon from '../../assets/skill-panel/source-manager.svg?react
 import RefreshIcon from '../../assets/skill-panel/refresh.svg?react';
 import { PageCard, PageHeader, PageToolbar, PageToolbarSearch, Tabs, LoadingSpinner, EmptyState } from '../ui';
 import { webRequest } from '../../services/webClient';
+import { installSkillWithPlan } from './SkillPackInstallPlan';
 import { SourceManagerModal } from '../../features/SourceManagerModal';
 import { SkillNetSearchModal } from '../../features/SkillNetSearchModal';
 import { ClawHubSearchModal } from '../../features/ClawHubSearchModal';
@@ -391,6 +392,7 @@ export function SkillPanel({
       try {
         type InstallPayload = {
           success: boolean;
+          cancelled?: boolean;
           pending?: boolean;
           skill?: { name: string };
           detail?: string;
@@ -415,9 +417,10 @@ export function SkillPanel({
         let force = false;
         let data: InstallPayload;
         while (true) {
-          data = await webRequest<InstallPayload>('skills.online_search.install', buildParams(force), {
+          data = await installSkillWithPlan<InstallPayload>('skills.online_search.install', buildParams(force), {
             timeoutMs: 60000,
           });
+          if (data.cancelled) return;
           if (!data.success && !force && data.detail_key && alreadyInstalledKeys.has(data.detail_key)) {
             const confirmText =
               data.detail_key === 'skills.clawhub.errors.skillAlreadyInstalled'

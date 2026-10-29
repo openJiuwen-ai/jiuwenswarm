@@ -2533,6 +2533,8 @@ class JiuWenSwarm:
                 and payload.get("pending")
             ):
                 _reload_after_skills = False
+            if payload.get("confirmation_required"):
+                _reload_after_skills = False
             if _reload_after_skills:
                 await self.create_instance()
                 await self._reload_team_skill_rails(request.session_id)
