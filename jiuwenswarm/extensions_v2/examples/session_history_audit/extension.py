@@ -18,20 +18,25 @@ class SessionHistoryAudit:
 
     def register(self, registrar):
         registrar.register_event_handler("context.usage.updated", self.on_usage, {}, "user")
-        registrar.register_event_handler("session.append", self.on_append, {"source": "extension"}, "user")
+        registrar.register_event_handler("session.append", self.on_append, {"door": "note", "origin.kind": "extension"}, "user")
 
     async def on_usage(self, event, ops, next_handler):
         message_id = "audit-" + hashlib.sha256(event.event_input.request_id.encode("utf-8")).hexdigest()
-        receipt = await ops.session.append({"id": message_id, "role": "assistant", "content": "This turn was audited."})
+        receipt = await ops.session.append({"id": message_id, "message": {
+            "type": "assistant", "content": [{"type": "text", "text": "This turn was audited."}],
+        }})
         page = await ops.session.messages(limit=5)
         visible = any(row.get("extension_message_id") == message_id for row in page["messages"])
         logger.info("session history audit: session=%s status=%s visible=%s", ops.session_context.session_id, receipt["status"], visible)
         return await next_handler(event)
 
     async def on_append(self, event, ops, next_handler):
-        if event.event_input.content.startswith("[block]"):
+        message = event.event_input.message
+        text = "".join(block["text"] for block in message.content if block.get("type") == "text")
+        if text.startswith("[block]"):
             return SessionAppendRejection("The audit policy rejected this note.")
-        rewritten = replace(event.event_input, content="[audited] " + event.event_input.content)
+        blocks = [{**block, "text": "[audited] " + block["text"]} if block.get("type") == "text" else block for block in message.content]
+        rewritten = replace(event.event_input, message=replace(message, content=blocks))
         return await next_handler(Event(event.event_type, rewritten))
 
 

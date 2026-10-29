@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import copy
+from dataclasses import replace
 import hashlib
 import json
 import re
@@ -27,6 +28,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     use_legacy_history_json,
 )
 from jiuwenswarm.server.wire_truncate import is_restorable_history_record
+from jiuwenswarm.server.runtime.session.history_message import message_from_dict, message_text
 
 MAX_APPEND_BYTES = 1024 * 1024
 _MESSAGE_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
@@ -107,11 +109,30 @@ def prepare_extension_append(
 ) -> tuple[PreparedHistoryRecord, str, str, str]:
     """Validate a user message and create a namespaced transcript-only record."""
     require_session_id(session_id)
-    if not isinstance(message, Mapping) or set(message) != {"id", "role", "content"}:
+    if not isinstance(message, Mapping) or set(message) not in ({"id", "role", "content"}, {"id", "message"}):
         raise SessionHistoryError("INVALID_MESSAGE")
-    message_id, role, content = message["id"], message["role"], message["content"]
+    message_id = message["id"]
     if not isinstance(message_id, str) or _MESSAGE_ID.fullmatch(message_id) is None:
         raise SessionHistoryError("INVALID_MESSAGE")
+    legacy = "message" not in message
+    try:
+        if legacy:
+            if message["role"] not in ("user", "assistant") or not isinstance(message["content"], str):
+                raise ValueError("Invalid legacy note")
+            view = message_from_dict({"type": message["role"], "content": message["content"], "is_meta": True})
+        else:
+            view = message_from_dict(message["message"])
+            if view.type not in ("user", "assistant", "system") or view.role != view.type or view.tool_calls is not None or view.tool_call_id is not None:
+                raise ValueError("Notes cannot impersonate tool messages")
+            if any(block.get("type") != "text" for block in view.content):
+                raise ValueError("Extension notes accept text blocks only")
+            view = replace(view, is_meta=True)
+        role = "user" if view.type == "user" else "assistant"
+        content = message_text(view)
+        if not legacy and len(json.dumps(view.to_dict(), ensure_ascii=False, allow_nan=False).encode("utf-8")) > MAX_APPEND_BYTES:
+            raise ValueError("Note exceeds the message limit")
+    except (KeyError, TypeError, ValueError, UnicodeError):
+        raise SessionHistoryError("INVALID_MESSAGE") from None
     if role not in ("user", "assistant") or not isinstance(content, str) or not content.strip():
         raise SessionHistoryError("INVALID_MESSAGE")
     try:
@@ -128,7 +149,8 @@ def prepare_extension_append(
         role=role, content=content, timestamp=time.time(),
         event_type="chat.final" if role == "assistant" else None,
         extra={"id": "ext:" + key, "extension_message_id": message_id,
-               "extension_package_id": package_id, "message_origin": "extension", "transcript_only": True},
+               "extension_package_id": package_id, "message_origin": "extension", "transcript_only": True,
+               "transcript_message": view.to_dict()},
     )
     if prepared is None:
         raise SessionHistoryError("INVALID_MESSAGE")

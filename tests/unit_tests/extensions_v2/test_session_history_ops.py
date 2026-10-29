@@ -37,6 +37,10 @@ from jiuwenswarm.extensions_v2.event_types.session_history import SessionAppendR
 
 
 class Extension:
+    def rewrite(self, event, text):
+        message = replace(event.event_input.message, content=[{"type": "text", "text": text}])
+        return replace(event.event_input, message=message)
+
     def register(self, registrar):
         registrar.register_event_handler("ui.ready", self.query, {})
         registrar.register_event_handler("session.append", self.policy, {})
@@ -54,40 +58,41 @@ class Extension:
             return {"error": getattr(error, "code", type(error).__name__)}
 
     async def policy(self, event, ops, next_handler):
-        body = event.event_input.content
+        body = "".join(block["text"] for block in event.event_input.message.content if block.get("type") == "text")
         if body == "context-facts":
             facts = {"cwd": await ops.session.cwd(), "root": await ops.session.root(),
-                     "model": await ops.session.model(), "source": event.event_input.source}
-            return await next_handler(Event(event.event_type, replace(event.event_input, content=json.dumps(facts))))
+                     "model": await ops.session.model(), "source": event.event_input.origin.entry}
+            return await next_handler(Event(event.event_type, self.rewrite(event, json.dumps(facts))))
         if body == "deny":
             return SessionAppendRejection("Policy refused the message.")
         if body == "fake-platform-deny":
-            return SessionAppendResult("rejected", ops.session_context.session_id, event.event_input.message_id)
+            return SessionAppendResult("rejected", ops.session_context.session_id, event.event_input.uuid)
         if body == "forge-origin":
-            return await next_handler(Event(event.event_type, replace(event.event_input, source="extension", content="deny")))
+            forged = replace(event.event_input, origin=replace(event.event_input.origin, kind="extension"), door="note")
+            return await next_handler(Event(event.event_type, forged))
         if body == "recursive":
             try:
                 await ops.session.append({"id": "inner", "role": "assistant", "content": "inner"})
             except Exception as error:
-                return await next_handler(Event(event.event_type, replace(event.event_input, content=error.code)))
+                return await next_handler(Event(event.event_type, self.rewrite(event, error.code)))
         if body == "invalid-route":
-            return await next_handler(Event(event.event_type, replace(event.event_input, message_id="forged", role="user")))
+            return await next_handler(Event(event.event_type, replace(event.event_input, uuid="forged")))
         if body == "fake-success":
             return SessionAppendResult("persisted", "other-session", "fake")
         if body == "read-before":
             page = await ops.session.messages()
-            return await next_handler(Event(event.event_type, replace(event.event_input, content="previous=" + str(len(page["messages"])))))
+            return await next_handler(Event(event.event_type, self.rewrite(event, "previous=" + str(len(page["messages"])))))
         if body == "throw":
             raise RuntimeError("A broken user handler is not a policy rejection")
         if body.startswith(("rewrite:", "platform:")):
-            return await next_handler(Event(event.event_type, replace(event.event_input, content="[checked] " + body)))
+            return await next_handler(Event(event.event_type, self.rewrite(event, "[checked] " + body)))
         receipt = await next_handler(event)
         if body == "twice":
             return await next_handler(event)
         if body == "late-reject":
             return SessionAppendRejection("Too late to undo a commit")
         if body == "mutate-receipt":
-            receipt.message["content"] = "FORGED RESULT"
+            receipt.history_record["content"] = "FORGED RESULT"
         return receipt
 
 
@@ -158,10 +163,10 @@ async def test_real_user_package_rewrites_commits_and_reads_without_workspace(hi
     receipt = result["receipt"]
     assert result["accepted"] and receipt["status"] == "persisted"
     assert receipt["message_id"] == "note" and receipt["session_id"] == "hist-a"
-    assert receipt["message"]["content"] == "[checked] rewrite:审计说明"
-    assert result["page"]["messages"][0] == receipt["message"]
-    assert "_session_append" not in receipt["message"]
-    assert _rows(sessions)[0]["content"] == receipt["message"]["content"]
+    assert receipt["message"]["content"] == [{"type": "text", "text": "[checked] rewrite:审计说明"}]
+    assert result["page"]["messages"][0] == receipt["history_record"]
+    assert "_session_append" not in receipt["history_record"]
+    assert _rows(sessions)[0]["content"] == receipt["history_record"]["content"]
     assert (sessions / "hist-a" / "metadata.json").read_bytes() == metadata
 
 
@@ -171,7 +176,7 @@ async def test_explicit_rejection_creates_no_history_or_metadata_change(history_
     before = (sessions / "hist-a" / "metadata.json").read_bytes()
     result = await _query(history_host, message=_message("deny"))
     assert result["receipt"]["status"] == "rejected"
-    assert result["receipt"]["message"] is None and not _rows(sessions)
+    assert result["receipt"]["history_record"] is None and not _rows(sessions)
     assert before == (sessions / "hist-a" / "metadata.json").read_bytes()
 
 
@@ -181,7 +186,7 @@ async def test_retry_returns_persisted_message_and_conflicting_original_is_refus
     first = await _query(history_host, message=_message("rewrite:once"))
     second = await _query(history_host, message=_message("rewrite:once"))
     assert first["receipt"]["status"] == "persisted" and second["receipt"]["status"] == "duplicate"
-    assert first["receipt"]["message"] == second["receipt"]["message"]
+    assert first["receipt"]["history_record"] == second["receipt"]["history_record"]
     assert (await _query(history_host, message=_message("different")))["error"] == "APPEND_ID_CONFLICT"
     assert len(_rows(sessions)) == 1
 
@@ -192,8 +197,8 @@ async def test_core_receipt_preserves_one_real_commit_under_handler_misbehavior(
     _, sessions = history_host
     result = await _query(history_host, message=_message(body))
     assert result["receipt"]["status"] == "persisted"
-    assert result["receipt"]["message"]["content"] == body
-    assert result["receipt"]["message"]["role"] == "assistant"
+    assert result["receipt"]["history_record"]["content"] == body
+    assert result["receipt"]["history_record"]["role"] == "assistant"
     assert len(_rows(sessions)) == 1
 
 
@@ -208,7 +213,7 @@ async def test_fabricated_success_cannot_replace_a_write(history_host):
 async def test_recursive_append_is_refused_before_a_second_write(history_host):
     _, sessions = history_host
     result = await _query(history_host, message=_message("recursive"))
-    assert result["receipt"]["message"]["content"] == "APPEND_REENTRANT"
+    assert result["receipt"]["history_record"]["content"] == "APPEND_REENTRANT"
     assert len(_rows(sessions)) == 1
 
 
@@ -565,10 +570,10 @@ async def test_partial_write_failure_rolls_back_and_retry_can_commit(history_hos
 @pytest.mark.asyncio
 async def test_append_policy_can_read_history_without_holding_commit_locks(history_host):
     result = await asyncio.wait_for(_query(history_host, message=_message("read-before")), timeout=2)
-    assert result["receipt"]["message"]["content"] == "previous=0"
+    assert result["receipt"]["history_record"]["content"] == "previous=0"
     retry = await _query(history_host, message=_message("read-before"))
     assert retry["receipt"]["status"] == "duplicate"
-    assert retry["receipt"]["message"]["content"] == "previous=0"
+    assert retry["receipt"]["history_record"]["content"] == "previous=0"
 
 
 @pytest.mark.asyncio
