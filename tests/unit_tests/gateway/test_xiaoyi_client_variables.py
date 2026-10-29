@@ -66,6 +66,10 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._session_heartbeat_tasks = {}
     ch._sessions_waiting_for_push = {}
     ch._pending_approvals = {}
+    # 默认按新版本手机端跑（app_ver=11.7.10.200，systemVariables 上报）：
+    # AskUser 结构化选项卡出站/应答路径开启；版本开关相关用例显式覆盖本表
+    # （≤ 11.7.9 / 未上报 → 文本回退，见 test_ask_user_prompt_falls_back_*）。
+    ch._session_app_vers = {"conv-1": "11.7.10.200"}
     ch._ws_connections = {"k": _FakeWs(sent)}
     ch._accumulated_texts = {}
     ch._send_locks = {}
@@ -94,14 +98,14 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     return ch
 
 
-def _build_stream_msg(text, client_vars=None, conv="conv-1", top="top-1", task="task-1", files=None):
+def _build_stream_msg(text, client_vars=None, conv="conv-1", top="top-1", task="task-1", files=None, app_ver="11.7.10.200"):
     parts = []
     if client_vars is not None:
         parts.append({
             "kind": "data",
             "data": {"variables": {
                 "clientVariables": client_vars,
-                "systemVariables": {"push_id": "p1"},
+                "systemVariables": {"push_id": "p1", "app_ver": app_ver},
             }},
         })
     if text:
@@ -525,3 +529,821 @@ async def test_ask_user_question_prompt_and_resume(cfg_file, workspace):
         assert any("已收到您的回复" in t for t in ack_texts)
     finally:
         _cleanup_tasks(ch)
+
+
+def _make_ask_user_event(request_id: str):
+    """构造 chat.ask_user_question 服务端事件（权限审批单问）。"""
+    ask = type("M", (), {})()
+    ask.event_type = EventType.CHAT_ASK_USER_QUESTION
+    ask.payload = {
+        "event_type": "chat.ask_user_question",
+        "request_id": request_id,
+        "source": "permission_interrupt",
+        "questions": [{
+            "question": "允许执行 bash: zip ... 吗？",
+            "header": "权限审批: bash",
+            "options": [{"label": "本次允许"}, {"label": "会话内记住"},
+                        {"label": "永久记住"}, {"label": "拒绝"}],
+        }],
+    }
+    ask.metadata = {
+        "xiaoyi_session_id": "top-1",
+        "xiaoyi_task_id": "task-2",
+        "xiaoyi_conversation_id": "conv-1",
+    }
+    ask.session_id = "conv-1"
+    ask.id = request_id
+    return ask
+
+
+@pytest.mark.asyncio
+async def test_ask_user_prompt_falls_back_to_text_for_old_client(cfg_file):
+    """app_ver ≤ 11.7.9：出站回退纯文本审批提示（无选项卡 data part/ask_user_id）。
+
+    登记精简待答复（无 question_ids/ask_user_tabs 标记）；流收尾 completed
+    不降级（与 11.7.9 已发端侧行为一致）；新契约结构化应答帧不消费、按
+    普通消息处理。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._session_app_vers["conv-1"] = "11.7.9.200"
+        ask = _make_ask_user_event("req-778")
+        await ch._send_legacy(ask)
+
+        pending = ch._pending_approvals["conv-1"]
+        assert pending["request_id"] == "req-778"
+        assert "question_ids" not in pending
+        assert "ask_user_tabs" not in pending
+        inner = json.loads(sent[-1]["msgDetail"])
+        result = inner["result"]
+        parts = result["artifact"]["parts"]
+        assert len(parts) == 1  # 无选项卡 data part
+        part = parts[0]
+        assert part["kind"] == "text"
+        assert "需要您的确认" in part["text"]
+        assert "权限审批: bash" in part["text"]
+        assert "同意" in part["text"] and "拒绝" in part["text"]
+        assert result["final"] is False
+        assert result["append"] is True  # 文本回退沿用旧形态 append=true
+        assert result["lastChunk"] is True
+
+        # 流收尾事件（is_processing=false）：completed 原样发出，不降级 working
+        ch._session_active.add("top-1")
+        proc = type("M", (), {})()
+        proc.event_type = EventType.CHAT_PROCESSING_STATUS
+        proc.payload = {"is_processing": False}
+        proc.metadata = ask.metadata
+        proc.session_id = "conv-1"
+        proc.id = "req-778"
+        await ch._send_legacy(proc)
+        inner = json.loads(sent[-1]["msgDetail"])
+        assert inner["result"]["status"]["state"] == "completed"
+
+        # 新契约结构化应答：不消费、按普通消息处理（空帧拦截，无 resume 路由）
+        n = len(captured)
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{
+                "question": "允许执行 bash: zip ... 吗？",
+                "selectedOptions": ["本次允许"],
+                "customInput": "",
+            }],
+            "permission_interrupt",
+            task="task-9",
+        ))
+        assert len(captured) == n
+        assert ch._pending_approvals["conv-1"]["request_id"] == "req-778"  # 待答复保留
+
+        # 文本约定词表回复照常走 interrupt resume（旧路径兜底）
+        await ch._handle_message_stream(_build_stream_msg("同意", None, task="task-10"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-778"
+        assert m.params["answers"] == [{"selected_options": ["本次允许"], "custom_input": ""}]
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_prompt_fails_closed_without_app_ver(cfg_file):
+    """app_ver 未上报：fail-closed 按不支持处理，回退文本提示。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._session_app_vers.pop("conv-1", None)
+        await ch._send_legacy(_make_ask_user_event("req-779"))
+
+        assert ch._pending_approvals["conv-1"]["request_id"] == "req-779"
+        inner = json.loads(sent[-1]["msgDetail"])
+        parts = inner["result"]["artifact"]["parts"]
+        assert len(parts) == 1
+        assert parts[0]["kind"] == "text"
+        assert "需要您的确认" in parts[0]["text"]
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_app_ver_extracted_from_system_variables(cfg_file):
+    """入站 systemVariables.app_ver 按逻辑会话记录并随 metadata 透传。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._session_app_vers.pop("conv-1", None)
+        await ch._handle_message_stream(_build_stream_msg(
+            "你好",
+            client_vars={"workspace": None},
+            task="task-11",
+            app_ver="11.7.10.200",
+        ))
+        assert ch._session_app_vers["conv-1"] == "11.7.10.200"
+        m = captured[-1]
+        assert m.metadata["xiaoyi_app_ver"] == "11.7.10.200"
+        assert ch._ask_user_tabs_enabled("conv-1") is True
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_timeout_loop_skips_text_fallback_entries(
+    cfg_file, monkeypatch
+):
+    """超时兜底循环仅处理选项卡路径登记（ask_user_tabs 标记）。
+
+    文本回退条目（旧版手机端）到期不自动续跑，保持既有"到期过期、迟到
+    文本按普通消息处理"语义。
+    """
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    resumed: list[tuple[str, str]] = []
+    ch._running = True
+
+    async def _fake_resume(logical_session, pending):
+        resumed.append((logical_session, pending["request_id"]))
+        ch._pending_approvals.pop(logical_session, None)
+
+    monkeypatch.setattr(ch, "_resume_timed_out_ask_user", _fake_resume)
+    ch._pending_approvals["conv-1"] = {
+        "request_id": "req-940",
+        "source": "permission_interrupt",
+        "task_id": "task-2",
+        "created_at": time.time() - 31 * 60,
+    }
+    ch._pending_approvals["conv-2"] = {
+        "request_id": "req-941",
+        "source": "permission_interrupt",
+        "task_id": "task-3",
+        "created_at": time.time() - 31 * 60,
+        "ask_user_tabs": True,
+    }
+    sleeps = {"n": 0}
+
+    async def _fake_sleep(_seconds):
+        sleeps["n"] += 1
+        if sleeps["n"] >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
+    try:
+        await ch._ask_user_timeout_loop()
+    except asyncio.CancelledError:
+        pass
+    # 仅选项卡条目自动续跑；文本回退条目保留到期自然过期
+    assert resumed == [("conv-2", "req-941")]
+    assert ch._pending_approvals["conv-1"]["request_id"] == "req-940"
+    _cleanup_tasks(ch)
+
+
+def _build_ask_answer_msg(answers, source, conv="conv-1", top="top-1", task="task-1"):
+    """端侧结构化应答帧：仅含 askUserAnswer data part，无 text/file。"""
+    return {
+        "conversationId": conv,
+        "deviceId": "dev",
+        "id": task,
+        "jsonrpc": "2.0",
+        "method": "message/stream",
+        "params": {
+            "id": task,
+            "message": {
+                "kind": "message",
+                "messageId": task,
+                "parts": [{"kind": "data", "data": {
+                    "askUserAnswer": {"source": source, "answers": answers},
+                }}],
+                "role": "user",
+            },
+            "sessionId": conv,
+        },
+        "sessionId": top,
+        "agentId": "agent0c18",
+        "agentMode": "OpenClawToC",
+        "userId": "u1",
+    }
+
+
+def _build_e2a_style_msg(data, conv="conv-1", top="top-1", task="task-1"):
+    """端侧 E2A 风格应答帧（对齐桌面端 chat.send 参数的 data part）：仅 data part。"""
+    return {
+        "conversationId": conv,
+        "deviceId": "dev",
+        "id": task,
+        "jsonrpc": "2.0",
+        "method": "message/stream",
+        "params": {
+            "id": task,
+            "message": {
+                "kind": "message",
+                "messageId": task,
+                "parts": [{"kind": "data", "data": data}],
+                "role": "user",
+            },
+            "sessionId": conv,
+        },
+        "sessionId": top,
+        "agentId": "agent0c18",
+        "agentMode": "OpenClawToC",
+        "userId": "u1",
+    }
+
+
+def _build_invoke_rsp_msg(payload, conv="conv-1", top="top-1", task="task-1"):
+    """端侧 ToolExecute/InvokeRsp 结构化应答帧：仅 data part。"""
+    return {
+        "conversationId": conv,
+        "deviceId": "dev",
+        "id": task,
+        "jsonrpc": "2.0",
+        "method": "message/stream",
+        "params": {
+            "id": task,
+            "message": {
+                "kind": "message",
+                "messageId": task,
+                "parts": [{"kind": "data", "data": {
+                    "commands": [{
+                        "header": {
+                            "namespace": "ToolExecute",
+                            "name": "InvokeRsp",
+                        },
+                        "payload": payload,
+                    }],
+                }}],
+                "role": "user",
+            },
+            "sessionId": conv,
+        },
+        "sessionId": top,
+        "agentId": "agent0c18",
+        "agentMode": "OpenClawToC",
+        "userId": "u1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_ask_user_answer_structured_reply_routes_resume(cfg_file):
+    """端侧 askUserAnswer data part → interrupt resume（权限类白名单精确命中）。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-888",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{
+                "question": "允许执行 bash 吗？",
+                "selectedOptions": ["永久记住"],
+                "customInput": "",
+            }],
+            "permission_interrupt",
+            task="task-9",
+        ))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-888"
+        assert m.params["source"] == "permission_interrupt"
+        assert m.params["answers"] == [{"selected_options": ["永久记住"], "custom_input": ""}]
+        assert m.params["query"] == "" and m.params["mode"] == "agent"
+        assert m.params["task_id"] == "task-2"
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_answer_structured_reply_fail_closed(cfg_file):
+    """权限类中断选项未命中白名单 → fail-closed 按拒绝处理，不猜测放行。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-889",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        # 选项外的字符串 + 补充意见：不能授权，作拒绝理由反馈
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{
+                "question": "允许执行 bash 吗？",
+                "selectedOptions": ["随便怎样都行"],
+                "customInput": "这个目录不对，换一个",
+            }],
+            "permission_interrupt",
+            task="task-9",
+        ))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-889"
+        assert m.params["answers"][0]["selected_options"] == ["拒绝"]
+        assert m.params["answers"][0]["custom_input"] == "这个目录不对，换一个"
+
+        # 空选 + 空文本：仍按拒绝（带未选说明），不允许放行
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-890",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{"question": "允许执行 bash 吗？", "selectedOptions": [], "customInput": ""}],
+            "permission_interrupt",
+            task="task-10",
+        ))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-890"
+        assert m.params["answers"][0]["selected_options"] == ["拒绝"]
+        assert "未选择" in m.params["answers"][0]["custom_input"]
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_answer_free_question_passthrough(cfg_file):
+    """ask_user_interrupt 自由问答：answers 原样透传（含 question 对齐 + 多问题）。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-900",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+        }
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [
+                {"question": "你想要什么风格？", "selectedOptions": ["深色"], "customInput": ""},
+                {"question": "要加图标吗？", "selectedOptions": [], "customInput": "不用了"},
+            ],
+            "ask_user_interrupt",
+            task="task-9",
+        ))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-900"
+        assert m.params["source"] == "ask_user_interrupt"
+        assert m.params["answers"] == [
+            {"question": "你想要什么风格？", "selected_options": ["深色"], "custom_input": ""},
+            {"question": "要加图标吗？", "selected_options": [], "custom_input": "不用了"},
+        ]
+        assert "conv-1" not in ch._pending_approvals
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_answer_without_pending_falls_through(cfg_file):
+    """无待答复审批：结构化应答帧按普通消息处理（不路由 resume、不构造任务）。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        n = len(captured)
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{"question": "q", "selectedOptions": ["深色"], "customInput": ""}],
+            "ask_user_interrupt",
+            task="task-9",
+        ))
+        # 仅 data part、无 text/file → 空帧拦截，不路由任何消息
+        assert len(captured) == n
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_expired_pending_falls_through(cfg_file):
+    """待答复审批过期：不消费、按普通消息处理。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-901",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time() - 31 * 60,
+        }
+        n = len(captured)
+        await ch._handle_message_stream(_build_ask_answer_msg(
+            [{"question": "q", "selectedOptions": ["本次允许"], "customInput": ""}],
+            "permission_interrupt",
+            task="task-9",
+        ))
+        assert len(captured) == n
+        assert "conv-1" not in ch._pending_approvals  # 过期条目已清理
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_invoke_rsp_reply_routes_resume(cfg_file):
+    """端侧 InvokeRsp data part → interrupt resume（question_id 对齐 + custom_text）。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-910",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["允许执行 bash 吗？"],
+            "question_ids": {"call_abc": "允许执行 bash 吗？"},
+        }
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "responder_device_id": "dev_abc123",  # 多端抢答设备标识
+            "answers": [{
+                "question_id": "call_abc",
+                "selected_options": ["永久记住"],
+                "custom_text": None,
+            }],
+        }, task="task-9"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-910"
+        assert m.params["source"] == "permission_interrupt"
+        # 权限类白名单精确命中；custom_text(null) → custom_input("")
+        assert m.params["answers"] == [
+            {"selected_options": ["永久记住"], "custom_input": ""}
+        ]
+        # responder_device_id 透传进 resume（审计/UI"由指定设备完成选择"）
+        assert m.params["responder_device_id"] == "dev_abc123"
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_invoke_rsp_multi_question_alignment(cfg_file):
+    """ask_user 多问题 InvokeRsp：question_id → question 文本对齐后逐条透传。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-911",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["你想要什么风格？", "要加图标吗？"],
+            "question_ids": {
+                "call_001": "你想要什么风格？",
+                "call_001#2": "要加图标吗？",
+            },
+        }
+        # 乱序回传：answers 按 question_id 关联，不依赖顺序/问题文本
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": False,
+            "answers": [
+                {"question_id": "call_001#2", "selected_options": [], "custom_text": "不用了"},
+                {"question_id": "call_001", "selected_options": ["深色"], "custom_text": None},
+            ],
+        }, task="task-9"))
+        m = captured[-1]
+        assert m.params["source"] == "ask_user_interrupt"
+        assert m.params["answers"] == [
+            {"question": "要加图标吗？", "selected_options": [], "custom_input": "不用了"},
+            {"question": "你想要什么风格？", "selected_options": ["深色"], "custom_input": ""},
+        ]
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_invoke_rsp_user_cancel(cfg_file):
+    """user_cancel：ask_user → 空答案（跳过续跑）；权限类 → fail-closed 拒绝。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-912",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["你想要什么风格？"],
+            "question_ids": {"call_001": "你想要什么风格？"},
+        }
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": True,
+            "answers": [],
+        }, task="task-9"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-912"
+        assert m.params["answers"] == [
+            {"question": "你想要什么风格？", "selected_options": [], "custom_input": ""}
+        ]
+
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-913",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["允许执行 bash 吗？"],
+            "question_ids": {"call_abc": "允许执行 bash 吗？"},
+        }
+        await ch._handle_message_stream(_build_invoke_rsp_msg({
+            "user_cancel": True,
+            "answers": [],
+        }, task="task-10"))
+        m = captured[-1]
+        assert m.params["answers"][0]["selected_options"] == ["拒绝"]
+        assert m.params["answers"][0]["custom_input"] == "用户取消了选项卡"
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_e2a_style_answer_routes_resume(cfg_file):
+    """E2A 风格应答（data 顶层 request_id/source/answers，桌面端 chat.send 同构）
+    → interrupt resume。端侧复用桌面端报文结构经 A2A data part 回传。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-920",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["你想要什么风格？"],
+            "question_ids": {},
+        }
+        await ch._handle_message_stream(_build_e2a_style_msg({
+            "request_id": "req-920",
+            "source": "ask_user_interrupt",
+            "answers": [{
+                "question": "你想要什么风格？",
+                "selected_options": ["深色"],
+                "custom_input": "夜间用",
+            }],
+        }, task="task-9"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-920"
+        assert m.params["source"] == "ask_user_interrupt"
+        # question 文本对齐 + snake_case 字段原样透传
+        assert m.params["answers"] == [
+            {
+                "question": "你想要什么风格？",
+                "selected_options": ["深色"],
+                "custom_input": "夜间用",
+            }
+        ]
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_invoke_rsp_agent_event_routes_resume(cfg_file):
+    """云端多端同步回传形态：AgentEvent/InvokeRsp 挂 content.events（c.json
+    实际形态）→ 递归定位 → question_id 对齐还原 → resume。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-940",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time(),
+            "questions": ["这份周报的主题方向？", "风格偏好？"],
+            "question_ids": {
+                "call_b6bd1b87f9304aaba47358c5d57cc701": "这份周报的主题方向？",
+                "call_b6bd1b87f9304aaba47358c5d57cc701#2": "风格偏好？",
+            },
+            "session_id": "top-1",
+            "agent_id": "ag",
+            "device_id": "dev",
+            "push_id": "push",
+        }
+        # c.json 实际形态 + relay 规范化后的顶层 conversationId（真实帧
+        # MSG_IN 日志 conv 有值，即到达 PC 时带顶层 conversationId）
+        frame = {
+            "method": "message/stream",
+            "conversationId": "conv-1",
+            "sessionId": "top-1",
+            "session": {
+                "sessionId": "top-1",
+                "conversationId": "conv-1",
+                "deviceId": "dev",
+                "requestId": "task-9",
+            },
+            "content": {
+                "events": [
+                    {
+                        "header": {"namespace": "AgentEvent", "name": "InvokeRsp"},
+                        "payload": {
+                            "action_type": "button_click",
+                            "source": "ask_user_interrupt",
+                            "user_cancel": False,
+                            "success": True,
+                            "answers": [
+                                {
+                                    "question_id": "call_b6bd1b87f9304aaba47358c5d57cc701",
+                                    "selected_options": ["工作汇报/总结"],
+                                    "custom_text": "",
+                                },
+                                {
+                                    "question_id": "call_b6bd1b87f9304aaba47358c5d57cc701#2",
+                                    "selected_options": ["科技深色渐变风"],
+                                    "custom_text": "",
+                                },
+                            ],
+                        },
+                    }
+                ]
+            },
+        }
+        await ch._handle_message_stream(frame)
+        m = captured[-1]
+        assert m.params["request_id"] == "req-940"
+        assert m.params["source"] == "ask_user_interrupt"
+        # question_id 经待答表映射还原为 question 文本，多问题逐条透传
+        assert m.params["answers"] == [
+            {
+                "question": "这份周报的主题方向？",
+                "selected_options": ["工作汇报/总结"],
+                "custom_input": "",
+            },
+            {
+                "question": "风格偏好？",
+                "selected_options": ["科技深色渐变风"],
+                "custom_input": "",
+            },
+        ]
+        assert "conv-1" not in ch._pending_approvals  # 已消费
+    finally:
+        _cleanup_tasks(ch)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_timeout_default_answer(cfg_file):
+    """超时兜底：ask_user 每题选第一个选项；权限类 fail-closed 拒绝。"""
+    captured, sent = [], []
+    ch = _make_channel(captured, sent)
+    try:
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-930",
+            "source": "ask_user_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time() - 3 * 60,
+            "questions": ["你想要什么风格？", "要加图标吗？"],
+            "question_ids": {},
+            "question_options": {
+                "你想要什么风格？": ["深色", "浅色"],
+                "要加图标吗？": [],
+            },
+            "session_id": "top-1",
+            "agent_id": "ag",
+            "device_id": "dev",
+            "push_id": "push",
+        }
+        await ch._resume_timed_out_ask_user("conv-1", ch._pending_approvals.pop("conv-1"))
+        m = captured[-1]
+        assert m.params["request_id"] == "req-930"
+        assert m.params["source"] == "ask_user_interrupt"
+        # 有选项的题选第一项；无选项的题给显式默认值"跳过"
+        assert m.params["answers"] == [
+            {"question": "你想要什么风格？", "selected_options": ["深色"], "custom_input": ""},
+            {"question": "要加图标吗？", "selected_options": [], "custom_input": "跳过"},
+        ]
+
+        ch._pending_approvals["conv-1"] = {
+            "request_id": "req-931",
+            "source": "permission_interrupt",
+            "task_id": "task-2",
+            "created_at": time.time() - 3 * 60,
+            "questions": ["允许执行 bash 吗？"],
+            "question_ids": {},
+            "question_options": {"允许执行 bash 吗？": ["本次允许", "拒绝"]},
+            "session_id": "top-1",
+            "agent_id": "ag",
+            "device_id": "dev",
+            "push_id": "push",
+        }
+        await ch._resume_timed_out_ask_user("conv-1", ch._pending_approvals.pop("conv-1"))
+        m = captured[-1]
+        # 权限类超时绝不默认放行：fail-closed 拒绝
+        assert m.params["answers"][0]["selected_options"] == ["拒绝"]
+        assert "超时未应答" in m.params["answers"][0]["custom_input"]
+    finally:
+        _cleanup_tasks(ch)
+
+
+def test_build_answer_from_ask_user_empty_answers_returns_none():
+    """边界守护：answers 为空列表时返回 None，不抛 IndexError。
+
+    当前调用链（三形态解析 + user_cancel 合成）保证非空，此用例锁定
+    防御性行为，防未来新调用方破坏不变式时崩溃。"""
+    from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
+        XiaoyiChannel,
+    )
+
+    assert (
+        XiaoyiChannel._build_answer_from_ask_user(
+            {"answers": [], "user_cancel": False},
+            {"source": "ask_user_interrupt", "request_id": "req-x"},
+        )
+        is None
+    )
+
+
+def test_build_ask_user_command_payload_shape():
+    """出站 ToolExecute/Invoke 指令 payload 形状（端侧契约）。
+
+    question_id 供 InvokeRsp 回传对齐；multi_select/options[].recommended/
+    text_input（含 placeholder）显式化；index 从 1 起保留给文本回退按序号匹配；
+    不发 expiresAt 等契约外字段。
+    """
+    from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
+        _build_ask_user_command_payload,
+    )
+
+    command = _build_ask_user_command_payload({
+        "source": "ask_user_interrupt",
+        "request_id": "req-100",
+        "questions": [{
+            "question": "你想要什么风格？",
+            "header": "配色",
+            "multi_select": True,
+            "options": [
+                {"label": "深色", "description": "适合夜间使用", "recommended": True},
+                {"label": "浅色"},
+                {"label": "  "},  # 空 label 剔除
+            ],
+        }],
+    })
+    assert command["header"] == {"namespace": "ToolExecute", "name": "Invoke"}
+    payload = command["payload"]
+    assert payload["source"] == "ask_user_interrupt"
+    assert "expiresAt" not in payload  # 契约外字段
+    q = payload["questions"][0]
+    assert q["question_id"] == "req-100"  # 无 tool_call_id → 事件 request_id
+    assert q["question"] == "你想要什么风格？"
+    assert "header" not in q  # 不下发短标签（对齐 PC 端，端侧无副标题）
+    assert q["multi_select"] is True
+    # 选项 = 序号 + label + recommended；不带 description 小字
+    assert q["options"] == [
+        {"index": 1, "label": "深色", "recommended": True},
+        {"index": 2, "label": "浅色"},
+    ]
+    # 有选项 → 自由文本为选填补充
+    assert q["text_input"] == {
+        "enabled": True,
+        "placeholder": "也可输入其他内容",
+        "required": False,
+    }
+
+    # 权限类：tool 上下文透传（snake_case）；question_id 优先 tool_call_id
+    command = _build_ask_user_command_payload({
+        "source": "permission_interrupt",
+        "request_id": "req-101",
+        "questions": [{
+            "question": "需要授权",
+            "tool_call_id": "call_abc",
+            "tool_name": "bash",
+            "tool_args": {"command": "rm -rf ./build"},
+            "options": [
+                {"label": "本次允许", "description": "仅本次授权执行"},
+                {"label": "拒绝"},
+            ],
+        }],
+    })
+    q = command["payload"]["questions"][0]
+    assert q["question_id"] == "call_abc"
+    assert q["tool_call_id"] == "call_abc"
+    assert q["tool_name"] == "bash"
+    assert q["tool_args"] == {"command": "rm -rf ./build"}
+    assert q["multi_select"] is False
+    assert q["options"][0] == {"index": 1, "label": "本次允许"}
+
+    # 空选项 → text_input.required（只能自由作答）；同 id 多问题加 #序号 消歧
+    command = _build_ask_user_command_payload({
+        "source": "ask_user_interrupt",
+        "request_id": "call_001",
+        "questions": [
+            {"question": "说说你的想法", "options": []},
+            {"question": "还要补充吗", "options": []},
+        ],
+    })
+    questions = command["payload"]["questions"]
+    assert questions[0]["options"] == []
+    assert questions[0]["text_input"] == {
+        "enabled": True,
+        "placeholder": "请输入内容",
+        "required": True,
+    }
+    assert questions[0]["question_id"] == "call_001"
+    assert questions[1]["question_id"] == "call_001#2"

@@ -164,6 +164,7 @@ from jiuwenswarm.agents.harness.common.rails import (
 from jiuwenswarm.agents.harness.common.rails.openclaw_history_rail import (
     OpenClawHistoryRail,
 )
+from jiuwenswarm.common.app_version import xiaoyi_ask_user_tabs_supported
 from jiuwenswarm.common.invocation_context.codec import attach_invocation_context
 from jiuwenswarm.server.runtime.session.openclaw_runtime_history import (
     OPENCLAW_HISTORY_ENABLED,
@@ -1341,6 +1342,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._ask_user_rail: StructuredAskUserRail | None = None
         self._tool_visibility_rail: XiaoyiDefaultToolVisibilityRail | None = None
         self._permission_rail: Any = None
+        # xiaoyi 手机端版本（gateway 随 metadata.xiaoyi_app_ver 透传，会话内
+        # 稳定）：AskUser 结构化选项卡/交互能力的按请求开关依据，> 11.7.9 才
+        # 开启（见 _xiaoyi_interaction_supported）。
+        self._client_app_ver: str = ""
         self._avatar_rail: Any = None
         self._memory_forbidden_rail: Any = None
         self._tool_cards = None
@@ -2441,6 +2446,46 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
     def _is_xiaoyi_channel(self) -> bool:
         """Whether this adapter is assembled for the Xiaoyi channel."""
         return str(self._instance_overrides.get("channel_id") or "").strip().lower() == "xiaoyi"
+
+    def _mark_xiaoyi_client_app_ver(
+        self, request_metadata: dict[str, Any] | None
+    ) -> None:
+        """从请求 metadata 记录 xiaoyi 手机端 app_ver（会话内稳定事实）。
+
+        gateway 在每条 chat.send/resume 消息的 metadata.xiaoyi_app_ver 透传
+        （源自入站 systemVariables.app_ver）。装配期（会话 adapter 创建时）
+        尚不可知，故由每请求的 _update_runtime_config 首跑补记；只记非空值，
+        与 gateway 侧"最后非空覆盖"口径一致。
+
+        Args:
+            request_metadata: 请求 metadata 字典；非 xiaoyi 渠道忽略。
+        """
+        if not self._is_xiaoyi_channel():
+            return
+        if not isinstance(request_metadata, dict):
+            return
+        app_ver = str(request_metadata.get("xiaoyi_app_ver") or "").strip()
+        if not app_ver or app_ver == self._client_app_ver:
+            return
+        self._client_app_ver = app_ver
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] xiaoyi client app_ver=%s "
+            "(ask_user tabs supported=%s)",
+            app_ver,
+            xiaoyi_ask_user_tabs_supported(app_ver),
+        )
+
+    def _xiaoyi_interaction_supported(self) -> bool:
+        """xiaoyi 手机端是否支持 AskUser 交互（选项卡出站/结构化应答）。
+
+        非 xiaoyi 渠道不受此开关约束（恒 True）。xiaoyi 渠道按 app_ver 判定：
+        > 11.7.9 才开启（app_ver 未上报/缺失按不支持处理，fail-closed——
+        旧端侧不识别选项卡契约字段）。与 gateway 出站分流（xiaoyi_connect
+        _ask_user_tabs_enabled）共用同一判定实现。
+        """
+        if not self._is_xiaoyi_channel():
+            return True
+        return xiaoyi_ask_user_tabs_supported(self._client_app_ver)
 
     def _filesystem_rail_enabled_for_profile(self) -> bool:
         raw = self._instance_overrides.get("enable_filesystem_rail", True)
@@ -5805,8 +5850,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 "(context_engine_config.enabled=false)"
             )
 
-        if self._is_xiaoyi_channel():
-            rail_infos = [info for info in rail_infos if info.attr_name != "_permission_rail"]
+        # xiaoyi 渠道按手机端版本分流（_xiaoyi_interaction_supported，app_ver
+        # > 11.7.9 才参与 AskUser 交互）：装配期会话 adapter 尚未收到首条请求、
+        # 版本未上报，保守摘除 permission_rail；支持选项卡的会话由每请求的
+        # _set_permission_rail_enabled（_update_runtime_config）按版本补挂。
+        if self._is_xiaoyi_channel() and not self._xiaoyi_interaction_supported():
+            rail_infos = [
+                info for info in rail_infos if info.attr_name != "_permission_rail"
+            ]
 
         # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
@@ -5836,9 +5887,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 self._build_symphony_orchestration_rail,
             ),
         )
-        if isinstance(mode, str) and mode.startswith("agent"):
-            if not self._is_xiaoyi_channel():
-                rail_infos.append(_RailBuildInfo("_ask_user_rail", self._build_structured_ask_user_rail))
+        # ask_user_rail：xiaoyi 渠道装配期版本未上报，保守不挂；支持的会话由
+        # _update_agent_rails/_set_user_interaction_enabled 首请求补挂。
+        if (
+            isinstance(mode, str)
+            and mode.startswith("agent")
+            and self._xiaoyi_interaction_supported()
+        ):
+            rail_infos.append(_RailBuildInfo("_ask_user_rail", self._build_structured_ask_user_rail))
 
             # work 单 agent 常挂 plan rails，与 code 侧一致：plan 是会话运行期状态，
             # 不是另一种 agent 装配，所以不能按 sub_mode 决定挂不挂——否则开关 Plan
@@ -7014,8 +7070,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         return "_ask_user_rail"
 
     async def _set_user_interaction_enabled(self, enabled: bool) -> None:
-        """Expose ``ask_user`` only when the requesting client can answer it."""
-        if self._is_xiaoyi_channel():
+        """Expose ``ask_user`` only when the requesting client can answer it.
+
+        xiaoyi 渠道按手机端版本分流（_xiaoyi_interaction_supported）：app_ver
+        > 11.7.9 时选项卡可渲染可回答（gateway 侧文本/PermissionReply 兜底），
+        不再强制关闭；≤ 11.7.9（或未上报）维持强制关闭，与已发旧端侧行为
+        一致。
+        """
+        if self._is_xiaoyi_channel() and not self._xiaoyi_interaction_supported():
             enabled = False
         attr_name = self._user_interaction_rail_attribute()
         rail = getattr(self, attr_name, None)
@@ -7039,6 +7101,47 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 "for non-interactive request"
             )
 
+    async def _set_permission_rail_enabled(self, enabled: bool) -> None:
+        """按 xiaoyi 手机端版本动态挂/摘 PermissionInterruptRail。
+
+        与 _set_user_interaction_enabled 同构（状态经 None 性表达）：
+        - enabled=False：已注册则 unregister 并置 None（旧版手机端不参与
+          审批交互，工具权限走 harness 默认策略，与装配期剥离语义一致）；
+          unregister 失败保留引用，下轮请求重试，防止 rail 悬挂在实例上。
+        - enabled=True：None 时经 _update_permission_rail 按当前配置补建并
+          注册；已挂载（装配期注册）则 no-op。
+        仅 xiaoyi 渠道调用（_update_runtime_config 分流），其他渠道的
+        permission rail 不受影响。
+        """
+        rail = getattr(self, "_permission_rail", None)
+        if enabled:
+            if rail is None:
+                # code 子类不经 deep create_instance 设 _config_base_cache，getattr 兜底
+                self._update_permission_rail(getattr(self, "_config_base_cache", None))
+                rail = self._permission_rail
+                if rail is not None:
+                    await self._instance.register_rail(rail)
+                    logger.info(
+                        "[JiuWenSwarmDeepAdapter] PermissionInterruptRail enabled "
+                        "for interactive xiaoyi request"
+                    )
+            return
+        if rail is not None:
+            try:
+                await self._instance.unregister_rail(rail)
+            except Exception:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] permission_rail unregister failed, "
+                    "will retry on next request",
+                    exc_info=True,
+                )
+                return
+            self._permission_rail = None
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] PermissionInterruptRail disabled for "
+                "xiaoyi app_ver (ask_user tabs unsupported)"
+            )
+
     async def _update_agent_rails(self) -> None:
         """agent 模式：注册 agent 专属 rails（原 plan 档能力并集）。"""
         if self._task_planning_rail is None:
@@ -7051,12 +7154,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             if self._todo_progress_rail is not None:
                 await self._instance.register_rail(self._todo_progress_rail)
                 logger.info("[JiuWenSwarmDeepAdapter] TodoProgressRail registered for agent mode")
-        if self._is_xiaoyi_channel():
-            if self._ask_user_rail is not None:
-                await self._instance.unregister_rail(self._ask_user_rail)
-                self._ask_user_rail = None
-                logger.info("[JiuWenSwarmDeepAdapter] StructuredAskUserRail disabled for Xiaoyi channel")
-        elif self._ask_user_rail is None:
+        # xiaoyi 渠道 app_ver ≤ 11.7.9 的会话不注册（_set_user_interaction_enabled
+        # 同步摘除兜底），避免每请求"注册→摘除"震荡；其余渠道不受影响。
+        if self._ask_user_rail is None and self._xiaoyi_interaction_supported():
             self._ask_user_rail = self._build_structured_ask_user_rail()
             if self._ask_user_rail is not None:
                 await self._instance.register_rail(self._ask_user_rail)
@@ -7689,6 +7789,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             circuit_breaker_rail.set_language(self._resolve_output_language())
         stage_timer.mark("rail_setters")
 
+        # xiaoyi 手机端版本首跑补记（会话 adapter 装配期尚不可知），必须在
+        # rails 装配/交互开关之前——_update_agent_rails 与 _set_user_interaction_enabled
+        # 都按它分流（app_ver ≤ 11.7.9 的会话不参与 AskUser 交互）。
+        self._mark_xiaoyi_client_app_ver(runtime_config.request_metadata)
+
         self._schedule_runtime_state_write(
             mode=runtime_config.mode,
             language=self._resolve_output_language(),
@@ -7706,6 +7811,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         await self._set_user_interaction_enabled(runtime_config.supports_user_interaction)
         stage_timer.mark("user_interaction")
+
+        # xiaoyi 渠道同步挂/摘 PermissionInterruptRail：app_ver ≤ 11.7.9 的
+        # 旧版手机端不参与审批交互（出站文本回退由 gateway 负责），rail 摘除
+        # 与装配期剥离语义一致；支持时保持挂载（装配已注册则 no-op）。
+        if self._is_xiaoyi_channel():
+            await self._set_permission_rail_enabled(
+                self._xiaoyi_interaction_supported()
+            )
+        stage_timer.mark("xiaoyi_permission_rail")
 
         await self._update_tools_for_mode(
             runtime_config.mode, runtime_config.session_id, runtime_config.request_id

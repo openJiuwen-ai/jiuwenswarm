@@ -709,7 +709,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_code_plan_approval_rail", self._build_plan_approval_rail),
         ]
 
-        if self._is_xiaoyi_channel():
+        # xiaoyi 渠道按手机端版本分流（_xiaoyi_interaction_supported，app_ver
+        # > 11.7.9 才参与 AskUser 交互）：装配期会话 adapter 尚未收到首条请求、
+        # 版本未上报，保守摘除 permission_rail/code_ask_user_rail；支持的会话由
+        # 每请求的 _set_user_interaction_enabled/_set_permission_rail_enabled
+        # （_update_runtime_config）按版本补挂。
+        if self._is_xiaoyi_channel() and not self._xiaoyi_interaction_supported():
             rail_infos = [
                 info
                 for info in rail_infos
@@ -1309,9 +1314,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     exc_info=True,
                 )
 
+        # xiaoyi 手机端版本首跑补记（同 deep：装配期尚不可知，须先于 rails 装配，
+        # _update_rails_for_mode 与 _set_user_interaction_enabled 按它分流）
+        self._mark_xiaoyi_client_app_ver(runtime_config.request_metadata)
         # code 模式始终走 _update_rails_for_mode 的 code 逻辑
         await self._update_rails_for_mode(runtime_config.mode)
         await self._set_user_interaction_enabled(runtime_config.supports_user_interaction)
+        # xiaoyi 渠道同步挂/摘 PermissionInterruptRail（同 deep：app_ver ≤ 11.7.9
+        # 的旧版手机端不参与审批交互）
+        if self._is_xiaoyi_channel():
+            await self._set_permission_rail_enabled(self._xiaoyi_interaction_supported())
         await self._update_tools_for_mode(runtime_config.mode, runtime_config.session_id, runtime_config.request_id)
         await self._update_session_tools(
             runtime_config.session_id,

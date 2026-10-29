@@ -54,6 +54,7 @@ from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.extensions.hooks_context import MemoryHookContext
 from jiuwenswarm.server.xiaoyi_invocation import request_billing_trace_id
+from jiuwenswarm.common.app_version import xiaoyi_ask_user_tabs_supported
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.server.utils.stream_utils import is_retry_notice_payload
 from jiuwenswarm.common.utils import (
@@ -1344,17 +1345,30 @@ class JiuWenSwarm:
                         "status line setup agent" in final_query if isinstance(final_query, str) else False,
                     )
 
+        # xiaoyi 手机端按 app_ver 分流（systemVariables.app_ver，gateway 随
+        # metadata.xiaoyi_app_ver 透传）：> 11.7.9 支持选项卡出站
+        # （status-update input-required + AskUser data part）与结构化应答
+        # 回传，恢复交互能力；≤ 11.7.9（或未上报）出站走 gateway 文本回退，
+        # agent 侧同步关闭交互（rails 摘除见 interface_deep/interface_code
+        # 的 _xiaoyi_interaction_supported），与已发旧端侧行为一致。
+        # 其他渠道不受影响，仍按调用方声明的交互能力透传。
+        _xiaoyi_app_ver = ""
+        if isinstance(request.metadata, dict):
+            _xiaoyi_app_ver = str(request.metadata.get("xiaoyi_app_ver") or "").strip()
         inputs: dict[str, Any] = {
             "conversation_id": request.session_id,
             "query": final_query,
             "channel": channel,
             "language": language,
-            # Xiaoyi's mobile client cannot render/answer the ask_user card;
-            # keep interaction disabled there even when the legacy client omits
-            # the capability flag. Other channels remain backward compatible.
+            # Xiaoyi's mobile client renders the ask_user card only when its
+            # app_ver supports the tab contract; other channels keep the
+            # legacy capability flag. Fail-closed for legacy xiaoyi clients.
             "supports_user_interaction": (
-                channel.strip().lower() != "xiaoyi"
-                and params.get("supports_user_interaction") is not False
+                params.get("supports_user_interaction") is not False
+                and (
+                    channel.strip().lower() != "xiaoyi"
+                    or xiaoyi_ask_user_tabs_supported(_xiaoyi_app_ver)
+                )
             ),
         }
         if _request_debug:
