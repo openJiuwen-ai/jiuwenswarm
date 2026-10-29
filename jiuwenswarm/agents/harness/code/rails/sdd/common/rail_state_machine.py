@@ -223,8 +223,10 @@ class RailStateMachineBase(DeepAgentRail):
             f"MANDATORY: when {domain} mode is enabled, you MUST call this "
             f"tool before doing any work on a requirement — do NOT write code "
             f"or produce artifacts directly. Call {tool}(stage={first_stage}) "
-            f"to start the flow; the system will then inject the stage's "
-            f"methodology. Only after reaching 'done' may you implement."
+            f"to start the flow; the stage's methodology is injected "
+            f"automatically on your next model call, so continue immediately "
+            f"with the next step (do NOT wait or end the turn). Only after "
+            f"reaching 'done' may you implement."
         )
 
     def _advance_tool_input_params(self) -> dict:

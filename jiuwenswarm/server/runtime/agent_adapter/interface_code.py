@@ -2495,7 +2495,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             rail_pkg_dir = Path(_dr_pkg.__file__).resolve().parent
             rail = _DesignRail(
                 rail_pkg_dir=rail_pkg_dir,
-                project_dir=self._project_dir or os.getcwd(),
+                project_dir=self._project_dir or self._workspace_dir,
             )
             logger.info("[JiuwenSwarmCodeAdapter] DesignRail create success")
             return rail
