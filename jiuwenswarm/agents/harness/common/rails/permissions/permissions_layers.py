@@ -41,6 +41,10 @@ _FALLBACK_MODE_PRESETS: dict[str, dict[str, Any]] = {
     "auto": {
         "sandbox_intent": "required",
         "defaults": {"*": "allow"},
+        # dev-stable 无 agent-core preset 机制，本表即事实 preset：
+        # develop 最新全局配置对 acp_chat 保留 ask（整工具无命令级
+        # 兜底），迁移删除 Global tools 名单后由 preset 补位（R2）。
+        "ask_tools": ["acp_chat"],
         "file_guard": {
             "enabled": True,
             "defaults": {"read": "allow", "write": "ask", "exec": "ask"},
@@ -277,13 +281,25 @@ def _compose_effective_local(
     deny = _as_str_list(global_migrated.get("deny_tools")) + _as_str_list(
         user_migrated.get("deny_tools")
     )
-    ask = _as_str_list(global_migrated.get("ask_tools")) + _as_str_list(
-        user_migrated.get("ask_tools")
-    )
     allow = (
         _as_str_list(global_migrated.get("allow_tools"))
         + _as_str_list(user_migrated.get("allow_tools"))
         + _as_str_list(session_migrated.get("allow_tools"))
+    )
+    # preset ask 底线（auto: acp_chat，develop 同款语义）只兜缺省：
+    # deny 优先、显式 allow 覆盖——否则 HITL 永久允许
+    # （append_allow_tool 写 user allow_tools）对 preset ask 工具
+    # 永不生效。
+    allow_set = set(allow)
+    preset_ask = [
+        name
+        for name in _as_str_list(preset.get("ask_tools"))
+        if name not in set(deny) and name not in allow_set
+    ]
+    ask = (
+        preset_ask
+        + _as_str_list(global_migrated.get("ask_tools"))
+        + _as_str_list(user_migrated.get("ask_tools"))
     )
     deny_unique = list(dict.fromkeys(deny))
     deny_set = set(deny_unique)
@@ -364,11 +380,16 @@ def get_user_permissions_path() -> Path:
 
 
 def get_session_permissions_path(session_id: str) -> Path:
-    from jiuwenswarm.common.utils import get_agent_sessions_dir
+    from jiuwenswarm.common.utils import get_agent_sessions_dir, is_valid_session_id
 
     sid = str(session_id or "").strip()
     if not sid:
         raise ValueError("session_id is required")
+    # sid 来自请求上下文（TOOL_PERMISSION_SESSION_ID / request.session_id），
+    # 直接作路径分量拼接；不校验则 ``../`` 可穿越数据目录写权限覆盖段
+    # （检视 2026-10-29）。load/persist 调用方均捕获 ValueError 降级。
+    if not is_valid_session_id(sid):
+        raise ValueError(f"invalid session_id: {sid!r}")
     return get_agent_sessions_dir() / sid / "session_permissions.yaml"
 
 
@@ -399,8 +420,11 @@ def _load_yaml(path: Path) -> dict[str, Any]:
         _YAML_LOAD_CACHE[path] = (stamp, deepcopy(data))
         return data
     except Exception:
+        # 文件存在但读取失败（损坏/权限错）不能当 {}：deny/ask/rules
+        # 静默消失属 fail-open；抛出让 compose 失败 → 快照回 None →
+        # 引擎沿用构建期 _static_config（评审 2026-10-29）。
         logger.warning("[PermissionsLayers] load_yaml_failed path=%s", path, exc_info=True)
-        return {}
+        raise
 
 
 def _dump_yaml(path: Path, data: dict[str, Any]) -> None:
@@ -416,7 +440,12 @@ def _permissions_section(raw: dict[str, Any]) -> dict[str, Any]:
         return {}
     if "permissions" in raw and isinstance(raw.get("permissions"), dict):
         return deepcopy(raw["permissions"])
-    # 整文件即 overlay（无外层键）
+    # 整文件即 overlay（无外层键）。mode / skill_authorization 是
+    # _compose_effective_local 从 user/session 层显式读取的键；裸写
+    # 用户层文件不含它们会被整体判空、静默丢弃（检视 2026-10-29）。
+    # ``enabled`` 有意不入白名单：合成恒 enabled:true，user 层旧语义
+    # enabled:false 无消费方，放行会使其流入 compose 入参、存在被
+    # 解读为关闭权限轨的风险。
     overlay_keys = {
         "allow_tools",
         "ask_tools",
@@ -425,6 +454,9 @@ def _permissions_section(raw: dict[str, Any]) -> dict[str, Any]:
         "approval_overrides",
         "file_guard",
         "network",
+        "mode",
+        "sandbox_intent",
+        "skill_authorization",
     }
     if overlay_keys & raw.keys():
         return deepcopy(raw)
@@ -502,16 +534,19 @@ def compose_host_effective_permissions(
 
 
 def get_sandbox_intent(*, session_id: str | None = None) -> str:
+    # 与 get_permissions_mode 同口径：全局层取生效配置而非 yaml 直读，
+    # 保证 MODE_GET 载荷里 mode 与 sandbox_intent 来自同一份生效段。
+    global_cfg = _load_effective_global_permissions()
     compose_fn = _import_core_compose()
     if compose_fn is not None:
         effective = compose_fn(
-            load_global_permissions(),
+            global_cfg,
             user_permissions=load_user_permissions() or None,
             session_permissions=load_session_permissions(session_id) or None,
         )
     else:
         effective = _compose_effective_local(
-            load_global_permissions(),
+            global_cfg,
             load_user_permissions() or None,
             load_session_permissions(session_id) or None,
         )
@@ -608,11 +643,14 @@ def migrate_and_write_global_permissions() -> dict[str, Any]:
     if "mode" not in migrated:
         migrated["mode"] = "auto"
 
-    data["permissions"] = migrated
-    _dump_yaml_round_trip(yaml_path, data)
-
+    # 先写 User 层（迁移目标）再清 Global（迁移源）：两次写盘间崩溃
+    # 时工具名单仍留在 Global，迁移幂等重跑（名单/override 按 id 与
+    # 归属去重）不丢失；反序崩溃即名单凭空消失（评审 2026-10-29）。
     if user_section:
         _dump_yaml(user_path, {"permissions": user_section})
+
+    data["permissions"] = migrated
+    _dump_yaml_round_trip(yaml_path, data)
 
     return migrated
 
@@ -641,7 +679,12 @@ def update_permissions_mode(mode: str) -> str:
 
 
 def get_permissions_mode() -> str:
-    perms = load_global_permissions()
+    # 取数走生效配置链路（config_loader：yaml 缓存、企业版内存 ingest、
+    # Agent 模板 body 优先），与 update_permissions_mode 的 persist 链路
+    # 同源——企业版内存 base 变更后直读 yaml 会拿回旧 mode（检视
+    # 2026-10-29）；不可用时 _load_effective_global_permissions 内部已
+    # 回落 load_global_permissions。
+    perms = _load_effective_global_permissions()
     if isinstance(perms.get("mode"), str) and perms["mode"].strip():
         return normalize_permission_mode(perms["mode"])
     # 兼容未迁移：enabled false ≈ full_access
@@ -860,6 +903,55 @@ def _merge_file_guard_path_entries(
     section["file_guard"] = cur_fg
 
 
+def _approval_override_key(entry: dict[str, Any]) -> tuple[Any, ...]:
+    """approval_overrides 条目身份键，与 rail 侧
+    ``_ensure_single_allow_override`` 同口径（tools/match_type/pattern）。"""
+    tools = entry.get("tools") or []
+    if isinstance(tools, str):
+        tools = [tools]
+    return (
+        tuple(sorted(str(t) for t in tools if str(t).strip())),
+        str(entry.get("match_type") or ""),
+        str(entry.get("pattern") or ""),
+    )
+
+
+def _ratchet_merge_approval_overrides(
+    current: Any,
+    incoming: Any,
+    *,
+    allow_only: bool = False,
+) -> list[dict[str, Any]]:
+    """按身份键棘轮合并 overrides：同键 action 取更放行，新键追加。
+
+    增量语义下调用方传入的是待落盘增量而非整表；整表替换会丢调用方
+    未携带的存量条目，故统一走合并。与 compose 侧 ``_merge_approval_overrides``
+    （user/session 按 id 去重）不同名同存，勿混用。
+    """
+    merged: dict[tuple[Any, ...], dict[str, Any]] = {}
+    order: list[tuple[Any, ...]] = []
+    for entry in list(current if isinstance(current, list) else []) + list(
+        incoming if isinstance(incoming, list) else []
+    ):
+        if not isinstance(entry, dict):
+            continue
+        if allow_only and str(entry.get("action") or "allow").lower() != "allow":
+            continue
+        key = _approval_override_key(entry)
+        if key not in merged:
+            order.append(key)
+            merged[key] = deepcopy(entry)
+            continue
+        kept_action = str(merged[key].get("action") or "allow").lower()
+        new_action = str(entry.get("action") or "allow").lower()
+        if _ACTION_RANK.get(new_action, 0) > _ACTION_RANK.get(kept_action, 0):
+            merged[key] = deepcopy(entry)
+    return [merged[key] for key in order if key in merged]
+
+
+_ACTION_RANK = {"deny": 0, "ask": 1, "allow": 2}
+
+
 def persist_user_overlay_from_effective(effective: dict[str, Any]) -> bool:
     """将 HITL 永久允许的 pattern / file_guard 增量写入 user_permissions.yaml。"""
     try:
@@ -872,7 +964,12 @@ def persist_user_overlay_from_effective(effective: dict[str, Any]) -> bool:
         current = _permissions_section(_load_yaml(path))
         overrides = effective.get("approval_overrides")
         if isinstance(overrides, list):
-            current["approval_overrides"] = deepcopy(overrides)
+            # 增量合并而非整表替换：payload 只携带 diff 出的条目，整表
+            # 替换会丢存量；且 compose 已并入 session 层条目，整表直写
+            # 会把会话级放行固化为永久（检视 2026-10-29）。
+            current["approval_overrides"] = _ratchet_merge_approval_overrides(
+                current.get("approval_overrides"), overrides
+            )
         added_paths = effective.get("_file_guard_paths_added")
         if isinstance(added_paths, list) and added_paths:
             _merge_file_guard_path_entries(current, added_paths)
@@ -911,12 +1008,11 @@ def persist_session_overlay_from_effective(
         current = _permissions_section(_load_yaml(path))
         overrides = effective.get("approval_overrides")
         if isinstance(overrides, list):
-            # Session 层只保留 allow overrides；不写 deny/ask tools
-            current["approval_overrides"] = [
-                deepcopy(entry)
-                for entry in overrides
-                if isinstance(entry, dict) and str(entry.get("action") or "allow").lower() == "allow"
-            ]
+            # Session 层只保留 allow overrides（棘轮合并，不整表替换）；
+            # 不写 deny/ask tools
+            current["approval_overrides"] = _ratchet_merge_approval_overrides(
+                current.get("approval_overrides"), overrides, allow_only=True
+            )
         added_paths = effective.get("_file_guard_paths_added")
         if isinstance(added_paths, list) and added_paths:
             _merge_file_guard_path_entries(current, added_paths)
