@@ -26,6 +26,10 @@ import {
   withResourceSelection,
 } from '../node_modules/.cache/jiuwenmate-api/jiuwenmateApi.js';
 
+test('DingTalk CLI has no employee OAuth management RPCs', () => {
+  assert.equal(Object.keys(JIUWENMATE_METHODS).some((key) => key.toLowerCase().includes('dingtalkcli')), false);
+});
+
 const wireColleague = {
   agent_id: 'agent-1',
   name: '小九',

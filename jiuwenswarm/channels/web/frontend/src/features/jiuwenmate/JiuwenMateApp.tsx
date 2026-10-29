@@ -78,6 +78,7 @@ import type {
   JiuwenMateConnection,
   JiuwenMateExistingPage,
   JiuwenMateTemplate,
+  JiuwenMateImPlatform,
 } from './types';
 import { useGroupDirectory } from '../groupChat/useGroupDirectory';
 import './jiuwenmate.css';
@@ -601,12 +602,13 @@ export function JiuwenMateApp({
         avatarUrl: created.avatarUrl ?? draft.avatarUrl,
         avatarHue: created.avatarHue ?? draft.avatarHue,
       };
-      setProfileIntent((current) => ({ nonce: current.nonce + 1, section: 'overview' }));
-      setActiveRailView('office');
       skillRecommendationRequest.current += 1;
       setSkillRecommendations(EMPTY_TEMPLATE_SKILL_RECOMMENDATIONS);
       setMissingTemplateCapabilities(EMPTY_MISSING_CAPABILITIES);
-      setState((current) => completeColleagueCreation(current, colleague));
+      setWorkspaceIntent((current) => ({ nonce: current.nonce + 1, intent: null }));
+      showFeature('messages', (current) =>
+        openColleagueWorkspace(completeColleagueCreation(current, colleague), colleague.id),
+      );
     } catch (error) {
       setActionError(t('jiuwenmate.load.createFailed', { reason: errorMessage(error) }));
     } finally {
@@ -649,6 +651,7 @@ export function JiuwenMateApp({
   const authorizeColleague = state.colleagues.find((item) => item.id === state.authorizeColleagueId) ?? null;
   // Set when replacing the Secret of one bound app; adding an app leaves it empty.
   const [authorizeConnection, setAuthorizeConnection] = useState<JiuwenMateConnection | null>(null);
+  const [authorizeInitialPlatform, setAuthorizeInitialPlatform] = useState<JiuwenMateImPlatform>('feishu');
   const [boundRobotCode, setBoundRobotCode] = useState('');
 
   useEffect(() => {
@@ -665,13 +668,20 @@ export function JiuwenMateApp({
     return () => { cancelled = true; };
   }, [authorizeConnection]);
 
-  const openAuthorization = (colleagueId: string, connection: JiuwenMateConnection | null) => {
+  const openAuthorization = (
+    colleagueId: string,
+    connection: JiuwenMateConnection | null,
+    platform?: JiuwenMateImPlatform,
+  ) => {
     setAuthorizeConnection(connection);
+    setAuthorizeInitialPlatform(
+      connection?.channel === 'feishu' || connection?.channel === 'dingtalk' ? connection.channel : platform ?? 'feishu',
+    );
     setState((current) => openColleagueAuthorization(current, colleagueId));
   };
 
   useEffect(() => {
-    if (state.view !== 'colleague-profile' && state.view !== 'colleague-workspace') {
+    if (state.view !== 'colleague-profile' && state.view !== 'colleague-workspace' && state.view !== 'office-dashboard') {
       setSchedules([]);
       return;
     }
@@ -827,6 +837,8 @@ export function JiuwenMateApp({
         return (
           <OfficeDashboardPage
             colleagues={state.colleagues}
+            schedules={schedules}
+            savingSchedule={savingSchedule}
             activity={activity}
             activityStatus={activityStatus}
             activityError={activityError}
@@ -836,6 +848,11 @@ export function JiuwenMateApp({
             onToggleDisabled={requestToggleDisabled}
             onDelete={requestDelete}
             onOpenTrace={(colleagueId, channelId) => openWorkspace(colleagueId, { recordTab: 'channels', channelId, trace: true })}
+            onCreateSchedule={createSchedule}
+            onUpdateSchedule={updateSchedule}
+            onSetScheduleEnabled={setScheduleEnabled}
+            onDeleteSchedule={removeSchedule}
+            onLoadScheduleHistory={loadScheduleHistory}
           />
         );
       case 'colleague-profile':
@@ -896,7 +913,7 @@ export function JiuwenMateApp({
             onDisconnectAgentMail={api.disconnectAgentMail}
             onOpenOffice={() => showFeature('office', openOffice)}
             onChat={() => openWorkspace(selectedColleague.id)}
-            onConfigureIm={(connection) => openAuthorization(selectedColleague.id, connection ?? null)}
+            onConfigureIm={(connection, platform) => openAuthorization(selectedColleague.id, connection ?? null, platform)}
             onConfigureWelink={() => {
               setAuthorizeConnection(null);
               setState((current) => openColleagueAuthorization(current, selectedColleague.id, 'welink'));
@@ -935,6 +952,7 @@ export function JiuwenMateApp({
             onSelectColleague={(id) => setState((current) => ({ ...current, selectedColleagueId: id }))}
             onCreateSchedule={(id) => openProfile(id, 'schedules')}
             schedules={schedules}
+            activity={activity}
             savingSchedule={savingSchedule}
             onSaveSchedule={createSchedule}
             onUpdateSchedule={updateSchedule}
@@ -1024,8 +1042,9 @@ export function JiuwenMateApp({
       ) : null}
       {authorizeColleague && state.authorizePlatform !== 'welink' && !existingPage ? (
         <ImAuthorizeDialog
-          key={authorizeConnection?.agentId ?? 'new'}
+          key={authorizeConnection?.agentId ?? `new-${authorizeInitialPlatform}`}
           created={!authorizeColleague.imConfigured && !authorizeConnection}
+          initialPlatform={authorizeInitialPlatform}
           fixed={authorizeConnection && authorizeConnection.channel !== 'web'
             ? { platform: authorizeConnection.channel, appId: authorizeConnection.connectionKey, robotCode: boundRobotCode }
             : undefined}
