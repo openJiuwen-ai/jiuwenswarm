@@ -387,7 +387,7 @@ async def test_real_core_model_call_observes_change_through_host_binding(
 
 
 async def test_cancelled_invocation_before_first_model_is_observed(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-during-setup")
@@ -413,7 +413,7 @@ async def test_cancelled_invocation_before_first_model_is_observed(tasks, monkey
 async def test_cancelled_invocation_captured_as_current_task_settles_inline(
     tasks, monkeypatch
 ):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-captured-request")
@@ -458,7 +458,7 @@ async def test_cancelled_invocation_captured_as_current_task_settles_inline(
 
 
 async def test_cancelled_invocation_ignores_stale_scheduler_handle(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-stale-scheduler")
@@ -515,7 +515,7 @@ async def test_cancelled_invocation_ignores_stale_scheduler_handle(tasks, monkey
 async def test_closed_output_waits_for_captured_native_execution(
     tasks, monkeypatch, swallowed_cancel
 ):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
     from openjiuwen.core.runner.callback.errors import AbortError
 
     service, executor = tasks
@@ -957,7 +957,7 @@ async def test_5545_stopped_round_without_scheduler_handle_still_settles(
 ):
     """#5545: the output closes while the stopped round (e.g. CUA cleanup) still
     unwinds outside the scheduler map; its end must still be acknowledged."""
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "computer-use-stop")
@@ -1045,7 +1045,7 @@ async def test_restored_open_card_refuses_a_new_task_before_binding(tasks, monke
 
 
 async def test_cancelled_consumer_waits_for_scheduler_cleanup(tasks, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution as module
+    from jiuwenswarm.server.runtime.video_task import execution as module
 
     service, executor = tasks
     task = submit(service, "cancel-scheduler-cleanup")

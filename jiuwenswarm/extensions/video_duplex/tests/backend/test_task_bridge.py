@@ -118,7 +118,7 @@ async def test_cancel_settlement_closes_and_settles_in_one_checkpoint(routed_tas
 
 
 async def test_cancel_during_normal_output_cleanup_preserves_settlement(routed_task, monkeypatch):
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import execution
+    from jiuwenswarm.server.runtime.video_task import execution
 
     r = routed_task
     rail = SimpleNamespace(managed_tasks={})
