@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
+import { groupMemberCandidates, groupMessageContent, executionResult, isBackgroundRefreshTimeout, mergeMessages, mergeExecutions, newMember, selectedMentions, safeAttachmentUrl, updateAttachments, formatFileSize } from '../node_modules/.cache/group-chat/features/groupChat/state.js';
 import { parseChatRoute, chatRoutePath } from '../node_modules/.cache/group-chat/multi-session/routing/route.js';
 
 const message = (id, timestamp, content = id) => ({ message_id: id, timestamp, content });
@@ -186,52 +186,33 @@ test('task results match exact execution or message IDs and the actual member', 
   assert.equal(mergeMessages([live], [message('live', 40)])[0].execution_id, 'task-one');
 });
 
-const sidebarBundlePath = 'node_modules/.cache/group-chat/ChatDirectory.mjs';
-await build({
-  entryPoints: ['src/features/groupChat/ChatDirectory.tsx'], outfile: sidebarBundlePath,
-  bundle: true, platform: 'node', format: 'esm', jsx: 'automatic',
-  external: ['react', 'react/jsx-runtime', 'react-dom', 'lucide-react'],
-  plugins: [{ name: 'sidebar-translations', setup(plugin) {
-    plugin.onResolve({ filter: /^react-i18next$/ }, () => ({ path: 'translations', namespace: 'sidebar-test' }));
-    plugin.onLoad({ filter: /.*/, namespace: 'sidebar-test' }, () => ({
-      contents: 'export const useTranslation = () => ({ t: (key) => key });', loader: 'js',
-    }));
-  } }],
-});
 const { pathToFileURL } = await import('node:url');
 const { resolve } = await import('node:path');
 const { createElement } = await import('react');
 const { renderToStaticMarkup } = await import('react-dom/server');
-const { ChatDirectory } = await import(pathToFileURL(resolve(sidebarBundlePath)).href);
-const sidebarProps = {
-  groups: [
-    { group_id: 'one', session_id: 'session-one', name: 'Pinned group', description: 'Review', members: [], status: 'ready' },
-    { group_id: 'two', session_id: 'session-two', name: 'Travel group', description: 'Plan', members: [], status: 'ready' },
-  ],
-  activeId: 'two', pinnedIds: new Set(['session-one']), pinningId: null, loading: false, hasMore: false,
-  loadingMore: false, onSelect() {}, onCreate() {}, onPin() {}, onRename() {}, onDelete() {}, onMore() {},
-};
 
-test('chat sidebar keeps creation, pinned and ordinary conversations alongside the active chat', () => {
-  const html = renderToStaticMarkup(createElement(ChatDirectory, sidebarProps));
-  assert.match(html, /data-testid="group-chat-create"/);
-  assert.match(html, /data-variant="pinned"/);
-  assert.match(html, /data-variant="conversations"/);
-  assert.ok(html.indexOf('Pinned group') < html.indexOf('Travel group'));
-  assert.match(html, /aria-current="page"/);
-  assert.equal((html.match(/data-testid="group-chat-conversation-more"/g) || []).length, 2);
-  assert.match(html, /aria-label="groupChat.moreActions"/);
-  assert.match(html, /aria-haspopup="menu" aria-expanded="false"/);
-  assert.equal((html.match(/data-testid="group-chat-directory-item"/g) || []).length, 2);
+const chatEntriesPath = 'node_modules/.cache/group-chat/chatEntries.mjs';
+await build({
+  entryPoints: ['src/features/jiuwenmate/chatEntries.ts'], outfile: chatEntriesPath,
+  bundle: true, platform: 'node', format: 'esm',
 });
+const { mergeChatEntries } = await import(pathToFileURL(resolve(chatEntriesPath)).href);
 
-test('empty sidebar retains the creation action and pagination remains available while pinning', () => {
-  const empty = renderToStaticMarkup(createElement(ChatDirectory, { ...sidebarProps, groups: [] }));
-  assert.match(empty, /data-testid="group-chat-create"/);
-  assert.match(empty, /groupChat.noConversations/);
-  const busy = renderToStaticMarkup(createElement(ChatDirectory, { ...sidebarProps, pinningId: 'one', hasMore: true }));
-  assert.match(busy, /data-testid="group-chat-more-groups"/);
-  assert.equal((busy.match(/data-testid="group-chat-conversation-more"/g) || []).length, 2);
+test('chat sidebar interleaves colleague conversations and groups by recency with pinned rows apart', () => {
+  const at = (iso) => Date.parse(iso) / 1000;
+  const records = [
+    { agentId: 'xiaojiu', id: 'old', updatedAt: '2026-10-29T08:00:00.000Z' },
+    { agentId: 'xiaojiu', id: 'pinned', pinned: true, updatedAt: '2026-10-01T08:00:00.000Z' },
+  ];
+  const groups = [
+    { group_id: 'travel', session_id: 'travel', created_at: at('2026-10-20T00:00:00Z'), updated_at: at('2026-10-29T09:00:00Z') },
+    { group_id: 'audit', session_id: 'audit', created_at: at('2026-10-28T00:00:00Z'), updated_at: 0 },
+  ];
+  const { pinned, others } = mergeChatEntries(records, groups, new Set(['audit']));
+  assert.deepEqual(pinned.map((entry) => entry.key), ['group:audit', 'xiaojiu:pinned']);
+  assert.deepEqual(others.map((entry) => entry.key), ['group:travel', 'xiaojiu:old']);
+  assert.equal(others[0].kind, 'group');
+  assert.equal(mergeChatEntries([], [], new Set()).others.length, 0);
 });
 
 test('installed Hub experts and teams submit runtime package IDs while preserving catalog identities', () => {
@@ -255,6 +236,35 @@ test('installed Hub experts and teams submit runtime package IDs while preservin
   ]);
   assert.equal(groupMemberCandidates([], [{ ...stock, installed: false }]).length, 0);
   assert.equal(groupMemberCandidates([{ ...agent, enabled: false }], []).length, 0);
+});
+
+test('file rename and delete call the group file APIs with the attachment path', async () => {
+  const rename = await groupChatClient.renameFile('group-one', '/ws/out/a.md', 'final.md');
+  assert.equal(rename.method, 'group.file.rename');
+  assert.deepEqual(rename.params, { group_id: 'group-one', path: '/ws/out/a.md', name: 'final.md' });
+  const removal = await groupChatClient.deleteFile('group-one', '/ws/out/a.md');
+  assert.equal(removal.method, 'group.file.delete');
+  assert.deepEqual(removal.params, { group_id: 'group-one', path: '/ws/out/a.md' });
+  const cleared = await groupChatClient.clearHistory('group-one');
+  assert.equal(cleared.method, 'group.history.clear');
+  assert.deepEqual(cleared.params, { group_id: 'group-one' });
+});
+
+test('confirmed file changes update loaded messages and keep untouched records identical', () => {
+  const kept = { id: 'kept', attachments: [{ name: 'b.md', path: '/b.md' }] };
+  const records = [{ id: 'one', attachments: [{ name: 'a.md', path: '/a.md' }, { name: 'b.md', path: '/b.md' }] }, kept];
+  const renamed = updateAttachments(records, '/a.md', 'final.md');
+  assert.deepEqual(renamed[0].attachments.map((file) => file.name), ['final.md', 'b.md']);
+  assert.equal(renamed[1], kept);
+  const removed = updateAttachments(records, '/b.md', null);
+  assert.deepEqual(removed.map((record) => record.attachments.length), [1, 0]);
+  assert.equal(records[0].attachments.length, 2);
+});
+
+test('file sizes use compact units', () => {
+  assert.equal(formatFileSize(512), '512B');
+  assert.equal(formatFileSize(231546), '226.12K');
+  assert.equal(formatFileSize(5 * 1024 * 1024), '5M');
 });
 
 test('question answers resume through the owning group without exposing private sessions', async () => {

@@ -80,6 +80,7 @@ import type {
   JiuwenMateTemplate,
   JiuwenMateImPlatform,
 } from './types';
+import { useGroupDirectory } from '../groupChat/useGroupDirectory';
 import './jiuwenmate.css';
 
 export interface JiuwenMateAppProps {
@@ -88,6 +89,9 @@ export interface JiuwenMateAppProps {
   confirmDiscardSettings?: () => boolean;
   /** Plaza "use" on an installed expert opens the employee creation page for that package. */
   useInstalledExpertRef?: MutableRefObject<(packageName: string) => void>;
+  /** Group chat opened in the chat view; driven by the /groups/:id route. */
+  groupId?: string;
+  onSelectGroup?: (groupId?: string) => void;
 }
 
 type PendingConfirm =
@@ -124,8 +128,12 @@ export function JiuwenMateApp({
   renderExistingPage,
   confirmDiscardSettings,
   useInstalledExpertRef,
+  groupId,
+  onSelectGroup = () => undefined,
 }: JiuwenMateAppProps) {
   const { t } = useTranslation();
+  const groupDirectory = useGroupDirectory({ activeGroupId: groupId, onSelect: onSelectGroup });
+  const groupChat = { directory: groupDirectory, activeGroupId: groupId, onSelectGroup };
   const api = useMemo(
     () =>
       createJiuwenMateApi(
@@ -256,6 +264,17 @@ export function JiuwenMateApp({
     void loadColleagues();
   }, [loadColleagues]);
 
+  // A group route always lands in the chat view, where group chats live.
+  useEffect(() => {
+    if (!groupId || loadStatus !== 'ready') return;
+    setExistingPage(null);
+    setPublicLabel(null);
+    setActiveRailView('messages');
+    setState((current) =>
+      current.view === 'colleague-workspace' || current.view === 'colleague-empty' ? current : openColleagueMessages(current),
+    );
+  }, [groupId, loadStatus]);
+
   if (useInstalledExpertRef) {
     useInstalledExpertRef.current = (packageName) => {
       const name = packageName.trim();
@@ -368,6 +387,7 @@ export function JiuwenMateApp({
   };
 
   const handleRailViewChange = (view: JiuwenMateRailView) => {
+    if (view === 'office' && groupId) onSelectGroup();
     showFeature(view, view === 'office' ? openOffice : openColleagueMessages);
   };
 
@@ -761,7 +781,7 @@ export function JiuwenMateApp({
       case 'office-intro':
         return <OfficeIntroPage onCreate={startCreation} />;
       case 'colleague-empty':
-        return <ColleagueEmptyPage onCreate={startCreation} />;
+        return <ColleagueEmptyPage onCreate={startCreation} groupChat={groupChat} />;
       case 'colleague-create':
         return (
           <ColleagueCreatePage
@@ -923,17 +943,22 @@ export function JiuwenMateApp({
         return selectedColleague ? (
           <ColleagueWorkspacePage
             key={workspaceIntent.nonce}
+            groupChat={groupChat}
             colleagues={state.colleagues}
             selectedColleagueId={selectedColleague.id}
             intent={workspaceIntent.intent}
             chat={api}
             connectionEpoch={connectionEpoch}
             onSelectColleague={(id) => setState((current) => ({ ...current, selectedColleagueId: id }))}
-            onCreateSchedule={(draft) => createSchedule(selectedColleague.id, draft)}
+            onCreateSchedule={(id) => openProfile(id, 'schedules')}
             schedules={schedules}
+            activity={activity}
             savingSchedule={savingSchedule}
+            onSaveSchedule={createSchedule}
             onUpdateSchedule={updateSchedule}
+            onSetScheduleEnabled={setScheduleEnabled}
             onDeleteSchedule={removeSchedule}
+            onLoadScheduleHistory={loadScheduleHistory}
             channelApi={api}
             modelCatalog={modelCatalog}
             savingPermissionProfile={savingResources}
@@ -1006,6 +1031,7 @@ export function JiuwenMateApp({
           renderFeature()
         )}
       </main>
+      {groupDirectory.dialogs}
       {actionError && !existingPage ? (
         <div className="jiuwenmate-action-error" role="alert" data-testid="jiuwenmate-action-error">
           <span>{actionError}</span>

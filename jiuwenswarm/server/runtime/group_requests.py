@@ -133,6 +133,18 @@ async def dispatch_group_request(server, ws, request, send_lock) -> bool:
                     channel_id=channel_id,
                     request_id=request.request_id,
                 )
+            elif method == "group.file.rename":
+                payload = await service.file_rename(
+                    group_id, params, user_id=user_id, channel_id=channel_id
+                )
+            elif method == "group.file.delete":
+                payload = await service.file_delete(
+                    group_id, params, user_id=user_id, channel_id=channel_id
+                )
+            elif method == "group.history.clear":
+                payload = await service.clear_history(
+                    group_id, user_id=user_id, channel_id=channel_id
+                )
             elif method == "group.history.get":
                 payload = await service.history(
                     group_id, params, user_id=user_id, channel_id=channel_id

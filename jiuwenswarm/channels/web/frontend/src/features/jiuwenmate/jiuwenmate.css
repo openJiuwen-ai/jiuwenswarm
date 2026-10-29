@@ -1849,6 +1849,12 @@
   opacity: 1;
 }
 
+/* Conversation rows: tuck the menu under the timestamp, inside the hover box. */
+.jiuwenmate-records__item--conversation > .jiuwenmate-menu {
+  top: 31px;
+  right: 32px;
+}
+
 /* Workspace main */
 .jiuwenmate-workspace__main {
   grid-column: 2;
@@ -5770,4 +5776,60 @@
   .jiuwenmate-trace-body--detail {
     grid-template-columns: 1fr;
   }
+}
+
+/* Group chats inside the chat view */
+.jiuwenmate-group-avatar {
+  display: inline-flex;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  color: var(--jm-blue);
+  background: var(--jm-blue-soft);
+}
+
+.jiuwenmate-group-avatar svg {
+  width: 20px;
+  height: 20px;
+}
+
+.jiuwenmate-records__more {
+  padding: 6px 8px;
+  border: 0;
+  color: var(--jm-blue);
+  background: transparent;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.jiuwenmate-workspace__main > .group-chat-workspace {
+  flex: 1;
+  min-height: 0;
+}
+
+.jiuwenmate-group-title {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.jiuwenmate-group-title strong {
+  min-width: 0;
+}
+
+.jiuwenmate-group-tag {
+  flex-shrink: 0;
+  padding: 0 5px;
+  border-radius: 3px;
+  color: var(--color-tag-team-text);
+  background: var(--color-tag-team-surface);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+  line-height: 16px;
 }

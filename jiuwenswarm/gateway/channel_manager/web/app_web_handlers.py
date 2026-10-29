@@ -412,6 +412,7 @@ class _DummyBus:
 _FORWARD_REQ_METHODS = frozenset({
     "group.create", "group.delete", "group.list", "group.get", "group.update",
     "group.member.add", "group.history.get", "group.execution.list", "group.execution.get",
+    "group.file.rename", "group.file.delete", "group.history.clear",
     "initialize",
     "session.switch",
     "session.fork",
@@ -644,6 +645,7 @@ _FORWARD_REQ_METHODS = frozenset({
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "group.create", "group.delete", "group.list", "group.get", "group.update",
     "group.member.add", "group.history.get", "group.execution.list", "group.execution.get",
+    "group.file.rename", "group.file.delete", "group.history.clear",
     # JiuwenMate 同事管理：由 AgentServer 的 JiuwenMateWebAdapter 处理，Gateway 无本地实现。
     "jiuwenmate.colleague.ensure_default",
     "jiuwenmate.colleague.list",
