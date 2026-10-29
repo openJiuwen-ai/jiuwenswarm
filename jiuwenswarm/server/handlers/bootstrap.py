@@ -141,6 +141,12 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 code="BAD_REQUEST",
             )
 
+        if "moa_enabled" in params and not isinstance(params["moa_enabled"], bool):
+            raise SessionProvisionError(
+                "moa_enabled must be a boolean",
+                code="BAD_REQUEST",
+            )
+
         explicit_work_mode_marker = params.get("_work_mode_explicit")
         requested = params.get("session_id")
         requested_session_id = (
@@ -185,6 +191,8 @@ async def handle_session_create(ctx: RequestContext) -> None:
                     or ""
                 ).strip(),
                 model_name=str(params.get("model_name") or "").strip(),
+                model_selection=params.get("model_selection"),
+                moa_enabled=params.get("moa_enabled"),
                 cron_id=str(params.get("cron_id") or "").strip(),
             )
         )
@@ -204,6 +212,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
             "projectDir": result.project_dir,
             "workMode": result.work_mode,
             "persist_session": result.persist_session,
+            "moa_enabled": result.moa_enabled,
             "prewarm_hit": result.prewarm_hit,
             "prewarm_status": result.prewarm_status,
         }
@@ -334,6 +343,7 @@ async def handle_session_fork(ctx: RequestContext) -> None:
                 "session_id": result.session_id,
                 "source_session_id": result.source_session_id,
                 "title": result.title,
+                "moa_enabled": result.moa_enabled,
             },
         )
         await ctx.sink.send_response(resp)

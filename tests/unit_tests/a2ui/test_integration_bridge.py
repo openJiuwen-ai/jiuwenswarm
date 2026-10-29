@@ -637,7 +637,6 @@ async def test_finalize_assistant_response_if_a2ui_bypasses_non_web_channel(monk
 @pytest.mark.parametrize("env_enabled", [None, "true", "false", "invalid"])
 @pytest.mark.parametrize("env_protocol", [None, "0.8", "9"])
 def test_web_config_matches_runtime_parser(monkeypatch, section, env_enabled, env_protocol):
-    from jiuwenswarm.common.a2ui_web_config import get_a2ui_config_payload
     from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 
     for key, value in [("JIUWENSWARM_A2UI_ENABLED", env_enabled),
