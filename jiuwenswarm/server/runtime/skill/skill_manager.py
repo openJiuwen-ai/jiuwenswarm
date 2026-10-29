@@ -10398,7 +10398,7 @@ class SkillManager:
         扩展系统未运行（如单测直接构造 SkillManager）时无工厂可问，直接不注册。
         """
         try:
-            from jiuwenswarm.extensions.registry import ExtensionRegistry
+            from jiuwenswarm.extensions import ExtensionRegistry
 
             factories = ExtensionRegistry.get_instance().list_skill_source_extensions()
         except RuntimeError:
@@ -10431,7 +10431,7 @@ class SkillManager:
         instantiating SkillManager directly).
         """
         try:
-            from jiuwenswarm.extensions.registry import ExtensionRegistry
+            from jiuwenswarm.extensions import ExtensionRegistry
 
             return ExtensionRegistry.get_instance().get_skill_source_extension(provider_type)
         except RuntimeError:
