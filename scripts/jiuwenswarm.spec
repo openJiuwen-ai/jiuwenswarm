@@ -149,19 +149,11 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-# A controlled package embeds its immutable Runtime build identity. Computing
-# it belongs to the build, so frozen Front/Worker startup only reads this small
-# payload. Source execution still validates dirty code and dependency locks.
-_identity_helper = runpy.run_path(os.path.join(
-    project_root, "jiuwenswarm", "server", "supervisor", "identity_cache.py"))
-_source_identity = _identity_helper["full_source_fingerprint"](Path(project_root, "jiuwenswarm"))
-_build_recipe = hashlib.sha256()
-_build_recipe.update(_source_identity.encode())
-for _build_source in ("scripts/jiuwenswarm.spec", "scripts/jiuwenswarm_exe_entry.py"):
-    _build_recipe.update(Path(project_root, _build_source).read_bytes())
+# Every actual frozen backend build gets a distinct, bundled identity.
 _identity_directory = tempfile.TemporaryDirectory(prefix="jiuwenswarm-build-identity-")
 _identity_file = Path(_identity_directory.name, "_worker_build_identity.json")
-_identity_file.write_text(json.dumps({"schema": 1, "fingerprint": _build_recipe.hexdigest()}), encoding="utf-8")
+_identity_helper = runpy.run_path(os.path.join(project_root, "jiuwenswarm", "common", "worker_build_identity.py"))
+_identity_helper["write_build_identity"](_identity_file, Path(project_root))
 datas.append((str(_identity_file), "jiuwenswarm"))
 _build_metadata_file = Path(_identity_directory.name, "build-metadata.json")
 build_config_module["write_build_metadata"](_build_metadata_file, build_config.version)

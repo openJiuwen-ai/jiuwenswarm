@@ -14,7 +14,9 @@ const { createShareImageExporter } = require('./share_image_export.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
+const { createShutdownReceipt, completeShutdownReceipt, recordShutdownOutcome } = require('./update_shutdown.cjs');
 let macUpdateInProgress = false;
+let updateShutdownReceipt = null;
 
 const BACKEND_HOST = '127.0.0.1';
 const FRONTEND_HOST = '127.0.0.1';
@@ -211,6 +213,7 @@ let downloadBubble = null;
 let shuttingDown = false;
 let shutdownComplete = false;
 let shutdownPromise = null;
+let finalShutdownPromise = null;
 let requestedExitCode = 0;
 const serviceProcesses = new Map();
 // Resolved session port group (null before startWebService / FrontendOnly mode).
@@ -396,7 +399,8 @@ function spawnService(name, ports, extraArgs = []) {
       // Keep the process-group identity until Electron exits. A uv wrapper can
       // exit before its Python descendants, and deleting this entry would make
       // the final cleanup lose ownership of that group.
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }
   });
   child.once('error', error => {
@@ -517,8 +521,14 @@ function watchBackendPair(agentProcess, gatewayProcess) {
       agentExited,
       gatewayExited,
     });
-    if (agentExited && gatewayProcess.exitCode === null) void terminateService(gatewayProcess);
-    if (gatewayExited && agentProcess.exitCode === null) void terminateService(agentProcess);
+    if (agentExited && gatewayProcess.exitCode === null) {
+      void terminateService(gatewayProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
+    if (gatewayExited && agentProcess.exitCode === null) {
+      void terminateService(agentProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
   }, 250);
 }
 
@@ -753,7 +763,10 @@ async function startBackendServices({ ports, webProcess, webReady }) {
     ]);
   } catch (error) {
     for (const child of [webProcess, agentProcess, gatewayProcess]) {
-      if (child) void terminateService(child);
+      if (child) {
+        void terminateService(child).catch(error =>
+          console.error('[electron] background service cleanup incomplete', error));
+      }
     }
     throw error;
   }
@@ -772,9 +785,25 @@ function signalServiceTree(child, signal) {
   try {
     if (process.platform === 'win32') {
       if (serviceProcesses.get('agent') === child) {
-        const { command, args } = serviceCommand('lifecycle', ['--detach-front', String(child.pid)]);
+        const timeout = signal === 'SIGKILL' ? SERVICE_KILL_TIMEOUT_MS : SERVICE_SHUTDOWN_TIMEOUT_MS;
+        const { command, args } = serviceCommand('lifecycle', [
+          '--detach-front', String(child.pid), '--timeout', String(timeout / 1000),
+          ...(signal === 'SIGKILL' ? ['--force'] : []),
+        ]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
-        helper.on('error', error => console.error('[electron] Front detach helper failed', error));
+        child.frontDetachPromise = new Promise((resolve, reject) => {
+          const timer = setTimeout(() => {
+            helper.kill();
+            reject(new Error('Front detach helper exceeded deadline'));
+          }, timeout);
+          helper.once('error', error => { clearTimeout(timer); reject(error); });
+          helper.once('exit', code => {
+            clearTimeout(timer);
+            if (code === 0) resolve();
+            else reject(new Error(`Front detach incomplete (exit=${code})`));
+          });
+        });
+        void child.frontDetachPromise.catch(error => console.error('[electron] Front detach helper failed', error));
         helper.unref();
         return true;
       }
@@ -825,14 +854,28 @@ function waitForServiceTreeExit(child, timeoutMs) {
 }
 
 async function terminateService(child) {
-  if (!child?.pid || !serviceTreeRunning(child)) return;
-  signalServiceTree(child, 'SIGTERM');
-  if (await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS)) return;
+  if (!child?.pid) return;
+  if (!serviceTreeRunning(child)) {
+    await child.frontDetachPromise;
+    return;
+  }
+  const signaled = signalServiceTree(child, 'SIGTERM');
+  try {
+    if (!signaled) throw new Error('Failed to start service shutdown');
+    const stopped = await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS);
+    await child.frontDetachPromise;
+    if (stopped) return;
+  } catch (error) {
+    console.warn('[electron] graceful Front detach incomplete', error);
+    if (!serviceTreeRunning(child)) throw error;
+  }
 
   console.warn(`[electron] service tree ${child.pid} did not stop after SIGTERM; forcing shutdown`);
-  signalServiceTree(child, 'SIGKILL');
-  if (!(await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS))) {
-    console.error(`[electron] service tree ${child.pid} is still running after SIGKILL`);
+  if (!signalServiceTree(child, 'SIGKILL')) throw new Error('Failed to start forced service shutdown');
+  const stopped = await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS);
+  await child.frontDetachPromise;
+  if (!stopped) {
+    throw new Error(`Service tree ${child.pid} is still running after SIGKILL`);
   }
 }
 
@@ -844,22 +887,38 @@ function stopServices() {
     console.log(`[electron] stopping ${name} service tree`, { pid: child.pid });
   }
   const deadline = Date.now() + RUNTIME_SHUTDOWN_TIMEOUT_MS;
-  shutdownPromise = Promise.allSettled(services.map(([, child]) => terminateService(child))).then(async results => {
+  shutdownPromise = Promise.allSettled(services.map(async ([, child]) => {
+    await terminateService(child);
+    if (serviceTreeRunning(child)) throw new Error(`Service tree ${child.pid} is still running`);
+  })).then(async results => {
+    let failure = null;
     for (const result of results) {
-      if (result.status === 'rejected') console.error('[electron] service shutdown failed', result.reason);
+      if (result.status === 'rejected') {
+        console.error('[electron] service shutdown failed', result.reason);
+        failure ||= result.reason;
+      }
     }
     if (services.some(([name]) => name === 'agent')) {
       const remaining = Math.max(1, deadline - Date.now());
       const { command, args } = serviceCommand('lifecycle', ['--shutdown-worker', '--timeout', String(remaining / 1000)]);
       const agent = services.find(([name]) => name === 'agent')[1];
-      await new Promise(resolve => {
-        const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent.spawnEnvironment || process.env });
-        const timer = setTimeout(() => { console.error('[electron] Worker shutdown helper exceeded deadline'); helper.kill(); resolve(); }, remaining + 500);
-        helper.once('error', error => { clearTimeout(timer); console.error('[electron] Worker shutdown failed', error); resolve(); });
-        helper.once('exit', code => { clearTimeout(timer); if (code !== 0) console.error('[electron] Worker shutdown incomplete', { code }); resolve(); });
-      });
+      try {
+        await new Promise((resolve, reject) => {
+          const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent.spawnEnvironment || process.env });
+          const timer = setTimeout(() => { helper.kill(); reject(new Error('Worker shutdown helper exceeded deadline')); }, remaining + 500);
+          helper.once('error', error => { clearTimeout(timer); reject(error); });
+          helper.once('exit', code => {
+            clearTimeout(timer);
+            if (code !== 0) reject(new Error(`Worker shutdown incomplete (exit=${code})`));
+            else resolve();
+          });
+        });
+      } catch (error) {
+        failure ||= error;
+      }
     }
     serviceProcesses.clear();
+    if (failure) throw failure;
   });
   return shutdownPromise;
 }
@@ -1746,7 +1805,7 @@ async function showStartupFailure(error) {
     requestShutdown(1);
     return;
   }
-  void stopServices();
+  void stopServices().catch(error => console.error('[electron] startup cleanup incomplete', error));
   let status;
   try {
     const records = await loadStartupFailures();
@@ -2337,7 +2396,8 @@ function runStartupDoctor() {
     };
     const timer = setTimeout(() => {
       console.warn('[electron] startup doctor timed out');
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }, STARTUP_DOCTOR_TIMEOUT_MS);
     child.once('exit', finish);
     child.once('error', error => {
@@ -2810,12 +2870,14 @@ function registerIpcHandlers() {
       try {
         const { launchMacUpdate } = require('./macos_update.cjs');
         const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
-        await launchMacUpdate({
+        const update = await launchMacUpdate({
           installerPath: target, executable: process.execPath, parentPid: process.pid,
+          backendExecutable: serviceCommand('lifecycle').command,
           childPids: [...serviceProcesses.values()].map(child => child.pid).filter(Number.isInteger),
           ports: Object.values(sessionPorts), updatesDir: path.join(dataRoot, '.updates'),
           logDir: path.join(dataRoot, 'logs'), arch: process.arch,
         });
+        updateShutdownReceipt = update.shutdownReceipt;
         void requestShutdown(0);
         return true;
       } catch (error) {
@@ -2825,6 +2887,9 @@ function registerIpcHandlers() {
       }
     }
     if (canUseBackendUpdateHelper()) {
+      const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
+      const receipt = await createShutdownReceipt(path.join(dataRoot, '.updates'));
+      updateShutdownReceipt = receipt;
       // Windows packaged builds delegate to the bundled backend's update
       // helper (workswarm.exe --desktop-install-update): it waits for this
       // process to exit and for the backend/frontend ports to release before
@@ -2837,6 +2902,7 @@ function registerIpcHandlers() {
         '--parent-pid', String(process.pid),
         '--backend-port', String(sessionPorts.gatewayApi),
         '--frontend-port', String(sessionPorts.frontend),
+        '--shutdown-receipt', receipt,
       ], {
         cwd: serviceWorkingDirectory(),
         env: { ...process.env },
@@ -2846,13 +2912,11 @@ function registerIpcHandlers() {
         shell: false,
       });
       helper.once('error', error => {
+        if (updateShutdownReceipt === receipt) updateShutdownReceipt = null;
         console.error('[electron] failed to launch backend update helper', error);
-        // Helper could not be spawned: fall back to opening the installer
-        // directly (dev-equivalent behavior) instead of leaving the app
-        // running with no update at all.
-        void shell.openPath(target).then(errorMessage => {
-          if (!errorMessage) setTimeout(() => requestShutdown(0), 250);
-        });
+        void dialog.showMessageBox({ type: 'error', message: 'Failed to launch update installer. Please try again.' })
+          .catch(error => console.error('[electron] failed to display update error', error));
+        void completeShutdownReceipt(receipt, false).catch(error => console.error('[electron] update receipt failed', error));
       });
       helper.once('spawn', () => {
         setTimeout(() => requestShutdown(0), 250);
@@ -3179,15 +3243,20 @@ app.on('before-quit', event => {
   quitRequested = true;
   if (shutdownComplete) return;
   event.preventDefault();
+  if (finalShutdownPromise) return;
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
   // 冲刷下载历史，保证重启后下载记录完整。
   saveStoredDownloads();
-  void Promise.all([abortAllBlobSaves(), stopServices()]).finally(() => {
-    shutdownComplete = true;
-    destroyTray();
-    app.exit(requestedExitCode);
-  });
+  finalShutdownPromise = recordShutdownOutcome(updateShutdownReceipt, () => Promise.all([abortAllBlobSaves(), stopServices()]))
+    .catch(error => {
+      requestedExitCode = Math.max(1, requestedExitCode);
+      console.error('[electron] final shutdown incomplete; update is blocked', error);
+    }).finally(() => {
+      shutdownComplete = true;
+      destroyTray();
+      app.exit(requestedExitCode);
+    });
 });
 app.on('activate', () => {
   if (!mainWindow || mainWindow.isDestroyed()) return;

@@ -13,9 +13,6 @@ import time
 import uuid
 from pathlib import Path
 
-from jiuwenswarm.server.ipc.client import try_connect
-from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN
-
 logger = logging.getLogger(__name__)
 
 
@@ -24,10 +21,10 @@ def default_socket_path() -> str:
     if override:
         return override
     from jiuwenswarm.common.utils import get_user_workspace_dir
-    from jiuwenswarm.server.supervisor.identity import data_scope
+    from jiuwenswarm.server.supervisor.identity import deployment_scope
 
     suffix = "pipe" if os.name == "nt" else "sock"
-    path = get_user_workspace_dir() / "run" / f"runtime-{data_scope()[:16]}.{suffix}"
+    path = get_user_workspace_dir() / "run" / f"runtime-{deployment_scope()[:16]}.{suffix}"
     if os.name != "nt" and len(os.fsencode(path)) >= 100:
         import tempfile
         directory = Path(tempfile.gettempdir()) / f"jiuwenswarm-runtime-{os.getuid()}"
@@ -35,8 +32,24 @@ def default_socket_path() -> str:
         if directory.is_symlink() or directory.stat().st_uid != os.getuid():
             raise RuntimeError("Runtime IPC directory has an unexpected owner")
         directory.chmod(0o700)
-        path = directory / f"runtime-{data_scope()[:16]}.sock"
+        path = directory / f"runtime-{deployment_scope()[:16]}.sock"
     return str(path)
+
+
+def legacy_socket_paths() -> list[str]:
+    """Historical endpoints in this data scope; explicit overrides are isolated."""
+    if os.environ.get("JIUWENSWARM_RUNTIME_SOCKET", "").strip():
+        return []
+    from jiuwenswarm.common.utils import get_user_workspace_dir
+
+    suffix = "pipe" if os.name == "nt" else "sock"
+    from jiuwenswarm.server.supervisor.identity import data_scope
+
+    root = get_user_workspace_dir() / "run"
+    return list(dict.fromkeys([
+        str(root / f"runtime-{data_scope()[:16]}.{suffix}"),
+        str(root / f"runtime-worker.{suffix}"),
+    ]))
 
 
 def build_worker_command(
@@ -72,13 +85,13 @@ async def request_resident_worker_shutdown(socket_path: str, *, hello_timeout: f
 
     A Worker outlives the Front that spawned it, so stopping the service
     process tree leaves it running. This connects as a fresh supervisor,
-    reads the hello to learn the Worker pid, then sends ``shutdown``. The
+    validates the Worker, sends ``shutdown``, and confirms process exit. The
     caller must stop every Front first; otherwise a Front supervisor would
     spawn a replacement Worker.
 
     Args:
         socket_path: Worker IPC endpoint, see ``default_socket_path``.
-        hello_timeout: Seconds to wait for the Worker hello frame.
+        hello_timeout: Total handshake/exit deadline; name retained for compatibility.
 
     Returns:
         The pid of the Worker asked to shut down, or ``None`` when no Worker
@@ -88,20 +101,11 @@ async def request_resident_worker_shutdown(socket_path: str, *, hello_timeout: f
         RuntimeError: The endpoint answered with something other than a
             Worker hello.
     """
-    conn = await try_connect(socket_path)
-    if conn is None:
-        return None
-    try:
-        hello = await asyncio.wait_for(conn.recv(), timeout=hello_timeout)
-        if not isinstance(hello, dict) or hello.get("kind") != KIND_HELLO:
-            raise RuntimeError(f"expected worker hello on {socket_path}")
-        pid = hello.get("pid")
-        if not isinstance(pid, int):
-            raise RuntimeError(f"worker hello on {socket_path} carries no pid")
-        await conn.send({"kind": KIND_SHUTDOWN})
-        return pid
-    finally:
-        await conn.close()
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+
+    result = await shutdown_resident_worker(timeout=hello_timeout, socket_path=socket_path)
+    return result.get("pid")
+
 
 
 class WorkerProcess:
@@ -209,7 +213,8 @@ class WorkerProcess:
             return
         deadline = time.monotonic() + max(0.0, timeout)
         proc.terminate()
-        code = await self.wait(timeout=max(0.0, deadline - time.monotonic()))
+        grace = deadline - min(1.0, max(0.0, timeout) / 2)
+        code = await self.wait(timeout=max(0.0, grace - time.monotonic()))
         if code is None:
             logger.warning("[Supervisor] worker did not exit after SIGTERM; killing")
             proc.kill()
