@@ -601,3 +601,211 @@ def test_build_permission_rail_with_local_compose_fallback(
     assert rail is not None
     assert getattr(rail, "permission_mode", None) == "full_access"
     assert getattr(rail, "sandbox_intent", None) == "optional"
+
+
+def test_mode_get_and_sandbox_follow_effective_config(isolated_data_dir: Path) -> None:
+    # MR 评审（2026-10-29）：MODE_GET/SANDBOX 必须读生效段而非 yaml 直读，
+    # persist 链路变更后回读不得拿旧值；sandbox_intent 跟随 mode。
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        get_permissions_mode,
+        get_sandbox_intent,
+        update_permissions_mode,
+    )
+
+    _write_global(isolated_data_dir, {"enabled": True, "mode": "auto"})
+    assert get_permissions_mode() == "auto"
+    assert get_sandbox_intent() == "required"
+
+    assert update_permissions_mode("strict") == "strict"
+    assert get_permissions_mode() == "strict"
+    assert get_sandbox_intent() == "required"
+
+    assert update_permissions_mode("full_access") == "full_access"
+    assert get_permissions_mode() == "full_access"
+    assert get_sandbox_intent() == "optional"
+
+
+def test_invalid_session_id_rejected(isolated_data_dir: Path) -> None:
+    # MR 评审（2026-10-29）：session_id 作路径分量前必须过
+    # is_valid_session_id，防 ``../`` 穿越数据目录写权限覆盖段。
+    import pytest
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        get_session_permissions_path,
+        load_session_permissions,
+        persist_session_overlay_from_effective,
+    )
+
+    for bad in ("../../config", "a/b", ".hidden", "sess/../x"):
+        with pytest.raises(ValueError):
+            get_session_permissions_path(bad)
+    assert load_session_permissions("../../config") == {}
+    assert (
+        persist_session_overlay_from_effective(
+            {"approval_overrides": [{"id": "x", "action": "allow"}]},
+            session_id="../../config",
+        )
+        is False
+    )
+
+
+def test_session_override_not_promoted_to_user(isolated_data_dir: Path) -> None:
+    # MR 评审（2026-10-29）：永久允许的增量不得携带 compose 已并入的
+    # session 层 override；user 层落盘走棘轮合并而非整表替换。
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        _derive_user_overlay_delta,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+        get_user_permissions_path,
+        persist_session_overlay_from_effective,
+        persist_user_overlay_from_effective,
+    )
+
+    sid = "sess-promote-1"
+    session_entry = {
+        "id": "session_pytest",
+        "tools": ["bash"],
+        "match_type": "command",
+        "pattern": "pytest*",
+        "action": "allow",
+    }
+    assert persist_session_overlay_from_effective(
+        {"approval_overrides": [session_entry]}, session_id=sid
+    )
+    user_entry = {
+        "id": "always_git_status",
+        "tools": ["bash"],
+        "match_type": "command",
+        "pattern": "git status*",
+        "action": "allow",
+    }
+    assert persist_user_overlay_from_effective({"approval_overrides": [user_entry]})
+
+    # rail 整表 payload = 磁盘合成结果 + 本次新批准条目
+    new_entry = {
+        "id": "always_ls_la",
+        "tools": ["bash"],
+        "match_type": "command",
+        "pattern": "ls -la*",
+        "action": "allow",
+    }
+    baseline = compose_host_effective_permissions(session_id=sid)
+    rail_payload = dict(baseline)
+    rail_payload["approval_overrides"] = list(
+        baseline.get("approval_overrides") or []
+    ) + [new_entry]
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        load_global_permissions,
+        load_user_permissions,
+    )
+
+    delta = _derive_user_overlay_delta(
+        rail_payload,
+        [load_global_permissions(), {}, load_user_permissions()],
+        approval_baseline=baseline,
+    )
+    kept = delta.get("approval_overrides") or []
+    assert [entry["id"] for entry in kept] == ["always_ls_la"]
+
+    assert persist_user_overlay_from_effective(delta)
+    raw = yaml.safe_load(get_user_permissions_path().read_text(encoding="utf-8"))
+    saved_ids = [
+        entry["id"] for entry in raw["permissions"]["approval_overrides"]
+    ]
+    # user 层新增本次条目；session 层条目不得被固化；存量不丢
+    assert saved_ids == ["always_git_status", "always_ls_la"]
+
+
+def test_user_persist_merges_overrides_instead_of_replace(isolated_data_dir: Path) -> None:
+    # MR 评审（2026-10-29）：增量语义下 persist 不得整表替换 user 层存量。
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        get_user_permissions_path,
+        persist_user_overlay_from_effective,
+    )
+
+    def _entry(oid: str) -> dict:
+        return {
+            "id": oid,
+            "tools": ["bash"],
+            "match_type": "command",
+            "pattern": f"{oid}*",
+            "action": "allow",
+        }
+
+    assert persist_user_overlay_from_effective({"approval_overrides": [_entry("a")]})
+    assert persist_user_overlay_from_effective({"approval_overrides": [_entry("b")]})
+    raw = yaml.safe_load(get_user_permissions_path().read_text(encoding="utf-8"))
+    assert [entry["id"] for entry in raw["permissions"]["approval_overrides"]] == [
+        "a",
+        "b",
+    ]
+
+
+def test_auto_preset_asks_acp_chat(isolated_data_dir: Path) -> None:
+    # R2（2026-10-29）：develop 最新对 acp_chat 保留 ask（整工具无
+    # 命令级兜底）；迁移删除 Global tools 名单后由 auto preset 兜底，
+    # full_access/strict 不引入。
+    _write_global(isolated_data_dir, {"enabled": True, "mode": "auto"})
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+    )
+
+    auto = compose_host_effective_permissions()
+    assert "acp_chat" in (auto.get("ask_tools") or [])
+    assert "acp_chat" not in (auto.get("allow_tools") or [])
+
+    _write_global(isolated_data_dir, {"enabled": True, "mode": "full_access"})
+    full = compose_host_effective_permissions()
+    assert "acp_chat" not in (full.get("ask_tools") or [])
+
+
+def test_auto_preset_acp_chat_explicit_allow_and_deny_win(isolated_data_dir: Path) -> None:
+    # preset ask 只兜缺省（无显式 ask 名单场景，即迁移删 Global tools
+    # 后的常态）：显式 allow（HITL 永久允许写 user 层）与 deny 均优先
+    # 于 preset 底线。
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+        get_user_permissions_path,
+    )
+
+    _write_global(isolated_data_dir, {"enabled": True, "mode": "auto"})
+    user_path = get_user_permissions_path()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text(
+        yaml.safe_dump({"permissions": {"allow_tools": ["acp_chat"]}}),
+        encoding="utf-8",
+    )
+    allowed = compose_host_effective_permissions()
+    assert "acp_chat" in (allowed.get("allow_tools") or [])
+    assert "acp_chat" not in (allowed.get("ask_tools") or [])
+
+    user_path.write_text(
+        yaml.safe_dump({"permissions": {"deny_tools": ["acp_chat"]}}),
+        encoding="utf-8",
+    )
+    denied = compose_host_effective_permissions()
+    assert "acp_chat" not in (denied.get("ask_tools") or [])
+    assert "acp_chat" not in (denied.get("allow_tools") or [])
+
+
+def test_corrupt_user_yaml_raises_not_silent_empty(isolated_data_dir: Path) -> None:
+    # 评审（2026-10-29）：user 层文件存在但读取失败不得静默当 {}——
+    # deny/ask/rules 全消失属 fail-open；抛出走快照 None → 引擎沿用
+    # 构建期 _static_config。
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        compose_host_effective_permissions,
+        get_user_permissions_path,
+        load_user_permissions,
+    )
+
+    _write_global(isolated_data_dir, {"enabled": True, "mode": "auto"})
+    user_path = get_user_permissions_path()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text("permissions: [unclosed", encoding="utf-8")
+
+    with pytest.raises(Exception):
+        load_user_permissions()
+    with pytest.raises(Exception):
+        compose_host_effective_permissions()
