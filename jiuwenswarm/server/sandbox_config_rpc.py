@@ -286,6 +286,22 @@ def _trigger_apply(kind: str) -> None:
         )
 
 
+async def try_apply_sandbox_network_policy() -> bool:
+    """Try the narrow owned-service fast path; False retains strict P0 rebuild."""
+    import sys
+    from jiuwenswarm.common.config import get_sandbox_startup_mode
+    from jiuwenswarm.common.net_guard_config import render_saved_sandbox_urls
+    from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+
+    if sys.platform != "win32" or get_sandbox_startup_mode() != "internal":
+        return False
+    runner = JiuwenBoxRunner.instance()
+    if not runner.owns_process or runner.process is None or runner.spawned_policy_path is None:
+        return False
+    render_saved_sandbox_urls(runner.spawned_policy_path)
+    return await runner.try_reload_network_policy(runner.spawned_policy_path)
+
+
 async def apply_sandbox_policy_for_restart(
     bootstrap: Callable[[], Awaitable[None]] | None = None,
 ) -> bool:

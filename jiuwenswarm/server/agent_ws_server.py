@@ -12,6 +12,7 @@ import math
 import os
 import shutil
 import sys
+import time
 from contextlib import aclosing, nullcontext
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Optional
@@ -4886,7 +4887,7 @@ class AgentWebSocketServer:
 
     async def _handle_session_delete(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Delete a single session and its recoverable runtime state."""
-        from openjiuwen.core.runner import Runner
+        from openjiuwen.core.runner.runner import Runner
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
         from jiuwenswarm.agents.harness.team import get_team_manager
 
@@ -4987,7 +4988,14 @@ class AgentWebSocketServer:
                                 reason="session.delete: ",
                             )
                         else:
-                            await Runner.release(target)
+                            apply_lock = getattr(self, "_security_config_apply_lock", None)
+                            if apply_lock is None:
+                                apply_lock = self._security_config_apply_lock = asyncio.Lock()
+                            async with apply_lock:
+                                await self._agent_manager.cleanup_session_runtime(
+                                    channel_id=channel_id or "default", session_id=target,
+                                )
+                                await Runner.release(target)
                             deleted = True
                     except Exception as exc:
                         logger.warning(
@@ -5511,14 +5519,14 @@ class AgentWebSocketServer:
                         payload = await dispatch_managed_permissions_request(
                             request.req_method, request.params or {},
                             agent_manager=self._agent_manager,
-                            restart_sandboxes=self._restart_configured_sandboxes,
+                            restart_sandboxes=self.apply_configured_sandboxes,
                             service=service,
                         )
                     else:
                         payload = await dispatch_security_config_request(
                             request.req_method, request.params or {},
                             agent_manager=self._agent_manager,
-                            restart_sandboxes=self._restart_configured_sandboxes,
+                            restart_sandboxes=self.apply_configured_sandboxes,
                             service=service,
                         )
                 resp = AgentResponse(
@@ -5549,7 +5557,7 @@ class AgentWebSocketServer:
                     payload = await dispatch_managed_permissions_request(
                         request.req_method, request.params or {},
                         agent_manager=self._agent_manager,
-                        restart_sandboxes=self._restart_configured_sandboxes,
+                        restart_sandboxes=self.apply_configured_sandboxes,
                         service=service,
                     )
                     resp = AgentResponse(
@@ -5614,10 +5622,15 @@ class AgentWebSocketServer:
                 apply_lock = getattr(self, "_security_config_apply_lock", None)
                 if apply_lock is None:
                     apply_lock = self._security_config_apply_lock = asyncio.Lock()
-                async with apply_lock:
+                read_only = request.req_method in {
+                    ReqMethod.SANDBOX_ENABLED_GET, ReqMethod.SANDBOX_STARTUP_MODE_GET,
+                    ReqMethod.SANDBOX_LIMITS_GET, ReqMethod.SANDBOX_FILES_GET,
+                    ReqMethod.SANDBOX_NETWORK_GET,
+                }
+                async with (nullcontext() if read_only else apply_lock):
                     payload = await dispatch_managed_sandbox_request(
                         request.req_method, request.params or {},
-                        restart_sandboxes=self._restart_configured_sandboxes,
+                        restart_sandboxes=self.apply_configured_sandboxes,
                         service=service,
                     )
                 resp = AgentResponse(
@@ -5670,7 +5683,43 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _restart_configured_sandboxes(self, params: dict) -> dict:
+    async def apply_configured_sandboxes(self, params: dict) -> dict:
+        """Automatic apply restores live owners; explicit restart retains its eager contract."""
+        if params == {"network_only": True}:
+            from jiuwenswarm.server.sandbox_config_rpc import try_apply_sandbox_network_policy
+            from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+                jiuwenbox_policy_update,
+            )
+
+            if (get_sandbox_endpoint().get("type") != "jiuwenbox"
+                    or not get_sandbox_runtime().get("enabled")):
+                raise ValueError("network hot update requires enabled jiuwenbox")
+            async with jiuwenbox_policy_update():
+                if (not self._has_pending_sandbox_rebuild()
+                        and await try_apply_sandbox_network_policy()):
+                    return {"restarted": 0, "scope": "all_active_sandboxes", "status": "applied",
+                            "network_status": "hot_applied"}
+            params = {}
+        return await self._restart_configured_sandboxes(params, live_only=True)
+
+    def _has_pending_sandbox_rebuild(self) -> bool:
+        pending = [self._resolve_adapter(agent) for agents in self._agent_manager.agents.values()
+                   for agent in agents.values()]
+        visited = set()
+        while pending:
+            adapter = pending.pop()
+            if adapter is None or id(adapter) in visited:
+                continue
+            visited.add(id(adapter))
+            pending.extend(getattr(adapter, "_session_adapters", {}).values())
+            card = getattr(adapter, "_sys_operation_card", None)
+            launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+            extra = getattr(launcher, "extra_params", None) or {}
+            if extra.get("_policy_apply_pending") or extra.get("_policy_rebuild_pending"):
+                return True
+        return False
+
+    async def _restart_configured_sandboxes(self, params: dict, *, live_only: bool = False) -> dict:
         """Apply saved network policy and recreate sandboxes with saved file rules."""
         if params:
             raise ValueError("sandbox.restart accepts no parameters (scope: all active sandboxes)")
@@ -5679,16 +5728,32 @@ class AgentWebSocketServer:
         runtime = get_sandbox_runtime()
         if not runtime.get("enabled"):
             raise ValueError("sandbox is disabled")
+        from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+            get_live_jiuwenbox_scopes, jiuwenbox_policy_update,
+        )
+
+        started = time.monotonic()
+        async with jiuwenbox_policy_update():
+            live_scopes = await get_live_jiuwenbox_scopes() if live_only else None
+            result = await AgentWebSocketServer._rebuild_configured_sandboxes(
+                self, runtime, live_scopes,
+            )
+        logger.info(
+            "[sandbox.apply] live_only=%s restarted=%s skipped=%s elapsed=%.3fs",
+            live_only, result["restarted"], result.get("skipped", 0), time.monotonic() - started,
+        )
+        return result
+
+    async def _rebuild_configured_sandboxes(
+        self, runtime: dict, live_scopes: set[str] | None,
+    ) -> dict:
+        """Prepare every retained card, then rebuild only the snapshotted owners."""
         from jiuwenswarm.server.sandbox_config_rpc import apply_sandbox_policy_for_restart
 
-        # Network egress is owned by the service. Wait for its saved policy before
-        # recreating instances; never acknowledge a queued background reload.
-        service_reloaded = await apply_sandbox_policy_for_restart(
-            getattr(self, "_bootstrap_internal_jiuwenbox", None),
-        )
         adapters = []
         launchers = set()
         pending = []
+        failures = []
         for agents in list(self._agent_manager.agents.values()):
             for agent in list(agents.values()):
                 pending.append(self._resolve_adapter(agent))
@@ -5707,33 +5772,107 @@ class AgentWebSocketServer:
             # A port change can replace a registered sysop while older sessions
             # still retain its previous card. Rebind before launcher deduplication.
             refresh_binding = getattr(adapter, "refresh_sandbox_runtime_binding", None)
-            if refresh_binding is not None:
-                refresh_binding()
+            card = getattr(adapter, "_sys_operation_card", None)
+            try:
+                if refresh_binding is not None:
+                    refresh_binding()
+                scope_key = (
+                    adapter.sandbox_scope_key() if hasattr(adapter, "sandbox_scope_key") else None
+                )
+            except Exception as exc:
+                identity = getattr(card, "id", None) or f"adapter[{len(visited)}]"
+                failures.append(f"{identity}: {exc}")
+                continue
             card = getattr(adapter, "_sys_operation_card", None)
             gateway = getattr(card, "gateway_config", None)
             launcher = getattr(gateway, "launcher_config", None)
             if launcher is not None:
-                if id(launcher) in launchers:
+                identity = scope_key if live_scopes is not None and scope_key else id(launcher)
+                if identity in launchers:
                     continue
-                launchers.add(id(launcher))
-            adapters.append(adapter)
+                launchers.add(identity)
+            rebuild = True
+            if live_scopes is not None:
+                extra = getattr(launcher, "extra_params", None) or {}
+                rebuild = bool(scope_key and (
+                    scope_key in live_scopes or extra.get("_policy_rebuild_pending")
+                ))
+            adapters.append((adapter, rebuild))
+        # An unidentified retained owner cannot safely be skipped as if retired.
+        # Validate the whole snapshot before blocking tools or changing the service.
+        if failures:
+            raise RuntimeError("Sandbox scope validation failed: " + "; ".join(failures))
+        for adapter, rebuild in adapters:
+            card = getattr(adapter, "_sys_operation_card", None)
+            launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+            if launcher is not None:
+                extra = getattr(launcher, "extra_params", None) or {}
+                extra["_policy_apply_pending"] = True
+                if rebuild and live_scopes is not None:
+                    extra["_policy_rebuild_pending"] = True
+                launcher.extra_params = extra
+        # Snapshot ownership before a service restart retires caches and retargets
+        # launcher URLs. Never infer liveness from an old card's sandbox_id alone.
+        service_reloaded = await apply_sandbox_policy_for_restart(
+            getattr(self, "_bootstrap_internal_jiuwenbox", None),
+        )
         restarted = 0
         # Finish old Windows ACL cleanup for every scope before installing any
         # replacement ACLs. Otherwise a later old instance can undo an earlier new one.
         from jiuwenswarm.server.sandbox_lifecycle import cleanup_jiuwenbox_sandboxes
 
-        for adapter in adapters:
+        for adapter, rebuild in adapters:
+            refresh_binding = getattr(adapter, "refresh_sandbox_runtime_binding", None)
+            if refresh_binding is not None:
+                refresh_binding()
+            card = getattr(adapter, "_sys_operation_card", None)
+            launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+            if launcher is not None and isinstance(getattr(launcher, "extra_params", None), dict):
+                launcher.extra_params["_policy_apply_pending"] = True
+                if rebuild and live_scopes is not None:
+                    launcher.extra_params["_policy_rebuild_pending"] = True
             await adapter.apply_sandbox_runtime_patch(
-                runtime, files_changed=True, strict=True, prepare_only=True,
+                runtime, files_changed=rebuild, strict=True, prepare_only=True,
             )
         # Include orphaned scopes/historical URLs after preparing active cards
         # (which also disables host fallback), still before any new ACL exists.
         await cleanup_jiuwenbox_sandboxes(reason="policy_changed", strict=True)
         failures = []
-        for index, adapter in enumerate(adapters):
+        skipped = 0
+        for index, (adapter, rebuild) in enumerate(adapters):
             try:
-                if await adapter.apply_sandbox_runtime_patch(runtime, files_changed=True, strict=True):
+                # Recheck after awaits: a released snapshot target stays lazy,
+                # while an unidentifiable retained owner remains a strict failure.
+                if live_scopes is not None and hasattr(adapter, "sandbox_scope_key"):
+                    rebuild = rebuild and adapter.sandbox_scope_key() is not None
+                if not rebuild:
+                    skipped += 1
+                    card = getattr(adapter, "_sys_operation_card", None)
+                    gateway = getattr(card, "gateway_config", None)
+                    launcher = getattr(gateway, "launcher_config", None)
+                    if launcher is not None:
+                        extra = getattr(launcher, "extra_params", None) or {}
+                        extra.pop("sandbox_id", None)
+                        extra.pop("_policy_rebuild_pending", None)
+                    continue
+                applied = await adapter.apply_sandbox_runtime_patch(
+                    runtime, files_changed=True, strict=True,
+                )
+                if applied:
                     restarted += 1
+                elif getattr(adapter, "_sys_operation_card", None) is None:
+                    skipped += 1
+                elif hasattr(adapter, "sandbox_scope_key") and adapter.sandbox_scope_key() is None:
+                    skipped += 1
+                else:
+                    raise RuntimeError("sandbox rebuild did not complete for retained owner")
+                card = getattr(adapter, "_sys_operation_card", None)
+                launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+                if launcher is not None:
+                    extra = getattr(launcher, "extra_params", None) or {}
+                    if not applied:
+                        extra.pop("sandbox_id", None)
+                    extra.pop("_policy_rebuild_pending", None)
             except Exception as exc:
                 card = getattr(adapter, "_sys_operation_card", None)
                 identity = getattr(card, "id", None) or f"adapter[{index}]"
@@ -5744,9 +5883,15 @@ class AgentWebSocketServer:
                 + "; ".join(failures)
                 + ". Retry sandbox.restart to apply the saved policy."
             )
+        for adapter, _ in adapters:
+            card = getattr(adapter, "_sys_operation_card", None)
+            launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+            if launcher is not None:
+                (getattr(launcher, "extra_params", None) or {}).pop("_policy_apply_pending", None)
         from jiuwenswarm.common.config import get_sandbox_startup_mode
 
         return {"restarted": restarted, "scope": "all_active_sandboxes",
+                "skipped": skipped,
                 "status": "applied" if restarted or service_reloaded else "no_active_sandboxes",
                 **({"network_status": "externally_managed"}
                    if get_sandbox_startup_mode() != "internal" else {})}

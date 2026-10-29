@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, HTTPException
@@ -16,6 +17,30 @@ router = APIRouter(tags=["policies"])
 
 configure_logging()
 logger = logging.getLogger(__name__)
+
+
+class ReloadNetworkRequest(BaseModel):
+    """Only reload the configured policy file; callers cannot supply paths/rules."""
+
+    model_config = {"extra": "forbid"}
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+@router.put("/network/reload")
+async def reload_network(request: ReloadNetworkRequest):
+    from jiuwenbox.server.app import get_windows_proxy_controller
+
+    controller = get_windows_proxy_controller()
+    if controller is None or not controller.listening:
+        raise HTTPException(
+            status_code=409, detail="Windows proxy reload unavailable; restart required",
+        )
+    task = asyncio.create_task(_mgr().reload_windows_network(controller, request.fingerprint))
+    task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+    try:
+        return await asyncio.shield(task)
+    except (ValueError, OSError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 def _mgr():

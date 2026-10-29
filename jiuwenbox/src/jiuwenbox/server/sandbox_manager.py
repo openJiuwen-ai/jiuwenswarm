@@ -342,6 +342,8 @@ class SandboxManager:
             policy_path=policy_path,
         )
         self.policy = self.policy_reader.load_policy()
+        # Disk baseline is separate from runtime timeout overrides.
+        self._network_reload_policy = self.policy.model_copy(deep=True)
         self.limits = limits or SandboxLimits.from_env()
 
         self._lock = asyncio.Lock()
@@ -1765,6 +1767,34 @@ class SandboxManager:
                     f"Code-enforced policy denial: {op} '{sandbox_path}' "
                     f"matched deny rule '{rule}' (sandbox={sandbox_id})"
                 )
+
+    async def reload_windows_network(self, controller, expected_fingerprint: str) -> dict:
+        """Apply domain/default rules without replacing instances or file ACLs."""
+        from jiuwenbox.server.network_policy_reload import read_network_candidate
+
+        async with self._lock:
+            if not controller.listening:
+                raise ValueError("Windows proxy is not listening")
+            candidate = read_network_candidate(
+                self.policy_reader, self._network_reload_policy, expected_fingerprint,
+            )
+            network = candidate.windows.network
+            closed = 0
+            if network != self._network_reload_policy.windows.network:
+                closed = await controller.replace_policy(
+                    network.egress, network.ingress, network.disable_all,
+                )
+            # Preserve each instance's filesystem/other overrides and runtime TTL.
+            def with_network(policy):
+                return policy.model_copy(update={
+                    "windows": policy.windows.model_copy(update={"network": network}),
+                })
+
+            self.policy = with_network(self.policy)
+            self._policies = {key: with_network(value) for key, value in self._policies.items()}
+            self._network_reload_policy = candidate
+            return {"status": "applied", "fingerprint": expected_fingerprint,
+                    "closed_connections": closed}
 
     async def get_policy(self, sandbox_id: str) -> SecurityPolicy | None:
         async with self._lock:

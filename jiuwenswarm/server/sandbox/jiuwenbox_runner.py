@@ -406,6 +406,50 @@ class JiuwenBoxRunner:
         except OSError:
             return None
 
+    async def try_reload_network_policy(self, policy_path: Path) -> bool:
+        """Confirm a network-only update on our existing Windows service."""
+        if sys.platform != "win32":
+            return False
+        async with self._lock:
+            if (not self.owns_process or self.process is None
+                    or self.process.returncode is not None
+                    or self.spawned_policy_path != policy_path):
+                return False
+            fingerprint = self._policy_fingerprint(policy_path)
+            if fingerprint is None:
+                return False
+
+            def reload_policy():
+                from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+                    build_jiuwenbox_http_client,
+                )
+
+                with build_jiuwenbox_http_client(
+                    f"http://{self.host}:{self.port}", timeout_seconds=10.0,
+                    api_token=self._startup_extra_env.get("JIUWENBOX_API_TOKEN"),
+                ) as client:
+                    response = client.put(
+                        "/api/v1/network/reload", json={"fingerprint": fingerprint},
+                    )
+                    response.raise_for_status()
+                    return response.json()
+
+            try:
+                receipt = await asyncio.to_thread(reload_policy)
+                if (not isinstance(receipt, dict) or receipt.get("status") != "applied"
+                        or receipt.get("fingerprint") != fingerprint
+                        or self._policy_fingerprint(policy_path) != fingerprint):
+                    return False
+            except (httpx.HTTPError, ValueError, OSError) as exc:
+                logger.info("[JiuwenBoxRunner] network hot update unavailable; rebuild: %s", exc)
+                return False
+            self._spawned_policy_fingerprint = fingerprint
+            logger.info(
+                "[JiuwenBoxRunner] network hot update applied; closed_connections=%s",
+                receipt.get("closed_connections", 0),
+            )
+            return True
+
     async def health_check(self, host: str | None = None, port: int | None = None) -> bool:
         target_host = host or self.host
         target_port = port or self.port

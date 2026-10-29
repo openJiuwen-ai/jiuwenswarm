@@ -889,7 +889,7 @@ async def test_network_source_uses_native_sandbox_sync(service, monkeypatch):
     live = load_yaml_round_trip(service.config_path)
     assert live["permissions"]["net_guard"]["urls"] == {"example.org": "deny"}
     assert live["sandbox"]["urls"] == {"example.org": "deny"}
-    assert restarts
+    assert restarts[-1] == {"network_only": True}
 
 
 @pytest.mark.asyncio
@@ -1559,6 +1559,7 @@ async def test_unified_file_update_replaces_old_sandbox_files(service, tmp_path,
     )
 
     async def restart(_params):
+        assert _params == {}
         return {"status": "applied"}
 
     await dispatch_security_config_request(
@@ -1616,3 +1617,42 @@ async def test_cloud_domain_deny_reaches_real_core_host_exit(service):
             host_exit.check_outbound_url("https://blocked.example.org/resource")
     finally:
         host_exit.reset_host_exit_policy()
+
+
+@pytest.mark.asyncio
+async def test_native_network_only_update_and_retry_keep_file_changes_on_full_path(
+    service, monkeypatch, tmp_path,
+):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server import sandbox_policy_render as render
+
+    monkeypatch.setattr(render, "_config_dir", lambda: tmp_path)
+    monkeypatch.setattr(render, "_is_windows", lambda: True)
+    live = load_yaml_round_trip(service.config_path)
+    live["sandbox"]["enabled"] = True
+    dump_yaml_round_trip(service.config_path, live)
+    restart = AsyncMock(return_value={"status": "applied"})
+    current = await dispatch_security_config_request(
+        ReqMethod.SECURITY_CONFIG_SANDBOX_GET, {}, agent_manager=Manager(),
+        restart_sandboxes=restart, service=service,
+    )
+    value = current["config"]
+
+    async def apply():
+        return await dispatch_security_config_request(
+            ReqMethod.SECURITY_CONFIG_SANDBOX_UPDATE, {"config": value},
+            agent_manager=Manager(), restart_sandboxes=restart, service=service,
+        )
+
+    assert (await apply())["applied"]
+    restart.assert_awaited_with({})
+    value["network"]["disable_all"] = True
+    restart.side_effect = RuntimeError("temporary reload failure")
+    assert not (await apply())["applied"]
+    restart.assert_awaited_with({"network_only": True})
+    restart.side_effect = None
+    assert (await apply())["applied"]
+    restart.assert_awaited_with({"network_only": True})
+    value["filesystem"]["allow_read"] = [str(tmp_path / "workspace")]
+    assert (await apply())["applied"]
+    restart.assert_awaited_with({})

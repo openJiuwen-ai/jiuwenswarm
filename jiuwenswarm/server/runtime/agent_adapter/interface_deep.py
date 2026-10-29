@@ -41,7 +41,7 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig
 from openjiuwen.core.common.logging import server_logger
-from openjiuwen.core.runner import Runner
+from openjiuwen.core.runner.runner import Runner
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
 from openjiuwen.core.session.checkpointer.persistence import PersistenceCheckpointerProvider
@@ -608,6 +608,7 @@ _AGENT_CARD_ID = "jiuwenswarm"
 # registrar that could share an id with an adapter must take a reference here too.
 _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
+_SYS_OPERATION_RELEASE_TASKS: dict[str, asyncio.Task] = {}
 
 _ACP_BLOCKED_DEFAULT_TOOL_NAMES = frozenset(
     {
@@ -1667,8 +1668,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 lock.locked() or self._session_adapter_lock_has_waiters(lock)
             ):
                 continue
-            if await self.cleanup_session_adapter(sid):
-                evicted += 1
+            try:
+                if await self.cleanup_session_adapter(sid):
+                    evicted += 1
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] idle session eviction failed: session_id=%s error=%s",
+                    sid, exc,
+                )
 
     async def cleanup_session_adapter(self, session_id: str | None) -> bool:
         """Release an idle session-scoped adapter without deleting session history."""
@@ -1678,7 +1685,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 return False
             if self.is_session_active(sid) or self.is_deep_agent_executing_for_session(sid):
                 return False
-            await self.cleanup()
+            try:
+                await self.cleanup()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] session adapter cleanup failed: "
+                    "session_id=%s error=%s",
+                    sid, exc,
+                )
+                return False
             return True
 
         lock = self._session_adapter_locks.get(sid)
@@ -1775,6 +1790,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 # Changing the switch cannot rebind tools holding the old
                 # SysOperation. Reuse the normal build and history warmup below
                 # for either direction, keeping the same product session.
+                # Cleanup must succeed before dropping the owner or creating a
+                # replacement; propagating a revocation failure keeps it retryable.
                 instance_source = existing
                 await existing.cleanup()
                 self._drop_session_adapter_cache_entry(sid, remove_lock=False, remove_runtime_state=False)
@@ -4324,11 +4341,63 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         Args:
             sys_operation_id: Id of the sys operation this adapter now depends on.
         """
-        self._retained_sys_operation_ids.append(sys_operation_id)
         with _SYS_OPERATION_REFCOUNT_LOCK:
+            if sys_operation_id in _SYS_OPERATION_RELEASE_TASKS:
+                raise RuntimeError(
+                    "sandbox scope cleanup is pending; retry after session deletion completes"
+                )
+            self._retained_sys_operation_ids.append(sys_operation_id)
             _SYS_OPERATION_REFCOUNTS[sys_operation_id] = (
                 _SYS_OPERATION_REFCOUNTS.get(sys_operation_id, 0) + 1
             )
+
+    async def _cleanup_sys_operations(self) -> None:
+        """Await remote teardown for final sandbox holders before unregistering them.
+
+        Keep the last reference and failed task discoverable on failure. A new
+        adapter cannot borrow this retiring registration until deletion succeeds.
+        Shared holders and local operations only release their own reference.
+        """
+        from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+            release_jiuwenbox_scope,
+        )
+
+        failures = []
+        for op_id in list(self._retained_sys_operation_ids):
+            operation = Runner.resource_mgr.get_sys_operation(op_id)
+            run_config = getattr(operation, "_run_config", None)
+            gateway = getattr(run_config, "config", None)
+            launcher = getattr(gateway, "launcher_config", None)
+            if getattr(launcher, "sandbox_type", None) != "jiuwenbox":
+                self._release_sys_operations([op_id])
+                continue
+            with _SYS_OPERATION_REFCOUNT_LOCK:
+                final_holder = _SYS_OPERATION_REFCOUNTS.get(op_id, 0) == 1
+            if not final_holder:
+                self._release_sys_operations([op_id])
+                continue
+
+            async def release(operation_id=op_id, config=run_config, launch=launcher):
+                await release_jiuwenbox_scope(str(launch.base_url), config.isolation_key_template)
+                (launch.extra_params or {}).pop("sandbox_id", None)
+                self._release_sys_operations([operation_id])
+                with _SYS_OPERATION_REFCOUNT_LOCK:
+                    _SYS_OPERATION_RELEASE_TASKS.pop(operation_id, None)
+
+            with _SYS_OPERATION_REFCOUNT_LOCK:
+                task = _SYS_OPERATION_RELEASE_TASKS.get(op_id)
+                if task is None or task.done():
+                    task = asyncio.create_task(release())
+                    _SYS_OPERATION_RELEASE_TASKS[op_id] = task
+                    task.add_done_callback(
+                        lambda done: None if done.cancelled() else done.exception()
+                    )
+            try:
+                await asyncio.shield(task)
+            except Exception as exc:
+                failures.append(f"{op_id}: {exc}")
+        if failures:
+            raise RuntimeError("sandbox scope cleanup failed: " + "; ".join(failures))
 
     def _release_sys_operations(self, sys_operation_ids: list[str] | None = None) -> None:
         """Drop adapter-held references and unregister the ones left unused.
@@ -4441,6 +4510,10 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     isolation_key_template
                 )
             )
+            if registered_sys_operation is not None:
+                with _SYS_OPERATION_REFCOUNT_LOCK:
+                    if str(registered_sys_operation.id) in _SYS_OPERATION_RELEASE_TASKS:
+                        raise RuntimeError("sandbox scope cleanup is pending")
             if registered_sys_operation is not None and JiuWenSwarmDeepAdapter._has_stale_sandbox_endpoint(
                 registered_sys_operation, sysop_card
             ):
@@ -4501,6 +4574,28 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if getattr(gateway, "launcher_config", None) is not None:
             card.id = registered.id
             card.gateway_config = gateway
+
+    def sandbox_scope_key(self) -> str | None:
+        """Return the owned scope identity, excluding final holders being retired."""
+        from openjiuwen.extensions.sys_operation.sandbox.providers.jiuwenbox import (
+            build_jiuwenbox_shared_scope_key,
+        )
+
+        card = self._sys_operation_card
+        if card is None or card.mode != OperationMode.SANDBOX:
+            return None
+        with _SYS_OPERATION_REFCOUNT_LOCK:
+            if (str(card.id) in _SYS_OPERATION_RELEASE_TASKS
+                    or str(card.id) not in self._retained_sys_operation_ids
+                    or _SYS_OPERATION_REFCOUNTS.get(str(card.id), 0) <= 0):
+                return None
+        launcher = card.gateway_config.launcher_config if card.gateway_config else None
+        if launcher is None or launcher.sandbox_type != "jiuwenbox":
+            return None
+        isolation_key = self._sys_operation_isolation_key(card)
+        if not isolation_key:
+            raise RuntimeError("sandbox isolation key is unavailable")
+        return build_jiuwenbox_shared_scope_key(str(launcher.base_url), isolation_key)
 
     async def apply_sandbox_runtime_patch(
         self, runtime: dict[str, Any], *, files_changed: bool, strict: bool = False,
@@ -4656,6 +4751,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     policy=new_policy,
                     policy_mode=extra.get("policy_mode", "append"),
                     preserve_files_upload=upload_list,
+                    reason="policy_changed",
                 )
                 extra["sandbox_id"] = new_sandbox_id
                 logger.info(
@@ -7868,21 +7964,25 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        cleanup_errors = []
         if not self._is_session_scoped_adapter:
-            for adapter in list(self._session_adapters.values()):
+            for session_id, adapter in list(self._session_adapters.items()):
                 try:
                     await adapter.stop_interaction()
                     await adapter.cleanup()
                 except Exception as exc:
+                    cleanup_errors.append(f"{session_id}: {exc}")
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] session adapter cleanup failed: %s",
                         exc,
                     )
-            self._session_adapters.clear()
-            self._session_adapter_locks.clear()
-            self._session_adapter_last_used.clear()
-            self._session_adapter_versions.clear()
-            self._session_adapter_reload_failures.clear()
+                else:
+                    self._drop_session_adapter_cache_entry(session_id, remove_runtime_state=False)
+            if not cleanup_errors:
+                self._session_adapter_locks.clear()
+                self._session_adapter_last_used.clear()
+                self._session_adapter_versions.clear()
+                self._session_adapter_reload_failures.clear()
         else:
             try:
                 await self.stop_interaction()
@@ -7906,13 +8006,20 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     exc,
                 )
         self._teardown_agent_owned_tools()
-        self._release_sys_operations()
+        try:
+            await self._cleanup_sys_operations()
+        except Exception as exc:
+            cleanup_errors.append(str(exc))
+        else:
+            self._sys_operation_card = None
         # 取消未到期的延时重索引 task，避免 adapter cleanup 后仍有孤儿 task
         # 去触发 manager.sync（此时 rail/manager 可能已失效）。
         if self._memory_reindex_task is not None and not self._memory_reindex_task.done():
             self._memory_reindex_task.cancel()
         self._memory_reindex_task = None
         await self._close_a2x_client()
+        if cleanup_errors:
+            raise RuntimeError("adapter cleanup failed: " + "; ".join(cleanup_errors))
 
     def _teardown_agent_owned_tools(self) -> None:
         """Drop this agent's stateful tool registrations from the global resource manager.
