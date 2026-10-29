@@ -467,6 +467,7 @@ async def test_daily_limit_pushes_notification_once():
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
 
             engine = ProactiveEngine({"enabled": True, "max_recommend_per_day": 1})
+            engine.set_proactive_agent(_make_proactive_agent([]))
             engine.set_send_notification_callback(_capture_notifications(notified))
 
             # 第一次 tick：命中上限 → 推送一次通知
@@ -496,6 +497,7 @@ async def test_daily_limit_no_callback_no_crash():
             from jiuwenswarm.agents.harness.common.recommendation.proactive_engine import ProactiveEngine
 
             engine = ProactiveEngine({"enabled": True, "max_recommend_per_day": 5})
+            engine.set_proactive_agent(_make_proactive_agent([]))
             # 故意不调 set_send_notification_callback
             pushed = await engine.tick_now()
             assert pushed is False
