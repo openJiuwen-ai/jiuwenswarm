@@ -262,12 +262,12 @@ def _protected_runtime_pids() -> set[str]:
     return pids
 
 
-def _dev_stable_host_engine(
+def _whole_line_regex_engine(
     *,
     worktree_guard: bool,
     project_root: Path | None,
 ) -> Any:
-    """agent-shield engine configured only for the dev-stable host component."""
+    """agent-shield engine that matches kill commands on the whole line."""
 
     from agent_shield.tool_permission import PermissionEngine
 
@@ -279,7 +279,7 @@ def _dev_stable_host_engine(
     return PermissionEngine({
         "host_guard": {
             "enabled": True,
-            "dev_stable": True,
+            "whole_line_regex": True,
             "worktree_guard": worktree_guard,
         },
         "runtime": runtime,
@@ -298,9 +298,9 @@ def _host_component_block(engine: Any, command: str) -> str | None:
 
 
 def _check_host_runtime(command: str) -> str | None:
-    """dev-stable host kill regexes and the current/parent process check."""
+    """Whole-line kill regexes and the current/parent process check."""
 
-    engine = _dev_stable_host_engine(worktree_guard=False, project_root=None)
+    engine = _whole_line_regex_engine(worktree_guard=False, project_root=None)
     return _host_component_block(engine, command)
 
 
@@ -318,7 +318,7 @@ def _check_worktree_path_safety(command: str) -> str | None:
         project_root = _context_project_root()
     except Exception:
         return None
-    engine = _dev_stable_host_engine(worktree_guard=True, project_root=project_root)
+    engine = _whole_line_regex_engine(worktree_guard=True, project_root=project_root)
     return _host_component_block(engine, command)
 
 
