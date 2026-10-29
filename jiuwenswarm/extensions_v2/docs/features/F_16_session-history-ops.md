@@ -1,14 +1,16 @@
-# session.append / ops.session.append / ops.session.messages 特性设计
+# session.append / ops.session.append 特性设计
 
 | 项 | 值 |
 | --- | --- |
 | 编号 | F_16 / session-history-ops |
 | 归档日期 | 2026-10-27 |
-| 后续修订 | 2026-10-29，完整消息、door/origin、行级 uuid 与字段填写说明 |
+| 后续修订 | 2026-10-29，完整消息、door/origin、行级 uuid；历史查询已拆至 F_23 |
 | 关联计划 | [EXTV2-16 / Server PR-04](../designs/extensions-v2-development-plan.md#extv2-16-会话历史读写与追加前扩展) |
 | 主责规约 | [S_06](../specs/S_06_session-history-ops.md) |
 
 ## 1. 范围、状态与依据
+
+本文只说明追加前事件和追加方法。历史分页查询 `ops.session.messages` 的参数、返回字段、快照、错误和独立只读用户示例已拆至 [F_23](F_23_session-messages-ops.md)，不再与写入契约合写；两份文档仍属于同一个 PR04 / EXTV2-16，不新增开发任务。
 
 本特性在 [PR !83](https://gitcode.com/huenrui_/jiuwenswarm/pull/83) 内升级事件契约，原编号不变。实现位置为 Worker；Front/Supervisor 沿用既有路由，agent-core 不修改。依赖既有 Core EventBus、Registry、Ops Builder 和 USER 故障隔离，验证使用 Core `ead700d7d18a247968d64de54918cf5d201a207a`。
 
@@ -22,7 +24,7 @@
 
 `session.append` 是一条主会话历史记录保存前的扩展点。平台先确定会话、待存消息、行身份与来源，再触发事件。USER 可以查看完整公开消息结构、按来源筛选并改写允许的文本；默认 CORE 校验并实际提交。仅扩展自己发起的 note 可显式拒绝。一次处理一条通过原前置过滤的记录尝试，重试也进入事件链，提交层负责去重。
 
-`await ops.session.append(note)` 为扩展追加 transcript_only 留档消息，使用绑定会话和真实包身份，另起 session.append 事件链，返回实际提交、重复或拒绝的回执。`await ops.session.messages(...)` 直接分页读取持久化产品历史，不触发查询事件。
+`await ops.session.append(note)` 为扩展追加 transcript_only 留档消息，使用绑定会话和真实包身份，另起 session.append 事件链，返回实际提交、重复或拒绝的回执。需要读回历史时，使用 [F_23 的独立查询方法](F_23_session-messages-ops.md)；读取不要求先执行追加。
 
 | 项 | 本次实现 | 与固定 Claude 定义的关系 |
 | --- | --- | --- |
@@ -116,7 +118,7 @@ door 的本地映射：用户记录→prompt；普通助手记录→response；c
 | message_id | str，必有 | Ops 调用时回显用户参数 id；平台调用时为原产品记录 id。不是通用行唯一身份 |
 | message | SessionAppendMessage 或 None | 成功/重复为**实际存下来的**公开消息（同 3.2 的全部字段）；拒绝为 None。可能与进入 Handler 时正文不同 |
 | uuid | str 或 None | 成功/重复为实际记录 uuid，旧行可回退到原 id；拒绝为 None，不能凭拒绝回执声称存在一行 |
-| history_record | dict 或 None | 成功/重复为实际产品历史记录的独立副本，可与 messages 查询比较；移除内部 _session_append。拒绝为 None |
+| history_record | dict 或 None | 成功/重复为实际产品历史记录的独立副本，可与 messages 查询比较；移除内部 _session_append。记录字段见 [F_23 第 4.2 节](F_23_session-messages-ops.md#42-返回字典的全部字段)。拒绝为 None |
 | reason | str 或 None | 拒绝时的非空原因；成功/重复为 None。用于给自己的调用方解释拒绝，不是异常堆栈 |
 
 唯一合法拒绝对象是 `SessionAppendRejection(reason="说明原因")`：reason 必填 str，去首尾空白后 1～512 字符，且必须在 next 之前、针对自己的 note 返回。普通平台/RPC 历史不能被 USER 拒绝；非法拒绝/改写依 Core USER 故障隔离继续原有效输入。抛异常不等于业务拒绝。CORE 已真实提交后，回传改写或后置拒绝不能撤销已写事实。
@@ -190,46 +192,7 @@ if receipt["status"] in ("persisted", "duplicate"):
 
 幂等范围为真实包 ID + 会话 + 参数 id；必须连同原参数格式和内容原样重试。相同原请求返回 duplicate 与先前实际消息；同一 id 改原参数报 APPEND_ID_CONFLICT。更改 Hook 后重试仍返回第一次实际写入，不用新规则重写旧行。取消/结果未知时同 id 原样重试确认。
 
-### 4.2 ops.session.messages(limit=50, cursor=None)
-
-| 参数 | 必填 / 默认 | 应填写什么 |
-| --- | --- | --- |
-| limit | 可省略，50 | 1～100 的整数，不接受 bool；如 limit=20 表示本页最多 20 条 |
-| cursor | 可省略，None | 首次/重新查询填 None；继续同一快照时原样传回上页 next_cursor，不解析、不拼接、不跨会话复用 |
-
-| 返回字段 | 类型 | 含义及怎样消费 |
-| --- | --- | --- |
-| messages | list[dict] | 按新到旧排列的主会话产品历史记录，不是 SessionAppendMessage 数组；可与 receipt.history_record 比较 |
-| next_cursor | str 或 None | 有下一页时的游标；继续查询原样传回，None 表示无下一游标 |
-| has_more | bool | 当前固定快照是否还有记录；不表示后来是否又有新增消息 |
-| snapshot_id | str 或 None | 当前文件快照标识；无历史文件为 None，空列表是正常结果 |
-
-messages 内的每条记录沿用产品历史：id 为分组身份；uuid 是新事件路径写入的行身份，旧/同步记录可缺失；role 为产品 user/assistant；content 为兼容显示字符串；request_id/channel_id 为平台请求/渠道；timestamp 为 Unix 秒数。event_type 及工具字段等按原记录保留。新事件记录含 transcript_message，其完整字段同 3.2；扩展记录还含 extension_message_id、extension_package_id、transcript_only。不要对旧记录假设这些可选字段必有。
-
-history_record 和 messages 中记录的常用字段如下。它们均由平台返回，调用者**不向 append 参数回填这些字段**；除本表确定字段外，产品原有 extra 键按 JSON 原样保留，没有统一的额外写入权限。
-
-| 记录字段 | 类型 / 是否必有 | 含义与使用方式 |
-| --- | --- | --- |
-| id | str，平台记录有 | 产品分组标识或扩展命名空间标识，保留既有语义；不当作所有行的唯一 ID |
-| uuid | str，可缺省 | 新事件写入路径的行级身份；旧或同步记录可能没有，用于与事件/回执关联 |
-| role | str，平台记录有 | 产品兼容角色 user/assistant；工具/通知的完整角色看 transcript_message.role |
-| content | str，平台记录有 | 产品兼容显示文本；不是内容块数组，不代表原始工具 result 已删除 |
-| request_id | str，平台记录有 | 产生该记录的平台请求标识，不作为新 append 的参数 id |
-| channel_id | str，平台记录有 | 记录所属接入渠道，如 web/extension；不由扩展选择目标渠道 |
-| timestamp | float，平台记录有 | Unix 时间戳，单位秒，由宿主填写；不是毫秒或本地格式字符串 |
-| event_type | str，可缺省 | 原产品事件类别，如 chat.final/chat.tool_result；不等于 EventBus 事件名 |
-| transcript_message | dict，可缺省 | 本轮事件最终保存的公开消息快照，全部字段同 3.2；旧记录可没有 |
-| native_message | dict，可缺省 | 平台输入 BaseMessage 时的原生 JSON 快照。基础字段为 role/content/name/metadata，具体原生子类可有工具调用、usage 等字段；只读保留，不作为用户请求 Schema |
-| tool_call_id / tool_calls / name / result / rendered_result | 依原记录，可缺省 | 工具关联/调用/名称/原始结果/呈现结果；结构由原生生产者决定。本事件只受控更新呈现正文，不能改关联或原始结果 |
-| extension_message_id | str，仅扩展记录有 | 用户方法参数 id，用于同一业务动作重试和留档关联 |
-| extension_package_id | str，仅扩展记录有 | Core 发布的真实调用包 ID；平台直接调用无包身份时为保留值 `<host>` |
-| transcript_only | bool，仅扩展记录保证 True | 表示扩展留档，不是新的 Agent 输入或已执行回合 |
-
-native_message.metadata 以及未知供应商/宿主字段为不透明 JSON；由所属原生模型定义，不要求用户填写或猜测。原生输入快照必须可序列化为 JSON；本能力不承诺保存任意 Python 对象。
-
-首次查询排空已接受写入后固定快照；后追加不进入旧 cursor。cursor=None 才查询包含新消息的新快照。文件替换/截断报 SNAPSHOT_CHANGED，跨会话或非法游标报 INVALID_CURSOR。无历史返回空页，不查询未提交生成片段，不触发 EventBus。
-
-### 4.3 旧 Handler / 回执迁移
+### 4.2 旧 Handler / 回执迁移
 
 | 旧用法 | 本次应该改成 |
 | --- | --- |
@@ -259,15 +222,17 @@ await run_history_io(
 
 该异步入口收到原生 BaseMessage 时，在过滤/提交之前适配为公开消息，同时将原生 JSON 快照留在 native_message 中。工具关联、metadata、工具参数由宿主保留，允许的 content 改写合并回待存快照，原调用者的 BaseMessage 实例不被就地修改。原有产品流式事件入口继续适配，不要求把全系统历史迁移为 BaseMessage 存储。
 
-启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 messages/append 等方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；普通读取 messages 不另起事件。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
+启动阶段，现有 ops.build CORE 返回 Builder，平台 BUILTIN 在 next 返回后登记 append 等共享方法；这不是写入事件的 CORE。业务阶段 Builder 为实际 Handler 绑定包身份和 SessionContext，USER 调 append 才另起新 session.append；[历史查询的直接读取链](F_23_session-messages-ops.md#51-平台装配和业务调用链) 独立说明。session.append 没有新增 BUILTIN；默认 CORE 负责写入，USER 负责自己的规则。
 
 生命周期预检在 Hook 前捕获 generation，提交锁内复验；不持文件/队列锁执行 USER。文件关闭后才成功回执，同一次调用的重复 next 复用真实结果；回执深拷贝，后置篡改不改变已经保存的事实。写入开始后取消先排空，再传播 CancelledError。写入与元数据仍非跨存储原子事务，不承诺 fsync 断电耐久。
 
-主要失败：INVALID_MESSAGE（输入/参数非法）、INVALID_SESSION/SESSION_NOT_FOUND（会话非法/追加目标不存在）、APPEND_ID_CONFLICT、APPEND_REENTRANT、HISTORY_IO_FAILED、APPEND_OUTCOME_UNKNOWN、INVALID_MESSAGE_LIMIT、INVALID_CURSOR、SNAPSHOT_CHANGED。USER 内未捕获的 Ops 异常仍可能被外层 Core 隔离；必须查看真实返回/自行捕获，不能把外层回合继续当作追加成功。
+主要失败：INVALID_MESSAGE（输入/参数非法）、INVALID_SESSION/SESSION_NOT_FOUND（会话非法/追加目标不存在）、APPEND_ID_CONFLICT、APPEND_REENTRANT、HISTORY_IO_FAILED、APPEND_OUTCOME_UNKNOWN。历史查询的参数、游标和快照错误见 F_23。USER 内未捕获的 Ops 异常仍可能被外层 Core 隔离；必须查看真实返回/自行捕获，不能把外层回合继续当作追加成功。
 
 卸载/重载撤销用户 Handler，不删除已提交历史或平台 CORE；共享 Ops 在有效 SessionContext 下可供其他事件 Handler 使用。无需用户调用 notify_context_usage 来创建新入口；已有示例仅选用量通知展示接入。
 
 ## 6. 验收与未决问题
+
+2026-10-29 本次仅按职责拆分文档，未改运行代码，未重跑下述业务或真实模型验收。以下保留 PR04 读写联合验证的日期、总数与范围；查询单独的场景和证据归属见 [F_23 第 6 节](F_23_session-messages-ops.md#6-验收与未决问题)。
 
 本轮 定向回归 388 项通过、1 项跳过；模型兼容回归 74 项通过。命令与证据目录：`D:\work_space\.codex-temp\server-pr04-message-contract-20261029`，对应 regression.xml、model-regression.xml、各 command.json；未运行格式化或静态检查工具。
 
@@ -288,6 +253,7 @@ await run_history_io(
 
 ## 7. 参考资料
 
+- [F_23 历史查询](F_23_session-messages-ops.md)：参数、分页/快照、只读用户包与查询证据。
 - [S_06 主责规约](../specs/S_06_session-history-ops.md)：不变量、兼容与错误范围。
 - [内置事件接入说明](../designs/builtin-event-development-guide.md)：公共 EventBus/Handler/Ops 机制。
 - [事件类型](../../event_types/session_history.py)、[平台触发](../../../server/runtime/session/history_events.py)、[消息映射](../../../server/runtime/session/history_message.py)、[默认 CORE](../../event_handlers/session_history.py)。
