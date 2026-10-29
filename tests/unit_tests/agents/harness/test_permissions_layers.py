@@ -809,3 +809,85 @@ def test_corrupt_user_yaml_raises_not_silent_empty(isolated_data_dir: Path) -> N
         load_user_permissions()
     with pytest.raises(Exception):
         compose_host_effective_permissions()
+
+
+def test_snapshot_failure_keeps_static_deny_not_ask(isolated_data_dir: Path) -> None:
+    # 评审（2026-10-29，renquanjia 两条 Should Fix）：overlay 损坏/compose
+    # 异常时快照必须回 None（引擎沿用构建期 _static_config），不得以 {}
+    # 整体替换策略——否则 deny 名单/file_guard 底线降档为 ASK。行为路径
+    # 穿透：构建 → overlay 事后写坏 → 快照 None → 引擎判定仍 DENY。
+    import asyncio
+    from types import SimpleNamespace
+
+    from openjiuwen.harness.security.models import PermissionLevel
+
+    from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+        build_permission_rail,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        get_user_permissions_path,
+    )
+
+    _write_global(
+        isolated_data_dir,
+        {"enabled": True, "mode": "auto", "tools": {"evil_cmd": "deny"}},
+    )
+    # 构建（agent 组装）以传入的 permissions 段为全局层源
+    rail = build_permission_rail(
+        {"permissions": {"enabled": True, "mode": "auto", "tools": {"evil_cmd": "deny"}}}
+    )
+    assert rail is not None
+    assert "evil_cmd" in (rail._static_config.get("deny_tools") or [])
+
+    # 模拟跨进程外部写坏 user overlay（构建后发生）
+    user_path = get_user_permissions_path()
+    user_path.parent.mkdir(parents=True, exist_ok=True)
+    user_path.write_text("permissions: [unclosed", encoding="utf-8")
+
+    # compose 失败 → 快照 None（不是 {}）
+    snap = rail._host.get_permissions_snapshot()
+    assert snap is None
+
+    # 引擎刷新回落 _static_config，deny 仍为 DENY 而非 ASK
+    rail._refresh_permissions_for_tool_call(SimpleNamespace())
+    result = asyncio.run(rail._engine.check_permission("evil_cmd", {}))
+    assert result.permission == PermissionLevel.DENY
+
+
+def test_file_guard_path_merge_blocks_ask_to_deny(isolated_data_dir: Path) -> None:
+    # 评审（2026-10-29）：paths 棘轮须全级别（deny<ask<allow），ask
+    # 不得被低级别层覆盖为 deny。
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        _merge_file_guard_path_entries,
+    )
+
+    section = {
+        "file_guard": {
+            "paths": [{"path": "**/.ssh/**", "read": "ask", "write": "ask", "exec": "ask"}]
+        }
+    }
+    _merge_file_guard_path_entries(
+        section,
+        [{"path": "**/.ssh/**", "read": "deny", "write": "allow", "exec": ""}],
+    )
+    merged = section["file_guard"]["paths"][0]
+    assert merged["read"] == "ask"  # ask 不被降级为 deny
+    assert merged["write"] == "allow"  # allow 棘轮照常生效
+    assert merged["exec"] == "ask"  # 空值不覆盖
+
+
+def test_ratchet_merge_skips_missing_action(isolated_data_dir: Path) -> None:
+    # 评审（2026-10-29）：无 action 条目不得默认 allow 持久化（fail-open）。
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        _ratchet_merge_approval_overrides,
+    )
+
+    existing = [
+        {"id": "a", "tools": ["bash"], "match_type": "command", "pattern": "a*", "action": "deny"}
+    ]
+    merged = _ratchet_merge_approval_overrides(
+        existing,
+        [{"tools": ["bash"], "match_type": "command", "pattern": "b*"}],
+    )
+    # 无 action 新键被跳过；存量保留
+    assert [entry["id"] for entry in merged] == ["a"]
