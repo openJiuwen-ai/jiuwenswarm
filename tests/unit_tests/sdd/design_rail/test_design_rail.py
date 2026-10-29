@@ -1021,3 +1021,91 @@ def test_review_skill_r1_uses_the_system_prompt_subagent_call(tmp_path: Path) ->
     assert "subagent_spawn" in body
     assert "subagent_wait" in body
     assert "Use `task_tool` with an available subagent type" not in body
+
+
+# ── Regression: chunked write protection prevents max_tokens truncation ──
+
+
+def test_analysis_generation_sop_requires_chunked_write(tmp_path: Path) -> None:
+    """Large documents must be split across multiple write_file/edit_file
+    calls so a single JSON string cannot be truncated by max_output_tokens
+    (truncated JSON → 'Unterminated string' → write_file never executes)."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis")
+    assert payload is not None
+
+    sop_path = (
+        Path(rail._rail_pkg_dir)
+        / "skills"
+        / "aet-req-analysis"
+        / "workflows"
+        / "sop-generation.md"
+    )
+    sop = sop_path.read_text(encoding="utf-8")
+
+    assert "Chunked Write Protection" in sop
+    assert "3000 characters" in sop
+    assert "edit_file" in sop
+
+
+def test_design_generation_sop_requires_chunked_write(tmp_path: Path) -> None:
+    """Same protection for the design skill — design docs with mermaid
+    diagrams and module-detail tables are especially truncation-prone."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("design")
+    assert payload is not None
+
+    sop_path = (
+        Path(rail._rail_pkg_dir)
+        / "skills"
+        / "aet-req-design"
+        / "workflows"
+        / "sop-generation.md"
+    )
+    sop = sop_path.read_text(encoding="utf-8")
+
+    assert "Chunked Write Protection" in sop
+    assert "3000 characters" in sop
+    assert "edit_file" in sop
+    assert "mermaid" in sop.lower()
+
+
+# ── Regression: chunked write hard rule in SKILL <constraint> (#truncation) ──
+
+
+def test_analysis_skill_constraint_has_chunked_write_hard_rule(tmp_path: Path) -> None:
+    """The chunked-write rule must live in the SKILL <constraint> section so
+    the model sees it on every invocation — not just in the SOP sub-file the
+    model may skim. A single oversized write_file is truncated by the model's
+    output token budget ('Unterminated string') and the file is never written.
+    """
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("analysis")
+    assert payload is not None
+
+    constraint_start = payload.find("<constraint>")
+    constraint_end = payload.find("</constraint>")
+    assert constraint_start != -1 and constraint_end != -1
+    constraint = payload[constraint_start:constraint_end]
+
+    assert "HARD RULE" in constraint
+    assert "2000 characters" in constraint
+    assert "Chunked file writes" in constraint
+    assert "Unterminated string" in constraint
+
+
+def test_design_skill_constraint_has_chunked_write_hard_rule(tmp_path: Path) -> None:
+    """Same hard rule for the design skill, with explicit mermaid warning."""
+    rail = _make_rail(tmp_path)
+    payload = rail._load_skill_methodology("design")
+    assert payload is not None
+
+    constraint_start = payload.find("<constraint>")
+    constraint_end = payload.find("</constraint>")
+    assert constraint_start != -1 and constraint_end != -1
+    constraint = payload[constraint_start:constraint_end]
+
+    assert "HARD RULE" in constraint
+    assert "2000 characters" in constraint
+    assert "mermaid" in constraint.lower()
+    assert "Unterminated string" in constraint
