@@ -763,7 +763,7 @@ export function ExternalCliAgentsSection({
       // The draft update re-arms the debounced auto-detect for the same path;
       // mark it as already scheduled so the refresh probe below stays the only
       // follow-up detection (no duplicate backend round-trip).
-      scheduledDetectPathsRef.current[cliAgent] = persistedPath;
+      scheduledDetectPathsRef.current[cliAgent] = `${persistedPath}|true`;
       // Refresh the result with one more probe so the badge lands on a fresh
       // "installed" state even if the just-probed result gets wiped meanwhile;
       // `detect` releases the held flag when it settles. The save is an
@@ -882,19 +882,20 @@ export function ExternalCliAgentsSection({
     [onSelectFile, setAgentError, t],
   );
 
-  // One string covering every agent's path and built-in-vs-external choice,
-  // so the effects below rerun only when an agent appears, disappears, or has
-  // its path or CLI mode edited.
+  // One string covering every agent's path, built-in-vs-external choice and
+  // enabled state, so the effects below rerun only when an agent appears,
+  // disappears, or has its path, CLI mode or enabled flag edited.
   const cliPathsSignature = JSON.stringify(
     visibleAgentKinds.map((agent) => [
       agent,
       draftValues[externalCliKey(agent, 'cli_path')] || '',
       draftValues[externalCliKey(agent, 'use_builtin')] === 'true',
+      draftValues[externalCliKey(agent, 'enabled')] === 'true',
     ]),
   );
 
   useEffect(() => {
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
+    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean, boolean][];
     for (const [cliAgent, cliPath] of currentPaths) {
       const previous = observedCliPathsRef.current[cliAgent];
       if (previous === cliPath) continue;
@@ -928,16 +929,21 @@ export function ExternalCliAgentsSection({
 
   useEffect(() => {
     if (!onDetect) return undefined;
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
+    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean, boolean][];
     const timers = new Map<ExternalCliAgentKind, number>();
-    for (const [cliAgent, cliPath, useBuiltin] of currentPaths) {
-      if (scheduledDetectPathsRef.current[cliAgent] === cliPath) continue;
-      scheduledDetectPathsRef.current[cliAgent] = cliPath;
+    for (const [cliAgent, cliPath, useBuiltin, enabled] of currentPaths) {
+      if (scheduledDetectPathsRef.current[cliAgent] === `${cliPath}|${enabled}`) continue;
+      scheduledDetectPathsRef.current[cliAgent] = `${cliPath}|${enabled}`;
       const timer = window.setTimeout(() => {
         timers.delete(cliAgent);
         // Detect in the mode the agent is configured for: probing PATH for a
         // built-in CLI would report a false "not installed".
-        void detect(cliAgent, cliPath, useBuiltin);
+        // When the agent is disabled, use_builtin and cli_path are not
+        // persisted by the backend, so they reset to defaults on reload.
+        // Probe with use_builtin=true so the managed built-in CLI path is
+        // checked first (it also falls back to PATH), giving the correct
+        // "is the CLI installed" answer for disabled agents.
+        void detect(cliAgent, cliPath, enabled ? useBuiltin : true);
       }, EXTERNAL_CLI_AUTO_DETECT_DELAY_MS);
       timers.set(cliAgent, timer);
     }
@@ -1161,6 +1167,15 @@ export function ExternalCliAgentsSection({
             <Loader2 className="settings-spinner h-3.5 w-3.5" />
             {t('config.externalCli.installPhase.running')}
           </span>
+        ) : !installed ? (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-text-muted"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <CliStatusDisc />
+            {t('config.externalCli.notInstalled')}
+          </span>
         ) : !enabled ? (
           <span
             className="inline-flex items-center gap-1 text-xs text-danger"
@@ -1170,7 +1185,7 @@ export function ExternalCliAgentsSection({
             <CliStatusDisc ringClassName="text-danger" filled />
             {t('config.externalCli.disabled')}
           </span>
-        ) : installed ? (
+        ) : (
           <span
             className="inline-flex items-center gap-1 text-xs text-text-muted"
             data-testid="settings-panel-external-cli-agent-status"
@@ -1181,15 +1196,6 @@ export function ExternalCliAgentsSection({
             {result?.version ? (
               <span className="ml-2 text-text-muted">{t('config.externalCli.version', { version: result.version })}</span>
             ) : null}
-          </span>
-        ) : (
-          <span
-            className="inline-flex items-center gap-1 text-xs text-text-muted"
-            data-testid="settings-panel-external-cli-agent-status"
-            data-variant={cliAgent}
-          >
-            <CliStatusDisc />
-            {t('config.externalCli.notInstalled')}
           </span>
         );
 
@@ -1206,7 +1212,7 @@ export function ExternalCliAgentsSection({
             className="space-y-2 rounded-lg border border-border bg-secondary/10 p-3"
             data-testid="settings-panel-external-cli-agent"
             data-variant={cliAgent}
-            data-state={detectingNow ? 'detecting' : installed ? 'installed' : 'not-installed'}
+            data-state={detectingNow ? 'detecting' : !installed ? 'not-installed' : !enabled ? 'disabled' : 'installed'}
           >
             {custom ? (
               <>
@@ -1237,7 +1243,7 @@ export function ExternalCliAgentsSection({
                       aria-checked={enabled}
                       aria-label={toggleLabel(cliAgent)}
                       onClick={() => onChange(enabledKey, enabled ? 'false' : 'true')}
-                      disabled={disabled}
+                      disabled={disabled || (!installed && !enabled)}
                       data-testid="settings-panel-external-cli-agent-toggle"
                       data-variant={cliAgent}
                       className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
@@ -1368,7 +1374,7 @@ export function ExternalCliAgentsSection({
                   <div className="flex flex-shrink-0 items-center gap-2">
                     <Switch
                       checked={enabled}
-                      disabled={disabled || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      disabled={disabled || (!installed && !enabled) || committing[cliAgent] || agentInstalling || editing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"
@@ -1500,13 +1506,13 @@ export function ExternalCliAgentsSection({
                     onStatusChange={onInstallStatusChange}
                     inline
                   />
-                ) : !installed && enabled && (!result || !detectingNow) ? (
+                ) : !installed && (!result || !detectingNow) ? (
                   // One-click install entry: shown initially (no result yet)
                   // and whenever a finished detect reports the agent missing.
                   // While a detect is in flight with a result on screen the
                   // banner hides, so a manual re-detect never flashes it.
-                  // Disabled agents never prompt: the user already turned them
-                  // off, so "install now" would be noise after a page reload.
+                  // The toggle is disabled when not installed, so the user
+                  // must use this button to install before enabling.
                   <div
                     className="flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5"
                     data-testid="settings-panel-external-cli-agent-install-hint"

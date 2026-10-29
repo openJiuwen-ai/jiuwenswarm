@@ -176,11 +176,11 @@ test('the persisted choice triggers a debounced auto-detection for both agents',
   // Every listed agent (built-in or uploaded) is detected after its own path
   // changes, in the CLI mode (built-in vs external) it is configured for.
   assert.match(sectionSource, /for \(const \[cliAgent, cliPath\] of currentPaths\)/);
-  assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin\] of currentPaths\)/);
+  assert.match(sectionSource, /for \(const \[cliAgent, cliPath, useBuiltin, enabled\] of currentPaths\)/);
   // Automatic detection stays silent; the manual detect button wraps it in
   // detectAndNotify, which toasts the outcome like the models settings'
   // connection test.
-  assert.match(sectionSource, /detect\(cliAgent, cliPath, useBuiltin\)/);
+  assert.match(sectionSource, /detect\(cliAgent, cliPath, enabled \? useBuiltin : true\)/);
   assert.match(sectionSource, /void detectAndNotify\(cliAgent, cliPath, useBuiltin\)/);
   assert.match(sectionSource, /void detectAndNotify\(cliAgent, draftValues\[cliPathKey\] \|\| ''\)/);
   assert.match(sectionSource, /result\?\.status === 'ok' \|\| result\?\.status === 'warning'/);
@@ -273,7 +273,7 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // A force install on an already-installed agent finishes silently backend-side,
   // so installNow must always toast the outcome to stay responsive.
   assert.match(sectionSource, /showHint\(t\('config\.externalCli\.installSucceeded'\)\)/);
-  assert.match(sectionSource, /!installed && enabled && \(!result \|\| !detectingNow\)/);
+  assert.match(sectionSource, /!installed && \(!result \|\| !detectingNow\)/);
   assert.doesNotMatch(sectionSource, /manualDetectAgents/);
   // Built-in mode shows the actual built-in CLI path from detection instead of
   // the generic placeholder text.
@@ -429,10 +429,11 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
   assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
-  // The enable switch must stay clickable even when the CLI is reported
-  // missing (e.g. right after a page reload, before the auto-detect runs),
-  // otherwise the user gets locked out of re-enabling a disabled agent.
-  assert.match(section, /disabled=\{disabled \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  // The enable switch is disabled only when the CLI is not installed AND the
+  // agent is already disabled — so a page reload (installed=false until the
+  // auto-detect runs) does not lock the user out of an enabled agent, and a
+  // disabled agent cannot be turned on before installing the CLI.
+  assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {
