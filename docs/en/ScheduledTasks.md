@@ -2,7 +2,13 @@
 
 Scheduled tasks (Cron) are an essential mechanism for automation in JiuwenSwarm.
 
+Model choices support existing single models and model groups/routes; changing a session's model does not modify the job configuration.
+
+Cron creation and update tools accept `model_selection`: `{"type":"model","id":"<model-id>"}` or `{"type":"model_group","id":"<group-id>","route_id":"<optional-route-id>"}`. A non-null structured selection takes priority over `model_name`; `route_id` is only valid for model groups. Set `model_selection` to null to clear the structured choice. Login-provided free models continue to use `model_name` and bind credentials from the authenticated creation/update connection; configured models and group routes do not inherit an old login binding.
+
 ---
+
+Each execution session inherits the model selection saved in the job; changing the session model does not change the job.
 
 ## Concepts
 

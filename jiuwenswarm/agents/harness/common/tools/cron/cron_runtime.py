@@ -19,7 +19,11 @@ from jiuwenswarm.runtime.cron.models import (
     is_valid_target_channel_id,
     normalize_target_channel_id,
 )
-from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
+from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
+    CronToolRoute,
+    CronTools,
+    cron_model_selection_schema,
+)
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from jiuwenswarm.common.utils import logger
@@ -143,6 +147,14 @@ class _CronToolsCronBackend(CronToolBackend):
             meta = get_session_metadata(session_id, cache_bust=True)
             if not isinstance(meta, dict):
                 return payload
+            if meta.get("model_selection") is not None:
+                from gateway.common.model_selection import ModelSelection
+
+                selection = ModelSelection.model_validate(meta["model_selection"])
+                out = dict(payload)
+                out["model_selection"] = selection.model_dump()
+                out.pop("model_name", None)
+                return out
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
@@ -564,6 +576,10 @@ def _extract_legacy_params(
         model_name_raw = data.get("model_name") or payload_block.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
             out["model_name"] = str(model_name_raw).strip()
+        if "model_selection" in data:
+            out["model_selection"] = data["model_selection"]
+        elif "model_selection" in payload_block:
+            out["model_selection"] = payload_block["model_selection"]
 
         # mcp：透传会话级 MCP 选择（顶层或随 payload 传入）；未显式传时由
         # 调用方继承会话 MCP 快照。保留显式空列表，避免继承覆盖或无法清除选择；
@@ -735,6 +751,36 @@ _QUARTZ_DOW_DECLARATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"[Dd]ow\s*\(\s*1\s*-\s*7"),
     re.compile(r"周\s*\(\s*1\s*-\s*7"),
 )
+
+
+def _patch_cron_model_selection_cards(tools: list[Any], language: str) -> None:
+    """Expose the application's model contract on framework-generated tools."""
+    for tool in tools:
+        card = getattr(tool, "card", None)
+        if card is None or card.name not in {"cron", "cron_create_job", "cron_update_job"}:
+            continue
+        params = deepcopy(card.input_params)
+        properties = params.setdefault("properties", {})
+        if card.name == "cron_create_job":
+            targets = [properties]
+        elif card.name == "cron_update_job":
+            targets = [properties["patch"].setdefault("properties", {})]
+        else:
+            targets = [properties[key].setdefault("properties", {}) for key in ("job", "patch")]
+        schema = cron_model_selection_schema(language)
+        for target in targets:
+            target["model_selection"] = deepcopy(schema)
+            if "model_name" in target:
+                note = (
+                    "Ignored when model_selection is non-null."
+                    if language == "en" else "model_selection 非 null 时忽略此字段。"
+                )
+                description = target["model_name"].get("description", "")
+                if note not in description:
+                    target["model_name"]["description"] = description + " " + note
+        card.input_params = params
+        if schema["description"] not in card.description:
+            card.description += "\n\n" + schema["description"]
 
 
 def _patch_cron_tool_cards(tools: list[Any]) -> list[Any]:
@@ -1064,6 +1110,7 @@ class CronRuntimeBridge:
             language=language,
         )
         tools = list(tools or [])
+        _patch_cron_model_selection_cards(tools, language)
         # cron 执行会话下架的独立工具：cron_create_job / cron_update_job。
         disabled_tool_names: set[str] = set()
         if not allow_create:

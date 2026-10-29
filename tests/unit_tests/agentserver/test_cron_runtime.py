@@ -1268,6 +1268,55 @@ class _FakeDispatchBackend:
         return {"id": job_id, **patch}
 
 
+@pytest.mark.parametrize("language", ["cn", "en", "legacy"])
+@pytest.mark.asyncio
+async def test_cron_model_selection_is_advertised_and_forwarded(language, monkeypatch):
+    """Both model-visible tool factories expose and preserve structured choices."""
+    from jsonschema import Draft7Validator
+
+    if language == "legacy":
+        cron_tools = CronTools()
+        monkeypatch.setattr(cron_tools, "create_job", AsyncMock(side_effect=lambda params: params))
+        monkeypatch.setattr(cron_tools, "update_job", AsyncMock(side_effect=lambda job_id, patch: patch))
+        tools = cron_tools.get_tools()
+    else:
+        bridge = CronRuntimeBridge()
+        bridge.set_backend(_FakeDispatchBackend())
+        tools = bridge.build_tools(
+            context=CronToolContext(channel_id="web", session_id="sess-1"),
+            agent_id="agent-1", language=language,
+        )
+    by_name = {tool.card.name: tool for tool in tools}
+    targets = [
+        by_name["cron_create_job"].card.input_params["properties"],
+        by_name["cron_update_job"].card.input_params["properties"]["patch"]["properties"],
+    ]
+    if language != "legacy":
+        unified = by_name["cron"].card.input_params["properties"]
+        targets.extend(unified[key]["properties"] for key in ("job", "patch"))
+    selection = {"type": "model_group", "id": "group-1", "route_id": "route-1"}
+    for target in targets:
+        schema = target["model_selection"]
+        validator = Draft7Validator(schema)
+        validator.validate(selection)
+        validator.validate({"type": "model", "id": "model-1"})
+        validator.validate(None)
+        assert not validator.is_valid({"type": "model_group"})
+        assert not validator.is_valid({"type": "unknown", "id": "model-1"})
+        assert not validator.is_valid({"type": "model", "id": ""})
+        assert "model_name" in schema["description"]
+        assert ("takes priority" if language != "cn" else "优先") in schema["description"]
+    created = await by_name["cron_create_job"]._func(
+        name="job", cron_expr="0 0 9 * * ? *", timezone="Asia/Shanghai",
+        description="reminder", model_selection=selection, model_name="stale-name",
+    )
+    assert created["model_selection"] == selection
+    updated = await by_name["cron_update_job"]._func(
+        job_id="job", patch={"model_selection": selection},
+    )
+    assert updated["model_selection"] == selection
+
+
 class TestBuildToolsAllowCreate:
     """cron 执行会话的受限工具集：创建/修改能力必须下掉，管理能力保留。"""
 

@@ -24,7 +24,7 @@ interface ModelPickerProps {
   /** Stable `{type,id}` selection when the caller participates in the new API. */
   selection?: ModelSelection | null;
   onSelectionChange?: (selection: ModelSelection) => void;
-  /** Cron / personal-context keep model_name-only until their contracts are migrated. */
+  /** Callers that only support legacy names omit this; cron now supports groups. */
   includeModelGroups?: boolean;
   disabled?: boolean;
   onAddModel?: () => void;

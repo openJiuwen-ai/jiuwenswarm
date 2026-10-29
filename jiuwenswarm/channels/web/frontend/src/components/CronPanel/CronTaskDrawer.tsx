@@ -15,7 +15,7 @@ import { isDefaultLikeProject } from './cronProjectDisplay';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
-import type { AgentMode } from '../../types';
+import type { AgentMode, ModelSelection } from '../../types';
 import '../ChatPanel/ChatPanel.css';
 
 export { isDefaultLikeProject } from './cronProjectDisplay';
@@ -43,6 +43,7 @@ export interface CronTaskFormValue {
   // work_mode 需由前端随 project_id 一并下发；见 index.tsx handleCreateSubmit）。
   workMode: WorkMode | null;
   modelName: string | null;
+  modelSelection: ModelSelection | null;
   description: string;
   /** 执行模式：单Agent('agent')/集群('team')，下发到后端 CronJob.mode（见 index.tsx handleCreateSubmit/handleEditSubmit） */
   mode: AgentMode;
@@ -62,6 +63,7 @@ function emptyForm(): CronTaskFormValue {
     projectId: null,
     workMode: null,
     modelName: null,
+    modelSelection: null,
     description: '',
     mode: 'agent',
     targets: 'web',
@@ -80,6 +82,7 @@ export function jobToForm(job: CronTaskUI): CronTaskFormValue {
     projectId: null,
     workMode: null,
     modelName: job.modelName,
+    modelSelection: job.modelSelection,
     description: job.description,
     mode: job.mode,
     targets: job.deliveryChannel,
@@ -98,6 +101,7 @@ export function templateToForm(tpl: CronTemplateUI, title: string, description: 
     projectId: null,
     workMode: null,
     modelName: null,
+    modelSelection: null,
     description,
     mode: 'agent',
     targets: 'web',
@@ -442,8 +446,10 @@ export default function CronTaskDrawer({
                     <ModelPicker
                       testIdPrefix="cron-model-picker"
                       value={form.modelName}
-                      onChange={(modelName) => setForm({ ...form, modelName })}
-                      includeModelGroups={false}
+                      selection={form.modelSelection}
+                      onChange={(modelName) => setForm((current) => ({ ...current, modelName, modelSelection: null }))}
+                      onSelectionChange={(modelSelection) => setForm((current) => ({ ...current, modelSelection }))}
+                      includeModelGroups
                       disabled={proactiveLocked}
                     />
                   </div>

@@ -306,6 +306,27 @@ class CronController:
     def job_metadata() -> dict[str, Any]:
         return cron_job_metadata()
 
+    async def _normalize_model_fields(self, values: dict[str, Any], auth_session: str) -> dict[str, Any]:
+        """Normalize one explicit choice and its credentials as a single patch."""
+        if values.get("model_selection") is not None:
+            from gateway.common.model_selection import ModelSelection
+            from gateway.common.model_routing_registry import ModelSelectionResolver
+
+            selection = ModelSelection.model_validate(values["model_selection"])
+            ModelSelectionResolver().resolve(selection)
+            # Stable IDs belong to configured/AgentOS catalog entries. Login
+            # models have no stable ID and bind credentials via model_name below.
+            # Never infer login origin from a configured model's display name.
+            return {"model_selection": selection.model_dump(), "model_name": None, "credential_ref": ""}
+        if "model_selection" not in values and "model_name" not in values:
+            return {}
+        name, source = resolve_cron_model(values.get("model_name"), zen_entries=await self._zen_entries())
+        return {
+            "model_selection": None, "model_name": name,
+            "credential_ref": _login_credential_ref_from_session(auth_session)
+            if source == CRON_MODEL_SOURCE_LOGIN else "",
+        }
+
     @_serialize_mutation
     async def create_job(
         self,
@@ -355,26 +376,10 @@ class CronController:
                 raise ValueError(
                     f"{PROACTIVE_JOB_ID} 是系统内置主动推荐任务的保留 id，不能手动创建"
                 )
-        model_name, model_source = resolve_cron_model(
-            params.get("model_name"),
-            zen_entries=await self._zen_entries(),
-        )
-        model_selection = params.get("model_selection")
-        if model_selection is not None:
-            from gateway.common.model_routing_registry import ModelSelectionResolver
-            from gateway.common.model_selection import ModelSelection
-            selection = ModelSelection.model_validate(model_selection)
-            ModelSelectionResolver().resolve(selection)
-            model_selection = selection.model_dump()
-        # 登录免费模型：把创建连接上的华为账号绑定到任务（凭据句柄）。路由
-        # user_id 与登录账号是两套独立体系，不能互相推导；没有可用登录会话就
-        # 明确拒绝（400），不留一个到点必失败的任务。自配模型（即使与登录模型
-        # 同名）不绑定，执行侧凭据注入只认绑定，不会误切到登录模型计费。
-        credential_ref = (
-            _login_credential_ref_from_session(auth_session)
-            if model_source == CRON_MODEL_SOURCE_LOGIN
-            else ""
-        )
+        model_fields = await self._normalize_model_fields(params, auth_session)
+        model_name = model_fields.get("model_name")
+        model_selection = model_fields.get("model_selection")
+        credential_ref = model_fields.get("credential_ref", "")
         # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
         # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
         # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
@@ -482,21 +487,7 @@ class CronController:
                 raise ValueError(
                     "proactive.tick 是系统内部模式，由设置→主动推荐开关自动维护，不能手动修改"
                 )
-        if "model_name" in patch:
-            canonical, model_source = resolve_cron_model(
-                patch.get("model_name"),
-                zen_entries=await self._zen_entries(),
-            )
-            patch["model_name"] = canonical
-            # 模型来源变化时同步重算绑定：改选登录模型 → 绑定当前连接的华为
-            # 账号；换回自配模型/清除模型 → 解绑，否则执行侧仍会注入登录凭据，
-            # 同名自配模型会被切到登录模型计费。
-            if model_source == CRON_MODEL_SOURCE_LOGIN:
-                patch["credential_ref"] = _login_credential_ref_from_session(
-                    auth_session
-                )
-            else:
-                patch["credential_ref"] = ""
+        patch.update(await self._normalize_model_fields(patch, auth_session))
         if "mcp" in patch:
             # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
             patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))

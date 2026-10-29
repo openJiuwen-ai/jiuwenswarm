@@ -28,6 +28,30 @@ from jiuwenswarm.common.host_services import send_runtime_push
 logger = logging.getLogger(__name__)
 
 
+def cron_model_selection_schema(language: str = "en") -> dict[str, Any]:
+    """Describe the structured model choice accepted by cron mutations."""
+    description = (
+        "Structured model selection; takes priority over model_name. "
+        "Use type=model with a model ID, or type=model_group with a group ID "
+        "and optional route_id (only valid for model_group). Set to null to clear."
+        if language == "en" else
+        "结构化模型选择，优先于 model_name。type=model 时 id 为模型 ID；"
+        "type=model_group 时 id 为模型组 ID，可选 route_id 指定组内路由"
+        "（仅 model_group 可用）。传 null 清除结构化选择。"
+    )
+    return {
+        "type": ["object", "null"],
+        "description": description,
+        "properties": {
+            "type": {"type": "string", "enum": ["model", "model_group"]},
+            "id": {"type": "string", "minLength": 1},
+            "route_id": {"type": ["string", "null"], "minLength": 1},
+        },
+        "required": ["type", "id"],
+        "additionalProperties": False,
+    }
+
+
 def resolve_agent_cron_model(raw: Any) -> str | None:
     """Validate a cron model in the AgentServer process.
 
@@ -579,12 +603,16 @@ class CronTools:
         if mode_raw is not None and str(mode_raw).strip():
             mode_kw["mode"] = normalize_cron_job_mode(mode_raw)
         model_kw: dict[str, Any] = {}
+        if normalized.get("model_selection") is not None:
+            from gateway.common.model_selection import ModelSelection
+
+            model_kw["model_selection"] = ModelSelection.model_validate(normalized["model_selection"]).model_dump()
         if "model_name" not in normalized:
             inherited_model = str(r.model_name or "").strip()
             if inherited_model:
                 normalized["model_name"] = inherited_model
         model_name_raw = normalized.get("model_name")
-        if model_name_raw is not None and str(model_name_raw).strip():
+        if not model_kw and model_name_raw is not None and str(model_name_raw).strip():
             model_kw["model_name"] = resolve_agent_cron_model(model_name_raw)
         # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
         # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
@@ -883,6 +911,8 @@ class CronTools:
         model_name = kwargs.get("model_name")
         if model_name is not None and str(model_name).strip():
             params["model_name"] = model_name
+        if "model_selection" in kwargs:
+            params["model_selection"] = kwargs["model_selection"]
         mcp = kwargs.get("mcp")
         if mcp is not None:
             params["mcp"] = mcp
@@ -928,7 +958,7 @@ class CronTools:
             ),
             make_tool(
                 name="cron_create_job",
-                description="Create cron job.",
+                description="Create cron job. Structured model_selection takes priority over model_name.",
                 input_params={
                     "type": "object",
                     "properties": {
@@ -949,8 +979,9 @@ class CronTools:
                         },
                         "model_name": {
                             "type": "string",
-                            "description": "Model name or alias to use. Omit for default.",
+                            "description": "Model name or alias. Ignored when model_selection is non-null. Omit for default.",
                         },
+                        "model_selection": cron_model_selection_schema(),
                         "mcp": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -992,7 +1023,8 @@ class CronTools:
                 description=(
                     "Update an existing cron job. Pass job_id and a patch dict with fields to update "
                     "(name, enabled, cron_expr, timezone, description, wake_offset_seconds, "
-                    "targets, mode, model_name, mcp, project_dir, project_id)."
+                    "targets, mode, model_name, model_selection, mcp, project_dir, project_id). "
+                    "Structured model_selection takes priority over model_name."
                 ),
                 input_params={
                     "type": "object",
@@ -1002,7 +1034,7 @@ class CronTools:
                             "type": "object",
                             "description": (
                                 "Fields to update (name, enabled, cron_expr, timezone, "
-                                "description, wake_offset_seconds, targets, mode, model_name, "
+                                "description, wake_offset_seconds, targets, mode, model_name, model_selection, "
                                 "mcp, project_dir, project_id). work_mode is not accepted as an "
                                 "independent patch field; to change work_mode, patch project_id "
                                 "or project_dir + work_mode (work_mode only disambiguates the "
@@ -1030,8 +1062,12 @@ class CronTools:
                                 },
                                 "model_name": {
                                     "type": "string",
-                                    "description": "Model name or alias. Set to empty string to reset to default.",
+                                    "description": (
+                                        "Model name or alias. Ignored when model_selection is non-null. "
+                                        "Set to empty string to reset to default."
+                                    ),
                                 },
+                                "model_selection": cron_model_selection_schema(),
                                 "mcp": {
                                     "type": "array",
                                     "items": {"type": "string"},

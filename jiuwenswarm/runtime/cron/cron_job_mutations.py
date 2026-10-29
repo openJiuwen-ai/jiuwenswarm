@@ -355,12 +355,15 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         raw_selection = patch.get("model_selection")
         if raw_selection is None:
             updated = replace(updated, model_selection=None)
+            if "model_name" not in patch:
+                updated = replace(updated, model_name=None, credential_ref="")
         else:
             from gateway.common.model_selection import ModelSelection
             selection = ModelSelection.model_validate(raw_selection)
             from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             ModelSelectionResolver().resolve(selection)
             updated = replace(updated, model_selection=selection.model_dump())
+            updated = replace(updated, model_name=None, credential_ref="")
     if "credential_ref" in patch:
         # 模型来源切换时由 controller 重算：登录模型 → 绑定创建会话的华为账号
         # 句柄；自配模型/清除模型 → 解绑（空串）。

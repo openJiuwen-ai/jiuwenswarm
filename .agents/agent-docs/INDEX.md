@@ -9,7 +9,7 @@ generated: true
 
 由 sync_documents.py 从文档 frontmatter 自动生成；请修改源文档后重新生成，不手工维护。
 
-共 14 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
+共 20 篇文档，按模块分组；跨模块文档在各相关分组展示，总数按文档去重。
 
 ## 模块导航
 
@@ -17,11 +17,15 @@ generated: true
 |---|---|
 | [agent_teams](#module-1) | 1 |
 | [agent_teams/workflow](#module-2) | 3 |
-| [jiuwenswarm](#module-3) | 3 |
-| [jiuwenswarm/channels/web/frontend](#module-4) | 1 |
-| [jiuwenswarm/gateway/channel_manager/web](#module-5) | 1 |
-| [jiuwenswarm/observability](#module-6) | 1 |
-| [未分类](#module-7) | 8 |
+| [gateway/channel_manager/im_platforms/xiaoyi](#module-3) | 1 |
+| [gateway/cron](#module-4) | 1 |
+| [gateway/message_handler](#module-5) | 1 |
+| [jiuwenswarm](#module-6) | 3 |
+| [jiuwenswarm/agents/harness/common/tools/cron](#module-7) | 1 |
+| [jiuwenswarm/channels/web/frontend](#module-8) | 1 |
+| [jiuwenswarm/gateway/channel_manager/web](#module-9) | 1 |
+| [jiuwenswarm/observability](#module-10) | 1 |
+| [未分类](#module-11) | 12 |
 
 <a id="module-1"></a>
 
@@ -43,6 +47,30 @@ generated: true
 
 <a id="module-3"></a>
 
+## gateway/channel_manager/im_platforms/xiaoyi
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261028_1445_xiaoyi-team-join-delivery](bugfix/gateway/channel_manager/im_platforms/xiaoyi/B_20261028_1445_xiaoyi-team-join-delivery.md) | B | 小艺成员加入团队后仅在通知栏收到 Team Leader 消息 | zhongxiaotian | gateway/channel_manager/im_platforms/xiaoyi, gateway/message_handler | gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_connect.py, gateway/message_handler/join_exit_handlers.py, tests/unit_tests/gateway/test_xiaoyi_team_delivery.py | 无独立 D：当前团队席位和 fan-out 契约未变化，本次仅修复小艺平台任务生命周期。 |
+
+<a id="module-4"></a>
+
+## gateway/cron
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261029_1502_cron-model-selection-tool-schema](bugfix/gateway/cron/B_20261029_1502_cron-model-selection-tool-schema.md) | B | 定时任务结构化模型选择缺少工具参数声明 | kdgmpw | gateway/cron, jiuwenswarm/agents/harness/common/tools/cron | gateway/cron/controller.py, jiuwenswarm/agents/harness/common/tools/cron/cron_tools.py, jiuwenswarm/agents/harness/common/tools/cron/cron_runtime.py, tests/unit_tests/gateway/test_cron_login_model_binding.py, tests/unit_tests/agentserver/test_cron_runtime.py | 无独立 D：按用户检视意见补齐既有结构化模型选择契约，无独立设计。 |
+
+<a id="module-5"></a>
+
+## gateway/message_handler
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261028_1445_xiaoyi-team-join-delivery](bugfix/gateway/channel_manager/im_platforms/xiaoyi/B_20261028_1445_xiaoyi-team-join-delivery.md) | B | 小艺成员加入团队后仅在通知栏收到 Team Leader 消息 | zhongxiaotian | gateway/channel_manager/im_platforms/xiaoyi, gateway/message_handler | gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_connect.py, gateway/message_handler/join_exit_handlers.py, tests/unit_tests/gateway/test_xiaoyi_team_delivery.py | 无独立 D：当前团队席位和 fan-out 契约未变化，本次仅修复小艺平台任务生命周期。 |
+
+<a id="module-6"></a>
+
 ## jiuwenswarm
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
@@ -51,7 +79,15 @@ generated: true
 | [SDD-0010](designs/archive/SDD-0010-jiuwen-tui-nested-workflow-and-budget-observability/design.md) | D | jiuwen TUI 嵌套 Workflow 与 Budget 可观测性 | @chenchunzhou | agent_teams/workflow, jiuwenswarm | — | — |
 | [SDD-0028](designs/archive/SDD-0028-swarmflow-verify-fork-observability/design.md) | D | swarmflow verify / fork 可观测与前端呈现 | @xiajing | agent_teams/workflow, jiuwenswarm | — | — |
 
-<a id="module-4"></a>
+<a id="module-7"></a>
+
+## jiuwenswarm/agents/harness/common/tools/cron
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [B_20261029_1502_cron-model-selection-tool-schema](bugfix/gateway/cron/B_20261029_1502_cron-model-selection-tool-schema.md) | B | 定时任务结构化模型选择缺少工具参数声明 | kdgmpw | gateway/cron, jiuwenswarm/agents/harness/common/tools/cron | gateway/cron/controller.py, jiuwenswarm/agents/harness/common/tools/cron/cron_tools.py, jiuwenswarm/agents/harness/common/tools/cron/cron_runtime.py, tests/unit_tests/gateway/test_cron_login_model_binding.py, tests/unit_tests/agentserver/test_cron_runtime.py | 无独立 D：按用户检视意见补齐既有结构化模型选择契约，无独立设计。 |
+
+<a id="module-8"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -59,7 +95,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0026](designs/proposals/SDD-0026-trajectory-observability-web-ui/design.md) | D | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | @alan_cheng | jiuwenswarm/channels/web/frontend | — | — |
 
-<a id="module-5"></a>
+<a id="module-9"></a>
 
 ## jiuwenswarm/gateway/channel_manager/web
 
@@ -67,7 +103,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-6"></a>
+<a id="module-10"></a>
 
 ## jiuwenswarm/observability
 
@@ -75,7 +111,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [SDD-0025](designs/proposals/SDD-0025-trajectory-session-store-and-serving/design.md) | D | 轨迹数据面：会话级 SQLite 存储、实时变更提示与读取 API | @alan_cheng | jiuwenswarm/observability, jiuwenswarm/gateway/channel_manager/web | — | — |
 
-<a id="module-7"></a>
+<a id="module-11"></a>
 
 ## 未分类
 
@@ -89,3 +125,7 @@ generated: true
 | [team_permission_design](designs/archive/team_permission_design.md) | D | Team 模式 Permissions 设计方案 | 待确认 | — | — | — |
 | [team_plan_design](designs/archive/team_plan_design.md) | D | Team Plan 模式设计文档 | 待确认 | — | — | — |
 | [team_worktree_isolation_agenttool_cn](designs/archive/team_worktree_isolation_agenttool_cn.md) | D | Team Teammate Worktree Isolation 设计文档 | 待确认 | — | — | — |
+| [B_20261026_1602_code-multimodal-loading](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261026_1602_code-multimodal-loading.md) | B | 配置多模态模型后，Code 未按 Work 规则加载工具 | 待确认 | — | — | 待核实 |
+| [B_20261026_1606_issue-5753-session-project-binding](bugfix/jiuwenswarm/server/runtime/session/B_20261026_1606_issue-5753-session-project-binding.md) | B | Issue #5753：普通会话发送消息后混入全局项目目录 | 待确认 | — | — | 待核实 |
+| [B_20261026_2035_gateway-contract-collection](bugfix/tests/unit_tests/common/B_20261026_2035_gateway-contract-collection.md) | B | Gateway 拆包后协议契约测试无法收集 | 待确认 | — | — | 待核实 |
+| [S_01_multimodal-tool-loading](specs/jiuwenswarm/server/runtime/agent_adapter/S_01_multimodal-tool-loading.md) | S | Work / Code 多模态工具加载契约 | 待确认 | — | — | — |

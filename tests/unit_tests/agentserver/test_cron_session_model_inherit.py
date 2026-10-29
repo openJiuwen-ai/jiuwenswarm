@@ -283,6 +283,24 @@ def test_inherit_session_model_reuses_session_model(monkeypatch: pytest.MonkeyPa
     assert payload.get("model_name") == "mimo-v2.5-free"
 
 
+def test_inherit_session_model_preserves_group_and_route_without_legacy_name(monkeypatch):
+    selection = {"type": "model_group", "id": "group-id", "route_id": "route-id"}
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"model_selection": selection, "model": "stale-display-name"},
+    )
+    payload = _CronToolsCronBackend._inherit_session_model(
+        {"model_name": "old-choice"}, context=CronToolContext(channel_id="web", session_id="session"),
+    )
+    assert payload["model_selection"] == selection
+    assert "model_name" not in payload
+    mapped = _extract_legacy_params(
+        {"payload": {"message": "task"}, "schedule": {"expr": "0 9 * * *"}, "model_selection": selection},
+        context=None, require_schedule=True,
+    )
+    assert mapped["model_selection"] == selection
+
+
 def test_inherit_session_model_overrides_explicit(monkeypatch: pytest.MonkeyPatch) -> None:
     """直接复用：即使显式传入 model_name，也被 chat-session 的模型配置覆盖。"""
     monkeypatch.setattr(

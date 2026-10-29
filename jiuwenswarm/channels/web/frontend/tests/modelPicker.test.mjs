@@ -81,6 +81,7 @@ const initialForm = {
   name: 'Existing scheduled task',
   description: 'Draft description',
   modelName: 'configured-a',
+  modelSelection: null,
   mode: 'agent',
   cronExpr: '0 0 2 * * ? *',
   timezone: 'Asia/Shanghai',
@@ -308,6 +309,36 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured A');
     await click(byId('cron-drawer-submit-btn'));
     assert.deepEqual(submitted, initialForm);
+  });
+});
+
+test('editing a task with a missing model omits unchanged model fields', async (t) => {
+  let patch;
+  const job = {
+    id: 'stale-model-job', name: 'Stale model', description: 'Existing description',
+    model_selection: { type: 'model_group', id: 'deleted-group', route_id: 'deleted-route' },
+    mode: 'agent', cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method, params) => {
+    if (method === 'cron.job.list') return { jobs: [job] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.update') {
+      patch = params.patch;
+      return { job: { ...job, ...patch } };
+    }
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+    await click(byId('cron-job-edit-btn'));
+    await click(byId('cron-drawer-submit-btn'));
+    assert.ok(patch);
+    assert.equal(Object.hasOwn(patch, 'model_selection'), false);
+    assert.equal(Object.hasOwn(patch, 'model_name'), false);
+    assert.equal(patch.description, job.description);
   });
 });
 

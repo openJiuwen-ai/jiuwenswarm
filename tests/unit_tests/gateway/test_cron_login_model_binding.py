@@ -122,6 +122,58 @@ def _job_params(**overrides) -> dict:
 
 
 @pytest.mark.asyncio
+async def test_stable_config_selection_with_login_model_name_does_not_bind(tmp_path, monkeypatch):
+    """Stable catalog identity wins over the same-named login model."""
+    from gateway.common.model_catalog import ModelCatalog
+
+    _patch_model_sources(monkeypatch, login_models=["shared-name"])
+    _patch_login_session(monkeypatch, logged_in=False)
+    entry = {**_config_entry("shared-name"), "model_id": "mdl_configured"}
+    catalog = ModelCatalog(config={"models": {"defaults": [entry]}})
+    monkeypatch.setattr("gateway.common.model_routing_registry.ModelCatalog", lambda: catalog)
+    controller, store = _make_controller(tmp_path)
+    selection = {"type": "model", "id": "mdl_configured"}
+
+    created = await controller.create_job(_job_params(
+        model_selection=selection, model_name="unknown-legacy-name",
+    ))
+    persisted = await store.get_job(created["id"])
+    assert persisted.model_selection["id"] == "mdl_configured"
+    assert persisted.model_name is None
+    assert persisted.credential_ref == ""
+
+    updated = await controller.update_job(created["id"], {
+        "model_selection": selection, "model_name": "shared-name",
+    })
+    assert updated["model_selection"]["id"] == "mdl_configured"
+    assert "credential_ref" not in updated
+
+
+@pytest.mark.asyncio
+async def test_stable_group_switch_clears_login_binding_and_explicit_null_clears_choice(tmp_path, monkeypatch):
+    _patch_model_sources(monkeypatch, login_models=["login-model"])
+    _patch_login_session(monkeypatch)
+    monkeypatch.setattr("gateway.common.model_routing_registry.ModelSelectionResolver.resolve", lambda *args: None)
+    controller, store = _make_controller(tmp_path)
+    initial = await controller.create_job(_job_params(model_name="login-model", _auth_session=_AUTH_SESSION))
+    selection = {"type": "model_group", "id": "group", "route_id": "route"}
+    updated = await controller.update_job(initial["id"], {
+        "model_selection": selection, "model_name": "stale-unknown-name",
+    })
+    assert updated["model_selection"] == selection
+    persisted = await store.get_job(initial["id"])
+    assert persisted.model_name is None
+    assert persisted.credential_ref == ""
+    await controller.update_job(initial["id"], {"name": "renamed"})
+    assert (await store.get_job(initial["id"])).model_selection == selection
+    await controller.update_job(initial["id"], {"model_selection": None})
+    persisted = await store.get_job(initial["id"])
+    assert persisted.model_selection is None
+    assert persisted.model_name is None
+    assert persisted.credential_ref == ""
+
+
+@pytest.mark.asyncio
 async def test_create_job_with_login_model_binds_credential_ref(
     tmp_path, monkeypatch
 ):

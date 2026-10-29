@@ -12,6 +12,7 @@ import type { CronJobDTO, CronTaskUI, CronTemplateUI } from '../../types/cron';
 import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './constants';
 import { isTeamCronModeValue } from './cronMode';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
+import { buildCronModelPatch } from './cronModelPatch';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
 import ConfirmDialog from './ConfirmDialog';
@@ -287,6 +288,7 @@ function cronJobToUI(job: CronJobDTO, projects: ProjectInfo[]): CronTaskUI {
     projectName,
     description: job.description,
     modelName: job.model_name ?? null,
+    modelSelection: job.model_selection ?? null,
     // 统一识别后端规范模式和历史别名，表单只展示 agent / team 两态。
     mode: isTeamCronModeValue(job.mode) ? 'team' : 'agent',
     cronExpr: job.cron_expr,
@@ -767,7 +769,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 需由前端（project.list 已含 work_mode）随 project_id 下发，保证归属/展示正确。
         // 未选项目时也要带上当前模式，后端据此把空项目归到 default/default_code（#5713）。
         ...(submittingWorkMode ? { work_mode: submittingWorkMode } : {}),
-        ...(value.modelName ? { model_name: value.modelName } : {}),
+        ...(value.modelSelection
+          ? { model_selection: value.modelSelection }
+          : { model_selection: null, model_name: value.modelName }),
         mode: value.mode,
         session_id: sessionId,
       });
@@ -808,7 +812,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             targets: value.targets.trim() || 'web',
             enabled: value.enabled,
             wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
-            ...(value.modelName ? { model_name: value.modelName } : {}),
+            ...buildCronModelPatch(value, drawer?.mode === 'edit' ? drawer.initial : value),
             mode: value.mode,
           };
       await webRequest<{ job: CronJobDTO }>('cron.job.update', {
