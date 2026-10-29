@@ -5944,7 +5944,7 @@ class JiuWenSwarmDeepAdapter:
                 # 登记）——与 _sync_mcp_servers_for_runtime 的透传口径一致；
                 # 漏传会导致 web 会话网关永远走静态头。
                 dynamic_token_url = str(entry.get("dynamic_token_url") or "").strip() or None
-                if await adapter.register_mcp_server(
+                if await adapter._register_mcp_server(
                     cfg, tag=tag, dynamic_token_url=dynamic_token_url
                 ):
                     applied_any = True

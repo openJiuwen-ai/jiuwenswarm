@@ -144,7 +144,6 @@ def test_manual_snapshot_uses_replaced_global_policy(overlays):
     assert current["tools"]["session_tool"] == "allow"
 
 
-@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_without_installed_snapshot_keeps_composed_build(overlays, tmp_path):
     rail = build_permission_rail(
         {"permissions": _policy()}, session_id="auto", enable_auto_permission=True,

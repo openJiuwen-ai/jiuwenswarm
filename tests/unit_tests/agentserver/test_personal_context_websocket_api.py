@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import types
 from unittest.mock import AsyncMock
 
 import pytest
@@ -242,6 +243,11 @@ def capture_wire(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(server_module, "send_wire_payload", _capture)
     monkeypatch.setattr(ws_handler, "send_wire_payload", _capture)
+    # WSSink imports send_wire_payload from ws_send by name; patch that binding too.
+    monkeypatch.setattr(
+        "jiuwenswarm.server.transports.ws_sink.send_wire_payload",
+        _capture,
+    )
 
 
 def _server() -> tuple[AgentWebSocketServer, _FakeHost]:
@@ -977,8 +983,18 @@ async def test_personal_context_failure_keeps_connection_and_ordinary_request_av
             )
         )
 
-    unary = AsyncMock(side_effect=ordinary_response)
-    monkeypatch.setattr("jiuwenswarm.server.handlers._default.handle_unary", unary)
+    async def ordinary_unary(_ws, request, send_lock) -> None:
+        from jiuwenswarm.server.transports.ws_sink import WSSink
+
+        await ordinary_response(
+            types.SimpleNamespace(
+                request=request,
+                sink=WSSink(_ws, send_lock),
+            )
+        )
+
+    monkeypatch.setattr(server, "_handle_unary", ordinary_unary)
+    monkeypatch.setattr(server, "_skips_session_lifecycle_guard", lambda _request: True)
     await server._handle_message(
         ws,
         json.dumps(
@@ -993,8 +1009,17 @@ async def test_personal_context_failure_keeps_connection_and_ordinary_request_av
         asyncio.Lock(),
     )
 
-    assert ws.sent[1]["status"] == "succeeded"
-    unary.assert_awaited_once()
+    ordinary_responses = [
+        parse_agent_server_wire_unary(item)
+        for item in ws.sent
+        if item.get("response_id") == "ordinary-1"
+    ]
+    assert any(response.ok for response in ordinary_responses)
+    assert any(
+        response.payload == {"content": "ordinary agent still works"}
+        for response in ordinary_responses
+        if response.ok
+    )
 
 
 @pytest.mark.asyncio

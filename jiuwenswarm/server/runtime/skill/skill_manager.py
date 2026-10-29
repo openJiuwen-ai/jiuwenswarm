@@ -5916,28 +5916,37 @@ class SkillManager:
             destination = _safe_child_path(self._skills_dir, skill_name, "skill")
         except (SkillRpcError, ValueError):
             return None
+        if not destination.is_dir():
+            return None
+        if compute_content_checksum(source) != compute_content_checksum(destination):
+            return None
         record = None
         for item in self._state.get("local_skills", []):
             if isinstance(item, dict) and item.get("name") == skill_name:
                 record = item
                 break
-        if record is None or not destination.is_dir():
-            return None
-        if compute_content_checksum(source) != compute_content_checksum(destination):
-            return None
         expected_origin = f"symphony:{package_id}"
-        origin = str(record.get("origin") or "")
-        if origin != expected_origin:
-            if origin not in {"", "local", "project"}:
-                return None
+        if record is None:
             self._add_local_skill(
                 {
-                    **record,
                     "name": skill_name,
                     "origin": expected_origin,
-                    "source": record.get("source") or "local",
+                    "source": "local",
                 }
             )
+        else:
+            origin = str(record.get("origin") or "")
+            if origin != expected_origin:
+                if origin not in {"", "local", "project"}:
+                    return None
+                self._remove_local_skill(skill_name)
+                self._add_local_skill(
+                    {
+                        "name": skill_name,
+                        "origin": expected_origin,
+                        "source": record.get("source") or "local",
+                    }
+                )
         return {
             "success": True,
             "skill": {
@@ -9400,11 +9409,7 @@ class SkillManager:
             meta = self._parse_skill_md(md)
             if not isinstance(meta, dict):
                 continue
-            name = (
-                self._resolve_skill_name(child, md, meta)
-                if is_enterprise()
-                else child.name
-            )
+            name = child.name
             if not name or name in registered:
                 continue
             # 排除内置技能（用户目录下与 builtin 目录同名的文件夹），避免改变其来源/行为。
@@ -10204,6 +10209,7 @@ class SkillManager:
         params 由 HTTP 层组装：``zip_bytes``（已校验 sha256 的包内容）、
         ``overwrite``、``mode``、``origin``。
         """
+        self.reload_state()
         params = params or {}
         zip_bytes = params.get("zip_bytes")
         if not isinstance(zip_bytes, (bytes, bytearray)) or not zip_bytes:
@@ -12434,12 +12440,16 @@ class SkillManager:
         不同来源的两个技能可能 SKILL.md name 相同但 origin 不同（如
         ``clawhub:owner/slug-a`` 与 ``clawhub:owner/slug-b``）。用 origin 作身份键
         才能让两者并存于 local_skills / installed_plugins 而不互相覆盖。
-        无 origin 的历史记录（local/import_local 的 URL 等）回退到 name。
+        ``sync_client`` / ``local`` / ``project`` 等共享 origin 需再按 name 区分，
+        否则并发 sync 或多目录本地技能会互相覆盖。
         """
         origin = str(record.get("origin", "") or "").strip()
-        if origin:
+        name = str(record.get("name", "") or "").strip()
+        if origin and origin not in {"sync_client", "local", "project"}:
             return f"origin:{origin}"
-        return f"name:{str(record.get('name', '') or '').strip()}"
+        if origin:
+            return f"name:{name}|origin:{origin}"
+        return f"name:{name}"
 
     @classmethod
     def _record_matches(cls, record: dict, *, name: str, origin: str) -> bool:

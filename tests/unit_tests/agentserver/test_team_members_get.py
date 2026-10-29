@@ -109,3 +109,27 @@ async def test_only_non_human_members_returns_not_ok() -> None:
 
     assert resp.ok is False
     assert resp.payload.get("members") == []
+
+
+@pytest.mark.anyio
+async def test_departed_human_seats_are_excluded() -> None:
+    """已 shut_down 的 human_agent 席位不再可 /join；shutdown_requested / dormant 仍在册。"""
+    resp = await _invoke([
+        {"member_id": "gone-1", "role": "human_agent", "status": "shut_down"},
+        {"member_id": "leaving-1", "role": "human_agent", "status": "shutdown_requested"},
+        {"member_id": "sleeper-1", "role": "human_agent", "status": "dormant"},
+    ])
+
+    assert resp.ok is True
+    assert [m["member_id"] for m in resp.payload["members"]] == ["leaving-1", "sleeper-1"]
+
+
+@pytest.mark.anyio
+async def test_only_departed_human_seats_returns_not_ok() -> None:
+    """human_agent 席位全部离队 → 过滤后空 → ok=False。"""
+    resp = await _invoke([
+        {"member_id": "gone-1", "role": "human_agent", "status": "shut_down"},
+    ])
+
+    assert resp.ok is False
+    assert resp.payload.get("members") == []

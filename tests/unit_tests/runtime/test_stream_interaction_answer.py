@@ -21,7 +21,11 @@ from jiuwenswarm.runtime.agent_definition import (
     RuntimeAgentDefinition,
     RuntimeAgentExecution,
 )
-from jiuwenswarm.runtime.context import get_current_runtime
+from jiuwenswarm.runtime.context import (
+    get_current_runtime,
+    reset_runtime_context,
+    set_runtime_context,
+)
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.interaction import InteractionAnswerInput
 from jiuwenswarm.runtime.service import AgentRuntime
@@ -601,38 +605,66 @@ async def test_real_facade_control_wrapper_closes_retained_adapter_stream(
     # A strong reference prevents garbage collection from masking a missing
     # explicit close in the production Facade's control-stream wrapper.
     retained_inner = adapter_stream()
+    adapter = SimpleNamespace(
+        process_message_stream_impl=Mock(return_value=retained_inner)
+    )
     facade = SimpleNamespace(
-        _ensure_adapter=Mock(
-            return_value=SimpleNamespace(
-                process_message_stream_impl=Mock(return_value=retained_inner)
-            )
-        ),
+        _ensure_adapter=Mock(return_value=adapter),
         _adapter_mode_for_request=Mock(return_value="normal"),
         _session_manager=SimpleNamespace(get_session_id=Mock(return_value=SESSION_ID)),
         _build_inputs=Mock(return_value=({}, "", False)),
         reconcile_session_mcp=AsyncMock(),
+        _persist_control_chunk_to_history=AsyncMock(),
+        _persist_pending_final_text_control=AsyncMock(),
     )
+
+    async def _stream_control_input(request: AgentRequest):
+        async for chunk in interface.JiuWenSwarm._stream_control_input(facade, request):
+            yield chunk
+
+    facade._stream_control_input = _stream_control_input
     monkeypatch.setattr(interface, "restore_chat_send_equipment_params", Mock())
     monkeypatch.setattr(
         interface, "compute_chat_send_mcp_needed", Mock(return_value=False)
     )
+    monkeypatch.setattr(interface, "_persist_ask_user_answer_history", AsyncMock())
+    monkeypatch.setattr(interface, "_complete_history_request", lambda *args, **kwargs: None)
+    monkeypatch.setattr(interface, "_session_message_owns_completion", lambda *args: True)
+    from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion
+
+    monkeypatch.setattr(
+        prompt_suggestion.forks, "request_started", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        prompt_suggestion.forks, "turn_ended", lambda *args, **kwargs: None
+    )
     harness.agent.deliver_control_input = lambda request: (
         interface.JiuWenSwarm.deliver_control_input(facade, request)
     )
-    stream = harness.client.stream_interaction_answer(answer)
     try:
-        async with aclosing(stream):
-            assert (await anext(stream)).event_type == "chat.delta"
-            if ending == "close":
-                await stream.aclose()
-            elif ending == "exception":
-                with pytest.raises(ValueError, match="adapter failed"):
-                    await anext(stream)
-            else:
-                remaining = [event async for event in stream]
-                assert [event.event_type for event in remaining] == ["chat.final"]
+        if ending == "close":
+            token = set_runtime_context(harness.runtime, SimpleNamespace())
+            try:
+                control_stream = interface.JiuWenSwarm._stream_control_input(
+                    facade, answer.to_agent_request()
+                )
+                chunk = await anext(control_stream)
+                assert chunk.payload["event_type"] == "chat.delta"
+                await control_stream.aclose()
+            finally:
+                reset_runtime_context(token)
+        else:
+            stream = harness.client.stream_interaction_answer(answer)
+            async with aclosing(stream):
+                assert (await anext(stream)).event_type == "chat.delta"
+                if ending == "exception":
+                    with pytest.raises(ValueError, match="adapter failed"):
+                        await anext(stream)
+                else:
+                    remaining = [event async for event in stream]
+                    assert [event.event_type for event in remaining] == ["chat.final"]
+            assert get_current_runtime() is None
         assert closed == [harness.runtime]
-        assert get_current_runtime() is None
     finally:
         await retained_inner.aclose()
 

@@ -8047,9 +8047,11 @@ class AgentWebSocketServer:
         """返回 team human_agent 席位列表供 /join 校验。
 
         纯查询透传：mismatch 校验与对外文案均在 gateway，server 只查 member、过滤
-        human_agent、回 ok/members。查不到或异常 → ok=False（payload 不带文案，由
-        gateway 拼"team 不存在"）。
+        human_agent、回 ok/members。已离队（``shut_down``）的席位与 ``team.snapshot``
+        同口径剔除。查不到或异常 → ok=False（payload 不带文案，由 gateway 拼
+        "team 不存在"）。
         """
+        from jiuwenswarm.agents.harness.team.member_status import is_departed_member
         from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
             query_team_human_members_for_join,
         )
@@ -8069,7 +8071,10 @@ class AgentWebSocketServer:
             members_raw = []
         members = [
             m for m in members_raw
-            if isinstance(m, dict) and m.get("role") == "human_agent" and m.get("member_id")
+            if isinstance(m, dict)
+            and m.get("role") == "human_agent"
+            and m.get("member_id")
+            and not is_departed_member(m.get("status"))
         ]
         resp = AgentResponse(
             request_id=request.request_id,

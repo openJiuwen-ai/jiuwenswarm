@@ -17,7 +17,7 @@ from jiuwenswarm.agents.harness.common.tools.acp_output_tools import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
-from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.observability.session_delete import trajectory_session_accepts_records
 from jiuwenswarm.runtime.session_provisioner import (
@@ -1242,8 +1242,10 @@ async def test_handle_tui_session_create_accepts_explicit_id_without_prewarm(
     fake_ws = FakeWebSocket()
     sessions_root = tmp_path / "sessions"
     warning_messages: list[str] = []
+    import jiuwenswarm.server.handlers.bootstrap as bootstrap_handlers
+
     monkeypatch.setattr(
-        agent_ws_server_module.logger,
+        bootstrap_handlers.logger,
         "warning",
         lambda message, *args: warning_messages.append(message % args),
     )
@@ -4467,12 +4469,21 @@ async def test_handle_message_uses_ws_scoped_acp_client_capabilities(monkeypatch
     await server.handle_initialize_for_test(ws_b, init_request_b, asyncio.Lock())
 
     captured = {}
+    import jiuwenswarm.server.dispatch as dispatch_module
 
     async def fake_handle_session_create(ctx):
         captured[int(ctx.connection_id)] = dict(ctx.request.metadata or {})
+        await ctx.sink.send_response(
+            AgentResponse(
+                request_id=ctx.request.request_id,
+                channel_id=ctx.request.channel_id,
+                ok=True,
+                payload={"session_id": "sess-b"},
+            )
+        )
 
     monkeypatch.setitem(
-        __import__("jiuwenswarm.server.dispatch", fromlist=["HANDLERS"]).HANDLERS,
+        dispatch_module.HANDLERS,
         ReqMethod.SESSION_CREATE,
         fake_handle_session_create,
     )

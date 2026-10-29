@@ -704,15 +704,19 @@ def test_team_materializes_model_group_without_routing_as_single_model(
         model_selection={"type": "model_group", "id": "group-single"},
     )
 
-    assert spec.model_pool_strategy == "by_model_name"
+    # Strategy-less groups still materialize as the single logical IntelliRouter entry.
+    assert spec.model_pool_strategy == "intelli_router"
     assert len(spec.model_pool) == 1
-    assert spec.model_pool[0].model_name == "primary-model"
-    assert spec.model_pool[0].api_provider == "OpenAI"
-    assert spec.leader.model_name == "primary-model"
+    assert spec.model_pool[0].model_name == "*"
+    assert spec.model_pool[0].api_provider == "intelli_router"
+    assert spec.leader.model_name == "*"
+    router = spec.model_pool[0].metadata["client"]["intelli_router"]
+    assert router["strategy"] == "ordered-failover"
+    assert [item["model_name"] for item in router["deployments"]] == ["primary-model"]
 
 def test_resolver_returns_no_enabled_routes_for_all_disabled_group_for_compiler_to_reject():
     group = _catalog_group()
     group["routes"][0]["enabled"] = False
     resolver = ModelSelectionResolver(_Catalog(groups=[group], models=[{"model_id": "m1", "model_name": "m1", "provider": "OpenAI"}]))
-    resolved = resolver.resolve(ModelSelection(type="model_group", id="g1"))
-    assert resolved.routes and all(not route.enabled for route in resolved.routes)
+    with pytest.raises(ModelSelectionError, match="has no enabled routes"):
+        resolver.resolve(ModelSelection(type="model_group", id="g1"))

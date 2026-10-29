@@ -31,12 +31,16 @@ class _FakeWs:
 
 
 def _make_channel() -> WebChannel:
+    from gateway.channel_manager.web.web_delivery_registry import WebDeliveryRegistry
+
     channel = object.__new__(WebChannel)
     channel._session_busy = {}
     channel._clients_by_key = {}
     channel._ws_by_id = {}
     channel._send_queues = {}
     channel._a4p_rebound_ws = {}
+    # object.__new__ skips __init__; send() now touches delivery registry.
+    channel.delivery = WebDeliveryRegistry()
     # Register one live client on the session bucket so send() reaches the
     # broadcast path instead of dropping the frame as an orphan.
     rk = RoutingKey(

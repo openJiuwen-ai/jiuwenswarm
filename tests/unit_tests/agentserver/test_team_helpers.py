@@ -130,9 +130,20 @@ async def test_group_request_routes_without_prompt_and_finishes_public_ack(monke
     monkeypatch.setattr(team_helpers, "update_session_metadata", Mock())
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", Mock())
     monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
-    request = SimpleNamespace(
-        session_id="session-group", request_id="req-group", channel_id="web", metadata=None,
-        params={"mode": "team", "type": "group_chat", "mentions": mentions},
+    # AgentRequest (not SimpleNamespace): stream path uses dataclasses.replace().
+    # Active follow-ups need TeamExecutionContext + waiter_kind=NONE so the
+    # interact path does not attach an undrainable persistent waiter.
+    group_params = {"type": "group_chat", "mentions": mentions}
+    request = (
+        _runtime_followup_request("session-group", "req-group", group_params)
+        if active
+        else AgentRequest(
+            request_id="req-group",
+            channel_id="web",
+            session_id="session-group",
+            metadata={},
+            params={"mode": "team", **group_params},
+        )
     )
     chunks = [chunk async for chunk in team_helpers.process_team_message_stream(
         request, {"query": "讨论"}, object(),
