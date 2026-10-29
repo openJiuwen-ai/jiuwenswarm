@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextvars import ContextVar, Token
 from typing import Any
 
@@ -15,6 +16,48 @@ _current_agent_request: ContextVar[AgentRequest | None] = ContextVar(
     "current_agent_request",
     default=None,
 )
+_current_stream_stop: ContextVar[asyncio.Event | None] = ContextVar("current_stream_stop", default=None)
+
+
+def set_current_stream_stop(event: asyncio.Event) -> Token:
+    return _current_stream_stop.set(event)
+
+
+def get_current_stream_stop() -> asyncio.Event | None:
+    return _current_stream_stop.get()
+
+
+def reset_current_stream_stop(token: Token) -> None:
+    _current_stream_stop.reset(token)
+
+
+def raise_if_request_cancelled() -> None:
+    event = get_current_stream_stop()
+    task = asyncio.current_task()
+    if (event is not None and event.is_set()) or (task is not None and task.cancelling()):
+        raise asyncio.CancelledError
+
+
+async def await_request_cleanup(awaitable):
+    """Finish owned cleanup even when the caller is cancelled a second time.
+
+    The owner keeps awaiting this task, so admission is not released while an
+    output lease or partially initialized instance is still being torn down.
+    RPC callers can time out independently without cancelling this cleanup.
+    """
+    task = asyncio.ensure_future(awaitable)
+    interrupted = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            if task.done():
+                return task.result()
+            interrupted = True
+    if interrupted:
+        raise asyncio.CancelledError
+    return result
 
 
 def set_device_context(context: DeviceCommandContext) -> Token:
