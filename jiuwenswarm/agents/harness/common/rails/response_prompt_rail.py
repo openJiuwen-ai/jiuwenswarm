@@ -28,7 +28,10 @@ SKIP_A2UI_PROMPT_CONTEXT_KEY = "skip_a2ui"
 A2UI_BROWSER_WORKFLOW_CONTEXT_KEY = "a2ui_browser_workflow"
 # browser-workflow 功能总开关（休眠中）：False 时 a2ui prompt 不注入
 # preflight/发送确认门禁规则，browser 意图检测被旁路。
-# 重开前需：① 修复 browser-workflow prompt 的已知问题（见 PR #8390 检视记录）；
+# 重开前需：① 修复 browser-workflow prompt 的 3 项 latent 问题：
+#    a) build_a2ui_browser_workflow_instruction 无 language 参数且文案纯英文（prompt_instructions.py:82）；
+#    b) _BROWSER_WORKFLOW_INTENT_RE 过宽（prompt_instructions.py:34，易误判普通 browser 提及为 workflow 意图）；
+#    c) protocol.py 14 个 _build_*_client_event_prompt 仅英文文案（无 i18n，与主 a2ui prompt 中英双轨不一致）；
 # ② 与工具注册联动——同时设置 env PLAYWRIGHT_RUNTIME_MCP_ENABLED，否则只开
 # prompt 无工具；只开 env 不开本开关则模型可执行浏览器动作但缺确认门禁提示。
 # 两处 call-site（before_invoke / before_model_call）均引用本常量，恢复只改这一处。
