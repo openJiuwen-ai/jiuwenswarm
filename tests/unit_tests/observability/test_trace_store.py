@@ -1749,7 +1749,8 @@ def test_payload_decoding_round_trips_compressed_and_empty_rows() -> None:
     test_logger.info("payload decoding handled compressed and empty rows")
 
 
-def test_incompatible_schema_version_discards_database(tmp_path: Path) -> None:
+def test_incompatible_schema_version_archives_database(tmp_path: Path) -> None:
+    """Rebuilding the active store preserves the old schema and raw history."""
     database_path = tmp_path / "trajectory.sqlite3"
     store = TrajectoryStore(database_path)
     store.initialize()
@@ -1780,7 +1781,15 @@ def test_incompatible_schema_version_discards_database(tmp_path: Path) -> None:
     assert version == store_module._SCHEMA_VERSION
     assert record_count == 0
     assert "trajectory_changes" not in tables
-    test_logger.info("a database from another schema version was rebuilt empty")
+    archives = list(tmp_path.glob("*.archive/trajectory.sqlite3"))
+    assert len(archives) == 1
+    with sqlite3.connect(archives[0]) as archived:
+        assert archived.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert archived.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert archived.execute("SELECT COUNT(*) FROM otlp_span_records").fetchone()[0] == 1
+        stored = archived.execute("SELECT raw_json FROM otlp_span_records").fetchone()[0]
+        assert store_module._decode_payload(stored) == _stored_record().raw_json
+    test_logger.info("incompatible schema was archived intact before rebuilding")
 
 
 @pytest.mark.asyncio
@@ -1837,3 +1846,118 @@ def test_change_seq_comes_from_store_state_and_never_rewinds(tmp_path: Path) -> 
         reopened.close()
     assert int(state["max_change_seq"]) == 2
     test_logger.info("revision counter kept growing across retention and restart")
+
+
+def test_zero_retention_preserves_expired_frames_after_reopen(tmp_path: Path) -> None:
+    """Startup and repeated expiry passes keep old data indefinitely."""
+    database = tmp_path / "forever.sqlite3"
+    store = TrajectoryStore(database, retention_days=0)
+    store.initialize()
+    try:
+        store.write_records([], frames=[_frame(0, timestamp_unix_nano=1)])
+        assert store.delete_expired(now=999_999_999) == 0
+    finally:
+        store.close()
+    store = TrajectoryStore(database, retention_days=0)
+    store.initialize()
+    try:
+        assert store.delete_expired(now=1_999_999_999) == 0
+        with sqlite3.connect(database) as connection:
+            assert connection.execute("SELECT COUNT(*) FROM trajectory_stream_frames").fetchone() == (1,)
+    finally:
+        store.close()
+    test_logger.info("zero retention preserved old trajectory frames across reopen")
+
+
+def test_schema_archive_includes_uncheckpointed_wal(tmp_path: Path) -> None:
+    """The archive is readable without WAL sidecars and retains committed rows."""
+    database = tmp_path / "wal.sqlite3"
+    connection = sqlite3.connect(database)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA wal_autocheckpoint=0")
+    connection.execute("PRAGMA user_version=3")
+    connection.execute("CREATE TABLE legacy_history (payload TEXT)")
+    connection.execute("INSERT INTO legacy_history VALUES ('historical trace')")
+    connection.commit()
+    assert database.with_name(f"{database.name}-wal").stat().st_size > 0
+    store = TrajectoryStore(database)
+    try:
+        store._archive_incompatible_database(connection, 3)
+    finally:
+        connection.close()
+
+    archives = list(tmp_path.glob("*.archive/wal.sqlite3"))
+    assert len(archives) == 1
+    with sqlite3.connect(archives[0]) as archived:
+        assert archived.execute("SELECT payload FROM legacy_history").fetchone() == ("historical trace",)
+        assert archived.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert not database.exists()
+    assert not database.with_name(f"{database.name}-wal").exists()
+    test_logger.info("schema archive consolidated committed WAL data into a standalone database")
+
+
+@pytest.mark.parametrize("failure_stage", ["directory", "backup"])
+def test_failed_schema_archive_preserves_active_database(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
+) -> None:
+    """Archive failures stop initialization before removing the original history."""
+    database = tmp_path / "preserved.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA user_version=3")
+        connection.execute("CREATE TABLE legacy_history (payload TEXT)")
+        connection.execute("INSERT INTO legacy_history VALUES ('keep me')")
+    connection.close()
+    store = TrajectoryStore(database)
+    original_mkdir = Path.mkdir
+    original_connect = sqlite3.connect
+
+    def fail_archive_directory(path: Path, mode: int = 0o777, parents: bool = False, exist_ok: bool = False) -> None:
+        if path.name.endswith(".archive"):
+            raise OSError("archive directory unavailable")
+        original_mkdir(path, mode=mode, parents=parents, exist_ok=exist_ok)
+
+    class FailingBackupConnection(sqlite3.Connection):
+        """Source connection simulating an archive write failure."""
+
+        def backup(self, target: sqlite3.Connection) -> None:
+            """Fail before removing any source data."""
+            raise sqlite3.OperationalError("archive write failed")
+
+    if failure_stage == "directory":
+        monkeypatch.setattr(Path, "mkdir", fail_archive_directory)
+    else:
+        monkeypatch.setattr(
+            store,
+            "_open_writer_connection",
+            lambda: original_connect(database, factory=FailingBackupConnection),
+        )
+    with pytest.raises((OSError, sqlite3.OperationalError), match="archive"):
+        store.initialize()
+
+    assert store._connection is None
+    with original_connect(database) as preserved:
+        assert preserved.execute("PRAGMA user_version").fetchone() == (3,)
+        assert preserved.execute("SELECT payload FROM legacy_history").fetchone() == ("keep me",)
+    test_logger.info("archive failure at %s left original schema and history intact", failure_stage)
+
+
+def test_repeated_schema_rebuilds_keep_separate_archives(tmp_path: Path) -> None:
+    """Subsequent upgrades never overwrite or expire previous schema archives."""
+    database = tmp_path / "repeated.sqlite3"
+    for version in (2, 3):
+        with sqlite3.connect(database) as connection:
+            connection.execute(f"PRAGMA user_version={version}")
+        connection.close()
+        store = TrajectoryStore(database, retention_days=1)
+        store.initialize()
+        store.close()
+    archives = list(tmp_path.glob("*.archive/repeated.sqlite3"))
+    assert len(archives) == 2
+    versions = set()
+    for archive in archives:
+        with sqlite3.connect(archive) as connection:
+            versions.add(connection.execute("PRAGMA user_version").fetchone()[0])
+    assert versions == {2, 3}
+    test_logger.info("successive schema rebuilds kept independent historical archives")

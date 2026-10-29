@@ -7350,8 +7350,12 @@ async def test_broadcast_team_state_snapshot_replays_mirrored_workflow_members(m
 
 
 @pytest.mark.anyio
-async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(monkeypatch):
-    """A DB member already covering a run member id is not emitted twice."""
+@pytest.mark.parametrize("colliding_field", ["members", "departed_members"])
+async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(monkeypatch, colliding_field):
+    """A DB member already covering a run member id is not emitted twice.
+
+    A departed DB member still owns its id, so it blocks the replay too.
+    """
     broadcast_events: list[dict] = []
     run = WorkflowRunState(
         id="run-1",
@@ -7379,14 +7383,14 @@ async def test_broadcast_team_state_snapshot_skips_run_member_colliding_with_db(
     class _FakeMonitorHandler:
         @staticmethod
         async def get_team_snapshot():
-            return {
+            snapshot = {
                 "team_id": "team-snapshot-test",
-                "members": [
-                    {"member_id": "agent1", "status": "ready"},
-                    {"member_id": "run-1:a-claude", "status": "busy"},
-                ],
+                "members": [{"member_id": "agent1", "status": "ready"}],
+                "departed_members": [],
                 "tasks": [],
             }
+            snapshot[colliding_field].append({"member_id": "run-1:a-claude", "status": "busy"})
+            return snapshot
 
     class _FakeManager:
         @staticmethod

@@ -2,10 +2,9 @@
  * TeamArea utilities - task planning metrics hook.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo } from 'react';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import { normalizeTaskStatus } from './shared';
-import { getTasksForCurrentProgress } from '../../features/teamTaskProgressBaseline';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 
 export function useTaskPlanningMetrics() {
@@ -13,17 +12,6 @@ export function useTaskPlanningMetrics() {
   const todos = useTodoStore(s => s.runtimes[activeSessionId ?? '']?.todos ?? []);
   const teamTaskEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamTasks = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTasks ?? []);
-  const taskProgressBaseline = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskProgressBaseline);
-  const progressTasks = useMemo(
-    () => (taskProgressBaseline ? getTasksForCurrentProgress(teamTasks, taskProgressBaseline) : teamTasks),
-    [taskProgressBaseline, teamTasks],
-  );
-
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 3_000);
-    return () => window.clearInterval(timer);
-  }, []);
 
   const totalTasks = useMemo(() => {
     if (teamTasks.length > 0) return teamTasks.length;
@@ -51,5 +39,5 @@ export function useTaskPlanningMetrics() {
     return completed.size;
   }, [teamTaskEvents, teamTasks, todos]);
 
-  return { completedTasks, progressTasks, teamTasks, totalTasks, now };
+  return { completedTasks, teamTasks, totalTasks };
 }

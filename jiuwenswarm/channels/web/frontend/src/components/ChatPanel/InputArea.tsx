@@ -36,6 +36,7 @@ import { useMultiModelCollaborationEnabled } from '../../features/multiModelColl
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
+import { isReachableTeamMemberStatus } from '../../features/teamMemberDeparture';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
@@ -1236,7 +1237,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return teamMembers
       .filter((member) => {
         const id = member.member_id?.trim();
-        return id && id !== 'user';
+        // 离队 / 退役中的成员接不到消息，@ 出去也没人接。
+        return id && id !== 'user' && isReachableTeamMemberStatus(member.status);
       })
       .map((member) => ({
         id: member.member_id,

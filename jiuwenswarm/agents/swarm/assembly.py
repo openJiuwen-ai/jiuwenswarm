@@ -142,7 +142,15 @@ def _apply_agent_group(
     agent_group_name: str,
     package: LoadedAgentGroupPackage | None = None,
 ) -> None:
-    """Seed a hybrid roster from one resolved AgentGroup package."""
+    """Seed the team from one resolved AgentGroup package.
+
+    The leader always takes the group's leader template. Under scheduled
+    dispatch the team starts with an empty roster: the group's other members
+    are not assembled here, and the leader spawns the ones a task needs, which
+    core loads from the installed package on demand (``spawn_expert``, inline
+    ``create_task`` members, swarmflow ``agent_template``). Otherwise they
+    become a hybrid predefined roster.
+    """
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_member_display_name,
     )
@@ -181,6 +189,8 @@ def _apply_agent_group(
         }
     )
     spec.agents["leader"] = leader_member.spec
+    if spec.dispatch_mode == "scheduled":
+        return
 
     predefined_members: list[TeamMemberSpec] = []
     for agent_name, template in templates.items():
