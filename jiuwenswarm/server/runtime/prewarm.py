@@ -25,7 +25,7 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import (
     AssistantMessageChunk,
 )
 
-from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.config import get_config, get_merged_config_dict
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.edition import is_enterprise
@@ -122,6 +122,22 @@ async def warmup_import_and_checkpointer() -> None:
     )
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         ensure_persistent_checkpointer,
+    )
+
+    # 阶段0：合并配置缓存预热。
+    # ``get_merged_config_dict`` 冷加载（双 YAML 读+合并，实测 ~150ms）会被
+    # RuntimePromptRail 的模型名兜底路径在每次模型调用时触发；启动时在线程池里
+    # 预热一次，消除首个真实请求的冷加载时延（OA.05000010）。放在快速有界的
+    # 阶段1/2 序列里，``ensure_interface_deep_and_checkpointer`` 兜底 await 本
+    # task 时即可保证缓存就绪（阶段3 为慢速 fire-and-forget，企业版还会跳过）。
+    t0 = time.perf_counter()
+    try:
+        await asyncio.to_thread(get_merged_config_dict)
+    except Exception:  # noqa: BLE001
+        logger.warning("[Prewarm] stage=0 merged_config failed", exc_info=True)
+    logger.info(
+        "[Prewarm] stage=0 name=merged_config elapsed_ms=%.1f",
+        (time.perf_counter() - t0) * 1000,
     )
 
     # 阶段1：interface_deep import（原 _warm_interface_deep_module 职责）。

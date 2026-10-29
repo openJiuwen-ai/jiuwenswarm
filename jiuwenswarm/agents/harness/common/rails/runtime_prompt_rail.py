@@ -8,6 +8,7 @@ sees the current values without needing to call any tool.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -245,6 +246,18 @@ class RuntimePromptRail(DeepAgentRail):
     def _same_path(left: str, right: str) -> bool:
         return os.path.normcase(os.path.abspath(left)) == os.path.normcase(os.path.abspath(right))
 
+    def _read_runtime_state_sync(self) -> dict[str, Any]:
+        """Read runtime_state.yaml for this session (single small-file read)."""
+        state_path = get_runtime_state_path(self._session_id)
+        try:
+            with open(state_path, encoding="utf-8") as f:
+                return yaml.safe_load(f) or {}
+        except FileNotFoundError:
+            return {}
+        except Exception as e:
+            logger.warning("Failed to read runtime state file %s: %s", state_path, e)
+            return {}
+
     @staticmethod
     def _configured_model_names() -> list[str]:
         """Read configured model names from config.yaml as a runtime fallback."""
@@ -346,15 +359,12 @@ class RuntimePromptRail(DeepAgentRail):
         ))
 
         # ── runtime ──
-        runtime_state: dict[str, Any] = {}
-        state_path = get_runtime_state_path(self._session_id)
-        try:
-            with open(state_path, encoding="utf-8") as f:
-                runtime_state = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            pass
-        except Exception as e:
-            logger.warning("Failed to read runtime state file %s: %s", state_path, e)
+        # Both disk reads in this section are offloaded to the default thread
+        # pool: before_model_call runs on the AgentServer event loop, and sync
+        # IO here stalled the loop on slow disks (OA.05000010, 2026-10-15).
+        runtime_state: dict[str, Any] = await asyncio.to_thread(
+            self._read_runtime_state_sync
+        )
 
         configured_models: list[str] = []
         raw_available_models = runtime_state.get("available_models") or []
@@ -364,7 +374,10 @@ class RuntimePromptRail(DeepAgentRail):
             if str(item).strip()
         ] if isinstance(raw_available_models, list) else []
         if not available_models or not runtime_state.get("model"):
-            configured_models = self._configured_model_names()
+            # Merged-config cache miss (startup first call / clear_config_cache
+            # invalidation) reloads both YAMLs (~150ms measured); keep that off
+            # the event loop as well.
+            configured_models = await asyncio.to_thread(self._configured_model_names)
         if not available_models:
             available_models = configured_models
         fallback_model = configured_models[0] if configured_models else ""

@@ -66,6 +66,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     get_todo_generation_token,
     snapshot_includes_persistent_todos,
 )
+from jiuwenswarm.common.todo_snapshot import versioned_todo_output
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
     extract_call_goal,
@@ -73,7 +74,6 @@ from jiuwenswarm.common.tool_display import (
 )
 from jiuwenswarm.common.todo_snapshot import (
     format_todos_for_frontend,
-    overlay_serial_todo_statuses,
 )
 from jiuwenswarm.common.utils import fix_json_arguments, logger
 
@@ -1490,6 +1490,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     todo_sid,
                     tool_name=tool_name,
                     arguments=getattr(tc, "arguments", None),
+                    snapshot=getattr(ctx.inputs.tool_result, "todo_snapshot", None),
                 )
 
     # ------------------------------------------------------------------
@@ -1641,44 +1642,36 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         *,
         tool_name: str = "",
         arguments: Any = None,
+        snapshot: dict | None = None,
     ) -> None:
         """Load the main agent's todo list and push a todo.updated event to the frontend."""
-        todo_tool = self._get_todo_tool()
-        if todo_tool is None:
-            logger.debug("[StreamEventRail] TodoListTool not available")
-            return
-
-        try:
-            todos_data = await todo_tool.load_todos(session_id)
-        except Exception as exc:
-            logger.debug(
-                "[StreamEventRail] Failed to load todos: %s", exc
-            )
-            return
-
-        # 请求隔离：todo.updated 是全量快照旁路（todo 工具 after_tool_call
-        # 全量推 todo.json），按 generation token 剔除已被新一轮请求取代的
-        # 旧代条目，防止旧任务的 completed 条目重新弹回前端。未打标条目
-        # （legacy 磁盘残留）与无 token 会话（fail-open）原样放行。
+        # New tools return their committed snapshot; rereading here could pair
+        # this call's outcome with another concurrent commit.
+        if snapshot is None:
+            todo_tool = self._get_todo_tool()
+            if todo_tool is None:
+                return
+            try:
+                items = await todo_tool.load_todos(session_id)
+                loaded = getattr(items, "snapshot", None)
+                if loaded is not None and not loaded.exists:
+                    return
+                snapshot = loaded.document() if loaded is not None else None
+                todos_data = items
+            except Exception:
+                logger.debug("Todo snapshot unavailable", exc_info=True)
+                return
+        else:
+            todos_data = snapshot["todos"]
         try:
             generation_token = get_todo_generation_token(session)
         except Exception:
             generation_token = None
-        if generation_token or tool_name:
-            before = len(todos_data)
+        if not versioned_todo_output() and (generation_token or tool_name):
             if snapshot_includes_persistent_todos(tool_name, arguments, todos_data):
                 todos_data = filter_todos_for_display(todos_data, generation_token)
             else:
                 todos_data = filter_todos_for_execution(todos_data, generation_token)
-            if len(todos_data) != before:
-                logger.info(
-                    "[StreamEventRail] todo.updated filtered stale-generation "
-                    "todos: session_id=%s generation_token=%s before=%d after=%d",
-                    session_id,
-                    generation_token,
-                    before,
-                    len(todos_data),
-                )
 
         # Parent StreamEventRail only: team-member rails use their own
         # workspace and must not feed request_summaries.tasks.
@@ -1701,16 +1694,30 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ),
             )
 
-        todos = overlay_serial_todo_statuses(
-            self._format_todos_for_frontend(todos_data)
-        )
+        if snapshot is not None:
+            from dataclasses import replace
+
+            from openjiuwen.harness.tools.todo_store import decode_snapshot
+
+            from jiuwenswarm.common.todo_snapshot import project_todo_snapshot
+
+            # Legacy items were already filtered using the tool intent above;
+            # a second generation filter would hide cross-turn reminders.
+            todos = project_todo_snapshot(replace(decode_snapshot(snapshot), todos=todos_data))
+            payload = {"todos": todos}
+            if todos.todo_meta is not None:
+                payload["todo_meta"] = todos.todo_meta
+        else:
+            from jiuwenswarm.common.todo_snapshot import overlay_serial_todo_statuses
+
+            payload = {"todos": overlay_serial_todo_statuses(self._format_todos_for_frontend(todos_data))}
 
         try:
             await session.write_stream(
                 OutputSchema(
                     type="todo.updated",
                     index=0,
-                    payload={"todos": todos},
+                    payload=payload,
                 )
             )
         except Exception:

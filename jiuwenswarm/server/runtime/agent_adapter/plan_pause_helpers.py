@@ -339,13 +339,17 @@ def pause_todo_items(todos: list[TodoItem]) -> bool:
 
 async def pause_pending_todos_on_tool(modify_tool: Any, session_id: str) -> bool:
     """Persist in_progress -> pending on the session todo file."""
-    todos = await modify_tool.load_todos(session_id)
-    if not todos:
-        return False
-    if not pause_todo_items(todos):
-        return False
-    await modify_tool.save_todos(session_id, todos)
-    return True
+    from openjiuwen.harness.tools.todo_store import transact
+
+    async def apply():
+        todos = await modify_tool.read_todos(session_id)
+        if not todos:
+            return False
+        if not pause_todo_items(todos):
+            return False
+        await modify_tool.write_todos(session_id, todos)
+        return True
+    return await transact(modify_tool, session_id, apply)
 
 
 async def snapshot_and_isolate_unfinished_todos(modify_tool: Any, session_id: str) -> dict[str, Any] | None:
@@ -354,29 +358,33 @@ async def snapshot_and_isolate_unfinished_todos(modify_tool: Any, session_id: st
     Prevents todo_list from exposing runnable pending items on the next turn, so a
     clearly new user message cannot parallelize with old plan steps via todo_start.
     """
-    todos = await modify_tool.load_todos(session_id)
-    if not todos:
-        return None
+    from openjiuwen.harness.tools.todo_store import transact
 
-    pause_todo_items(todos)
-    archived, kept = split_todos_for_pause_handoff(todos)
-    snapshot = build_plan_pause_snapshot_payload(archived, kept)
+    async def apply():
+        todos = await modify_tool.read_todos(session_id)
+        if not todos:
+            return None
 
-    ids_to_delete: list[str] = []
-    seen: set[str] = set()
-    for todo in archived:
-        if todo.id not in seen:
-            seen.add(todo.id)
-            ids_to_delete.append(todo.id)
-    for todo in todos:
-        if todo.status == TodoStatus.CANCELLED and todo.id not in seen:
-            seen.add(todo.id)
-            ids_to_delete.append(todo.id)
+        pause_todo_items(todos)
+        archived, kept = split_todos_for_pause_handoff(todos)
+        snapshot = build_plan_pause_snapshot_payload(archived, kept)
 
-    if ids_to_delete:
-        await delete_todos_via_modify_tool(modify_tool, ids_to_delete, session_id=session_id)
+        ids_to_delete: list[str] = []
+        seen: set[str] = set()
+        for todo in archived:
+            if todo.id not in seen:
+                seen.add(todo.id)
+                ids_to_delete.append(todo.id)
+        for todo in todos:
+            if todo.status == TodoStatus.CANCELLED and todo.id not in seen:
+                seen.add(todo.id)
+                ids_to_delete.append(todo.id)
 
-    return snapshot
+        if ids_to_delete:
+            await delete_todos_via_modify_tool(modify_tool, ids_to_delete, session_id=session_id)
+
+        return snapshot
+    return await transact(modify_tool, session_id, apply)
 
 
 async def delete_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, session_id: str) -> None:
@@ -388,36 +396,48 @@ async def delete_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, sess
     directly — same path ``load_todos`` takes, both accept session_id as a
     plain string.
     """
-    if not ids:
-        return
-    current = await modify_tool.load_todos(session_id)
-    await modify_tool._delete_todos(session_id, ids, current)  # pylint: disable=protected-access
+    from openjiuwen.harness.tools.todo_store import transact
+
+    async def apply():
+        if not ids:
+            return
+        current = await modify_tool.read_todos(session_id)
+        await modify_tool._delete_todos(session_id, ids, current)  # pylint: disable=protected-access
+    return await transact(modify_tool, session_id, apply)
 
 
 async def cancel_todos_via_modify_tool(modify_tool: Any, ids: list[str], *, session_id: str) -> None:
     """Cancel todos by id, bypassing ``invoke`` (same reason as delete above)."""
-    if not ids:
-        return
-    current = await modify_tool.load_todos(session_id)
-    await modify_tool._cancel_todos(session_id, ids, current)  # pylint: disable=protected-access
+    from openjiuwen.harness.tools.todo_store import transact
+
+    async def apply():
+        if not ids:
+            return
+        current = await modify_tool.read_todos(session_id)
+        await modify_tool._cancel_todos(session_id, ids, current)  # pylint: disable=protected-access
+    return await transact(modify_tool, session_id, apply)
 
 
 async def cancel_pending_todos_on_tool(modify_tool: Any, session_id: str) -> bool:
     """Mark all non-completed todos cancelled (isolate old plan for a new-task turn)."""
-    todos = await modify_tool.load_todos(session_id)
-    if not todos:
-        return False
+    from openjiuwen.harness.tools.todo_store import transact
 
-    done_statuses = {
-        TodoStatus.COMPLETED.value,
-        TodoStatus.CANCELLED.value,
-    }
-    ids_to_cancel = [todo.id for todo in todos if todo.status.value not in done_statuses]
-    if not ids_to_cancel:
-        return False
+    async def apply():
+        todos = await modify_tool.read_todos(session_id)
+        if not todos:
+            return False
 
-    await cancel_todos_via_modify_tool(modify_tool, ids_to_cancel, session_id=session_id)
-    return True
+        done_statuses = {
+            TodoStatus.COMPLETED.value,
+            TodoStatus.CANCELLED.value,
+        }
+        ids_to_cancel = [todo.id for todo in todos if todo.status.value not in done_statuses]
+        if not ids_to_cancel:
+            return False
+
+        await cancel_todos_via_modify_tool(modify_tool, ids_to_cancel, session_id=session_id)
+        return True
+    return await transact(modify_tool, session_id, apply)
 
 
 def merge_supplementary_into_request_params(

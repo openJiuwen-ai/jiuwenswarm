@@ -1,0 +1,4 @@
+interface:
+  display_name: "Dynamic Memory CLI"
+  short_description: "Operate atomic Pending and Built agent memory."
+  default_prompt: "Use $dynamic-memory-cli to publish Pending retrieval UTs, search merged memory, and build verified Built indexes."
