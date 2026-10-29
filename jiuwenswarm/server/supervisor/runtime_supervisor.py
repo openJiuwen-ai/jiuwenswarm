@@ -471,7 +471,7 @@ class RuntimeSupervisor:
             try:
                 await self._bring_up()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("[Supervisor] worker bring-up failed: %s", exc)
+                logger.warning("[Supervisor] worker bring-up failed: %s: %s", type(exc).__name__, exc, exc_info=True)
                 if not await self._schedule_restart(str(exc)):
                     break
                 continue
@@ -545,6 +545,7 @@ class RuntimeSupervisor:
                 if self._stopping or self._terminating:
                     raise RuntimeError("Worker startup cancelled by supervisor stop")
                 await self._migrate_legacy_workers()
+                deadline = time.monotonic() + self._connect_timeout
                 for attempt in range(2):
                     if self._stopping or self._terminating:
                         raise RuntimeError("Worker startup cancelled by supervisor stop")
@@ -553,7 +554,14 @@ class RuntimeSupervisor:
                     process = None
                     conn = None
                     try:
-                        existing = await try_connect(self._socket_path, timeout=0.05)
+                        try:
+                            existing = await try_connect(
+                                self._socket_path, timeout=min(0.5, max(.001, deadline - time.monotonic()))
+                            )
+                        except TimeoutError:
+                            existing = await connect_with_retry(
+                                self._socket_path, timeout=max(.001, deadline - time.monotonic())
+                            )
                         conn = existing
                         if self._stopping or self._terminating:
                             raise RuntimeError("Worker startup cancelled by supervisor stop")
@@ -676,34 +684,49 @@ class RuntimeSupervisor:
             await conn.send({"kind": KIND_GATEWAY_ATTACH})
 
     async def _migrate_legacy_workers(self) -> None:
-        """Retire an owned historical endpoint instead of merely abandoning it."""
+        """Retire proven owners; unknown historical endpoints stay untouched."""
         from jiuwenswarm.server.supervisor.worker_process import legacy_socket_paths
-        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock
+        from jiuwenswarm.server.supervisor.resident_lifecycle import retire_worker, startup_lock, worker_process
 
         if self._socket_path != default_socket_path():
             return
         for path in legacy_socket_paths():
             if path == self._socket_path:
                 continue
-            deadline = time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT
-            async with startup_lock(path, deadline):
-                connection = await try_connect(path, timeout=.05)
-                if connection is None:
-                    if not endpoint_is_listening(path):
+            connection = None
+            owned = False
+            # Historical discovery must not consume the new endpoint's startup budget.
+            deadline = time.monotonic() + .5
+            try:
+                async with startup_lock(path, deadline):
+                    connection = await try_connect(path, timeout=max(.001, deadline - time.monotonic()))
+                    if connection is None:
                         continue
-                    connection = await connect_with_retry(path, timeout=max(.001, deadline - time.monotonic()))
-                try:
-                    hello = await asyncio.wait_for(connection.recv(), timeout=_HELLO_TIMEOUT)
-                    if not isinstance(hello, dict) or bool(hello.get("stub")) != self._stub:
+                    hello = await asyncio.wait_for(connection.recv(), timeout=max(.001, deadline - time.monotonic()))
+                    worker_process(hello, path, allow_legacy=True)
+                    owned = True
+                    if bool(hello.get("stub")) != self._stub:
                         raise RuntimeError("legacy Worker execution profile mismatch")
-                    await retire_worker(connection, hello, path, deadline=deadline, allow_legacy=True)
-                except Exception:
-                    self._fatal = True
-                    self._fatal_reason = "legacy Worker migration failed"
-                    self._readiness.mark_failed(self._fatal_reason)
-                    raise
-                finally:
-                    await connection.close()
+                    await retire_worker(connection, hello, path,
+                                        deadline=time.monotonic() + _FINAL_SHUTDOWN_TIMEOUT, allow_legacy=True)
+            except Exception as exc:
+                if not owned:
+                    logger.warning(
+                        "[Supervisor] historical Worker ownership unconfirmed at %s; preserving it and "
+                        "continuing on %s: %s: %s", path, self._socket_path, type(exc).__name__, exc,
+                    )
+                    continue
+                self._fatal = True
+                self._fatal_reason = f"legacy Worker migration failed at {path}: {type(exc).__name__}: {exc}"
+                self._readiness.mark_failed(self._fatal_reason)
+                raise
+            finally:
+                if connection is not None:
+                    try:
+                        await connection.close()
+                    except (OSError, RuntimeError):
+                        logger.warning("[Supervisor] historical Worker IPC close failed at %s", path, exc_info=True)
+
 
     async def _pump(self) -> None:
         conn = self._conn

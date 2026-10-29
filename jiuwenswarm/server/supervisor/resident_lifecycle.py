@@ -135,7 +135,8 @@ async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: 
         raise RuntimeError("Worker forced to exit; graceful shutdown/persistence incomplete") from error
     if outcome is not None and outcome.get("ok") is not True:
         raise RuntimeError(f"Worker reported incomplete shutdown: {outcome.get('error', '')}")
-    if outcome is None and hello.get("protocol") != 1:
+    requires_result = hello.get("protocol") != 1 or hello.get("shutdown_result") is True
+    if outcome is None and requires_result:
         raise RuntimeError("Worker exited without a shutdown acknowledgement") from error
     # The Worker releases this lifetime lease before exit. Hold the startup
     # lock in the caller until the replacement has also passed HELLO validation.

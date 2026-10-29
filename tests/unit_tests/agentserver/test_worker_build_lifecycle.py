@@ -192,13 +192,15 @@ def test_legacy_python_worker_refuses_inferred_deployment(tmp_path, monkeypatch,
         resident_lifecycle.worker_process(hello, "worker", allow_legacy=True)
 
 
+@pytest.mark.parametrize("layout", ["exe", "dmg"])
 @pytest.mark.parametrize("peer", ["own", "other-app", "python"])
 @pytest.mark.parametrize("protocol", [1, 2])
-def test_legacy_desktop_ownership_requires_its_os_executable(tmp_path, monkeypatch, peer, protocol):
+def test_legacy_desktop_ownership_requires_its_os_executable(tmp_path, monkeypatch, peer, protocol, layout):
     real_process = resident_lifecycle.psutil.Process
     username = real_process().username()
     pid = os.getpid() + 10_000_000
-    desktop = str(tmp_path / "WorkSwarm.app/Contents/Resources/backend/workswarm")
+    desktop = str(tmp_path / ("WorkSwarm.exe" if layout == "exe" else
+                              "WorkSwarm.app/Contents/Resources/backend/workswarm"))
     executable = {"own": desktop, "other-app": str(tmp_path / "Other.app/Contents/Resources/backend/workswarm"),
                   "python": sys.executable}[peer]
     process = SimpleNamespace(create_time=lambda: 1, username=lambda: username, exe=lambda: executable,

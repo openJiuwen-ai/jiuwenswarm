@@ -36,7 +36,7 @@ SHUTDOWN_TIMEOUT = 30.0
 
 
 class WorkerForceExit(RuntimeError):
-    """Dispatch ignored cancellation, so Runtime shutdown must not run."""
+    """Runtime cleanup is incomplete, so the process must exit unsuccessfully."""
 
 
 async def serve_worker(socket_path: str, *, host: str, port: int,
@@ -81,17 +81,19 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                     instance=instance,
                     code_identity_value=worker_code_identity,
                 )
-            except (OSError, RuntimeError):
+                if runtime_task is None:
+                    runtime_task = asyncio.create_task(
+                        _load_runtime(host, port, signals, dispatcher, loaded),
+                        name="runtime-load",
+                    )
+                if holder.last_readiness is not None:
+                    await conn.send(holder.last_readiness)
+            except (OSError, RuntimeError) as exc:
+                logger.warning("[Worker] HELLO/readiness delivery failed; retiring session: %s: %s",
+                               type(exc).__name__, exc)
                 await _retire_session(holder, dispatcher)
                 await conn.close()
                 continue
-            if runtime_task is None:
-                runtime_task = asyncio.create_task(
-                    _load_runtime(host, port, signals, dispatcher, loaded),
-                    name="runtime-load",
-                )
-            if holder.last_readiness is not None:
-                await conn.send(holder.last_readiness)
             try:
                 keep_running = await _read_session(conn, dispatcher)
             except WorkerForceExit as exc:
@@ -160,8 +162,8 @@ def _install_heartbeat_fast_path(conn: IpcConnection, beat: LoopBeat) -> None:
     set_responder(respond)
 
 
-def _log_late_runtime_load(task: asyncio.Task) -> None:
-    """Consume a load that finished after shutdown already moved on."""
+def _log_late_runtime_task(task: asyncio.Task) -> None:
+    """Consume a Runtime task that finished after its shutdown deadline."""
     if task.cancelled():
         return
     try:
@@ -169,10 +171,10 @@ def _log_late_runtime_load(task: asyncio.Task) -> None:
     except asyncio.CancelledError:
         return
     if exc is not None:
-        logger.warning("[Worker] runtime load finished after shutdown timeout: %s", exc)
+        logger.warning("[Worker] %s finished after shutdown timeout: %s", task.get_name(), exc)
         return
     logger.warning(
-        "[Worker] runtime load finished after shutdown timeout; cleanup already continued"
+        "[Worker] %s finished after shutdown timeout; process shutdown already started", task.get_name()
     )
 
 
@@ -182,11 +184,11 @@ async def _runtime_for_shutdown(
     *,
     timeout: float = _RUNTIME_LOAD_SHUTDOWN_TIMEOUT,
 ) -> Any:
-    """Return a loaded Runtime, or give up once ``timeout`` elapses.
+    """Return a loaded Runtime, or force exit when loading cannot stop in time.
 
     ``asyncio.wait_for`` still waits until a cancelled task finishes. A load
     blocked in ``asyncio.to_thread`` does not finish when cancelled, so this
-    uses ``asyncio.wait`` and continues cleanup while that thread runs.
+    uses ``asyncio.wait`` before escalating to process exit.
     """
     runtime = loaded.get("runtime")
     if runtime_task is None:
@@ -195,11 +197,11 @@ async def _runtime_for_shutdown(
     runtime = loaded.get("runtime")
     if runtime_task not in done:
         logger.warning(
-            "[Worker] runtime load still running after %.0fs during shutdown; continuing cleanup",
+            "[Worker] runtime load still running after %.0fs during shutdown; forcing process exit",
             timeout,
         )
         runtime_task.cancel()
-        runtime_task.add_done_callback(_log_late_runtime_load)
+        runtime_task.add_done_callback(_log_late_runtime_task)
         raise WorkerForceExit("runtime load did not drain before shutdown deadline")
     try:
         return runtime_task.result() or runtime
@@ -255,15 +257,15 @@ async def _close_worker(
 
 
 async def _shutdown_runtime(runtime: Any, *, timeout: float) -> None:
-    task = asyncio.create_task(_invoke_shutdown(runtime))
+    task = asyncio.create_task(_invoke_shutdown(runtime), name="runtime-shutdown")
     done, _pending = await asyncio.wait({task}, timeout=timeout)
     if task not in done:
         logger.warning(
-            "[Worker] runtime shutdown still running after %.0fs; continuing cleanup",
+            "[Worker] runtime shutdown still running after %.0fs; forcing process exit",
             timeout,
         )
         task.cancel()
-        task.add_done_callback(_log_late_runtime_load)
+        task.add_done_callback(_log_late_runtime_task)
         raise WorkerForceExit("runtime shutdown exceeded shared deadline")
     try:
         task.result()
