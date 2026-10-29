@@ -21,6 +21,8 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from jiuwenswarm.edition import is_enterprise
+
 logger = logging.getLogger(__name__)
 
 # ``inputs`` key carrying the UserTurn across the team dispatch boundary.
@@ -119,7 +121,14 @@ class UserTurn:
         }
         # Scheduled and heartbeat turns carry no user upload.
         if not is_system:
-            envelope["files_updated_by_user"] = json.dumps(self.files or {}, ensure_ascii=False)
+            # 企业态附件归一化与单 agent build_user_prompt 同口径：
+            # 未物化附件去掉 Gateway 本地 path 并补下载提示，避免
+            # leader/成员对不存在的本地 path 直接 read_file（检视
+            # 2026-10-29；team 路径经 render() 投递，绕过 build_user_prompt）。
+            files = _normalize_files_for_agent_prompt(self.files or {})
+            envelope["files_updated_by_user"] = json.dumps(files, ensure_ascii=False)
+            if is_enterprise() and files:
+                envelope["file_handling_hint"] = _enterprise_file_download_hint(self.language)
 
         skills_to_use = self._resolve_skills(content)
         if skills_to_use:
@@ -199,3 +208,21 @@ def _handle_statusline_prompt_command(content: str) -> tuple[str, str]:
     )
 
     return parse_statusline(content)
+
+
+def _normalize_files_for_agent_prompt(files: dict | list | Any) -> dict | list | Any:
+    """Delegate to the facade normalizer (imported late to avoid a cycle)."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _normalize_files_for_agent_prompt as normalize_files,
+    )
+
+    return normalize_files(files)
+
+
+def _enterprise_file_download_hint(language: str) -> str:
+    """Delegate to the facade hint builder (imported late to avoid a cycle)."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _enterprise_file_download_hint as build_hint,
+    )
+
+    return build_hint(language)
