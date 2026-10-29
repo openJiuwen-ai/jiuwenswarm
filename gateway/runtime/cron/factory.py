@@ -1,7 +1,7 @@
 """Factory: personal edition file store vs HA etcd store.
 
 配置解析（CronStoreSettings / load_cron_store_settings）由
-``jiuwenswarm.common.cron_settings`` 提供（gateway/runtime/server 三方
+``gateway.common.cron_settings`` 提供（gateway/runtime/server 三方
 共用），此处 re-export——与母仓 factory 同款（减少分叉面）。
 """
 
@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.cron_settings import (  # noqa: F401
+from gateway.common.cron_settings import (  # noqa: F401
     CronStoreSettings,
     load_cron_store_settings,
 )
@@ -33,13 +33,14 @@ async def create_gateway_cron_store(
     """
     if config is None:
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
 
             config = get_config()
         except Exception:
             config = {}
     settings = load_cron_store_settings(config)
-    path = settings.file_path or get_cron_jobs_path()
+    # FileCronJobStore 自带 path 缺省回落（store 内 get_cron_jobs_path 兜底）
+    path = settings.file_path
     if settings.backend != "etcd":
         return FileCronJobStore(path=path)
 

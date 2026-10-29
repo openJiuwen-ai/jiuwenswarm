@@ -68,6 +68,9 @@ from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
 )
+from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import (
+    record_model_token_usage,
+)
 from jiuwenswarm.common.tool_display import (
     extract_call_goal,
     inject_call_goal_schema,
@@ -1056,6 +1059,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 )
 
     async def after_model_call(self, ctx: AgentCallbackContext) -> None:
+        build_context = getattr(self._deep_agent, "_build_context", None)
+        usage_role = self._role or getattr(build_context, "role", None)
+        await record_model_token_usage(
+            ctx,
+            fallback_role=usage_role,
+            product_session_id=getattr(build_context, "session_id", None),
+        )
         # New agent-core versions emit the complete pre/post context usage
         # snapshots themselves.  The report on the callback context is the
         # capability marker; emitting the legacy rail event as well would add
@@ -1307,12 +1317,18 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     tool_result_payload,
                     raw_output,
                 )
-            error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
-            if error_state is not None:
-                tool_result_payload["success"] = not error_state
-                if error_state:
-                    tool_result_payload["status"] = "error"
-                    tool_result_payload["is_error"] = True
+            tool_name = str(tool_result_payload["tool_name"] or "").strip().lower()
+            if tool_name == "ttse_consult" and isinstance(result, str):
+                # FACT/TIP and argument warnings are plain text. A real failure
+                # arrives as an object with a boolean success field.
+                tool_result_payload["success"] = True
+            else:
+                error_state = _infer_tool_result_error(raw_output if raw_output is not None else result)
+                if error_state is not None:
+                    tool_result_payload["success"] = not error_state
+                    if error_state:
+                        tool_result_payload["status"] = "error"
+                        tool_result_payload["is_error"] = True
             _enrich_trusted_reviewer_result(
                 tool_result_payload,
                 raw_output,

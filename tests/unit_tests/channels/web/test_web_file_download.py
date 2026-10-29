@@ -17,6 +17,9 @@ from urllib.parse import parse_qs, quote, urlsplit
 
 import pytest
 
+# 母仓 agent_http_bridge 是 gateway 实现的转发别名，resolver 的模块级状态只在
+# gateway 模块内；patch 必须落在真正执行读取的模块上。
+from gateway.common.client import agent_http_bridge
 from jiuwenswarm.agents.harness.common.tools import web_file_download
 from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
     VerifiedDownloadAssetOwner,
@@ -26,7 +29,6 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 )
 from jiuwenswarm.channels.web import app_web
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from jiuwenswarm.common.client import agent_http_bridge
 from jiuwenswarm.server.agent_ws_server import _parse_single_byte_range
 
 

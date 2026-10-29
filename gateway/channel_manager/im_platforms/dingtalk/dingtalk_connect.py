@@ -9,16 +9,18 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from pydantic import BaseModel, Field
 import httpx
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+from pydantic import BaseModel, Field
 
-from gateway.channel_manager.base import RobotMessageRouter, BaseChannel
-from gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import DingTalkFileService
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
+from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import (
+    DingTalkFileService,
+)
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.common.utils import get_agent_workspace_dir
+from gateway.common.paths import get_agent_workspace_dir
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 
@@ -104,11 +106,11 @@ class DingTalkImageSendRequest:
 
 try:
     from dingtalk_stream import (
-        DingTalkStreamClient,
-        Credential,
+        AckMessage,
         CallbackHandler,
         CallbackMessage,
-        AckMessage,
+        Credential,
+        DingTalkStreamClient,
     )
     from dingtalk_stream.chatbot import ChatbotMessage
 
@@ -774,7 +776,7 @@ class DingTalkChannel(BaseChannel):
             logger.info(f"钉钉入站消息: {message.content} 来自 {message.sender_name}")
             # 记录最近一次可回发的钉钉会话身份，供 cron推送兜底使用。
             try:
-                from jiuwenswarm.common.config import update_channel_in_config
+                from gateway.common.config import update_channel_in_config
 
                 update_channel_in_config(
                     "dingtalk",

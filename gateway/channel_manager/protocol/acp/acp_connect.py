@@ -11,25 +11,19 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early
-parse_dotenv_early("jiuwenswarm-acp-channel")
-
-# --- Now safe to import jiuwenswarm modules ---
-from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
-from jiuwenswarm.common.e2a.acp.protocol import (
+from openjiuwen_protocol.e2a.acp.protocol import (
     build_acp_initialize_result,
     build_acp_prompt_result,
     build_acp_session_list_result,
     build_acp_session_new_result,
 )
-from jiuwenswarm.common.e2a.acp.session_updates import (
+from openjiuwen_protocol.e2a.acp.session_updates import (
     build_acp_final_text_update,
     build_acp_session_update,
     build_acp_usage_update,
 )
-from jiuwenswarm.common.e2a.adapters import envelope_from_acp_jsonrpc
-from jiuwenswarm.common.e2a.constants import (
+from openjiuwen_protocol.e2a.adapters import envelope_from_acp_jsonrpc
+from openjiuwen_protocol.e2a.constants import (
     E2A_RESPONSE_KIND_ACP_JSONRPC_ERROR,
     E2A_RESPONSE_KIND_ACP_PROMPT_RESULT,
     E2A_RESPONSE_KIND_ACP_SESSION_UPDATE,
@@ -39,9 +33,22 @@ from jiuwenswarm.common.e2a.constants import (
     E2A_RESPONSE_STATUS_SUCCEEDED,
     E2A_SOURCE_PROTOCOL_E2A,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope, E2AProvenance, E2AResponse, utc_now_iso
-from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
-from jiuwenswarm.common.version import get_runtime_version
+from openjiuwen_protocol.e2a.models import (
+    E2AEnvelope,
+    E2AProvenance,
+    E2AResponse,
+    utc_now_iso,
+)
+from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
+
+# --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from gateway.dotenv_early import parse_dotenv_early
+
+parse_dotenv_early("jiuwenswarm-acp-channel")
+
+# --- Now safe to import jiuwenswarm modules ---
+from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from gateway.common.version import get_runtime_version
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 
@@ -185,7 +192,7 @@ class AcpGatewayBridge:
         ):
             return False
 
-        from jiuwenswarm.common.e2a.adapters import build_acp_tool_response_message
+        from openjiuwen_protocol.e2a.adapters import build_acp_tool_response_message
 
         jsonrpc_id = str(data.get("id") or "").strip()
         pending = self._pending_client_rpc_session_by_id.pop(jsonrpc_id, None)
@@ -848,7 +855,7 @@ class AcpChannel(BaseChannel):
         await self._dispatch_message(msg)
 
     async def _handle_jsonrpc_response(self, data: dict[str, Any]) -> None:
-        from jiuwenswarm.common.e2a.adapters import build_acp_tool_response_message
+        from openjiuwen_protocol.e2a.adapters import build_acp_tool_response_message
 
         jsonrpc_id = str(data.get("id") or "").strip()
         if not jsonrpc_id:
@@ -1783,7 +1790,7 @@ class AcpChannel(BaseChannel):
 
 
 def _load_acp_channel_config() -> AcpChannelConfig:
-    from jiuwenswarm.common.config import get_config
+    from gateway.common.config import get_config
 
     try:
         full_cfg = get_config()
@@ -1819,6 +1826,11 @@ def main() -> None:
     # Keep ACP stdio protocol frames on the original stdout while redirecting
     # incidental process logs away from the protocol stream.
     sys.stdout = sys.stderr
+
+    # 独立入口自行初始化日志，输出路径与 Gateway 一致（共同安装时复用母仓配置）
+    from gateway.common.logging_setup import setup_gateway_logger
+
+    setup_gateway_logger()
 
     parser = argparse.ArgumentParser(
         prog="jiuwenswarm-acp",

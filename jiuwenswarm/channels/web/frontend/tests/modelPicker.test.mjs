@@ -34,6 +34,8 @@ try {
     vite.ssrLoadModule('/src/features/multiModelCollaboration/featureConfig.ts'),
     vite.ssrLoadModule('/src/features/settings/modules/models/ModelGroupDialog.tsx'),
     vite.ssrLoadModule('/src/features/settings/services/SettingsServicesProvider'),
+    vite.ssrLoadModule('/src/stores/teamSelectorStore.ts'),
+    vite.ssrLoadModule('/src/features/teamOrganization/featureConfig.ts'),
   ]);
 } finally {
   await vite.close();
@@ -58,6 +60,8 @@ const [
   { setMultiModelCollaborationEnabled, isMultiModelCollaborationEnabled },
   { ModelGroupDialog },
   { SettingsServicesProvider },
+  { useTeamSelectorStore },
+  { setTeamOrganizationUiEnabled, isTeamOrganizationUiEnabled },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -892,5 +896,75 @@ test('model group dialog preserves existing duplicate route identities and overr
     assert.deepEqual(saved[0].routes, routes);
     assert.equal(saved[0].model_group_id, 'mgp-stable');
     assert.deepEqual(saved[0].request_config, { temperature: 0.5 });
+  });
+});
+
+for (const explicitSession of [false, true]) {
+  test(`organization child model preserves owner selection with explicit session: ${explicitSession}`, async () => {
+    const previousTeams = useTeamSelectorStore.getState();
+    const previousEnabled = isTeamOrganizationUiEnabled();
+    try {
+      await withFixture(async ({ mount, byId }) => {
+        setTeamOrganizationUiEnabled(true);
+        useSessionStore.getState().setAvailableModels([
+          { model_id: 'glm', model_name: 'GLM-5.3', is_default: true },
+          { model_id: 'deepseek', model_name: 'deepseek-flash' },
+        ], 'GLM-5.3');
+        useSessionStore.getState().setMode(sessionId, 'team');
+        useSessionStore.getState().setSelectedModelName(sessionId, 'GLM-5.3');
+        useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: 'glm' });
+        const teams = [
+          { team_id: 'owner', team_name: 'owner', organization_id: 'org', is_owner: true },
+          {
+            team_id: 'expert', team_name: 'expert', organization_id: 'org', is_owner: false,
+            execution_model_name: 'deepseek-flash', execution_model_selection: { type: 'model', id: 'deepseek' },
+          },
+        ];
+        const runtime = { teams, selectedTeamId: 'expert', defaultTeamId: 'owner', loaded: true };
+        useTeamSelectorStore.setState({ runtimes: { [sessionId]: runtime } });
+
+        if (explicitSession) useChatStore.setState({ activeSessionId: 'another-session' });
+        await mount(createElement(ChatModelSelector, explicitSession ? { sessionId } : {}));
+
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /deepseek-flash/);
+        assert.equal(byId('chat-panel-model-selector-trigger').disabled, true);
+        assert.equal(useSessionStore.getState().runtimes[sessionId].selectedModelName, 'GLM-5.3');
+        await act(async () => {
+          useTeamSelectorStore.setState({ runtimes: { [sessionId]: { ...runtime, selectedTeamId: 'owner' } } });
+        });
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /GLM-5.3/);
+        assert.equal(byId('chat-panel-model-selector-trigger').disabled, false);
+        await act(async () => {
+          useTeamSelectorStore.setState({ runtimes: { [sessionId]: runtime } });
+          setTeamOrganizationUiEnabled(false);
+        });
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /GLM-5.3/);
+      });
+    } finally {
+      useTeamSelectorStore.setState(previousTeams, true);
+      setTeamOrganizationUiEnabled(previousEnabled);
+    }
+  });
+}
+
+
+test('design selectors hide model groups and persist an ordinary model fallback', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    setupStableCatalog();
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'mgp-stable' });
+    await mount(createElement(ChatModelSelector, { sessionId, allowModelGroups: false }));
+    await act(async () => {});
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection,
+      { type: 'model', id: 'mdl-a' });
+    assert.deepEqual(persisted.at(-1), { session_id: sessionId, model_selection: { type: 'model', id: 'mdl-a' } });
+    await click(byId('chat-panel-model-selector-trigger'));
+    assert.equal(byId('chat-panel-model-selector-group-option'), null);
+    assert.equal(byId('chat-panel-model-selector-moa-option'), null);
   });
 });

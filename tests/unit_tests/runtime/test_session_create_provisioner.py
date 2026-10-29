@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, cast
@@ -87,6 +88,15 @@ def _input(**overrides: Any) -> SessionCreateInput:
     }
     values.update(overrides)
     return SessionCreateInput(**values)
+
+
+@pytest.fixture(autouse=True)
+def _reset_created_session_metadata_cache() -> Iterator[None]:
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    session_metadata.remove_session_metadata_cache("created-session")
+    yield
+    session_metadata.remove_session_metadata_cache("created-session")
 
 
 def _install_product_hooks(

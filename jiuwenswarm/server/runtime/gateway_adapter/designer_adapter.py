@@ -31,7 +31,7 @@ from jiuwenswarm.common.schema.designer_graph import (
 )
 from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir, get_agent_sessions_dir
-from jiuwenswarm.common.work_mode import (
+from gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_WORK,
     DESIGN_WORK_MODE,
     is_default_project_id,
@@ -295,6 +295,22 @@ def _graph_story_prompt(graph: dict[str, Any]) -> tuple[str, str]:
     meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
     analysis = meta.get("script_analysis") if isinstance(meta.get("script_analysis"), dict) else {}
     return str(analysis.get("story_name") or ""), str(graph.get("description") or "")
+
+
+def _heal_canvas_title(graph: dict[str, Any]) -> dict[str, Any]:
+    """Retitle a canvas still named after its prompt, by the rule the session title follows."""
+    story_name, prompt = _graph_story_prompt(graph)
+    current = str(graph.get("title") or "")
+    title = _replacement_display_title(current, prompt, story_name)
+    if not title or title == current:
+        return graph
+    healed = dict(graph)
+    healed["title"] = title
+    try:
+        return dict(_store.save_graph(healed))
+    except Exception:
+        logger.warning("Failed to retitle design canvas %s", graph.get("graph_id"), exc_info=True)
+        return healed
 
 
 def sync_design_display_name(project: Any) -> Any:
@@ -653,6 +669,7 @@ def _get_design_workspace(
     )
     if error is not None or pair is None:
         return None, error, code
+    pair["graph"] = _heal_canvas_title(pair["graph"])
     return _workspace_from_pair(project, pair, pairs), None, None
 
 

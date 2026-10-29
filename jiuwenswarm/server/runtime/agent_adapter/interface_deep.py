@@ -26,7 +26,8 @@ from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
-from shutil import which
+from shutil import copytree, ignore_patterns, which
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -53,6 +54,7 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
 from openjiuwen.core.foundation.tool import ToolCard, McpServerConfig, ToolExposure, ToolInfo
 from openjiuwen.core.common.logging import server_logger
+from openjiuwen.core.common.exception.errors import AgentError
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent import (
@@ -164,7 +166,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
 from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
 )
-from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiError, RsiHarnessInstallConflict
 from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
 
 GOAL_UPDATED_EVENT_TYPE = InteractionEventType.GOAL_UPDATED.value
@@ -386,7 +388,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (  #
     resolve_declared_auto_workspace,
     supports_phase_auto_root,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
+from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
@@ -529,6 +531,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import is_heartbeat_supported
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from jiuwenswarm.agents.harness.common.tools.image_tools import generate_image
 from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (
     generate_video,
@@ -666,7 +669,7 @@ from jiuwenswarm.common.utils import (
     mask_sensitive,
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     deprecate_mode,
@@ -745,7 +748,7 @@ def _resolve_agent_composition_scope(mode: str, sub_mode: str | None) -> str:
         return "team_root"
     if normalized_mode == "code" and normalized_sub_mode == "team":
         return "team_root"
-    from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
+    from gateway.common.mode_matrix import supports_single_agent_permission_profile
 
     if supports_single_agent_permission_profile(mode, sub_mode):
         return "single_agent"
@@ -1068,6 +1071,7 @@ _CRON_TOOL_NAMES = frozenset(
         "cron_delete_job",
         "cron_toggle_job",
         "cron_preview_job",
+        "cron_run_now",
     }
 )
 
@@ -2124,6 +2128,9 @@ class JiuWenSwarmDeepAdapter:
         self._rsi_harness_load_record: Any | None = None
         self._rsi_harness_package_id: str | None = None
         self._rsi_displaced_plugins: dict[str, tuple[str, str]] = {}
+        self._rsi_default_harness: tuple[str, str] | None = None
+        self._rsi_selected_plugin: tuple[str, str] | None = None
+        self._rsi_selected_package_snapshot: TemporaryDirectory | None = None
 
     def set_heartbeat_service(self, service: Any | None) -> None:
         """Bind the one process-level Heartbeat runtime used by this rail."""
@@ -2208,6 +2215,23 @@ class JiuWenSwarmDeepAdapter:
         ]
         return any(
             not is_heartbeat_supported(candidate)
+            for candidate in candidates
+            if candidate
+        )
+
+    def _scheduled_task_unsupported_for_current_request(
+        self, session_id: str | None = None
+    ) -> bool:
+        """Detect Xiaoyi from request context or the channel-qualified session ID."""
+        context = getattr(self, "_runtime_cron_tool_context", None)
+        candidates = [
+            str(getattr(context, "channel_id", "") or "").strip(),
+            str(session_id or getattr(self, "_parent_session_id", "") or "")
+            .strip()
+            .split("_", 1)[0],
+        ]
+        return any(
+            not is_scheduled_task_supported(candidate)
             for candidate in candidates
             if candidate
         )
@@ -2705,7 +2729,7 @@ class JiuWenSwarmDeepAdapter:
                 else ""
             )
         if "plugin_names" not in params:
-            params["plugin_names"] = list(self._loaded_plugins)
+            params["plugin_names"] = self._current_plugin_names()
         try:
             agent_template_name = params.get("agent_template_name")
             if isinstance(agent_template_name, str) and agent_template_name.strip():
@@ -2720,6 +2744,16 @@ class JiuWenSwarmDeepAdapter:
                     else item
                     for item in plugin_names
                 ]
+                if request.session_id and params["plugin_names"]:
+                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+                    saved = get_session_equipment(request.session_id, cache_bust=True).get("plugin_names", [])
+                    # A refreshed client may echo equipment saved before uninstall.
+                    # New invalid selections still reach the marketplace gate.
+                    params["plugin_names"] = [
+                        name for name in params["plugin_names"]
+                        if name not in saved or equipment.is_plugin_allowed(name)
+                    ]
         except (TypeError, ValueError) as exc:
             return self._equipment_error_response(request, str(exc))
 
@@ -2749,7 +2783,7 @@ class JiuWenSwarmDeepAdapter:
             await self._unload_agent_template_for_request(params)
             await self._load_agent_template_for_request(params)
             await self._load_plugins_for_request(params)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, AgentError, OSError, RsiError) as exc:
             return self._equipment_error_response(request, str(exc))
         from jiuwenswarm.server.runtime.session.session_metadata import (
             save_session_equipment,
@@ -2815,9 +2849,20 @@ class JiuWenSwarmDeepAdapter:
         v = params["plugin_names"]
         if not isinstance(v, list):
             return True, "plugin_names illegal type"
-        if set(self._loaded_plugins) != set(v):
+        if set(self._current_plugin_names()) != set(v):
             return True, "plugin set changed"
         return False, ""
+
+    def _current_plugin_names(self) -> list[str]:
+        """Include the session-selected RSI bundle in ordinary equipment state."""
+        names = list(dict.fromkeys([
+            *self._loaded_plugins,
+            *(name for name in getattr(self, "_rsi_displaced_plugins", {}) if equipment.is_plugin_allowed(name)),
+        ]))
+        selected = getattr(self, "_rsi_selected_plugin", None)
+        if selected is not None:
+            names.append(selected[0])
+        return names
 
     async def _unload_agent_template_for_request(self, params: dict) -> None:
         """Unload the current expert when switching, clearing, or version drifts."""
@@ -2867,11 +2912,15 @@ class JiuWenSwarmDeepAdapter:
                         await self._instance.unload_extension(current[1])
                     self._loaded_agent_template = None
             elif kind == "plugin_packages":
+                selected = getattr(self, "_rsi_selected_plugin", None)
+                if selected is not None and selected[0] == pid:
+                    await self._select_rsi_harness_for_request(None)
                 entry = self._loaded_plugins.get(pid)
                 if entry is not None:
                     if self._instance is not None:
                         await self._instance.unload_extension(entry[0])
                     self._loaded_plugins.pop(pid, None)
+                getattr(self, "_rsi_displaced_plugins", {}).pop(pid, None)
         except Exception as exc:
             raise RuntimeError(
                 f"unload equipment failed: kind={kind} id={pid}: {exc}"
@@ -2909,6 +2958,7 @@ class JiuWenSwarmDeepAdapter:
         v = params["plugin_names"]
         if not isinstance(v, list):
             return
+        self._requested_rsi_plugin(v)
         desired = set(v)
         displaced = getattr(self, "_rsi_displaced_plugins", {})
         self._rsi_displaced_plugins = {name: entry for name, entry in displaced.items() if name in desired}
@@ -2938,9 +2988,11 @@ class JiuWenSwarmDeepAdapter:
         for item in v:
             if not isinstance(item, str):
                 raise ValueError(f"plugin_names element must be str, got {type(item).__name__}")
+        selected = self._requested_rsi_plugin(v)
+        await self._select_rsi_harness_for_request(selected)
         to_load: list[tuple[str, str, Path]] = []
         for name in v:
-            if name in {
+            if name == selected or name in getattr(self, "_rsi_displaced_plugins", {}) or name in {
                 getattr(self, "_rsi_harness_package_id", None),
                 getattr(self, "_rsi_harness_install_id", None),
             }:
@@ -2959,6 +3011,66 @@ class JiuWenSwarmDeepAdapter:
         for name, desired_version, pkg_dir in to_load:
             record = await self._instance.load_plugin(str(pkg_dir))
             self._loaded_plugins[name] = (record, desired_version)
+
+    @staticmethod
+    def _requested_rsi_plugin(names: list[str]) -> str | None:
+        """The versioned RSI catalog namespace occupies one Harness slot."""
+        selected = list(dict.fromkeys(
+            name for name in names if isinstance(name, str) and name.startswith("rsi-harness-")
+        ))
+        if len(selected) > 1:
+            raise ValueError("每个会话只能选择一个 RSI Harness 包，请取消其他版本")
+        return selected[0] if selected else None
+
+    async def _select_rsi_harness_for_request(self, name: str | None) -> None:
+        """Replace the default with a session selection, restoring on failure."""
+        current = getattr(self, "_rsi_selected_plugin", None)
+        if (name is not None or current is not None) and self._instance is None:
+            raise RuntimeError("DeepAgent instance not ready for equipment load")
+        if name is None:
+            if current is None:
+                return
+            default = getattr(self, "_rsi_default_harness", None)
+            if default is None:
+                await self._replace_rsi_harness_local("deactivate", config_path="", installation_id="")
+            else:
+                await self._replace_rsi_harness_local(
+                    "activate", config_path=default[0], installation_id=default[1],
+                )
+            self._rsi_selected_plugin = None
+            snapshot = getattr(self, "_rsi_selected_package_snapshot", None)
+            if snapshot is not None:
+                snapshot.cleanup()
+                self._rsi_selected_package_snapshot = None
+            return
+        package = equipment.resolve_plugin_dir(name)
+        version = equipment.read_manifest_version(package)
+        if current == (name, version):
+            return
+        # Selecting the already active immutable version needs no second load.
+        if (
+            current is not None
+            or getattr(self, "_rsi_harness_install_id", None) != name
+            or version != name.removeprefix("rsi-harness-")
+        ):
+            # Keep the loaded package stable even if its editable catalog copy
+            # changes. A failed replacement can then reload the previous files.
+            snapshot = TemporaryDirectory(prefix="rsi_session_", ignore_cleanup_errors=True)
+            try:
+                target = Path(snapshot.name) / "package"
+                copytree(package, target, ignore=ignore_patterns("__pycache__", "*.pyc"))
+                await self._replace_rsi_harness_local(
+                    "activate", config_path=str(target), installation_id=name,
+                    preserve_displaced=True,
+                )
+            except BaseException:
+                snapshot.cleanup()
+                raise
+            previous = getattr(self, "_rsi_selected_package_snapshot", None)
+            self._rsi_selected_package_snapshot = snapshot
+            if previous is not None:
+                previous.cleanup()
+        self._rsi_selected_plugin = (name, version)
 
     def _get_cached_session_adapter(self, session_id: str | None) -> "JiuWenSwarmDeepAdapter | None":
         sid = self._session_adapter_key(session_id)
@@ -3688,7 +3800,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 metadata = get_session_metadata(sid)
-                from jiuwenswarm.common.model_selection import ModelSelection
+                from gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.moa_runtime import effective_moa_enabled, resolve_moa_settings
 
                 # Explicit stable selections win; legacy ordinary names are also an
@@ -4876,7 +4988,7 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> str:
         """Resolve managed-browser binary from saved browser config."""
-        from jiuwenswarm.agents.harness.common.browser_config import resolve_chrome_path
+        from jiuwenswarm.common.browser_config import resolve_chrome_path
 
         if config_base is None:
             config_base = get_config()
@@ -5287,7 +5399,7 @@ class JiuWenSwarmDeepAdapter:
                     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                 ),
             )
-            from jiuwenswarm.agents.harness.common.browser_config import (
+            from jiuwenswarm.common.browser_config import (
                 apply_browser_decision_config,
             )
 
@@ -7764,7 +7876,7 @@ class JiuWenSwarmDeepAdapter:
         if group_id:
             cached = self._model_group_cache.get(group_id)
             if cached is None:
-                from jiuwenswarm.common.model_selection import ModelSelection
+                from gateway.common.model_selection import ModelSelection
                 from jiuwenswarm.server.runtime.model_compiler_adapter import (
                     build_model_from_selection,
                 )
@@ -7966,7 +8078,7 @@ class JiuWenSwarmDeepAdapter:
         raw_selection = params.get("model_selection")
         if raw_selection is not None:
             try:
-                from jiuwenswarm.common.model_selection import ModelSelection
+                from gateway.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
                 if self._is_cron_execution_session(getattr(request, "session_id", None)):
                     from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
@@ -8006,7 +8118,7 @@ class JiuWenSwarmDeepAdapter:
             except ValueError:
                 logger.warning("invalid session id while resolving model selection: %r", session_id)
         from jiuwenswarm.common.model_catalog import ModelCatalog
-        from jiuwenswarm.common.model_selection import ModelSelection
+        from gateway.common.model_selection import ModelSelection
         from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
         catalog = ModelCatalog()
@@ -8039,7 +8151,7 @@ class JiuWenSwarmDeepAdapter:
 
     def _resolve_stable_model(self, requested: str, can_access=None) -> Model:
         """Cache by resolved content, not only ID: edits take effect without restart."""
-        from jiuwenswarm.common.model_selection import ModelSelection
+        from gateway.common.model_selection import ModelSelection
         from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
         from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
@@ -9249,11 +9361,6 @@ class JiuWenSwarmDeepAdapter:
         config_path = str(active.get("runtime_path") or "").strip()
         if not installation_id or not config_path:
             return None
-        if (
-            getattr(self, "_rsi_harness_install_id", None) == installation_id
-            and getattr(self, "_rsi_harness_load_record", None) is not None
-        ):
-            return {"status": "ACTIVE", "installation_id": installation_id, "already_active": True}
         try:
             return await self.apply_rsi_harness_install_local(
                 "activate", config_path=config_path, installation_id=installation_id,
@@ -9274,11 +9381,36 @@ class JiuWenSwarmDeepAdapter:
         config_path: str,
         installation_id: str,
     ) -> dict[str, Any]:
+        """Update the global default without replacing a session's selection."""
+        if operation not in {"activate", "deactivate"}:
+            raise ValueError(f"unsupported RSI Harness operation: {operation}")
+        if getattr(self, "_rsi_selected_plugin", None) is not None:
+            result = {"status": "SKIPPED", "resources": []}
+        else:
+            result = await self._replace_rsi_harness_local(
+                operation, config_path=config_path, installation_id=installation_id,
+            )
+        self._rsi_default_harness = (config_path, installation_id) if operation == "activate" else None
+        return result
+
+    async def _replace_rsi_harness_local(
+        self,
+        operation: str,
+        *,
+        config_path: str,
+        installation_id: str,
+        preserve_displaced: bool = False,
+    ) -> dict[str, Any]:
         """Apply an RSI version to this adapter only (no session fanout)."""
 
         instance = getattr(self, "_instance", None)
         if instance is None:
             return {"status": "SKIPPED", "resources": []}
+        # Other clients may uninstall a package without notifying this adapter.
+        self._rsi_displaced_plugins = {
+            name: entry for name, entry in getattr(self, "_rsi_displaced_plugins", {}).items()
+            if equipment.is_plugin_allowed(name)
+        }
         if operation == "deactivate":
             record = getattr(self, "_rsi_harness_load_record", None)
             if record is None:
@@ -9305,7 +9437,7 @@ class JiuWenSwarmDeepAdapter:
         old_displaced = dict(getattr(self, "_rsi_displaced_plugins", {}))
         loaded_plugins = getattr(self, "_loaded_plugins", {})
         self._loaded_plugins = loaded_plugins
-        displaced = {}
+        displaced = dict(old_displaced) if preserve_displaced else {}
         package_id = None
         manifest = Path(config_path) / "manifest.json"
         if manifest.is_file():
@@ -9317,9 +9449,10 @@ class JiuWenSwarmDeepAdapter:
             self._rsi_harness_install_id = None
             self._rsi_harness_config_path = None
         try:
-            for name, (path, version) in old_displaced.items():
-                restored = await instance.load_plugin(path)
-                loaded_plugins[name] = (restored, version)
+            if not preserve_displaced:
+                for name, (path, version) in old_displaced.items():
+                    restored = await instance.load_plugin(path)
+                    loaded_plugins[name] = (restored, version)
             # The catalog copy has a versioned id; it is the same capability
             # bundle as the immutable RSI version, not a second plugin to load.
             for name in dict.fromkeys((package_id, installation_id)):
@@ -9399,8 +9532,7 @@ class JiuWenSwarmDeepAdapter:
         snapshots = [
             (
                 target,
-                getattr(target, "_rsi_harness_install_id", None),
-                getattr(target, "_rsi_harness_config_path", None),
+                getattr(target, "_rsi_default_harness", None),
             )
             for target in targets
         ]
@@ -9416,13 +9548,13 @@ class JiuWenSwarmDeepAdapter:
                 applied.append(target)
                 resources.extend(result.get("resources") or [])
         except Exception:
-            for target, old_id, old_path in reversed(snapshots):
+            for target, old_default in reversed(snapshots):
                 try:
-                    if old_id and old_path:
+                    if old_default is not None:
                         await target.apply_rsi_harness_install_local(
                             "activate",
-                            config_path=old_path,
-                            installation_id=old_id,
+                            config_path=old_default[0],
+                            installation_id=old_default[1],
                         )
                     else:
                         await target.apply_rsi_harness_install_local(
@@ -13471,7 +13603,6 @@ class JiuWenSwarmDeepAdapter:
         方法注册，send_file 首次注册后改走 ``update_runtime_context``。
         这里每次请求只做幂等检查和运行时上下文更新。
         """
-        self._ensure_cron_tools_registered(session_id)
         self._ensure_session_messaging_tools_registered(session_id, channel_id)
 
         # send_file 工具：由 channels.<channel>.send_file_allowed 控制。工具实例只建一次，
@@ -13489,6 +13620,13 @@ class JiuWenSwarmDeepAdapter:
             cron_channel = str(_CRON_TOOL_CHANNEL_ID.get() or "").strip()
             if cron_channel:
                 channel = cron_channel
+        if (
+            is_scheduled_task_supported(channel)
+            and not self._scheduled_task_unsupported_for_current_request(session_id)
+        ):
+            self._ensure_cron_tools_registered(session_id)
+        else:
+            self._drop_cron_tools(channel)
         # 心跳工具按渠道能力下发：小艺渠道不下发（见 heartbeat_policy）。
         # 工具由 HeartbeatRail 在 agent 组装期注册，这里每请求兜一次摘除，
         # 覆盖 rail 已被缓存、首次构建时渠道尚未确定的情况。
@@ -13528,6 +13666,38 @@ class JiuWenSwarmDeepAdapter:
                     project_dir=self._project_dir,
                     require_execution_authorization=require_send_authorization,
                 )
+
+    def _drop_cron_tools(self, channel: str) -> None:
+        """Remove cron tools from a channel that does not support scheduled tasks."""
+        ability_manager = getattr(self._instance, "ability_manager", None)
+        removed: list[str] = []
+        if ability_manager is not None:
+            remover = getattr(ability_manager, "remove_ability", None) or getattr(
+                ability_manager, "remove", None
+            )
+            for existing in list(ability_manager.list() or []):
+                name = getattr(existing, "name", "")
+                if name not in _CRON_TOOL_NAMES or remover is None:
+                    continue
+                try:
+                    remover(name)
+                    removed.append(name)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "[JiuWenSwarmDeepAdapter] cron tool remove skipped name=%s",
+                        name,
+                        exc_info=True,
+                    )
+        if removed:
+            self._prune_tool_cards(set(removed))
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] cron tools removed for channel=%s: %s",
+                channel,
+                sorted(removed),
+            )
+        self._cron_tools_registered_language = None
+        self._cron_tools_registered_allow_create = None
+        self._cron_tools_registered_allow_update = None
 
     def _drop_heartbeat_tools(self, channel: str) -> None:
         """把已注册的心跳工具从模型可见工具集里摘掉（渠道不支持心跳）。
@@ -14232,6 +14402,16 @@ class JiuWenSwarmDeepAdapter:
             await session.post_run()
 
     async def cleanup(self) -> None:
+        """Release adapter-owned resources even when another cleanup step fails."""
+        try:
+            await self._cleanup_adapter_resources()
+        finally:
+            snapshot = getattr(self, "_rsi_selected_package_snapshot", None)
+            if snapshot is not None:
+                snapshot.cleanup()
+                self._rsi_selected_package_snapshot = None
+
+    async def _cleanup_adapter_resources(self) -> None:
         """Release adapter-owned external runtime resources."""
         from jiuwenswarm.server.runtime.agent_adapter.external_harness_helpers import (
             stop_external_harness,
@@ -15275,6 +15455,41 @@ class JiuWenSwarmDeepAdapter:
             self._active_loop_session(),
             continues_turn=self._continues_current_turn(params),
         )
+
+    async def _commit_round_state(self, session_id: str) -> None:
+        """Persist the loop Session once a request's round output has closed.
+
+        The only other commit is ``SessionTurnTracker.sync`` at dispatch,
+        before the round runs; the DeepAgent loop never commits at round end.
+        A rebuilt adapter (restart, idle eviction) would restore that earlier
+        state, for example an interrupt this round already answered, and take
+        the next message as the answer to it.
+
+        Only the request that held the round's output lease calls this; a
+        request accepted into another reader's round has no round to end.
+
+        Args:
+            session_id: Session the request ran in, for the log line.
+        """
+        session = self._active_loop_session()
+        if session is None:
+            return
+        try:
+            # A second cancel must not cut the commit short, nor skip the
+            # cleanup that follows this call in the caller's ``finally``.
+            await asyncio.shield(session.commit())
+        except asyncio.CancelledError:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] round state commit continues after cancel: "
+                "session_id=%s",
+                session_id,
+            )
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] round state commit failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
 
     def _active_loop_session(self) -> Any | None:
         """Return the session the DeepAgent loop is bound to, when there is one.
@@ -17599,6 +17814,8 @@ class JiuWenSwarmDeepAdapter:
                     )
                 except Exception:
                     logger.debug("[Goal] interaction stream close failed", exc_info=True)
+                if not _is_attach_only_subscription(request.params):
+                    await self._commit_round_state(session_id)
             close_agent_run_span(
                 _run_span,
                 session_id=session_id,
@@ -17691,7 +17908,7 @@ class JiuWenSwarmDeepAdapter:
     def _require_cross_session_task_admission(self, request: AgentRequest) -> None:
         """Refuse protected-mode steering before any SDK submission."""
         from jiuwenswarm.agents.harness.common.session_ops_service import resolve_live_agent_session
-        from jiuwenswarm.common.mode_matrix import is_plan_mode
+        from gateway.common.mode_matrix import is_plan_mode
         from jiuwenswarm.runtime.context import get_current_runtime
         from jiuwenswarm.runtime.session_input import SessionInputQueueRequiredError
 
@@ -19464,6 +19681,8 @@ class JiuWenSwarmDeepAdapter:
                     )
                 except Exception:
                     logger.debug("[Goal] interaction stream close failed", exc_info=True)
+                if not attach_subscription:
+                    await self._commit_round_state(session_id)
             close_agent_run_span(
                 _run_span,
                 session_id=session_id,
@@ -19551,13 +19770,35 @@ class JiuWenSwarmDeepAdapter:
             except Exception:
                 logger.debug("[JiuWenSwarmDeepAdapter] context window fallback failed", exc_info=True)
 
-        if usage_accumulator["total_tokens"] > 0:
+        has_turn_usage = any(
+            usage_accumulator[key] > 0
+            for key in ("input_tokens", "output_tokens", "total_tokens")
+        )
+        session_usage = None
+        try:
+            from jiuwenswarm.server.runtime.session.session_token_usage import (
+                get_session_token_usage,
+            )
+
+            snapshot = await asyncio.to_thread(get_session_token_usage, session_id)
+            if snapshot["revision"] > 0:
+                session_usage = snapshot
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] cumulative session usage unavailable",
+                exc_info=True,
+            )
+
+        if has_turn_usage or session_usage is not None:
             payload: dict[str, Any] = {
                 "event_type": "chat.usage_summary",
                 "session_id": session_id,
-                "usage": summary,
                 "model": self._resolve_model_name(),
             }
+            if has_turn_usage:
+                payload["usage"] = summary
+            if session_usage is not None:
+                payload["session_usage"] = session_usage
             if context_usage_percent is not None:
                 payload["usage_percent"] = context_usage_percent
             if context_window_tokens is not None:
@@ -19763,6 +20004,10 @@ class JiuWenSwarmDeepAdapter:
             **projection,
             "task_id": subagent_id,
             "description": description,
+            # Parent-stream history persist uses payload.content; without it the
+            # empty-shell filter drops roster frames and refresh loses the panel
+            # (GitCode #4887). Mirror description so parent history rediscovers ids.
+            "content": description,
             "legacy_status": legacy_status,
             "index": index,
             "total": total,
@@ -19770,6 +20015,15 @@ class JiuWenSwarmDeepAdapter:
         }
         if message:
             payload["message"] = message
+        if parent_session_id:
+            try:
+                from jiuwenswarm.server.runtime.session.session_token_usage import get_session_token_usage
+
+                session_usage = get_session_token_usage(parent_session_id)
+                if session_usage.get("revision", 0) > 0:
+                    payload["session_usage"] = session_usage
+            except Exception:
+                logger.debug("[SessionTokenUsage] subagent snapshot unavailable", exc_info=True)
         return payload
 
     @staticmethod

@@ -1974,6 +1974,53 @@ async def test_cleanup_attempts_are_bounded(archive):
 
 
 @pytest.mark.asyncio
+async def test_busy_lock_path_consumes_the_cleanup_budget(archive):
+    """拿不到锁也是失败：`cleanup_attempts` 必须随失败落盘，否则预算永不消耗（#5845）。
+
+    `_finalize_session_locked` 是唯一写 `cleanup_attempts` 的地方，而占用路径（跨进程
+    flock 被另一进程长期持有）永远进不到它。只在局部变量里 +1 时，每次重新 spawn 的
+    finalizer 读到的 attempts 恒为 0：`_MAX_CLEANUP_ATTEMPTS` 永不达成、`_abandon_cleanup`
+    不可达，同一个会话被无限重试并持续占用收尾槽位。
+    """
+    service, create, _, _runtime = archive
+    create()
+    lc.begin("session", "sess_a", "archive", block_execution=True)
+    lc.mark_finalizing("session", "sess_a")
+    operation_id = lc.state("session", "sess_a")["operation"]["operation_id"]
+
+    class _BusyLock:
+        """模拟 `self.lock(...)` 始终被另一进程占住。"""
+
+        async def __aenter__(self):
+            raise lc.LifecycleError("OPERATION_IN_PROGRESS", "held by another process")
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+    service.lock = lambda *args, **kwargs: _BusyLock()  # type: ignore[method-assign]
+
+    await service._finalize_session("sess_a", "archive", "web", "default", None)
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["cleanup_attempts"] == 1, "占用路径的 attempts 没有落盘"
+    assert operation["status"] == "failed"
+    assert operation["retryable"] is True
+    assert operation["cleanup_next_at"] > 0, "占用路径没有写退避时间"
+
+    # 后续每轮 recovery 重新 spawn：attempts 必须继续累加，直到预算耗尽转 abandoned。
+    busy = lc.LifecycleError("OPERATION_IN_PROGRESS", "held by another process")
+    for attempts in (2, 3, 4, 5):
+        await service._record_finalize_failure(
+            "sess_a", "archive", attempts, busy, operation_id
+        )
+
+    operation = lc.state("session", "sess_a")["operation"]
+    assert operation["cleanup_attempts"] == 5
+    assert operation["status"] == "abandoned"
+    assert operation["cleanup_exhausted"] is True
+    assert operation["retryable"] is False
+
+
+@pytest.mark.asyncio
 async def test_unarchive_restores_active_listing(archive):
     service, create, _, _ = archive
     create()

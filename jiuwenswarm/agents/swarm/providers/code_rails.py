@@ -34,7 +34,7 @@ from openjiuwen.agent_teams.harness.manifest import (
 from openjiuwen.harness.prompts import resolve_language
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     is_code_profile_mode,
     is_team_mode,
     is_team_plan_mode,

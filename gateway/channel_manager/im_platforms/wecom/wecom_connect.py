@@ -4,10 +4,10 @@
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import concurrent.futures
 import json
+import logging
 import os
 import re
 import threading
@@ -16,15 +16,19 @@ from collections import OrderedDict
 from typing import Any, Callable
 
 import requests
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
 
-from gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
-from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from gateway.channel_manager.base import (
+    BaseChannel,
+    ChannelMetadata,
+    RobotMessageRouter,
+)
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
-from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
-from jiuwenswarm.common.utils import get_agent_workspace_dir
+from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from gateway.common.paths import get_agent_workspace_dir
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 
@@ -632,7 +636,9 @@ class WecomChannel(BaseChannel):
 
     @staticmethod
     def _is_control_message(content: str) -> bool:
-        from gateway.message_handler.command_parser.slash_command import is_control_like_for_im_batching
+        from gateway.message_handler.command_parser.slash_command import (
+            is_control_like_for_im_batching,
+        )
 
         return is_control_like_for_im_batching(content)
 
@@ -905,7 +911,7 @@ class WecomChannel(BaseChannel):
         # 写入 last_chat_id 和 last_user_id 供 cron/心跳推送使用
         if chatid and not self._looks_like_msgid(chatid):
             try:
-                from jiuwenswarm.common.config import update_channel_in_config
+                from gateway.common.config import update_channel_in_config
 
                 update_data: dict[str, str] = {"last_chat_id": chatid or ""}
                 if sender_user_id:
@@ -1041,7 +1047,7 @@ class WecomChannel(BaseChannel):
                 logger.info("[WecomChannel] _extract_chatid: 返回session_id=%s", sid_str)
                 return sid_str
         try:
-            from jiuwenswarm.common.config import get_config
+            from gateway.common.config import get_config
             ch_cfg = (get_config().get("channels") or {}).get("wecom") or {}
             # last_chat_id：用户聊天时自动写入；default_chat_id：可手动配置，用于心跳/定时推送
             last = str(ch_cfg.get("last_chat_id") or ch_cfg.get("default_chat_id") or "").strip()
@@ -1408,7 +1414,9 @@ class WecomChannel(BaseChannel):
 
         # 初始化文件服务
         try:
-            from gateway.channel_manager.im_platforms.wecom.wecom_file_service import WecomFileService
+            from gateway.channel_manager.im_platforms.wecom.wecom_file_service import (
+                WecomFileService,
+            )
             workspace_dir = self.config.workspace_dir or str(get_agent_workspace_dir())
             self._file_service = WecomFileService(
                 ws_client=client,

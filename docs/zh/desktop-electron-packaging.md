@@ -140,7 +140,7 @@ JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 ```
 
 Python 侧配合（均已实现并有测试）：
-- `jiuwenswarm/dotenv_early.py`：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定
+- `gateway/dotenv_early.py`（gateway 子进程）与 `jiuwenswarm/dotenv_early.py`（AgentServer 等母仓进程）：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定。两份加载器独立演进；缺实例 `.env` 时仍只由母仓那份创建
 - `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`：检测到 `PLAYWRIGHT_MCP_TARGET_ID` 时走 Electron 分支，不还原 headless 参数、不改写 JSON argv
 
 ### 服务管理
@@ -347,7 +347,8 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 | `gateway/__init__.py` | PEP 562 惰性导出（启动性能关键不变量，见 §7；勿加回急切导入，有测试保护） |
 | `tests/unit_tests/gateway/test_gateway_lazy_exports.py` | gateway 惰性导出 + app_web 轻导入不变量 |
 | `tests/unit_tests/channels/web/test_web_static_cache_headers.py` | 静态资源 Cache-Control 头行为 |
-| `jiuwenswarm/dotenv_early.py` | env 保留键（Electron browser 键集） |
+| `gateway/dotenv_early.py` | gateway 子进程的 env 保留键（Electron browser 键集）；只加载已有 `.env` |
+| `jiuwenswarm/dotenv_early.py` | 母仓进程的 env 保留键；缺实例 `.env` 时仍由它创建 |
 | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | `_sync_browser_runtime_environment` electron 分支 |
 | `src/components/DesktopBrowserPane/` | 前端浏览器面板 |
 | `src/features/browserAgentActivity.ts` | "浏览器 Agent 已调用"信号 hook |

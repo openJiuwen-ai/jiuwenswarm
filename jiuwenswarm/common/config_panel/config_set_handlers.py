@@ -48,7 +48,9 @@ from jiuwenswarm.common.config import (
     SWARMFLOW_WORKTREE_CONFIG_PATH,
     TEAM_DISPATCH_MODE_CONFIG_PATH,
     TEAM_MEMBER_MESSAGING_CONFIG_PATH,
+    TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH,
     TEAM_TASK_VERIFICATION_CONFIG_PATH,
+    coerce_subtask_depth,
     get_config,
     get_config_raw,
     resolve_env_vars,
@@ -58,6 +60,7 @@ from jiuwenswarm.common.config import (
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
+    update_external_cli_path_histories_in_config,
     update_kv_cache_affinity_enabled_in_config,
     update_memory_forbidden_description_in_config,
     update_memory_forbidden_enabled_in_config,
@@ -74,9 +77,11 @@ from jiuwenswarm.common.config import (
     update_symphony_in_config,
     update_task_full_duplex_in_config,
     update_team_organization_ui_in_config,
+    update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
     update_team_member_messaging_in_config,
+    update_team_member_subtasks_in_config,
     update_team_task_verification_in_config,
     update_trajectory_diagnosis_in_config,
     update_default_models_in_config,
@@ -387,6 +392,7 @@ CONFIG_YAML_KEYS = frozenset({
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
+    "comfyui_workflow_enabled",
     "task_asr_enabled",
     "topic_recommendation_enabled",
     "prompt_suggestion_enabled",
@@ -398,12 +404,15 @@ CONFIG_YAML_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
+    "team_member_subtasks_enabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
+    "external_cli_agent_claude_path_histories",
     "external_cli_agent_codex_enabled",
     "external_cli_agent_codex_use_builtin",
     "external_cli_agent_codex_cli_path",
+    "external_cli_agent_codex_path_histories",
     "setup_guide_enabled",
     "skill_evolution",
     "ttse_enabled",
@@ -411,11 +420,12 @@ CONFIG_YAML_KEYS = frozenset({
     "progressive_tool_optimize",
 })
 # 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
-# enable_member_messaging），改动后需重载 team。
+# enable_member_messaging / max_subtask_depth），改动后需重载 team。
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
+    "team_member_subtasks_enabled",
 })
 # Settings toggles that only change YAML; AgentServer reads the file next turn.
 RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
@@ -425,6 +435,7 @@ RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
 WEB_UI_YAML_KEYS = frozenset({
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
+    "comfyui_workflow_enabled",
     "setup_guide_enabled",
     *RECOMMENDATION_UI_CONFIG_KEYS,
 })
@@ -452,9 +463,11 @@ EXTERNAL_CLI_AGENT_CONFIG_KEYS = frozenset({
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
+    "external_cli_agent_claude_path_histories",
     "external_cli_agent_codex_enabled",
     "external_cli_agent_codex_use_builtin",
     "external_cli_agent_codex_cli_path",
+    "external_cli_agent_codex_path_histories",
 })
 DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
 DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
@@ -643,10 +656,13 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         TEAM_MEMBER_MESSAGING_CONFIG_PATH,
         DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     )
+    subtask_depth = get_nested_config_value(raw, TEAM_MEMBER_SUBTASK_DEPTH_CONFIG_PATH, 0)
     return {
         "team_scheduled_dispatch_enabled": "true" if str(dispatch_mode).strip() == "scheduled" else "false",
         "team_task_verification_enabled": "true" if parse_config_switch_bool(verification) else "false",
         "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
+        # The depth doubles as the switch (core F_128): on means any depth > 0.
+        "team_member_subtasks_enabled": "true" if coerce_subtask_depth(subtask_depth) > 0 else "false",
     }
 
 
@@ -1153,7 +1169,14 @@ def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any
                 untouched_entries[item.strip()] = {"cli_agent": item.strip()}
     agents: list[dict[str, Any]] = []
     for cli_agent in external_cli_agent_kinds():
-        if not any(key.startswith(f"external_cli_agent_{cli_agent}_") for key in params):
+        # A save that only rewrites path histories must not rebuild the
+        # entry, so a cleanup write never re-detects a stale cli_path.
+        touched_keys = [
+            key
+            for key in params
+            if key.startswith(f"external_cli_agent_{cli_agent}_") and not key.endswith("_path_histories")
+        ]
+        if not touched_keys:
             untouched = untouched_entries.get(cli_agent)
             if untouched is not None:
                 agents.append(dict(untouched))
@@ -1174,6 +1197,46 @@ def external_cli_agents_from_switches(raw: dict[str, Any], params: dict[str, Any
             entry["cli_path"] = str(detection.get("path") or "").strip()
         agents.append(entry)
     return agents
+
+
+def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[str, Any]) -> dict[str, list[str]]:
+    """Merge persisted CLI path histories with this save's history params.
+
+    Args:
+        raw: The pre-save config snapshot.
+        params: The flattened settings params of this save.
+
+    Returns:
+        ``cli_agent`` to its merged history paths. Kinds whose history key is
+        absent from ``params`` keep their persisted history verbatim. When a
+        save switches an agent from one external path to another, the
+        previously effective path is appended so switching never loses it;
+        the currently effective path stays out of the history because it is
+        always the dropdown's first option.
+    """
+    current = flatten_external_cli_agents_for_config_panel(raw)
+    merged: dict[str, list[str]] = {}
+    for cli_agent in external_cli_agent_kinds():
+        history_key = external_cli_agent_key(cli_agent, "path_histories")
+        source = params.get(history_key, current.get(history_key, "[]"))
+        history: list[str] = []
+        try:
+            parsed = json.loads(str(source or "[]"))
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, list):
+            history = [str(path) for path in parsed if str(path or "").strip()]
+        cli_path_key = external_cli_agent_key(cli_agent, "cli_path")
+        if cli_path_key in params:
+            old_path = str(current.get(cli_path_key, "") or "").strip()
+            _, _, new_path = external_cli_agent_effective_state(cli_agent, current, params)
+            # Switching to the built-in CLI reports an empty new path; the
+            # replaced custom path must still land in the history.
+            if old_path and old_path != new_path and old_path not in history:
+                history = [*history, old_path]
+        if history:
+            merged[cli_agent] = history
+    return merged
 
 
 def refresh_external_cli_builtin_models(external_cli_agents: list[dict[str, str]]) -> None:
@@ -1464,12 +1527,18 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者与成员间通信只在调度模式下生效，关闭调度模式时一并关闭。
+                    # 验证者、成员间通信与成员子任务只在调度模式下生效，关闭调度模式时一并关闭。
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
                     update_team_member_messaging_in_config(False)
                     yaml_updated.append("team_member_messaging_enabled")
-            elif param_key in ("team_task_verification_enabled", "team_member_messaging_enabled"):
+                    update_team_member_subtasks_in_config(False)
+                    yaml_updated.append("team_member_subtasks_enabled")
+            elif param_key in (
+                "team_task_verification_enabled",
+                "team_member_messaging_enabled",
+                "team_member_subtasks_enabled",
+            ):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
                     if "team_scheduled_dispatch_enabled" in params
@@ -1477,8 +1546,10 @@ def apply_config_payload(
                 )
                 if param_key == "team_task_verification_enabled":
                     update_team_task_verification_in_config(parsed and scheduled)
-                else:
+                elif param_key == "team_member_messaging_enabled":
                     update_team_member_messaging_in_config(parsed and scheduled)
+                else:
+                    update_team_member_subtasks_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1488,8 +1559,15 @@ def apply_config_payload(
                     # 每个卡片的“一键安装”独立触发：仅当本次保存显式携带了
                     # 该 agent 的配置键时才检查/安装它的依赖，避免动到本次
                     # 未触碰、但此前已启用过的另一个 agent。
-                    codex_touched = any(key.startswith("external_cli_agent_codex_") for key in params)
-                    claude_touched = any(key.startswith("external_cli_agent_claude_") for key in params)
+                    # Path-history-only keys must not trigger the install gate.
+                    codex_touched = any(
+                        key.startswith("external_cli_agent_codex_") and not key.endswith("_path_histories")
+                        for key in params
+                    )
+                    claude_touched = any(
+                        key.startswith("external_cli_agent_claude_") and not key.endswith("_path_histories")
+                        for key in params
+                    )
                     if codex_touched and any(item.get("cli_agent") == "codex" for item in external_cli_agents):
                         codex_dependency_install = (
                             ensure_codex_dependency() if ensure_codex_dependency else None
@@ -1512,6 +1590,9 @@ def apply_config_payload(
                         external_cli_agents,
                         build_external_cli_publish_url(),
                     )
+                    update_external_cli_path_histories_in_config(
+                        external_cli_path_histories_from_switches(raw, params)
+                    )
                     refresh_external_cli_builtin_models(external_cli_agents)
                     external_cli_agents_updated = True
             elif param_key == "skill_evolution":
@@ -1532,6 +1613,8 @@ def apply_config_payload(
                 update_task_full_duplex_in_config(parsed)
             elif param_key == "team_organization_ui_enabled":
                 update_team_organization_ui_in_config(parsed)
+            elif param_key == "comfyui_workflow_enabled":
+                update_comfyui_workflow_enabled_in_config(parsed)
             elif param_key == "task_asr_enabled":
                 update_task_asr_in_config(parsed)
             elif param_key == "topic_recommendation_enabled":
@@ -1751,6 +1834,9 @@ async def config_get_handler(
         payload["team_organization_ui_enabled"] = (
             "true" if experimental_cfg.get("team_organization_ui_enabled", False) else "false"
         )
+        payload["comfyui_workflow_enabled"] = (
+            "true" if experimental_cfg.get("comfyui_workflow_enabled", False) else "false"
+        )
         payload["progressive_tool_optimize"] = (
             "true" if raw.get("progressive_tool_optimize", False) else "false"
         )
@@ -1804,12 +1890,14 @@ async def config_get_handler(
             "team_member_messaging_enabled",
             "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
         )
+        payload.setdefault("team_member_subtasks_enabled", "false")
         for key, value in provider("a2ui").get_default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("task_asr_enabled", "false")
         for key, (_, value_type, default) in {

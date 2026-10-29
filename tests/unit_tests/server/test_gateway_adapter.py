@@ -16,9 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
@@ -72,7 +72,9 @@ async def test_workspace_upload_chunks_stay_in_injected_user_dir(
     tmp_path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Large AgentOS uploads are routed as bounded E2A chunks, not Gateway files."""
-    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+    from jiuwenswarm.server.runtime.gateway_adapter import (
+        workspace_file_adapter as module,
+    )
 
     monkeypatch.setattr(module, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(module, "is_path_within_user_dirs", lambda path: Path(path).is_relative_to(tmp_path))
@@ -121,7 +123,9 @@ async def test_upload_chunk_concurrent_same_name_does_not_clobber(
     import asyncio
     from concurrent.futures import ThreadPoolExecutor
 
-    from jiuwenswarm.server.runtime.gateway_adapter import workspace_file_adapter as module
+    from jiuwenswarm.server.runtime.gateway_adapter import (
+        workspace_file_adapter as module,
+    )
 
     monkeypatch.setattr(module, "get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(module, "is_path_within_user_dirs", lambda path: Path(path).is_relative_to(tmp_path))
@@ -401,9 +405,15 @@ class TestSessionAdapter:
 
     async def test_get_metadata(self, monkeypatch) -> None:
         """session.get_metadata：OK 返回 metadata；不存在返回 NOT_FOUND（与 Web fallback 语义一致）。"""
+        captured: dict[str, object] = {}
+
+        def _read(sid, cache_bust=False, *, enable_writeback=True):
+            captured["enable_writeback"] = enable_writeback
+            return {"session_id": sid, "mode": "agent", "model": "m1"}
+
         monkeypatch.setattr(
             "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
-            lambda sid, cache_bust=False: {"session_id": sid, "mode": "agent", "model": "m1"},
+            _read,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "sess-1"})
@@ -411,10 +421,25 @@ class TestSessionAdapter:
         assert resp.ok is True
         assert resp.payload["session_id"] == "sess-1"
         assert resp.payload["model"] == "m1"
+        # 缺省保持既有调用方（web/TUI/video_duplex）的原行为：允许推断写盘
+        assert captured["enable_writeback"] is True
+
+        # gateway 远端读声明的只读语义随参数透传，不得静默升级为可写
+        resp = await SessionAdapter().handle(
+            _request(
+                ReqMethod.SESSION_GET_METADATA,
+                {"session_id": "sess-1", "enable_writeback": False},
+            )
+        )
+        assert resp.ok is True
+        assert captured["enable_writeback"] is False
+
+        def _empty(sid, cache_bust=False, *, enable_writeback=True):
+            return {}
 
         monkeypatch.setattr(
             "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
-            lambda sid, cache_bust=False: {},
+            _empty,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "missing"})
@@ -1331,6 +1356,7 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
         "chrome_path": "/agent/chrome", "headless": False, "decision_mode": "llm",
         "decision_provider": "typesafe", "jev_key_configured": False,
         "decision_model": "jev-1.13.0", "decision_api_base": "https://api.typesafe.ai/v1",
+        "decision_display_name": "",
     }
     assert updates == [{"chrome_path": "/agent/new-chrome", "headless": True}]
     assert changed.metadata["config_changed"] is True
@@ -1361,6 +1387,7 @@ async def test_config_adapter_resolves_platform_browser_path_for_runtime_restart
         "jev_key_configured": False,
         "decision_model": "jev-1.13.0",
         "decision_api_base": "https://api.typesafe.ai/v1",
+        "decision_display_name": "",
     }
 
 
@@ -1510,16 +1537,18 @@ def test_saving_decision_fields_keeps_the_rest_of_the_jev_settings(tmp_path, mon
         encoding="utf-8",
     )
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
-    config_module.update_browser_decision_in_config({"mode": "hybrid"})
+    config_module.update_browser_decision_in_config({"mode": "hybrid", "display_name": "My Jev"})
     saved = path.read_text(encoding="utf-8")
     assert "mode: hybrid" in saved and "provider: openrouter" in saved
     assert "min_confidence: 0.55" in saved and "headless: false" in saved
+    assert "display_name: My Jev" in saved
+
 
 
 def test_jev_provider_defaults_match_openjiuwen() -> None:
     """jiuwenswarm writes these on a provider switch; they must equal what openjiuwen would pick."""
     decision = pytest.importorskip("openjiuwen.harness.tools.browser_move.decision")
-    from jiuwenswarm.agents.harness.common.browser_config import JEV_PROVIDER_DEFAULTS
+    from jiuwenswarm.common.browser_config import JEV_PROVIDER_DEFAULTS
 
     for provider, defaults in JEV_PROVIDER_DEFAULTS.items():
         if provider == "custom":
@@ -1588,6 +1617,7 @@ async def test_custom_jev_model_and_endpoint_round_trip_through_front(monkeypatc
     changed = await adapter.handle(_set(
         decision_provider="custom", decision_model="jev-preview",
         decision_api_base="https://jev.example.test/v1",
+        decision_display_name="Custom Jev",
     ))
     assert changed.ok
     # Simulate a Front process whose environment predates Runtime's credential write.
@@ -1597,6 +1627,8 @@ async def test_custom_jev_model_and_endpoint_round_trip_through_front(monkeypatc
     assert reopened.payload["decision_provider"] == "custom"
     assert reopened.payload["decision_model"] == "jev-preview"
     assert reopened.payload["decision_api_base"] == "https://jev.example.test/v1"
+    assert reopened.payload["decision_display_name"] == "Custom Jev"
+    assert current["browser"]["decision"]["display_name"] == "Custom Jev"
     assert reopened.payload["jev_key_configured"] is True
     assert "synthetic-custom-key" not in repr(reopened.payload)
     keys = await config_service.handle_config_request(_request(ReqMethod.CONFIG_GET))

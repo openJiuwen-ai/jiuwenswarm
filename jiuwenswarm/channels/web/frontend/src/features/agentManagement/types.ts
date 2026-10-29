@@ -11,7 +11,6 @@ export type AgentCatalogItem = {
   runtimePackageName: string;
   hubAssetId?: string;
   displayName: string;
-  searchNames?: string[];
   description: string;
   category: string;
   source: AgentSource;
@@ -73,7 +72,6 @@ export type AgentGroupCatalogItem = {
   id: string;
   name: string;
   displayName: string;
-  searchNames?: string[];
   description: string;
   category: string;
   source: AgentGroupSource;

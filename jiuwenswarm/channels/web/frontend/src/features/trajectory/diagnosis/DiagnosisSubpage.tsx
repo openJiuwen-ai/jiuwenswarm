@@ -1,32 +1,40 @@
 /** Diagnosis sub-page: what was diagnosed, how the run went, and what to do next. */
 
-import { memo, useCallback, useMemo, useState, type ReactNode } from 'react';
+import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { isRunning, ttseRootCauses } from './diagnosisState';
+import { experienceJudge, isRunning, skillJudges, ttseRootCauses } from './diagnosisState';
 import {
   asRewardPayload,
   type DiagnosisRecord,
-  type RootCause,
+  type EvolutionJudge,
 } from './diagnosisTypes';
 import {
+  artifactSuggestion,
+  artifactSuggestionItems,
   diagnosisTarget,
   formatElapsed,
   formatTimeWindow,
   isStageExpanded,
+  legacyArtifactInstruction,
   looksLikePath,
   processSummary,
-  splitStageOutput,
+  skillBatchFillText,
+  skillSuggestionText,
+  stageOutputBlocks,
   stageViews,
+  suggestionParts,
   suggestionsState,
+  truncateText,
+  type ArtifactSuggestionItem,
   type StageView,
   type StageViewStatus,
 } from './diagnosisView';
 import { FillButton } from './DiagnosisFillButton';
 import { RewardSummary } from './DiagnosisReward';
-import { RootCauses } from './DiagnosisRootCauses';
+import { Findings, FoldableItem } from './DiagnosisFindings';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
-import { ClampedMarkdown, PlainFold } from './DiagnosisText';
+import { ClampedMarkdown, PlainFold, WholeMarkdown } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
 import css from './DiagnosisSubpage.module.css';
 
@@ -34,20 +42,27 @@ export interface DiagnosisSubpageProps {
   session: DiagnosisSession;
   /** Display names of the session's agents by subject id. */
   subjectLabels: ReadonlyMap<string, string>;
-  /** Root cause currently emphasised on the trajectory lanes. */
-  focusedCauseId: string | null;
-  /** Emphasise a root cause on the trajectory, or `null` to stop. */
-  onFocusCause: (cause: RootCause | null) => void;
+  /** Finding (failure cause or evolution item) currently emphasised on the trajectory lanes. */
+  focusedFindingId: string | null;
+  /** Emphasise a finding on the trajectory, or `null` to stop. */
+  onFocusFinding: (findingId: string | null) => void;
+  /** Leave the diagnosis view once a suggestion has been written into the composer. */
+  onComposerFilled?: () => void;
 }
 
 export const DiagnosisSubpage = memo(function DiagnosisSubpage({
   session,
   subjectLabels,
-  focusedCauseId,
-  onFocusCause,
+  focusedFindingId,
+  onFocusFinding,
+  onComposerFilled,
 }: DiagnosisSubpageProps) {
   const { t } = useTranslation();
-  const { record, notice, summaries } = session;
+  const { record, notice, summaries, fillComposer } = session;
+  const fillAndReturn = useCallback((text: string) => {
+    fillComposer(text);
+    onComposerFilled?.();
+  }, [fillComposer, onComposerFilled]);
 
   return (
     <div className={css.root} data-testid="trajectory-diagnosis-subpage">
@@ -79,8 +94,9 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
             record={record}
             session={session}
             subjectLabels={subjectLabels}
-            focusedCauseId={focusedCauseId}
-            onFocusCause={onFocusCause}
+            focusedFindingId={focusedFindingId}
+            onFocusFinding={onFocusFinding}
+            onFill={fillAndReturn}
           />
         )}
       </div>
@@ -92,18 +108,20 @@ interface RecordCardsProps {
   record: DiagnosisRecord;
   session: DiagnosisSession;
   subjectLabels: ReadonlyMap<string, string>;
-  focusedCauseId: string | null;
-  onFocusCause: (cause: RootCause | null) => void;
+  focusedFindingId: string | null;
+  onFocusFinding: (findingId: string | null) => void;
+  onFill: (text: string) => void;
 }
 
-function Card({ title, action, testId, children }: {
+function Card({ title, action, testId, className, children }: {
   title: string;
   action?: ReactNode;
   testId: string;
+  className?: string;
   children: ReactNode;
 }) {
   return (
-    <section className={css.card} data-testid={testId}>
+    <section className={className === undefined ? css.card : `${css.card} ${className}`} data-testid={testId}>
       <header className={css.cardHead}>
         <h3 className={css.cardTitle}>{title}</h3>
         {action}
@@ -113,28 +131,116 @@ function Card({ title, action, testId, children }: {
   );
 }
 
-function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCause }: RecordCardsProps) {
+/** Suggestions already opened in this session, so the tab dot does not return after leaving the page. */
+const seenSuggestionPanes = new Set<string>();
+
+/** The stage row to follow: the one that is running, or the last row before any has started. */
+function runningItem(list: HTMLElement | null, runningId: string): HTMLElement | null {
+  if (list === null) return null;
+  if (runningId === '') return list.querySelector('li:last-child');
+  return list.querySelector(`[data-stage-id="${CSS.escape(runningId)}"]`);
+}
+
+/** The diagnosis list scrolls as one column; find that box from a node inside it. */
+function scrollBox(element: HTMLElement): HTMLElement | null {
+  let node = element.parentElement;
+  while (node !== null) {
+    const overflow = getComputedStyle(node).overflowY;
+    if (overflow === 'auto' || overflow === 'scroll') return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function RecordCards({
+  record,
+  session,
+  subjectLabels,
+  focusedFindingId,
+  onFocusFinding,
+  onFill,
+}: RecordCardsProps) {
   const { t } = useTranslation();
   const running = isRunning(record);
-  const done = !running;
   const target = useMemo(() => diagnosisTarget(record), [record]);
   const labelOf = (subjectId: string) => subjectLabels.get(subjectId) ?? subjectId;
   const note = record.input.user_note?.trim() ?? '';
-  const taskDescription = record.task_description?.trim() ?? '';
-  const { suggestions } = record;
+  const trajectorySummary = truncateText(record.trajectory_summary ?? record.task_description ?? '', 500);
   const reward = asRewardPayload(record.reward);
-  const ttseCauses = ttseRootCauses(record);
+  const skills = skillJudges(record);
+  const experience = experienceJudge(record);
+  const artifactBody = artifactSuggestion(record, false);
+  const artifactText = artifactBody === ''
+    ? ''
+    : `${t('trajectory.diagnosis.artifactFillPrefix')}\n${artifactBody}`;
+  const artifactItems = artifactSuggestionItems(record);
   const outlets = suggestionsState(record.status);
+  const showDetails = record.error !== undefined
+    || reward !== null
+    || trajectorySummary !== ''
+    || (record.reward_failure_causes?.length ?? 0) > 0
+    || (record.evolution_judge?.length ?? 0) > 0
+    || (record.root_causes?.length ?? 0) > 0;
+  const [pane, setPane] = useState<{ id: string; value: 'details' | 'suggestions'; seen: boolean }>(
+    () => ({ id: record.diagnosis_id, value: 'details', seen: seenSuggestionPanes.has(record.diagnosis_id) }),
+  );
+  if (pane.id !== record.diagnosis_id) {
+    setPane({
+      id: record.diagnosis_id,
+      value: 'details',
+      seen: seenSuggestionPanes.has(record.diagnosis_id),
+    });
+  }
+  const showSuggestionDot = outlets === 'ready' && pane.value !== 'suggestions' && !pane.seen;
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const paneRef = useRef<HTMLElement>(null);
+  // Viewport Y of the tab bar captured at the click, so the swap does not yank the scroll.
+  const paneAnchorRef = useRef<number | null>(null);
+  const selectPane = (value: 'details' | 'suggestions') => {
+    if (value !== pane.value && tabsRef.current !== null) {
+      paneAnchorRef.current = tabsRef.current.getBoundingClientRect().top;
+    }
+    if (value === 'suggestions') seenSuggestionPanes.add(record.diagnosis_id);
+    setPane({ id: record.diagnosis_id, value, seen: pane.seen || value === 'suggestions' });
+  };
+  useLayoutEffect(() => {
+    const anchor = paneAnchorRef.current;
+    paneAnchorRef.current = null;
+    const tabs = tabsRef.current;
+    const pane = paneRef.current;
+    if (anchor === null || tabs === null || pane === null) return;
+    const scroller = scrollBox(tabs);
+    if (scroller === null) return;
+    // The two tab panels are the same element type, so React can reuse the section and keep the
+    // previous pane's inline min-height. Measure the incoming content without that leftover.
+    pane.style.minHeight = '';
+    const shift = () => tabs.getBoundingClientRect().top - anchor;
+    const delta = shift();
+    if (Math.abs(delta) < 1) return;
+    const desired = scroller.scrollTop + delta;
+    const max = scroller.scrollHeight - scroller.clientHeight;
+    // The other pane is shorter, so the browser would clamp the scroll and pull the cards above into view.
+    if (desired > max) {
+      pane.style.minHeight = `${Math.ceil(pane.getBoundingClientRect().height + desired - max)}px`;
+    }
+    scroller.scrollTop += shift();
+  }, [pane.value]);
 
   return (
     <>
-      <Card title={t('trajectory.diagnosis.object')} testId="trajectory-diagnosis-object">
+      <Card
+        title={t('trajectory.diagnosis.object')}
+        testId="trajectory-diagnosis-object"
+        className={`${css.objectCard} ${css.spacedCard}`}
+      >
         {target.full ? (
           <>
-            <p className={css.line}>
-              <span className={css.lineLabel}>{t('trajectory.diagnosis.objectTime')}</span>
-              {t('trajectory.diagnosis.objectFull')}
-            </p>
+            {target.window === null ? null : (
+              <p className={css.line}>
+                <span className={css.lineLabel}>{t('trajectory.diagnosis.objectTime')}</span>
+                {formatTimeWindow(target.window.startMs, target.window.endMs)}
+              </p>
+            )}
             {subjectLabels.size === 0 ? null : (
               <AgentLine labels={[...subjectLabels.values()]} />
             )}
@@ -156,57 +262,105 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
             {t('trajectory.diagnosis.objectStepsCount', { count: record.input.resolved_span_count })}
           </p>
         ) : null}
+        {note === '' ? null : (
+          <p className={css.line} data-testid="trajectory-diagnosis-object-note">
+            <span className={css.lineLabel}>{t('trajectory.diagnosis.note')}</span>
+            <span className={css.noteInline}>{note}</span>
+          </p>
+        )}
         {record.input.excluded_running.length > 0 ? (
           <p className={css.hint} data-testid="trajectory-diagnosis-object-excluded">
             {t('trajectory.diagnosis.objectExcludedRunning', { count: record.input.excluded_running.length })}
           </p>
         ) : null}
-        {taskDescription === '' ? null : (
-          <div className={css.taskBox} data-testid="trajectory-diagnosis-task">
-            <span className={css.lineLabel}>{t('trajectory.diagnosis.objectTask')}</span>
-            <PlainFold text={taskDescription} />
-          </div>
-        )}
       </Card>
 
-      {note === '' ? null : (
-        <Card title={t('trajectory.diagnosis.note')} testId="trajectory-diagnosis-note-card">
-          <p className={css.noteText}>{note}</p>
-        </Card>
-      )}
+      <ProcessSection
+        record={record}
+        running={running}
+        onCancel={running ? () => { void session.cancel(); } : undefined}
+      />
 
-      <Card
-        title={t('trajectory.diagnosis.details')}
-        testId="trajectory-diagnosis-record"
-        action={running ? (
-          <button
-            type="button"
-            className={css.button}
-            onClick={() => { void session.cancel(); }}
-            data-testid="trajectory-diagnosis-cancel"
-          >
-            {t('trajectory.diagnosis.cancel')}
-          </button>
-        ) : null}
+      <div
+        ref={tabsRef}
+        className={css.resultTabs}
+        role="tablist"
+        aria-label={t('trajectory.diagnosis.resultTabs')}
       >
-        {record.error === undefined ? null : (
-          <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
-        )}
-        <ProcessSection record={record} running={running} />
-        {record.headline === undefined || record.headline === '' ? null : (
-          <p className={css.headline} data-testid="trajectory-diagnosis-headline">{record.headline}</p>
-        )}
-        {done && reward !== null ? <RewardSummary reward={reward} /> : null}
-        {/* Findings appear as the attribution reports them, not only once the run is over. */}
-        <RootCauses
-          record={record}
-          subjectLabels={subjectLabels}
-          focusedCauseId={focusedCauseId}
-          onFocusCause={onFocusCause}
-        />
-      </Card>
+        <button
+          type="button"
+          role="tab"
+          className={css.resultTab}
+          aria-selected={pane.value === 'details'}
+          onClick={() => selectPane('details')}
+          data-testid="trajectory-diagnosis-pane-details"
+        >
+          {t('trajectory.diagnosis.details')}
+        </button>
+        <span className={css.resultTabDivider} aria-hidden />
+        <button
+          type="button"
+          role="tab"
+          className={css.resultTab}
+          aria-selected={pane.value === 'suggestions'}
+          onClick={() => selectPane('suggestions')}
+          data-testid="trajectory-diagnosis-pane-suggestions"
+        >
+          {t('trajectory.diagnosis.suggestions')}
+          {showSuggestionDot ? (
+            <>
+              <span className={css.resultTabDot} aria-hidden />
+              <span className={css.srOnly}>{t('trajectory.diagnosis.suggestionsReady')}</span>
+            </>
+          ) : null}
+        </button>
+      </div>
 
-      <Card title={t('trajectory.diagnosis.suggestions')} testId="trajectory-diagnosis-suggestions">
+      {pane.value === 'details' ? (
+        <section
+          key={pane.value}
+          ref={paneRef}
+          role="tabpanel"
+          className={css.resultPane}
+          data-testid="trajectory-diagnosis-record"
+        >
+          {record.error === undefined ? null : (
+            <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
+          )}
+          {reward !== null ? <RewardSummary reward={reward} /> : null}
+          {/* Findings stream in under the evaluation once scoring has landed. */}
+          <Findings
+            record={record}
+            subjectLabels={subjectLabels}
+            focusedFindingId={focusedFindingId}
+            onFocusFinding={onFocusFinding}
+          />
+          {trajectorySummary === '' ? null : (
+            <FoldableItem
+              title={t('trajectory.diagnosis.objectSummary')}
+              className={css.summaryBlock}
+              testId="trajectory-diagnosis-task"
+              toggleTestId="trajectory-diagnosis-summary-toggle"
+            >
+              <div className={css.itemBody}>
+                <PlainFold text={trajectorySummary} />
+              </div>
+            </FoldableItem>
+          )}
+          {running && !showDetails ? (
+            <p className={css.hint} data-testid="trajectory-diagnosis-details-pending">
+              {t('trajectory.diagnosis.detailsPending')}
+            </p>
+          ) : null}
+        </section>
+      ) : (
+        <section
+          key={pane.value}
+          ref={paneRef}
+          role="tabpanel"
+          className={css.resultPane}
+          data-testid="trajectory-diagnosis-suggestions"
+        >
         {outlets === 'pending' ? (
           <p className={css.hint}>{t('trajectory.diagnosis.outletsPending')}</p>
         ) : outlets === 'unfinished' ? (
@@ -215,102 +369,297 @@ function RecordCards({ record, session, subjectLabels, focusedCauseId, onFocusCa
           </p>
         ) : (
           <>
-            {suggestions.artifact_fix === undefined ? null : (
+            {artifactItems.length > 0 ? (
               <SuggestionCard
                 tone="artifact"
                 kind={t('trajectory.diagnosis.artifactFix')}
                 testId="trajectory-diagnosis-artifact-fix"
                 action={(
                   <FillButton
-                    text={suggestions.artifact_fix.instruction}
-                    onFill={session.fillComposer}
+                    text={artifactText}
+                    onFill={onFill}
                     testId="trajectory-diagnosis-artifact-fix-fill"
                   />
                 )}
               >
-                <ClampedMarkdown text={suggestions.artifact_fix.instruction} />
+                <ArtifactCauseList items={artifactItems} />
               </SuggestionCard>
-            )}
-            {suggestions.skills.map(skill => (
+            ) : artifactText === '' ? null : (
               <SuggestionCard
-                key={skill.id}
-                tone="skill"
-                kind={t('trajectory.diagnosis.skills')}
-                title={skill.skill_name}
-                mono={looksLikePath(skill.skill_name)}
-                testId="trajectory-diagnosis-skill"
-                action={skill.selectable ? (
+                tone="artifact"
+                kind={t('trajectory.diagnosis.artifactFix')}
+                testId="trajectory-diagnosis-artifact-fix"
+                action={(
                   <FillButton
-                    text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skill.message}`}
-                    onFill={session.fillComposer}
-                    testId="trajectory-diagnosis-skill-fill"
+                    text={artifactText}
+                    onFill={onFill}
+                    testId="trajectory-diagnosis-artifact-fix-fill"
                   />
-                ) : (
-                  <span className={css.hint}>{t('trajectory.diagnosis.blocked', { reason: skill.blocked_reason ?? '' })}</span>
                 )}
               >
-                <ClampedMarkdown text={skill.change_summary} />
-                {skill.rationale === '' || skill.rationale === skill.change_summary ? null : (
-                  <p className={css.hint}>{skill.rationale}</p>
-                )}
+                <ClampedMarkdown text={artifactText} />
               </SuggestionCard>
-            ))}
-            {ttseCauses.map((cause) => {
-              const triggered = record.ttse_trigger[cause.id];
-              const triggering = session.triggeringTtse.has(cause.id);
-              return (
-                <SuggestionCard
-                  key={cause.id}
-                  tone="experience"
-                  kind={t('trajectory.diagnosis.ttse')}
-                  title={t('trajectory.diagnosis.ttseReady')}
-                  testId="trajectory-diagnosis-ttse"
-                  action={(
-                    <span className={css.row}>
-                      {triggered === undefined ? null : (
-                        <span className={css.hint} data-testid="trajectory-diagnosis-ttse-result">
-                          {t(`trajectory.diagnosis.ttseResult.${triggered.result}`)}
-                        </span>
-                      )}
-                      <button
-                        type="button"
-                        className={css.actionButton}
-                        disabled={triggering || (triggered !== undefined && triggered.result !== 'failed')}
-                        onClick={() => { void session.triggerTtse(cause.id); }}
-                        data-testid="trajectory-diagnosis-ttse-trigger"
-                      >
-                        {triggering ? t('trajectory.diagnosis.triggeringTtse') : t('trajectory.diagnosis.triggerTtse')}
-                      </button>
-                    </span>
-                  )}
-                >
-                  <p className={css.hint}>{t('trajectory.diagnosis.ttseHint')}</p>
-                </SuggestionCard>
-              );
-            })}
-            {suggestions.artifact_fix === undefined && suggestions.skills.length === 0 && ttseCauses.length === 0 ? (
+            )}
+            <SkillSuggestions skills={skills} onFill={onFill} />
+            {experience === null ? null : (
+              <EvolutionCard
+                judge={experience}
+                action={(
+                  <span className={css.row}>
+                    {record.ttse_trigger[experience.id] === undefined ? null : (
+                      <span className={css.hint} data-testid="trajectory-diagnosis-ttse-result">
+                        {t(`trajectory.diagnosis.ttseResult.${record.ttse_trigger[experience.id].result}`)}
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      className={css.actionButton}
+                      disabled={
+                        session.triggeringTtse.has(experience.id)
+                        || (record.ttse_trigger[experience.id] !== undefined
+                          && record.ttse_trigger[experience.id].result !== 'failed')
+                      }
+                      onClick={() => { void session.triggerTtse(experience.id); }}
+                      data-testid="trajectory-diagnosis-ttse-trigger"
+                    >
+                      {session.triggeringTtse.has(experience.id)
+                        ? t('trajectory.diagnosis.triggeringTtse')
+                        : t('trajectory.diagnosis.triggerTtse')}
+                    </button>
+                  </span>
+                )}
+              >
+                <p className={css.hint}>{t('trajectory.diagnosis.ttseHint')}</p>
+              </EvolutionCard>
+            )}
+            <LegacySuggestions record={record} onFill={onFill} />
+            {artifactItems.length === 0 && artifactText === '' && skills.length === 0 && experience === null ? (
               <p className={css.hint}>{t('trajectory.diagnosis.noSuggestions')}</p>
             ) : null}
           </>
         )}
-      </Card>
+        </section>
+      )}
+    </>
+  );
+}
+
+/** The artifact-fix suggestions: one numbered line per suggestion, not one block per cause. */
+function ArtifactCauseList({ items }: { items: readonly ArtifactSuggestionItem[] }) {
+  return <SuggestionLines lines={items.flatMap(item => item.parts)} />;
+}
+
+/** One suggestion as written. Several are a numbered list so they stay distinct. */
+function SuggestionLines({ lines }: { lines: readonly string[] }) {
+  if (lines.length === 0) return null;
+  if (lines.length === 1) return <SuggestionMarkdown text={lines[0]} />;
+  return (
+    <ol className={css.suggestionLines} data-testid="trajectory-diagnosis-suggestion-lines">
+      {lines.map((line, index) => (
+        <li key={`${index}:${line.slice(0, 32)}`}>
+          <SuggestionMarkdown text={line} />
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function SuggestionMarkdown({ text }: { text: string }) {
+  return (
+    <div className={css.suggestionBody}>
+      <WholeMarkdown text={text} />
+    </div>
+  );
+}
+
+function skillSuggestionParts(judge: EvolutionJudge): string[] {
+  return suggestionParts(judge.suggestion);
+}
+
+/** Skill cards. Two or more can be ticked and filled together; each card can still fill itself. */
+function SkillSuggestions({ skills, onFill }: {
+  skills: readonly EvolutionJudge[];
+  onFill: (text: string) => void;
+}) {
+  const { t } = useTranslation();
+  const [selected, setSelected] = useState<ReadonlySet<string>>(() => new Set());
+  const batch = skills.length > 1;
+  const chosen = skills.filter(skill => selected.has(skill.id));
+  const allOn = batch && chosen.length === skills.length;
+  const prefix = t('trajectory.diagnosis.skillFillPrefix');
+  const toggle = (id: string, on: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+  return (
+    <>
+      {batch ? (
+        <div className={css.skillBatch} data-testid="trajectory-diagnosis-skill-batch">
+          <label className={css.skillCheck}>
+            <input
+              type="checkbox"
+              checked={allOn}
+              ref={(node) => {
+                if (node !== null) node.indeterminate = chosen.length > 0 && !allOn;
+              }}
+              onChange={() => {
+                setSelected(allOn ? new Set() : new Set(skills.map(skill => skill.id)));
+              }}
+              data-testid="trajectory-diagnosis-skill-select-all"
+            />
+            {t('trajectory.diagnosis.skillSelectAll')}
+          </label>
+          <span className={css.spacer} />
+          <FillButton
+            text={skillBatchFillText(chosen, prefix)}
+            onFill={onFill}
+            testId="trajectory-diagnosis-skill-fill-selected"
+            label={t('trajectory.diagnosis.skillFillSelected', { count: chosen.length })}
+            disabled={chosen.length === 0}
+          />
+        </div>
+      ) : null}
+      {skills.map(judge => (
+        <EvolutionCard
+          key={judge.id}
+          judge={judge}
+          selected={selected.has(judge.id)}
+          onSelect={batch ? (on => toggle(judge.id, on)) : undefined}
+          action={(
+            <FillButton
+              text={`${prefix}\n\n${skillSuggestionText(judge)}`}
+              onFill={onFill}
+              testId="trajectory-diagnosis-skill-fill"
+            />
+          )}
+        >
+          <SuggestionLines lines={skillSuggestionParts(judge)} />
+        </EvolutionCard>
+      ))}
+    </>
+  );
+}
+
+/** One evolution item: the advice/verdict text and its action; details live in the findings list. */
+function EvolutionCard({ judge, action, children, selected = false, onSelect }: {
+  judge: EvolutionJudge;
+  action: ReactNode;
+  children: ReactNode;
+  selected?: boolean;
+  onSelect?: (selected: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const skill = judge.category === 'skill';
+  const title = skill ? (judge.target ?? '') : t('trajectory.diagnosis.ttseReady');
+  const leading = onSelect === undefined ? undefined : (
+    <label className={css.skillCheck}>
+      <input
+        type="checkbox"
+        checked={selected}
+        onChange={event => onSelect(event.target.checked)}
+        aria-label={t('trajectory.diagnosis.skillSelectOne', { name: title || judge.id })}
+        data-testid="trajectory-diagnosis-skill-select"
+      />
+    </label>
+  );
+  return (
+    <SuggestionCard
+      tone={skill ? 'skill' : 'experience'}
+      kind={t(skill ? 'trajectory.diagnosis.skills' : 'trajectory.diagnosis.ttse')}
+      title={title}
+      mono={skill && looksLikePath(title)}
+      testId={skill ? 'trajectory-diagnosis-skill' : 'trajectory-diagnosis-ttse'}
+      action={action}
+      leading={leading}
+    >
+      {children}
+    </SuggestionCard>
+  );
+}
+
+/** Suggestions of a record written before the switch (read-only fallback). */
+function LegacySuggestions({ record, onFill }: {
+  record: DiagnosisRecord;
+  onFill: (text: string) => void;
+}) {
+  const { t } = useTranslation();
+  const suggestions = record.suggestions;
+  const hasNew = (record.reward_failure_causes ?? []).length > 0 || (record.evolution_judge ?? []).length > 0;
+  if (suggestions === undefined || hasNew) return null;
+  const instruction = legacyArtifactInstruction(record);
+  const experience = ttseRootCauses(record);
+  return (
+    <>
+      {instruction === '' ? null : (
+        <SuggestionCard
+          tone="artifact"
+          kind={t('trajectory.diagnosis.artifactFix')}
+          testId="trajectory-diagnosis-artifact-fix"
+          action={(
+            <FillButton
+              text={instruction}
+              onFill={onFill}
+              testId="trajectory-diagnosis-artifact-fix-fill"
+            />
+          )}
+        >
+          <ClampedMarkdown text={instruction} />
+        </SuggestionCard>
+      )}
+      {(suggestions.skills ?? []).map(skill => (
+        <SuggestionCard
+          key={skill.id}
+          tone="skill"
+          kind={t('trajectory.diagnosis.skills')}
+          title={skill.skill_name}
+          mono={looksLikePath(skill.skill_name)}
+          testId="trajectory-diagnosis-skill"
+          action={(
+            <FillButton
+              text={`${t('trajectory.diagnosis.skillFillPrefix')}\n\n${skill.message}`}
+              onFill={onFill}
+              testId="trajectory-diagnosis-skill-fill"
+            />
+          )}
+        >
+          <ClampedMarkdown text={skill.change_summary} />
+        </SuggestionCard>
+      ))}
+      {experience.map(cause => (
+        <SuggestionCard
+          key={cause.id}
+          tone="experience"
+          kind={t('trajectory.diagnosis.ttse')}
+          title={t('trajectory.diagnosis.ttseReady')}
+          testId="trajectory-diagnosis-ttse"
+          action={<span />}
+        >
+          <p className={css.hint}>{t('trajectory.diagnosis.ttseHint')}</p>
+        </SuggestionCard>
+      ))}
     </>
   );
 }
 
 /** One suggestion: what kind it is and what it is about on top, the action beside them, the detail below. */
-function SuggestionCard({ tone, kind, title, mono = false, action, testId, children }: {
+function SuggestionCard({ tone, kind, title, mono = false, action, testId, leading, children }: {
   tone: 'artifact' | 'skill' | 'experience';
   kind: string;
   title?: string;
   mono?: boolean;
   action: ReactNode;
   testId: string;
+  leading?: ReactNode;
   children: ReactNode;
 }) {
   return (
     <div className={`${css.suggestion} ${css[`tone_${tone}`]}`} data-testid={testId}>
       <div className={css.suggestionHead}>
+        {leading}
         <span className={css.suggestionKind}>{kind}</span>
         {title === undefined ? null : (
           <strong className={`${css.suggestionTitle} ${mono ? css.mono : ''}`}>{title}</strong>
@@ -318,7 +667,9 @@ function SuggestionCard({ tone, kind, title, mono = false, action, testId, child
         <span className={css.spacer} />
         {action}
       </div>
-      {children}
+      <div className={css.suggestionScroll}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -338,36 +689,44 @@ function AgentLine({ labels }: { labels: readonly string[] }) {
 }
 
 /**
- * How the diagnosis ran. Open to its stage list from the start and after it ends; while it runs every
- * stage shows its detail, and afterwards each folds to its summary line.
+ * How the diagnosis ran, in its own card. While it runs every stage shows its detail, and afterwards
+ * each folds to its summary line.
  */
-function ProcessSection({ record, running }: { record: DiagnosisRecord; running: boolean }) {
+function ProcessSection({ record, running, onCancel }: {
+  record: DiagnosisRecord;
+  running: boolean;
+  onCancel?: () => void;
+}) {
   const { t } = useTranslation();
-  const [choice, setChoice] = useState<boolean | undefined>(undefined);
   const summary = useMemo(() => processSummary(record.stages), [record.stages]);
   // A starting run has no stage yet, but its waiting placeholders are worth showing.
   if (record.stages.length === 0 && !running) return null;
-  const open = choice ?? true;
   const meta = running
     ? ''
     : [t('trajectory.diagnosis.processSteps', { count: summary.count }), summary.elapsed]
       .filter(item => item !== '')
       .join(' · ');
+  const action = onCancel === undefined ? (
+    meta === '' ? undefined : <span className={css.hint}>{meta}</span>
+  ) : (
+    <button
+      type="button"
+      className={css.button}
+      onClick={onCancel}
+      data-testid="trajectory-diagnosis-cancel"
+    >
+      {t('trajectory.diagnosis.cancel')}
+    </button>
+  );
   return (
-    <div className={css.process} data-testid="trajectory-diagnosis-process" data-expanded={open ? 'true' : 'false'}>
-      <button
-        type="button"
-        className={`${css.stageHead} ${css.stageToggle}`}
-        aria-expanded={open}
-        onClick={() => setChoice(!open)}
-        data-testid="trajectory-diagnosis-process-toggle"
-      >
-        <ChevronRight className={`${css.chevron} ${open ? css.chevronOpen : ''}`} size={14} strokeWidth={2} aria-hidden />
-        <span className={css.stageTitle}>{t('trajectory.diagnosis.process')}</span>
-        <span className={css.stageSummary}>{meta}</span>
-      </button>
-      {open ? <StageList record={record} running={running} /> : null}
-    </div>
+    <Card
+      title={t('trajectory.diagnosis.process')}
+      testId="trajectory-diagnosis-process"
+      className={`${css.objectCard} ${css.spacedCard}`}
+      action={action}
+    >
+      <StageList record={record} running={running} />
+    </Card>
   );
 }
 
@@ -378,9 +737,51 @@ function StageList({ record, running }: { record: DiagnosisRecord; running: bool
   const toggle = useCallback((view: StageView, open: boolean) => {
     setChoices(current => ({ ...current, [view.stageId]: { status: view.status, open } }));
   }, []);
+  const listRef = useRef<HTMLOListElement>(null);
+  const followRef = useRef(true);
+  const programmaticRef = useRef(false);
+  const seenRunningRef = useRef('');
+  const runningStage = views.find(view => view.status === 'running');
+  const runningId = runningStage?.stageId ?? '';
+  const runningOutput = runningStage?.stage?.output ?? '';
+  const onListScroll = useCallback(() => {
+    if (programmaticRef.current) {
+      programmaticRef.current = false;
+      return;
+    }
+    const list = listRef.current;
+    const item = runningItem(list, runningId);
+    followRef.current = list !== null && item !== null && item.getBoundingClientRect().bottom <= list.getBoundingClientRect().bottom + 24;
+  }, [runningId]);
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!running || list === null) return;
+    // A newly started step is the one to read, even if an earlier step was scrolled into view.
+    if (seenRunningRef.current !== runningId) {
+      seenRunningRef.current = runningId;
+      followRef.current = true;
+    }
+    const item = runningItem(list, runningId);
+    if (item === null || !followRef.current) return;
+    const listRect = list.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    const overflowBelow = itemRect.bottom - listRect.bottom;
+    const overflowAbove = listRect.top - itemRect.top;
+    const bringUp = itemRect.height <= listRect.height && overflowAbove > 1;
+    if (overflowBelow <= 1 && !bringUp) return;
+    const before = list.scrollTop;
+    programmaticRef.current = true;
+    list.scrollTop += overflowBelow > 1 ? overflowBelow : -overflowAbove;
+    if (list.scrollTop === before) programmaticRef.current = false;
+  }, [running, runningId, runningOutput]);
   if (views.length === 0) return null;
   return (
-    <ol className={css.stages} data-testid="trajectory-diagnosis-stages">
+    <ol
+      ref={listRef}
+      className={css.stages}
+      data-testid="trajectory-diagnosis-stages"
+      onScroll={onListScroll}
+    >
       {views.map((view) => {
         const choice = choices[view.stageId];
         const userChoice = choice !== undefined && choice.status === view.status ? choice.open : undefined;
@@ -411,7 +812,11 @@ function StageItem({ view, expanded, onToggle }: {
   const hasBody = stage !== null && ((stage.skip_reason ?? '') !== '' || stage.output !== '');
   const iconKind = view.status;
   const bodyId = `trajectory-diagnosis-stage-body-${view.stageId}`;
-  const output = useMemo(() => splitStageOutput(stage?.output ?? ''), [stage?.output]);
+  const live = view.status === 'running';
+  const blocks = useMemo(
+    () => stageOutputBlocks(stage?.output ?? '', live),
+    [live, stage?.output],
+  );
   // The one-line conclusion and the time it took stay visible while the stage is folded.
   const conclusion = stage === null || view.status === 'pending' ? '' : (stage.summary ?? '');
   const elapsed = stage === null || view.status === 'running' ? '' : formatElapsed(stage.elapsed_ms);
@@ -459,15 +864,18 @@ function StageItem({ view, expanded, onToggle }: {
       {expanded && stage !== null && hasBody ? (
         <div className={css.stageBody} id={bodyId}>
           {stage.skip_reason === undefined ? null : <p className={css.hint}>{stage.skip_reason}</p>}
-          {output.body === '' ? null : <pre className={css.output}>{output.body}</pre>}
-          {output.requestCount === 0 ? null : (
-            <details className={css.requestFold}>
-              <summary data-testid="trajectory-diagnosis-stage-requests">
-                {t('trajectory.diagnosis.requestCount', { count: output.requestCount })}
-              </summary>
-              <pre className={css.output}>{output.requestLines.join('\n')}</pre>
-            </details>
-          )}
+          {blocks.map((block, index) => (
+            block.kind === 'body' ? (
+              <pre key={`body-${index}`} className={css.output}>{block.text}</pre>
+            ) : (
+              <details key={`requests-${index}`} className={css.requestFold}>
+                <summary data-testid="trajectory-diagnosis-stage-requests">
+                  {t('trajectory.diagnosis.requestCount', { count: block.count })}
+                </summary>
+                <pre className={css.output}>{block.lines.join('\n')}</pre>
+              </details>
+            )
+          ))}
         </div>
       ) : null}
     </li>

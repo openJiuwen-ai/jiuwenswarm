@@ -7,6 +7,10 @@ import type {
   TeamTaskStatus,
 } from '../stores/sessionStore';
 import { normalizeFinalContent } from '../utils/finalContent';
+import { ownerTeamId } from './teamOrganization/conversation';
+import { useTeamSelectorStore } from '../stores/teamSelectorStore';
+import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
+import { isDepartedTeamMemberStatus } from './teamMemberDeparture';
 import {
   mergeTaskTimeline,
   toTaskTimelineEntry,
@@ -16,11 +20,6 @@ import {
   findOverlappingFileExecutionEvent,
   mergeFileDownloadItems,
 } from '../utils/fileDownloadDedup';
-import {
-  createTaskProgressBaseline,
-  registerConfirmedTaskCreation,
-  type TaskProgressBaseline,
-} from './teamTaskProgressBaseline';
 
 interface TeamMember {
   id: string;
@@ -60,14 +59,16 @@ interface TeamTaskEvent {
 
 export interface TeamHistoryPanelState {
   members: TeamMember[];
+  /** 回放结束时已离队的成员：不进名册，只供按 member_id 查名字 / 头像。 */
+  departedMembers: TeamMember[];
   tasks: TeamTask[];
   taskEvents: TeamTaskEvent[];
   /** 子话题时间线用的任务流转事件，按时间升序、逐条保留。 */
   taskTimeline: TeamTaskTimelineEntry[];
   executionEvents: TeamMemberExecutionEvent[];
+  organizationExecutionEvents?: Record<string, TeamMemberExecutionEvent[]>;
   messages: Message[];
   humanShareCommands: HumanShareCommand[];
-  taskProgressBaseline: TaskProgressBaseline;
 }
 
 interface TeamHistoryGetResponse {
@@ -364,7 +365,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
   // 被移出名册的成员快照：旧历史里休眠退场也只记了 shutdown，
   // 随后的 status_changed → dormant 要靠它找回展示名 / mode / role。
   const retiredMembers = new Map<string, TeamMember>();
-  let taskProgressBaseline = createTaskProgressBaseline();
 
   const addMember = (memberId: string, timestamp: number) => {
     if (!shouldKeepMember(memberId)) {
@@ -478,14 +478,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       skills: skills || existing?.skills,
       files: files || existing?.files,
       workflow_run_id: pickString(rawTask, ['workflow_run_id']) || existing?.workflow_run_id,
-      // A paused run's visual progress must not creep after a reload; the
-      // freeze point is this record's own timestamp (the pause event).
-      ...(typeof rawTask.progress_frozen === 'boolean'
-        ? {
-            progress_frozen: rawTask.progress_frozen,
-            progress_frozen_at: rawTask.progress_frozen ? nextTimestamp : undefined,
-          }
-        : { progress_frozen: existing?.progress_frozen, progress_frozen_at: existing?.progress_frozen_at }),
       // Truncation flags: read raw with explicit guards so a status-only
       // record (no flags) falls back to `existing?` — never resets to false.
       // Mirrors the title/content `|| existing?` pattern above.
@@ -744,7 +736,7 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         continue;
       }
       const memberStatus = pickString(event, ['new_status', 'status']);
-      if (memberStatus === 'shut_down') {
+      if (isDepartedTeamMemberStatus(memberStatus)) {
         applyMemberShutdown(memberId);
         continue;
       }
@@ -794,14 +786,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     const content = pickString(event, ['content']);
     const teamId = pickString(event, ['team_id']);
 
-    if (type === 'team.task.created') {
-      taskProgressBaseline = registerConfirmedTaskCreation(
-        Array.from(tasks.values()),
-        taskProgressBaseline,
-        taskId
-      );
-    }
-
     const timelineEntry = toTaskTimelineEntry(event, eventTimestamp);
     if (timelineEntry) {
       taskTimeline.push(timelineEntry);
@@ -826,18 +810,50 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
 
   return {
     members: Array.from(members.values()),
+    departedMembers: Array.from(retiredMembers.values(), (member) => ({ ...member, status: 'shut_down' })),
     tasks: Array.from(tasks.values()),
     taskEvents: Array.from(taskEvents.values()),
     taskTimeline: mergeTaskTimeline([], taskTimeline),
     executionEvents: Array.from(executionEvents.values()),
     messages,
     humanShareCommands: Array.from(humanShareCommands.values()),
-    taskProgressBaseline,
   };
 }
 
 export function parseTeamHistoryPanelRecords(records: unknown[], sessionId: string): TeamHistoryPanelState {
   return collectTeamState(records.filter(isRecord), sessionId);
+}
+
+/** Keep the Owner roster and member execution records scoped to their Team after a refresh. */
+export function parseOrganizationHistoryPanelRecords(records: unknown[], sessionId: string): TeamHistoryPanelState {
+  const state = parseTeamHistoryPanelRecords(records, sessionId);
+  if (!isTeamOrganizationUiEnabled()) return state;
+  const ownerRecords: Record<string, unknown>[] = [];
+  const teams = new Map<string, Record<string, unknown>[]>();
+  const ownerId = ownerTeamId(sessionId)
+    || useTeamSelectorStore.getState().runtimes[sessionId]?.teams.find(team => team.is_owner)?.team_id;
+  if (!ownerId) return state;
+  for (const record of records.filter(isRecord)) {
+    const payload = isRecord(record.event_payload) ? { ...record, ...record.event_payload } : record;
+    const teamId = String(payload.team_id || payload.team_name || '').trim();
+    if (!teamId || teamId === ownerId) {
+      ownerRecords.push(record);
+      continue;
+    }
+    const teamRecords = teams.get(teamId) ?? [];
+    teamRecords.push(record);
+    teams.set(teamId, teamRecords);
+  }
+  if (!teams.size) return state;
+  const ownerState = parseTeamHistoryPanelRecords(ownerRecords, sessionId);
+  return {
+    ...state,
+    members: ownerState.members,
+    executionEvents: ownerState.executionEvents,
+    organizationExecutionEvents: Object.fromEntries([...teams].map(([teamId, teamRecords]) => [
+      teamId, parseTeamHistoryPanelRecords(teamRecords, sessionId).executionEvents,
+    ])),
+  };
 }
 
 interface TeamSnapshotResponse {
@@ -963,7 +979,7 @@ export async function loadTeamHistoryPanelState(
     cursor = nextCursor;
   }
 
-  const state = parseTeamHistoryPanelRecords(records, sessionId);
+  const state = parseOrganizationHistoryPanelRecords(records, sessionId);
   // Prefer live DB snapshot as the authoritative board when the monitor is
   // still up — refreshes placeholder / wrong-id waiting cards to real
   // task_id + body. When the monitor is down (empty snapshot), keep the

@@ -86,6 +86,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             items: [
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
+              { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },
             ],
           },
         },
@@ -134,6 +135,17 @@ export const experimentalModule: SettingsModuleDefinition = {
           id: 'progressive-tool-optimize-enabled',
           component: 'switch',
           key: 'progressive_tool_optimize',
+        },
+      ],
+    },
+    {
+      id: 'design-mode',
+      titleKey: 'settingsPanel.experimental.designMode',
+      items: [
+        {
+          id: 'comfyui-workflow-enabled',
+          component: 'switch',
+          key: 'comfyui_workflow_enabled',
         },
       ],
     },

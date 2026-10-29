@@ -384,8 +384,13 @@ export type DesignerExecutionRun = {
   warning?: string | null;
   warnings?: string[] | null;
   /** `scope_node_ids`: the run only drives these nodes (a ComfyUI generate).
-   * `target_node_id`: a single-node generate; Continue leaves this scope explicitly. */
-  metadata?: { scope_node_ids?: string[]; target_node_id?: string } & Record<string, unknown>;
+   * `target_node_id`: a single-node generate; Continue leaves this scope explicitly.
+   * `trigger_source`: who started the latest trigger; a leader trigger dies with the leader. */
+  metadata?: {
+    scope_node_ids?: string[];
+    target_node_id?: string;
+    trigger_source?: 'canvas' | 'leader';
+  } & Record<string, unknown>;
 };
 
 export type DesignerGraphSummary = {

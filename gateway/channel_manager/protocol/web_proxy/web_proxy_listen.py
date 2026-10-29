@@ -18,7 +18,7 @@ import aiohttp
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, RedirectResponse, Response, StreamingResponse
 
-from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+from gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentRuntime,
     is_third_party_agent_type,
 )

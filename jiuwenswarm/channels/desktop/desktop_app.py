@@ -1240,7 +1240,7 @@ class DesktopRuntime:
         ``wait`` seconds for a still-shutting-down Gateway from an upgrade
         restart to release the lock, then raises if a live holder remains.
         """
-        from jiuwenswarm.instance_manager.lock import GatewayLock
+        from gateway.gateway_lock import GatewayLock
 
         workspace = get_user_workspace_dir()
         holder = GatewayLock.find_holder(workspace)

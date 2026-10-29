@@ -1354,6 +1354,18 @@ def complete_oauth_callback(query: dict[str, Any]) -> bool:
     return complete_oauth_flow(query)
 
 
+async def complete_oauth_callback_async(query: dict[str, Any]) -> bool:
+    """Async twin of :func:`complete_oauth_callback`.
+
+    统一异步入口（``common.mcp_oauth.complete_oauth_flow_async`` 经本注入点
+    取用）：本地实现经 ``to_thread`` 包装，避免在事件循环内做文件 IO；与
+    gateway 侧 WS 远端实现（``gateway/routing/mcp_remote``）同签名互换。
+    """
+    import asyncio
+
+    return await asyncio.to_thread(complete_oauth_callback, query)
+
+
 def complete_host_oauth_auth(name: str) -> dict[str, Any]:
     """Finish a host-managed OAuth MCP connect after the callback succeeded.
 

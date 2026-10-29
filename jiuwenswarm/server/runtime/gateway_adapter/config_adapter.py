@@ -331,7 +331,7 @@ class ConfigAdapter(GatewayAdapter):
         )
 
     async def _handle_browser_config(self, request: AgentRequest) -> AgentResponse:
-        from jiuwenswarm.agents.harness.common.browser_config import (
+        from jiuwenswarm.common.browser_config import (
             browser_decision_state,
             browser_decision_updates,
         )
@@ -368,6 +368,7 @@ class ConfigAdapter(GatewayAdapter):
         decision_updates, error = browser_decision_updates(
             params.get("decision_mode"), params.get("decision_provider"), config,
             model=params.get("decision_model"), api_base=params.get("decision_api_base"),
+            display_name=params.get("decision_display_name"),
         )
         if error:
             return build_error_response(request, error, code="BAD_REQUEST")

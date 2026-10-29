@@ -4,6 +4,7 @@ import { act, createElement, createRef } from 'react';
 import { createRoot } from 'react-dom/client';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
+import { loadCallback } from './loadProductionCallback.mjs';
 
 // Reserved, non-resolving DOM origin only; fetch rejects network access and the WebSocket fixture returns picker data.
 const dom = new JSDOM('<!doctype html><div class="chat-panel-shell"><div id="root"></div></div>', {
@@ -57,7 +58,13 @@ class MockWebSocket {
       payload = {
         skills: [
           { name: 'test-skill', description: 'Test skill for compacting text', skill_type: 'skill', installed: true },
-          { name: 'team-skill', description: 'Team skill', skill_type: 'swarm_skill', installed: true },
+          {
+            name: 'team-skill',
+            display_name: '旅行规划',
+            description: 'Team skill',
+            skill_type: 'swarm_skill',
+            installed: true,
+          },
         ],
         plugins: [],
       };
@@ -479,6 +486,132 @@ for (const language of ['zh', 'en']) {
     });
   }
 }
+
+const evolutionCommands = ['evolve', 'evolve_list', 'evolve_simplify', 'evolve_rebuild', 'evolve_rollback'];
+for (const command of evolutionCommands) {
+  for (const mode of ['agent', 'team']) {
+    for (const method of ['click', 'Enter', 'Tab']) {
+      test(`${mode}: /${command} completes a skill through ${method} and sends plain command text`, async () => {
+        await mount({ mode }, async ({ props, render, sessionId }) => {
+          const sent = [];
+          props.onSubmit = (content) => sent.push(content);
+          await render();
+          const skill = mode === 'team' ? 'team-skill' : 'test-skill';
+          // A full command without a space must show skills, not search for the command name.
+          await typeSlash(`/${command}`);
+          assert.ok(suggestionIds().includes(skill));
+          await typeSlash(`/${command} `);
+          assert.ok(suggestionIds().includes(skill));
+          await typeSlash(`/${command} ${mode === 'team' ? 'Team' : 'compacting'}`);
+          assert.deepEqual(suggestionIds(), [skill]);
+          if (method === 'click') await click(byId('chat-panel-composer-suggestion-item', skill));
+          else await pressKey(method);
+          assert.equal(byId('chat-panel-input').textContent, `/${command} ${skill} `);
+          assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          assert.equal(byId('chat-panel-input').querySelector('[contenteditable="false"]'), null);
+          assert.equal(useChatStore.getState().getRuntime(sessionId).inputValue, `/${command} ${skill} `);
+          assert.deepEqual(sent, []);
+          await click(byId('chat-panel-input-send'));
+          assert.deepEqual(sent, [`/${command} ${skill}`]);
+        });
+      });
+    }
+  }
+}
+
+for (const command of evolutionCommands) {
+  for (const mode of ['agent', 'team']) {
+    test(`${mode}: evolution ${command} with no candidates releases Tab and sends on Enter`, async () => {
+      await mount({ mode }, async ({ props, render }) => {
+        const sent = [];
+        props.onSubmit = (content) => sent.push(content);
+        await render();
+        // Cover both an unknown skill and an installed skill excluded by the mode filter.
+        for (const name of ['missing', mode === 'team' ? 'test-skill' : 'team-skill']) {
+          const text = `/${command} ${name}`;
+          await typeSlash(text);
+          assert.deepEqual(suggestionIds(), []);
+          const beforeTab = sent.length;
+          const event = new dom.window.KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+          await act(async () => byId('chat-panel-input').dispatchEvent(event));
+          assert.equal(event.defaultPrevented, false);
+          assert.equal(sent.length, beforeTab);
+          assert.equal(byId('chat-panel-input').textContent, text);
+          assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+          await typeSlash(text);
+          await pressKey('Enter');
+          assert.equal(sent.length, beforeTab + 1);
+          assert.equal(sent.at(-1), text);
+          assert.equal(byId('chat-panel-input').textContent, '');
+        }
+      });
+    });
+  }
+}
+
+test('evolution empty candidates preserve IME confirmation and Shift+Enter', async () => {
+  await mount({ mode: 'team' }, async ({ props, render }) => {
+    props.onSubmit = () => assert.fail('composition or Shift+Enter must not send');
+    await render();
+    const text = '/evolve_list missing';
+    for (const options of [{ isComposing: true }, { keyCode: 229 }, { shiftKey: true }]) {
+      await typeSlash(text);
+      const event = new dom.window.KeyboardEvent('keydown', {
+        key: 'Enter', bubbles: true, cancelable: true, ...options,
+      });
+      await act(async () => byId('chat-panel-input').dispatchEvent(event));
+      assert.equal(event.defaultPrevented, false);
+      assert.equal(byId('chat-panel-input').textContent, text);
+      assert.notEqual(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    }
+  });
+});
+
+test('evolution skill completion stops at later arguments and preserves them when editing the skill', async () => {
+  await mount({ mode: 'team' }, async () => {
+    for (const text of [
+      '/evolve_simplify team-skill merge duplicate entries',
+      '/evolve_rollback team-skill latest',
+      '/evolve_list team-skill ',
+    ]) {
+      await typeSlash(text);
+      assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+    }
+    await typeSlash('/evolve_simplify tea-old merge duplicates');
+    await act(async () => {
+      const editor = byId('chat-panel-input');
+      const range = document.createRange();
+      range.setStart(editor.firstChild, '/evolve_simplify tea'.length);
+      range.collapse(true);
+      window.getSelection().removeAllRanges();
+      window.getSelection().addRange(range);
+      editor.dispatchEvent(new dom.window.Event('input', { bubbles: true }));
+    });
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+    await pressKey('Tab');
+    assert.equal(byId('chat-panel-input').textContent, '/evolve_simplify team-skill merge duplicates');
+  });
+});
+
+test('evolution completion matches translated display names but inserts the directory name', async () => {
+  await mount({ mode: 'team', language: 'zh' }, async () => {
+    await typeSlash('/evolve_list 旅行');
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+    await click(byId('chat-panel-composer-suggestion-item', 'team-skill'));
+    assert.equal(byId('chat-panel-input').textContent, '/evolve_list team-skill ');
+    assert.equal(document.querySelector('[data-testid="chat-panel-composer-suggestion"]'), null);
+  });
+});
+
+test('unknown evolution skill query shows the skill empty state; ordinary slash search still works', async () => {
+  await mount({ mode: 'team' }, async () => {
+    await typeSlash('/evolve_list missing');
+    assert.deepEqual(suggestionIds(), []);
+    assert.equal(byId('chat-panel-composer-suggestion-empty').textContent, i18n.t('chat.slashPicker.noMatchingSkills'));
+    await typeSlash('/Team');
+    assert.deepEqual(suggestionIds(), ['team-skill']);
+  });
+});
 
 test('welcome Tab and unknown slash Enter do not send input; /plan still executes from the menu', async () => {
   await mount({ sessionId: 'new' }, async ({ props, render }) => {
@@ -918,6 +1051,93 @@ test('paused Owner retains its pause state while organization work exposes stop 
     } finally {
       await act(async () => {
         finishExpertRequest(`${sessionId}::expert`, 'background');
+        setTeamOrganizationUiEnabled(false);
+      });
+    }
+  });
+});
+
+
+test('actual Owner composer remains disabled after stop and metadata refresh while child runs', async () => {
+  const { startExpertRequest, clearOrganizationRequests, setOrganizationOwnerStopped,
+    isOrganizationOwnerStopped, organizationOwnerStateRevision } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/processing.js'
+  );
+  const { organizationOwnerStopTarget, selectedExpertTeamId } = await import(
+    '../node_modules/.cache/input-area-permission-merge/features/teamOrganization/conversation.js'
+  );
+  await mount({ mode: 'team' }, async ({ sessionId, props, render }) => {
+    const chat = useChatStore.getState();
+    const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+      useChatStore,
+      request: async () => ({ session_id: sessionId, is_processing: true, status: 'processing' }),
+      sessionIdRef: { current: 'other-session' },
+      upsertSessionMetadata() {},
+      useWorkspaceStore,
+      setProcessing: (id, value) => { chat.setProcessing(id, value); props.isProcessing = value; },
+      setThinking: chat.setThinking,
+      isOrganizationOwnerStopped,
+      setOrganizationOwnerStopped,
+      organizationOwnerStateRevision,
+    });
+    const interrupt = loadCallback('hooks/useWebSocket.ts', 'interrupt', {
+      selectedExpertTeamId, organizationOwnerStopTarget, useSessionStore, useChatStore,
+      setOrganizationOwnerStopped, isOrganizationOwnerStopped,
+      getSessionWorkContext: () => ({}),
+      resolveOutgoingMode: (_id, mode) => mode,
+      closeActiveTeamLeaderMessages() {},
+      request: async (_method, params) => {
+        assert.equal(params.organization_owner_stop, true);
+        return { success: true };
+      },
+      onErrorRef: { current: error => assert.fail(error) },
+      t: key => key,
+    });
+    const cancel = loadCallback('hooks/useWebSocket.ts', 'cancel', {
+      interrupt, organizationOwnerStopTarget,
+      useSubagentStore: { getState: () => ({ markRunningSubagentsCancelled: () => assert.fail('child cancelled') }) },
+      onErrorRef: { current: error => assert.fail(error) }, t: key => key,
+    });
+    const handleCancel = loadCallback('App.tsx', 'handleCancel', {
+      sessionIdRef: { current: sessionId }, NEW_CONVERSATION_ID: 'new',
+      useGoalStore: { getState: () => ({ runtimes: {} }) },
+      mode: 'team', organizationOwnerStopTarget, cancel, pause: () => assert.fail('Owner paused'),
+    });
+    props.onCancel = () => {
+      handleCancel();
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+    };
+    try {
+      await act(async () => {
+        setTeamOrganizationUiEnabled(true);
+        chat.setProcessing(sessionId, true);
+        useTeamSelectorStore.setState(state => ({ runtimes: {
+          ...state.runtimes, [sessionId]: { selectedTeamId: 'owner', teams: [
+            { team_id: 'owner', is_owner: true, organization_id: 'org' },
+            { team_id: 'expert', is_owner: false, organization_id: 'org' },
+          ] },
+        } }));
+        startExpertRequest(`${sessionId}::expert`, 'child-running', 'org_expert_background');
+      });
+      props.isProcessing = chat.getRuntime(sessionId).isProcessing;
+      await render();
+      assert.equal(byId('chat-panel-input-send').dataset.variant, 'stop');
+      await click(byId('chat-panel-input-send'));
+      await render();
+      assert.equal(byId('chat-panel-input-send').disabled, true);
+      for (let i = 0; i < 3; i += 1) {
+        await act(async () => {
+          assert.ok(await refresh(sessionId));
+          startExpertRequest(`${sessionId}::expert`, `late-child-${i}`, 'org_expert_background');
+        });
+        await render();
+        assert.equal(byId('chat-panel-input-send').dataset.variant, 'send');
+        assert.equal(byId('chat-panel-input-send').disabled, true);
+        assert.equal(chat.getRuntime(`${sessionId}::expert`).isProcessing, true);
+      }
+    } finally {
+      await act(async () => {
+        clearOrganizationRequests(sessionId);
         setTeamOrganizationUiEnabled(false);
       });
     }

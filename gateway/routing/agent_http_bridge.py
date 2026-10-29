@@ -1,6 +1,6 @@
 """Gateway → 目标 AgentServer 的受认证 HTTP bridge 客户端（Phase 2）。
 
-基址解析与 HTTP 上传执行已下沉 ``jiuwenswarm.common.client.agent_http_bridge``
+基址解析与 HTTP 上传执行已下沉 ``gateway.common.client.agent_http_bridge``
 （保留侧 Web 静态服务 ``channels/web/app_web`` 同样消费）。此处：
 
 - re-export 下沉后的符号，保持既有 import 路径兼容；
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.client.agent_http_bridge import (  # noqa: F401
+from gateway.common.client.agent_http_bridge import (  # noqa: F401
     UPLOAD_TIMEOUT_SECONDS,
     resolve_agent_host_port,
     resolve_agent_http_base,
@@ -66,7 +66,8 @@ async def upload_file_bytes_via_e2a(
     import base64
     import uuid
 
-    from jiuwenswarm.common.schema.message import ReqMethod
+    from openjiuwen_protocol.message import ReqMethod
+
     from gateway.routing.e2a_proxy import fetch_agent_unary
 
     if not content:

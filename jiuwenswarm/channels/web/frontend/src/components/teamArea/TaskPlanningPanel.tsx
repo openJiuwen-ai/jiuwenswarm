@@ -14,12 +14,13 @@ import {
   getBoardTaskTitle,
   getMemberDisplayName,
   getTaskColumnKey,
+  isKnownTaskAssignee,
   type TaskColumnKey,
   type TeamMember,
 } from './shared';
 import { CompactTaskList } from './CompactTaskList';
 import { UnassignedTeamAvatar } from './UnassignedTeamAvatar';
-import { getTotalTaskVisualProgressPercent } from './taskProgress';
+import { getTaskProgressPercent } from './taskProgress';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { SwarmflowTreeView } from './SwarmflowTreeView';
 import { SwarmflowGraphView } from './SwarmflowGraphView';
@@ -32,8 +33,6 @@ import { RunGroupHeader } from './RunGroupHeader';
 type TaskPlanningPanelProps = {
   variant: 'compact' | 'expanded';
   tasks: SessionTeamTask[];
-  progressTasks?: SessionTeamTask[];
-  now?: number;
   members: TeamMember[];
   totalTasks: number;
   completedTasks: number;
@@ -126,8 +125,6 @@ export function ProgressBar({
 
 export function ProgressSection({
   tasks,
-  progressTasks,
-  now,
   groupedTasks,
   completedTasks,
   totalTasks,
@@ -142,8 +139,6 @@ export function ProgressSection({
   workflowRuns,
 }: {
   tasks: SessionTeamTask[];
-  progressTasks?: SessionTeamTask[];
-  now?: number;
   groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>;
   completedTasks: number;
   totalTasks: number;
@@ -182,7 +177,7 @@ export function ProgressSection({
     );
   }
 
-  const progressPercent = getTotalTaskVisualProgressPercent(progressTasks ?? tasks, now ?? Date.now());
+  const progressPercent = getTaskProgressPercent(tasks);
 
   if (displayMode === 'count') {
     // 镜像 worker 的任务卡按 run 分组展示，组头用共享 RunGroupHeader；
@@ -347,8 +342,6 @@ export function ViewSwitcher({
 export function TaskPlanningPanel({
   variant,
   tasks,
-  progressTasks,
-  now,
   members,
   totalTasks,
   completedTasks,
@@ -383,7 +376,7 @@ export function TaskPlanningPanel({
     return groups;
   }, [tasks]);
 
-  const progressPercent = getTotalTaskVisualProgressPercent(progressTasks ?? tasks, now ?? Date.now());
+  const progressPercent = getTaskProgressPercent(tasks);
 
   if (variant === 'compact') {
     const allTasks = tasks;
@@ -419,8 +412,6 @@ export function TaskPlanningPanel({
         )}
         <ProgressSection
           tasks={allTasks}
-          progressTasks={progressTasks}
-          now={now}
           groupedTasks={groupedTasks}
           completedTasks={completedTasks}
           totalTasks={totalTasks}
@@ -462,8 +453,6 @@ export function TaskPlanningPanel({
           ) : (
             <ProgressSection
               tasks={tasks}
-              progressTasks={progressTasks}
-              now={now}
               groupedTasks={groupedTasks}
               completedTasks={completedTasks}
               totalTasks={totalTasks}
@@ -559,7 +548,7 @@ function BoardTaskCard({
   hideAssignee: boolean;
   workflowRuns: WorkflowRun[];
 }) {
-  const assigneeExists = Boolean(task.assignee && members.some((member) => member.member_id === task.assignee));
+  const assigneeExists = isKnownTaskAssignee(task.assignee, members);
   const assigneeName = getMemberDisplayName(task.assignee || '');
   const title = getBoardTaskTitle(task);
   const content = getBoardTaskContent(task);

@@ -10,7 +10,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import (
     build_reviewer_action_view,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
-    redact_reviewer_intent,
+    redact_reviewer_value,
     redact_text,
     reviewer_path_location,
 )
@@ -74,10 +74,9 @@ async def test_complete_model_requests_distinguish_three_same_name_targets(tmp_p
     wire = [messages[1]["content"] for messages in model.messages]
     assert len(set(wire)) == 3
     for payload in wire:
-        assert str(tmp_path) not in payload
         evidence = json.loads(payload)["request"]["review_evidence"]
         assert evidence["user_intent"]["trusted_user_turns"][0]["text"] == (
-            "Only change files in [workspace]/work/presentation."
+            f'Only change files in "{tmp_path}/work/presentation".'
         )
         assert evidence["path_targets"][0]["location_status"] == "complete"
         assert evidence["path_targets_incomplete"] is False
@@ -110,7 +109,7 @@ def test_identity_deduplication_precedes_bounded_projection(tmp_path):
         "control\u202esegment/a.txt",
     ],
 )
-async def test_sensitive_ancestors_never_reach_model(tmp_path, relative):
+async def test_sensitive_names_remain_but_secret_values_are_hidden(tmp_path, relative):
     # TEST ONLY: synthetic secret-shaped fixture, never usable credentials.
     model = _Transport()
     path = tmp_path / relative
@@ -119,15 +118,18 @@ async def test_sensitive_ancestors_never_reach_model(tmp_path, relative):
     )
     wire = model.messages[0][1]["content"]
     target = json.loads(wire)["request"]["review_evidence"]["path_targets"][0]
-    assert "location" not in target
-    assert target["location_status"] == "redacted"
-    assert str(tmp_path) not in wire
-    assert relative not in wire
+    if relative.startswith("control"):
+        assert target["location_status"] == "redacted"
+        assert "location" not in target
+    else:
+        expected = relative.replace("sk-FAKEONLY123456789", "[redacted]")
+        assert target["location"]["relative_path"] == expected
+        assert target["location_status"] == ("redacted" if "[redacted]" in expected else "complete")
     assert "sk-FAKEONLY123456789" not in wire
 
 
 def test_redacted_distinct_targets_are_not_deduplicated(tmp_path):
-    paths = [tmp_path / "first-secret" / "a.txt", tmp_path / "second-secret" / "a.txt"]
+    paths = [tmp_path / "sk-FAKEONLY123456789" / "a.txt", tmp_path / "sk-FAKEONLY987654321" / "a.txt"]
     targets = _view(tmp_path, paths).to_json_dict()["review_evidence"]["path_targets"]
     assert len(targets) == 2
     assert targets[0] == targets[1]
@@ -144,18 +146,26 @@ def test_redacted_distinct_targets_are_not_deduplicated(tmp_path):
         "sk-FAKEONLY123456789.py",
     ],
 )
-async def test_controls_in_basename_never_reach_model(tmp_path, basename):
+async def test_controls_in_basename_keep_canonical_target_redacted(tmp_path, basename):
     model = _Transport()
     await IsolatedModelReviewerClient(model=model).assess(
         _view(tmp_path, [tmp_path / "work" / basename], malformed_access=True)
     )
     wire = model.messages[0][1]["content"]
-    target = json.loads(wire)["request"]["review_evidence"]["path_targets"][0]
+    evidence = json.loads(wire)["request"]["review_evidence"]
+    target = evidence["path_targets"][0]
     assert target["location_status"] == "redacted"
-    assert target["target"] == "[redacted_target]"
-    assert "location" not in target
-    assert basename not in wire
-    assert "\\u0000" not in wire
+    if basename.startswith("sk-"):
+        assert target["target"] == "[redacted].py"
+        assert target["location"]["relative_path"] == "work/[redacted].py"
+    else:
+        assert target["target"] == "[redacted_target]"
+        assert "location" not in target
+    # Canonical identity stays bounded; full action evidence keeps the literal
+    # path, including unusual characters, rather than silently changing it.
+    assert basename not in json.dumps(target, ensure_ascii=False)
+    expected = str(tmp_path / "work" / basename).replace("sk-FAKEONLY123456789", "[redacted]")
+    assert evidence["reviewable_payload"]["file_path"] == expected
 
 
 def test_root_overlap_restriction_and_long_evidence(tmp_path):
@@ -187,33 +197,16 @@ def test_intent_boundaries_unicode_spaces_and_platform(tmp_path):
     root = tmp_path / "project"
     platform = tmp_path / "data"
     raw = f'只改 "{root}/work/项目 A"，读取 {platform}/skills/demo/SKILL.md。'
-    text = redact_reviewer_intent(
-        raw, workspace_root=str(root), platform_trusted_root=str(platform)
-    )
-    assert (
-        text
-        == "只改 [workspace]/work/项目 A，读取 [platform_trusted_root]/skills/demo/SKILL.md。"
-    )
+    text = redact_reviewer_value(raw)
+    assert text == raw
     for outside in (
-        f"{root}-other/report.py",
-        f"file://{root}/report.py",
-        f"{root}/../outside/report.py",
+        f"{root}-other/report.py", f"file://{root}/report.py", f"{root}/../outside/report.py",
     ):
-        text = redact_reviewer_intent(
-            outside, workspace_root=str(root), platform_trusted_root=""
-        )
-        assert "[workspace]" not in text
-        assert str(tmp_path) not in text
-    # The shared redactor retains its pre-repair behavior.
+        assert redact_reviewer_value(outside) == outside
+    # Generic display redaction retains its existing contract.
     assert redact_text(f"Read {root}/report.py") == "Read [path]"
-    assert (
-        redact_reviewer_intent(
-            'Inspect /custom-location/a and "/custom-location/目录 A".',
-            workspace_root=str(root),
-            platform_trusted_root="",
-        )
-        == "Inspect [path] and [path]."
-    )
+    literal = 'Inspect /custom-location/a and "/custom-location/目录 A".'
+    assert redact_reviewer_value(literal) == literal
 
 
 def test_symlink_location_uses_host_canonical_target(tmp_path):

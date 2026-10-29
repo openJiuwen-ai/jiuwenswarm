@@ -62,7 +62,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
 )
-from jiuwenswarm.common.session_message import (
+from gateway.common.session_message import (
     SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
     SESSION_MESSAGE_INTERNAL_KEY,
 )

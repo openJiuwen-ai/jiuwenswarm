@@ -18,7 +18,7 @@ from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.common.config import get_available_models, get_config
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
     canonicalize_mode_text,

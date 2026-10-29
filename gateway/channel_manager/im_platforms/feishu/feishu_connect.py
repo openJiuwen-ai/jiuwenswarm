@@ -14,18 +14,18 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 import requests
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
 from pydantic import BaseModel, Field
-from jiuwenswarm.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
-from gateway.channel_manager.base import RobotMessageRouter, BaseChannel
-from gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
-    FeishuFileService,
-    is_image_file,
-    is_audio_file,
-    is_video_file,
-)
+
+from gateway.channel_manager.base import BaseChannel, RobotMessageRouter
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
+)
+from gateway.channel_manager.im_platforms.feishu.feishu_file_service import (
+    FeishuFileService,
+    is_audio_file,
+    is_image_file,
+    is_video_file,
 )
 from gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     CardKitError,
@@ -33,6 +33,7 @@ from gateway.channel_manager.im_platforms.feishu.feishu_streaming_card import (
     FeishuStreamingSession,
 )
 from gateway.channel_manager.im_platforms.platform_adapter.message import MessageStore
+from gateway.common.mode_matrix import is_team_mode
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
 
@@ -76,14 +77,14 @@ class FeishuConfig(BaseModel):
 try:
     import lark_oapi as lark
     from lark_oapi.api.im.v1 import (
-        CreateImageRequest,
-        CreateImageRequestBody,
         CreateFileRequest,
         CreateFileRequestBody,
-        CreateMessageRequest,
-        CreateMessageRequestBody,
+        CreateImageRequest,
+        CreateImageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
+        CreateMessageRequest,
+        CreateMessageRequestBody,
         Emoji,
         P2ImMessageReceiveV1,
     )
@@ -465,7 +466,7 @@ class FeishuChannel(BaseChannel):
         if hasattr(self._message_storage, 'set_platform_adapter'):
             self._message_storage.set_platform_adapter(self._im_platform_adapter)
         # 初始化文件服务
-        from jiuwenswarm.common.utils import get_agent_workspace_dir
+        from gateway.common.paths import get_agent_workspace_dir
         workspace_dir = self.config.temp_file_dir or str(get_agent_workspace_dir())
         self._file_service = FeishuFileService(
             api_client=self._api_client,
@@ -536,7 +537,7 @@ class FeishuChannel(BaseChannel):
                 )
                 # 持久化到配置文件（多应用模式下写入对应 app 条目）
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
+                    from gateway.common.config import update_channel_app_field
                     ok = update_channel_app_field(
                         "feishu", self.config.app_id,
                         {"bot_open_id": bot_open_id},
@@ -1274,7 +1275,9 @@ class FeishuChannel(BaseChannel):
 
     @staticmethod
     def _is_control_message(content: str) -> bool:
-        from gateway.message_handler.command_parser.slash_command import is_control_like_for_im_batching
+        from gateway.message_handler.command_parser.slash_command import (
+            is_control_like_for_im_batching,
+        )
 
         return is_control_like_for_im_batching(content)
 
@@ -2085,7 +2088,7 @@ class FeishuChannel(BaseChannel):
         1. 完整绝对路径：/home/xxx/.jiuwenswarm/agent/workspace/xxx.docx
         2. 仅文件名：'xxx.docx' 或 "xxx.docx"——在 workspace 目录下查找
         """
-        from jiuwenswarm.common.utils import get_agent_workspace_dir
+        from gateway.common.paths import get_agent_workspace_dir
         workspace_dir = str(get_agent_workspace_dir())
 
         seen: set[str] = set()
@@ -2818,7 +2821,7 @@ class FeishuChannel(BaseChannel):
             # V2 多应用：写入对应 app 条目，避免多 app 争抢同一个平铺字段
             if self.config.channel_id == "feishu" and not self.config.bot_key:
                 try:
-                    from jiuwenswarm.common.config import update_channel_app_field
+                    from gateway.common.config import update_channel_app_field
 
                     update_channel_app_field(
                         "feishu",
@@ -2834,7 +2837,9 @@ class FeishuChannel(BaseChannel):
                     pass
             elif self.channel_id.startswith("feishu_enterprise:") and self.config.bot_key:
                 try:
-                    from jiuwenswarm.common.config import update_channel_subsection_in_config
+                    from gateway.common.config import (
+                        update_channel_subsection_in_config,
+                    )
 
                     update_channel_subsection_in_config(
                         "feishu_enterprise",

@@ -308,7 +308,8 @@ async def test_create_job_without_marker_allows_default_project_and_no_fields() 
             "targets": "web",
             "mode": "proactive.tick",
             "id": PROACTIVE_JOB_ID,
-        }
+        },
+        internal_proactive_sync=True,
     )
     assert job["project_id"] == ""
     assert job["work_mode"] == "work"

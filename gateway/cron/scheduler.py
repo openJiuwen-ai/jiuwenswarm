@@ -10,7 +10,12 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
+from openjiuwen_protocol.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+from openjiuwen_protocol.message import EventType, Message, ReqMethod
+
+from gateway.common.scheduled_task_policy import is_scheduled_task_supported
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
     resolve_dingtalk_push_metadata,
@@ -26,12 +31,9 @@ from gateway.cron.models import (
 )
 from gateway.cron.store_base import CronJobStoreBackend
 from gateway.message_handler.message_handler import MessageHandler
-from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
-from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.routing.agent_client import AgentServerClient, AgentServerUnaryTimeout
 from gateway.runtime.cron.cron_expr import next_cron_datetime
+from gateway.runtime.events import TERMINAL_ERROR_EVENT_TYPES
 
 logger = logging.getLogger(__name__)
 
@@ -98,9 +100,9 @@ def _login_model_auth_for_job(job: CronJob) -> dict[str, Any] | None:
     拿不到凭据不在这里报错：AgentServer 对"登录模型没带凭据"有面向用户的
     ``login_required`` 报错，任务以明确原因失败，而不是静默换默认模型。
     """
-    from jiuwenswarm.common.auth.apig import resolve_apig_config
-    from jiuwenswarm.common.auth.login_credentials import is_credential_ref
     from gateway.auth.passthrough import refreshed_credential_for_ref
+    from gateway.auth.apig import resolve_apig_config
+    from gateway.auth.login_credentials import is_credential_ref
 
     ref = str(getattr(job, "credential_ref", "") or "").strip()
     if not ref or not is_credential_ref(ref):
@@ -227,11 +229,13 @@ def _extract_text_from_stream_payload(payload: dict | None) -> str | None:
     return None
 
 
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.cron_team_completion import (
     apply_cron_team_round_event,
     cron_team_round_should_end,
-    is_cron_leader_placeholder_text as _is_cron_leader_placeholder_text,
     new_cron_team_round_state,
+)
+from gateway.common.cron_team_completion import (
+    is_cron_leader_placeholder_text as _is_cron_leader_placeholder_text,
 )
 
 
@@ -349,7 +353,7 @@ class CronSchedulerService:
         # etcd/HA 后端没有本地文件，退化为本机默认路径（每个 Gateway 各持一份）。
         lifecycle_source = getattr(store, "path", None)
         if lifecycle_source is None:
-            from jiuwenswarm.common.utils import get_cron_jobs_path
+            from gateway.common.paths import get_cron_jobs_path
 
             lifecycle_source = get_cron_jobs_path()
         self._lifecycle_owner_store = LifecycleOwners(lifecycle_source)
@@ -696,6 +700,13 @@ class CronSchedulerService:
             if job_id in new_job_ids
         }
         for job in jobs:
+            if not is_scheduled_task_supported(job.targets):
+                logger.info(
+                    "[Cron] skipping unsupported target job=%s target=%s",
+                    job.id,
+                    job.targets,
+                )
+                continue
             try:
                 push_dt, wake_dt, run_id = self._compute_next_run(job, now_ts=now)
             except Exception as exc:  # noqa: BLE001
@@ -953,6 +964,10 @@ class CronSchedulerService:
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
+        if not is_scheduled_task_supported(job.targets):
+            raise ValueError(
+                f"scheduled tasks are not supported for target: {job.targets}"
+            )
         if not await self.project_execution_allowed(job.project_id, job.user_id):
             raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         now = datetime.now(tz=ZoneInfo(job.timezone))
@@ -1193,6 +1208,13 @@ class CronSchedulerService:
 
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
+        if job is not None and not is_scheduled_task_supported(job.targets):
+            logger.info(
+                "[Cron] dropping unsupported target event job=%s target=%s",
+                job.id,
+                job.targets,
+            )
+            return
         if (
             job is not None
             and not await self.project_execution_allowed(job.project_id, job.user_id)
@@ -2188,6 +2210,13 @@ class CronSchedulerService:
         logger.info("[Cron] push_update done job=%s run_id=%s", job.id, run_id)
 
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
+        if not is_scheduled_task_supported(job.targets):
+            logger.info(
+                "[Cron] push skipped: unsupported target job=%s target=%s",
+                job.id,
+                job.targets,
+            )
+            return
         logger.info(
             "[Cron] push_to_targets job=%s run_id=%s channel=%s is_placeholder=%s text_len=%d status=%s",
             job.id,
@@ -2275,7 +2304,7 @@ class CronSchedulerService:
             channels_cfg: dict = {}
             ch_cfg: dict = {}
             try:
-                from jiuwenswarm.common.config import get_config_raw
+                from gateway.common.config import get_config_raw
 
                 cfg = get_config_raw() or {}
                 channels_cfg = cfg.get("channels") or {}

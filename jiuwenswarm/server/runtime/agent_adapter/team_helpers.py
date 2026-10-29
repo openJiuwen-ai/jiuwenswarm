@@ -25,7 +25,6 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
-from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamMonitor, TeamStreamLogger
 from openjiuwen.core.runner import Runner
@@ -39,18 +38,19 @@ from jiuwenswarm.server.runtime.session.history_io import (
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
+from jiuwenswarm.agents.harness.team.member_status import is_departed_member
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
     SessionMessagingRoute,
     session_messaging_route_context,
     with_session_messaging_route,
 )
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
+from gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
 from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
 from jiuwenswarm.common.chat_final import FINAL_MODE_PATCH_SEGMENT
-from jiuwenswarm.common.session_message import with_cross_session_history_metadata
-from jiuwenswarm.common.cron_team_completion import (
+from gateway.common.session_message import with_cross_session_history_metadata
+from gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     _drain_cron_delegation_grace_events,
     apply_cron_team_round_event,
@@ -2051,7 +2051,12 @@ async def _broadcast_team_state_snapshot(
         if get_wf_handler is not None:
             wf_handler = get_wf_handler(session_id)
             if wf_handler is not None:
-                db_member_ids = {m.get("member_id", "") for m in snapshot.get("members", [])}
+                # Departed members keep their DB row too, so their ids stay
+                # reserved even though they are off the roster.
+                db_member_ids = {
+                    m.get("member_id", "")
+                    for m in (*snapshot.get("members", []), *snapshot.get("departed_members", []))
+                }
                 # Iterative loops reuse an agent id across phases of one run;
                 # like the live path's session-wide spawned_members, each
                 # mirrored member is emitted exactly once per replay.
@@ -2182,8 +2187,7 @@ async def _announce_team_roster(
         fresh: list[dict[str, Any]] = []
         for member in members:
             candidate_id = str(member.get("member_id") or "").strip()
-            member_status = str(member.get("status") or "").strip().lower()
-            if member_status == MemberStatus.SHUTDOWN.value:
+            if is_departed_member(member.get("status")):
                 continue
             if not candidate_id or candidate_id in announced_members:
                 continue
@@ -3088,7 +3092,7 @@ async def _process_team_message_stream(
     # i.e. wait for this very turn to finish (it is released only after the
     # stream ends), a self-deadlock. ``_begin_team_round`` routes such turns
     # through the mailbox-scoped admission instead.
-    from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     request_params = getattr(request, "params", None)
     cross_session_marker = (
@@ -3402,7 +3406,7 @@ async def _process_team_message_stream(
         # caller-supplied compiled payload with runtime credentials is never
         # accepted).
         if model_selection is not None:
-            from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+            from gateway.common.model_selection import ModelSelection as SwarmModelSelection
             model_selection = SwarmModelSelection.model_validate(model_selection).model_dump()
             if get_session_metadata(session_id, cache_bust=True).get("cron_id"):
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
@@ -3434,7 +3438,7 @@ async def _process_team_message_stream(
                     stored.model_dump(exclude_none=True) if stored is not None else None
                 )
             if isinstance(stored_selection, dict):
-                from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+                from gateway.common.model_selection import ModelSelection as SwarmModelSelection
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                 selected = SwarmModelSelection.model_validate(stored_selection)
@@ -3482,7 +3486,7 @@ async def _process_team_message_stream(
                 group_members=request_metadata["group_members"],
                 touch_last_message_at=False, sync_write=True)
         if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
-            from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+            from gateway.common.model_selection import ModelSelection as SwarmModelSelection
             from jiuwenswarm.server.runtime.session.model_selection_store import (
                 get_session_model_selection,
                 set_session_model_selection,
@@ -4385,6 +4389,20 @@ async def _consume_stream_with_query(
     async def _deliver(event: dict[str, Any]) -> None:
         """Broadcast one event and persist it when no waiter received it."""
         nonlocal writer
+        if event.get("event_type") == "chat.final" or (
+            event.get("event_type") == "chat.processing_status"
+            and event.get("is_processing") is False
+        ):
+            try:
+                from jiuwenswarm.server.runtime.session.session_token_usage import (
+                    get_session_token_usage,
+                )
+
+                usage = await asyncio.to_thread(get_session_token_usage, session_id)
+                if usage["revision"] > 0:
+                    event = {**event, "session_usage": usage}
+            except Exception:
+                logger.warning("[TeamHelpers] cumulative session usage unavailable", exc_info=True)
         delivered = await _broadcast_event(channel_id, session_id, event)
         if writer is None:
             return
@@ -4648,6 +4666,23 @@ async def _consume_stream_with_query(
                 continue
             parsed = await run_stream_parser(parse_stream_chunk, chunk)
             if parsed is not None:
+                if (
+                    parsed.get("event_type") == "chat.error"
+                    and parsed.get("code") == "SWARMFLOW_SESSION_BUDGET_EXHAUSTED"
+                ):
+                    # 预算耗尽的 chat.error 只在会话里没有 swarmflow run 时才发；
+                    # 有 run（无论运行中还是已终态）时，预算耗尽由 run 自身的终态体现，
+                    # 丢弃这条，避免它提前触发 is_processing=false。
+                    tm = get_team_manager(channel_id)
+                    wf_handler = tm.get_workflow_handler(session_id)
+                    if wf_handler is not None and wf_handler.get_run_states():
+                        logger.info(
+                            "[TeamHelpers] budget-exhausted chat.error ignored "
+                            "(swarmflow run present): channel_id=%s session_id=%s",
+                            _resolve_channel_id(channel_id),
+                            session_id,
+                        )
+                        continue
                 # Time to first token: the first frame actually produced by a
                 # model (reasoning counts — on a thinking model it comes first).
                 if first_model_output_at is None and parsed.get("event_type") in _MODEL_OUTPUT_EVENT_TYPES:
@@ -5494,18 +5529,6 @@ async def _consume_workflow_events(
             # channel_id 随事件传下去：终态事件在 waiter 已被 cancel 拆除时，
             # broadcast_event 用它走 gateway server-push 兜底投递。
             await _broadcast_event(channel_id, session_id, event)
-
-            if not is_tui and wf.get("budget_exhausted_scope") == "session":
-                await _broadcast_event(
-                    channel_id,
-                    session_id,
-                    {
-                        "event_type": "chat.error",
-                        "session_id": session_id,
-                        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
-                        "error": "Session budget exhausted",
-                    },
-                )
 
             # The idle guard may be holding a swallowed team.idle for this
             # session. A pause / stop takes the run out of the active set

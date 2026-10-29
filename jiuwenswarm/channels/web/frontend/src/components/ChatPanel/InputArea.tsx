@@ -36,12 +36,14 @@ import { useMultiModelCollaborationEnabled } from '../../features/multiModelColl
 import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { getSelectedAgentGroup } from '../../stores/agentGroupCatalogSeed';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
+import { isReachableTeamMemberStatus } from '../../features/teamMemberDeparture';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { applyGoalArm, evaluateGoalArm } from '../../features/goalMode/goalModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
 import { OverwriteGoalConfirmModal } from '../GoalBar/OverwriteGoalConfirmModal';
 import { AgentMode, MediaItem, Permission, type ProjectInfo } from '../../types';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
+import { attachmentDraftsBySession, useAttachmentDraftClearNonce } from '../../features/sessionAssets/attachmentDraftRegistry';
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
@@ -71,6 +73,7 @@ import {
   type SlashCommand,
   type SlashCommandContext,
 } from './slashCommands/registry';
+import { splitComposerSlashChip } from './composerDraftHydrate';
 import {
   canUseSlashCommand,
   getWebSlashCommandsForMode,
@@ -79,6 +82,12 @@ import {
   resolveSlashCommandDescription,
   shouldExecuteRegisteredSlashCommand,
 } from './slashCommands/semantics';
+import {
+  getSkillArgumentSuggestion,
+  getSkillArgumentReplacement,
+  filterSkillSuggestions,
+  type SkillSuggestion,
+} from './slashCommands/skillArgumentCompletion';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
 import { planUnsentImageDiscard, type UnsentImageDraft } from './unsentImageDiscard';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
@@ -250,13 +259,15 @@ type InputAreaTeamMember = {
   status?: string;
 };
 
-type ComposerSuggestionKind = 'member' | 'role' | 'slash';
+type ComposerSuggestionKind = 'member' | 'role' | 'slash' | 'skill';
 type WorkIconName = 'add' | 'arrow' | 'check' | 'close' | 'collapse' | 'expand' | 'folder' | 'search';
 
-type ComposerSuggestionState = {
-  kind: ComposerSuggestionKind;
-  query: string;
-};
+type ComposerSuggestionState =
+  | {
+      kind: Exclude<ComposerSuggestionKind, 'skill'>;
+      query: string;
+    }
+  | SkillSuggestion;
 
 type ComposerSuggestionItem = {
   id: string;
@@ -283,9 +294,9 @@ function getComposerSuggestionItems(
   isTeamMode: boolean,
 ): ComposerSuggestionItem[] {
   if (!suggestion) return [];
-  if (suggestion.kind === 'slash') {
+  if (suggestion.kind === 'slash' || suggestion.kind === 'skill') {
     const query = suggestion.query.trim().toLowerCase();
-    const commands = slashCommands
+    const commands = (suggestion.kind === 'skill' ? [] : slashCommands)
       .filter((command) => !query || command.name.toLowerCase().includes(query))
       .map((command) => ({
         id: command.name,
@@ -294,21 +305,7 @@ function getComposerSuggestionItems(
         itemKind: 'command' as const,
         takesArgs: command.takesArgs,
       }));
-    const skills = slashSkills
-      .filter((skill) =>
-        // 单 agent：普通 skill + skillpack（技能包可当普通技能选用）；集群：swarm_skill。
-        isTeamMode
-          ? skill.skill_type === 'swarm_skill'
-          : !skill.skill_type || skill.skill_type === 'skill' || skill.skill_type === 'skillpack',
-      )
-      .filter((skill) => {
-        if (!query) return true;
-        return [skill.name, skill.display_name, skill.description]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-          .includes(query);
-      })
+    const skills = filterSkillSuggestions(slashSkills, query, isTeamMode, suggestion.kind === 'skill')
       .map((skill) => ({
         id: skill.name,
         label: skill.display_name || skill.name,
@@ -527,7 +524,9 @@ interface AttachmentDraft {
 // unsent attachment drafts at module scope so that navigation does not discard
 // a session's composer state. The persisted image itself already lives under
 // that session's uploads directory; this map preserves only the pending UI draft.
-const attachmentDraftsBySession = new Map<string, AttachmentDraft[]>();
+// Lives in a shared module (not declared here) so multi-session/state/newConversationLifecycle.ts
+// can clear the 'new' entry when a genuinely fresh new conversation starts, without
+// an import cycle (that module is itself imported below for NEW_CONVERSATION_ID).
 
 interface AttachmentAlert {
   id: string;
@@ -792,8 +791,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [speechError, setSpeechError] = useState('');
   const [isModeMenuOpen, setIsModeMenuOpen] = useState(false);
   const [attachments, setAttachments] = useState<AttachmentDraft[]>(() =>
-    activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : [],
+    activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
   );
+  // 当前 `attachments` state 实际对应的 session（和 activeSessionId 分开追踪）：切换会话时
+  // activeSessionId 在本次渲染就已经更新，但 attachments 还要等切换 session 的 effect 跑完
+  // 才会重置成目标会话的草稿。切会话瞬间两者短暂不一致，谁依赖 attachments 做跨会话操作
+  // （比如把它们注册成任务素材）都要先核对这个 ref，否则会把上一个会话的草稿误登记到新会话。
+  const attachmentSessionIdRef = useRef(activeSessionId);
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
   const attachmentAlertTimersRef = useRef<Map<string, number>>(new Map());
   const [attachmentMenuId, setAttachmentMenuId] = useState<string | null>(null);
@@ -1233,7 +1237,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return teamMembers
       .filter((member) => {
         const id = member.member_id?.trim();
-        return id && id !== 'user';
+        // 离队 / 退役中的成员接不到消息，@ 出去也没人接。
+        return id && id !== 'user' && isReachableTeamMemberStatus(member.status);
       })
       .map((member) => ({
         id: member.member_id,
@@ -1343,6 +1348,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   }, [activeSessionId, canPersistAttachments]);
   useEffect(() => {
     if (!canPersistAttachments || !activeSessionId) return;
+    // 切换会话那一次渲染里，activeSessionId 已经是新会话，但 attachments 还是上一个会话的草稿
+    // （要等下面"切会话"那个 effect 跑完才会重置）。这一轮先跳过，避免把上一个会话还没发送的
+    // 附件误登记成这个新会话的素材；下一轮渲染 attachments 跟 activeSessionId 对齐后会重新触发。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
     const pending: Array<{ path: string; source: 'upload' | 'generated'; name?: string }> = [];
     const consider = (path: string | undefined, source: 'upload' | 'generated', name?: string) => {
       const value = path?.trim();
@@ -1382,7 +1391,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       isTeamMode,
     );
     return items.map((item) =>
-      item.itemKind === 'skill' && teamGroupSelectionActive
+      item.itemKind === 'skill' && composerSuggestion?.kind !== 'skill' && teamGroupSelectionActive
         ? { ...item, disabled: true, disabledReason: t('chat.teamSkillsGroupLocked') }
         : item.itemKind === 'command' && isSlashCommandDisabledByGoal(item.id, hasUnfinishedGoal)
           ? { ...item, disabled: true, disabledReason: t('plan.toolbarUnavailableGoal') }
@@ -1412,7 +1421,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   );
 
   useEffect(() => {
-    if (composerSuggestion?.kind !== 'slash' || slashCatalogLoaded || slashCatalogLoading) return;
+    if (
+      !composerSuggestion ||
+      (composerSuggestion.kind !== 'slash' && composerSuggestion.kind !== 'skill') ||
+      slashCatalogLoaded || slashCatalogLoading
+    ) {
+      return;
+    }
     setSlashCatalogLoading(true);
     void Promise.all([
       webRequest<{ commands?: SlashCommandMeta[] }>('commands.list', {
@@ -1653,6 +1668,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     for (const path of plan.paths) {
       requestImageDiscard(sessionId, path);
     }
+    // A removed chip that had already been auto-registered as a session material
+    // (session.assets.register fires as soon as the upload completes, well before
+    // send) must drop that material too, unless another still-attached draft needs
+    // the same path kept. Only 'upload' materials: agent-generated ('generated')
+    // ones are not tied to any composer draft and must survive regardless.
+    if (sessionId && sessionId !== NEW_CONVERSATION_ID) {
+      const keptPaths = new Set(
+        remaining
+          .map((draft) => pickString(draft.persistedMediaItem?.path))
+          .filter((path): path is string => Boolean(path))
+          .map(normalizePath),
+      );
+      for (const draft of drafts) {
+        const path = pickString(draft.persistedMediaItem?.path);
+        if (!path || keptPaths.has(normalizePath(path))) continue;
+        const asset = sessionAssetsRef.current.find(
+          (item) => item.source === 'upload' && normalizePath(item.path) === normalizePath(path),
+        );
+        if (!asset) continue;
+        void useSessionAssetsStore
+          .getState()
+          .remove(sessionId, asset.asset_id)
+          .catch((error) => console.error('Failed to remove session asset:', error));
+      }
+    }
   }, [activeSessionId, requestImageDiscard]);
 
   const updateAttachment = useCallback((id: string, update: Partial<AttachmentDraft>) => {
@@ -1725,18 +1765,40 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
   }, [releaseUnsentUploads]);
 
-  const attachmentSessionIdRef = useRef(activeSessionId);
   useEffect(() => {
     const sessionId = attachmentSessionIdRef.current;
     if (sessionId) attachmentDraftsBySession.set(sessionId, attachments);
   }, [attachments]);
+
+  // 外部清空（目前只有 App.tsx enterNewConversation 对 'new' 调用 clearAttachmentDrafts）
+  // 只改了 Map，不会让 activeSessionId 变化——如果这时候本来就停留在被清的那个会话上
+  // （典型：已经在 'new' 欢迎页带着未发送附件，又点了一次"新建对话"），下面"切换会话"
+  // 那个 effect 不会跑，本地 attachments state 就不会跟着清空，残留的附件之后一发送
+  // 还是会被注册成新会话自己的素材——清空形同虚设。这个 effect 专门补上这种"没有发生
+  // 会话切换"的清空场景。
+  const attachmentDraftClearNonce = useAttachmentDraftClearNonce(activeSessionId);
+  const attachmentDraftClearNonceRef = useRef(attachmentDraftClearNonce);
+  useEffect(() => {
+    if (attachmentDraftClearNonce === attachmentDraftClearNonceRef.current) return;
+    attachmentDraftClearNonceRef.current = attachmentDraftClearNonce;
+    // ref 还没等于 activeSessionId 说明一次真正的会话切换正在进行中，下面那个 effect
+    // 本来就会用（已经清空的）Map 内容重新同步本地 state，这里不用重复处理。
+    if (attachmentSessionIdRef.current !== activeSessionId) return;
+    releaseUnsentUploads(attachmentsRef.current);
+    setAttachments([]);
+    setAttachmentAlerts([]);
+    setAttachmentMenuId(null);
+    clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
+  }, [attachmentDraftClearNonce, activeSessionId, releaseUnsentUploads]);
 
   useEffect(() => {
     if (attachmentSessionIdRef.current === activeSessionId) return;
     const previousSessionId = attachmentSessionIdRef.current;
     if (previousSessionId) attachmentDraftsBySession.set(previousSessionId, attachments);
     attachmentSessionIdRef.current = activeSessionId;
-    setAttachments(activeSessionId ? (attachmentDraftsBySession.get(activeSessionId) ?? []) : []);
+    setAttachments(
+      activeSessionId ? ((attachmentDraftsBySession.get(activeSessionId) as AttachmentDraft[] | undefined) ?? []) : [],
+    );
     setAttachmentAlerts([]);
     setAttachmentMenuId(null);
     clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
@@ -2359,15 +2421,6 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
   }, [autoFocusKey]);
 
-  // 切会话时用 inputValue 填充 contenteditable（chip 位置丢失，仅恢复纯文本）
-  useEffect(() => {
-    if (!inputRef.current) return;
-    const sid = useChatStore.getState().activeSessionId;
-    if (!sid) return;
-    const text = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
-    inputRef.current.textContent = text;
-  }, [activeSessionId]);
-
   // 监听外部设置 inputValue 的事件（如编辑排队任务）
   useEffect(() => {
     const handler = (e: Event) => {
@@ -2413,6 +2466,66 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     });
     return text.replace(/\u200B/g, '');
   }, []);
+
+  // 切会话时用 inputValue 填充 contenteditable。技能 chip 由 selectedSkills 同步效果重建；
+  // 有参斜杠 chip（如 /persist）写在纯文本里，这里还原成蓝色标签，避免切回后"标签消失"（#5771）。
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    const sid = useChatStore.getState().activeSessionId;
+    if (!sid) return;
+    const text = useChatStore.getState().runtimes[sid]?.inputValue ?? '';
+    el.replaceChildren();
+    const { command, rest } = splitComposerSlashChip(text);
+    if (command) {
+      const chip = document.createElement('span');
+      chip.className = 'chat-input-chip-inline chat-input-chip-inline--slash-command';
+      chip.setAttribute('contenteditable', 'false');
+      chip.dataset.slashCommand = command;
+
+      const prefix = document.createElement('span');
+      prefix.className = 'chat-input-chip-inline__prefix';
+      prefix.textContent = '/';
+
+      const labelEl = document.createElement('span');
+      labelEl.className = 'chat-input-chip-inline__label';
+      labelEl.textContent = command;
+
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'chat-input-chip-inline__remove';
+      removeBtn.setAttribute('aria-label', 'remove slash command');
+      removeBtn.innerHTML = closeSvg;
+      removeBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const next = chip.nextSibling;
+        if (next && next.nodeType === Node.TEXT_NODE) {
+          const nextText = next.textContent || '';
+          if (nextText.startsWith(' ')) {
+            next.textContent = nextText.slice(1);
+          }
+        }
+        chip.remove();
+        const activeSid = useChatStore.getState().activeSessionId;
+        if (activeSid) useChatStore.getState().setInputValue(activeSid, extractPlainText());
+      });
+
+      chip.append(prefix, labelEl, removeBtn);
+      el.append(chip);
+      el.append(document.createTextNode(rest || '\u200B'));
+    } else {
+      el.textContent = text;
+    }
+    const selection = window.getSelection();
+    if (selection) {
+      const range = document.createRange();
+      range.selectNodeContents(el);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }, [activeSessionId, extractPlainText]);
 
   const composerConversationRef = useRef(conversationId);
   useEffect(() => {
@@ -2775,6 +2888,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     beforeRange.selectNodeContents(el);
     beforeRange.setEnd(range.endContainer, range.endOffset);
     const beforeText = beforeRange.toString().replace(/\u200B/g, '');
+    const skillSuggestion = getSkillArgumentSuggestion(beforeText);
+    if (skillSuggestion) return skillSuggestion;
     const slashMatch = beforeText.match(/(?:^|\s)(\/)([a-zA-Z][\w-]*)?$/);
     if (slashMatch) {
       return { kind: 'slash', query: slashMatch[2] ?? '' };
@@ -2795,7 +2910,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       return;
     }
     // slash 指令不依赖团队成员，即便没有可 @ 的成员也照常弹出
-    if (trigger.kind !== 'slash' && mentionCandidates.length === 0) {
+    if (trigger.kind !== 'slash' && trigger.kind !== 'skill' && mentionCandidates.length === 0) {
       setComposerSuggestion(null);
       return;
     }
@@ -2833,6 +2948,32 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       if (!el || !selection || selection.rangeCount === 0) return;
       const range = selection.getRangeAt(0);
       if (!el.contains(range.commonAncestorContainer)) return;
+
+      if (kind === 'skill') {
+        const trigger = getCurrentComposerTrigger();
+        if (trigger?.kind !== 'skill') return;
+        const beforeRange = range.cloneRange();
+        beforeRange.selectNodeContents(el);
+        beforeRange.setEnd(range.endContainer, range.endOffset);
+        const caret = beforeRange.toString().replace(/\u200B/g, '').length;
+        const edit = getSkillArgumentReplacement(extractPlainText(), caret, trigger, value);
+        const endRange = range.cloneRange();
+        setRangeStartByTextOffset(endRange, el, edit.end);
+        range.setEnd(endRange.startContainer, endRange.startOffset);
+        setRangeStartByTextOffset(range, el, edit.start);
+        range.deleteContents();
+        const text = document.createTextNode(edit.text);
+        range.insertNode(text);
+        range.setStartAfter(text);
+        range.collapse(true);
+        selection.removeAllRanges();
+        selection.addRange(range);
+        const sid = useChatStore.getState().activeSessionId;
+        if (sid) useChatStore.getState().setInputValue(sid, extractPlainText());
+        setComposerSuggestion(null);
+        el.focus();
+        return;
+      }
 
       // slash 选中
       if (kind === 'slash') {
@@ -3094,8 +3235,16 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
         if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
           if (isImeCompositionKey(e.nativeEvent, isComposingRef.current)) return;
-          e.preventDefault();
           const item = composerSuggestionItems[composerSuggestionIndex];
+          if (composerSuggestion.kind === 'skill' && !item) {
+            setComposerSuggestion(null);
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleSubmit();
+            }
+            return;
+          }
+          e.preventDefault();
           if (e.key === 'Enter' && composerSuggestion.kind === 'slash') {
             // 完整受限命令优先走提交守卫，避免过滤后误选名称/描述匹配的技能。
             const { name, args } = parseSlashLine(extractRichContent());
@@ -3708,7 +3857,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const currentMode = AGENT_MODE_OPTIONS.find((item) => item.value === mode) ?? AGENT_MODE_OPTIONS[0];
   const evolutionLabel = getEvolutionPillLabel(mode, evolutionStatus, t);
   const attachmentAlertPortalTarget = inputRef.current?.closest<HTMLElement>('.chat-panel-shell');
-  const showSlashSuggestionBelow = showWorkContextRow && composerSuggestion?.kind === 'slash';
+  const showSlashSuggestionBelow =
+    showWorkContextRow && (composerSuggestion?.kind === 'slash' || composerSuggestion?.kind === 'skill');
 
   return (
     <>
@@ -4003,7 +4153,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 }}
                 onPick={insertComposerToken}
                 loading={slashCatalogLoading}
-                slashSkillsOnly={isTeamMode}
+                slashSkillsOnly={isTeamMode || composerSuggestion.kind === 'skill'}
               />
             )}
             <div
@@ -5196,6 +5346,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   disabled={
                     isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
                   }
+                  allowModelGroups={!isDesignLanding}
                 />}
 
                 {taskAsrEnabled && <button
@@ -5306,7 +5457,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }}
                   onPick={insertComposerToken}
                   loading={slashCatalogLoading}
-                  slashSkillsOnly={isTeamMode}
+                  slashSkillsOnly={isTeamMode || composerSuggestion.kind === 'skill'}
                   placement="below"
                 />
               )}
@@ -5861,7 +6012,7 @@ function ComposerSuggestionMenu({
   slashSkillsOnly: boolean;
   placement?: 'above' | 'below';
 }) {
-  const isSlash = suggestion.kind === 'slash';
+  const isSlash = suggestion.kind === 'slash' || suggestion.kind === 'skill';
   const tokenPrefix = suggestion.kind === 'role' ? '$' : '@';
   const { t } = useTranslation();
   const commandCount = items.filter((item) => item.itemKind === 'command').length;

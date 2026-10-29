@@ -291,6 +291,59 @@ class RuntimePromptRail(DeepAgentRail):
             logger.debug("Failed to read configured model names: %s", exc)
             return []
 
+    @staticmethod
+    def _agent_model(ctx: AgentCallbackContext) -> tuple[Any, Any]:
+        """Return this callback's live model and the agent config holding it."""
+        agent = ctx.agent
+        config = getattr(agent, "config", None)
+        model = getattr(config, "model", None)
+        get_llm = getattr(agent, "get_llm", None)
+        if callable(get_llm):
+            try:
+                model = get_llm()
+            except Exception as exc:
+                logger.debug("Failed to read the current agent model: %s", exc)
+        return model, config
+
+    @staticmethod
+    def _agent_model_name(ctx: AgentCallbackContext) -> str:
+        """Read this callback's live model instead of the shared session model."""
+        model, config = RuntimePromptRail._agent_model(ctx)
+        # Model calls run on the inner ReActAgent; before_invoke can run on
+        # the outer DeepAgent, whose config holds the same Model directly.
+        for request_config in (
+            getattr(model, "model_config", None),
+            getattr(config, "model_config_obj", None),
+            config,
+        ):
+            name = getattr(request_config, "model_name", None)
+            if isinstance(name, str) and name.strip():
+                return name.strip()
+        return ""
+
+    @staticmethod
+    def _agent_group_model_names(ctx: AgentCallbackContext) -> list[str]:
+        """Models this agent's model group can route to; empty outside a group.
+
+        Delegates to the Team allocator's ``_selectable_route_tags`` rather
+        than copying it, so the list always matches the ``selectable_models``
+        that ``spawn_teammate`` accepts in the installed openjiuwen version.
+        A ``tag-filtered`` router (a pinned member or a tag-restricted group)
+        only routes to its own tag.
+        """
+        model, _ = RuntimePromptRail._agent_model(ctx)
+        client_config = getattr(model, "model_client_config", None)
+        router = getattr(client_config, "intelli_router", None)
+        if not getattr(router, "deployments", None):
+            return []
+        try:
+            from openjiuwen.agent_teams.models.allocator import _selectable_route_tags
+
+            return _selectable_route_tags(router.model_dump(mode="json"))
+        except Exception as exc:
+            logger.debug("Failed to read model group route tags: %s", exc)
+            return []
+
     def _resolve_current_mode(
         self,
         ctx: AgentCallbackContext,
@@ -686,9 +739,15 @@ class RuntimePromptRail(DeepAgentRail):
             configured_models = self._configured_model_names()
         if not available_models:
             available_models = configured_models
+        # The session-wide list names every configured model, but a model-group
+        # agent can only route to its group's models.
+        group_models = self._agent_group_model_names(ctx)
+        if group_models:
+            available_models = group_models
         fallback_model = configured_models[0] if configured_models else ""
         model = str(
-            runtime_state.get("model")
+            self._agent_model_name(ctx)
+            or runtime_state.get("model")
             or self._model_name
             or fallback_model
             or "unknown"

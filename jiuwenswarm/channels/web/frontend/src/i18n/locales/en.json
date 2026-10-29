@@ -47,7 +47,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
-    "experiments": "Experiments",
+    "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -101,6 +101,9 @@
       "bootstrapError": "Failed to build the workflow. Please try again later.",
       "notImplemented": "Not implemented",
       "send": "Send",
+      "running": "The design leader is working…",
+      "stop": "Stop",
+      "stopError": "Could not stop. Please try again.",
       "attach": "Add reference media",
       "removeAttachment": "Remove reference",
       "attachHint": "Images, video, or audio. Up to 5 images, 1 video, and 1 audio file.",
@@ -145,7 +148,7 @@
       "editPlaceholder": "Edit text content…",
       "aspectRatio": "Aspect ratio",
       "resolution": "Resolution",
-      "duration": "Duration",
+      "duration": "Video duration",
       "count": "Count",
       "browseFiles": "Browse files",
       "dropHint": "Or drag into this area",
@@ -163,6 +166,7 @@
       "videoTitle": "Video settings",
       "imageTitle": "Image settings",
       "durationValue": "{{seconds}}s",
+      "durationUnit": "s",
       "loading": "Loading generation settings…",
       "loadError": "Could not load generation settings: {{message}}",
       "saveError": "Settings not saved: {{message}}"
@@ -510,7 +514,15 @@
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
-      "jevTab": "Jev",
+      "jevTab": "Decision models",
+      "jevTabHelp": "Optional. Enhances decision-making for browser subagents and multi-model collaboration in single-agent conversations.",
+      "jevModels": "Jev models",
+      "jevDeleteFailed": "Failed to clear the Jev configuration. Please try again.",
+      "jevEmpty": "No Jev model configured",
+      "jevEmptyDescription": "Add one Jev model to share between browser decisions and multi-model collaboration.",
+      "jevDisplayNamePlaceholder": "Enter a model display name",
+      "jevApiBasePlaceholder": "e.g. https://jev.example.com/v1",
+      "jevModelHint": "Enter a Jev model name supported by the provider, such as typesafe/jev-1.13 or jev-1.13.0.",
       "modelGroups": "Model groups",
       "modelGroupsManagement": "Model group management",
       "empty": "No models configured",
@@ -684,7 +696,6 @@
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
         "aliasRequired": "Model display name is required",
         "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
-        "modelNameConflict": "Model ID cannot match another configuration's model display name",
         "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
       },
       "testConnection": "Test connection",
@@ -775,8 +786,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "Custom",
       "jevConfig": "Jev Model Configuration",
-      "jevKeyMissing": "Jev API key is not configured. Configure it under Models > Jev first.",
-      "clearSharedJevConfirm": "Clear this provider's Jev key? Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
+      "jevKeyMissing": "Jev API key is not configured. Add a Jev model under Models > Decision models first.",
+      "clearSharedJevConfirm": "Clear the current Jev model's API key and display name? Connection settings will be retained. Browser decisions will return to LLM only, and JEV decision for multi-model collaboration will be disabled.",
       "jevBaseInvalid": "Enter an HTTPS API base URL without credentials, query parameters or fragments",
       "jevModelInvalid": "Enter a valid OpenRouter Jev model, such as typesafe/jev-1.13"
     },
@@ -797,7 +808,8 @@
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "proactiveLimitsDisabledDescription": "Enable proactive recommendations to configure these limits. Saved values: up to {{daily}} per day and {{rounds}} conversation rounds per check.",
       "multiModelCollaboration": "Multi-model collaboration",
-      "toolOptimize": "Tool retrieval optimization"
+      "toolOptimize": "Tool retrieval optimization",
+      "designMode": "Design Mode"
     },
     "taskAsr": {
       "dialogTitle": "Configure speech transcription model",
@@ -855,7 +867,7 @@
       },
       "decision_mode": {
         "title": "Browser decisions",
-        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Jev."
+        "description": "Choose who decides each browser step. Jev modes use the shared configuration under Models > Decision models."
       },
       "decision_provider": {
         "title": "Jev provider",
@@ -976,7 +988,7 @@
       "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
       "rsi_enabled": {
         "title": "Enable RSI",
-        "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
+        "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "Enable trajectory diagnosis",
@@ -985,6 +997,10 @@
       "team_organization_ui_enabled": {
         "title": "Enable Team Organization",
         "description": "Enable organization views and backend organization tools. Fully restart the backend and create a new session after changing this setting; existing organization tasks are not stopped immediately."
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI workflow integration",
+        "description": "Currently supports importing ComfyUI vLLM-Omni nodes and workflows into the design canvas."
       },
       "progressive_tool_optimize": {
         "title": "Enable tool retrieval optimization",
@@ -1001,6 +1017,10 @@
       "team_member_messaging_enabled": {
         "title": "Enable member-to-member messaging",
         "description": "Members can message each other directly (point-to-point, multicast, broadcast) instead of routing through the Leader. Task assignment and handoffs stay with the Leader and the scheduler."
+      },
+      "team_member_subtasks_enabled": {
+        "title": "Allow members to split tasks",
+        "description": "Members can split the task they are working on into subtasks for themselves or other existing members. The task pauses until its subtasks finish, then resumes with their results. Subtasks can nest up to 2 levels."
       },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
@@ -1052,7 +1072,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV decision",
-        "description": "Use JEV configured under Models > Jev to verify execution progress. When off, use the selected model group’s default model."
+        "description": "Use Jev configured under Models > Decision models to decide whether to consult reference models. When off, use the selected model group’s default model to verify execution progress."
       },
       "moa_verifier_interval": {
         "title": "Verification interval (rounds)",
@@ -1112,14 +1132,15 @@
         "cancel": "Cancel",
         "start": "Start",
         "starting": "Starting…",
-        "summary": "{{count}} Agent(s) selected · {{nodes}} node(s)",
-        "emptyNodes": "The selection has no complete step to diagnose. Steps that are not fully covered were left out.",
+        "summary": "{{count}} Agent(s) selected · {{spans}} OTel span(s)",
+        "emptyNodes": "The selection has no complete OTel span to diagnose. Spans that are not fully covered (start and end) were left out.",
         "lastTurn": "The selection includes the main agent's last response. Artifact evaluation and process-anomaly diagnosis will be attempted.",
-        "nodeLimit": "The selection contains {{count}} nodes, over the limit of {{limit}}. Narrow the range.",
+        "nodeLimit": "The selection contains {{count}} OTel spans, over the limit of {{limit}}. Narrow the range.",
         "running": "A diagnosis is already in progress",
-        "noData": "There is no trajectory to diagnose yet"
+        "noData": "There is no trajectory to diagnose yet",
+        "replay": "Read-only replay cannot be diagnosed; exit replay first"
       },
-      "summary": "{{agents}} Agents · {{nodes}} nodes",
+      "summary": "{{agents}} Agents · {{spans}} OTel spans",
       "toolbar": {
         "scale": "Trajectory scale",
         "time": "Time",
@@ -1150,8 +1171,9 @@
       "noteLabel": "User feedback: describe issues in the selected range (optional)",
       "fullScopeBusy": "The session is running; the full trajectory cannot be diagnosed",
       "cancel": "Cancel diagnosis",
-      "selectionHint": "Drag a range on the time axis or any lane, and check the members to diagnose.",
-      "includeAgent": "Diagnose {{name}}",
+      "selectionHint": "Drag a range on the time axis, or use Select all for one agent's whole lane. When selected, uncheck the box to clear that agent's pick.",
+      "includeAgent": "Selected: {{name}}",
+      "includeAgentHint": "Uncheck to clear {{name}}'s current selection",
       "timeAxis": "Time axis",
       "records": "Diagnosis records",
       "noRecords": "No diagnosis yet",
@@ -1169,6 +1191,7 @@
         "interrupted": "Interrupted"
       },
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
+      "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
         "pending": "Waiting",
         "running": "Running",
@@ -1192,8 +1215,10 @@
       "suggestions": "Diagnosis suggestions",
       "noSuggestions": "This diagnosis has no actionable suggestions",
       "details": "Diagnosis details",
+      "resultTabs": "Diagnosis details and suggestions",
+      "suggestionsReady": "Suggestions ready",
       "dismiss": "Dismiss",
-      "note": "Diagnosis note",
+      "note": "User feedback",
       "object": "Diagnosis target",
       "objectAgents": "Agents",
       "objectFull": "Entire trajectory",
@@ -1215,6 +1240,7 @@
         "cancelDelete": "Cancel",
         "deleteRunning": "A diagnosis in progress cannot be deleted"
       },
+      "rewardResult": "Artifact evaluation",
       "rewardDimensions": "{{count}} scored dimensions, {{perfect}} of them need no improvement; select a category to see its dimensions, the rest are broken down in the findings",
       "rewardTotal": "Total {{score}}",
       "artifactFix": "Artifact fix",
@@ -1230,22 +1256,42 @@
         "weak": "Not met"
       },
       "signalSource": {
-        "keyword_tool": "Tool output hit",
-        "keyword_user": "User message hit",
-        "reward": "Reward score"
+        "keyword_tool": "Tool output",
+        "keyword_user": "User message",
+        "reward": "Reward",
+        "user": "User note"
+      },
+      "signalSourceLabel": "Source: {{source}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}: {{dimension}}",
+      "findingDimension": "Dimension",
+      "findingProblem": "Problem",
+      "findingReason": "Cause",
+      "attributionKind": {
+        "artifact": "Artifact",
+        "skill": "Skill",
+        "experience": "Experience"
       },
       "signalScore": "Score {{score}}",
       "signalSurfacedAt": "Surfaced at {{nodes}}",
       "causeAt": "At {{nodes}}",
       "evidence": "Based on",
-      "findingsIssuesOnly": "{{issues}} issues",
-      "findingsIssuesAndExperience": "{{issues}} issues, plus {{experience}} experience verdict(s)",
-      "findingsExperienceOnly": "{{experience}} experience verdict(s)",
+      "dimension": "Dimension",
       "requestCount": "{{count}} model requests",
-      "objectSteps": "Steps",
-      "objectStepsCount": "{{count}} trajectory steps",
+      "objectSteps": "Scope",
+      "objectStepsCount": "{{count}} OTel spans",
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
+      "objectSummary": "Trajectory summary",
+      "sectionExpand": "Expand",
+      "sectionCollapse": "Collapse",
+      "findingCauses": "{{count}} artifact finding(s)",
+      "findingSkill": "{{count}} skill finding(s)",
+      "findingExperience": "{{count}} experience finding(s)",
+      "findingJoin": ", ",
+      "findingWithEvolution": "{{causes}}, plus {{evolution}}",
+      "findingLegacyCauses": "{{count}} legacy finding(s)",
+      "relatedSignals": "Related signals",
       "suggestionsUnfinished": "The diagnosis did not finish, so there are no suggestions",
       "process": "Diagnosis process",
       "processSteps": "{{count}} steps",
@@ -1257,10 +1303,15 @@
         "partial": "Task partly completed"
       },
       "ttseHint": "Extract reusable experience from this trajectory; TTSE generates and saves it in the background",
+      "ttseTriggeredNotice": "TTSE has been triggered and will finish generating and saving the experience in the background",
       "ttseReady": "Experience available",
       "skillFillPrefix": "Evolve the relevant skill according to the following suggestions:",
+      "skillSelectAll": "Select all",
+      "skillSelectOne": "Select {{name}}",
+      "skillFillSelected": "Fill selected ({{count}})",
+      "artifactFillPrefix": "Optimize according to the following suggestions:",
       "ttseResult": {
-        "triggered": "Triggered; TTSE is generating and saving the experience in the background",
+        "triggered": "Triggered",
         "failed": "Trigger failed"
       },
       "blocked": "Unavailable: {{reason}}",
@@ -1280,7 +1331,8 @@
     },
     "composer": {
       "collapse": "Collapse composer",
-      "expand": "Expand composer"
+      "expand": "Expand composer",
+      "unavailable": "The composer is unavailable during diagnosis"
     },
     "layout": {
       "hideSessions": "Collapse sessions",
@@ -1740,6 +1792,12 @@
       "tools": "Tools & Connectors",
       "skills": "Skills",
       "notReported": "Not reported",
+      "cumulativeTitle": "Cumulative tokens",
+      "mainAgentTokens": "Main Agent",
+      "otherAgentTokens": "Subagents / team members",
+      "inputTokens": "Input",
+      "outputTokens": "Output",
+      "partialReported": "Some calls did not report usage",
       "close": "Close context details",
       "noBreakdown": "No category details returned by the backend"
     },
@@ -2110,6 +2168,9 @@
       "slack": "Enable the Slack channel. Disabling preserves existing settings.",
       "whatsapp": "Enable the WhatsApp channel. Disabling preserves existing settings."
     },
+    "availability": {
+      "xiaoyi": "Xiaoyi does not currently support scheduled tasks or file delivery."
+    },
     "configurationGuide": "Configuration guide",
     "addConfiguration": "Add configuration",
     "enable": "Enable",
@@ -2311,18 +2372,17 @@
       "builtinPathPlaceholder": "Built-in CLI (managed)",
       "installNow": "Install",
       "notInstalledHint": "No SDK detected yet. Click",
-      "removePath": "Remove this path from history",
       "savedHint": "Saved",
       "detectSucceeded": "Detection passed",
       "editPath": "Edit",
       "openFile": "Open file",
       "compatibilityWarning": "The detected version may be incompatible. You can change the executable path, upgrade the version, or click \"Install\" to use the built-in CLI.",
       "compatibilityWarningWithVersion": "The detected version may be incompatible. You can change the executable path, upgrade to {{version}} or later, or click \"Install\" to use the built-in CLI.",
-      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or click \"Install\" to use the built-in CLI.",
-      "missingPath": "Path does not exist: {{path}}. Check the path, or click \"Install\" to use the built-in CLI.",
-      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or click \"Install\" to use the built-in CLI.",
-      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or click \"Install\" to use the built-in CLI.",
-      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or click \"Install\" to use the built-in CLI.",
+      "missingInPath": "{{agent}} CLI was not found in the system PATH. Enter an executable path, or cancel and click \"Install\" to use the built-in CLI.",
+      "missingPath": "Path does not exist: {{path}}. Check the path, or cancel and click \"Install\" to use the built-in CLI.",
+      "directoryPath": "The entered path is a directory: {{path}}. Enter the full path to the CLI executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "unavailableCli": "Failed to run {{agent}} CLI ({{reason}}). Check the executable, or cancel and click \"Install\" to use the built-in CLI.",
+      "windowsScriptPath": "The selected file is a Windows script. Choose a real executable, or cancel and click \"Install\" to use the built-in CLI.",
       "autoSaved": "{{agents}} dependencies finished installing. Your configuration has been saved automatically.",
       "installDialogTitle": "Install optional components",
       "installDialogDescription": "Closing this dialog does not interrupt installation. Your configuration will be saved automatically when installation finishes.",
@@ -2591,6 +2651,7 @@
       "web": "Web (web)",
       "tui": "Terminal (tui)",
       "xiaoyi": "Xiaoyi (xiaoyi)",
+      "xiaoyiUnsupported": "Xiaoyi (unsupported)",
       "feishu": "Lark (feishu)",
       "dingtalk": "DingTalk (dingtalk)",
       "whatsapp": "WhatsApp (whatsapp)",
@@ -3755,7 +3816,7 @@
       "connectionUnavailable": "Required connectors are not connected yet. Connect them before use.",
       "connectorUnavailableNamed": "This Expert requires the connector “{{connector}}”, which is not connected. Connect it and try again.",
       "uploadSuccess": "Expert package {{id}} was imported. Review it in My Experts.",
-      "uploadImportedInstallFailed": "Expert package {{id}} was imported, but installation failed. Try installing it again in My Experts.",
+      "installOutcomeUnknown": "The connection dropped before the install result was confirmed. The package is kept — retry the install from My Experts later.",
       "uploadError": "Unable to upload and import the Expert package. Check the file and try again.",
       "uploadMissingManifest": "The Expert package is missing manifest.json, or the file is corrupt.",
       "uploadMissingReadme": "The Expert package is missing README.md.",
@@ -4017,6 +4078,12 @@
     "forkFromMessage": "Create a conversation branch from this message",
     "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
+    "saveSkill": "Save",
+    "saveSkillSaving": "Saving...",
+    "saveSkillSaved": "Saved",
+    "saveSkillSuccess": "Saved successfully",
+    "saveSkillNoSession": "No active conversation. The Skill cannot be saved.",
+    "saveSkillOverwriteConfirm": "{{message}}\nOverwrite the existing Skill?",
     "fileTypeDocument": "Document",
     "fileTypeSpreadsheet": "Spreadsheet",
     "fileTypePresentation": "Presentation",
@@ -4032,6 +4099,7 @@
     "messageQueue": "Message Queue",
     "crossSessionMessageQueue": "Cross-session messages",
     "localMessageQueue": "Local messages",
+    "turnStarting": "Starting…",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",
@@ -4297,6 +4365,7 @@
     "pauseFailed": "Pause failed",
     "cancelFailed": "Cancel failed",
     "supplementFailed": "Supplement failed",
+    "supplementAttachmentsUnsupported": "Messages with attachments cannot be sent immediately. Click \"Edit\" to remove the attachments, then send again.",
     "resumeFailed": "Resume failed",
     "submitAnswerFailed": "Failed to submit answer",
     "unknownError": "Unknown error",
@@ -5062,17 +5131,17 @@
     }
   },
   "rsi": {
-    "title": "Experiments",
-    "createExperiment": "Create Experiment",
+    "title": "RSI",
+    "createExperiment": "Create RSI Task",
     "empty": {
-      "title": "No experiment tasks",
-      "hint": "We support creating Harness, paper, and program optimization experiments"
+      "title": "No RSI tasks",
+      "hint": "Create RSI tasks for Harness, paper, and program optimization"
     },
     "intro": {
       "title": "RSI · Recursive Self-Improvement",
       "lead": "Make AI stronger with use—from simply working to working better",
       "stepsTitle": "How it works",
-      "step1Title": "Step 1: Create an experiment",
+      "step1Title": "Step 1: Create an RSI task",
       "step1Body": "Choose Harness Optimization or Artifact Optimization (paper or program), fill in the required parameters, and click Create to start automatic optimization.",
       "step2Title": "Step 2: Visualize the optimization",
       "step2Body": "Track training progress and score curves in real time. Explore the RSI tree search and let the process iterate automatically without manual intervention.",
@@ -5085,15 +5154,15 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
-      "title": "RSI experiments",
+      "title": "RSI Tasks",
       "loading": "Loading…",
-      "error": "Failed to load experiments"
+      "error": "Failed to load RSI tasks"
     },
     "createDialog": {
-      "title": "Create Experiment",
-      "nameLabel": "Experiment name",
-      "namePlaceholder": "Enter experiment name",
-      "typeLabel": "Experiment type",
+      "title": "Create RSI Task",
+      "nameLabel": "Task name",
+      "namePlaceholder": "Enter task name",
+      "typeLabel": "Task type",
       "typeHarness": "Harness Optimization",
       "typeArtifact": "Artifact Optimization",
       "artifactSubtypeLabel": "Artifact subtype",
@@ -5138,7 +5207,7 @@
       "cancel": "Cancel",
       "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
       "validation": {
-        "nameRequired": "Please enter experiment name",
+        "nameRequired": "Please enter task name",
         "datasetRequired": "Please select dataset file",
         "optimizerRequired": "Please select optimizer model",
         "testerRequired": "Please select tester model",
@@ -5231,7 +5300,7 @@
       "failureReason": "Failure reason",
       "rejectionReason": "Why it was not adopted",
       "inheritFrom": "Inherited from",
-      "baselineDescription": "This is the starting version for the experiment.",
+      "baselineDescription": "This is the starting version for the optimization.",
       "noChangeSummary": "Inherited from the parent; no structured change summary is available.",
       "nodeArtifact": "Node artifact",
       "processing": "Processing…",
@@ -5239,13 +5308,13 @@
       "nodeId": "Node ID",
       "nodeType": "Lifecycle",
       "close": "Close",
-      "deleteTitle": "Delete experiment",
-      "deleteBody": "Experiment data cannot be restored after deletion. Delete this experiment?",
-      "pauseTitle": "Pause experiment",
-      "pauseBody": "The current optimization will stop. Pause this experiment?",
-      "stopTitle": "Stop task",
-      "stopBody": "Stopping will terminate the current optimization task. Stop this experiment?",
-      "queuedTitle": "This experiment is queued",
+      "deleteTitle": "Delete RSI task",
+      "deleteBody": "RSI task data cannot be restored after deletion. Delete this task?",
+      "pauseTitle": "Pause RSI task",
+      "pauseBody": "The current optimization will stop. Pause this RSI task?",
+      "stopTitle": "Stop RSI task",
+      "stopBody": "Stopping will terminate the current optimization task. Stop this RSI task?",
+      "queuedTitle": "This RSI task is queued",
       "queuedHint": "1 more task is optimizing. Please wait."
     },
     "stage": {

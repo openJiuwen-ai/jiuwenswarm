@@ -131,7 +131,7 @@ from jiuwenswarm.common.task_loop_config import (
 from jiuwenswarm.common.runtime_workspace import (
     resolve_runtime_workspace_paths, resolve_bound_runtime_workspace_paths,
 )
-from jiuwenswarm.common.mode_matrix import supports_single_agent_permission_profile
+from gateway.common.mode_matrix import supports_single_agent_permission_profile
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PermissionRailGroup,
 )
@@ -2592,7 +2592,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                 )
-                from jiuwenswarm.agents.harness.common.browser_config import (
+                from jiuwenswarm.common.browser_config import (
                     apply_browser_decision_config,
                 )
 

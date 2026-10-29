@@ -9,6 +9,8 @@ from typing import Any
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
+
+from .qwen_omni_tools import parse_qwen_omni_tool_call
 from .tasks.errors import QueueVersionConflict, TaskRevisionConflict
 from .tasks.prompts import (
     EMPTY_QUERY_INSTRUCTIONS,
@@ -17,7 +19,6 @@ from .tasks.prompts import (
     REVISION_CONFLICT_INSTRUCTIONS,
     task_query_instructions,
 )
-from .qwen_omni_tools import parse_qwen_omni_tool_call
 
 logger = logging.getLogger(__name__)
 AGENT_QUERY_TIMEOUT = 20
@@ -105,7 +106,9 @@ async def task_agent_query(client, method, params, session, owner):
 class AgentTaskExecutor:
     def __init__(self, client, store, normalize_media):
         self.client, self.store, self.normalize_media = client, store, normalize_media
-        from .tasks.bridge import GatewayTaskEndpoint
+        from gateway.extensions.video_duplex.backend.tasks.bridge import (
+            GatewayTaskEndpoint,
+        )
 
         self.endpoint = GatewayTaskEndpoint(store)
 
@@ -143,8 +146,8 @@ class AgentTaskExecutor:
                 }
             )
         from jiuwenswarm.extensions.video_duplex.backend.tasks.service import (
-            InteractionPending,
             ExecutionUncertain,
+            InteractionPending,
         )
 
         try:
@@ -186,7 +189,9 @@ class AgentTaskExecutor:
             raise
 
     async def wait_settled(self, task):
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import ExecutionUncertain
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import (
+            ExecutionUncertain,
+        )
 
         try:
             async with asyncio.timeout(20):
@@ -575,7 +580,7 @@ class VideoSearchManager:
                 raise ValueError("Qwen Omni Realtime is not the active provider")
             call = parse_qwen_omni_tool_call(params)
             if call.name in {"jiuwen_delegate", "jiuwen_research"}:
-                from .video_search import _frame_media_item, MAX_FRAME_CHARS
+                from .video_search import MAX_FRAME_CHARS, _frame_media_item
 
                 frame = params.get("frame_data_url", "")
                 if frame and (

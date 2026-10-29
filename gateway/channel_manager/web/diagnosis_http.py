@@ -21,8 +21,7 @@ from typing import TYPE_CHECKING, Any
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, Response
 
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.diagnosis.models import ERROR_STATUS_BY_CODE
+from openjiuwen_protocol.message import ReqMethod
 from gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
     validate_http_origin,
@@ -63,14 +62,19 @@ def _error(error: str, code: str, status_code: int) -> JSONResponse:
     return _json({"error": error, "code": code}, status_code)
 
 
-def error_status(code: str) -> int:
-    """Return the HTTP status for an error code answered by the AgentServer."""
-    if code in ERROR_STATUS_BY_CODE:
-        return ERROR_STATUS_BY_CODE[code]
+def error_status(code: str, reported_status: Any = None) -> int:
+    """Return the HTTP status carried on an AgentServer error payload.
+
+    Diagnosis errors include ``status``. Transport failures that never reach
+    the diagnosis service are mapped from ``code``. Anything else is 500.
+    """
+    if isinstance(reported_status, int) and not isinstance(reported_status, bool) and 100 <= reported_status <= 599:
+        return reported_status
     if code in _UNAVAILABLE_CODES:
         return 503
     if code == _TIMEOUT_CODE:
         return 504
+    logger.warning("[diagnosis] error payload has no usable status, using 500: code=%s", code)
     return 500
 
 
@@ -156,7 +160,11 @@ def attach_diagnosis_routes(
             return _error("diagnosis request failed", "INTERNAL_ERROR", 500)
         if not ok:
             code = str(payload.get("code") or "INTERNAL_ERROR")
-            return _error(str(payload.get("error") or "diagnosis request failed"), code, error_status(code))
+            return _error(
+                str(payload.get("error") or "diagnosis request failed"),
+                code,
+                error_status(code, payload.get("status")),
+            )
         if success_status == 204:
             return Response(status_code=204, headers=_NO_STORE_HEADERS)
         return _json(payload, success_status)

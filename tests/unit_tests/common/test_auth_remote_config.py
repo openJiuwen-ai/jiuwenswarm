@@ -6,8 +6,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from jiuwenswarm.common.auth import remote_config
-from jiuwenswarm.common.auth.remote_config import RemoteConfig, get_config, parse_config
+from gateway.auth import remote_config
+from gateway.auth.remote_config import RemoteConfig, get_config, parse_config
 
 FULL = {
     "is_effective": True,

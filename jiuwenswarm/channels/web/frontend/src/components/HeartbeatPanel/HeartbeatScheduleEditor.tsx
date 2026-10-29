@@ -89,38 +89,46 @@ export default function HeartbeatScheduleEditor({ value, onChange, minIntervalSe
       )}
 
       {value.kind === 'once' && (
-        <div className="flex items-start gap-2" title={t('heartbeat.schedule.once.hint') ?? undefined} data-testid="heartbeat-panel-once-row">
+        <div className="space-y-2" data-testid="heartbeat-panel-once-row" title={t('heartbeat.schedule.once.hint') ?? undefined}>
           {/* 复用 CronPanel 的自绘选择器：原生 <input type="date"> 的占位格式跟随浏览器 locale，
               会渲染成「yyyy/mm/日」中英混排；自绘组件全走 i18n 且支持 minDate/minTime 禁选过期。
               未选择时留白（不传 placeholder），见 bug002 用户确认。
-              minDate/minTime 每次渲染按 nowWallClock 重算，父层抽屉每 10s 触发一次重渲染，
-              用户停在弹层里等到所选时刻过期时，过期的日期/时分选项会即时变为禁选。 */}
-          <div className="min-w-0 flex-1">
-            <label className="mb-1 block text-xs text-text-muted" data-testid="heartbeat-panel-once-date-label">
-              {t('heartbeat.schedule.once.dateLabel')}
-              <span className="text-red-500">*</span>
-            </label>
-            <DatePicker
-              value={value.onceDate}
-              onChange={(v) => onChange({ ...value, onceDate: v })}
-              minDate={todayStr}
-              className="w-full"
-            />
+              minDate/minTime 与 run_at 编解码都按表单 timezone 墙钟（#5610），父层抽屉每 10s
+              触发一次重渲染，用户停在弹层里等到所选时刻过期时，过期的日期/时分选项会即时变为禁选。 */}
+          <div className="flex items-start gap-2">
+            <div className="min-w-0 flex-1">
+              <label className="mb-1 block text-xs text-text-muted" data-testid="heartbeat-panel-once-date-label">
+                {t('heartbeat.schedule.once.dateLabel')}
+                <span className="text-red-500">*</span>
+              </label>
+              <DatePicker
+                value={value.onceDate}
+                onChange={(v) => onChange({ ...value, onceDate: v })}
+                minDate={todayStr}
+                className="w-full"
+              />
+            </div>
+            <div className="w-32 shrink-0">
+              <label className="mb-1 block text-xs text-text-muted" data-testid="heartbeat-panel-once-time-label">
+                {t('heartbeat.schedule.once.timeLabel')}
+                <span className="text-red-500">*</span>
+              </label>
+              <TimePicker
+                value={value.onceTime}
+                onChange={(v) => onChange({ ...value, onceTime: v })}
+                // 日期未选时按「今天」处理（minDate 已锁死不能选过去），
+                // 否则先开时间下拉、还没选日期时整列时分都不禁选，能选到已经过去的点。
+                minTime={!value.onceDate || value.onceDate === todayStr ? nowTimeStr : undefined}
+                className="w-full"
+              />
+            </div>
           </div>
-          <div className="w-32 shrink-0">
-            <label className="mb-1 block text-xs text-text-muted" data-testid="heartbeat-panel-once-time-label">
-              {t('heartbeat.schedule.once.timeLabel')}
-              <span className="text-red-500">*</span>
-            </label>
-            <TimePicker
-              value={value.onceTime}
-              onChange={(v) => onChange({ ...value, onceTime: v })}
-              // 日期未选时按「今天」处理（minDate 已锁死不能选过去），
-              // 否则先开时间下拉、还没选日期时整列时分都不禁选，能选到已经过去的点。
-              minTime={!value.onceDate || value.onceDate === todayStr ? nowTimeStr : undefined}
-              className="w-full"
-            />
-          </div>
+          <SimpleSelect
+            value={value.timezone}
+            onChange={(v) => onChange({ ...value, timezone: v })}
+            options={TIMEZONE_SELECT_OPTIONS}
+            className="w-48"
+          />
         </div>
       )}
     </div>

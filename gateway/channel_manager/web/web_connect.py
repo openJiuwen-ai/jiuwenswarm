@@ -22,34 +22,38 @@ from typing import Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
 
 import aiohttp
+from openjiuwen_protocol.message import EventType, Message, Mode, ReqMethod
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
-from jiuwenswarm.common.protocol_ids import (
-    InvalidProtocolId,
-    validate_session_id,
-    validate_workflow_run_id,
-)
-from jiuwenswarm.common.utils import get_logs_dir
-from gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter, ConnectHook
-from gateway.routing.base_ws_channel import BaseWsChannel
-from gateway.routing.keys import AgentRef, RoutingKey
-from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.security.ws_origin import (
-    get_header_value,
-)
-from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
-from jiuwenswarm.common.session_message import (
-    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
-    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
-)
-from jiuwenswarm.common.ws_diagnostics import (
-    describe_ws_exception,
-    describe_ws_peer,
-    format_ws_diagnostics,
+from gateway.channel_manager.base import (
+    ChannelMetadata,
+    ConnectHook,
+    RobotMessageRouter,
 )
 from gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
     new_web_proxy_client_session,
 )
+from gateway.common.paths import get_logs_dir
+from gateway.common.protocol_ids import (
+    InvalidProtocolId,
+    validate_session_id,
+    validate_workflow_run_id,
+)
+from gateway.common.security.ws_origin import (
+    get_header_value,
+)
+from gateway.common.session_message import (
+    SESSION_MESSAGE_ANONYMOUS_OWNER_METADATA_KEY,
+    SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY,
+)
+from gateway.common.ws_diagnostics import (
+    describe_ws_exception,
+    describe_ws_peer,
+    format_ws_diagnostics,
+)
+from gateway.routing.base_ws_channel import BaseWsChannel
+from gateway.routing.keys import AgentRef, RoutingKey
+from gateway.routing.session_sharing import RoutingTarget
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +222,9 @@ class WebChannel(BaseWsChannel):
         self._session_busy: dict[str, bool] = {}
         self._expert_processing_requests: dict[str, set[tuple[str, str]]] = {}
         # session_id -> 重新绑定的 ws_id: 刷新后经新连接完成 A4P 授权
-        # (complete/reject) 时登记，把该恢复 turn 的迟到事件改投到这个 ws，
-        # 而不是当孤儿丢弃；turn 的终态事件送达后解除绑定。
+        # (complete/reject) 时登记，把该恢复 turn 的迟到事件只投给这个 ws。
+        # 未登记时，原连接已断开的事件落到 session 桶，投给重连后的新连接。
+        # turn 的终态事件送达后解除绑定。
         self._a4p_rebound_ws: dict[str, str] = {}
         # Git diff 监控注册表(设计文档阶段10):由 app_gateway 在启动期注入,
         # handler 通过 ``getattr(channel, "git_watcher_registry", None)`` 防御性读取。
@@ -229,6 +234,7 @@ class WebChannel(BaseWsChannel):
         # Agent client the diagnosis HTTP proxy uses to reach the AgentServer
         # service; bound by the web handler registration.
         self.diagnosis_agent_client: Any = None
+        self.trajectory_agent_client: Any = None
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
         # 3rd-agent Web UI proxy: one northbound port per agent_type.
@@ -706,12 +712,12 @@ class WebChannel(BaseWsChannel):
         """同一端口承载 WebChannel 的 WebSocket 与 HTTP 路由（uvicorn/FastAPI）。"""
         import uvicorn
 
-        from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
         from gateway.channel_manager.web.transport_stall_guard import (
             guarded_http_protocol,
             guarded_websockets_protocol,
         )
         from gateway.channel_manager.web.web_channel_app import build_web_channel_app
+        from gateway.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
 
         app = build_web_channel_app(self)
         uv_cfg = uvicorn.Config(
@@ -1191,11 +1197,7 @@ class WebChannel(BaseWsChannel):
                 ws = self._ws_by_id.get(request_ws_id)
                 if ws is not None and not getattr(ws, "closed", False):
                     ws_set.add(ws)
-                elif routing_target is None:
-                    # res 与发起请求的连接一一对应（request_id 唯一）；发起连接
-                    # 断开后 session 桶里的其他连接不可能匹配该 id，改投只会串扰。
-                    self._log_orphan_request_drop(msg, request_ws_id)
-                    return
+                # 发起连接已断开时不在这里丢弃，交给下方 session 桶投给重连后的新连接。
 
             if not ws_set and routing_target is not None:
                 delivery = routing_target.delivery
@@ -1272,8 +1274,9 @@ class WebChannel(BaseWsChannel):
         # ── 旧路径：优先按请求 metadata.ws_id 物理寻址，再按 session_id 精确路由 ──
         # 普通 stream event（chat.delta/final/usage_summary 等）由 ChannelManager
         # 调 channel.send(msg)，不会携带 RoutingTarget；但原始 Web 请求注入的
-        # metadata.ws_id 会经 _chunk_to_message 保留下来。先用它收窄到发起请求的
-        # 物理连接，避免同一个 session 桶里的陈旧 ws 一起收到迟到事件。
+        # metadata.ws_id 会经 _chunk_to_message 保留下来。发起连接仍在时只投给它，
+        # 避免同一个 session 桶里的其他连接一起收到。发起连接已断开（刷新换了新
+        # ws_id）时，落到下方 session 桶，把在途思考、正文和工具进度投给新连接。
         ws_set: set[Any] = set()
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
         request_ws_id = str(metadata.get("ws_id") or "").strip()
@@ -1282,20 +1285,11 @@ class WebChannel(BaseWsChannel):
             if ws is not None and not getattr(ws, "closed", False):
                 ws_set.add(ws)
             elif routing_target is None:
-                # 刷新后若用户已在新连接上重新完成 A4P 授权，该恢复 turn 的迟到
-                # 事件应改投到新连接（否则会被当孤儿丢弃，刷新方看不到持续输出）。
+                # A4P 在新连接上完成授权后登记了改绑：只投给该连接。
+                # 没有改绑则 ws_set 保持为空，交给 session 桶。
                 rebound_ws = self._rebound_ws_for(msg)
                 if rebound_ws is not None:
                     ws_set.add(rebound_ws)
-                else:
-                    # 发起该请求的物理连接已断开（unregister_ws 已摘除 ws_id 映射，
-                    # 重连必换新 ws_id）：这是在途流的迟到事件。落入 session 桶会投给
-                    # 同 session 的新连接，被当作新请求的回复消费，造成跨请求串扰。
-                    # 丢弃；重连方通过 history 拉取补齐。team fan_out（带
-                    # routing_target）V2 未命中后的回退保留原语义。
-                    self._log_orphan_request_drop(msg, request_ws_id)
-                    await self._notify_orphan_history_changed(msg)
-                    return
 
         if not ws_set and not msg.session_id:
             logger.warning(
@@ -1355,11 +1349,15 @@ class WebChannel(BaseWsChannel):
         # 广播 processing_status{is_processing:false, paused:true}, 此处合成
         # true 会在服务端权威帧前后到达, 把帧式消费方的状态翻回 true.
         # pause 失败时也不合成 false — 状态未变, 合成会误报.
+        # resume 同样不合成: AgentServer 把 resume 当空操作处理 (提示"直接
+        # 发送下一条消息即可继续"), 真正的 running 态由下一条消息的新流广播;
+        # 无条件合成 true 会在无活跃轮次时把前端翻回转圈, 直到下一次 pause
+        # 才能终结 (issue 5762 的二次 pause 场景).
         if event_name == "chat.interrupt_result" and not str(payload.get("source") or "").startswith("org_"):
             intent = payload.get("intent", "cancel") if isinstance(payload, dict) else "cancel"
-            if intent == "pause":
+            if intent in ("pause", "resume"):
                 return
-            is_processing = intent in ("supplement", "resume")
+            is_processing = intent == "supplement"
             await self._broadcast_to({
                 "type": "event",
                 "event": "chat.processing_status",
@@ -1440,54 +1438,6 @@ class WebChannel(BaseWsChannel):
         if self._resolve_event_name(msg) in {"chat.final", "chat.error"}:
             self._a4p_rebound_ws.pop(sid, None)
         return ws
-
-    async def _notify_orphan_history_changed(self, msg: Message) -> None:
-        """Invalidate authorized observers' history without forwarding an old turn.
-
-        A reconnect may have read history before the original execution finished.
-        Its terminal output must trigger another read, but must never be consumed
-        as the new connection's active chat response.
-        """
-        if self._resolve_event_name(msg) not in {"chat.final", "chat.error"} or not msg.session_id:
-            return
-        metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
-        # This key is injected from the authenticated Web connection, including
-        # an explicit None for local anonymous connections. Missing is unknown.
-        if "user_id" not in metadata:
-            return
-        owner = metadata["user_id"]
-        app_id = msg.app_id or metadata.get("app_id")
-        if not app_id:
-            return
-        clients: set[Any] = set()
-        for route, sockets in self._clients_by_key.items():
-            if route.session_id != msg.session_id or route.app_id != app_id:
-                continue
-            for socket in sockets:
-                if not getattr(socket, "closed", False) and self.connection_user_id(socket) == owner:
-                    clients.add(socket)
-        if clients:
-            await self._broadcast_to({
-                "type": "event",
-                "event": "runtime.history_required",
-                "payload": {"session_id": msg.session_id},
-            }, clients)
-
-    @staticmethod
-    def _log_orphan_request_drop(msg: Message, request_ws_id: str) -> None:
-        """记录孤儿请求事件的丢弃（RC-3）：发起连接已断，事件不再改投 session 桶。"""
-        event_name = str(getattr(getattr(msg, "event_type", None), "value", "") or "")
-        if not event_name:
-            event_name = str(getattr(msg, "type", "") or "")
-        log = logger.info if event_name in ("chat.final", "chat.error") else logger.debug
-        log(
-            "[WebChannel] orphan request event dropped: originating ws gone"
-            " ws_id=%s session_id=%s event=%s id=%s",
-            request_ws_id,
-            getattr(msg, "session_id", None),
-            event_name,
-            getattr(msg, "id", ""),
-        )
 
     def _track_session_busy(self, msg: Message) -> None:
         """在所有路由分支之前维护 session busy 映射(供 /ws/git 写操作查询)。

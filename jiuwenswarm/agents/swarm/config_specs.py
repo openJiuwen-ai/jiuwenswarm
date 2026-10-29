@@ -69,7 +69,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
 )
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.providers import tools as _tools
-from jiuwenswarm.common.mode_matrix import (
+from gateway.common.mode_matrix import (
     NEW_TEAM_CODE_NORMAL,
     NEW_TEAM_CODE_PLAN,
     NEW_TEAM_DESIGN,
@@ -864,6 +864,12 @@ def build_member_capability_specs(
         )
     if availability is not None:
         rails.append(availability)
+    if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
+        rails.append(RailSpec(type=registry.ORGANIZATION_MODEL))
+        if role == "leader":
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_MODEL_TOOLS))
+            rails.append(RailSpec(type=registry.ORGANIZATION_OWNER_INBOX))
+            tools.append(BuiltinToolSpec(type=registry.ORGANIZATION_OWNER_INBOX_TOOLS))
     return rails, tools
 
 

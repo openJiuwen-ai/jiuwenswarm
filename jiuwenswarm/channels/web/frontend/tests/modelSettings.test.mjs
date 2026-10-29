@@ -21,6 +21,7 @@ import {
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
 import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
 import {
+  LOGIN_MODEL_SOURCE,
   getEditableModels,
   getModelDisplayGroups,
 } from '../node_modules/.cache/settings-refactor/modules/models/modelListOperations.js';
@@ -394,14 +395,14 @@ test('display name validation is required, unique among display names, and exclu
       .model_name,
     undefined,
   );
-  assert.match(
+  // Model ID may match another configuration's display name (#5808).
+  assert.equal(
     validateModelDraft({ ...baseDraft, alias: 'unique', model_name: 'second' }, models, undefined, catalog, t)
       .model_name,
-    /modelNameConflict/,
+    undefined,
   );
 
-  // Legacy peers with empty alias + same model_name: seeding display name from model_name
-  // must not block editing endpoint/key (#5646 / review P2).
+  // Empty-alias peers still display model_name; that visible name must stay unique.
   const legacyDuplicateModels = [
     {
       model_id: 'mdl_a',
@@ -420,7 +421,7 @@ test('display name validation is required, unique among display names, and exclu
       model_provider: 'OpenAI',
     },
   ];
-  assert.equal(
+  assert.match(
     validateModelDraft(
       { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
       legacyDuplicateModels,
@@ -428,20 +429,27 @@ test('display name validation is required, unique among display names, and exclu
       catalog,
       t,
     ).alias,
-    undefined,
+    /aliasConflict/,
   );
   assert.match(
     validateModelDraft(
-      { ...baseDraft, alias: 'GLM-5.2', model_name: 'GLM-5.2' },
-      [
-        { ...legacyDuplicateModels[0], alias: 'GLM-5.2' },
-        legacyDuplicateModels[1],
-      ],
-      { model_id: 'mdl_b' },
+      { ...baseDraft, alias: 'GLM-5.2', model_name: 'glm-5.2' },
+      legacyDuplicateModels,
+      undefined,
       catalog,
       t,
     ).alias,
     /aliasConflict/,
+  );
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'GLM-5.2-custom', model_name: 'GLM-5.2' },
+      legacyDuplicateModels,
+      { model_id: 'mdl_a' },
+      catalog,
+      t,
+    ).alias,
+    undefined,
   );
 
   // Upsert edit path: entries use model_id without origin_index. Display name equal to own
@@ -483,6 +491,47 @@ test('display name validation is required, unique among display names, and exclu
       t,
     ).alias,
     /aliasConflict/,
+  );
+
+  // Hidden free/login models are not Settings-editable; their model_name must not
+  // block a custom display name that happens to match (#5808 review).
+  const runtimeGrantedModels = [
+    {
+      model_name: 'qwen3-max',
+      alias: '',
+      is_free: true,
+      api_base: 'https://free.example/v1',
+      api_key: '',
+      model_provider: 'OpenAI',
+    },
+    {
+      model_name: 'login-model',
+      alias: '',
+      source: LOGIN_MODEL_SOURCE,
+      api_base: 'https://login.example/v1',
+      api_key: '',
+      model_provider: 'OpenAI',
+    },
+  ];
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'qwen3-max', model_name: 'qwen3-max' },
+      runtimeGrantedModels,
+      undefined,
+      catalog,
+      t,
+    ).alias,
+    undefined,
+  );
+  assert.equal(
+    validateModelDraft(
+      { ...baseDraft, alias: 'login-model', model_name: 'custom-id' },
+      runtimeGrantedModels,
+      undefined,
+      catalog,
+      t,
+    ).alias,
+    undefined,
   );
 });
 
@@ -689,7 +738,8 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /<JevSettings disabled=\{disabled\}/);
   assert.match(definition, /defaultModelSettingsTab: ModelSettingsTabId = 'models'/);
   assert.match(tabLayout, /const \[activeTab, setActiveTab\] = useState<TabId>\(defaultTab\)/);
-  assert.match(tabLayout, /items=\{tabs\.map\(\(tab\) => \(\{ value: tab\.id, label: t\(tab\.labelKey\) \}\)\)\}/);
+  assert.match(tabLayout, /value: tab\.id,[\s\S]*label: t\(tab\.labelKey\)/);
+  assert.match(tabLayout, /suffix: tab\.helpKey \? <HelpTips content=\{t\(tab\.helpKey\)\} size="large" \/> : undefined/);
   assert.match(page, /void loadCatalog\(\);[\s\S]{0,180}setDialog\(nextDialog\)/);
   assert.match(page, /type SaveModelsOptions = \{ errorScope\?: SettingsSaveErrorScope \};/);
   assert.match(page, /saveQueue\.enqueue\([\s\S]{0,320}\{ errorScope \},/);

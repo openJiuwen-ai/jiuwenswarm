@@ -16,7 +16,7 @@ from pathlib import Path
 # Characters no mainstream filesystem accepts inside a name: ASCII control
 # chars, POSIX/Windows path separators, and the rest of the Windows-reserved
 # punctuation. Everything else — including non-ASCII letters — is kept.
-from jiuwenswarm.common.attachment_safety import (  # noqa: F401
+from gateway.common.attachment_safety import (  # noqa: F401
     safe_session_dirname,
     safe_upload_filename,
 )

@@ -10,7 +10,7 @@ from enum import Enum
 from http import HTTPStatus
 from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
-from jiuwenswarm.common.schema.message import Message
+from openjiuwen_protocol.message import Message
 from gateway.routing.session_sharing import RoutingTarget
 
 

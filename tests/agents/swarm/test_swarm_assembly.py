@@ -89,7 +89,7 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
+from gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -1799,6 +1799,14 @@ def test_send_file_gating_defaults_by_channel() -> None:
     # Explicit config switch overrides the default.
     disabled = {"channels": {"web": {"send_file_allowed": False}}}
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
+
+
+def test_xiaoyi_send_file_is_disabled_even_when_config_enabled() -> None:
+    """Xiaoyi's missing delivery path is enforced regardless of stale config."""
+    enabled = {"channels": {"xiaoyi": {"send_file_allowed": True}}}
+
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi")
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi:app")
 
 
 def test_team_send_file_does_not_enable_auto_authorization(

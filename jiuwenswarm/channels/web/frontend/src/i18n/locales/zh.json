@@ -47,7 +47,7 @@
     "work": "任务",
     "agent": "专家",
     "design": "设计",
-    "experiments": "实验",
+    "experiments": "RSI",
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
@@ -101,6 +101,9 @@
       "bootstrapError": "搭建工作流失败，请稍后重试。",
       "notImplemented": "未实现",
       "send": "发送",
+      "running": "设计团长正在执行…",
+      "stop": "停止",
+      "stopError": "停止失败，请稍后重试。",
       "attach": "添加参考素材",
       "removeAttachment": "移除参考素材",
       "attachHint": "支持图片、视频、音频。最多 5 张图、1 个视频、1 段音频。",
@@ -145,7 +148,7 @@
       "editPlaceholder": "编辑文本内容…",
       "aspectRatio": "长宽比",
       "resolution": "分辨率",
-      "duration": "时长",
+      "duration": "视频时长",
       "count": "生成数量",
       "browseFiles": "浏览文件",
       "dropHint": "或者拖拽到区域内",
@@ -163,6 +166,7 @@
       "videoTitle": "视频参数",
       "imageTitle": "图片参数",
       "durationValue": "{{seconds}} 秒",
+      "durationUnit": "秒",
       "loading": "正在读取生成参数…",
       "loadError": "无法读取生成参数：{{message}}",
       "saveError": "参数未保存：{{message}}"
@@ -503,7 +507,15 @@
       "customModels": "自定义模型",
       "tabsLabel": "模型设置分类",
       "modelsTab": "模型",
-      "jevTab": "Jev",
+      "jevTab": "决策模型",
+      "jevTabHelp": "可选配置。用于增强浏览器子智能体，以及单智能体会话中多模型协同的决策能力。",
+      "jevModels": "Jev 模型",
+      "jevDeleteFailed": "清除 Jev 配置失败，请重试。",
+      "jevEmpty": "尚未配置 Jev 模型",
+      "jevEmptyDescription": "添加一个 Jev 模型，供浏览器决策和多模型协同共用。",
+      "jevDisplayNamePlaceholder": "请输入模型展示名称",
+      "jevApiBasePlaceholder": "例如：https://jev.example.com/v1",
+      "jevModelHint": "请填写提供商支持的 Jev 模型名，例如 typesafe/jev-1.13 或 jev-1.13.0。",
       "modelGroups": "模型组",
       "modelGroupsManagement": "模型组管理",
       "empty": "尚未配置模型",
@@ -677,7 +689,6 @@
         "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
         "aliasRequired": "模型展示名称为必填项",
         "aliasConflict": "模型展示名称必须全局唯一，不能与其他模型的展示名称重复",
-        "modelNameConflict": "模型 ID 不能与其他配置的模型展示名称相同",
         "modelGroupNameConflict": "模型组名称必须全局唯一，不能与其他模型组名称重复"
       },
       "testConnection": "测试连接",
@@ -768,8 +779,8 @@
       "providerTypesafe": "TypeSafe",
       "providerCustom": "自定义",
       "jevConfig": "Jev 模型配置",
-      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > Jev」配置。",
-      "clearSharedJevConfirm": "清除当前提供商的 Jev 密钥？浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
+      "jevKeyMissing": "尚未配置 Jev 密钥，请先在「模型 > 决策模型」中添加 Jev 模型。",
+      "clearSharedJevConfirm": "清除当前 Jev 模型的密钥和展示名称？连接参数将保留，浏览器将切回仅 LLM，多模型协同将关闭 JEV 决策。",
       "jevBaseInvalid": "请填写 HTTPS API 基础地址，不含账号、查询参数或片段",
       "jevModelInvalid": "请填写有效的 OpenRouter Jev 模型，如 typesafe/jev-1.13"
     },
@@ -790,7 +801,8 @@
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "proactiveLimitsDisabledDescription": "开启主动推荐后可设置。当前保存值：每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
       "multiModelCollaboration": "多模型协同",
-      "toolOptimize": "工具检索优化"
+      "toolOptimize": "工具检索优化",
+      "designMode": "设计模式"
     },
     "taskAsr": {
       "dialogTitle": "配置语音转写模型",
@@ -848,7 +860,7 @@
       },
       "decision_mode": {
         "title": "浏览器决策",
-        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > Jev」中的共享配置。"
+        "description": "选择由谁决定每一步浏览器操作。Jev 模式使用「模型 > 决策模型」中的共享配置。"
       },
       "decision_provider": {
         "title": "Jev 服务提供方",
@@ -960,7 +972,7 @@
       "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
       "rsi_enabled": {
         "title": "启用 RSI",
-        "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
+        "description": "显示侧边栏「RSI」入口，可创建并查看 Harness 优化和产物优化（论文、程序）的 RSI 任务；关闭后隐藏该入口。"
       },
       "trajectory_ui_diagnosis_enabled": {
         "title": "启用轨迹诊断",
@@ -969,6 +981,10 @@
       "team_organization_ui_enabled": {
         "title": "启用 Team Organization",
         "description": "启用组织视图及后端组织工具。修改后请完整重启后端并新建会话；不会立即停止已有组织任务。"
+      },
+      "comfyui_workflow_enabled": {
+        "title": "ComfyUI 工作流集成",
+        "description": "目前支持将 ComfyUI 的 vLLM-Omni 节点和 Workflow 导入到设计画布中"
       },
       "progressive_tool_optimize": {
         "title": "启用工具检索优化",
@@ -985,6 +1001,10 @@
       "team_member_messaging_enabled": {
         "title": "启用成员间通信",
         "description": "允许成员之间直接发送消息（点对点、多播、广播），无需经 Leader 转达；任务指派与交接仍由 Leader 和调度框架负责。"
+      },
+      "team_member_subtasks_enabled": {
+        "title": "允许成员拆分子任务",
+        "description": "成员可以把正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后原任务暂停，子任务全部结束后带着结果恢复执行。子任务最多嵌套 2 层。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
@@ -1036,7 +1056,7 @@
       },
       "moa_jev_enabled": {
         "title": "JEV 决策",
-        "description": "使用「模型 > Jev」中配置的 JEV 验证执行进度；关闭时使用模型组的组内默认模型。"
+        "description": "使用「模型 > 决策模型」中配置的 Jev 决定是否咨询参考模型；关闭时使用模型组的组内默认模型验证执行进度。"
       },
       "moa_verifier_interval": {
         "title": "验证间隔（轮）",
@@ -1096,14 +1116,15 @@
         "cancel": "取消",
         "start": "开始执行",
         "starting": "启动中…",
-        "summary": "已选择 {{count}} 个 Agent · {{nodes}} 个节点",
-        "emptyNodes": "选中范围内没有完整可诊断的步骤（未完整覆盖的步骤已被剔除）",
+        "summary": "已选择 {{count}} 个 Agent · {{spans}} 个 OTel Span",
+        "emptyNodes": "选中范围内没有完整可诊断的 OTel Span（起止未都被覆盖的 Span 已被剔除）",
         "lastTurn": "选中轨迹包含主agent最后一轮响应，将尝试进行产物评估和过程异常诊断归因",
-        "nodeLimit": "选中轨迹超过 {{limit}} 个节点（当前 {{count}} 个），请缩小选择范围",
+        "nodeLimit": "选中轨迹超过 {{limit}} 个 OTel Span（当前 {{count}} 个），请缩小选择范围",
         "running": "已有诊断正在进行",
-        "noData": "当前没有可诊断的轨迹"
+        "noData": "当前没有可诊断的轨迹",
+        "replay": "只读复现中无法诊断，请先退出复现"
       },
-      "summary": "{{agents}}个Agent · {{nodes}} 个节点",
+      "summary": "{{agents}}个Agent · {{spans}} 个 OTel Span",
       "toolbar": {
         "scale": "轨迹比例",
         "time": "时间",
@@ -1134,8 +1155,9 @@
       "noteLabel": "用户反馈：描述已选轨迹中的问题（可选）",
       "fullScopeBusy": "会话运行中，无法诊断完整轨迹",
       "cancel": "取消诊断",
-      "selectionHint": "在时间轴或任一泳道上拖选一段时间，并勾选要诊断的成员。",
-      "includeAgent": "诊断 {{name}}",
+      "selectionHint": "在时间轴上拖选范围，或用「全选」选中某 Agent 的全部轨迹；已选中时可用勾选框取消该 Agent 的选区。",
+      "includeAgent": "已选中：{{name}}",
+      "includeAgentHint": "取消勾选可清除 {{name}} 的当前选区",
       "timeAxis": "时间轴",
       "records": "诊断记录",
       "noRecords": "还没有诊断记录",
@@ -1153,6 +1175,7 @@
         "interrupted": "已中断"
       },
       "outletsPending": "诊断完成后在这里给出优化建议",
+      "detailsPending": "评估结果和诊断发现会显示在这里",
       "stageStatus": {
         "pending": "等待中",
         "running": "进行中",
@@ -1176,8 +1199,10 @@
       "suggestions": "诊断建议",
       "noSuggestions": "本次诊断没有可执行的优化建议",
       "details": "诊断详情",
+      "resultTabs": "诊断详情和诊断建议",
+      "suggestionsReady": "已有建议",
       "dismiss": "关闭提示",
-      "note": "诊断说明",
+      "note": "用户反馈",
       "object": "诊断对象",
       "objectAgents": "Agent",
       "objectFull": "全部轨迹",
@@ -1199,6 +1224,7 @@
         "cancelDelete": "取消",
         "deleteRunning": "诊断进行中，无法删除"
       },
+      "rewardResult": "产物评估结果",
       "rewardDimensions": "共 {{count}} 项评分维度，其中 {{perfect}} 项无需优化；点击类别查看各维度评分，需优化的在诊断发现中展开",
       "rewardTotal": "总分 {{score}}",
       "artifactFix": "产物修复建议",
@@ -1214,22 +1240,42 @@
         "weak": "未达标"
       },
       "signalSource": {
-        "keyword_tool": "工具输出命中",
-        "keyword_user": "用户消息命中",
-        "reward": "Reward 评分"
+        "keyword_tool": "工具输出",
+        "keyword_user": "用户消息",
+        "reward": "Reward",
+        "user": "用户补充"
+      },
+      "signalSourceLabel": "信号来源：{{source}}",
+      "attributionLabel": "{{kind}}",
+      "causeTopic": "{{category}}：{{dimension}}",
+      "findingDimension": "维度",
+      "findingProblem": "问题",
+      "findingReason": "原因",
+      "attributionKind": {
+        "artifact": "产物",
+        "skill": "技能",
+        "experience": "经验"
       },
       "signalScore": "得分 {{score}}",
-      "signalSurfacedAt": "问题露出于 {{nodes}}",
+      "signalSurfacedAt": "问题定位到 {{nodes}}",
       "causeAt": "位于 {{nodes}}",
       "evidence": "依据",
-      "findingsIssuesOnly": "{{issues}} 处问题",
-      "findingsIssuesAndExperience": "{{issues}} 处问题，另有 {{experience}} 条经验判定",
-      "findingsExperienceOnly": "{{experience}} 条经验判定",
+      "dimension": "评分维度",
       "requestCount": "模型请求 {{count}} 次",
-      "objectSteps": "步骤",
-      "objectStepsCount": "{{count}} 个轨迹步骤",
+      "objectSteps": "范围",
+      "objectStepsCount": "{{count}} 个 OTel Span",
       "objectExcludedRunning": "诊断时有 {{count}} 个步骤仍在运行，未纳入诊断",
       "objectTask": "任务描述",
+      "objectSummary": "轨迹摘要",
+      "sectionExpand": "展开",
+      "sectionCollapse": "收起",
+      "findingCauses": "{{count}} 条产物归因",
+      "findingSkill": "{{count}} 条技能归因",
+      "findingExperience": "{{count}} 条经验归因",
+      "findingJoin": "、",
+      "findingWithEvolution": "{{causes}}，另有 {{evolution}}",
+      "findingLegacyCauses": "{{count}} 处旧版归因",
+      "relatedSignals": "相关归因信号",
       "suggestionsUnfinished": "诊断未完成，没有建议",
       "process": "诊断过程",
       "processSteps": "{{count}} 步",
@@ -1241,10 +1287,15 @@
         "partial": "任务部分完成"
       },
       "ttseHint": "从这次轨迹中提取可复用的经验，由 TTSE 在后台生成并保存",
+      "ttseTriggeredNotice": "已触发TTSE，将在后台完成经验生成和保存",
       "ttseReady": "可生成经验",
       "skillFillPrefix": "根据以下优化建议对相应skill进行演进：",
+      "skillSelectAll": "全选",
+      "skillSelectOne": "选择 {{name}}",
+      "skillFillSelected": "填入所选（{{count}}）",
+      "artifactFillPrefix": "请根据以下建议进行优化：",
       "ttseResult": {
-        "triggered": "已触发，TTSE 正在后台生成并保存经验",
+        "triggered": "已触发",
         "failed": "触发失败"
       },
       "blocked": "暂不可用：{{reason}}",
@@ -1264,7 +1315,8 @@
     },
     "composer": {
       "collapse": "收起输入框",
-      "expand": "展开输入框"
+      "expand": "展开输入框",
+      "unavailable": "诊断时不能使用输入框"
     },
     "layout": {
       "hideSessions": "收起会话栏",
@@ -1724,6 +1776,12 @@
       "tools": "工具及连接器",
       "skills": "技能",
       "notReported": "未报告",
+      "cumulativeTitle": "累计 Token",
+      "mainAgentTokens": "主 Agent",
+      "otherAgentTokens": "子 Agent / 团队成员",
+      "inputTokens": "输入",
+      "outputTokens": "输出",
+      "partialReported": "部分调用未上报用量",
       "close": "关闭上下文详情",
       "noBreakdown": "后端未返回分类明细"
     },
@@ -2094,6 +2152,9 @@
       "slack": "是否启用 Slack 频道；关闭后保留已有配置。",
       "whatsapp": "是否启用 WhatsApp 频道；关闭后保留已有配置。"
     },
+    "availability": {
+      "xiaoyi": "小艺暂不支持定时任务和文件发送。"
+    },
     "configurationGuide": "配置方法",
     "addConfiguration": "添加配置",
     "enable": "启用",
@@ -2295,18 +2356,17 @@
       "builtinPathPlaceholder": "内置 CLI（自动管理）",
       "installNow": "一键安装",
       "notInstalledHint": "暂未检测到SDK，请点击",
-      "removePath": "从历史记录中删除该路径",
       "savedHint": "已保存",
       "detectSucceeded": "检测成功",
       "editPath": "编辑",
       "openFile": "打开文件",
       "compatibilityWarning": "检测到的版本可能不兼容。可以更换可执行文件路径、升级版本，或点击“一键安装”改用内置 CLI。",
       "compatibilityWarningWithVersion": "检测到的版本可能不兼容。可以更换可执行文件路径、升级到 {{version}} 或更高版本，或点击“一键安装”改用内置 CLI。",
-      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或点击“一键安装”使用内置 CLI。",
-      "missingPath": "路径不存在：{{path}}。请检查路径，或点击“一键安装”使用内置 CLI。",
-      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或点击“一键安装”使用内置 CLI。",
-      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或点击“一键安装”使用内置 CLI。",
-      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或点击“一键安装”使用内置 CLI。",
+      "missingInPath": "未在系统 PATH 中找到 {{agent}} CLI。可手动填写可执行文件路径，或取消后点击“一键安装”使用内置 CLI。",
+      "missingPath": "路径不存在：{{path}}。请检查路径，或取消后点击“一键安装”使用内置 CLI。",
+      "directoryPath": "所填路径是一个目录：{{path}}。请填写 CLI 可执行文件的完整路径，或取消后点击“一键安装”使用内置 CLI。",
+      "unavailableCli": "无法运行 {{agent}} CLI（{{reason}}）。请检查可执行文件，或取消后点击“一键安装”使用内置 CLI。",
+      "windowsScriptPath": "当前选择的是 Windows 脚本文件。请改选真实的可执行文件，或取消后点击“一键安装”使用内置 CLI。",
       "autoSaved": "{{agents}} 依赖安装完成，已自动保存您的配置。",
       "installDialogTitle": "安装可选组件",
       "installDialogDescription": "关闭此弹窗不会中断安装。安装完成后，您的配置将自动保存。",
@@ -2575,6 +2635,7 @@
       "web": "网页 (web)",
       "tui": "终端 (tui)",
       "xiaoyi": "小艺 (xiaoyi)",
+      "xiaoyiUnsupported": "小艺（暂不支持）",
       "feishu": "飞书 (feishu)",
       "dingtalk": "钉钉 (dingtalk)",
       "whatsapp": "WhatsApp (whatsapp)",
@@ -3732,7 +3793,7 @@
       "connectionUnavailable": "依赖的连接器尚未连接，请先连接后再使用",
       "connectorUnavailableNamed": "该专家依赖的连接器「{{connector}}」尚未连接，请先完成连接后再重试安装。",
       "uploadSuccess": "专家包 {{id}} 已导入，请在我的专家中查看",
-      "uploadImportedInstallFailed": "专家包 {{id}} 已导入，但安装失败，请在我的专家中重试安装",
+      "installOutcomeUnknown": "网络中断，安装结果未确认。专家包已保留，可稍后在我的专家中重试安装。",
       "uploadError": "上传并导入专家失败，请检查文件后重试",
       "uploadMissingManifest": "专家包缺少 manifest.json，或文件已损坏",
       "uploadMissingReadme": "专家包缺少 README.md 文件",
@@ -3991,6 +4052,12 @@
     "forkFromMessage": "从此消息新建会话分支",
     "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
+    "saveSkill": "保存",
+    "saveSkillSaving": "保存中...",
+    "saveSkillSaved": "已保存",
+    "saveSkillSuccess": "保存成功",
+    "saveSkillNoSession": "当前无活跃会话，无法保存 Skill",
+    "saveSkillOverwriteConfirm": "{{message}}\n是否覆盖保存？",
     "fileTypeDocument": "文档",
     "fileTypeSpreadsheet": "电子表格",
     "fileTypePresentation": "演示文件",
@@ -4006,6 +4073,7 @@
     "messageQueue": "消息队列",
     "crossSessionMessageQueue": "跨会话消息",
     "localMessageQueue": "本地消息",
+    "turnStarting": "正在启动…",
     "turnRunning": "任务执行",
     "turnElapsed": "任务用时",
     "workCompleted": "已完成 {{duration}}",
@@ -4271,6 +4339,7 @@
     "pauseFailed": "暂停失败",
     "cancelFailed": "取消失败",
     "supplementFailed": "补充失败",
+    "supplementAttachmentsUnsupported": "带附件的消息无法插队发送，请先点击“编辑”移除附件后再发送。",
     "resumeFailed": "恢复失败",
     "submitAnswerFailed": "提交回答失败",
     "unknownError": "未知错误",
@@ -5034,18 +5103,18 @@
     }
   },
   "rsi": {
-    "title": "实验",
-    "createExperiment": "创建实验",
+    "title": "RSI",
+    "createExperiment": "创建 RSI 任务",
     "empty": {
-      "title": "暂无实验任务",
-      "hint": "我们支持创建Harness优化、论文优化和程序优化实验"
+      "title": "暂无 RSI 任务",
+      "hint": "支持创建 Harness 优化、论文优化和程序优化的 RSI 任务"
     },
     "intro": {
       "title": "RSI·递归自我改进",
       "lead": "让AI越用越强—从「会干活」到「越干越好」",
       "stepsTitle": "操作步骤",
-      "step1Title": "第一步：创建实验",
-      "step1Body": "选择实验场景：Harness 优化 / 产物优化（论文、程序），填写必要参数，点击「确定」，开始自动优化。",
+      "step1Title": "第一步：创建 RSI 任务",
+      "step1Body": "选择优化场景：Harness 优化 / 产物优化（论文、程序），填写必要参数，点击「创建」，开始自动优化。",
       "step2Title": "第二步：可视化优化过程",
       "step2Body": "实时可视训练进度条和得分曲线。 RSI 树搜索可视化，理解自动探索过程。全程自动迭代，无需人工干预。",
       "step3Title": "第三步：获得最优结果",
@@ -5057,15 +5126,15 @@
       "feature2Body": "把你的成品（论文 / 程序）交给 AI 反复打磨：生成多个优化候选，逐版检验评分，保留最好的一版继续迭代，直到产出最满意的那一版再交付给你。经过多轮打磨自动完成，质量稳步上升"
     },
     "list": {
-      "title": "RSI自进化实验",
+      "title": "RSI 任务",
       "loading": "加载中…",
-      "error": "加载实验列表失败"
+      "error": "加载 RSI 任务列表失败"
     },
     "createDialog": {
-      "title": "创建实验",
-      "nameLabel": "实验名称",
-      "namePlaceholder": "请输入实验名称",
-      "typeLabel": "实验类型",
+      "title": "创建 RSI 任务",
+      "nameLabel": "任务名称",
+      "namePlaceholder": "请输入任务名称",
+      "typeLabel": "任务类型",
       "typeHarness": "Harness 优化",
       "typeArtifact": "产物优化",
       "artifactSubtypeLabel": "产物子类型",
@@ -5110,7 +5179,7 @@
       "cancel": "取消",
       "infoBar": "请预先安装、调用evolve-design技能，创建产物优化的依赖项，填写程序路径",
       "validation": {
-        "nameRequired": "请输入实验名称",
+        "nameRequired": "请输入任务名称",
         "datasetRequired": "请选择数据集文件",
         "optimizerRequired": "请选择优化模型",
         "testerRequired": "请选择测试模型",
@@ -5211,13 +5280,13 @@
       "nodeId": "节点 ID",
       "nodeType": "生命周期",
       "close": "关闭",
-      "deleteTitle": "删除实验",
-      "deleteBody": "删除后实验数据不可恢复，确定删除该实验吗？",
-      "pauseTitle": "暂停实验",
-      "pauseBody": "暂停后将停止当前优化进程，确定暂停该实验吗？",
-      "stopTitle": "停止任务",
-      "stopBody": "停止后将终止当前优化任务，确定停止该实验吗？",
-      "queuedTitle": "本实验正在排队中",
+      "deleteTitle": "删除 RSI 任务",
+      "deleteBody": "删除后 RSI 任务数据不可恢复，确定删除该任务吗？",
+      "pauseTitle": "暂停 RSI 任务",
+      "pauseBody": "暂停后将停止当前优化进程，确定暂停该 RSI 任务吗？",
+      "stopTitle": "停止 RSI 任务",
+      "stopBody": "停止后将终止当前优化任务，确定停止该 RSI 任务吗？",
+      "queuedTitle": "当前 RSI 任务正在排队",
       "queuedHint": "下面还有 1 个任务正在优化中，请耐心等待"
     },
     "stage": {

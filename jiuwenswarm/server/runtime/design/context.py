@@ -15,6 +15,7 @@ import threading
 from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
+    RUN_TRIGGER_SOURCE_LEADER,
     DesignerExecutionGraph,
     apply_graph_patch,
 )
@@ -134,6 +135,7 @@ class StoreNodeSpawner:
             node_ids=node_ids,
             cascade=cascade,
             on_update=self._on_run_update,
+            source=RUN_TRIGGER_SOURCE_LEADER,
         )
 
     def set_push_callbacks(
@@ -154,7 +156,12 @@ class StoreNodeSpawner:
         graph = self._store.get_graph(graph_id)
         if graph is None:
             raise ValueError(f"designer graph not found: {graph_id!r}")
+        from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
+            mark_brief_prompt_edits,
+        )
+
         updated = apply_graph_patch(graph, patch)
+        mark_brief_prompt_edits(graph, updated)
         saved = self._store.save_graph(updated)
         if self._on_graph_update is not None:
             try:

@@ -6,7 +6,7 @@
 
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
+import { conversationKey, useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { Info } from 'lucide-react';
 import { useSessionArtifacts, useSessionArtifactsCount } from '../ArtifactsPanel';
@@ -167,7 +167,6 @@ export function ToolPanel({
   const setTeamTaskEvents = useSessionStore(s => s.setTeamTaskEvents);
   const setTeamTaskTimeline = useSessionStore(s => s.setTeamTaskTimeline);
   const setTeamTasks = useSessionStore(s => s.setTeamTasks);
-  const mergeTeamTaskProgressBaseline = useSessionStore(s => s.mergeTeamTaskProgressBaseline);
   const setTeamMemberExecutionEvents = useSessionStore(s => s.setTeamMemberExecutionEvents);
   const setTeamHistoryMessages = useSessionStore(s => s.setTeamHistoryMessages);
   const setTeamHumanShareCommands = useSessionStore(s => s.setTeamHumanShareCommands);
@@ -176,7 +175,7 @@ export function ToolPanel({
   const [teamPlanningExpanded, setTeamPlanningExpanded] = useState(false);
   const [teamMembersExpanded, setTeamMembersExpanded] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
-  const { completedTasks: teamCompletedTasks, progressTasks, teamTasks, totalTasks: teamTotalTasks, now } = useTaskPlanningMetrics();
+  const { completedTasks: teamCompletedTasks, teamTasks, totalTasks: teamTotalTasks } = useTaskPlanningMetrics();
   const artifactsCount = useSessionArtifactsCount();
   const sessionAssetCount = useSessionAssetsStore(selectSessionAssets(activeSessionId)).length;
   const subagentCount = useSubagentStore(state => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
@@ -331,10 +330,6 @@ export function ToolPanel({
     () => [...applicationPlanningTasks, ...teamTasks],
     [applicationPlanningTasks, teamTasks],
   );
-  const teamPlanningProgress = useMemo(
-    () => [...applicationPlanningTasks, ...progressTasks],
-    [applicationPlanningTasks, progressTasks],
-  );
   const applicationCompleted = applicationPlanningTasks.filter((task) => task.status === 'completed').length;
   const todoCompletedTasks = planningTasks.filter((task) => task.status === 'completed').length;
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
@@ -401,6 +396,7 @@ export function ToolPanel({
     loadingTeamHistorySessionRef.current = sessionId;
     void loadTeamHistoryPanelState(sessionId, controller.signal)
       .then(historyState => {
+        if (controller.signal.aborted) return;
         loadingTeamHistorySessionRef.current = null;
         hydratedTeamHistorySessionRef.current = sessionId;
         const current = useSessionStore.getState().runtimes[sessionId];
@@ -408,6 +404,14 @@ export function ToolPanel({
         if (mergedMembers.length > 0) {
           setTeamMembers(sessionId, mergedMembers);
         }
+        // 离队目录：历史回放为底，叠加恢复期间实时记下的；已回到名册的成员不再算离队。
+        const rosterIds = new Set(mergedMembers.map(member => member.member_id));
+        const mergedDepartedMembers = mergeById(
+          historyState.departedMembers,
+          current?.teamDepartedMembers ?? [],
+          member => member.member_id,
+        ).filter(member => !rosterIds.has(member.member_id));
+        useSessionStore.getState().setTeamDepartedMembers(sessionId, mergedDepartedMembers);
 
         const mergedTaskEvents = mergeById(historyState.taskEvents, current?.teamTaskEvents ?? [], event => event.task_id);
         // Always apply — an empty restored list must clear stale events too.
@@ -424,7 +428,6 @@ export function ToolPanel({
         const liveTasksForMerge = (current?.teamTasks ?? []).filter(task => restoredTaskIds.has(task.task_id));
         const mergedTasks = mergeById(historyState.tasks, liveTasksForMerge, task => task.task_id);
         setTeamTasks(sessionId, mergedTasks);
-        mergeTeamTaskProgressBaseline(sessionId, historyState.taskProgressBaseline);
 
         // 同一次调用在两条路径下的 id 不同（实时 stableEventId vs 历史恢复
         // hist-*），按 id 合并会留下两张卡片；调用/结果改按 (member, kind,
@@ -434,6 +437,13 @@ export function ToolPanel({
         const mergedExecutionEvents = mergeById(historyState.executionEvents, current?.teamMemberExecutionEvents ?? [], executionEventKey);
         if (mergedExecutionEvents.length > 0) {
           setTeamMemberExecutionEvents(sessionId, mergedExecutionEvents);
+        }
+        for (const [teamId, events] of Object.entries(historyState.organizationExecutionEvents ?? {})) {
+          const key = conversationKey(sessionId, teamId);
+          const store = useSessionStore.getState();
+          store.ensureRuntime(key);
+          const live = useSessionStore.getState().runtimes[key]?.teamMemberExecutionEvents ?? [];
+          setTeamMemberExecutionEvents(key, mergeById(events, live, executionEventKey));
         }
 
         const mergedHumanShareCommands = mergeById(
@@ -448,7 +458,8 @@ export function ToolPanel({
         setTeamHistoryMessages(sessionId, historyState.messages);
       })
       .catch(error => {
-        loadingTeamHistorySessionRef.current = null;
+        if (controller.signal.aborted) return;
+        if (loadingTeamHistorySessionRef.current === sessionId) loadingTeamHistorySessionRef.current = null;
         if (error instanceof DOMException && error.name === 'AbortError') {
           return;
         }
@@ -457,11 +468,11 @@ export function ToolPanel({
 
     return () => {
       controller.abort();
+      if (loadingTeamHistorySessionRef.current === sessionId) loadingTeamHistorySessionRef.current = null;
     };
   }, [
     isConnected,
     isNewSessionPromotion,
-    mergeTeamTaskProgressBaseline,
     mode,
     sessionId,
     setTeamHistoryMessages,
@@ -548,8 +559,6 @@ export function ToolPanel({
                 <TaskPlanningPanel
                   variant="expanded"
                   tasks={teamPlanningTasks}
-                  progressTasks={teamPlanningProgress}
-                  now={now}
                   members={teamMembers}
                   totalTasks={teamTotalTasks + applicationPlanningTasks.length}
                   completedTasks={teamCompletedTasks + applicationCompleted}

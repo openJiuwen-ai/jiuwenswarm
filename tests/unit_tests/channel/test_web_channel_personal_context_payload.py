@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from jiuwenswarm.common.schema.message import Message
+from openjiuwen_protocol.message import Message
 from gateway.channel_manager.web.web_connect import WebChannel
 
 

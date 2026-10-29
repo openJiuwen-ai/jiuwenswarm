@@ -8,19 +8,19 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from gateway.common.etcd.client import (
+    EtcdCasError,
+    EtcdError,
+    EtcdJsonClient,
+    prefix_range_end,
+)
+from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from gateway.runtime.cron.cron_job_mutations import (
     apply_cron_job_patch,
     build_new_cron_job,
     ensure_proactive_deletable,
     migrate_work_mode_on_items,
     parse_cron_jobs,
-)
-from jiuwenswarm.common.etcd.client import (
-    EtcdCasError,
-    EtcdError,
-    EtcdJsonClient,
-    prefix_range_end,
 )
 from gateway.runtime.cron.models import CronJob
 
