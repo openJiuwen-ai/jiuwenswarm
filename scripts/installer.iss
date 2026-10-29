@@ -24,15 +24,6 @@
 #define MyAppExeName BuildExecutableNameWindows
 #define MyAppURL "https://openjiuwen.com"
 
-
-#ifndef SourceRoot
-  #define SourceRoot ExtractFileDir(RemoveBackslashUnlessRoot(SourcePath))
-#endif
-#ifndef BuildRoot
-  #define BuildRoot SourceRoot
-#endif
-#define PackagingRoot ExtractFileDir(RemoveBackslashUnlessRoot(SourcePath))
-
 [Setup]
 AppId={{6DC96977-C194-44FE-812D-D4F0B576BD905}
 AppName={#MyAppName}
@@ -49,9 +40,9 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 UsePreviousAppDir=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir={#BuildRoot}\dist
+OutputDir=..\dist
 OutputBaseFilename={#BuildSetupBaseName}
-SetupIconFile={#SourceRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico
+SetupIconFile=..\jiuwenswarm\channels\web\frontend\public\logo.ico
 UninstallDisplayIcon={app}\logo-{#MyAppVersion}.ico
 Compression=lzma2/normal
 SolidCompression=yes
@@ -82,8 +73,8 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "preserve-windows-cli.ps1"; Flags: dontcopy
-Source: "{#BuildRoot}\dist\{#BuildDistDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
+Source: "..\dist\{#BuildDistDirName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
 
 [InstallDelete]
 ; Remove application-owned Electron leftovers when replacing an Electron build.

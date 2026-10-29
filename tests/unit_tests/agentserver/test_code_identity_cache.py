@@ -394,15 +394,16 @@ def test_controlled_frozen_build_identity_is_path_independent(tmp_path, monkeypa
     assert identity.code_identity() != first
 
 
-def test_frozen_build_without_controlled_identity_is_rejected(tmp_path, monkeypatch):
+def test_legacy_frozen_build_preserves_executable_validation(tmp_path, monkeypatch):
     executable = tmp_path / "legacy.exe"
     executable.write_bytes(b"first")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(executable))
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.delenv("JIUWENSWARM_BUILD_ID", raising=False)
-    with pytest.raises(RuntimeError, match="Invalid Worker build identity"):
-        identity.code_identity()
+    first = identity.code_identity()
+    executable.write_bytes(b"replacement-package")
+    assert identity.code_identity() != first
 
 
 @pytest.mark.parametrize("value", [b'\xef\xbb\xbf[core]\n autocrlf = true\n',

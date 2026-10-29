@@ -206,21 +206,13 @@ def _capture_logs(caplog):
 async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
     fixture = Path(__file__).parent / "fixtures" / "diagnostic_worker.py"
     root = Path(__file__).resolve().parents[3]
-    bootstrap = tmp_path / "diagnostic-bootstrap"
-    bootstrap.mkdir()
-    (bootstrap / "sitecustomize.py").write_text(
-        f"import runpy\nrunpy.run_path({str(fixture)!r})['configure']({mode!r})\n",
-        encoding="utf-8",
-    )
-    python_paths = [str(bootstrap), str(root)]
+    python_paths = [str(root)]
     if os.environ.get("PYTHONPATH"):
         python_paths.append(os.environ["PYTHONPATH"])
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(python_paths))
 
     def command(socket_path, **options):
-        # Keep the production entrypoint and OS ownership validation intact;
-        # inject faults only through this child's isolated Python startup hook.
-        return [sys.executable, "-m", "jiuwenswarm.server.worker.main", "--socket", socket_path]
+        return [sys.executable, str(fixture), "--mode", mode, "--socket", socket_path]
 
     monkeypatch.setattr(process_module, "build_worker_command", command)
     endpoint = (

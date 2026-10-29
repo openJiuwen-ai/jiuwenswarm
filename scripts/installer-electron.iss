@@ -22,14 +22,11 @@
 #endif
 #define MyAppPublisher "openJiuwen"
 #define MyAppURL "https://openjiuwen.com"
-; Source and output roots are explicit wrapper inputs; script assets stay beside this file.
-#ifndef SourceRoot
-  #define SourceRoot ExtractFileDir(RemoveBackslashUnlessRoot(SourcePath))
-#endif
-#ifndef BuildRoot
-  #define BuildRoot SourceRoot
-#endif
-#define PackagingRoot ExtractFileDir(RemoveBackslashUnlessRoot(SourcePath))
+; 项目根目录 = 脚本所在目录（scripts）的上一级。ISCC 不折叠 "..\"，相对路径会
+; 带着 "scripts\..\" 原样参与文件扫描，叠加 Electron 包内 node_modules 的深层
+; 路径后可触顶 Windows MAX_PATH(260)，报"系统找不到指定的路径"；因此 dist 与
+; 图标统一用基于 SourcePath（脚本所在目录，ISPP 预定义变量）的绝对路径引用。
+#define ProjectRoot ExtractFileDir(RemoveBackslashUnlessRoot(SourcePath))
 
 [Setup]
 ; Keep the established desktop AppId so per-user Python desktop installs are
@@ -43,7 +40,7 @@ DefaultDirName={localappdata}\Programs\{#MyAppName}
 ; In-place updates must retain a user's existing custom per-user directory.
 UsePreviousAppDir=yes
 DefaultGroupName={#MyAppName}
-OutputDir={#BuildRoot}\dist
+OutputDir={#ProjectRoot}\dist
 #ifdef ELECTRON_FRONTEND_ONLY
   OutputBaseFilename={#MyAppName}-frontend-test-{#MyAppVersion}
 #else
@@ -53,7 +50,7 @@ OutputDir={#BuildRoot}\dist
     OutputBaseFilename={#BuildSetupBaseName}
   #endif
 #endif
-SetupIconFile={#SourceRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico
+SetupIconFile={#ProjectRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico
 UninstallDisplayIcon={app}\logo-{#MyAppVersion}.ico
 Compression=lzma2/normal
 SolidCompression=yes
@@ -84,9 +81,9 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "{#PackagingRoot}\scripts\preserve-windows-cli.ps1"; Flags: dontcopy
-Source: "{#BuildRoot}\dist\{#MyAppName}-Electron\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "{#SourceRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
+Source: "{#ProjectRoot}\scripts\preserve-windows-cli.ps1"; Flags: dontcopy
+Source: "{#ProjectRoot}\dist\{#MyAppName}-Electron\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProjectRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico"; DestDir: "{app}"; DestName: "logo-{#MyAppVersion}.ico"; Flags: ignoreversion
 
 [InstallDelete]
 ; Replace Electron resources as a unit and remove application-owned directories
