@@ -557,15 +557,18 @@ class PersistentAgentService:
         return self._repository.connections(namespace_id, agent_id)
 
     def attach_connection(self, namespace_id: str, agent_id: str, channel: str, connection_key: str) -> str:
-        """Return the agent that serves this app for the colleague, creating and publishing it the first time.
+        """Return the canonical Feishu agent or create a dedicated agent for another IM app.
 
-        The same colleague and app always get the same agent. A new agent is published from
-        the colleague's last publication, never from unpublished settings.
+        Web and Feishu share the colleague's identity and workspace. DingTalk keeps its
+        per-connection agent. New dedicated agents are published from the colleague's last
+        publication, never from unpublished settings.
         """
         config = self._require_config(namespace_id, agent_id)
         if channel not in IM_CHANNELS:
             raise PersistentAgentError(f"unsupported channel {channel!r}")
         require_identifier("connection_key", connection_key)
+        if channel == "feishu":
+            return config.agent_id
         now = self._clock()
         created = self._id_factory()
         record = self._repository.insert_connection_agent(

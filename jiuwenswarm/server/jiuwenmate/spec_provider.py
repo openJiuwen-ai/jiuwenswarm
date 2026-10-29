@@ -221,7 +221,9 @@ def build_invocation(
     if ports.group_chat is not None:
         from jiuwenswarm.server.jiuwenmate.ports.group_chat import HostGroupChatPort
 
-        if not isinstance(ports.group_chat, HostGroupChatPort) or ports.group_chat.scope != (
+        from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
+
+        if not isinstance(ports.group_chat, (HostGroupChatPort, GuardedGroupChatPort)) or ports.group_chat.scope != (
                 request.namespace_id, request.agent_id):
             raise PersistentContractError("group_chat must be the host port bound to this colleague")
     if not isinstance(backend, SessionWindowBackend) or backend.scope != (

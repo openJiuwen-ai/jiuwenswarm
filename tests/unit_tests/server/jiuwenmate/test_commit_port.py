@@ -432,11 +432,13 @@ async def test_sending_delivery_after_restart_becomes_unknown_not_retriable(host
     execution = accept_and_start(repository, "conv-1", "msg-1", route_snapshot=route)
     await port.record(execution, candidate(execution, 1))
     await port.record(execution, final(execution, 2))
-    claimed = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW)
+    claimed = repository.claim_pending_result_deliveries(NS, channels=frozenset({channel}), limit=10, now=NOW)
     assert len(claimed) == 1 and claimed[0]["channel"] == channel
 
-    repository.recover_sending_result_deliveries(NS, now=NOW + timedelta(minutes=1))
-    jobs = repository.claim_pending_result_deliveries(NS, limit=10, now=NOW + timedelta(minutes=1))
+    repository.recover_sending_result_deliveries(NS, channels=frozenset({channel}), now=NOW + timedelta(minutes=1))
+    jobs = repository.claim_pending_result_deliveries(
+        NS, channels=frozenset({channel}), limit=10, now=NOW + timedelta(minutes=1),
+    )
 
     row = repository.result_deliveries(NS, execution.request_id)[0]
     assert row["status"] == "unknown" and jobs == []
@@ -622,7 +624,7 @@ async def test_group_confirmed_reply_archive_retries_without_resending(host, tmp
         await asyncio.to_thread(resources.archive_delivery, job)
 
     service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=send, clock=lambda: NOW,
-                                    archive_delivery=save)
+                                    archive_delivery=save, channels=frozenset({platform}))
     await service.dispatch_pending()
     await service.reconcile_archives()
     assert len(sends) == 1
@@ -959,10 +961,12 @@ async def test_welink_unknown_is_reconciled_after_restart_without_resending(host
         if job.get('operation') == 'reconcile' and confirmed[0]:
             ack.update(outcome='delivered', external_message_id='11')
         return ack
-    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW)
+    service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
+                                    channels=frozenset({'welink'}))
     await service.dispatch_pending()
     assert repository.result_deliveries(NS, execution.request_id)[0]['status'] == 'unknown'
-    restarted = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW)
+    restarted = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
+                                      channels=frozenset({'welink'}))
     confirmed[0] = True
     await restarted.reconcile_welink_deliveries()
     row = repository.result_deliveries(NS, execution.request_id)[0]
@@ -1056,7 +1060,7 @@ async def test_welink_confirmed_handoff_survives_restart_without_resending(host)
         handed.append((job, mentions, message_id))
     service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
         mention_roster=lambda job: [{'agent_id': 'peer', 'name': '小九', 'app_ids': ['peer-ak']}],
-        handoff_handler=handoff)
+        handoff_handler=handoff, channels=frozenset({'welink'}))
     await service.dispatch_pending()
     assert sent[0]['text'] == '请继续 小九'
     assert handed == []
@@ -1065,17 +1069,18 @@ async def test_welink_confirmed_handoff_survives_restart_without_resending(host)
     assert unknown['mention_targets'][0]['agent_id'] == 'peer'
     assert unknown['text'] == '请继续 小九'
     # The first restarted process confirms delivery before the handoff consumer is assembled.
-    restarted = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW)
+    restarted = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
+                                      channels=frozenset({'welink'}))
     await restarted.reconcile_welink_deliveries()
     assert handed == []
     resumed = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
-        handoff_handler=handoff)
+        handoff_handler=handoff, channels=frozenset({'welink'}))
     await resumed.reconcile_welink_deliveries()
     assert len(handed) == 1
     assert handed[0][2] == '11'
     assert handed[0][0]['agent_id'] == AGENT
     again = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
-        handoff_handler=handoff)
+        handoff_handler=handoff, channels=frozenset({'welink'}))
     await again.reconcile_welink_deliveries()
     assert len(handed) == 1
     assert len([job for job in sent if not job.get('operation')]) == 1
@@ -1088,7 +1093,7 @@ async def test_welink_validation_ack_does_not_change_delivered_receipt(host):
     execution = accept_and_start(repository, 'validation-conv', 'validation-msg', route_snapshot=route)
     await port.record(execution, candidate(execution, 1))
     await port.record(execution, final(execution, 2))
-    job = repository.claim_pending_result_deliveries(NS, now=NOW)[0]
+    job = repository.claim_pending_result_deliveries(NS, channels=frozenset({'welink'}), now=NOW)[0]
     repository.update_result_delivery(NS, job['delivery_id'], outcome='delivered',
         external_message_id='11', error_code=None, now=NOW)
     service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=AsyncMock(), clock=lambda: NOW)
@@ -1118,7 +1123,8 @@ async def test_welink_unconfirmed_or_absent_target_never_hands_off(host, outcome
             ack['handoff_target_valid'] = valid
         return ack
     service = ResultDeliveryService(repository, namespace_id=NS, send_delivery=gateway, clock=lambda: NOW,
-        mention_roster=lambda job: [{'agent_id': 'peer', 'name': '小九'}], handoff_handler=handoff)
+        mention_roster=lambda job: [{'agent_id': 'peer', 'name': '小九'}], handoff_handler=handoff,
+        channels=frozenset({'welink'}))
     await service.dispatch_pending()
     await service.reconcile_welink_deliveries()
     assert handed == []

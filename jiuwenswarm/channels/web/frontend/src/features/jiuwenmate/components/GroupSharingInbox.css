@@ -1,0 +1,161 @@
+.jiuwenmate-sharing-inbox,
+.jiuwenmate-sharing-notice {
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.jiuwenmate-sharing-notice,
+.jiuwenmate-sharing-toolbar,
+.jiuwenmate-sharing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.jiuwenmate-sharing-notice {
+  margin: 12px 24px;
+  padding: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
+  background: var(--color-surface-content);
+}
+
+.jiuwenmate-sharing-inbox {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.jiuwenmate-sharing-toolbar {
+  justify-content: space-between;
+}
+
+.jiuwenmate-sharing-inbox h2 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.jiuwenmate-sharing-private-note {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.jiuwenmate-sharing-cards,
+.jiuwenmate-sharing-message-list {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jiuwenmate-sharing-cards > li {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.jiuwenmate-sharing-agent-message {
+  min-width: 0;
+}
+
+.jiuwenmate-sharing-agent-message__content {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  justify-items: start;
+  gap: 6px;
+}
+
+.jiuwenmate-sharing-agent-message__author {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.jiuwenmate-sharing-card {
+  display: grid;
+  width: fit-content;
+  max-width: 100%;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  background: var(--color-surface-content);
+}
+
+.jiuwenmate-sharing-fields {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.jiuwenmate-sharing-fields > div {
+  display: grid;
+  grid-template-columns: minmax(80px, 110px) minmax(0, 1fr);
+  gap: 12px;
+}
+
+.jiuwenmate-sharing-fields dt,
+.jiuwenmate-sharing-inbox small,
+.jiuwenmate-sharing-inbox time {
+  color: var(--color-text-secondary);
+}
+
+.jiuwenmate-sharing-fields dd {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.jiuwenmate-sharing-inbox p {
+  margin: 0;
+}
+
+.jiuwenmate-sharing-inbox pre {
+  margin: 8px 0;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.jiuwenmate-sharing-inbox summary {
+  cursor: pointer;
+  color: var(--color-text-link);
+}
+
+.jiuwenmate-sharing-inbox summary:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+
+.jiuwenmate-sharing-actions {
+  gap: 8px;
+}
+
+.jiuwenmate-sharing-owner-decision {
+  max-width: 80%;
+}
+
+.jiuwenmate-sharing-inbox [role='alert'],
+.jiuwenmate-sharing-notice [role='alert'] {
+  color: var(--color-feedback-danger);
+}
+
+@media (max-width: 600px) {
+  .jiuwenmate-sharing-fields > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+
+  .jiuwenmate-sharing-card {
+    width: 100%;
+    padding: 12px;
+  }
+
+  .jiuwenmate-sharing-owner-decision {
+    max-width: 100%;
+  }
+}
