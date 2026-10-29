@@ -153,5 +153,6 @@
 | `components/ui/Select` | `ui-select` | 通用下拉选择控件 |
 | `components/ui/HelpTips` | `ui-help-tips` | 通用"?"帮助提示按钮与自适应气泡 |
 | `features/designer` | `designer` | 设计功能页;工作流画布与节点;Director 对话;运行控制;素材与分镜 |
+| `features/rsi` | `rsi` | RSI 任务列表、创建、详情与优化过程画布 |
 
 | `features/A4PAuthorizationModal` | `a4p-authorization` | A4P 授权卡片及范围选择 |

@@ -47,7 +47,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
-    "experiments": "Experiments",
+    "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
     "skills": "Skills",
@@ -948,7 +948,7 @@
       "a2ui_enabled": { "title": "Enable A2UI", "description": "Render supported results as interactive interfaces." },
       "rsi_enabled": {
         "title": "Enable RSI",
-        "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
+        "description": "Show the RSI entry in the sidebar to create and view RSI tasks for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
       "cua_agent_enabled": {
         "title": "Enable computer control",
@@ -5018,17 +5018,17 @@
     }
   },
   "rsi": {
-    "title": "Experiments",
-    "createExperiment": "Create Experiment",
+    "title": "RSI",
+    "createExperiment": "Create RSI Task",
     "empty": {
-      "title": "No experiment tasks",
-      "hint": "We support creating Harness, paper, and program optimization experiments"
+      "title": "No RSI tasks",
+      "hint": "Create RSI tasks for Harness, paper, and program optimization"
     },
     "intro": {
       "title": "RSI · Recursive Self-Improvement",
       "lead": "Make AI stronger with use—from simply working to working better",
       "stepsTitle": "How it works",
-      "step1Title": "Step 1: Create an experiment",
+      "step1Title": "Step 1: Create an RSI task",
       "step1Body": "Choose Harness Optimization or Artifact Optimization (paper or program), fill in the required parameters, and click Create to start automatic optimization.",
       "step2Title": "Step 2: Visualize the optimization",
       "step2Body": "Track training progress and score curves in real time. Explore the RSI tree search and let the process iterate automatically without manual intervention.",
@@ -5041,15 +5041,15 @@
       "feature2Body": "Give your paper or program to AI for repeated polishing. It generates optimization candidates, validates and scores every version, keeps the best one, and iterates until the highest-quality deliverable is ready."
     },
     "list": {
-      "title": "RSI experiments",
+      "title": "RSI Tasks",
       "loading": "Loading…",
-      "error": "Failed to load experiments"
+      "error": "Failed to load RSI tasks"
     },
     "createDialog": {
-      "title": "Create Experiment",
-      "nameLabel": "Experiment name",
-      "namePlaceholder": "Enter experiment name",
-      "typeLabel": "Experiment type",
+      "title": "Create RSI Task",
+      "nameLabel": "Task name",
+      "namePlaceholder": "Enter task name",
+      "typeLabel": "Task type",
       "typeHarness": "Harness Optimization",
       "typeArtifact": "Artifact Optimization",
       "artifactSubtypeLabel": "Artifact subtype",
@@ -5094,7 +5094,7 @@
       "cancel": "Cancel",
       "infoBar": "Please pre-install and invoke the evolve-design skill, create artifact optimization dependencies, and fill in the program path.",
       "validation": {
-        "nameRequired": "Please enter experiment name",
+        "nameRequired": "Please enter task name",
         "datasetRequired": "Please select dataset file",
         "optimizerRequired": "Please select optimizer model",
         "testerRequired": "Please select tester model",
@@ -5187,7 +5187,7 @@
       "failureReason": "Failure reason",
       "rejectionReason": "Why it was not adopted",
       "inheritFrom": "Inherited from",
-      "baselineDescription": "This is the starting version for the experiment.",
+      "baselineDescription": "This is the starting version for the optimization.",
       "noChangeSummary": "Inherited from the parent; no structured change summary is available.",
       "nodeArtifact": "Node artifact",
       "processing": "Processing…",
@@ -5195,13 +5195,13 @@
       "nodeId": "Node ID",
       "nodeType": "Lifecycle",
       "close": "Close",
-      "deleteTitle": "Delete experiment",
-      "deleteBody": "Experiment data cannot be restored after deletion. Delete this experiment?",
-      "pauseTitle": "Pause experiment",
-      "pauseBody": "The current optimization will stop. Pause this experiment?",
-      "stopTitle": "Stop task",
-      "stopBody": "Stopping will terminate the current optimization task. Stop this experiment?",
-      "queuedTitle": "This experiment is queued",
+      "deleteTitle": "Delete RSI task",
+      "deleteBody": "RSI task data cannot be restored after deletion. Delete this task?",
+      "pauseTitle": "Pause RSI task",
+      "pauseBody": "The current optimization will stop. Pause this RSI task?",
+      "stopTitle": "Stop RSI task",
+      "stopBody": "Stopping will terminate the current optimization task. Stop this RSI task?",
+      "queuedTitle": "This RSI task is queued",
       "queuedHint": "1 more task is optimizing. Please wait."
     },
     "stage": {

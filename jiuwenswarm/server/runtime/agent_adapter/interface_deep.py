@@ -25,7 +25,8 @@ from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
-from shutil import which
+from shutil import copytree, ignore_patterns, which
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -58,6 +59,7 @@ from openjiuwen.core.foundation.tool import (
     ToolInfo,
 )
 from openjiuwen.core.common.logging import server_logger
+from openjiuwen.core.common.exception.errors import AgentError
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.checkpointer import CheckpointerFactory
 from openjiuwen.core.session.checkpointer.checkpointer import CheckpointerConfig
@@ -162,7 +164,7 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
 from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
 )
-from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiError, RsiHarnessInstallConflict
 
 GOAL_UPDATED_EVENT_TYPE = InteractionEventType.GOAL_UPDATED.value
 _ERROR_EVENT = getattr(InteractionEventType, "EXECUTION_ERROR", None)
@@ -2233,6 +2235,9 @@ class JiuWenSwarmDeepAdapter:
         self._rsi_harness_load_record: Any | None = None
         self._rsi_harness_package_id: str | None = None
         self._rsi_displaced_plugins: dict[str, tuple[str, str]] = {}
+        self._rsi_default_harness: tuple[str, str] | None = None
+        self._rsi_selected_plugin: tuple[str, str] | None = None
+        self._rsi_selected_package_snapshot: TemporaryDirectory | None = None
 
     def set_heartbeat_service(self, service: Any | None) -> None:
         """Bind the one process-level Heartbeat runtime used by this rail."""
@@ -2830,7 +2835,7 @@ class JiuWenSwarmDeepAdapter:
                 else ""
             )
         if "plugin_names" not in params:
-            params["plugin_names"] = list(self._loaded_plugins)
+            params["plugin_names"] = self._current_plugin_names()
         try:
             agent_template_name = params.get("agent_template_name")
             if isinstance(agent_template_name, str) and agent_template_name.strip():
@@ -2845,6 +2850,16 @@ class JiuWenSwarmDeepAdapter:
                     else item
                     for item in plugin_names
                 ]
+                if request.session_id and params["plugin_names"]:
+                    from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
+
+                    saved = get_session_equipment(request.session_id, cache_bust=True).get("plugin_names", [])
+                    # A refreshed client may echo equipment saved before uninstall.
+                    # New invalid selections still reach the marketplace gate.
+                    params["plugin_names"] = [
+                        name for name in params["plugin_names"]
+                        if name not in saved or equipment.is_plugin_allowed(name)
+                    ]
         except (TypeError, ValueError) as exc:
             return self._equipment_error_response(request, str(exc))
 
@@ -2874,7 +2889,7 @@ class JiuWenSwarmDeepAdapter:
             await self._unload_agent_template_for_request(params)
             await self._load_agent_template_for_request(params)
             await self._load_plugins_for_request(params)
-        except (ValueError, RuntimeError) as exc:
+        except (ValueError, RuntimeError, AgentError, OSError, RsiError) as exc:
             return self._equipment_error_response(request, str(exc))
         from jiuwenswarm.server.runtime.session.session_metadata import (
             save_session_equipment,
@@ -2942,9 +2957,20 @@ class JiuWenSwarmDeepAdapter:
         v = params["plugin_names"]
         if not isinstance(v, list):
             return True, "plugin_names illegal type"
-        if set(self._loaded_plugins) != set(v):
+        if set(self._current_plugin_names()) != set(v):
             return True, "plugin set changed"
         return False, ""
+
+    def _current_plugin_names(self) -> list[str]:
+        """Include the session-selected RSI bundle in ordinary equipment state."""
+        names = list(dict.fromkeys([
+            *self._loaded_plugins,
+            *(name for name in getattr(self, "_rsi_displaced_plugins", {}) if equipment.is_plugin_allowed(name)),
+        ]))
+        selected = getattr(self, "_rsi_selected_plugin", None)
+        if selected is not None:
+            names.append(selected[0])
+        return names
 
     async def _unload_agent_template_for_request(self, params: dict) -> None:
         """Unload the current expert when switching, clearing, or version drifts."""
@@ -2994,11 +3020,15 @@ class JiuWenSwarmDeepAdapter:
                         await self._instance.unload_extension(current[1])
                     self._loaded_agent_template = None
             elif kind == "plugin_packages":
+                selected = getattr(self, "_rsi_selected_plugin", None)
+                if selected is not None and selected[0] == pid:
+                    await self._select_rsi_harness_for_request(None)
                 entry = self._loaded_plugins.get(pid)
                 if entry is not None:
                     if self._instance is not None:
                         await self._instance.unload_extension(entry[0])
                     self._loaded_plugins.pop(pid, None)
+                getattr(self, "_rsi_displaced_plugins", {}).pop(pid, None)
         except Exception as exc:
             raise RuntimeError(
                 f"unload equipment failed: kind={kind} id={pid}: {exc}"
@@ -3036,6 +3066,7 @@ class JiuWenSwarmDeepAdapter:
         v = params["plugin_names"]
         if not isinstance(v, list):
             return
+        self._requested_rsi_plugin(v)
         desired = set(v)
         displaced = getattr(self, "_rsi_displaced_plugins", {})
         self._rsi_displaced_plugins = {name: entry for name, entry in displaced.items() if name in desired}
@@ -3065,9 +3096,11 @@ class JiuWenSwarmDeepAdapter:
         for item in v:
             if not isinstance(item, str):
                 raise ValueError(f"plugin_names element must be str, got {type(item).__name__}")
+        selected = self._requested_rsi_plugin(v)
+        await self._select_rsi_harness_for_request(selected)
         to_load: list[tuple[str, str, Path]] = []
         for name in v:
-            if name in {
+            if name == selected or name in getattr(self, "_rsi_displaced_plugins", {}) or name in {
                 getattr(self, "_rsi_harness_package_id", None),
                 getattr(self, "_rsi_harness_install_id", None),
             }:
@@ -3086,6 +3119,66 @@ class JiuWenSwarmDeepAdapter:
         for name, desired_version, pkg_dir in to_load:
             record = await self._instance.load_plugin(str(pkg_dir))
             self._loaded_plugins[name] = (record, desired_version)
+
+    @staticmethod
+    def _requested_rsi_plugin(names: list[str]) -> str | None:
+        """The versioned RSI catalog namespace occupies one Harness slot."""
+        selected = list(dict.fromkeys(
+            name for name in names if isinstance(name, str) and name.startswith("rsi-harness-")
+        ))
+        if len(selected) > 1:
+            raise ValueError("每个会话只能选择一个 RSI Harness 包，请取消其他版本")
+        return selected[0] if selected else None
+
+    async def _select_rsi_harness_for_request(self, name: str | None) -> None:
+        """Replace the default with a session selection, restoring on failure."""
+        current = getattr(self, "_rsi_selected_plugin", None)
+        if (name is not None or current is not None) and self._instance is None:
+            raise RuntimeError("DeepAgent instance not ready for equipment load")
+        if name is None:
+            if current is None:
+                return
+            default = getattr(self, "_rsi_default_harness", None)
+            if default is None:
+                await self._replace_rsi_harness_local("deactivate", config_path="", installation_id="")
+            else:
+                await self._replace_rsi_harness_local(
+                    "activate", config_path=default[0], installation_id=default[1],
+                )
+            self._rsi_selected_plugin = None
+            snapshot = getattr(self, "_rsi_selected_package_snapshot", None)
+            if snapshot is not None:
+                snapshot.cleanup()
+                self._rsi_selected_package_snapshot = None
+            return
+        package = equipment.resolve_plugin_dir(name)
+        version = equipment.read_manifest_version(package)
+        if current == (name, version):
+            return
+        # Selecting the already active immutable version needs no second load.
+        if (
+            current is not None
+            or getattr(self, "_rsi_harness_install_id", None) != name
+            or version != name.removeprefix("rsi-harness-")
+        ):
+            # Keep the loaded package stable even if its editable catalog copy
+            # changes. A failed replacement can then reload the previous files.
+            snapshot = TemporaryDirectory(prefix="rsi_session_", ignore_cleanup_errors=True)
+            try:
+                target = Path(snapshot.name) / "package"
+                copytree(package, target, ignore=ignore_patterns("__pycache__", "*.pyc"))
+                await self._replace_rsi_harness_local(
+                    "activate", config_path=str(target), installation_id=name,
+                    preserve_displaced=True,
+                )
+            except BaseException:
+                snapshot.cleanup()
+                raise
+            previous = getattr(self, "_rsi_selected_package_snapshot", None)
+            self._rsi_selected_package_snapshot = snapshot
+            if previous is not None:
+                previous.cleanup()
+        self._rsi_selected_plugin = (name, version)
 
     def _get_cached_session_adapter(self, session_id: str | None) -> "JiuWenSwarmDeepAdapter | None":
         sid = self._session_adapter_key(session_id)
@@ -9046,11 +9139,6 @@ class JiuWenSwarmDeepAdapter:
         config_path = str(active.get("runtime_path") or "").strip()
         if not installation_id or not config_path:
             return None
-        if (
-            getattr(self, "_rsi_harness_install_id", None) == installation_id
-            and getattr(self, "_rsi_harness_load_record", None) is not None
-        ):
-            return {"status": "ACTIVE", "installation_id": installation_id, "already_active": True}
         try:
             return await self.apply_rsi_harness_install_local(
                 "activate", config_path=config_path, installation_id=installation_id,
@@ -9071,11 +9159,36 @@ class JiuWenSwarmDeepAdapter:
         config_path: str,
         installation_id: str,
     ) -> dict[str, Any]:
+        """Update the global default without replacing a session's selection."""
+        if operation not in {"activate", "deactivate"}:
+            raise ValueError(f"unsupported RSI Harness operation: {operation}")
+        if getattr(self, "_rsi_selected_plugin", None) is not None:
+            result = {"status": "SKIPPED", "resources": []}
+        else:
+            result = await self._replace_rsi_harness_local(
+                operation, config_path=config_path, installation_id=installation_id,
+            )
+        self._rsi_default_harness = (config_path, installation_id) if operation == "activate" else None
+        return result
+
+    async def _replace_rsi_harness_local(
+        self,
+        operation: str,
+        *,
+        config_path: str,
+        installation_id: str,
+        preserve_displaced: bool = False,
+    ) -> dict[str, Any]:
         """Apply an RSI version to this adapter only (no session fanout)."""
 
         instance = getattr(self, "_instance", None)
         if instance is None:
             return {"status": "SKIPPED", "resources": []}
+        # Other clients may uninstall a package without notifying this adapter.
+        self._rsi_displaced_plugins = {
+            name: entry for name, entry in getattr(self, "_rsi_displaced_plugins", {}).items()
+            if equipment.is_plugin_allowed(name)
+        }
         if operation == "deactivate":
             record = getattr(self, "_rsi_harness_load_record", None)
             if record is None:
@@ -9102,7 +9215,7 @@ class JiuWenSwarmDeepAdapter:
         old_displaced = dict(getattr(self, "_rsi_displaced_plugins", {}))
         loaded_plugins = getattr(self, "_loaded_plugins", {})
         self._loaded_plugins = loaded_plugins
-        displaced = {}
+        displaced = dict(old_displaced) if preserve_displaced else {}
         package_id = None
         manifest = Path(config_path) / "manifest.json"
         if manifest.is_file():
@@ -9114,9 +9227,10 @@ class JiuWenSwarmDeepAdapter:
             self._rsi_harness_install_id = None
             self._rsi_harness_config_path = None
         try:
-            for name, (path, version) in old_displaced.items():
-                restored = await instance.load_plugin(path)
-                loaded_plugins[name] = (restored, version)
+            if not preserve_displaced:
+                for name, (path, version) in old_displaced.items():
+                    restored = await instance.load_plugin(path)
+                    loaded_plugins[name] = (restored, version)
             # The catalog copy has a versioned id; it is the same capability
             # bundle as the immutable RSI version, not a second plugin to load.
             for name in dict.fromkeys((package_id, installation_id)):
@@ -9196,8 +9310,7 @@ class JiuWenSwarmDeepAdapter:
         snapshots = [
             (
                 target,
-                getattr(target, "_rsi_harness_install_id", None),
-                getattr(target, "_rsi_harness_config_path", None),
+                getattr(target, "_rsi_default_harness", None),
             )
             for target in targets
         ]
@@ -9213,13 +9326,13 @@ class JiuWenSwarmDeepAdapter:
                 applied.append(target)
                 resources.extend(result.get("resources") or [])
         except Exception:
-            for target, old_id, old_path in reversed(snapshots):
+            for target, old_default in reversed(snapshots):
                 try:
-                    if old_id and old_path:
+                    if old_default is not None:
                         await target.apply_rsi_harness_install_local(
                             "activate",
-                            config_path=old_path,
-                            installation_id=old_id,
+                            config_path=old_default[0],
+                            installation_id=old_default[1],
                         )
                     else:
                         await target.apply_rsi_harness_install_local(
@@ -14096,6 +14209,11 @@ class JiuWenSwarmDeepAdapter:
             raise
         else:
             await self._close_moa_runtime()
+        finally:
+            snapshot = getattr(self, "_rsi_selected_package_snapshot", None)
+            if snapshot is not None:
+                snapshot.cleanup()
+                self._rsi_selected_package_snapshot = None
 
     async def _cleanup_adapter_resources(self) -> None:
         """Release adapter-owned external runtime resources."""
