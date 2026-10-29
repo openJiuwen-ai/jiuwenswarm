@@ -48,11 +48,31 @@ def test_external_cli_read_preserves_legacy_entries_and_custom_paths(registry: P
         "external_cli_agent_claude_enabled": "true",
         "external_cli_agent_claude_use_builtin": "true",
         "external_cli_agent_claude_cli_path": "",
+        "external_cli_agent_claude_path_histories": "[]",
         "external_cli_agent_codex_enabled": "true",
         "external_cli_agent_codex_use_builtin": "false",
         "external_cli_agent_codex_cli_path": "/opt/codex",
+        "external_cli_agent_codex_path_histories": "[]",
     }
     assert raw == original
+
+
+def test_external_cli_read_exposes_persisted_path_histories() -> None:
+    raw = {
+        "modes": {
+            "team": {
+                "jiuwen_team": {
+                    "external_cli_agents": [{"cli_agent": "codex", "cli_path": "/opt/codex"}],
+                    "external_cli_path_histories": {"codex": ["/old/codex", " ", "/old/codex"]},
+                },
+            },
+        },
+    }
+
+    flat = flatten_external_cli_agents_for_config_panel(raw)
+
+    assert flat["external_cli_agent_codex_path_histories"] == json.dumps(["/old/codex"])
+    assert flat["external_cli_agent_claude_path_histories"] == "[]"
 
 
 @pytest.mark.parametrize("raw", [{}, {"modes": None}, {"modes": {"team": []}}])

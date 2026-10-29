@@ -16,3 +16,9 @@
   outline: none;
   box-shadow: var(--effect-focus-ring);
 }
+
+.ui-help-tips--large {
+  width: 20px;
+  height: 20px;
+  font-size: var(--font-size-sm);
+}

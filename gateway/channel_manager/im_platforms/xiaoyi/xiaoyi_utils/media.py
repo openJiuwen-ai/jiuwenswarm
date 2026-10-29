@@ -6,14 +6,14 @@
 
 import asyncio
 import base64
-from dataclasses import dataclass
 import logging
 import os
+from dataclasses import dataclass
 from typing import Any
 
 import aiohttp
 
-from jiuwenswarm.common.utils import get_xy_tmp_dir
+from gateway.common.paths import get_xy_tmp_dir
 
 logger = logging.getLogger(__name__)
 

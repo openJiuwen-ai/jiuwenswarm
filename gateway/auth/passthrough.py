@@ -124,7 +124,7 @@ def refreshed_credential_for_ref(credential_ref: str) -> dict[str, Any] | None:
 def _is_login_model(model_name: str, session_id: str | None) -> bool:
     """请求的模型是不是登录来源。名字带 #index 后缀时取前半段（通道侧的全局序号）。"""
     from gateway.auth.login_credentials import bare_model_name
-    from jiuwenswarm.common.auth.model_catalog import get_models
+    from gateway.auth.model_catalog import get_models
 
     try:
         # allow_refresh=False：这里在 Gateway 的转发热路径上，不能为了刷模型目录

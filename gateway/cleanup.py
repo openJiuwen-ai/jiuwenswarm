@@ -15,9 +15,9 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from jiuwenswarm.common.utils import (
-    get_agent_workspace_dir,
+from gateway.common.paths import (
     get_agent_sessions_dir,
+    get_agent_workspace_dir,
     get_user_workspace_dir,
 )
 

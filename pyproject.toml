@@ -23,7 +23,7 @@ dependencies = [
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
     "filelock>=3.25.0,<4",
-    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@10a03dd263c33042558bbd67a815952458a25fa9#subdirectory=openjiuwen-protocol",
+    "openjiuwen-protocol @ git+https://gitcode.com/openJiuwen/agent-protocol.git@2a0457e5e01152e9ca5f8afdffd84716227046ca#subdirectory=openjiuwen-protocol",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -176,6 +176,7 @@ namespaces = false
 [tool.setuptools.package-data]
 "*" = ["LICENSE"]
 jiuwenswarm = [
+    "_worker_build_identity.json",
     "channels/process_cli/protocol/schema.json",
     "channels/web/frontend/dist/**/*",
     "channels/web/frontend/dist/*",
@@ -220,7 +221,7 @@ default-groups = ['dev']
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
 openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "b2a0a248c554753ba31727415fe17a03eed60b46" }
-openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "10a03dd263c33042558bbd67a815952458a25fa9", subdirectory = "openjiuwen-protocol" }
+openjiuwen-protocol = { git = "https://gitcode.com/openJiuwen/agent-protocol.git", rev = "2a0457e5e01152e9ca5f8afdffd84716227046ca", subdirectory = "openjiuwen-protocol" }
 
 
 [dependency-groups]

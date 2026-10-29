@@ -760,7 +760,7 @@ def test_windows_electron_uses_exact_installer_path() -> None:
         "$BuildSetupFilename",
     ):
         assert expected_name in source
-    assert '$InstallerPath = Join-Path $ProjectRoot "dist\\$InstallerFileName"' in source
+    assert '$InstallerPath = Join-Path $BuildRoot "dist\\$InstallerFileName"' in source
     assert "Remove-Item -LiteralPath $InstallerPath -Force" in source
     assert "Test-Path -LiteralPath $InstallerPath -PathType Leaf" in source
     assert "Sort-Object LastWriteTime" not in source
@@ -871,7 +871,7 @@ def test_macos_electron_build_bundles_node_runtime_into_app_resources() -> None:
     ), "build-electron-exe.sh 缺少把 node-runtime 绑进 .app/Contents/Resources 的调用"
     assert re.search(
         r'"\$BACKEND_DIR/\$BUILD_EXECUTABLE_NAME"\s+'
-        r'"\$PROJECT_ROOT/scripts/verify_playwright_mcp_bundle\.py"',
+        r'"\$PACKAGING_ROOT/scripts/verify_playwright_mcp_bundle\.py"',
         source,
     ), "build-electron-exe.sh 绑完 node 后没有跑 frozen Playwright MCP 验证"
     assert re.search(

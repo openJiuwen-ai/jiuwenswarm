@@ -16,8 +16,8 @@ from gateway.routing.mcp_remote import (
     bind_agent_client,
     install,
 )
-from jiuwenswarm.common import external_providers
-from jiuwenswarm.common.external_providers import provider
+from gateway.common import external_providers
+from gateway.common.external_providers import provider
 
 
 class _FakeUnary:
@@ -75,7 +75,7 @@ async def test_remote_callback_returns_result_and_shapes_request(fake_unary) -> 
 )
 async def test_remote_callback_raises_on_failure(fake_unary, result) -> None:
     """服务端失败文案经 McpOAuthError 透传——回调页据此给 400 落地而非假成功。"""
-    from jiuwenswarm.common.mcp_oauth import McpOAuthError
+    from gateway.common.mcp_oauth import McpOAuthError
 
     fake_unary.result = result
 
@@ -99,7 +99,7 @@ async def test_mcp_oauth_layer_raises_on_uncompleted(monkeypatch) -> None:
     """complete_oauth_flow_async 对 False 结果抛 McpOAuthError——handler 不检查返回值。"""
     from types import SimpleNamespace as NS
 
-    from jiuwenswarm.common import external_providers, mcp_oauth
+    from gateway.common import external_providers, mcp_oauth
 
     saved = dict(external_providers._providers)
     external_providers._providers["mcp_registry"] = NS(

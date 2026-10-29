@@ -15,6 +15,7 @@ import threading
 from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
+    RUN_TRIGGER_SOURCE_LEADER,
     DesignerExecutionGraph,
     apply_graph_patch,
 )
@@ -134,6 +135,7 @@ class StoreNodeSpawner:
             node_ids=node_ids,
             cascade=cascade,
             on_update=self._on_run_update,
+            source=RUN_TRIGGER_SOURCE_LEADER,
         )
 
     def set_push_callbacks(

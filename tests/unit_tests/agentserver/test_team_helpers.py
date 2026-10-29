@@ -4704,7 +4704,14 @@ async def test_process_team_message_stream_does_not_emit_evolution_status_for_no
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch):
+async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    ledger = SessionTokenUsageLedger(tmp_path / "sess-leader-only", "sess-leader-only")
+    ledger.record("call-leader", "main", 100, 20)
+    ledger.record("call-member", "others", 50, 10)
     broadcasted: list[dict] = []
     ready_calls: list[tuple[str, str]] = []
 
@@ -4811,6 +4818,10 @@ async def test_consume_stream_with_query_broadcasts_leader_and_teammate_outputs(
     )
 
     assert ready_calls == [("sess-leader-only", "demo-team")]
+    for event in broadcasted:
+        if event["event_type"] == "chat.final":
+            assert event["session_usage"]["main"]["input_tokens"] == 100
+            assert event["session_usage"]["others"]["output_tokens"] == 10
     # Leader finals are content events, not Team round terminals.  The runtime
     # may emit several of them before team.completed; only the framework
     # terminal or a terminal-less stream close produces

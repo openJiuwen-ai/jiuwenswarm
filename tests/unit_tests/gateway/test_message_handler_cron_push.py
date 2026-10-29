@@ -170,17 +170,18 @@ async def test_cron_push_without_request_login_rejects_supplied_session(action) 
 
 @pytest.mark.asyncio
 async def test_dialogue_cron_push_persists_free_model_account_binding(tmp_path, monkeypatch) -> None:
-    from jiuwenswarm.common.auth.model_catalog import LoginModel
+    from gateway.auth import model_catalog as _model_catalog
+    from gateway.auth.model_catalog import LoginModel
     from gateway.cron.controller import CronController
     from gateway.cron.store import CronJobStore
 
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_config", lambda *a, **k: None)
-    monkeypatch.setattr("jiuwenswarm.common.config.get_model_names", lambda: [])
+    monkeypatch.setattr("gateway.common.config.get_model_config", lambda *a, **k: None)
+    monkeypatch.setattr("gateway.common.config.get_model_names", lambda: [])
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.opencode_zen.get_zen_free_model_entries", lambda: []
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.auth.model_catalog.get_models",
+        _model_catalog, "get_models",
         lambda *a, **k: [LoginModel(model_name="GLM-5.2", display_name="GLM-5.2")],
     )
 

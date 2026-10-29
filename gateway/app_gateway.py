@@ -39,16 +39,23 @@ def _mark_startup_import_phase(stage: str) -> None:
     _STARTUP_IMPORT_PHASES.append((stage, time.monotonic()))
 
 from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
-from openjiuwen_protocol.message import Message, Mode, ReqMethod
+from openjiuwen_protocol.message import (
+    PROMPT_SUGGESTION_READY_EVENT,
+    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
+    TOPIC_STARTERS_READY_EVENT,
+    Message,
+    Mode,
+    ReqMethod,
+)
 from websockets.exceptions import ConnectionClosed, ConnectionClosedError
 
+from gateway.common.media_capability_config import (
+    migrate_media_capability_switches,
+)
 from gateway.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
     format_ws_diagnostics,
-)
-from jiuwenswarm.common.media_capability_config import (
-    migrate_media_capability_switches,
 )
 
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
@@ -59,9 +66,15 @@ from gateway.dotenv_early import load_dotenv_runtime, parse_dotenv_early
 parse_dotenv_early("jiuwenswarm-gateway")
 _mark_startup_import_phase("dotenv_parsed")
 
+# Gateway 自带日志初始化：共同安装时母仓已配置则复用，独立安装时按同一路径自建
+from gateway.common.logging_setup import setup_gateway_logger
+
+setup_gateway_logger()
+_mark_startup_import_phase("logging_ready")
+
 # Standalone entrypoints retain workspace preparation; Desktop/app already do
 # it before spawning us and pass the marker to avoid duplicate disk work.
-from jiuwenswarm.common.utils import (
+from gateway.common.paths import (
     cleanup_stale_openjiuwen_descs,
     prepare_runtime_workspace,
 )
@@ -71,7 +84,9 @@ if os.environ.get("JIUWENSWARM_RUNTIME_WORKSPACE_READY") != "1":
     prepare_runtime_workspace(cleanup_stale_descs=False)
 _mark_startup_import_phase("runtime_workspace_ready")
 
-from openjiuwen.core.common.logging import LogManager  # pylint: disable=wrong-import-order
+from openjiuwen.core.common.logging import (
+    LogManager,  # pylint: disable=wrong-import-order
+)
 
 from gateway.channel_manager.base import BaseWebChannel
 
@@ -81,6 +96,16 @@ _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 from gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
 from gateway.channel_manager.web.media import (
     normalize_chat_media_attachments,
+)
+from gateway.common.debug_dump import (
+    install_async_dump_handler,
+    install_crash_exit_handler,
+)
+from gateway.common.paths import (
+    apply_free_search_runtime_defaults,
+    get_env_file,
+    get_root_dir,
+    get_user_workspace_dir,
 )
 from gateway.common.process_supervision import (
     GATEWAY_RESTART_EXIT_CODE,
@@ -92,21 +117,6 @@ from gateway.common.security.ws_origin import (
 )
 from gateway.routing.agent_request_timeout import coerce_client_timeout_ms
 from gateway.routing.route_binding import GatewayRouteBinding
-from jiuwenswarm.common.debug_dump import (
-    install_async_dump_handler,
-    install_crash_exit_handler,
-)
-from jiuwenswarm.common.schema.message import (
-    PROMPT_SUGGESTION_READY_EVENT,
-    TOPIC_STARTERS_CONTROL_CHANGED_EVENT,
-    TOPIC_STARTERS_READY_EVENT,
-)
-from jiuwenswarm.common.utils import (
-    apply_free_search_runtime_defaults,
-    get_env_file,
-    get_root_dir,
-    get_user_workspace_dir,
-)
 
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
@@ -178,7 +188,7 @@ def _load_gateway_runtime_config(
     channel configuration. Evolution config propagation is optional for the
     same reason: it may fail independently without changing the loaded config.
     """
-    import jiuwenswarm.common.config as config_module
+    import gateway.common.config as config_module
 
     try:
         if config_module.migrate_legacy_heartbeat_probe_config():
@@ -1705,7 +1715,7 @@ class GatewayServer(BaseWebChannel):
                 metadata["project_dir"] = project_dir.strip()
                 # 记录会话首条消息时所在的 git 分支，供 /resume 按分支过滤（Ctrl+B）。
                 # 非 git/detached/失败时为哨兵 "HEAD"。
-                from jiuwenswarm.common.utils import resolve_git_branch
+                from gateway.common.paths import resolve_git_branch
 
                 metadata["git_branch"] = resolve_git_branch(project_dir.strip())
             client_timeout_ms = coerce_client_timeout_ms(data.get("timeout_ms"))
@@ -1906,6 +1916,9 @@ async def _run(
         WebChannelConfig,
     )
     from gateway.cleanup import start_background_cleanup
+    from gateway.common.config import get_config
+    from gateway.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
+    from gateway.common.updater import UpdaterService
     from gateway.cron import (
         CronController,
         CronSchedulerService,
@@ -1920,9 +1933,6 @@ async def _run(
     from gateway.heartbeat import HeartbeatControllerProxy
     from gateway.message_handler.message_handler import MessageHandler
     from gateway.routing.agent_client import WebSocketAgentServerClient
-    from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.config_panel.config_set_handlers import CONFIG_SET_ENV_MAP
-    from jiuwenswarm.common.updater import UpdaterService
 
     logger.info("[App] Gateway starting, connecting AgentServer: %s", agent_server_url)
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
@@ -2012,8 +2022,8 @@ async def _run(
     message_handler.set_outbound_pipeline(im_outbound)
 
     cron_store = await create_gateway_cron_store()
+    from gateway.common.model_migration import migrate_legacy_cron_selections
     from gateway.runtime.cron.factory import load_cron_store_settings
-    from jiuwenswarm.common.model_migration import migrate_legacy_cron_selections
 
     # Shared etcd jobs need the target user's catalog; that migration runs on
     # the per-user resource/reference boundary, never using Gateway's catalog.
@@ -2032,8 +2042,8 @@ async def _run(
     message_handler.set_cron_controller(cron_controller)
     # gateway 自有的 cron 工厂注册进注入点：common 的 model_resource 处理
     # 器经 provider("cron_store_factory") 创建 gateway 侧 cron store
+    from gateway.common.external_providers import register as _register_provider
     from gateway.runtime.cron import factory as _cron_factory
-    from jiuwenswarm.common.external_providers import register as _register_provider
 
     _register_provider("cron_store_factory", _cron_factory)
     # session_metadata 域 WS 远端实现的客户端绑定（仅远端预演模式消费）
@@ -2218,7 +2228,7 @@ async def _run(
             env=dict(env_updates or {}),
         )
 
-        from jiuwenswarm.common.config_panel.config_set_handlers import (
+        from gateway.common.config_panel.config_set_handlers import (
             needs_agent_reload,
         )
 

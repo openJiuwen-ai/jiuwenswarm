@@ -7,8 +7,8 @@
 ``from jiuwenswarm.common.e2a import ...`` 与 ``from jiuwenswarm.common.e2a.acp import ...``
 全部保持可用。唯一真源在协议包，本仓不持有实现，过渡期结束后随收敛删除。
 
-**未随迁（本仓保留实现）**：``agent_compat.e2a_to_agent_request``（依赖本仓
-``schema.agent.AgentRequest`` 实例构造）。
+``agent_compat.e2a_to_agent_request`` 亦已随迁协议包（其依赖的 ``AgentRequest`` /
+``ReqMethod`` 均在协议包内）。
 
 协议说明（中英）：仓库 ``docs/zh/E2A-protocol.md``、``docs/en/E2A-protocol.md``。
 """
@@ -83,7 +83,7 @@ from openjiuwen_protocol.e2a.models import (
     utc_now_iso,
 )
 
-from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+from openjiuwen_protocol.e2a.agent_compat import e2a_to_agent_request
 
 __all__ = [
     "ACP_AGENT_TO_CLIENT_METHODS",

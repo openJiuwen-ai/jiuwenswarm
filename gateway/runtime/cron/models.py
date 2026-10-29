@@ -5,15 +5,15 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from gateway.common.work_mode import (
-    DEFAULT_WEB_WORK_MODE,
-    normalize_work_mode,
-)
 from gateway.common.mode_matrix import (
     TEAM_PLAN_CODE_MODE,
     TEAM_PLAN_NORMAL_MODE,
     deprecate_mode,
     is_team_mode,
+)
+from gateway.common.work_mode import (
+    DEFAULT_WEB_WORK_MODE,
+    normalize_work_mode,
 )
 from gateway.runtime.cron.cron_expr import validate_cron_expression
 
@@ -283,7 +283,7 @@ def resolve_cron_model(
     value = str(raw).strip()
     if not value:
         return None, ""
-    from jiuwenswarm.common.config import (
+    from gateway.common.config import (
         get_model_config,
         get_model_names,
         resolve_env_vars,
@@ -312,7 +312,7 @@ def resolve_cron_model(
     # 通道侧全局序号后缀，取前半段再匹配（与 passthrough._build_model_auth 一致）。
     try:
         from gateway.auth.login_credentials import bare_model_name
-        from jiuwenswarm.common.auth.model_catalog import get_models
+        from gateway.auth.model_catalog import get_models
 
         bare = bare_model_name(value)
         for login_model in get_models(allow_refresh=False):

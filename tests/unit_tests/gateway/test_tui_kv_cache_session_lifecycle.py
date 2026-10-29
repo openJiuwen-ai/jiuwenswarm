@@ -146,7 +146,7 @@ async def test_session_create_forwards_previous_plan_root_to_agentserver(
     agent_client = _SuccessfulAgentClient("new-plan-root")
     calls: list[dict] = []
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr("gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda session_id: {"mode": "agent.plan"},
@@ -197,7 +197,7 @@ async def test_session_create_does_not_apply_plan_root_action_to_team_owner(
     agent_client = _SuccessfulAgentClient("new-team-root")
     calls: list[dict] = []
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr("gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
         lambda session_id: {"mode": "team"},
@@ -245,7 +245,7 @@ async def test_session_create_skips_kvc_metadata_when_affinity_disabled(
     channel = _TuiChannel()
     agent_client = _SuccessfulAgentClient("new-plan-root")
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr("gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,
@@ -291,7 +291,7 @@ async def test_session_create_contains_kvc_metadata_failure(
     channel = _TuiChannel()
     agent_client = _SuccessfulAgentClient("new-plan-root")
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr("gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,
@@ -333,7 +333,7 @@ async def test_session_create_prefers_canonical_switch_owner_dispatch(
     channel = _TuiChannel()
     agent_client = _SuccessfulAgentClient("new-team-root")
 
-    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr("gateway.common.paths.get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.init_session_metadata",
         lambda **kwargs: None,

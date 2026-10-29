@@ -28,11 +28,13 @@ import {
   splitLeadParagraph,
   splitRewardSignalText,
   splitStageOutput,
+  stageOutputBlocks,
   stageViews,
   stripLeadingHeading,
   suggestionsState,
   truncateText,
   skillSuggestionText,
+  skillBatchFillText,
   unixNanoToMs,
   usesLegacyFindings,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisView.mjs';
@@ -143,8 +145,23 @@ test('unix nanoseconds convert to milliseconds without losing precision', () => 
   assert.equal(unixNanoToMs(''), null);
 });
 
-test('a full-scope record has no window to show', () => {
-  assert.deepEqual(diagnosisTarget({ input: { scope: { kind: 'full' } } }), { full: true, groups: [] });
+test('a full-scope record shows the span of its resolved ranges', () => {
+  assert.deepEqual(diagnosisTarget({ input: { scope: { kind: 'full' } } }), {
+    full: true,
+    window: null,
+    groups: [],
+  });
+  const target = diagnosisTarget({
+    input: {
+      scope: { kind: 'full' },
+      resolved_ranges: [
+        { subject_id: 'main', start_unix_nano: nano(1_000), end_unix_nano: nano(4_000) },
+        { subject_id: 'worker', start_unix_nano: nano(2_000), end_unix_nano: nano(8_000) },
+        { subject_id: 'bad', start_unix_nano: 'x', end_unix_nano: nano(9_000) },
+      ],
+    },
+  });
+  assert.deepEqual(target, { full: true, window: { startMs: 1_000, endMs: 8_000 }, groups: [] });
 });
 
 test('selected ranges with the same window collapse into one group', () => {
@@ -162,6 +179,7 @@ test('selected ranges with the same window collapse into one group', () => {
     },
   });
   assert.equal(target.full, false);
+  assert.equal(target.window, null);
   assert.deepEqual(target.groups, [
     { startMs: 1000, endMs: 2000, subjectIds: ['main', 'worker'] },
     { startMs: 3000, endMs: 4000, subjectIds: ['solo'] },
@@ -266,6 +284,14 @@ test('the node label keeps gaps and collapses only adjacent steps', () => {
   );
   assert.equal(evidenceNodeLabel({ evidence: [ref('1', 'main:14')] }), 'main:14');
   assert.equal(evidenceNodeLabel({ evidence: [] }), '');
+  const team = 'team-member:web_1:jiuwen_team_web_1:team-leader';
+  assert.equal(evidenceNodeLabel({ evidence: [ref('1', `${team}:14`)] }), 'team-leader:14');
+  assert.equal(
+    evidenceNodeLabel({
+      evidence: [ref('1', `${team}:16`), ref('2', `${team}:14`), ref('3', `${team}:15`)],
+    }),
+    'team-leader:14 → team-leader:16',
+  );
 });
 
 test('findingCounts separates reward causes, skill suggestions and experience verdicts', () => {
@@ -412,6 +438,74 @@ test('model request lines are split from the rest of a stage output', () => {
   assert.equal(view.requestLines.length, 3);
   assert.equal(view.body, '任务描述：装好依赖\n消息产物 main:0：先看 README');
   assert.deepEqual(splitStageOutput(''), { body: '', requestLines: [], requestCount: 0 });
+});
+
+test('one chosen skill fills as itself and several are headed by the skill name', () => {
+  const image = { id: 'evo-1', target: 'baoyu-image-gen', suggestion: ['## 交付前质量校验\n\n- 先自检'] };
+  const other = { id: 'evo-2', target: 'writer', suggestion: ['补上引用'] };
+  const prefix = '根据以下优化建议对相应skill进行演进：';
+  assert.equal(skillBatchFillText([image], prefix), `${prefix}\n\n## 交付前质量校验\n\n- 先自检`);
+  assert.equal(
+    skillBatchFillText([image, other], prefix),
+    [
+      prefix,
+      '',
+      '## baoyu-image-gen',
+      '',
+      '## 交付前质量校验',
+      '',
+      '- 先自检',
+      '',
+      '## writer',
+      '',
+      '补上引用',
+    ].join('\n'),
+  );
+  assert.equal(skillBatchFillText([], prefix), prefix);
+});
+
+test('a running stage keeps arrival order and a finished stage puts the body first', () => {
+  const output = [
+    'llm-1 · task_parse · 请求中 · m',
+    'llm-1 · task_parse · iter 1 · 成功 · m',
+    '任务描述：装好依赖',
+    'llm-2 · diagnose · 成功 · m',
+    '消息产物 main:0：先看 README',
+  ].join('\n');
+  assert.deepEqual(stageOutputBlocks(output, true), [
+    {
+      kind: 'requests',
+      lines: ['llm-1 · task_parse · 请求中 · m', 'llm-1 · task_parse · iter 1 · 成功 · m'],
+      count: 1,
+    },
+    { kind: 'body', text: '任务描述：装好依赖' },
+    { kind: 'requests', lines: ['llm-2 · diagnose · 成功 · m'], count: 1 },
+    { kind: 'body', text: '消息产物 main:0：先看 README' },
+  ]);
+  assert.deepEqual(
+    stageOutputBlocks('llm-1 · task_parse · 请求中 · m\n\nllm-1 · task_parse · 成功 · m', true),
+    [{
+      kind: 'requests',
+      lines: ['llm-1 · task_parse · 请求中 · m', 'llm-1 · task_parse · 成功 · m'],
+      count: 1,
+    }],
+  );
+  assert.deepEqual(stageOutputBlocks(output, false), [
+    { kind: 'body', text: '任务描述：装好依赖\n消息产物 main:0：先看 README' },
+    {
+      kind: 'requests',
+      lines: [
+        'llm-1 · task_parse · 请求中 · m',
+        'llm-1 · task_parse · iter 1 · 成功 · m',
+        'llm-2 · diagnose · 成功 · m',
+      ],
+      count: 2,
+    },
+  ]);
+  assert.deepEqual(stageOutputBlocks('', true), []);
+  assert.deepEqual(stageOutputBlocks('llm-1 · task_parse · 请求中 · m', true), [
+    { kind: 'requests', lines: ['llm-1 · task_parse · 请求中 · m'], count: 1 },
+  ]);
 });
 
 test('processSummary counts stages and adds their durations', () => {

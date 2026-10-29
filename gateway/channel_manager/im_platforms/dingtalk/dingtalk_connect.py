@@ -20,9 +20,9 @@ from gateway.channel_manager.im_platforms.dingtalk.dingtalk_file_service import 
 from gateway.channel_manager.im_platforms.errors import (
     AttachmentPersistError,
 )
+from gateway.common.paths import get_agent_workspace_dir
 from gateway.routing.keys import DeliveryTarget
 from gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
 
@@ -776,7 +776,7 @@ class DingTalkChannel(BaseChannel):
             logger.info(f"钉钉入站消息: {message.content} 来自 {message.sender_name}")
             # 记录最近一次可回发的钉钉会话身份，供 cron推送兜底使用。
             try:
-                from jiuwenswarm.common.config import update_channel_in_config
+                from gateway.common.config import update_channel_in_config
 
                 update_channel_in_config(
                     "dingtalk",

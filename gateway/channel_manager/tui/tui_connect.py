@@ -11,16 +11,15 @@ import time
 from dataclasses import dataclass
 from typing import Any, Optional
 
-
-from jiuwenswarm.common.config import (
+from gateway.common.config import (
     get_config,
 )
-from jiuwenswarm.common.config_panel import tui_models_handlers
-from gateway.routing.route_binding import GatewayRouteBinding
+from gateway.common.config_panel import tui_models_handlers
 from gateway.routing.agent_request_timeout import (
     resolve_agent_request_timeout_seconds,
     send_agent_request_with_timeout,
 )
+from gateway.routing.route_binding import GatewayRouteBinding
 
 logger = logging.getLogger(__name__)
 
@@ -487,7 +486,7 @@ def build_tui_session_create_channel_metadata(
         return None
     meta: dict[str, Any] = {"project_dir": seed, "cwd": seed}
     try:
-        from jiuwenswarm.common.utils import resolve_git_branch
+        from gateway.common.paths import resolve_git_branch
 
         meta["git_branch"] = resolve_git_branch(seed)
     except Exception:  # noqa: BLE001
@@ -520,6 +519,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
     async def _session_list(ws, req_id, params, session_id, user_id=None):
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import fetch_agent_unary
 
         limit = 20
@@ -639,7 +639,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 s["active_in_window"] = True
 
         # 当前项目的 git 分支，供前端 Ctrl+B 过滤对比（非 git/失败为哨兵 "HEAD"）
-        from jiuwenswarm.common.utils import resolve_git_branch
+        from gateway.common.paths import resolve_git_branch
 
         current_branch = resolve_git_branch(project_dir or None)
 
@@ -657,6 +657,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         create_params = dict(params)
@@ -772,6 +773,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         SessionAdapter 删除路径。
         """
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(params, dict):
@@ -1173,6 +1175,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         """优先经 E2A 转发至 AgentServer；单用户共享目录不可达时由薄代理跑
         SessionAdapter（``apply_session_rename`` 同一中立门面）本地回退。"""
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1195,6 +1198,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         同一适配器（共享目录），保持迁移前的离线可用性。
         """
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1212,6 +1216,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _session_preview(ws, req_id, params, session_id, user_id=None):
         """获取 session 预览信息（统一薄代理：AgentServer 注入目录 history 白名单过滤）。"""
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1375,8 +1380,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         async def _run_harmonyos_dev_init_operation() -> None:
             try:
-                from openjiuwen_protocol.e2a.gateway_normalize import e2a_from_agent_fields
+                from openjiuwen_protocol.e2a.gateway_normalize import (
+                    e2a_from_agent_fields,
+                )
                 from openjiuwen_protocol.message import ReqMethod
+
                 from gateway.routing.e2a_proxy import (
                     is_legacy_shared_directory_client,
                 )
@@ -1529,6 +1537,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         不可达时由薄代理跑同一适配器（保持离线可用）。
         """
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         if not isinstance(params, dict):
@@ -1721,7 +1730,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
 
         resolved_client = _resolve_agent_client(agent_client)
         if resolved_client is None or is_legacy_shared_directory_client(resolved_client):
-            from jiuwenswarm.common.hooks_config import load_hooks_config
+            from gateway.common.hooks_config import load_hooks_config
 
             try:
                 hooks_config = load_hooks_config(get_config())
@@ -1739,6 +1748,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             return
 
         from openjiuwen_protocol.message import ReqMethod
+
         from gateway.routing.e2a_proxy import proxy_unary_request
 
         await proxy_unary_request(
@@ -1877,7 +1887,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             # AgentOS 用户 session 不在 Gateway 部署目录，不能在这里作本地反查。
             if "project_dir" not in params and session_id:
                 try:
-                    from jiuwenswarm.common.external_providers import provider
+                    from gateway.common.external_providers import provider
 
                     meta = await provider("session_metadata").get_session_metadata_async(
                         session_id, cache_bust=True, user_id=user_id,

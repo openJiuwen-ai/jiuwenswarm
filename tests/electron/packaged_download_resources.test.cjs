@@ -7,7 +7,7 @@ const { spawnSync } = require('node:child_process');
 const { createRequire } = require('node:module');
 
 const ROOT = path.resolve(__dirname, '../..');
-const DOWNLOAD_RESOURCES = ['browser_downloads.cjs', 'browser_download_bubble.cjs', 'dist/bubble.html'];
+const REQUIRED_RESOURCES = ['browser_downloads.cjs', 'browser_download_bubble.cjs', 'dist/bubble.html', 'update_shutdown.cjs'];
 const bash = process.platform === 'win32'
   ? path.join(process.env.ProgramFiles || 'C:/Program Files', 'Git/bin/bash.exe')
   : 'bash';
@@ -15,8 +15,8 @@ const bash = process.platform === 'win32'
 for (const platform of ['windows', 'macos']) {
   const shell = platform === 'windows' ? (process.platform === 'win32' ? 'powershell.exe' : 'pwsh') : bash;
   const available = spawnSync(shell, ['--version'], { windowsHide: true }).error === undefined;
-  for (const missing of [null, ...DOWNLOAD_RESOURCES]) {
-    test(`${platform} assembled downloads: ${missing ? `reject missing ${missing}` : 'complete bundle loads'}`, {
+  for (const missing of [null, ...REQUIRED_RESOURCES]) {
+    test(`${platform} assembled desktop resources: ${missing ? `reject missing ${missing}` : 'complete bundle loads'}`, {
       skip: !available && `${shell} is unavailable`,
     }, (t) => {
       const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'electron-download-resources-'));
@@ -75,7 +75,8 @@ for (const platform of ['windows', 'macos']) {
         const requireFromBundle = createRequire(path.join(app, 'main.cjs'));
         assert.equal(typeof requireFromBundle('./browser_downloads.cjs').createBrowserDownloadService, 'function');
         assert.equal(typeof requireFromBundle('./browser_download_bubble.cjs').createDownloadBubbleController, 'function');
-        for (const name of DOWNLOAD_RESOURCES.slice(0, 2)) {
+        assert.equal(typeof requireFromBundle('./update_shutdown.cjs').recordShutdownOutcome, 'function');
+        for (const name of REQUIRED_RESOURCES.filter(name => name.endsWith('.cjs'))) {
           assert.deepEqual(fs.readFileSync(path.join(app, name)), fs.readFileSync(path.join(desktop, name)));
         }
       }

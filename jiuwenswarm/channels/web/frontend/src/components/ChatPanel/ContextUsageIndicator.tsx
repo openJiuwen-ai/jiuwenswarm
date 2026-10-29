@@ -21,6 +21,10 @@ const TOOLTIP_GAP = 5;
 const TOOLTIP_ALIGN_OFFSET = 3;
 const DETAIL_GAP = 7;
 
+function formatCumulativeTokens(value: number): string {
+  return `${(value / 1_000).toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })}K`;
+}
+
 function useElementWidth(ref: RefObject<HTMLElement | null>, visible: boolean): number {
   const [width, setWidth] = useState(0);
 
@@ -64,6 +68,7 @@ export function ContextUsageIndicator() {
   const activeSessionId = useChatStore((state) => state.activeSessionId);
   const mode = useSessionStore((state) => state.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const snapshot = useSessionStore((state) => state.runtimes[activeSessionId ?? '']?.contextUsageSnapshot ?? null);
+  const tokenUsageSnapshot = useSessionStore((state) => state.runtimes[activeSessionId ?? '']?.tokenUsageSnapshot ?? null);
 
   const triggerRef = useRef<HTMLButtonElement>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -102,9 +107,9 @@ export function ContextUsageIndicator() {
   }, [activeSessionId, mode]);
 
   useEffect(() => {
-    if (snapshot) return;
+    if (snapshot || (tokenUsageSnapshot && tokenUsageSnapshot.revision > 0)) return;
     setDetailSessionId(null);
-  }, [snapshot]);
+  }, [snapshot, tokenUsageSnapshot]);
 
   useEffect(() => {
     if (!tooltipOpen && !detailOpen) return;
@@ -139,11 +144,14 @@ export function ContextUsageIndicator() {
     };
   }, [closeDetail, detailOpen]);
 
-  if ((mode !== 'agent' && mode !== 'team') || !activeSessionId || !snapshot) return null;
+  if ((mode !== 'agent' && mode !== 'team') || !activeSessionId
+    || (!snapshot && (!tokenUsageSnapshot || tokenUsageSnapshot.revision === 0))) return null;
 
   const notReported = t('chat.contextUsage.notReported');
-  const { occupancy_rate: rate, input_tokens: used, limit_tokens: limit } = snapshot.context_window;
-  const cacheRate = snapshot.session_kv_cache_hit_rate;
+  const rate = snapshot?.context_window.occupancy_rate ?? null;
+  const used = snapshot?.context_window.input_tokens ?? null;
+  const limit = snapshot?.context_window.limit_tokens ?? null;
+  const cacheRate = snapshot?.session_kv_cache_hit_rate ?? null;
   const displayRate = rate === null ? notReported : formatContextPercent(rate);
   const ringPercent = rate === null ? null : getContextRingPercent(rate);
   const overviewUsed = used === null ? notReported : formatContextTokens(used);
@@ -151,10 +159,10 @@ export function ContextUsageIndicator() {
   const displayCacheRate = cacheRate === null ? null : formatContextPercent(cacheRate);
   const categories = [
     ...CONTEXT_USAGE_CATEGORY_KEYS.flatMap((key) => {
-      const part = snapshot.parts[key];
+      const part = snapshot?.parts[key];
       return part ? [part] : [];
     }),
-    ...Object.values(snapshot.parts).filter((part) => !getContextUsageCategoryDefinition(part.category)),
+    ...Object.values(snapshot?.parts ?? {}).filter((part) => !getContextUsageCategoryDefinition(part.category)),
   ].map((part) => {
     const definition = getContextUsageCategoryDefinition(part.category);
     return {
@@ -307,6 +315,58 @@ export function ContextUsageIndicator() {
                 <div className="context-usage-detail__kv">
                   <span>{t('chat.contextUsage.kvCacheHitRate')}</span>
                   <strong>{displayCacheRate}</strong>
+                </div>
+              )}
+
+              {tokenUsageSnapshot && (
+                <div className="context-usage-token-totals" data-testid="chat-panel-context-usage-token-totals">
+                  <div
+                    className="context-usage-token-totals__title"
+                    data-testid="chat-panel-context-usage-token-totals-title"
+                  >
+                    {t('chat.contextUsage.cumulativeTitle')}
+                  </div>
+                  <div className="context-usage-token-totals__table">
+                    <span />
+                    <span data-testid="chat-panel-context-usage-input-column-label">
+                      {t('chat.contextUsage.inputTokens')}
+                    </span>
+                    <span className="context-usage-token-totals__separator" aria-hidden="true">/</span>
+                    <span data-testid="chat-panel-context-usage-output-column-label">
+                      {t('chat.contextUsage.outputTokens')}
+                    </span>
+                    {([
+                      ['main', tokenUsageSnapshot.main, 'chat.contextUsage.mainAgentTokens'],
+                      ['others', tokenUsageSnapshot.others, 'chat.contextUsage.otherAgentTokens'],
+                    ] as const).map(([variant, usage, labelKey]) => (
+                      <div
+                        key={variant}
+                        className="context-usage-token-category"
+                        data-testid="chat-panel-context-usage-token-category"
+                        data-variant={variant}
+                      >
+                        <div className="context-usage-token-category__label">
+                          <span>{t(labelKey)}</span>
+                          {(usage.input_calls < usage.calls_total || usage.output_calls < usage.calls_total) && (
+                            <small data-testid="chat-panel-context-usage-token-partial-status">
+                              {t('chat.contextUsage.partialReported')}
+                            </small>
+                          )}
+                        </div>
+                        <strong data-variant="input" data-testid="chat-panel-context-usage-input-tokens">
+                          {usage.input_tokens === null
+                            ? t('chat.contextUsage.notReported')
+                            : formatCumulativeTokens(usage.input_tokens)}
+                        </strong>
+                        <span className="context-usage-token-totals__separator" aria-hidden="true">/</span>
+                        <strong data-variant="output" data-testid="chat-panel-context-usage-output-tokens">
+                          {usage.output_tokens === null
+                            ? t('chat.contextUsage.notReported')
+                            : formatCumulativeTokens(usage.output_tokens)}
+                        </strong>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

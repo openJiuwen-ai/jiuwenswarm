@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from gateway.common.client.agent_client import AgentServerClient
+from gateway.common.client.third_agent import ThirdAgent
+from gateway.common.config import get_config
 from gateway.extensions.agentos.agentos_router.agent_manager import AgentManager
 from gateway.extensions.agentos.agentos_router.agentos_authenticator import (
     AgentOSAuthenticator,
@@ -20,9 +23,6 @@ from gateway.extensions.sdk.third_agent import ThirdAgentExtension
 from gateway.extensions.yuanrong_frontend_client import (
     YuanrongFrontendAgentClient,
 )
-from jiuwenswarm.common.client.agent_client import AgentServerClient
-from jiuwenswarm.common.client.third_agent import ThirdAgent
-from jiuwenswarm.common.config import get_config
 
 
 class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):

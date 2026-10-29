@@ -4,7 +4,7 @@
 Reads the ``gateway`` section of one etcd key and overlays managed fields onto
 the Gateway's in-memory full-config snapshot.
 
-The etcd transport lives in ``jiuwenswarm.common.etcd``; Gateway injects the
+The etcd transport lives in ``gateway.common.etcd``; Gateway injects the
 runtime refresh callback and owns this service's process lifecycle.
 
 Trust boundary: this key is management-plane input and may change local

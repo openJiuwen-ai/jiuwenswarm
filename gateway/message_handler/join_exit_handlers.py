@@ -36,6 +36,18 @@ logger = logging.getLogger(__name__)
 _TEAM_SEAT_SUPPORTED_CHANNELS: frozenset[str] = frozenset({"feishu", "xiaoyi"})
 
 
+def _with_xiaoyi_team_task_hold(
+    user_infos: dict[str, Any],
+    channel_id: str,
+) -> dict[str, Any]:
+    """Return join notice routing info that keeps the Xiaoyi task open."""
+    if channel_id != "xiaoyi":
+        return user_infos
+    metadata = dict(user_infos.get("meta_data") or {})
+    metadata["xiaoyi_team_task_hold"] = True
+    return {**user_infos, "meta_data": metadata}
+
+
 # 已 /join 认领 team 席位后仍允许执行的控制指令白名单。
 # 其余会改变 session/mode/分支/对话历史或向 Agent 注入 query 的执行类指令一律拒绝
 # （破坏席位绑定或扰乱 team 流程），必须先 /exit 退出当前 session 再切换。
@@ -219,8 +231,9 @@ class JoinExitHandlers:
                 "session=%s member=%s channel=%s",
                 sid, parsed.member_name, msg.channel_id,
             )
+            notice_user_infos = _with_xiaoyi_team_task_hold(user_infos, msg.channel_id)
             await self._h.send_channel_notice(
-                user_infos, channel_id, msg.session_id,
+                notice_user_infos, channel_id, msg.session_id,
                 f"已加入 session {sid}，席位：{parsed.member_name}。"
                 f"后续消息将以 {parsed.member_name} 身份参与团队对话。"
                 f"可通过 @team-leader 询问成员信息和任务状态。",
@@ -235,7 +248,7 @@ class JoinExitHandlers:
             # ── V2: 推送该 member 加入前的团队历史消息 ──
             asyncio.create_task(
                 self.push_join_history(
-                    user_infos, msg,
+                    notice_user_infos, msg,
                     sid, parsed.member_name, anchor_ts,
                 )
             )

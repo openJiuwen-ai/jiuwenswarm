@@ -182,6 +182,29 @@ class _StreamingTablesEngine:
         )
 
 
+class _RewardThenFindingsEngine:
+    """Scores first, then holds the run open while a finding arrives underneath."""
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.reported = asyncio.Event()
+
+    async def run(self, inputs: EngineInputs, emit: Any) -> EngineResult:
+        del inputs
+        await emit(EngineEvent("diagnose", "reward", reward=_reward_payload("stub")))
+        await emit(EngineEvent("diagnose", "stage_finished", status="completed", summary="scored"))
+        await emit(EngineEvent("attribute", "stage_started", title="Attribute"))
+        await emit(EngineEvent("attribute", "reward_failure_causes", reward_failure_causes=[_cause("rfc-1")]))
+        self.reported.set()
+        await self.release.wait()
+        await emit(EngineEvent("attribute", "stage_finished", status="completed"))
+        return EngineResult(
+            trajectory_summary="final",
+            reward_failure_causes=[_cause("rfc-1")],
+            reward=_reward_payload("stub"),
+        )
+
+
 class _FailingEngine:
     async def run(self, inputs: EngineInputs, emit: Any) -> EngineResult:
         await emit(EngineEvent("evidence", "stage_started", title="Evidence"))
@@ -450,6 +473,30 @@ async def test_tables_are_visible_and_pushed_while_the_run_goes_on(tmp_path: Pat
     assert [cause.id for cause in finished.reward_failure_causes] == ["rfc-final"]
     assert [judge.id for judge in finished.evolution_judge] == ["evo-final", "evo-exp"]
     assert finished.trajectory_summary == "final"
+
+
+@pytest.mark.asyncio
+async def test_reward_is_visible_before_findings_arrive(tmp_path: Path) -> None:
+    engine = _RewardThenFindingsEngine()
+    service, push = _service(tmp_path, engine=engine)
+
+    started = await service.start(SESSION_ID, _full_request())
+    await asyncio.wait_for(engine.reported.wait(), _ENGINE_DONE_TIMEOUT)
+
+    live = service.get_record(SESSION_ID, started.diagnosis_id)
+    assert live.status is DiagnosisStatus.RUNNING
+    assert live.reward == _reward_payload("stub")
+    assert [cause.id for cause in live.reward_failure_causes] == ["rfc-1"]
+
+    kinds = [payload["kind"] for payload in push.of(PROGRESS_EVENT)]
+    assert kinds.index("reward") < kinds.index("reward_failure_causes")
+    stored = DiagnosisStore(tmp_path).load(SESSION_ID, started.diagnosis_id)
+    assert stored is not None and stored.reward == _reward_payload("stub")
+
+    engine.release.set()
+    finished = await _wait_finished(service, started.diagnosis_id)
+    assert finished.reward == _reward_payload("stub")
+    assert finished.status is DiagnosisStatus.COMPLETED
 
 
 @pytest.mark.asyncio
