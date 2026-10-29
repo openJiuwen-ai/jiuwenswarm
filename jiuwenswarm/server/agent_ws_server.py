@@ -173,6 +173,43 @@ logger = logging.getLogger(__name__)
 _INTERFACE_DEEP_MODULE = "jiuwenswarm.server.runtime.agent_adapter.interface_deep"
 _startup_warmup_task: asyncio.Task[None] | None = None
 
+try:  # legacy API still ships with websockets 15.x; fall back to the default
+    # protocol when a future version removes it (see start() ImportError branch).
+    from websockets.frames import OP_PONG
+    from websockets.legacy.framing import prepare_ctrl
+    from websockets.legacy.server import WebSocketServerProtocol
+    from websockets.protocol import State
+    from websockets.typing import Data
+
+    class _FastPongServerProtocol(WebSocketServerProtocol):
+        """Server protocol whose pong() bypasses drain() and writes synchronously.
+
+        OA.05000010 (2026-10-26 outage): the default pong() goes through
+        write_frame() = write_frame_sync() + await drain(). While the outbound
+        buffer is backed up, the read loop parks on pong's drain line, so later
+        pings from the Gateway are never read and the connection gets closed
+        after 8 consecutive pong misses. RFC 6455 §5.5.2 only requires answering
+        a ping "as soon as is practical", and the library itself already writes
+        close frames / broadcasts without waiting for drain — a synchronous
+        pong follows the same control-plane / data-plane split.
+        """
+
+        async def pong(self, data: Data = b"") -> None:
+            if self.state is not State.OPEN:
+                return
+            self.write_frame_sync(True, OP_PONG, prepare_ctrl(data))
+
+except ImportError:  # pragma: no cover
+    _FastPongServerProtocol = None  # type: ignore[assignment,misc]
+    # 可用性兜底路径必须可观测:websockets.legacy 一旦被未来版本移除,
+    # 本修复会静默退化为默认协议(pong 重新经 drain,OA.05000010 复发),
+    # 没有这条告警就只能等故障复现时才发现。
+    logger.warning(
+        "[AgentWebSocketServer] _FastPongServerProtocol unavailable "
+        "(websockets.legacy import failed); falling back to the default "
+        "protocol, pong drain suppression disabled (OA.05000010 risk)"
+    )
+
 
 def _import_interface_deep_blocking() -> None:
     if _INTERFACE_DEEP_MODULE not in sys.modules:
@@ -581,6 +618,14 @@ class AgentWebSocketServer:
         if listen:
             try:
                 from websockets.legacy.server import serve as legacy_serve
+                # pong 走 _FastPongServerProtocol 的同步直写路径：出站缓冲积压时读循环
+                # 不再被 pong 的 drain 扣住，Gateway 连续 pong miss 断链 (OA.05000010)
+                # 随之消除。legacy 协议类与顶层新版 serve 不兼容，仅注入 legacy 路径。
+                serve_kwargs: dict[str, Any] = (
+                    {"create_protocol": _FastPongServerProtocol}
+                    if _FastPongServerProtocol is not None
+                    else {}
+                )
                 self._server = await legacy_serve(
                     self._connection_handler,
                     self._host,
@@ -590,6 +635,7 @@ class AgentWebSocketServer:
                     ping_timeout=self._ping_timeout,
                     max_size=AGENT_WS_MAX_MESSAGE_BYTES,
                     max_queue=None,
+                    **serve_kwargs,
                 )
             except ImportError:
                 import websockets
