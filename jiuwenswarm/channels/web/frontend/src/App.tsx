@@ -1,5 +1,4 @@
 import { ApplicationConversationRuntimes } from './applicationPlugins/ApplicationConversationRuntimes';
-import { GroupChatWorkspace } from './features/groupChat/GroupChatWorkspace';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
 import {
@@ -741,9 +740,10 @@ function AppContent({
       setSessionId(route.sessionId);
       setActiveNav('chat');
     } else if (route.kind === 'group-chat') {
+      // Group chats live in the JiuwenMate chat view.
       sessionIdRef.current = NEW_CONVERSATION_ID;
       setSessionId(NEW_CONVERSATION_ID);
-      setActiveNav('groupChat');
+      setIsJiuwenMate(true);
       setTeamAreaExpanded(false);
       setSingleAgentPanelExpanded(false);
     } else if (route.kind === 'design-project') {
@@ -3977,7 +3977,6 @@ function AppContent({
       setRsiOpenCreateNonce(0);
       if (nav !== 'settings') setRequestedSettingsModuleId(null);
       setActiveNav(nav);
-      if (nav === 'groupChat') navigate({ kind: 'group-chat' });
       if (nav === 'chat') {
         if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
         if (isMobile) {
@@ -4465,7 +4464,12 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
   if (isJiuwenMate) {
     return (
       <JiuwenMateApp
-        onExit={() => setIsJiuwenMate(false)}
+        onExit={() => {
+          setIsJiuwenMate(false);
+          if (route.kind === 'group-chat') navigate({ kind: 'chat-new' });
+        }}
+        groupId={route.kind === 'group-chat' ? route.groupId : undefined}
+        onSelectGroup={(groupId) => navigate(groupId ? { kind: 'group-chat', groupId } : { kind: 'chat-new' })}
         renderExistingPage={renderJiuwenMateExistingPage}
         useInstalledExpertRef={openInstalledExpertRef}
         confirmDiscardSettings={() => {
@@ -4518,7 +4522,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' || activeNav === 'groupChat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
         {configError && (
           <div className="card mb-4" data-testid="app-config-error">
             <div className="text-sm text-text-muted">
@@ -4777,13 +4781,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               )}
             </div>
           </>
-        )}
-        {activeNav === 'groupChat' && (
-          <GroupChatWorkspace
-            key={route.kind === 'group-chat' ? route.groupId ?? 'groups' : 'groups'}
-            groupId={route.kind === 'group-chat' ? route.groupId : undefined}
-            onSelect={(groupId) => navigate({ kind: 'group-chat', groupId })}
-          />
         )}
         {activeNav === 'experiments' && (
           <div className="app-section">
