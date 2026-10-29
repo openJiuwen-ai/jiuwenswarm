@@ -119,3 +119,18 @@ export function taskCounts(tasks: Record<string, string> = {}) {
   }
   return counts;
 }
+
+/** Backend timestamps are seconds; tolerate millisecond values as well. */
+export function timestampMillis(value: number): number {
+  return value > 1e12 ? value : value * 1000;
+}
+
+/** Short sidebar label: HH:mm for today, M/D within the year, otherwise YYYY/M/D. */
+export function conversationTime(millis: number, now: Date = new Date()): string {
+  const date = new Date(millis);
+  if (date.toDateString() === now.toDateString()) {
+    return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+  }
+  const day = `${date.getMonth() + 1}/${date.getDate()}`;
+  return date.getFullYear() === now.getFullYear() ? day : `${date.getFullYear()}/${day}`;
+}
