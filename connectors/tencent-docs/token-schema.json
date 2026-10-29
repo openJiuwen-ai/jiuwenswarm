@@ -1,0 +1,22 @@
+{
+  "title": "腾讯文档授权",
+  "title_en": "Tencent Docs Authorization",
+  "description": "输入腾讯文档个人 MCP Token：电脑端打开腾讯文档空间列表（docs.qq.com），点进一个空间，点右上角「≡」→「使用MCP」→「获取MCP token」→「复制」。Token 按空间生成、有效期一年，仅加密保存在本机。获取资格与每日配额以官方页面实时校验为准（官方文档提示需通过超级会员/Plus 校验）。Token 失效或泄露时，在同一菜单「重置」后重新填写。",
+  "description_en": "Enter your Tencent Docs personal MCP token: on desktop, open your Tencent Docs space list (docs.qq.com), enter a space, click the \"≡\" menu in the top-right corner, choose \"Use MCP\" → \"Get MCP token\" → \"Copy\". The token is generated per space, valid for one year, and stored locally (encrypted) only. Eligibility and daily quota are subject to on-page verification (official docs mention a Super VIP/Plus check). If the token expires or leaks, reset it in the same menu and update it here.",
+  "docUrl": "https://docs.qq.com/open/document/mcp/get-token/",
+  "docLabel": "查看获取 Token 指引",
+  "docLabel_en": "How to get a token",
+  "fields": [
+    {
+      "key": "TENCENT_DOCS_TOKEN",
+      "label": "个人 MCP Token",
+      "label_en": "Personal MCP Token",
+      "type": "password",
+      "required": true,
+      "placeholder": "在空间「≡ → 使用MCP → 获取MCP token」中复制",
+      "placeholder_en": "Copy from the space menu \"≡ → Use MCP → Get MCP token\"",
+      "description": "在腾讯文档空间内生成（右上角「≡ → 使用MCP → 获取MCP token」），按空间生成、有效期一年；仅保存本机",
+      "description_en": "Generated inside a Tencent Docs space (top-right \"≡ → Use MCP → Get MCP token\"); per-space, valid for one year; stored locally only"
+    }
+  ]
+}

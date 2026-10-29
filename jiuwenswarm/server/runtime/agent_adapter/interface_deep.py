@@ -560,6 +560,9 @@ from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processo
 from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
     SkillRetrievalPromptRail,
 )
+from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail_patch import (
+    apply_progressive_tool_fingerprint_patch,
+)
 from jiuwenswarm.symphony.config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import read_pdf
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
@@ -1837,6 +1840,13 @@ class JiuWenSwarmDeepAdapter:
         # effects; idempotent, and guaranteed to run before any
         # DeepAgent/TaskTool is created below.
         apply_task_tool_event_patch()
+        # ProgressiveToolRail stores per-session search-authorization
+        # fingerprints in a dict keyed by the raw tool name; session state
+        # expands "." in dict keys as nested paths, so dotted MCP tool names
+        # (tencent-docs manage.*/doc.*/sheet.*/...) always miss the lookup and
+        # are rejected with "must be searched again". Escape the keys on
+        # write/read. Idempotent; no side effects on import.
+        apply_progressive_tool_fingerprint_patch()
         self._instance: DeepAgent | None = None
         self._process_cli_run_options = None
         self._external_harness_binding: dict[str, Any] | None = None

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "tencent-docs": {
+      "type": "streamable-http",
+      "url": "https://docs.qq.com/openapi/mcp",
+      "headers": {
+        "Authorization": "${TENCENT_DOCS_TOKEN}"
+      },
+      "timeout": 600
+    }
+  }
+}
