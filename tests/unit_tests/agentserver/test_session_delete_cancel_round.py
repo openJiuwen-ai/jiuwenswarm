@@ -5,8 +5,8 @@
 Regression guard for TC-SESSION_DELETE-006: a zombie round used to keep running
 after delete and re-persisted the session dir (session.list resurrection, chat
 stream never ending). The delete handler now first cancels the round via the
-same chat.interrupt cancellation routing; cancel failure must never block the
-delete itself.
+same chat.interrupt cancellation routing; failed cancellation preserves records
+so the user can retry.
 """
 # Exercise the private RPC handler and observe its runtime collaborators.
 # pylint: disable=protected-access
@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -128,11 +129,14 @@ def _request(target: str) -> AgentRequest:
 
 
 @pytest.mark.asyncio
-async def test_delete_cancels_inflight_round_before_removing_records(wiring):
+@pytest.mark.parametrize("directory_exists", [True, False])
+async def test_delete_cancels_inflight_round_before_removing_records(wiring, directory_exists):
     session_dir, evicted, released, killed, sent, _tm = wiring
     target = session_dir.name
     spy = _SpyAgent()
     server = _make_server(session_dir.parent, target, spy)
+    if not directory_exists:
+        session_dir.rmdir()
 
     await server._handle_session_delete(None, _request(target), asyncio.Lock())
 
@@ -150,20 +154,6 @@ async def test_delete_cancels_inflight_round_before_removing_records(wiring):
     assert not session_dir.exists(), "session dir must be removed"
     # 3) success frame returned
     assert sent and any("succeeded" == f.get("status") for f in sent)
-
-
-@pytest.mark.asyncio
-async def test_cancel_failure_does_not_block_delete(wiring):
-    session_dir, _evicted, _released, _killed, sent, _tm = wiring
-    target = session_dir.name
-    spy = _SpyAgent(raise_exc=True)
-    server = _make_server(session_dir.parent, target, spy)
-
-    await server._handle_session_delete(None, _request(target), asyncio.Lock())
-
-    assert len(spy.requests) == 1
-    assert not session_dir.exists()
-    assert sent and any(f.get("status") == "succeeded" for f in sent)
 
 
 @pytest.mark.asyncio
@@ -228,3 +218,150 @@ async def test_delete_waits_for_apply_before_releasing_shared_runtime(wiring):
         lock.release()
         await asyncio.wait_for(task, 2)
     assert not session_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_delete_cancels_before_waiting_for_checkpointer(wiring):
+    session_dir, *_ = wiring
+    spy = _SpyAgent()
+    server = _make_server(session_dir.parent, session_dir.name, spy)
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def checkpointer(_):
+        entered.set()
+        await release.wait()
+        return None
+
+    server._ensure_persistent_checkpointer_response = checkpointer
+    task = asyncio.create_task(server._handle_session_delete(None, _request(session_dir.name), asyncio.Lock()))
+    try:
+        await entered.wait()
+        assert spy.requests, 'runtime cancellation must precede checkpoint initialization'
+    finally:
+        release.set()
+        await task
+
+
+async def _try_chat(server, target):
+    server._handle_stream_impl = AsyncMock()
+    await server._handle_stream(None, AgentRequest(
+        request_id="next-round", channel_id="desktop", session_id=target,
+        req_method=ReqMethod.CHAT_SEND, params={"query": "hello"}, is_stream=True,
+    ), asyncio.Lock())
+    return server._handle_stream_impl.await_count > 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancel_failed", "checkpoint_error", "reply_error"])
+async def test_failed_delete_does_not_permanently_block_later_chat(wiring, monkeypatch, failure):
+    session_dir, _evicted, _released, _killed, sent, _manager = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, _SpyAgent(raise_exc=failure == "cancel_failed"))
+    if failure == "checkpoint_error":
+        server._ensure_persistent_checkpointer_response = AsyncMock(side_effect=RuntimeError("checkpoint failed"))
+    if failure == "reply_error":
+        send = aws.send_wire_payload
+        async def send_once(*args):
+            monkeypatch.setattr(aws, "send_wire_payload", send)
+            raise RuntimeError("reply failed")
+        monkeypatch.setattr(aws, "send_wire_payload", send_once)
+    if failure == "cancel_failed":
+        await server._handle_session_delete(None, _request(target), asyncio.Lock())
+        assert session_dir.exists(), "failed cancellation must preserve recoverable records"
+        assert sent[-1]["status"] == "failed"
+        assert sent[-1]["body"]["details"]["code"] == "DELETE_FAILED"
+    else:
+        with pytest.raises(RuntimeError):
+            await server._handle_session_delete(None, _request(target), asyncio.Lock())
+    assert await _try_chat(server, target), "completed failed deletion must not leave a permanent BUSY marker"
+
+
+@pytest.mark.asyncio
+async def test_overlapping_deletes_keep_chat_blocked_until_last_cleanup(wiring):
+    session_dir, *_ = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, None)
+    entered = [asyncio.Event(), asyncio.Event()]
+    release = [asyncio.Event(), asyncio.Event()]
+    calls = 0
+    async def cleanup(**_):
+        nonlocal calls
+        index = calls
+        calls += 1
+        entered[index].set()
+        await release[index].wait()
+    server._agent_manager.cleanup_session_runtime = cleanup
+    first = asyncio.create_task(server._handle_session_delete(None, _request(target), asyncio.Lock()))
+    second = None
+    try:
+        await asyncio.wait_for(entered[0].wait(), 1)
+        second = asyncio.create_task(server._handle_session_delete(None, _request(target), asyncio.Lock()))
+        await asyncio.sleep(0)
+        release[0].set()
+        await asyncio.wait_for(entered[1].wait(), 1)
+        await first
+        assert not await _try_chat(server, target), "one response must not unlock another active deletion"
+        release[1].set()
+        await second
+        assert await _try_chat(server, target)
+    finally:
+        for event in release: event.set()
+        await asyncio.gather(*[task for task in (first, second) if task is not None], return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_delete_keeps_its_entire_cleanup_then_unlocks(wiring):
+    session_dir, *_ = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, None)
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def cleanup(**_):
+        entered.set()
+        await release.wait()
+    server._agent_manager.cleanup_session_runtime = cleanup
+    task = asyncio.create_task(server._handle_session_delete(None, _request(target), asyncio.Lock()))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert not await _try_chat(server, target)
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        assert not session_dir.exists(), "RPC cancellation must not abandon later record cleanup"
+        assert await _try_chat(server, target)
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_delete_timeout_keeps_busy_only_while_stream_shutdown_is_running(wiring):
+    session_dir, *_ = wiring
+    target = session_dir.name
+    server = _make_server(session_dir.parent, target, None)
+    server._stream_cancel_timeout = 0.02
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def execute(*_):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            await release.wait()
+    server._handle_stream_impl = execute
+    owner = asyncio.create_task(server._handle_stream(None, AgentRequest(
+        request_id="old-round", channel_id="desktop", session_id=target,
+        req_method=ReqMethod.CHAT_SEND, params={"query": "hello"}, is_stream=True,
+    ), asyncio.Lock()))
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        await server._handle_session_delete(None, _request(target), asyncio.Lock())
+        assert not owner.done()
+        assert not await _try_chat(server, target)
+        release.set()
+        await asyncio.gather(owner, return_exceptions=True)
+        await asyncio.sleep(0)
+        assert await _try_chat(server, target), "finished background cleanup must release BUSY after an earlier timeout"
+    finally:
+        release.set()
+        await asyncio.gather(owner, return_exceptions=True)
