@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
-import { AtSign, ChevronLeft, FolderOpen, Plus, Send, Settings, Users, X } from 'lucide-react';
+import {
+  AtSign, Bot, ChevronLeft, ChevronRight, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webClient, type WsEvent } from '../../services/webClient';
 import { attachTeamSession } from '../../services/teamAttach';
 import ModelPicker from '../../components/ModelPicker';
+import { TeamMemberAvatar } from '../../components/TeamMemberAvatar';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useWorkspaceStore } from '../../stores/workspaceStore';
 import type { ModelSelection, UserAnswer } from '../../types';
@@ -68,6 +71,8 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
   const [pinningId, setPinningId] = useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(true);
   const [panel, setPanel] = useState<'members' | 'files' | null>('members');
+  const [memberSearch, setMemberSearch] = useState(false);
+  const [memberQuery, setMemberQuery] = useState('');
   const [input, setInput] = useState('');
   const [mentions, setMentions] = useState<string[]>([]);
   const [mentionMenu, setMentionMenu] = useState(false);
@@ -78,9 +83,9 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [editTarget, setEditTarget] = useState<GroupInfo | null>(null);
   const [deleting, setDeleting] = useState(false);
-  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState<GroupInfo | null>(null);
   const [olderOffset, setOlderOffset] = useState(0);
   const [loadingOlder, setLoadingOlder] = useState(false);
   const [listTotal, setListTotal] = useState(0);
@@ -309,13 +314,22 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
     textarea.current?.focus();
   }
 
+  function openEdit(target: GroupInfo) {
+    setError(''); setName(target.name); setDescription(target.description); setEditTarget(target);
+  }
+
+  function openDelete(target: GroupInfo) {
+    setError(''); setDeleteTarget(target);
+  }
+
   async function update() {
-    if (!group || !name.trim() || saving) return;
+    if (!editTarget || !name.trim() || saving) return;
     setSaving(true);
     try {
-      const updated = await groupChatClient.update(group.group_id, { name: name.trim(), description });
+      const updated = await groupChatClient.update(editTarget.group_id, { name: name.trim(), description });
       if (alive.current) {
-        setGroup(updated); setEditing(false);
+        if (updated.group_id === group?.group_id) setGroup(updated);
+        setEditTarget(null);
         setGroups((current) => current.map((item) => item.group_id === updated.group_id ? updated : item));
       }
       void useWorkspaceStore.getState().refreshWorkspaceData();
@@ -324,13 +338,20 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
   }
 
   async function remove() {
-    if (!groupId || deleting) return;
+    if (!deleteTarget || deleting) return;
+    const targetId = deleteTarget.group_id;
     setDeleting(true);
     try {
-      await groupChatClient.delete(groupId);
-      useSessionStore.getState().removeSession(groupId);
+      await groupChatClient.delete(targetId);
+      useSessionStore.getState().removeSession(targetId);
       void useWorkspaceStore.getState().refreshWorkspaceData();
-      if (alive.current) onSelect();
+      if (!alive.current) return;
+      setDeleteTarget(null);
+      if (targetId === groupId) onSelect();
+      else {
+        setGroups((current) => current.filter((item) => item.group_id !== targetId));
+        setListTotal((current) => Math.max(0, current - 1));
+      }
     } catch (reason) { report(reason); }
     finally { if (alive.current) setDeleting(false); }
   }
@@ -365,23 +386,37 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
     ...executions.map((execution) => ({ id: execution.execution_id, at: execution.created_at * 1000, message: null, execution })),
   ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
 
+  const visibleMembers = group?.members.filter((member) => `${member.display_name ?? ''} ${member.member_name}`
+    .toLocaleLowerCase().includes(memberQuery.trim().toLocaleLowerCase())) ?? [];
+  const showSelf = !memberQuery.trim() || t('groupChat.you').includes(memberQuery.trim());
+  const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
+  const agentCount = group?.members.length ?? 0;
+
   return <section className={`group-chat-workspace${groupId ? ' has-conversation' : ''}`} data-testid="group-chat-workspace">
     <ChatDirectory groups={groups} activeId={groupId} pinnedIds={new Set(pinnedSessions.map((item) => item.session_id))}
       pinningId={pinningId} loading={directoryLoading} hasMore={groups.length < listTotal} loadingMore={loadingMore}
       onSelect={onSelect} onCreate={() => setPicker('create')} onPin={(item, pinned) => void pinConversation(item, pinned)}
+      onRename={openEdit} onDelete={openDelete}
       onMore={() => void loadMoreGroups()} />
     <div className="group-chat-main" data-testid="group-chat-main">
     <header className="group-chat-header">
-      {groupId && <button type="button" onClick={() => onSelect()} aria-label={t('groupChat.back')}
+      {groupId && <button type="button" className="group-chat-back" onClick={() => onSelect()} aria-label={t('groupChat.back')}
         data-testid="group-chat-back"><ChevronLeft size={19} /></button>}
       <h1 data-testid="group-chat-title">{group?.name || t('groupChat.open')}</h1>
-      {group && <span className="group-chat-muted" data-testid="group-chat-member-count"><Users size={15} /> {group.members.length + 1}</span>}
+      {group && <span className="group-chat-header-counts" data-testid="group-chat-member-count">
+        <span title={t('groupChat.humanCount', { count: 1 })} aria-label={t('groupChat.humanCount', { count: 1 })}
+          data-testid="group-chat-human-count"><UserRound size={12} aria-hidden />1</span>
+        <span title={t('groupChat.agentCount', { count: agentCount })} aria-label={t('groupChat.agentCount', { count: agentCount })}
+          data-testid="group-chat-agent-count"><Bot size={12} aria-hidden />{agentCount}</span>
+      </span>}
       <div className="group-chat-header-actions">
         {group ? <>
-          <button type="button" aria-label={t('groupChat.files')} aria-pressed={panel === 'files'}
-            onClick={() => setPanel(panel === 'files' ? null : 'files')} data-testid="group-chat-toggle-files"><FolderOpen size={19} /></button>
-          <button type="button" aria-label={t('groupChat.settings')} aria-pressed={panel === 'members'}
-            onClick={() => setPanel(panel === 'members' ? null : 'members')} data-testid="group-chat-toggle-members"><Settings size={19} /></button>
+          <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.files')} aria-pressed={panel === 'files'}
+            title={t('groupChat.files')} onClick={() => setPanel(panel === 'files' ? null : 'files')}
+            data-testid="group-chat-toggle-files"><Folder size={18} /></button>
+          <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.settings')} aria-pressed={panel === 'members'}
+            title={t('groupChat.settings')} onClick={() => setPanel(panel === 'members' ? null : 'members')}
+            data-testid="group-chat-toggle-members"><Settings size={18} /></button>
         </> : null}
       </div>
     </header>
@@ -395,7 +430,8 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
     {loading ? <div className="group-chat-empty" data-testid="group-chat-loading">{t('groupChat.loading')}</div> : !groupId ? (
       <div className="group-chat-directory" data-testid="group-chat-directory">
         <div className="group-chat-empty" data-testid="group-chat-directory-empty">
-          <Users size={40} /><h2>{t('groupChat.welcome')}</h2><p>{t('groupChat.welcomeHint')}</p>
+          <span className="group-chat-avatar group-chat-group-avatar group-chat-empty-icon"><MessagesSquare size={30} aria-hidden /></span>
+          <h2>{t('groupChat.welcome')}</h2><p>{t('groupChat.welcomeHint')}</p>
           <button type="button" className="btn primary" onClick={() => setPicker('create')}
             data-testid="group-chat-empty-create">{t('groupChat.create')}</button>
         </div>
@@ -409,15 +445,27 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
         }}>
           {olderOffset > 0 && <button type="button" className="group-chat-text-button" disabled={loadingOlder}
             onClick={() => void loadOlder()} data-testid="group-chat-load-older">{t('groupChat.older')}</button>}
-          {!timeline.length && <div className="group-chat-empty" data-testid="group-chat-empty">
-            <Users size={36} /><h2>{t('groupChat.start')}</h2><p>{t('groupChat.mentionHint')}</p>
+          {!timeline.length && <div className="group-chat-empty group-chat-start" data-testid="group-chat-empty">
+            <span className="group-chat-avatar-stack" data-testid="group-chat-start-avatars">
+              {(group.members.length ? group.members.slice(0, 4).map((member) => member.member_name) : ['user'])
+                .map((member) => <TeamMemberAvatar key={member} member={member} className="group-chat-stack-avatar" alt="" />)}
+            </span>
+            <h2>{t('groupChat.start')}</h2><p>{t('groupChat.startHint')}</p>
+            <div className="group-chat-suggestions" data-testid="group-chat-suggestions">
+              {(['bugTeam', 'brainstormTeam', 'customTeam'] as const).map((key) => <button type="button" key={key}
+                className="group-chat-suggestion" disabled={deleting || Boolean(questions[0])} onClick={() => {
+                  setInput(t(`groupChat.suggestions.${key}`)); textarea.current?.focus();
+                }} data-testid="group-chat-suggestion" data-variant={key}>
+                <span>{t(`groupChat.suggestions.${key}`)}</span><ChevronRight size={16} aria-hidden />
+              </button>)}
+            </div>
           </div>}
           {timeline.map((item) => item.execution ? <ExecutionCard key={item.id} execution={item.execution}
-            result={executionResult(item.execution, messages)} /> : item.message && (
+            result={executionResult(item.execution, messages)} renderAvatar={memberAvatar} /> : item.message && (
             <article key={item.id} id={`group-chat-message-${item.id}`} className={`group-chat-message${item.message.sender === 'user' ? ' is-user' : ''}`}
               data-testid="group-chat-message" data-variant={item.id}>
               {item.message.sender !== 'user' && <header data-testid="group-chat-message-header">
-                <span className="group-chat-avatar"><Users size={17} /></span>
+                <TeamMemberAvatar member={item.message.sender} className="group-chat-message-avatar" alt="" />
                 <strong>{item.message.sender_name || item.message.sender}</strong>
                 <time dateTime={new Date(item.at).toISOString()}>{new Date(item.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
               </header>}
@@ -454,66 +502,89 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
               {group.members.map((member) => <button type="button" key={member.member_name}
                 disabled={sending} onClick={() => mention(member.member_name)}
                 data-testid="group-chat-mention-option" data-variant={member.member_name}>
-                <Users size={16} /><span>{member.display_name || member.member_name}</span>
-                {member.kind === 'agent_group' && <small>{t('groupChat.team')}</small>}
+                {memberAvatar(member.member_name)}<span>{member.display_name || member.member_name}</span>
+                {member.kind === 'agent_group' && <small className="group-chat-tag is-team">{t('groupChat.team')}</small>}
               </button>)}
             </div>}
             <footer>
-              <button type="button" disabled={sending} onClick={() => setMentionMenu(!mentionMenu)}
-                aria-label={t('groupChat.mention')} aria-expanded={mentionMenu} data-testid="group-chat-mention"><AtSign size={18} /></button>
+              <button type="button" className="group-chat-icon-button" disabled={sending} onClick={() => setMentionMenu(!mentionMenu)}
+                aria-label={t('groupChat.mention')} title={t('groupChat.mention')} aria-expanded={mentionMenu}
+                data-testid="group-chat-mention"><AtSign size={17} /></button>
               <span className="group-chat-muted" data-testid="group-chat-send-hint">{t('groupChat.sendHint')}</span>
               <ModelPicker value={modelName ?? defaultModel} selection={modelSelection} includeModelGroups={false}
                 disabled={sending} onChange={setModelName} onSelectionChange={setModelSelection}
                 testIdPrefix="group-chat-model" />
               <button type="submit" className="group-chat-send" disabled={!input.trim() || sending || !connected || deleting}
-                aria-label={t('groupChat.send')} data-testid="group-chat-send"><Send size={18} /></button>
+                aria-label={t('groupChat.send')} data-testid="group-chat-send"><Send size={16} /></button>
             </footer>
           </form>}
+          <p className="group-chat-ai-notice" data-testid="group-chat-ai-notice">{t('groupChat.aiNotice')}</p>
         </div>
       </div>
-      {panel && <aside className="group-chat-panel" data-testid="group-chat-panel" data-variant={panel}>
-        <header><h2>{t(panel === 'files' ? 'groupChat.files' : 'groupChat.settings')}</h2>
-          <button type="button" aria-label={t('common.close')} onClick={() => setPanel(null)} data-testid="group-chat-panel-close"><X size={18} /></button>
-        </header>
-        {panel === 'files' ? <div className="group-chat-file-list" data-testid="group-chat-file-list">
+    </div> : <div className="group-chat-empty" data-testid="group-chat-unavailable">{t('groupChat.unavailable')}</div>}
+    </div>
+    {group && panel && <aside className="group-chat-panel" data-testid="group-chat-panel" data-variant={panel}>
+      <button type="button" className="group-chat-icon-button group-chat-panel-close" aria-label={t('common.close')}
+        onClick={() => setPanel(null)} data-testid="group-chat-panel-close"><X size={18} /></button>
+      {panel === 'files' ? <>
+        <header><h2>{t('groupChat.files')}</h2></header>
+        <div className="group-chat-file-list" data-testid="group-chat-file-list">
           {!files.size && <p className="group-chat-muted" data-testid="group-chat-no-files">{t('groupChat.noFiles')}</p>}
           {olderOffset > 0 && <button type="button" className="group-chat-text-button" disabled={loadingOlder}
             onClick={() => void loadOlder()} data-testid="group-chat-files-older">{t('groupChat.olderFiles')}</button>}
           {[...files.entries()].map(([id, file]) => <Attachment key={id} file={file} />)}
-        </div> : <>
-          <div className="group-chat-group-info"><span className="group-chat-avatar"><Users size={30} /></span>
-            <h3>{group.name}</h3><p>{group.description}</p>
-            <button type="button" className="group-chat-text-button" onClick={() => {
-              setError(''); setName(group.name); setDescription(group.description); setEditing(true);
-            }} data-testid="group-chat-edit">{t('groupChat.edit')}</button>
-          </div>
-          <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">{t('groupChat.members')}</h3>
-            <button type="button" onClick={() => setPicker('members')} aria-label={t('groupChat.addMembers')}
-              disabled={group.members.length >= 10} data-testid="group-chat-add-members"><Plus size={19} /></button>
-          </div>
-          <div className="group-chat-member-list" data-testid="group-chat-member-list">
-            <div className="group-chat-member-row" data-testid="group-chat-self"><span className="group-chat-avatar"><Users size={18} /></span>{t('groupChat.you')}</div>
-            {group.members.map((member) => <button type="button" className="group-chat-member-row" key={member.member_name}
-              disabled={sending} onClick={() => mention(member.member_name)}
-              data-testid="group-chat-member" data-variant={member.member_name}>
-              <span className="group-chat-avatar"><Users size={18} /></span><span>{member.display_name || member.member_name}</span>
-              {member.kind === 'agent_group' && <small>{t('groupChat.team')}</small>}
-            </button>)}
-          </div>
-          <button type="button" className="btn group-chat-delete" onClick={() => { setError(''); setDeleteOpen(true); }}
-            data-testid="group-chat-delete">{t('groupChat.delete')}</button>
-        </>}
-      </aside>}
-    </div> : <div className="group-chat-empty" data-testid="group-chat-unavailable">{t('groupChat.unavailable')}</div>}
-    </div>
+        </div>
+      </> : <>
+        <div className="group-chat-group-info">
+          <span className="group-chat-avatar group-chat-group-avatar"><MessagesSquare size={28} aria-hidden /></span>
+          <h3 data-testid="group-chat-info-name">
+            <span>{group.name}</span>
+            <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.edit')} title={t('groupChat.edit')}
+              onClick={() => openEdit(group)} data-testid="group-chat-edit"><PencilLine size={14} /></button>
+          </h3>
+          {group.description && <p data-testid="group-chat-info-description">{group.description}</p>}
+        </div>
+        <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">{t('groupChat.members')}</h3>
+          <span>
+            <button type="button" className="group-chat-icon-button" onClick={() => setPicker('members')}
+              aria-label={t('groupChat.addMembers')} title={t('groupChat.addMembers')}
+              disabled={group.members.length >= 10} data-testid="group-chat-add-members"><Plus size={18} /></button>
+            <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.searchMembers')}
+              title={t('groupChat.searchMembers')} aria-pressed={memberSearch} onClick={() => {
+                setMemberSearch(!memberSearch); setMemberQuery('');
+              }} data-testid="group-chat-search-members"><Search size={16} /></button>
+          </span>
+        </div>
+        {memberSearch && <label className="group-chat-search group-chat-member-search">
+          <Search size={14} aria-hidden />
+          <input autoFocus value={memberQuery} placeholder={t('groupChat.searchMembers')} aria-label={t('groupChat.searchMembers')}
+            onChange={(event) => setMemberQuery(event.target.value)} data-testid="group-chat-member-search-input" />
+        </label>}
+        <div className="group-chat-member-list" data-testid="group-chat-member-list">
+          {showSelf && <div className="group-chat-member-row" data-testid="group-chat-self">
+            <TeamMemberAvatar member="user" className="group-chat-member-avatar" alt="" />
+            <span>{t('groupChat.you')}</span>
+          </div>}
+          {visibleMembers.map((member) => <button type="button" className="group-chat-member-row" key={member.member_name}
+            disabled={sending} onClick={() => mention(member.member_name)} title={t('groupChat.mention')}
+            data-testid="group-chat-member" data-variant={member.member_name}>
+            <TeamMemberAvatar member={member.member_name} className="group-chat-member-avatar" alt="" />
+            <span>{member.display_name || member.member_name}</span>
+            {member.kind === 'agent_group' && <small className="group-chat-tag is-team">{t('groupChat.team')}</small>}
+          </button>)}
+          {!showSelf && !visibleMembers.length && <p className="group-chat-muted" data-testid="group-chat-no-member-match">
+            {t('groupChat.noMemberMatch')}</p>}
+        </div>
+      </>}
+    </aside>}
     {picker && <MemberPicker group={picker === 'members' ? group ?? undefined : undefined} onClose={() => setPicker(null)} onSaved={(saved) => {
       setPicker(null);
       void useWorkspaceStore.getState().refreshWorkspaceData();
       if (picker === 'members') { setGroup(saved); void loadDirectory(); }
       else onSelect(saved.group_id);
     }} />}
-    <Dialog open={editing} titleId="group-chat-edit-title" className="group-chat-small-dialog" closeDisabled={saving}
-      onCancel={() => setEditing(false)}>
+    <Dialog open={Boolean(editTarget)} titleId="group-chat-edit-title" className="group-chat-small-dialog" closeDisabled={saving}
+      onCancel={() => setEditTarget(null)}>
       {error && <p role="alert" className="group-chat-error" data-testid="group-chat-edit-error">{error}</p>}
       <form data-testid="group-chat-edit-form" onSubmit={(event) => { event.preventDefault(); void update(); }}>
         <h2 id="group-chat-edit-title">{t('groupChat.edit')}</h2>
@@ -522,18 +593,19 @@ export function GroupChatWorkspace({ groupId, onSelect }: {
         <label>{t('groupChat.description')}<textarea value={description} maxLength={2000} disabled={saving}
           onChange={(event) => setDescription(event.target.value)} data-testid="group-chat-edit-description" /></label>
         <footer className="group-chat-dialog-footer"><button type="button" className="btn" disabled={saving}
-          onClick={() => setEditing(false)} data-testid="group-chat-edit-cancel">{t('common.cancel')}</button>
+          onClick={() => setEditTarget(null)} data-testid="group-chat-edit-cancel">{t('common.cancel')}</button>
           <button type="submit" className="btn primary" disabled={saving || !name.trim()}
             data-testid="group-chat-edit-save">{t('common.save')}</button></footer>
       </form>
     </Dialog>
-    <Dialog open={deleteOpen} titleId="group-chat-delete-title" className="group-chat-small-dialog"
-      closeDisabled={deleting} onCancel={() => setDeleteOpen(false)}>
+    <Dialog open={Boolean(deleteTarget)} titleId="group-chat-delete-title" className="group-chat-small-dialog"
+      closeDisabled={deleting} onCancel={() => setDeleteTarget(null)}>
       <div data-testid="group-chat-delete-dialog"><h2 id="group-chat-delete-title">{t('groupChat.delete')}</h2>
         {error && <p role="alert" className="group-chat-error" data-testid="group-chat-delete-error">{error}</p>}
+        {deleteTarget && <p className="group-chat-delete-name" data-testid="group-chat-delete-name">{deleteTarget.name}</p>}
         <p data-testid="group-chat-delete-warning">{t('groupChat.deleteWarning')}</p>
         <footer className="group-chat-dialog-footer"><button type="button" className="btn" disabled={deleting}
-          onClick={() => setDeleteOpen(false)} data-testid="group-chat-delete-cancel">{t('common.cancel')}</button>
+          onClick={() => setDeleteTarget(null)} data-testid="group-chat-delete-cancel">{t('common.cancel')}</button>
           <button type="button" className="btn group-chat-delete" disabled={deleting} onClick={() => void remove()}
             data-testid="group-chat-delete-confirm">{t('groupChat.delete')}</button></footer>
       </div>

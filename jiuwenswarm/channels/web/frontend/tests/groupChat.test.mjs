@@ -189,7 +189,8 @@ test('task results match exact execution or message IDs and the actual member', 
 const sidebarBundlePath = 'node_modules/.cache/group-chat/ChatDirectory.mjs';
 await build({
   entryPoints: ['src/features/groupChat/ChatDirectory.tsx'], outfile: sidebarBundlePath,
-  bundle: true, platform: 'node', format: 'esm', jsx: 'automatic', external: ['react', 'react/jsx-runtime', 'lucide-react'],
+  bundle: true, platform: 'node', format: 'esm', jsx: 'automatic',
+  external: ['react', 'react/jsx-runtime', 'react-dom', 'lucide-react'],
   plugins: [{ name: 'sidebar-translations', setup(plugin) {
     plugin.onResolve({ filter: /^react-i18next$/ }, () => ({ path: 'translations', namespace: 'sidebar-test' }));
     plugin.onLoad({ filter: /.*/, namespace: 'sidebar-test' }, () => ({
@@ -208,7 +209,7 @@ const sidebarProps = {
     { group_id: 'two', session_id: 'session-two', name: 'Travel group', description: 'Plan', members: [], status: 'ready' },
   ],
   activeId: 'two', pinnedIds: new Set(['session-one']), pinningId: null, loading: false, hasMore: false,
-  loadingMore: false, onSelect() {}, onCreate() {}, onPin() {}, onMore() {},
+  loadingMore: false, onSelect() {}, onCreate() {}, onPin() {}, onRename() {}, onDelete() {}, onMore() {},
 };
 
 test('chat sidebar keeps creation, pinned and ordinary conversations alongside the active chat', () => {
@@ -218,8 +219,9 @@ test('chat sidebar keeps creation, pinned and ordinary conversations alongside t
   assert.match(html, /data-variant="conversations"/);
   assert.ok(html.indexOf('Pinned group') < html.indexOf('Travel group'));
   assert.match(html, /aria-current="page"/);
-  assert.match(html, /aria-label="groupChat.unpin" aria-pressed="true"/);
-  assert.match(html, /aria-label="groupChat.pin" aria-pressed="false"/);
+  assert.equal((html.match(/data-testid="group-chat-conversation-more"/g) || []).length, 2);
+  assert.match(html, /aria-label="groupChat.moreActions"/);
+  assert.match(html, /aria-haspopup="menu" aria-expanded="false"/);
   assert.equal((html.match(/data-testid="group-chat-directory-item"/g) || []).length, 2);
 });
 
@@ -229,7 +231,7 @@ test('empty sidebar retains the creation action and pagination remains available
   assert.match(empty, /groupChat.noConversations/);
   const busy = renderToStaticMarkup(createElement(ChatDirectory, { ...sidebarProps, pinningId: 'one', hasMore: true }));
   assert.match(busy, /data-testid="group-chat-more-groups"/);
-  assert.equal((busy.match(/class="group-chat-pin" disabled=""/g) || []).length, 2);
+  assert.equal((busy.match(/data-testid="group-chat-conversation-more"/g) || []).length, 2);
 });
 
 test('installed Hub experts and teams submit runtime package IDs while preserving catalog identities', () => {
