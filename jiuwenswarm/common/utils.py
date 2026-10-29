@@ -48,9 +48,7 @@ from ruamel.yaml import YAML
 # 布局与桌面端 <dataRoot>/logs/YYYY-MM-DD/ 一致，便于反馈打包按天过滤。
 # 注意：agent-core 侧有同名同语义实现
 # （openjiuwen/core/common/logging/dated_file_handler.py），两份需同步维护。
-# 日内上限 10MB 对齐桌面端 logger.ts 的 MAX_BYTES——2MB 时滚动过于频繁，
-# 排障窗口太短（gateway 高流量时段几分钟就轮掉一档）。
-_LOG_DATED_MAX_BYTES = 10 * 1024 * 1024
+_LOG_DATED_MAX_BYTES = 2 * 1024 * 1024
 _LOG_RETENTION_DAYS = 90
 _DATED_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
