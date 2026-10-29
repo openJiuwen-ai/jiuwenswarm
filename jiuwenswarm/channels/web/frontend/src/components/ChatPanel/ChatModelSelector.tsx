@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   isConversationModelGroupBlocked,
   supportsMultiModelCollaboration,
@@ -21,6 +21,7 @@ import type { ModelSelection } from '../../types';
 import ModelPicker from '../ModelPicker';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { useTaskFullDuplexSessionId } from '../../features/taskFullDuplex/duplexSession';
 
 function openModelSettings(): void {
   requestSettingsModule('models');
@@ -46,10 +47,16 @@ export default function ChatModelSelector({
   allowModelGroups?: boolean;
 }): JSX.Element | null {
   const { t } = useTranslation();
-  const models = useSessionStore((state) => state.chatAvailableModels);
+  const allModels = useSessionStore((state) => state.chatAvailableModels);
   const modelGroups = useSessionStore((state) => state.availableModelGroups);
   const activeSessionId = useChatStore((state) => state.activeSessionId);
   const boundSessionId = sessionId || activeSessionId;
+  // The duplex main chat does not support free models: hide them and heal a free selection (#5855).
+  const duplexActive = useTaskFullDuplexSessionId() === boundSessionId && Boolean(boundSessionId);
+  const models = useMemo(
+    () => (duplexActive ? allModels.filter((model) => model.is_free !== true) : allModels),
+    [allModels, duplexActive],
+  );
   const organizationEnabled = useTeamOrganizationUiEnabled();
   const selectedChildTeam = useTeamSelectorStore((state) => {
     if (!organizationEnabled) return undefined;
@@ -183,6 +190,7 @@ export default function ChatModelSelector({
         }}
         disabled={disabled || Boolean(selectedChildTeam)}
         onAddModel={openModelSettings}
+        excludeFreeModels={duplexActive}
       />
       {selectionError ? (
         <div className="chat-model-selector__error" role="alert" data-testid="chat-panel-model-selector-error">

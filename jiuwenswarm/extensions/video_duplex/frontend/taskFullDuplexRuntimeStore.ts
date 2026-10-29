@@ -3,6 +3,7 @@ import { toast } from "../../../channels/web/frontend/src/components/ui/Toast/to
 
 import type { VideoLivePanelHandle } from "./VideoLivePanel";
 import { isTaskDuplexScreenSharingEnabled } from "../../../channels/web/frontend/src/features/taskFullDuplex/mediaPreferences";
+import { setTaskFullDuplexSessionId } from "../../../channels/web/frontend/src/features/taskFullDuplex/duplexSession";
 import { describeDuplexError } from "./duplexErrorMessage";
 
 export type TaskFullDuplexRuntimeState = "idle" | "starting" | "active";
@@ -67,6 +68,7 @@ function publish(update: Partial<TaskFullDuplexRuntimeSnapshot>): void {
     errorToast = key;
   }
   snapshot = next;
+  setTaskFullDuplexSessionId(next.state === "idle" ? null : next.sessionId);
   listeners.forEach((listener) => listener());
 }
 
