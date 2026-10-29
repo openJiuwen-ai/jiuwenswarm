@@ -98,293 +98,13 @@ _APPROVAL_EVENT_ACTIONS = {
     "deny": "reject",
     "refuse": "reject",
 }
-# 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）。
+# 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）
 _APPROVAL_EXPIRE_S = 30 * 60
 
-# ==================== AskUser 结构化选项卡（A2A artifact-update + data part） ====================
-# 出站：chat.ask_user_question → artifact-update 帧（final=false，任务等输入），
-# artifact.parts 挂 text part（人类可读正文）+ data part（commands/ToolExecute/
-# Invoke 指令：question_id/multi_select/options[].recommended/text_input，驱动端侧
-# 选项卡）。入站：端侧结构化应答 data part commands/ToolExecute/InvokeRsp
-# （question_id 对齐 + selected_options/custom_text + user_cancel），转成 interrupt
-# resume 的 snake_case answers；旧 askUserAnswer 形态（camelCase）保留兼容。
-_ASK_USER_COMMAND_NAMESPACE = "ToolExecute"
-_ASK_USER_COMMAND_NAME = "Invoke"
-_ASK_USER_ANSWER_COMMAND_NAME = "InvokeRsp"
-
-
-def _build_ask_user_command_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """chat.ask_user_question 事件载荷 → 出站 ToolExecute/Invoke 指令 payload。
-
-    出站契约：question_id 供端侧 InvokeRsp 原样带回对齐（answers 按
-    question_id 关联，不再依赖 question 文本）；multi_select/options[].label/
-    description/recommended 驱动选项卡渲染；text_input 显式声明自由文本输入
-    （替代旧"options 空数组 = 自由输入"约定）。label 原样下发，端侧回传时必须
-    原样返回（语义映射靠 interface.py 白名单精确命中）。options[].index 从 1
-    开始，保留给文本回退路径按序号匹配（用户直接回复"1"选中第一项）。
-    """
-    questions_out: list[dict[str, Any]] = []
-    questions = payload.get("questions") or []
-    if not isinstance(questions, list):
-        questions = []
-    fallback_id = str(payload.get("request_id") or "").strip()
-    seen_ids: set[str] = set()
-    for q in questions:
-        if not isinstance(q, dict):
-            continue
-        options_out: list[dict[str, Any]] = []
-        raw_options = q.get("options") or []
-        if not isinstance(raw_options, list):
-            raw_options = []
-        for idx, opt in enumerate(raw_options, start=1):
-            if not isinstance(opt, dict):
-                continue
-            label = str(opt.get("label") or "").strip()
-            if not label:
-                continue
-            # 序号 + label + recommended（推荐标记）：不带 description 小字说明
-            # （端侧渲染成选项下方小字，如 Other 的"Custom input"，用户不要）。
-            item: dict[str, Any] = {
-                "index": idx,
-                "label": label,
-            }
-            if opt.get("recommended"):
-                item["recommended"] = True
-            options_out.append(item)
-        question_out: dict[str, Any] = {
-            "question": str(q.get("question") or "").strip(),
-        }
-        # question_id：优先 tool_call_id（权限审批卡与工具调用关联），缺省用事件
-        # request_id；同 id 多问题（一次 ask_user 多问）加 #序号 消歧，保证
-        # InvokeRsp 回传对齐唯一。
-        question_id = (
-            str(q.get("tool_call_id") or "").strip()
-            or str(q.get("toolCallId") or "").strip()
-            or fallback_id
-        )
-        unique_id = question_id
-        dup = 1
-        while unique_id in seen_ids:
-            dup += 1
-            unique_id = f"{question_id}#{dup}"
-        seen_ids.add(unique_id)
-        question_out["question_id"] = unique_id
-        # 不下发 header（短标签）：端侧渲染成卡片副标题，PC 端卡片无此元素
-        # （只有问题文本 + 序号 + label + description），对齐 PC 端展示。
-        question_out["multi_select"] = bool(q.get("multi_select"))
-        if q.get("tool_call_id"):
-            question_out["tool_call_id"] = str(q.get("tool_call_id"))
-        if q.get("tool_name"):
-            question_out["tool_name"] = str(q.get("tool_name"))
-        if q.get("tool_args") is not None:
-            question_out["tool_args"] = q.get("tool_args")
-        question_out["options"] = options_out
-        # text_input：无选项 → 只能自由作答（required）；有选项 → 自由文本为
-        # 选填补充（agent-server 侧已追加 Other 选项，文本回退路径常驻；权限场景
-        # 自由文本只作拒绝理由，interface.py fail-closed，不会误授权）。
-        # placeholder 为端侧输入框占位文案。
-        question_out["text_input"] = {
-            "enabled": True,
-            "placeholder": "请输入内容" if not options_out else "也可输入其他内容",
-            "required": not options_out,
-        }
-        questions_out.append(question_out)
-
-    # payload 只发契约字段（source + questions）：不发 expiresAt 等契约外字段，
-    # 避免端侧严格 schema 校验失败；服务端待答表过期自管（_APPROVAL_EXPIRE_S）。
-    invoke_payload: dict[str, Any] = {
-        "ask_user_id": uuid.uuid4().hex[:16],
-        "source": str(payload.get("source") or "").strip() or "permission_interrupt",
-        "questions": questions_out,
-    }
-    return {
-        "header": {"namespace": _ASK_USER_COMMAND_NAMESPACE, "name": _ASK_USER_COMMAND_NAME},
-        "payload": invoke_payload,
-    }
-
-
-def _build_ask_user_prompt_text(source: str, questions: list) -> str:
-    """问题正文（text part）——只放模型要问的问题本身。
-
-    结构化选项卡（data part 的 ToolExecute/Invoke 指令）承载 header/选项
-    渲染与点选回传，text part 不再重复"想向您确认一个问题"标题、标签行、
-    可选项列表与回复约定话术（端侧弹卡后这些内容在气泡里重复且生硬）。
-    多问题逐行拼接。source 参数保留兼容既有调用点，正文不再区分来源。
-    """
-    del source
-    lines = []
-    for q in questions:
-        if not isinstance(q, dict):
-            continue
-        question = str(q.get("question") or "").strip()
-        if question:
-            lines.append(question)
-    return "\n".join(lines)
-
-
-def _parse_ask_user_answer_part(data: dict[str, Any]) -> dict[str, Any] | None:
-    """入站 data part → 结构化应答；无 AskUser 应答返回 None。
-
-    三种形态：
-    ① ToolExecute/InvokeRsp 指令（端侧结构化应答契约）：commands[].payload
-       {user_cancel, responder_device_id, answers[{question_id, selected_options,
-       custom_text}]}。帧内不带 source（由待答复登记表回填），question_id 在
-       路由层经 XiaoyiChannel._attach_ask_user_answer_context 还原为 question
-       文本；responder_device_id 为抢答设备标识（多端同步场景），
-       透传进 resume 供审计/UI 展示"由指定设备完成选择"。
-    ② 旧 askUserAnswer 形态（camelCase，兼容已发端侧）：{source, answers[]}。
-    ③ E2A 风格 resume 载荷（对齐桌面端 chat.send 应答参数，snake_case）：
-       data 顶层 {request_id?, source?, answers[{question, selected_options,
-       custom_input}]}，question 文本对齐——端侧可直接复用桌面端报文结构，
-       放 A2A message/stream 的 data part 发给云端。
-
-    answers 出站给 interrupt resume 前还需经
-    XiaoyiChannel._build_answer_from_ask_user 白名单校验（权限类中断 fail-closed）。
-    """
-    if not isinstance(data, dict):
-        return None
-
-    commands = data.get("commands")
-    if isinstance(commands, list):
-        for command in commands:
-            if not isinstance(command, dict):
-                continue
-            header = command.get("header")
-            if not isinstance(header, dict):
-                continue
-            if (
-                str(header.get("namespace") or "").strip() != _ASK_USER_COMMAND_NAMESPACE
-                or str(header.get("name") or "").strip() != _ASK_USER_ANSWER_COMMAND_NAME
-            ):
-                continue
-            rsp = command.get("payload")
-            if not isinstance(rsp, dict):
-                return None
-            user_cancel = bool(rsp.get("user_cancel"))
-            responder_device_id = str(rsp.get("responder_device_id") or "").strip()
-            answers: list[dict[str, Any]] = []
-            for a in rsp.get("answers") or []:
-                if not isinstance(a, dict):
-                    continue
-                selected = a.get("selected_options")
-                if isinstance(selected, str):
-                    selected = [selected]
-                if not isinstance(selected, list):
-                    selected = []
-                cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
-                answers.append({
-                    "question_id": str(a.get("question_id") or "").strip(),
-                    "question": str(a.get("question") or "").strip(),
-                    "selected_options": cleaned,
-                    "custom_input": str(a.get("custom_text") or "").strip(),
-                })
-            if not answers and not user_cancel:
-                return None
-            return {
-                "source": "",
-                "user_cancel": user_cancel,
-                "responder_device_id": responder_device_id,
-                "answers": answers,
-            }
-
-    # ③ E2A 风格 resume 载荷：data 顶层 answers（snake_case）+ request_id/source
-    # 标识（对齐桌面端 chat.send 应答参数，question 文本对齐）。端侧可直接复用
-    # 桌面端报文结构放 A2A message/stream 的 data part 发给云端。variables 等
-    # 其他 data part 无顶层 answers 键，不会误判。
-    raw_answers = data.get("answers")
-    if isinstance(raw_answers, list) and (
-        str(data.get("request_id") or "").strip()
-        or str(data.get("source") or "").strip()
-    ):
-        answers: list[dict[str, Any]] = []
-        for a in raw_answers:
-            if not isinstance(a, dict):
-                continue
-            selected = a.get("selected_options")
-            if isinstance(selected, str):
-                selected = [selected]
-            if not isinstance(selected, list):
-                selected = []
-            cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
-            answers.append({
-                "question": str(a.get("question") or "").strip(),
-                "selected_options": cleaned,
-                "custom_input": str(a.get("custom_input") or "").strip(),
-            })
-        if answers:
-            return {
-                "source": str(data.get("source") or "").strip(),
-                "user_cancel": False,
-                "answers": answers,
-            }
-        return None
-
-    answer = data.get("askUserAnswer")
-    if not isinstance(answer, dict):
-        return None
-    source = str(answer.get("source") or "").strip()
-    raw_answers = answer.get("answers")
-    if not isinstance(raw_answers, list):
-        return None
-    answers = []
-    for a in raw_answers:
-        if not isinstance(a, dict):
-            continue
-        selected = a.get("selectedOptions")
-        if isinstance(selected, str):
-            selected = [selected]
-        if not isinstance(selected, list):
-            selected = []
-        cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
-        answers.append({
-            "question": str(a.get("question") or "").strip(),
-            "selected_options": cleaned,
-            "custom_input": str(a.get("customInput") or "").strip(),
-        })
-    if not source or not answers:
-        return None
-    return {"source": source, "user_cancel": False, "answers": answers}
-
-
-def _parse_invoke_rsp_agent_event(message: dict[str, Any]) -> dict[str, Any] | None:
-    """AgentEvent/InvokeRsp 事件（云端多端同步回传形态）→ 结构化应答。
-
-    云端把端侧 InvokeRsp 以 AgentEvent 通道回传（挂 content.events 等帧内
-    任意位置，与 PermissionReply 同通道），payload 与 InvokeRsp 指令同构：
-    {user_cancel, source?, answers[{question_id, selected_options, custom_text}]}。
-    question_id 对齐（不带 question 文本），路由层经待答表映射还原。
-    """
-    from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.self_evolution import (
-        find_agent_event,
-    )
-
-    event = find_agent_event(message, "InvokeRsp")
-    if not isinstance(event, dict):
-        return None
-    rsp = event.get("payload")
-    if not isinstance(rsp, dict):
-        return None
-    user_cancel = bool(rsp.get("user_cancel"))
-    source = str(rsp.get("source") or "").strip()
-    answers: list[dict[str, Any]] = []
-    for a in rsp.get("answers") or []:
-        if not isinstance(a, dict):
-            continue
-        selected = a.get("selected_options")
-        if isinstance(selected, str):
-            selected = [selected]
-        if not isinstance(selected, list):
-            selected = []
-        cleaned = [str(s).strip() for s in selected if str(s or "").strip()]
-        answers.append({
-            "question_id": str(a.get("question_id") or "").strip(),
-            "question": str(a.get("question") or "").strip(),
-            "selected_options": cleaned,
-            "custom_input": str(a.get("custom_text") or "").strip(),
-        })
-    if not answers and not user_cancel:
-        return None
-    return {"source": source, "user_cancel": user_cancel, "answers": answers}
+_APPROVAL_REPLY_HINT = (
+    "请直接回复：同意（仅本次）/ 会话内允许 / 永久允许 / 拒绝。"
+    "回复其他内容将视为拒绝，并把该内容作为反馈转达给智能体。"
+)
 
 
 def _normalize_approval_text(text: str) -> str:
@@ -828,8 +548,6 @@ class XiaoyiChannel(BaseChannel):
         self._scheduled_device_command_lock = asyncio.Lock()
         # clientVariables 审批桥接：待答复审批（logical_session → 审批上下文）
         self._pending_approvals: dict[str, dict[str, Any]] = {}
-        # AskUser 超时兜底任务：周期扫描待答表，超时未应答自动选默认选项 resume
-        self._ask_user_timeout_task: asyncio.Task | None = None
         self._reload_permissions_cb: Callable[[], Any] | None = None
         # 流式审计（诊断取证）：task_key → 本轮"正文/思考"帧计数（见 _note_stream_audit）
         self._stream_audit: dict[str, dict[str, Any]] = {}
@@ -889,8 +607,6 @@ class XiaoyiChannel(BaseChannel):
         # V2: 启动 ws 保活任务，周期发 status-update 重置手机端空闲计时
         if self._team_ws_keepalive_interval > 0:
             self._ws_keepalive_task = asyncio.create_task(self._ws_keepalive_loop())
-        # AskUser 超时兜底：超时未应答自动选默认选项续跑（见 _ask_user_timeout_loop）
-        self._ask_user_timeout_task = asyncio.create_task(self._ask_user_timeout_loop())
         logger.info("XiaoyiChannel 已启动（客户端模式，双通道）")
 
     async def stop(self) -> None:
@@ -956,10 +672,6 @@ class XiaoyiChannel(BaseChannel):
         if self._ws_keepalive_task and not self._ws_keepalive_task.done():
             self._ws_keepalive_task.cancel()
         self._ws_keepalive_task = None
-        # 取消 AskUser 超时兜底任务
-        if self._ask_user_timeout_task and not self._ask_user_timeout_task.done():
-            self._ask_user_timeout_task.cancel()
-        self._ask_user_timeout_task = None
         # V2: 清理 ws 流式合并缓冲
         for _tid in list(self._ws_flush_tasks.keys()):
             if self._ws_flush_tasks[_tid]:
@@ -1666,22 +1378,6 @@ class XiaoyiChannel(BaseChannel):
                 else get_status_text_for_event(msg.event_type, msg.payload)
             )
             status_state = get_status_state_for_event(msg.event_type, msg.payload)
-            # AskUser/权限审批挂起中（待答复审批已登记）：任务在等用户输入而非
-            # 结束。AgentServer 流收尾的 is_processing=false 事件映射成
-            # completed+final=true 会把手机任务气泡标成"已完成"并关闭等待态——
-            # 降级为 working，应答回传 resume 后的续跑流再走正常终态收尾。
-            # 待答表按逻辑会话登记（xiaoyi_conversation_id），本分支 session_id
-            # 是顶层物理 sessionId——两者可不同，两个键都查。
-            _logical_session = str(
-                (getattr(msg, "metadata", None) or {}).get("xiaoyi_conversation_id")
-                or ""
-            ).strip()
-            if status_state == "completed" and (
-                self._pending_approvals.get(session_id)
-                or (_logical_session and self._pending_approvals.get(_logical_session))
-            ):
-                status_state = "working"
-                status_text = "等待您的确认~"
             # 工具事件：附带结构化 data part（status-update 的 message.parts 里）
             _tool_part = build_tool_call_part(msg.event_type, msg.payload)
             for url_key in list(self._ws_connections.keys()):
@@ -3048,7 +2744,6 @@ class XiaoyiChannel(BaseChannel):
         push_id = ""  # V2: 从 data part 的 systemVariables 提取，webhook 推送寻址 token
         client_variables: dict[str, Any] = {}  # data part 的 variables.clientVariables（workspace/permission 等）
         permission_reply: dict[str, Any] | None = None  # AgentEvent/PermissionReply 审批回执事件
-        ask_user_answer: dict[str, Any] | None = None  # data part 的 askUserAnswer 结构化应答
         file_attachments: list[str] = []
         media_files: list[dict[str, Any]] = []
 
@@ -3095,19 +2790,6 @@ class XiaoyiChannel(BaseChannel):
                         cv = variables.get("clientVariables")
                         if isinstance(cv, dict):
                             client_variables.update(cv)
-                    # AskUser 结构化应答（端侧选项卡点选）：InvokeRsp
-                    # 或旧 askUserAnswer 形态；InvokeRsp 的 source 由待答表回填，
-                    # 此处仅记录帧形状（user_cancel/answers 条数）。
-                    if ask_user_answer is None:
-                        ask_user_answer = _parse_ask_user_answer_part(data)
-                        if ask_user_answer is not None:
-                            logger.info(
-                                "XiaoYi: 识别到 AskUser 结构化应答 source=%s "
-                                "user_cancel=%s answers=%d 条",
-                                ask_user_answer.get("source"),
-                                ask_user_answer.get("user_cancel"),
-                                len(ask_user_answer.get("answers") or []),
-                            )
                     # 审批回执事件（AgentEvent/PermissionReply）：用户点选/结构化回复授权决定
                     events = data.get("events")
                     if isinstance(events, list):
@@ -3262,66 +2944,6 @@ class XiaoyiChannel(BaseChannel):
             logger.warning("XiaoyiChannel failed to update .xiaoyiruntime", exc_info=True)
 
         raw_msg_id = message.get("id")
-        # ==================== ASK USER ANSWER BRIDGE（结构化应答） ====================
-        # 端侧选项卡点选 → askUserAnswer data part。仅含 data part、无 text/file，
-        # 必须在空帧拦截之前解析（否则会被当事件帧丢弃，应答永远到不了）。
-        # 权限类中断（permission/confirm/evolution）对 selected_options 做白名单
-        # 校验，映射不中按拒绝处理（fail-closed），不猜测放行；ask_user_interrupt
-        # 原样透传（自由问答允许选项外文本）。
-        # 云端多端同步回传形态（AgentEvent/InvokeRsp，挂 content.events 等任意
-        # 位置）：data part 三个键均不带时按事件名递归定位，payload 与 InvokeRsp
-        # 指令同构（question_id 对齐 + user_cancel + source）。
-        if ask_user_answer is None:
-            ask_user_answer = _parse_invoke_rsp_agent_event(message)
-        if ask_user_answer is not None:
-            pending = self._pop_pending_approval_for_answer(logical_session)
-            if pending is not None:
-                # InvokeRsp 应答补全上下文（source 回填 + question_id → question
-                # 文本 + user_cancel 空答案合成），后续白名单校验/透传逻辑不变。
-                self._attach_ask_user_answer_context(ask_user_answer, pending)
-                routed = self._build_answer_from_ask_user(
-                    ask_user_answer, pending
-                )
-                if routed is not None:
-                    answer, log_note = routed
-                    resume_answers = self._resume_answers_from_ask_user(
-                        ask_user_answer, answer
-                    )
-                    responder_device_id = str(
-                        ask_user_answer.get("responder_device_id") or ""
-                    ).strip()
-                    logger.info(
-                        f"XiaoYi: askUserAnswer 结构化应答 session={logical_session} "
-                        f"request_id={pending.get('request_id')} answer={answer} "
-                        f"responder_device_id={responder_device_id or '-'} "
-                        f"note={log_note}"
-                    )
-                    await self._route_approval_reply(
-                        message,
-                        answer,
-                        pending,
-                        session_id=session_id,
-                        logical_session=logical_session,
-                        agent_id=agent_id,
-                        device_id=device_id,
-                        push_id=push_id,
-                        answers=resume_answers,
-                        responder_device_id=responder_device_id,
-                    )
-                    return
-                logger.warning(
-                    "XiaoYi: askUserAnswer 结构化应答未构成有效回答，按普通消息处理 "
-                    "session=%s request_id=%s",
-                    logical_session,
-                    pending.get("request_id"),
-                )
-            else:
-                logger.info(
-                    "XiaoYi: askUserAnswer 应答无待答复审批（未发出或已过期/已消费），"
-                    "按普通消息处理 session=%s",
-                    logical_session,
-                )
-        # =================================================================
         # ==================== PERMISSION APPROVAL BRIDGE ====================
         # 本会话存在待答复的权限/确认审批时，把用户回复（文本约定或 PermissionReply
         # data event）转换为 interrupt resume（chat.send + request_id/answers/source）
@@ -3604,168 +3226,6 @@ class XiaoyiChannel(BaseChannel):
         # 其他意见：拒绝并把原文作为反馈（对齐 Web 端 custom_input 语义）
         return {"selected_options": [], "custom_input": feedback}
 
-    def _pop_pending_approval_for_answer(
-        self, logical_session: str
-    ) -> dict[str, Any] | None:
-        """取走会话的待答复审批（过期视为无待答复，不消费）。"""
-        pending = self._pending_approvals.get(logical_session)
-        if not pending:
-            return None
-        if time.time() - float(pending.get("created_at", 0)) > _APPROVAL_EXPIRE_S:
-            self._pending_approvals.pop(logical_session, None)
-            logger.info(
-                f"XiaoYi: 待答复审批已过期，结构化应答按普通消息处理 session={logical_session}"
-            )
-            return None
-        self._pending_approvals.pop(logical_session, None)
-        return pending
-
-    @staticmethod
-    def _attach_ask_user_answer_context(
-        ask_user_answer: dict[str, Any],
-        pending: dict[str, Any],
-    ) -> None:
-        """InvokeRsp 应答补全上下文：source 回填 + question_id → question 文本。
-
-        InvokeRsp 帧内不带 source、answers 按 question_id 对齐
-        （不带 question 文本），而 interrupt resume 按 question 文本对齐
-        （interface.py answers_dict 以 question 为键）。此处用出站登记的
-        question_ids 映射表还原；user_cancel 且无 answers 时按出站问题清单合成
-        空答案（ask_user → 跳过，权限类 → fail-closed 拒绝，语义在
-        _build_answer_from_ask_user 收口）。
-        """
-        if not str(ask_user_answer.get("source") or "").strip():
-            ask_user_answer["source"] = str(pending.get("source") or "").strip()
-        questions_by_id = pending.get("question_ids") or {}
-        questions = pending.get("questions") or []
-        answers = ask_user_answer.get("answers")
-        if not isinstance(answers, list):
-            answers = []
-        for answer in answers:
-            if not isinstance(answer, dict):
-                continue
-            if not str(answer.get("question") or "").strip():
-                answer["question"] = str(
-                    questions_by_id.get(
-                        str(answer.get("question_id") or "").strip(), ""
-                    )
-                )
-        if not answers and ask_user_answer.get("user_cancel"):
-            ask_user_answer["answers"] = [
-                {"question": str(q or ""), "selected_options": [], "custom_input": ""}
-                for q in questions
-            ] or [{"question": "", "selected_options": [], "custom_input": ""}]
-
-    @staticmethod
-    def _build_answer_from_ask_user(
-        ask_user_answer: dict[str, Any],
-        pending: dict[str, Any],
-    ) -> tuple[dict[str, Any], str] | None:
-        """AskUser 结构化应答（InvokeRsp / 旧 askUserAnswer）→ resume answers。
-
-        ask_user_interrupt：answers 原样透传（问题对齐 + 自由文本兜底）。
-        权限类中断（permission/confirm/evolution）：selected_options 必须**精确命中**
-        interface.py 的授权白名单（字符串相等，非模糊匹配）——映射不中一律按拒绝
-        处理（fail-closed），custom_input 只能作拒绝理由、不能授权。
-        user_cancel：ask_user → 空答案续跑（= 跳过该问题）；
-        权限类 → fail-closed 按拒绝，取消本身即拒绝理由。
-        answers 缺失首条时用空答案（= 拒绝 + 未知选项反馈），不猜测放行。
-        """
-        answers = ask_user_answer.get("answers") or []
-        answer = answers[0] if answers and isinstance(answers[0], dict) else None
-        if answer is None:
-            return None
-        source = str(pending.get("source") or "").strip()
-        answer_source = str(ask_user_answer.get("source") or "").strip()
-
-        if ask_user_answer.get("user_cancel"):
-            if source == "ask_user_interrupt" or answer_source == "ask_user_interrupt":
-                return (
-                    {
-                        "question": str(answer.get("question") or ""),
-                        "selected_options": [],
-                        "custom_input": "",
-                    },
-                    "ask_user 取消→跳过",
-                )
-            return (
-                {"selected_options": ["拒绝"], "custom_input": "用户取消了选项卡"},
-                "权限:取消→fail-closed拒绝",
-            )
-
-        if source == "ask_user_interrupt" or answer_source == "ask_user_interrupt":
-            # 自由问答：问题文本对齐（多问题场景靠 question 关联），选项+自由文本
-            # 均为合法答案；空 selected_options + 空 custom_input 表示跳过。
-            resume_answer = {
-                "question": str(answer.get("question") or ""),
-                "selected_options": list(answer.get("selected_options") or []),
-                "custom_input": str(answer.get("custom_input") or ""),
-            }
-            return resume_answer, "ask_user 透传"
-
-        selected = answer.get("selected_options") or []
-        custom_input = str(answer.get("custom_input") or "").strip()
-        first = str(selected[0]).strip() if selected else ""
-
-        # 授权白名单（与 interface.py _build_interactive_input_from_answers 同源）：
-        # 允许一次 / 会话内记住 / 永久记住 / 拒绝。
-        if first in ("approve", "本次允许", "Approve", "Proceed", "批准", "开始执行"):
-            return {"selected_options": ["本次允许"], "custom_input": ""}, "权限:本次允许"
-        if first in ("session_allow", "会话内记住", "Session Allow"):
-            return {"selected_options": ["会话内记住"], "custom_input": ""}, "权限:会话内记住"
-        if first in (
-            "always_allow",
-            "allow_always",
-            "永久记住",
-            "总是允许",
-            "Always Allow",
-        ):
-            return {"selected_options": ["永久记住"], "custom_input": ""}, "权限:永久记住"
-        if first in ("reject", "拒绝", "Reject"):
-            return (
-                {"selected_options": ["拒绝"], "custom_input": custom_input},
-                "权限:拒绝",
-            )
-        if first == "继续规划":
-            return (
-                {"selected_options": ["继续规划"], "custom_input": custom_input},
-                "plan:继续规划",
-            )
-        # 命不中白名单（含多选/空选/选项外文本）：fail-closed 按拒绝处理，
-        # 用户附带文字作为拒绝理由反馈给智能体。
-        feedback = custom_input or (
-            f"用户拒绝（选项卡应答未命中白名单: {first}）"
-            if first
-            else "用户拒绝（选项卡应答未选择任何选项）"
-        )
-        return {"selected_options": ["拒绝"], "custom_input": feedback}, "权限:fail-closed拒绝"
-
-    @staticmethod
-    def _resume_answers_from_ask_user(
-        ask_user_answer: dict[str, Any],
-        fallback_answer: dict[str, Any],
-    ) -> list[dict[str, Any]]:
-        """askUserAnswer 全量 answers → resume answers 列表。
-
-        ask_user_interrupt：逐条透传（保留 question 文本做多问题对齐，interface.py
-        按 question 组 answers_dict）。权限类中断：白名单语义已收敛进
-        fallback_answer，只传这一条（多问题选项卡对权限场景无意义，防第二条
-        未校验的答案混进 resume）。
-        """
-        source = str(ask_user_answer.get("source") or "").strip()
-        if source == "ask_user_interrupt":
-            answers: list[dict[str, Any]] = []
-            for a in ask_user_answer.get("answers") or []:
-                if not isinstance(a, dict):
-                    continue
-                answers.append({
-                    "question": str(a.get("question") or ""),
-                    "selected_options": list(a.get("selected_options") or []),
-                    "custom_input": str(a.get("custom_input") or ""),
-                })
-            return answers or [fallback_answer]
-        return [fallback_answer]
-
     async def _route_approval_reply(
         self,
         message: dict[str, Any],
@@ -3777,28 +3237,21 @@ class XiaoyiChannel(BaseChannel):
         agent_id: str,
         device_id: str,
         push_id: str,
-        answers: list[dict[str, Any]] | None = None,
-        responder_device_id: str = "",
     ) -> None:
         """把审批回复转成 chat.send interrupt-resume 路由给 AgentServer（恢复挂起的运行）。
 
         resume 的 xiaoyi_task_id 沿用原任务 id：续跑流式输出回到手机端同一任务气泡。
-        ``answers`` 显式传入完整答案列表（多问题 ask_user 场景逐条透传），缺省
-        按单答案 ``[answer]`` 兼容既有调用点。``responder_device_id`` 为抢答设备
-        标识（多端抢答场景），随 params 透传供审计/UI 展示"由指定设备完成选择"。
         """
         task_id = str(pending.get("task_id") or "")
-        params: dict[str, Any] = {
+        params = {
             "query": "",
             "task_id": task_id,
             "session_id": logical_session,  # 对齐 Web 端 resume 载荷（useWebSocket chat.send）
             "request_id": pending.get("request_id") or "",
-            "answers": answers if answers is not None else [answer],
+            "answers": [answer],
             "source": pending.get("source") or "permission_interrupt",
             "mode": "agent",
         }
-        if responder_device_id:
-            params["responder_device_id"] = responder_device_id
         metadata = {
             "method": "message/stream",
             "xiaoyi_session_id": session_id,  # 顶层 sessionId（物理回发）
@@ -3837,21 +3290,11 @@ class XiaoyiChannel(BaseChannel):
             await self._send_status_update(task_id, session_id, "已收到您的回复，继续执行…")
 
     async def _send_ask_user_question_prompt(self, msg: Message, session_id: str, task_id: str) -> None:
-        """权限/确认/ask_user 提示：结构化选项卡 + 文本回退，并登记待答复审批。
+        """权限/确认审批提示：渲染问题与选项，并登记待答复审批（等用户下一条消息回复）。
 
-        出站形态（A2A 标准语义）：status-update(state=input-required, final=false)，
-        message.parts 同时挂 text part（人类可读正文，老客户端仍可见）与 data part
-        （commands/ToolExecute/Invoke 指令，端侧据此渲染选项卡）。
-        中断是"任务在等输入"而非任务产出物，故用 status-update 而非 artifact-update；
-        input-required 不在终态集合内 → final=false，正确表达"任务未结束，正在等输入"。
-
-        回复约定（三条常驻路径）：
-        ① 结构化应答 data part commands/ToolExecute/InvokeRsp（question_id 对齐 +
-           user_cancel；旧端侧 askUserAnswer camelCase 形态仍可解析）；
-        ② 文本约定词表（同意 / 会话内允许 / 永久允许 / 拒绝）；
-        ③ AgentEvent/PermissionReply data event {"action":"approve|session_allow|
-           always_allow|reject","feedback":?}。
-        自由问答（text_input.required）与选项外文本走 ② 的"其他意见"分支。
+        回复约定：文本（同意 / 会话内允许 / 永久允许 / 拒绝，详见模块级词表）或
+        data event {"header":{"namespace":"AgentEvent","name":"PermissionReply"},
+        "payload":{"action":"approve|session_allow|always_allow|reject","feedback":?}}。
         """
         payload = msg.payload if isinstance(msg.payload, dict) else {}
         questions = payload.get("questions") or []
@@ -3863,145 +3306,45 @@ class XiaoyiChannel(BaseChannel):
             or (msg.session_id or "")
             or session_id
         )
-        ask_user_command = _build_ask_user_command_payload(payload)
         if request_id and logical_session:
-            invoke_questions = [
-                q
-                for q in ask_user_command["payload"].get("questions") or []
-                if isinstance(q, dict)
-            ]
             self._pending_approvals[logical_session] = {
                 "request_id": request_id,
                 "source": source,
                 "task_id": task_id,
                 "created_at": time.time(),
-                # InvokeRsp 按 question_id 回传，此处登记 id → question 文本映射，
-                # 应答时还原成 interface.py 对齐所需的 question 文本。
-                "questions": [str(q.get("question") or "") for q in invoke_questions],
-                "question_ids": {
-                    str(q.get("question_id")): str(q.get("question") or "")
-                    for q in invoke_questions
-                    if str(q.get("question_id") or "").strip()
-                },
-                # 超时兜底（_ask_user_timeout_loop）所需：问题 → 选项 label 列表
-                # （默认选第一项）+ 回发上下文（顶层会话/设备标识，合成 resume
-                # 消息用，正常应答路径不读这些键）。
-                "question_options": {
-                    str(q.get("question") or ""): [
-                        str(o.get("label") or "").strip()
-                        for o in q.get("options") or []
-                        if isinstance(o, dict) and str(o.get("label") or "").strip()
-                    ]
-                    for q in invoke_questions
-                },
-                "session_id": str(meta.get("xiaoyi_session_id") or "").strip() or session_id,
-                "agent_id": str(meta.get("im_sender_user_id") or "").strip(),
-                "device_id": str(meta.get("xiaoyi_device_id") or "").strip(),
-                "push_id": str(meta.get("xiaoyi_push_id") or "").strip(),
             }
         else:
             logger.warning("XiaoYi: ask_user_question 缺少 request_id/会话标识，无法登记待答复审批")
 
-        prompt_text = _build_ask_user_prompt_text(source, questions)
-        ask_user_part = {
-            "kind": "data",
-            "data": {"commands": [ask_user_command]},
-        }
-        # artifact-update 承载：问题正文走
-        # text part，选项卡指令走 data part，同帧下发。final=false——任务仍在
-        # 等输入，true 会断开端云任务通道；last_chunk=true（本条 artifact 完整
-        # 发完）；append=false（新 artifact，不追加前序片段）。续跑结果继续落到
-        # 同一 task 气泡。
+        q0: dict[str, Any] = questions[0] if questions and isinstance(questions[0], dict) else {}
+        header = str(q0.get("header") or "").strip()
+        question = str(q0.get("question") or "").strip()
+        options = q0.get("options") or []
+        labels = [
+            str(opt.get("label") or "").strip()
+            for opt in options
+            if isinstance(opt, dict) and str(opt.get("label") or "").strip()
+        ]
+        lines = ["🔐 需要您的确认"]
+        if header:
+            lines.append(f"【{header}】")
+        if question:
+            lines.append(question)
+        if labels:
+            lines.append("可选项：" + " / ".join(labels))
+        lines.append(_APPROVAL_REPLY_HINT)
+        prompt_text = "\n".join(lines)
+        # 完整文本块但非 final：提示可见且不关闭任务气泡，续跑结果继续落到同一任务
         for url_key in list(self._ws_connections.keys()):
             await self._send_text_response(
                 session_id,
                 task_id,
                 prompt_text,
                 url_key,
-                append=False,
+                append=True,
                 last_chunk=True,
                 is_final=False,
-                kind="text",
-                extra_part=ask_user_part,
             )
-
-    async def _ask_user_timeout_loop(self) -> None:
-        """AskUser 超时兜底：周期扫描待答表，超时未应答自动选默认选项 resume。
-
-        挂起期间手机端可能始终不回（旧版端侧无回传/用户离开）。到
-        _APPROVAL_EXPIRE_S（30 分钟）仍无应答时：ask_user 每题选第一个选项
-        （无选项按跳过）、权限/确认类 fail-closed 按拒绝，自动 resume 让模型
-        继续思考，续跑结果回到原 task 气泡。
-        """
-        while self._running:
-            await asyncio.sleep(60)
-            try:
-                for logical_session in list(self._pending_approvals.keys()):
-                    pending = self._pending_approvals.get(logical_session)
-                    if not pending:
-                        continue
-                    if (
-                        time.time() - float(pending.get("created_at") or 0)
-                        <= _APPROVAL_EXPIRE_S
-                    ):
-                        continue
-                    self._pending_approvals.pop(logical_session, None)
-                    await self._resume_timed_out_ask_user(logical_session, pending)
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("XiaoYi: AskUser 超时兜底扫描异常")
-
-    async def _resume_timed_out_ask_user(
-        self, logical_session: str, pending: dict[str, Any]
-    ) -> None:
-        """超时的待答审批 → 默认答案 resume（模型继续思考）。"""
-        source = str(pending.get("source") or "").strip()
-        question_options = pending.get("question_options") or {}
-        if source == "ask_user_interrupt":
-            # 每题选第一个选项（模型给的顺序即推荐序）；无选项的问题（自由
-            # 输入题）给显式默认值"跳过"，模型收到明确信号继续，不悬空。
-            answers = []
-            for question in pending.get("questions") or []:
-                labels = question_options.get(str(question)) or []
-                answers.append({
-                    "question": str(question),
-                    "selected_options": [labels[0]] if labels else [],
-                    "custom_input": "" if labels else "跳过",
-                })
-            if not answers:
-                answers = [{"question": "", "selected_options": [], "custom_input": ""}]
-            answer = answers[0]
-            resume_answers = answers
-            log_note = "ask_user 超时→默认选项"
-        else:
-            # 权限/确认/演进类：超时 fail-closed 按拒绝，绝不默认放行。
-            answer = {
-                "selected_options": ["拒绝"],
-                "custom_input": "超时未应答，已自动拒绝",
-            }
-            resume_answers = [answer]
-            log_note = "权限:超时→fail-closed拒绝"
-        logger.info(
-            "XiaoYi: AskUser 待答复超时（%ds），自动按默认选项续跑 session=%s "
-            "request_id=%s note=%s answers=%r",
-            _APPROVAL_EXPIRE_S,
-            logical_session,
-            pending.get("request_id"),
-            log_note,
-            resume_answers,
-        )
-        await self._route_approval_reply(
-            {"id": str(pending.get("task_id") or "")},
-            answer,
-            pending,
-            session_id=str(pending.get("session_id") or ""),
-            logical_session=logical_session,
-            agent_id=str(pending.get("agent_id") or ""),
-            device_id=str(pending.get("device_id") or ""),
-            push_id=str(pending.get("push_id") or ""),
-            answers=resume_answers,
-        )
 
     async def _start_session_heartbeat(self, session_id: str, task_id: str) -> None:
         """启动会话心跳任务，每隔5秒发送空消息直到final消息发出."""
@@ -4568,12 +3911,8 @@ class XiaoyiChannel(BaseChannel):
             last_chunk: bool = True,
             is_final: bool = True,
             kind: str | None = None,
-            extra_part: dict | None = None,
     ) -> None:
-        """发送文本响应（A2A artifact-update 格式）到指定通道.
-
-        ``extra_part`` 追加在 text part 之后（AskUser 选项卡的 data part，
-        见 _send_ask_user_question_prompt）。
+        """发送文本响应（A2A 格式）到指定通道.
 
         ``kind`` 显式指定 part 类型（``"text"`` 或 ``"reasoningText"``）。
         默认 ``None`` 时按 ``last_chunk`` 推导（``True``→text，``False``→reasoningText），
@@ -4586,9 +3925,6 @@ class XiaoyiChannel(BaseChannel):
             data = {"kind": "reasoningText", "reasoningText": text}
         else:
             data = {"kind": "text", "text": text}
-        parts = [data]
-        if extra_part:
-            parts.append(extra_part)
         response = {
             "jsonrpc": "2.0",
             "id": f"msg_{int(time.time() * 1000)}",
@@ -4600,7 +3936,7 @@ class XiaoyiChannel(BaseChannel):
                 "final": is_final,
                 "artifact": {
                     "artifactId": f"artifact_{int(time.time() * 1000)}",
-                    "parts": parts,
+                    "parts": [data],
                 },
             },
         }

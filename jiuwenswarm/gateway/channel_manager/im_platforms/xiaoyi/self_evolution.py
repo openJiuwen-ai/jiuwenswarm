@@ -72,15 +72,6 @@ def _find_agent_event(message: dict[str, Any], name: str) -> dict[str, Any] | No
     return None
 
 
-def find_agent_event(message: dict[str, Any], name: str) -> dict[str, Any] | None:
-    """Public wrapper of :func:`_find_agent_event`.
-
-    云端多端同步回传（AgentEvent/InvokeRsp 等）挂在帧内任意位置（如
-    content.events），渠道层按事件名递归定位。
-    """
-    return _find_agent_event(message, name)
-
-
 def _resolve_ids(message: dict[str, Any], command: dict[str, Any]):
     """Resolve session/task/message ids — same scheme as memory_query.extract_memory_query."""
     nested = None
