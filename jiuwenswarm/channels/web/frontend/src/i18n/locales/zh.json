@@ -77,6 +77,7 @@
     "attachmentsBlocked": "设计模式暂不支持附件，请先移除附件后再发送。",
     "models": {
       "chatMissing": "对话模型未配置，请先在「设置」中配置模型后再使用设计。",
+      "chatAnthropicUnsupported": "设计暂不支持 Anthropic 协议的对话模型。请在「设置」中改为配置 OpenAI 协议的模型后再试。",
       "videoOff": "视频生成已在「设置 > Agent」中关闭。",
       "videoMissing": "视频生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
       "imageOff": "图像生成已在「设置 > Agent」中关闭。",

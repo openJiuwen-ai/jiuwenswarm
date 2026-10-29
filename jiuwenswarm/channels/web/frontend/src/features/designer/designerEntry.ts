@@ -223,7 +223,7 @@ export async function composeDesignerSession(params: {
   try {
     // Same design landing gate as ``submitDesignComposer``: the first message
     // on an empty canvas must fail before the director builds the graph.
-    const modelProblem = await findDesignModelsProblem();
+    const modelProblem = await findDesignModelsProblem(params.sessionId);
     if (modelProblem) {
       throw new Error(modelProblem);
     }

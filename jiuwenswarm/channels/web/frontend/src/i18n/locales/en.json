@@ -77,6 +77,7 @@
     "attachmentsBlocked": "Design mode does not support attachments yet. Remove attachments and try again.",
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
+      "chatAnthropicUnsupported": "Design does not support a chat model on the Anthropic protocol. In Settings, configure a model that uses the OpenAI protocol and try again.",
       "videoOff": "Video generation is switched off in Settings > Agent.",
       "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
       "imageOff": "Image generation is switched off in Settings > Agent.",

@@ -19,7 +19,7 @@ import {
   composeDesignerSession,
   sendDesignerLeaderMessage,
 } from '../designerEntry';
-import { findDesignModelsProblem } from '../designModelsReadiness';
+import { findDesignModelsProblem, loadedDesignChatAnthropicProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
 import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
@@ -165,13 +165,13 @@ export function DesignerChatPanel() {
       return;
     }
     let cancelled = false;
-    void findDesignModelsProblem().then((problem) => {
+    void findDesignModelsProblem(sessionId).then((problem) => {
       if (!cancelled) setBlockedProblem(problem ?? '');
     });
     return () => {
       cancelled = true;
     };
-  }, [sessionId, availableModelCount]);
+  }, [sessionId, availableModelCount, selectedModelName]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -245,8 +245,11 @@ export function DesignerChatPanel() {
     if ((!content && attachments.length === 0) || chatBusy) return;
     // Same gate as the landing page: a round needs the chat model and both
     // generation slots, so refuse loudly instead of failing mid-run (#5266).
-    if (blockedProblem) {
-      toast.open({ content: blockedProblem, variant: 'error' });
+    // Anthropic is read from the in-memory catalog so the click returns before
+    // any design RPC, even if the warning effect has not finished.
+    const protocolProblem = loadedDesignChatAnthropicProblem(sessionId, selectedModelName);
+    if (protocolProblem || blockedProblem) {
+      toast.open({ content: protocolProblem || blockedProblem, variant: 'error' });
       return;
     }
     setSending(true);
@@ -293,7 +296,7 @@ export function DesignerChatPanel() {
       .finally(() => {
         setSending(false);
       });
-  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, sessionId, t]);
+  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, selectedModelName, sessionId, t]);
 
   const handleStop = useCallback(() => {
     if (!sessionId) return;

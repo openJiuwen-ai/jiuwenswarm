@@ -7,8 +7,9 @@
 
 import i18n from '../../i18n';
 import { webRequest } from '../../services/webClient';
+import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
-import { designChatModelReady } from './designChatModelState';
+import { designChatModelReady, designChatModelUsesAnthropic } from './designChatModelState';
 import { generationProblemFromConfig, type GenerationKind } from './designGenerationReadiness';
 import { nodeGenerationKind, type MaybeNode } from './designerNodeGenerationKind';
 import type { ModelEntry } from '../../types';
@@ -22,14 +23,42 @@ import type { ModelEntry } from '../../types';
  * still warming up — re-verify with a fresh `models.list` before claiming the
  * chat model is missing, and fail open when the re-check cannot complete.
  */
-export async function findDesignChatModelProblem(): Promise<string | null> {
-  if (designChatModelReady(useSessionStore.getState().chatAvailableModels)) return null;
+function selectedDesignChatModelName(sessionId?: string | null): string | null {
+  const id = String(sessionId || useChatStore.getState().activeSessionId || '').trim();
+  if (!id) return null;
+  return useSessionStore.getState().runtimes[id]?.selectedModelName ?? null;
+}
+
+/**
+ * Anthropic-protocol block for the chat model already in memory, or null.
+ *
+ * Synchronous on purpose: send / regenerate clicks must refuse before any
+ * design RPC. A missing catalog is not this error — the async readiness
+ * check still owns "chat model not configured".
+ */
+export function loadedDesignChatAnthropicProblem(
+  sessionId?: string | null,
+  selectedModelName?: string | null,
+): string | null {
+  const session = useSessionStore.getState();
+  const selected = selectedModelName ?? selectedDesignChatModelName(sessionId);
+  if (!designChatModelUsesAnthropic(session.chatAvailableModels, selected, session.defaultModelName)) {
+    return null;
+  }
+  return i18n.t('designer.models.chatAnthropicUnsupported');
+}
+
+export async function findDesignChatModelProblem(sessionId?: string | null): Promise<string | null> {
+  const loaded = useSessionStore.getState().chatAvailableModels;
+  if (designChatModelReady(loaded)) {
+    return loadedDesignChatAnthropicProblem(sessionId);
+  }
   try {
     const resp = await webRequest<{ models?: ModelEntry[]; active_model?: string }>('models.list');
     const models = Array.isArray(resp?.models) ? resp.models : [];
     if (designChatModelReady(models)) {
       useSessionStore.getState().setAvailableModels(models, resp?.active_model ?? '');
-      return null;
+      return loadedDesignChatAnthropicProblem(sessionId);
     }
   } catch {
     // Cannot verify right now: do not claim the chat model is missing.
@@ -71,11 +100,11 @@ export async function findDesignRunProblem(nodes: readonly MaybeNode[]): Promise
  * design pipeline drives (chat / video / image) is configured and switched on.
  * Never throws: a failed config read must not block entry.
  */
-export async function findDesignModelsProblem(): Promise<string | null> {
+export async function findDesignModelsProblem(sessionId?: string | null): Promise<string | null> {
   const problems: string[] = [];
   // Chat readiness needs no config read, so it must not be skipped when
   // `config.get` times out while the runtime is warming up.
-  const chatProblem = await findDesignChatModelProblem();
+  const chatProblem = await findDesignChatModelProblem(sessionId);
   if (chatProblem) problems.push(chatProblem);
   let config: Record<string, unknown> | null = null;
   try {
